@@ -494,47 +494,54 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
      * capture yields a 200 with an empty report / "no LLM traffic" brief.
      */
     private void handleOptimisationReport(HttpRequest request, ResponseWriter responseWriter) {
-        try {
-            String format = request.getFirstQueryStringParameter("format");
-            if (format == null || format.isEmpty()) {
-                format = "json";
-            }
-            if (!"json".equalsIgnoreCase(format) && !"markdown".equalsIgnoreCase(format) && !"csv".equalsIgnoreCase(format)) {
-                responseWriter.writeResponse(request, BAD_REQUEST, "format must be one of: json, markdown, csv", MediaType.create("text", "plain").toString());
-                return;
-            }
+        // Building the report retrieves, redacts and renders potentially large captured traffic
+        // (retrieveRecordedPairs blocks on the retrieve future; service.build redacts + renders), so
+        // it must not run on the Netty event loop. Offload to the scheduler and write the response
+        // from there — ctx.writeAndFlush is thread-safe and hops back onto the channel event loop, so
+        // the response (status/body/content-type) and error handling below are byte-for-byte unchanged.
+        httpState.getScheduler().submit(() -> {
+            try {
+                String format = request.getFirstQueryStringParameter("format");
+                if (format == null || format.isEmpty()) {
+                    format = "json";
+                }
+                if (!"json".equalsIgnoreCase(format) && !"markdown".equalsIgnoreCase(format) && !"csv".equalsIgnoreCase(format)) {
+                    responseWriter.writeResponse(request, BAD_REQUEST, "format must be one of: json, markdown, csv", MediaType.create("text", "plain").toString());
+                    return;
+                }
 
-            org.mockserver.llm.analysis.LlmOptimisationReportService.Filter filter =
-                new org.mockserver.llm.analysis.LlmOptimisationReportService.Filter(
-                    request.getFirstQueryStringParameter("session"),
-                    request.getFirstQueryStringParameter("host"),
-                    request.getFirstQueryStringParameter("provider"));
+                org.mockserver.llm.analysis.LlmOptimisationReportService.Filter filter =
+                    new org.mockserver.llm.analysis.LlmOptimisationReportService.Filter(
+                        request.getFirstQueryStringParameter("session"),
+                        request.getFirstQueryStringParameter("host"),
+                        request.getFirstQueryStringParameter("provider"));
 
-            org.mockserver.llm.analysis.LlmOptimisationReportService service =
-                new org.mockserver.llm.analysis.LlmOptimisationReportService();
-            org.mockserver.llm.analysis.LlmOptimisationReportService.Result result =
-                service.build(retrieveRecordedPairs(), filter);
+                org.mockserver.llm.analysis.LlmOptimisationReportService service =
+                    new org.mockserver.llm.analysis.LlmOptimisationReportService();
+                org.mockserver.llm.analysis.LlmOptimisationReportService.Result result =
+                    service.build(retrieveRecordedPairs(), filter);
 
-            if ("markdown".equalsIgnoreCase(format)) {
-                responseWriter.writeResponse(request, OK, service.renderBrief(result), "text/markdown; charset=utf-8");
-            } else if ("csv".equalsIgnoreCase(format)) {
-                responseWriter.writeResponse(request, OK, service.renderCsv(result), "text/csv; charset=utf-8");
-            } else {
-                String json = ObjectMapperFactory.createObjectMapper()
-                    .writerWithDefaultPrettyPrinter().writeValueAsString(result.getReport());
-                responseWriter.writeResponse(request, OK, json, "application/json");
+                if ("markdown".equalsIgnoreCase(format)) {
+                    responseWriter.writeResponse(request, OK, service.renderBrief(result), "text/markdown; charset=utf-8");
+                } else if ("csv".equalsIgnoreCase(format)) {
+                    responseWriter.writeResponse(request, OK, service.renderCsv(result), "text/csv; charset=utf-8");
+                } else {
+                    String json = ObjectMapperFactory.createObjectMapper()
+                        .writerWithDefaultPrettyPrinter().writeValueAsString(result.getReport());
+                    responseWriter.writeResponse(request, OK, json, "application/json");
+                }
+            } catch (Exception e) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.ERROR)
+                        .setHttpRequest(request)
+                        .setMessageFormat("exception building LLM optimisation report:{}")
+                        .setArguments(e.getMessage())
+                        .setThrowable(e)
+                );
+                responseWriter.writeResponse(request, INTERNAL_SERVER_ERROR, "Internal error generating optimisation report", MediaType.create("text", "plain").toString());
             }
-        } catch (Exception e) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.ERROR)
-                    .setHttpRequest(request)
-                    .setMessageFormat("exception building LLM optimisation report:{}")
-                    .setArguments(e.getMessage())
-                    .setThrowable(e)
-            );
-            responseWriter.writeResponse(request, INTERNAL_SERVER_ERROR, "Internal error generating optimisation report", MediaType.create("text", "plain").toString());
-        }
+        });
     }
 
     /**

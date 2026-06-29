@@ -209,6 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### Correctness & reliability
+- **Large `PUT /mockserver/retrieve` and the LLM optimisation report no longer stall logging or time out.**
+  Retrieving logs, requests, or recorded expectations serialized the (potentially large, e.g. captured streaming
+  bodies) result *inside* the single log-consumer thread's callback, which could exceed the retrieve future
+  timeout and — worse — block all further logging (filling the ring buffer and dropping events) while it ran. The
+  three remaining retrieve branches (`LOGS`, `REQUESTS`, `RECORDED_EXPECTATIONS`) now materialize the result on
+  the consumer thread (cheap) and run the expensive serialization on the caller thread, matching the
+  already-fixed `REQUEST_RESPONSES` path; the LLM optimisation-report endpoint likewise builds its report off the
+  Netty event loop. Responses are byte-for-byte identical; only the thread doing the work changed.
 - **Load-scenario status no longer reports a transient `null` while a run is completing.** The orchestrator
   removed a finishing run from its active map before publishing the run's terminal status, so a status poll
   landing in that brief window saw neither and returned `null`. The terminal status is now published before the
