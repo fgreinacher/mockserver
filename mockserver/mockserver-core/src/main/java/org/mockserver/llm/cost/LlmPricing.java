@@ -57,10 +57,16 @@ public final class LlmPricing {
     public static final class PricingEntry {
         private final double inputPerMillion;
         private final double outputPerMillion;
+        private final boolean approximate;
 
         public PricingEntry(double inputPerMillion, double outputPerMillion) {
+            this(inputPerMillion, outputPerMillion, false);
+        }
+
+        public PricingEntry(double inputPerMillion, double outputPerMillion, boolean approximate) {
             this.inputPerMillion = inputPerMillion;
             this.outputPerMillion = outputPerMillion;
+            this.approximate = approximate;
         }
 
         public double getInputPerMillion() {
@@ -69,6 +75,15 @@ public final class LlmPricing {
 
         public double getOutputPerMillion() {
             return outputPerMillion;
+        }
+
+        /**
+         * True when these rates are an admitted placeholder / approximation (e.g. gpt-5*
+         * mapped to the nearest known tier) rather than a verified provider list price. Any
+         * cost derived from an approximate rate must be presented as an estimate, not fact.
+         */
+        public boolean isApproximate() {
+            return approximate;
         }
     }
 
@@ -110,9 +125,9 @@ public final class LlmPricing {
         // known tier (gpt-4o flagship / gpt-4o-mini cheap tier) as a placeholder so a
         // recognised model resolves to SOMETHING rather than null. Confirm against the
         // provider price list before relying on these figures.
-        entry("gpt-5-mini", new PricingEntry(0.15, 0.6)),   // ~gpt-4o-mini tier (approx, TBC)
-        entry("gpt-5-nano", new PricingEntry(0.15, 0.6)),   // ~gpt-4o-mini tier (approx, TBC)
-        entry("gpt-5", new PricingEntry(2.5, 10.0))         // ~gpt-4o flagship tier (approx, TBC)
+        entry("gpt-5-mini", new PricingEntry(0.15, 0.6, true)),   // ~gpt-4o-mini tier (approx, TBC)
+        entry("gpt-5-nano", new PricingEntry(0.15, 0.6, true)),   // ~gpt-4o-mini tier (approx, TBC)
+        entry("gpt-5", new PricingEntry(2.5, 10.0, true))         // ~gpt-4o flagship tier (approx, TBC)
     );
 
     private static final List<Map.Entry<String, PricingEntry>> GEMINI_PRICING = Arrays.asList(
@@ -193,6 +208,16 @@ public final class LlmPricing {
         }
         return (inputTokens / 1_000_000.0) * pricing.getInputPerMillion()
             + (outputTokens / 1_000_000.0) * pricing.getOutputPerMillion();
+    }
+
+    /**
+     * True when the provider/model resolves to an admitted-placeholder / approximate rate
+     * (e.g. gpt-5*), so any cost derived from it must be flagged as an estimate rather than
+     * fact. False for an unpriced model (no entry) or a verified list price.
+     */
+    public static boolean isApproximateRate(Provider provider, String model) {
+        PricingEntry pricing = getPricing(provider, model);
+        return pricing != null && pricing.isApproximate();
     }
 
     /**

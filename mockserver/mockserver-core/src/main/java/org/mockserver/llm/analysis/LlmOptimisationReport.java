@@ -159,6 +159,7 @@ public class LlmOptimisationReport {
         private long reasoningTokens;
         private double estimatedCostUsd;
         private boolean costIsEstimated;
+        private boolean costUnknown;
         private long totalLatencyMs;
         private int toolCallCount;
         private double cacheHitRatio;
@@ -228,6 +229,16 @@ public class LlmOptimisationReport {
             return this;
         }
 
+        /** True when at least one included call could not be priced (unknown model). */
+        public boolean isCostUnknown() {
+            return costUnknown;
+        }
+
+        public Totals setCostUnknown(boolean costUnknown) {
+            this.costUnknown = costUnknown;
+            return this;
+        }
+
         public long getTotalLatencyMs() {
             return totalLatencyMs;
         }
@@ -286,6 +297,8 @@ public class LlmOptimisationReport {
         private long reasoningTokens;
         private double estimatedCostUsd;
         private boolean costIsEstimated;
+        private boolean costUnknown;
+        private boolean approximateRate;
         private long latencyMs;
         private String finishReason;
         private int messageCount;
@@ -382,6 +395,33 @@ public class LlmOptimisationReport {
 
         public Call setCostIsEstimated(boolean costIsEstimated) {
             this.costIsEstimated = costIsEstimated;
+            return this;
+        }
+
+        /**
+         * True when the model could not be priced (unknown/unrecognised id, e.g. an Azure
+         * deployment name). The call's {@code estimatedCostUsd} is held at {@code 0.0} for
+         * well-defined aggregation, but consumers must NOT render it as a confident $0.00.
+         */
+        public boolean isCostUnknown() {
+            return costUnknown;
+        }
+
+        public Call setCostUnknown(boolean costUnknown) {
+            this.costUnknown = costUnknown;
+            return this;
+        }
+
+        /**
+         * True when the cost was derived from an admitted-placeholder/approximate rate (e.g.
+         * gpt-5*). Such a figure is not a billed price; {@code costIsEstimated} is also forced true.
+         */
+        public boolean isApproximateRate() {
+            return approximateRate;
+        }
+
+        public Call setApproximateRate(boolean approximateRate) {
+            this.approximateRate = approximateRate;
             return this;
         }
 

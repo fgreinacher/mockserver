@@ -132,8 +132,10 @@ public class LlmOptimisationReportBuilder {
                 continue;
             }
             // detectForAnalysis (not sniff) so mocked LLM traffic on localhost is included,
-            // consistent with the gate in LlmOptimisationReportService.
-            Optional<Provider> providerOpt = LlmProviderSniffer.detectForAnalysis(request);
+            // consistent with the gate in LlmOptimisationReportService. Pass the response so the
+            // response-shape signal (content_block/message_start/chat.completion/…) is used: a
+            // header-less Anthropic call (model+messages body) is otherwise mis-detected as OpenAI.
+            Optional<Provider> providerOpt = LlmProviderSniffer.detectForAnalysis(request, exchange.getResponse());
             if (!providerOpt.isPresent()) {
                 continue; // not LLM traffic
             }
@@ -294,10 +296,20 @@ public class LlmOptimisationReportBuilder {
         call.setOutputTokens(outputTokens);
         call.setCachedInputTokens(cachedInputTokens);
         call.setReasoningTokens(reasoningTokens);
-        call.setCostIsEstimated(estimated);
 
         Double cost = LlmPricing.estimateCostUsd(provider, model, inputTokens, outputTokens);
-        call.setEstimatedCostUsd(cost == null ? 0.0 : round4(cost));
+        // Distinguish "unpriced" (unknown model — Azure deployment names, unrecognised ids) from a
+        // genuine $0.00. We keep estimatedCostUsd numerically 0.0 so aggregation stays well-defined,
+        // but flag costUnknown so consumers never render an unpriced call as a confident $0.00.
+        boolean costUnknown = cost == null;
+        call.setCostUnknown(costUnknown);
+        call.setEstimatedCostUsd(costUnknown ? 0.0 : round4(cost));
+        // A cost derived from an admitted-placeholder/approx rate (e.g. gpt-5*) is not a billed
+        // figure — force the estimate flag (and surface an explicit approx-rate flag) so it is
+        // never shown as fact.
+        boolean approxRate = !costUnknown && LlmPricing.isApproximateRate(provider, model);
+        call.setApproximateRate(approxRate);
+        call.setCostIsEstimated(estimated || approxRate);
         call.setModel(model);
 
         if (response != null) {
@@ -312,6 +324,7 @@ public class LlmOptimisationReportBuilder {
         double cost = 0.0;
         int toolCalls = 0;
         boolean anyEstimated = false;
+        boolean anyCostUnknown = false;
         for (LlmOptimisationReport.Call call : report.getCalls()) {
             input += call.getInputTokens();
             output += call.getOutputTokens();
@@ -321,6 +334,7 @@ public class LlmOptimisationReportBuilder {
             cost += call.getEstimatedCostUsd();
             toolCalls += call.getToolCalls().size();
             anyEstimated = anyEstimated || call.isCostIsEstimated();
+            anyCostUnknown = anyCostUnknown || call.isCostUnknown();
         }
         int callCount = report.getCalls().size();
         int retryCallCount = windowedRetryCount(report.getCalls());
@@ -334,6 +348,7 @@ public class LlmOptimisationReportBuilder {
             .setTotalLatencyMs(latency)
             .setEstimatedCostUsd(round4(cost))
             .setCostIsEstimated(anyEstimated)
+            .setCostUnknown(anyCostUnknown)
             .setToolCallCount(toolCalls)
             .setCacheHitRatio(cacheHitRatio)
             .setRetryCallCount(retryCallCount)

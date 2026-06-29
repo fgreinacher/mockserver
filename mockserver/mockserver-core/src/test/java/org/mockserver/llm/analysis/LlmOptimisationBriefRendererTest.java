@@ -93,6 +93,55 @@ public class LlmOptimisationBriefRendererTest {
     }
 
     @Test
+    public void briefMasksSecretsPastedIntoMessageText() {
+        // A secret a user pasted into a PROMPT (not an HTTP header — those are already redacted)
+        // must be masked in the appendix, which prints message text verbatim and is framed
+        // "paste into any LLM".
+        HttpRequest leaky = request()
+            .withMethod("POST")
+            .withPath("/v1/chat/completions")
+            .withHeader("Host", "api.openai.com")
+            .withBody("{\"model\":\"gpt-4o-2024-08-06\",\"messages\":["
+                + "{\"role\":\"system\",\"content\":\"You are helpful.\"},"
+                + "{\"role\":\"user\",\"content\":\"Use my key sk-abcdefghijklmnop1234567890 and "
+                + "AKIAIOSFODNN7EXAMPLE and Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123 and "
+                + "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 please\"}]}");
+        List<CapturedExchange> exchanges = java.util.Collections.singletonList(
+            new CapturedExchange(leaky, usageResponse("gpt-4o-2024-08-06", 100, 10, "stop"), 100L));
+        String md = renderer.render(sampleReport(exchanges), exchanges, new FixtureRedactor());
+
+        assertThat(md, not(containsString("sk-abcdefghijklmnop1234567890")));
+        assertThat(md, not(containsString("AKIAIOSFODNN7EXAMPLE")));
+        assertThat(md, not(containsString("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")));
+        assertThat(md, not(containsString("Bearer abcdefghijklmnopqrstuvwxyz0123")));
+        assertThat(md, containsString("***"));
+        // ordinary prose around the secret is preserved
+        assertThat(md, containsString("Use my key"));
+        assertThat(md, containsString("please"));
+    }
+
+    @Test
+    public void maskSecretsLeavesNormalProseUntouched() {
+        String prose = "The quick brown fox jumps over the lazy dog. Cost was $3.14 and id 42.";
+        assertEquals(prose, LlmOptimisationBriefRenderer.maskSecrets(prose));
+    }
+
+    @Test
+    public void unpricedCallRendersNaNotConfidentZero() {
+        HttpRequest unpriced = request()
+            .withMethod("POST")
+            .withPath("/v1/chat/completions")
+            .withHeader("Host", "api.openai.com")
+            .withBody("{\"model\":\"my-azure-deployment\",\"messages\":["
+                + "{\"role\":\"user\",\"content\":\"hi\"}]}");
+        List<CapturedExchange> exchanges = java.util.Collections.singletonList(
+            new CapturedExchange(unpriced, usageResponse("my-azure-deployment", 100, 10, "stop"), 100L));
+        String md = renderer.render(sampleReport(exchanges), exchanges, new FixtureRedactor());
+        assertThat(md, containsString("| n/a |"));
+        assertThat(md, not(containsString("| $0.0000 |")));
+    }
+
+    @Test
     public void briefIncludesPerCallTableHeaderAndToolDefinitions() {
         List<CapturedExchange> exchanges = sampleExchanges();
         String md = renderer.render(sampleReport(exchanges), exchanges, new FixtureRedactor());

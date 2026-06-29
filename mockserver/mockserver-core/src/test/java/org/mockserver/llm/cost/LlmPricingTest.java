@@ -8,6 +8,8 @@ import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class LlmPricingTest {
 
@@ -116,6 +118,24 @@ public class LlmPricingTest {
         // to SOMETHING (not null) so a recognised model is priced, not dropped.
         assertThat(LlmPricing.getPricing(Provider.OPENAI, "gpt-5"), is(notNullValue()));
         assertThat(LlmPricing.getPricing(Provider.OPENAI, "gpt-5-mini"), is(notNullValue()));
+    }
+
+    @Test
+    public void shouldFlagGpt5PlaceholderRatesAsApproximate() {
+        // gpt-5* are admitted placeholders — flagged approximate so callers present any derived
+        // cost as an estimate, not fact.
+        assertTrue(LlmPricing.isApproximateRate(Provider.OPENAI, "gpt-5"));
+        assertTrue(LlmPricing.isApproximateRate(Provider.OPENAI, "gpt-5-mini"));
+        assertTrue(LlmPricing.getPricing(Provider.OPENAI, "gpt-5").isApproximate());
+    }
+
+    @Test
+    public void shouldNotFlagVerifiedRatesAsApproximate() {
+        assertFalse(LlmPricing.isApproximateRate(Provider.OPENAI, "gpt-4o"));
+        assertFalse(LlmPricing.isApproximateRate(Provider.ANTHROPIC, "claude-sonnet-4-5"));
+        // an unpriced model is not "approximate" — it is simply unknown
+        assertFalse(LlmPricing.isApproximateRate(Provider.OPENAI, "some-future-model"));
+        assertFalse(LlmPricing.isApproximateRate(Provider.AZURE_OPENAI, "my-deployment"));
     }
 
     @Test

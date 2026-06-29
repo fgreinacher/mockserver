@@ -14,8 +14,10 @@ import org.mockserver.model.ToolUse;
 import org.mockserver.serialization.ObjectMapperFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * Renders an {@link LlmOptimisationReport} to a copy-paste Markdown
@@ -34,6 +36,22 @@ import java.util.Optional;
 public class LlmOptimisationBriefRenderer {
 
     private static final ObjectMapper OBJECT_MAPPER = ObjectMapperFactory.createObjectMapper();
+
+    /**
+     * Conservative value-level credential shapes masked in the appendix message text. The
+     * appendix prints message bodies verbatim and is framed "paste into any LLM", so a secret a
+     * user pasted into a prompt (not an HTTP header, which {@link FixtureRedactor} already
+     * strips) would otherwise leak. Each pattern targets a high-signal, distinctive token shape
+     * so normal prose is not mangled.
+     */
+    private static final List<Pattern> SECRET_PATTERNS = Arrays.asList(
+        Pattern.compile("sk-[A-Za-z0-9]{16,}"),                 // OpenAI-style API keys
+        Pattern.compile("AKIA[0-9A-Z]{16}"),                    // AWS access key id
+        Pattern.compile("Bearer\\s+[A-Za-z0-9._-]{20,}"),       // bearer tokens
+        Pattern.compile("gh[po]_[A-Za-z0-9]{20,}")              // GitHub ghp_/gho_ tokens
+    );
+
+    static final String SECRET_MASK = "***";
 
     static final String FRAMING_PREAMBLE =
         "You are an LLM cost-optimisation expert. Below is a captured agent run that was proxied "
@@ -113,7 +131,8 @@ public class LlmOptimisationBriefRenderer {
         md.append("- Cached input tokens: ").append(formatTokens(t.getCachedInputTokens())).append("\n");
         md.append("- Reasoning tokens: ").append(formatTokens(t.getReasoningTokens())).append("\n");
         md.append("- Estimated cost: ").append(formatUsd(t.getEstimatedCostUsd()))
-            .append(t.isCostIsEstimated() ? " (estimated — usage not reported upstream)" : "").append("\n");
+            .append(t.isCostIsEstimated() ? " (estimated — usage not reported upstream)" : "")
+            .append(t.isCostUnknown() ? " (excludes unpriced calls — see \"n/a\" rows)" : "").append("\n");
         md.append("- Total latency: ").append(t.getTotalLatencyMs()).append(" ms\n");
         md.append("- Tool calls: ").append(t.getToolCallCount()).append("\n");
         md.append("- Cache hit rate: ").append(formatPercent(t.getCacheHitRatio())).append("\n");
@@ -129,14 +148,27 @@ public class LlmOptimisationBriefRenderer {
                 .append(" | ").append(nullToDash(call.getModel()))
                 .append(" | ").append(formatTokens(call.getInputTokens()))
                 .append(" | ").append(formatTokens(call.getOutputTokens()))
-                .append(" | ").append(formatUsd(call.getEstimatedCostUsd())).append(call.isCostIsEstimated() ? "*" : "")
+                .append(" | ").append(formatCallCost(call))
                 .append(" | ").append(call.getLatencyMs()).append(" ms")
                 .append(" | ").append(call.getToolCalls().size())
                 .append(" | ").append(nullToDash(call.getFinishReason()))
                 .append(" |\n");
         }
         md.append("\n");
-        md.append("*estimated cost (usage not reported upstream).\n\n");
+        md.append("*estimated cost (usage not reported upstream, or an approximate/placeholder rate); "
+            + "\"n/a\" = model could not be priced.\n\n");
+    }
+
+    /**
+     * Render a call's cost cell. An unpriced model ({@code costUnknown}) is shown as
+     * {@code n/a} — never a confident $0.00 — and an estimated/approximate-rate cost carries a
+     * trailing {@code *}.
+     */
+    private static String formatCallCost(LlmOptimisationReport.Call call) {
+        if (call.isCostUnknown()) {
+            return "n/a";
+        }
+        return formatUsd(call.getEstimatedCostUsd()) + (call.isCostIsEstimated() ? "*" : "");
     }
 
     private void appendOpportunities(StringBuilder md, LlmOptimisationReport report) {
@@ -199,7 +231,12 @@ public class LlmOptimisationBriefRenderer {
             if (request == null) {
                 continue;
             }
-            Optional<Provider> providerOpt = org.mockserver.llm.client.LlmProviderSniffer.sniff(request);
+            // Use the SAME detector as the builder (detectForAnalysis with the response), so the
+            // appendix and the per-call table agree on exactly which calls are LLM traffic. Using
+            // the stricter sniff() here would drop calls that the table counts (e.g. a header-less
+            // Anthropic call recognised only by its response shape).
+            Optional<Provider> providerOpt = org.mockserver.llm.client.LlmProviderSniffer
+                .detectForAnalysis(request, exchange.getResponse());
             if (!providerOpt.isPresent()) {
                 continue; // mirror the builder: only LLM traffic is included
             }
@@ -245,7 +282,7 @@ public class LlmOptimisationBriefRenderer {
         for (ParsedMessage message : conversation.getMessages()) {
             md.append("- **").append(message.getRole().name()).append("**: ");
             String text = message.getTextContent();
-            md.append(text != null ? singleLine(text) : "");
+            md.append(text != null ? maskSecrets(singleLine(text)) : "");
             if (!message.getToolCalls().isEmpty()) {
                 md.append(" _(tool calls: ");
                 List<String> names = new ArrayList<>();
@@ -311,5 +348,21 @@ public class LlmOptimisationBriefRenderer {
 
     private static String singleLine(String text) {
         return text.replaceAll("\\s+", " ").trim();
+    }
+
+    /**
+     * Mask obvious credential shapes (API keys, AWS access keys, bearer tokens, GitHub tokens)
+     * in free-text message content with {@value #SECRET_MASK}. Conservative and cheap — a fixed
+     * set of high-signal token patterns, so ordinary prose is left untouched.
+     */
+    static String maskSecrets(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        String masked = text;
+        for (Pattern pattern : SECRET_PATTERNS) {
+            masked = pattern.matcher(masked).replaceAll(SECRET_MASK);
+        }
+        return masked;
     }
 }

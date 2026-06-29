@@ -30,7 +30,7 @@
 | 0 | gpt-4o-2024-08-06 | 8,120 | 540 | $0.0257 | 2300 ms | 0 | tool_calls |
 | 1 | gpt-4o-2024-08-06 | 8,200 | 480 | $0.0253 | 1900 ms | 0 | stop |
 
-*estimated cost (usage not reported upstream).
+*estimated cost (usage not reported upstream, or an approximate/placeholder rate); "n/a" = model could not be priced.
 
 ## Detected opportunities
 

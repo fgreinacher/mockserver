@@ -144,13 +144,78 @@ public class LlmOptimisationReportBuilderTest {
     }
 
     @Test
-    public void unknownModelYieldsZeroCost() {
+    public void unpricedModelIsFlaggedNotShownAsConfidentZero() {
+        // An unrecognised model (e.g. an Azure deployment name) cannot be priced. The call must
+        // be flagged costUnknown so consumers don't render a confident $0.00; estimatedCostUsd is
+        // held at 0.0 only so aggregation stays well-defined.
         LlmOptimisationReport report = builder.build(
             Collections.singletonList(exchange(
                 openAiRequest("some-unpriced-model", "sys", "hi"),
                 openAiUsageResponse("some-unpriced-model", 1000, 100, "stop"), 100L)),
             "host:api.openai.com", LlmOptimisationReport.GroupingBasis.PROXY_HOST, headers(), Collections.emptyList());
-        assertEquals(0.0, report.getCalls().get(0).getEstimatedCostUsd(), 0.00001);
+        LlmOptimisationReport.Call call = report.getCalls().get(0);
+        assertTrue(call.isCostUnknown());
+        assertFalse(call.isApproximateRate());
+        assertEquals(0.0, call.getEstimatedCostUsd(), 0.00001);
+        assertTrue(report.getTotals().isCostUnknown());
+    }
+
+    @Test
+    public void pricedModelIsNotFlaggedCostUnknown() {
+        LlmOptimisationReport report = builder.build(
+            Collections.singletonList(exchange(
+                openAiRequest("gpt-4o-2024-08-06", "sys", "hi"),
+                openAiUsageResponse("gpt-4o-2024-08-06", 1000, 100, "stop"), 100L)),
+            "host:api.openai.com", LlmOptimisationReport.GroupingBasis.PROXY_HOST, headers(), Collections.emptyList());
+        assertFalse(report.getCalls().get(0).isCostUnknown());
+        assertFalse(report.getTotals().isCostUnknown());
+    }
+
+    // --- approximate (placeholder) rates force an estimate flag ---
+
+    @Test
+    public void approximatePlaceholderRateForcesEstimatedFlag() {
+        // gpt-5* prices are admitted placeholders — even with real usage reported, the derived
+        // cost must NOT be presented as fact: costIsEstimated and approximateRate are both set.
+        LlmOptimisationReport report = builder.build(
+            Collections.singletonList(exchange(
+                openAiRequest("gpt-5", "sys", "hi"),
+                openAiUsageResponse("gpt-5", 1000, 100, "stop"), 100L)),
+            "host:api.openai.com", LlmOptimisationReport.GroupingBasis.PROXY_HOST, headers(), Collections.emptyList());
+        LlmOptimisationReport.Call call = report.getCalls().get(0);
+        assertTrue(call.isApproximateRate());
+        assertTrue(call.isCostIsEstimated());
+        assertFalse(call.isCostUnknown());
+        assertThat(call.getEstimatedCostUsd(), greaterThan(0.0));
+        assertTrue(report.getTotals().isCostIsEstimated());
+    }
+
+    // --- provider detection uses the response-shape signal ---
+
+    @Test
+    public void anthropicByResponseBodyShapeClassifiedAnthropicNotOpenAi() {
+        // A header-less Anthropic call (model+messages body) routed through an unknown host/path:
+        // the request alone looks like OpenAI, but the response shape (type:message + stop_reason)
+        // identifies Anthropic. The builder must pass the response to the detector.
+        HttpRequest anthropicLike = request()
+            .withMethod("POST")
+            .withPath("/generate")
+            .withHeader("Host", "internal-gateway.example.com")
+            .withBody("{\"model\":\"claude-sonnet-4-5\",\"messages\":["
+                + "{\"role\":\"user\",\"content\":\"hello\"}]}");
+        HttpResponse anthropicResponse = response().withStatusCode(200)
+            .withBody("{\"type\":\"message\",\"role\":\"assistant\","
+                + "\"content\":[{\"type\":\"text\",\"text\":\"hi there\"}],"
+                + "\"stop_reason\":\"end_turn\","
+                + "\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}");
+        LlmOptimisationReport report = builder.build(
+            Collections.singletonList(exchange(anthropicLike, anthropicResponse, 100L)),
+            "host:internal-gateway.example.com", LlmOptimisationReport.GroupingBasis.PROXY_HOST,
+            headers(), Collections.emptyList());
+
+        assertEquals(1, report.getCalls().size());
+        assertEquals("ANTHROPIC", report.getCalls().get(0).getProvider());
+        assertThat(report.getSession().getProviders(), contains("ANTHROPIC"));
     }
 
     // --- fingerprinting ---
