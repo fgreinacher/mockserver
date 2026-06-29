@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Fixture redaction now also masks credentials in query strings and streamed bodies, and fails closed on
+  unparseable secrets.** When redacting recorded traffic (HAR/Postman imports, the LLM optimisation report, the
+  MCP capture tools) the redactor previously only masked sensitive headers and named JSON body fields. It now also
+  (a) masks the values of credential-bearing query parameters by default (such as `key`, `api_key`, `apikey`,
+  `access_token`, `token`, `signature`, `sig`, and the AWS SigV4 `X-Amz-Signature`/`X-Amz-Security-Token`) —
+  e.g. Gemini's `?key=` API key; (b) redacts configured fields inside each Server-Sent-Events `data:` payload of
+  a streamed body, leaving non-JSON markers such as `[DONE]` intact (and failing closed on a `data:` payload it
+  cannot parse that still mentions a configured field); and (c) when a body is configured for field redaction but
+  cannot be parsed yet still mentions a configured field name, replaces the whole body rather than risk leaking it.
+  Ordinary unstructured bodies (plain text, HTML, decoded binary) that mention no configured field are left
+  unchanged.
 - **A2A client builders: the custom-handler regex `messagePattern` is now escaped completely.** Every client
   library (Java, Node, Python, Ruby, Go, Rust, PHP, .NET) inlines `messagePattern` into a JSONPath `=~ /…/` regex
   literal but previously escaped only the `/` delimiter, so a pattern ending in a lone backslash (or containing

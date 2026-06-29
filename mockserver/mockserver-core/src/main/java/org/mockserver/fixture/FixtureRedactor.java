@@ -24,6 +24,14 @@ public class FixtureRedactor {
 
     public static final String REDACTED_PLACEHOLDER = "***REDACTED***";
 
+    /**
+     * Placeholder substituted for an entire body that has body-field redaction
+     * configured but cannot be parsed to locate those fields. Failing closed here
+     * prevents a credential hiding in an unparseable payload from leaking into a
+     * fixture file.
+     */
+    public static final String UNPARSEABLE_BODY_PLACEHOLDER = "<redacted: body could not be parsed for field redaction>";
+
     private static final Set<String> DEFAULT_SENSITIVE_HEADERS = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
 
     static {
@@ -33,6 +41,23 @@ public class FixtureRedactor {
         DEFAULT_SENSITIVE_HEADERS.add("Cookie");
         DEFAULT_SENSITIVE_HEADERS.add("Set-Cookie");
         DEFAULT_SENSITIVE_HEADERS.add("Proxy-Authorization");
+    }
+
+    private static final Set<String> DEFAULT_SENSITIVE_QUERY_PARAMS = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+
+    static {
+        // Credentials commonly carried in the query string by LLM / cloud APIs:
+        // Gemini uses ?key=<API_KEY>; AWS SigV4 presigned requests put the
+        // signature and session token in the query string.
+        DEFAULT_SENSITIVE_QUERY_PARAMS.add("key");
+        DEFAULT_SENSITIVE_QUERY_PARAMS.add("api_key");
+        DEFAULT_SENSITIVE_QUERY_PARAMS.add("apikey");
+        DEFAULT_SENSITIVE_QUERY_PARAMS.add("access_token");
+        DEFAULT_SENSITIVE_QUERY_PARAMS.add("token");
+        DEFAULT_SENSITIVE_QUERY_PARAMS.add("signature");
+        DEFAULT_SENSITIVE_QUERY_PARAMS.add("x-amz-signature");
+        DEFAULT_SENSITIVE_QUERY_PARAMS.add("x-amz-security-token");
+        DEFAULT_SENSITIVE_QUERY_PARAMS.add("sig");
     }
 
     private static final ObjectMapper OBJECT_MAPPER = ObjectMapperFactory.createObjectMapper();
@@ -46,8 +71,17 @@ public class FixtureRedactor {
         return Collections.unmodifiableSet(DEFAULT_SENSITIVE_HEADERS);
     }
 
+    /**
+     * The default sensitive query-string parameter names (case-insensitive), as an
+     * unmodifiable set, so callers can reuse them when constructing a redactor.
+     */
+    public static Set<String> defaultSensitiveQueryParams() {
+        return Collections.unmodifiableSet(DEFAULT_SENSITIVE_QUERY_PARAMS);
+    }
+
     private final Set<String> sensitiveHeaders;
     private final Set<String> sensitiveBodyFields;
+    private final Set<String> sensitiveQueryParams;
 
     /**
      * Create a redactor with the default sensitive header list and no body-field
@@ -56,6 +90,7 @@ public class FixtureRedactor {
     public FixtureRedactor() {
         this.sensitiveHeaders = DEFAULT_SENSITIVE_HEADERS;
         this.sensitiveBodyFields = Collections.emptySet();
+        this.sensitiveQueryParams = DEFAULT_SENSITIVE_QUERY_PARAMS;
     }
 
     /**
@@ -77,6 +112,19 @@ public class FixtureRedactor {
      * @param sensitiveBodyFields JSON field names to redact in bodies (case-insensitive)
      */
     public FixtureRedactor(Collection<String> sensitiveHeaders, Collection<String> sensitiveBodyFields) {
+        this(sensitiveHeaders, sensitiveBodyFields, DEFAULT_SENSITIVE_QUERY_PARAMS);
+    }
+
+    /**
+     * Create a redactor with custom sensitive headers, JSON body field names and
+     * query-string parameter names. Query parameters are matched case-insensitively;
+     * their values are replaced with the placeholder.
+     *
+     * @param sensitiveHeaders     header names to redact (case-insensitive)
+     * @param sensitiveBodyFields  JSON field names to redact in bodies (case-insensitive)
+     * @param sensitiveQueryParams query-string parameter names to redact (case-insensitive)
+     */
+    public FixtureRedactor(Collection<String> sensitiveHeaders, Collection<String> sensitiveBodyFields, Collection<String> sensitiveQueryParams) {
         this.sensitiveHeaders = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         if (sensitiveHeaders != null) {
             this.sensitiveHeaders.addAll(sensitiveHeaders);
@@ -84,6 +132,10 @@ public class FixtureRedactor {
         this.sensitiveBodyFields = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         if (sensitiveBodyFields != null) {
             this.sensitiveBodyFields.addAll(sensitiveBodyFields);
+        }
+        this.sensitiveQueryParams = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        if (sensitiveQueryParams != null) {
+            this.sensitiveQueryParams.addAll(sensitiveQueryParams);
         }
     }
 
@@ -223,8 +275,32 @@ public class FixtureRedactor {
             }
             redacted.withHeaders(headers);
         }
+        redactQueryStringIfNeeded(redacted);
         redactBodyIfNeeded(redacted.getBodyAsString(), redacted::withBody);
         return redacted;
+    }
+
+    /**
+     * Replace the values of any configured sensitive query-string parameters with
+     * the placeholder. Credentials such as Gemini's {@code ?key=} or AWS SigV4
+     * {@code X-Amz-Signature} / {@code X-Amz-Security-Token} are carried in the
+     * query string and would otherwise be written to fixtures unmasked.
+     */
+    private void redactQueryStringIfNeeded(HttpRequest redacted) {
+        List<Parameter> existing = redacted.getQueryStringParameterList();
+        if (sensitiveQueryParams.isEmpty() || existing == null || existing.isEmpty()) {
+            return;
+        }
+        Parameters parameters = new Parameters();
+        for (Parameter parameter : existing) {
+            String name = parameter.getName().getValue();
+            if (sensitiveQueryParams.contains(name)) {
+                parameters.withEntry(new Parameter(name, REDACTED_PLACEHOLDER));
+            } else {
+                parameters.withEntry(parameter);
+            }
+        }
+        redacted.withQueryStringParameters(parameters);
     }
 
     private HttpResponse redactResponse(HttpResponse response) {
@@ -246,14 +322,30 @@ public class FixtureRedactor {
     }
 
     /**
-     * If body-field redaction is configured and {@code bodyString} is JSON,
-     * redact matching fields and apply the result via {@code setter}. No-op for
-     * absent/non-JSON bodies or when no body fields are configured.
+     * If body-field redaction is configured, redact matching fields in
+     * {@code bodyString} and apply the result via {@code setter}. No-op when no
+     * body fields are configured or the body is absent/empty.
      * <p>
+     * Resolution order:
+     * <ol>
+     *   <li>A single JSON document (object or array) — redact configured fields at
+     *       any depth and re-emit. A scalar JSON value cannot carry a named field,
+     *       so it is left unchanged.</li>
+     *   <li>An SSE / streamed body (one or more {@code data:} lines) — redact the
+     *       configured fields inside each {@code data:} JSON payload individually
+     *       and re-emit the SSE structure. Non-JSON {@code data:} markers such as
+     *       {@code [DONE]} are left intact.</li>
+     *   <li>An unstructured body (plain text, HTML, decoded binary, …) — left
+     *       unchanged, because there are no named fields to redact. The single
+     *       exception is when the raw text still mentions a configured field name
+     *       (e.g. a truncated/malformed JSON payload containing {@code "api_key":…}
+     *       that our parser could not reach): there we <b>fail closed</b> and
+     *       replace the whole body with {@value #UNPARSEABLE_BODY_PLACEHOLDER}
+     *       rather than risk leaking a credential we could not mask structurally.</li>
+     * </ol>
      * Note: the redacted body is re-applied as a string body. For recorded
      * fixtures (captured traffic) bodies are already string bodies, so this does
-     * not change match semantics. SSE event-data payloads are out of scope —
-     * only request/response bodies are redacted, not individual stream chunks.
+     * not change match semantics.
      */
     private void redactBodyIfNeeded(String bodyString, java.util.function.Consumer<String> setter) {
         if (sensitiveBodyFields.isEmpty() || bodyString == null || bodyString.isEmpty()) {
@@ -265,9 +357,108 @@ public class FixtureRedactor {
                 redactJsonNode(root);
                 setter.accept(OBJECT_MAPPER.writeValueAsString(root));
             }
-        } catch (Exception e) {
-            // not JSON — leave the body unchanged (headers were already redacted)
+            // a scalar JSON value (string / number / boolean / null) parsed cleanly
+            // and cannot contain a named field — nothing to redact, leave unchanged
+            return;
+        } catch (Exception notSingleJsonDocument) {
+            // fall through: an SSE stream or a genuinely unparseable body
         }
+        if (isServerSentEventStream(bodyString)) {
+            setter.accept(redactSseBody(bodyString));
+            return;
+        }
+        // Neither a JSON document nor an SSE stream. We can only redact NAMED fields,
+        // and an unstructured body (plain text, HTML, decoded binary, …) has none — so
+        // it is normally left unchanged. The one exception is a body that LOOKS like it
+        // should have been parseable structured data carrying a configured secret field
+        // (e.g. a truncated/malformed JSON payload still containing "api_key":"…"): there
+        // the field is present but our parser could not reach it to mask it, so we fail
+        // closed and replace the whole body rather than leak the raw secret.
+        if (mentionsSensitiveBodyField(bodyString)) {
+            setter.accept(UNPARSEABLE_BODY_PLACEHOLDER);
+        }
+    }
+
+    /**
+     * True if the raw body text contains any configured sensitive field name
+     * (case-insensitive). Used to decide whether an unparseable body might be hiding
+     * a secret we failed to mask structurally — if no configured field name even
+     * appears, there is nothing to fail closed over and the body is left intact.
+     */
+    private boolean mentionsSensitiveBodyField(String body) {
+        String lower = body.toLowerCase();
+        for (String field : sensitiveBodyFields) {
+            if (lower.contains(field.toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * An SSE / streamed body is recognised by at least one line beginning with the
+     * {@code data:} field name (the carriage return of a {@code \r\n} separator is
+     * tolerated). A JSON document never reaches this check because it is handled by
+     * the single-document path first.
+     */
+    private boolean isServerSentEventStream(String body) {
+        for (String segment : body.split("\n", -1)) {
+            String line = segment.endsWith("\r") ? segment.substring(0, segment.length() - 1) : segment;
+            if (line.startsWith("data:")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Redact configured fields within each {@code data:} JSON payload of an SSE
+     * body, preserving the line / event structure (including {@code \r\n}
+     * separators and non-{@code data:} lines such as {@code event:} / {@code id:}).
+     */
+    private String redactSseBody(String body) {
+        String[] segments = body.split("\n", -1);
+        for (int i = 0; i < segments.length; i++) {
+            String segment = segments[i];
+            boolean trailingCr = segment.endsWith("\r");
+            String line = trailingCr ? segment.substring(0, segment.length() - 1) : segment;
+            if (line.startsWith("data:")) {
+                String afterPrefix = line.substring("data:".length());
+                String space = afterPrefix.startsWith(" ") ? " " : "";
+                String payload = afterPrefix.substring(space.length());
+                line = "data:" + space + redactJsonPayloadOrSelf(payload);
+            }
+            segments[i] = trailingCr ? line + "\r" : line;
+        }
+        return String.join("\n", segments);
+    }
+
+    /**
+     * Redact configured fields in a single SSE {@code data:} payload when it is a
+     * JSON object or array. A payload we cannot parse as a JSON object/array but
+     * which still mentions a configured field name (e.g. a truncated event, or one
+     * JSON event split across multiple {@code data:} lines) is <b>failed closed</b>
+     * to the placeholder — the same rationale as the non-SSE body path — rather than
+     * emitted raw. Any other non-JSON marker ({@code [DONE]}, empty) is left intact.
+     */
+    private String redactJsonPayloadOrSelf(String payload) {
+        String trimmed = payload.trim();
+        if (trimmed.isEmpty()) {
+            return payload;
+        }
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(trimmed);
+            if (node != null && (node.isObject() || node.isArray())) {
+                redactJsonNode(node);
+                return OBJECT_MAPPER.writeValueAsString(node);
+            }
+        } catch (Exception notJson) {
+            // fall through: a non-JSON data marker or an unparseable chunk
+        }
+        if (mentionsSensitiveBodyField(payload)) {
+            return UNPARSEABLE_BODY_PLACEHOLDER;
+        }
+        return payload;
     }
 
     /**

@@ -355,14 +355,88 @@ public class FixtureRedactorTest {
     }
 
     @Test
-    public void shouldLeaveNonJsonBodyUnchangedWhenBodyRedactionConfigured() {
+    public void shouldFailClosedOnUnparseableBodyWhenBodyRedactionConfigured() {
+        // a body that is neither a JSON document nor an SSE stream, but for which
+        // field redaction is configured, is replaced wholesale (fail closed) so a
+        // credential hidden in an unparseable payload cannot leak into a fixture
         Expectation expectation = Expectation.when(
-            request().withMethod("POST").withPath("/api").withBody("not json api_key")
+            request().withMethod("POST").withPath("/api").withBody("not json api_key=sk-secret")
         ).thenRespond(response().withStatusCode(200));
 
         Expectation[] redacted = bodyRedactor.redact(new Expectation[]{expectation});
 
-        assertThat(requestOf(redacted[0]).getBodyAsString(), is("not json api_key"));
+        String body = requestOf(redacted[0]).getBodyAsString();
+        assertThat(body.contains("sk-secret"), is(false));
+        assertThat(body, is(FixtureRedactor.UNPARSEABLE_BODY_PLACEHOLDER));
+    }
+
+    @Test
+    public void shouldLeaveUnstructuredBodyWithoutSecretFieldUnchanged() {
+        // an ordinary non-JSON body (plain text / HTML / decoded binary) that does
+        // not mention any configured field name is preserved — there is nothing to
+        // redact, so it must NOT be destroyed by the fail-closed path
+        Expectation expectation = Expectation.when(
+            request().withMethod("POST").withPath("/api")
+        ).thenRespond(response().withStatusCode(200).withBody("Hello, World!"));
+
+        Expectation[] redacted = bodyRedactor.redact(new Expectation[]{expectation});
+
+        assertThat(redacted[0].getHttpResponse().getBodyAsString(), is("Hello, World!"));
+    }
+
+    @Test
+    public void shouldLeaveScalarJsonBodyUnchangedWhenBodyRedactionConfigured() {
+        // a scalar JSON value parses cleanly and cannot carry a named field — it is
+        // left intact rather than fail-closed (it is structurally inspectable)
+        Expectation expectation = Expectation.when(
+            request().withMethod("POST").withPath("/api").withBody("\"just a string\"")
+        ).thenRespond(response().withStatusCode(200));
+
+        Expectation[] redacted = bodyRedactor.redact(new Expectation[]{expectation});
+
+        assertThat(requestOf(redacted[0]).getBodyAsString(), is("\"just a string\""));
+    }
+
+    @Test
+    public void shouldRedactConfiguredFieldsInsideSseStreamBody() {
+        // a streamed (SSE) body has its configured fields redacted per data: payload,
+        // preserving the event structure and non-JSON markers such as [DONE]
+        String sse = "event: message\n"
+            + "data: {\"api_key\":\"sk-secret\",\"text\":\"hi\"}\n"
+            + "\n"
+            + "data: [DONE]\n";
+        Expectation expectation = Expectation.when(
+            request().withMethod("POST").withPath("/api")
+        ).thenRespond(response().withStatusCode(200).withBody(sse));
+
+        Expectation[] redacted = bodyRedactor.redact(new Expectation[]{expectation});
+
+        String body = redacted[0].getHttpResponse().getBodyAsString();
+        assertThat(body.contains("sk-secret"), is(false));
+        assertThat(body.contains(REDACTED_PLACEHOLDER), is(true));
+        assertThat(body.contains("hi"), is(true));
+        assertThat(body.contains("[DONE]"), is(true));
+        assertThat(body.contains("event: message"), is(true));
+    }
+
+    @Test
+    public void shouldFailClosedOnUnparseableSseDataPayloadMentioningSecretField() {
+        // a data: payload that mentions a configured field but is not parseable as a
+        // standalone JSON object/array (e.g. a truncated chunk) is failed closed,
+        // while a plain marker like [DONE] is left intact
+        String sse = "data: {\"api_key\":\"sk-secret\",\"truncated\n"
+            + "\n"
+            + "data: [DONE]\n";
+        Expectation expectation = Expectation.when(
+            request().withMethod("POST").withPath("/api")
+        ).thenRespond(response().withStatusCode(200).withBody(sse));
+
+        Expectation[] redacted = bodyRedactor.redact(new Expectation[]{expectation});
+
+        String body = redacted[0].getHttpResponse().getBodyAsString();
+        assertThat(body.contains("sk-secret"), is(false));
+        assertThat(body.contains(FixtureRedactor.UNPARSEABLE_BODY_PLACEHOLDER), is(true));
+        assertThat(body.contains("[DONE]"), is(true));
     }
 
     @Test
@@ -374,5 +448,41 @@ public class FixtureRedactorTest {
         Expectation[] redacted = redactor.redact(new Expectation[]{expectation});
 
         assertThat(requestOf(redacted[0]).getBodyAsString().contains("sk-secret"), is(true));
+    }
+
+    // --- Query-string redaction ---
+
+    @Test
+    public void shouldRedactSensitiveQueryParameterValuesByDefault() {
+        // Gemini-style ?key=<API_KEY> and other credential-bearing query params are
+        // redacted by the default redactor, while ordinary params are preserved
+        Expectation expectation = Expectation.when(
+            request().withMethod("POST").withPath("/v1beta/models/x:generateContent")
+                .withQueryStringParameter("key", "AIza-super-secret")
+                .withQueryStringParameter("alt", "sse")
+        ).thenRespond(response().withStatusCode(200));
+
+        Expectation[] redacted = redactor.redact(new Expectation[]{expectation});
+
+        HttpRequest req = requestOf(redacted[0]);
+        assertThat(req.getFirstQueryStringParameter("key"), is(REDACTED_PLACEHOLDER));
+        assertThat(req.getFirstQueryStringParameter("alt"), is("sse"));
+    }
+
+    @Test
+    public void shouldRedactAwsSigV4QueryCredentials() {
+        Expectation expectation = Expectation.when(
+            request().withMethod("GET").withPath("/object")
+                .withQueryStringParameter("X-Amz-Signature", "deadbeef")
+                .withQueryStringParameter("X-Amz-Security-Token", "FwoG-token")
+                .withQueryStringParameter("X-Amz-Date", "20260629T000000Z")
+        ).thenRespond(response().withStatusCode(200));
+
+        Expectation[] redacted = redactor.redact(new Expectation[]{expectation});
+
+        HttpRequest req = requestOf(redacted[0]);
+        assertThat(req.getFirstQueryStringParameter("X-Amz-Signature"), is(REDACTED_PLACEHOLDER));
+        assertThat(req.getFirstQueryStringParameter("X-Amz-Security-Token"), is(REDACTED_PLACEHOLDER));
+        assertThat(req.getFirstQueryStringParameter("X-Amz-Date"), is("20260629T000000Z"));
     }
 }
