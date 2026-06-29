@@ -61,6 +61,10 @@
 #   CAPTURE_TOOLS     space-separated subset to consider (default: claude opencode tabnine)
 #   CAPTURE_FAIL_ON_TIMEOUT  set to 1 to FAIL the run if any prompt timed out / retried
 #                            (default 0: timeouts are reported but do not fail the gate)
+#   CAPTURE_DISABLE_MCP  default 1: run each CLI with its MCP servers disabled and in a
+#                        clean temp working dir, so the tool's own MCP/plugin startup (which
+#                        can add 30s+ — e.g. an unreachable chrome-devtools MCP) does not
+#                        pollute the timing. Set 0 to run the CLI exactly as configured.
 #   FORCE             set to 1 to run even when a CI environment is detected
 #
 set -uo pipefail
@@ -74,6 +78,7 @@ MOCKSERVER_CA="${MOCKSERVER_CA:-$REPO_ROOT/mockserver/mockserver-core/src/main/r
 CAPTURE_TIMEOUT="${CAPTURE_TIMEOUT:-180}"
 CAPTURE_TOOLS="${CAPTURE_TOOLS:-claude opencode tabnine}"
 CAPTURE_FAIL_ON_TIMEOUT="${CAPTURE_FAIL_ON_TIMEOUT:-0}"
+CAPTURE_DISABLE_MCP="${CAPTURE_DISABLE_MCP:-1}"
 
 note()  { printf '\033[36m[capture]\033[0m %s\n' "$*"; }
 ok()    { printf '\033[32m[ ok  ]\033[0m %s\n' "$*"; }
@@ -136,6 +141,30 @@ export NODE_USE_SYSTEM_CA=1 NODE_USE_ENV_PROXY=1 # tabnine honours these
 # --- shared workspace (image + per-prompt captures live here) ----------------
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+
+# --- isolation: run the CLIs in a clean temp dir, with their MCP servers disabled ---
+# A coding CLI launched in a project dir loads that project's (and the user's global)
+# config — including MCP servers. An MCP server that is slow or unreachable under the
+# proxy (e.g. a chrome-devtools MCP that shells out to npx + Chrome) can add 30s+ of
+# startup that has nothing to do with MockServer and would swamp the capture timing.
+# So by default each tool runs in $RUNCWD (empty) with MCP disabled.
+RUNCWD="$work/run"; mkdir -p "$RUNCWD"
+EMPTY_MCP="$work/empty-mcp.json"; printf '{"mcpServers":{}}' > "$EMPTY_MCP"
+if [ "$CAPTURE_DISABLE_MCP" = "1" ]; then
+  # opencode has no MCP CLI flag, so disable every globally-configured MCP server via a
+  # project config dropped in the run dir (reads the user's config — names only, no secrets).
+  python3 - "$RUNCWD/opencode.json" <<'PY' 2>/dev/null || true
+import json, os, sys
+mcp = {}
+try:
+    g = json.load(open(os.path.expanduser("~/.config/opencode/opencode.json")))
+    mcp = {k: {"enabled": False} for k in (g.get("mcp") or {})}
+except Exception:
+    pass
+json.dump({"$schema": "https://opencode.ai/config.json", "mcp": mcp}, open(sys.argv[1], "w"))
+PY
+  note "Tools run in a clean dir with MCP disabled (set CAPTURE_DISABLE_MCP=0 to run as-configured)."
+fi
 
 # --- prompt ladder: simple (fast) -> reasoning (slow) -> multimodal (text+image) ---
 SIMPLE_PROMPT="Reply with exactly the single word: hello"
@@ -207,21 +236,34 @@ if [ "${#INSTALLED_TOOLS[@]}" -eq 0 ]; then
 fi
 
 # --- run one tool with a prompt (+ optional image), capturing combined output ---
+# Each tool runs in $RUNCWD; with CAPTURE_DISABLE_MCP=1, MCP servers are turned off
+# (claude: --strict-mcp-config + empty config; tabnine: allowlist a sentinel name;
+# opencode: the disable config already written into $RUNCWD). Image input is best-effort:
+# opencode via -f, claude/tabnine via an absolute path reference in the prompt.
 run_tool() { # $1=tool $2=prompt $3=image(path or "") $4=outfile
   local tool="$1" prompt="$2" image="$3" outfile="$4" p
+  local nomcp="$CAPTURE_DISABLE_MCP"
   case "$tool" in
     claude)
       p="$prompt"; [ -n "$image" ] && p="$prompt The image to look at is the file at: $image"
-      run_with_timeout "$CAPTURE_TIMEOUT" claude -p "$p" </dev/null >"$outfile" 2>&1 ;;
+      if [ "$nomcp" = "1" ]; then
+        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" claude -p "$p" --strict-mcp-config --mcp-config "$EMPTY_MCP" </dev/null >"$outfile" 2>&1 )
+      else
+        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" claude -p "$p" </dev/null >"$outfile" 2>&1 )
+      fi ;;
     opencode)
       if [ -n "$image" ]; then
-        run_with_timeout "$CAPTURE_TIMEOUT" opencode run "$prompt" -f "$image" </dev/null >"$outfile" 2>&1
+        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" opencode run "$prompt" -f "$image" </dev/null >"$outfile" 2>&1 )
       else
-        run_with_timeout "$CAPTURE_TIMEOUT" opencode run "$prompt" </dev/null >"$outfile" 2>&1
+        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" opencode run "$prompt" </dev/null >"$outfile" 2>&1 )
       fi ;;
     tabnine)
       p="$prompt"; [ -n "$image" ] && p="$prompt @$image"
-      run_with_timeout "$CAPTURE_TIMEOUT" tabnine --prompt "$p" --skip-trust --approval-mode plan --output-format text </dev/null >"$outfile" 2>&1 ;;
+      if [ "$nomcp" = "1" ]; then
+        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" tabnine --prompt "$p" --skip-trust --approval-mode plan --output-format text --allowed-mcp-server-names __none__ </dev/null >"$outfile" 2>&1 )
+      else
+        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" tabnine --prompt "$p" --skip-trust --approval-mode plan --output-format text </dev/null >"$outfile" 2>&1 )
+      fi ;;
   esac
 }
 
@@ -297,6 +339,8 @@ print("-" * 100)
 
 overall_ok = True
 any_timeout = False
+max_overhead = 0.0          # max (tool wall-clock − MockServer upstream time) across rows
+overhead_row = None
 for label in labels:
     traffic = load(f"{work}/traffic_{label}.json")
     report = load(f"{work}/report_{label}.json")
@@ -320,6 +364,13 @@ for label in labels:
         f = facts.get((tool, label), {})
         dur = f.get("dur", "?"); to = f.get("to", False); re = f.get("re", 0)
         any_timeout = any_timeout or to
+        # Overhead = how much of the wall-clock was NOT MockServer's forwarding.
+        try:
+            ov = float(dur) - (up_ms / 1000.0 if up_ms else 0.0)
+            if ov > max_overhead:
+                max_overhead = ov; overhead_row = (tool, label, dur, up_ms)
+        except (TypeError, ValueError):
+            pass
         cell_ok = captured >= 1 and classified
         overall_ok = overall_ok and cell_ok
         tort = (f"{re}x" if re else "yes") if to else "-"
@@ -331,6 +382,15 @@ for label in labels:
 print("-" * 100)
 print("Columns: DUR=tool wall-clock · TO/RTY=tool reported timeout/retries · "
       "UPSTREAM=max provider response time MockServer saw · STREAM=relayed incrementally")
+# DUR is dominated by the TOOL's own startup/MCP/retries, not MockServer: UPSTREAM is the
+# only MockServer-attributable time. Flag when the gap is large so slowness is not misread
+# as a proxy problem.
+if overhead_row and max_overhead >= 10:
+    t, lab, d, u = overhead_row
+    print(f"NOTE: '{t}' on '{lab}' spent ~{max_overhead:.0f}s OUTSIDE MockServer "
+          f"(wall {d}s vs MockServer upstream {u}ms). That gap is the tool's own "
+          f"startup / MCP servers / retries — not the proxy. Disable MCP (default) and "
+          f"compare DUR to UPSTREAM to attribute slowness correctly.")
 print()
 
 gate_ok = overall_ok and (not (fail_on_timeout and any_timeout))

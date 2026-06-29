@@ -110,7 +110,18 @@ hardened setup, generate your own CA and point `MOCKSERVER_CA` at it.
 | `CAPTURE_TIMEOUT` | `180` | per-tool, per-prompt timeout (seconds) |
 | `CAPTURE_TOOLS` | `claude opencode tabnine` | subset to consider |
 | `CAPTURE_FAIL_ON_TIMEOUT` | `0` | set `1` to fail the run if any prompt timed out / retried |
+| `CAPTURE_DISABLE_MCP` | `1` | run each CLI in a clean temp dir with its MCP servers disabled (so MCP startup doesn't pollute timing); `0` to run as-configured |
 | `FORCE` | _unset_ | set `1` to run even when a CI env is detected |
+
+### Reading the timing — `DUR` vs `UPSTREAM`
+
+`UPSTREAM` is the only MockServer-attributable time (how long the provider took to respond,
+as MockServer measured it). `DUR` is the tool's whole wall-clock, which is dominated by the
+**tool's own** startup, MCP servers, and retries — not the proxy. The report prints a `NOTE`
+when that gap is large, so a slow CLI is not mistaken for a slow proxy. (A real example found
+during development: opencode took ~36s where MockServer's part was ~2s — the rest was an
+unreachable `chrome-devtools` MCP server timing out for 32s. `CAPTURE_DISABLE_MCP=1`, the
+default, removes that.)
 
 ## No secrets
 
