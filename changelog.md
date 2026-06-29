@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### Documentation
+- **AI/LLM/MCP and load-injection documentation review — clarity, value, and discoverability.** Added an "AI & MCP Overview" landing page that routes readers by use case (MockServer controlled by AI, mocking AI services, or observing AI traffic); cross-listed LLM Response Mocking into the AI & MCP section; led the AI pages with value-first openings and added "how it works" Mermaid diagrams. Grouped the three performance pages (serving / driving / injecting) under Performance Testing with a shared signpost table and a "Load Scenarios vs k6/Gatling" positioning. For SEO and AI answer-engines: added FAQ structured data (FAQPage JSON-LD) to eight feature pages, tightened titles/meta descriptions, and corrected stale `llms.txt` entries.
 - **AI Traffic Inspection page now covers tools, SDKs, and frameworks via two clearly-labelled connection methods.** Method A (transparent HTTPS proxy) groups the existing Claude Code, OpenCode, and LangChain/LangGraph recipes; Method B (base-URL override) adds LlamaIndex and OpenAI Agents SDK recipes migrated from the former Agent Frameworks page. The separate Agent Frameworks page has been consolidated into AI Traffic Inspection and now redirects to the `#configure-tools` section.
 
 #### Load injection, chaos & SRE
