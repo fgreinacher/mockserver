@@ -10,9 +10,19 @@ sitemap:
   priority: 0.8
   changefreq: 'monthly'
   lastmod: 2026-05-22T00:00:00+00:00
+keywords: "mcp server, claude code mcp, cursor mcp, model context protocol setup, mockserver mcp"
+schema_faq:
+  - question: "How do I connect Claude Code to MockServer?"
+    answer: "Run: claude mcp add mockserver --transport streamable-http http://localhost:1080/mockserver/mcp. Claude Code will detect the MCP server on the next conversation. You need a running MockServer instance first — the quickest way is: docker run -d --rm -p 1080:1080 mockserver/mockserver."
+  - question: "What is the MockServer MCP endpoint URL?"
+    answer: "The MCP endpoint is http://localhost:1080/mockserver/mcp on any running MockServer instance — no additional configuration is required. It uses the Streamable HTTP transport defined by the MCP specification. Adjust the host and port if your MockServer is running elsewhere."
+  - question: "Which AI assistants support MockServer MCP?"
+    answer: "Cursor, Claude Code, Windsurf, Cline, Continue, and OpenCode are all supported via the Streamable HTTP MCP transport. Programmatic MCP clients such as LangChain (langchain-mcp-adapters) and LangGraph also work. AI tools that do not support MCP can use MockServer's OpenAPI spec as a REST API fallback."
+  - question: "Do I need to write code to use MockServer with an AI assistant?"
+    answer: "No. Once you add the MCP endpoint to your AI assistant's configuration, you interact entirely through natural language. Ask your assistant to create a mock, verify a request, or debug a mismatch and it calls the appropriate MCP tool automatically — no client code, no glue."
 ---
 
-<p>MockServer includes a built-in <strong>MCP (Model Context Protocol)</strong> server that enables AI coding assistants to programmatically create mock expectations, verify requests, retrieve recorded traffic, and debug HTTP issues — all through natural language conversations.</p>
+<p>Let your AI coding assistant (Claude Code, Cursor, Windsurf, Cline, OpenCode) create mocks, verify calls, and debug HTTP failures by asking in plain English — no client code, no glue. This page connects your assistant in one step.</p>
 
 <h2>Prerequisites</h2>
 

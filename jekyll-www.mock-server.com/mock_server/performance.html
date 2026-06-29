@@ -1,14 +1,25 @@
 ---
-title: Scalability & Latency
-description: "MockServer performance: a single instance serves tens of thousands of requests per second with sub-millisecond median latency, and request matching stays flat as expectations scale. Real, reproducible k6 and JMH benchmarks, plus tuning guidance."
+title: "MockServer Performance Benchmarks: Throughput & Latency"
+shortTitle: "Scalability & Latency"
+description: "MockServer performance benchmarks: one instance serves 32,000+ req/sec at sub-millisecond median latency, with flat request matching as expectations scale."
 layout: page
 pageOrder: 3
-section: 'Operations'
+section: 'Performance Testing'
 subsection: true
 sitemap:
 priority: 0.8
 changefreq: 'monthly'
 lastmod: 2026-06-24T08:00:00+01:00
+keywords: mockserver performance, mockserver benchmark, mock server throughput, api mock latency
+schema_faq:
+  - question: "How fast is MockServer?"
+    answer: "On six CPU cores a single instance holds sub-millisecond median latency up to 32,000 requests/sec, saturating near 36,000 req/s. Latency stays flat until that knee — p50 is 0.19 ms, p95 around 4 ms — then degrades predictably rather than collapsing."
+  - question: "How many requests per second can MockServer handle?"
+    answer: "A single six-core instance sustains up to 32,000 requests/sec at sub-millisecond median latency, saturating near 36,000 req/s. Beyond one instance, run several instances behind a load balancer — serving capacity scales horizontally."
+  - question: "Does MockServer slow down with many expectations?"
+    answer: "No. MockServer indexes expectations so each request is compared only against a small candidate set rather than scanning every expectation. At 5,000 expectations matching is up to 177× faster than a naive linear scan, keeping matching cost nearly flat as expectations grow."
+  - question: "How do I tune MockServer for high throughput?"
+    answer: "The most impactful lever is the in-memory request log: set maxLogEntries lower or disable logging (disableLogging=true) to free heap and reduce GC pressure. Additional levers include the native epoll transport on Linux, thread-pool sizes, and forward-proxy connection pooling. See the Scalability Configuration section for details."
 ---
 
 <!--
@@ -19,6 +30,29 @@ lastmod: 2026-06-24T08:00:00+01:00
 -->
 
 <p itemprop="headline">A single MockServer instance holds sub-millisecond median latency up to 32,000 requests/sec on six CPU cores, and request matching stays flat &mdash; up to 177&times; faster than a linear scan &mdash; as you scale to thousands of expectations.</p>
+
+<table class="table-standard">
+    <thead>
+        <tr>
+            <th>Page</th>
+            <th>Question it answers</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><a href="/mock_server/performance.html">Scalability &amp; Latency</a></td>
+            <td>How much traffic can one instance <strong>serve</strong> as a mock?</td>
+        </tr>
+        <tr>
+            <td><a href="/mock_server/load_injection.html">Load Injection</a></td>
+            <td>How do I <strong>drive</strong> load from MockServer?</td>
+        </tr>
+        <tr>
+            <td><a href="/mock_server/load_injection_performance.html">Load Injection Performance</a></td>
+            <td>How much load can MockServer <strong>inject</strong>, and how does it scale?</td>
+        </tr>
+    </tbody>
+</table>
 
 <p>MockServer is built for high throughput and low, <em>predictable</em> latency from a single instance. The figures below come from an automated performance suite that runs on a dedicated, core-pinned CI machine; every chart is regenerated from the measured data on each run, so what you see is reproducible rather than cherry-picked. Jump to <a href="#how_tested">how MockServer is performance tested</a> for the methodology, or run the suite yourself from <span class="inline_code">mockserver-performance-test/</span>.</p>
 

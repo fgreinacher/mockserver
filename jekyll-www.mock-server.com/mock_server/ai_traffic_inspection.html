@@ -10,6 +10,16 @@ sitemap:
   priority: 0.8
   changefreq: 'monthly'
   lastmod: 2026-05-27T00:00:00+00:00
+keywords: inspect llm traffic, proxy claude code, mitm llm api, record ai agent traffic, ai traffic inspection, llm proxy, https proxy ai
+schema_faq:
+  - question: "How do I see what an AI agent sends to the LLM API?"
+    answer: "Start MockServer and set HTTPS_PROXY=http://localhost:1080 plus the appropriate CA trust variable (NODE_EXTRA_CA_CERTS for Node.js tools such as Claude Code, SSL_CERT_FILE for Python). Run your agent normally. MockServer intercepts, decodes, and logs every HTTPS request and response. Open http://localhost:1080/mockserver/dashboard and click Traffic to see each LLM call with model name, token counts, tool calls, and the full conversation."
+  - question: "How do I proxy Claude Code traffic through MockServer?"
+    answer: "Set two environment variables before starting Claude Code: export HTTPS_PROXY=http://localhost:1080 and export NODE_EXTRA_CA_CERTS=/path/to/mockserver-ca.pem. Get the CA path from the MockServer startup log or by running curl http://localhost:1080/mockserver/proxyConfiguration -H 'Accept: text/plain'. All HTTPS calls to api.anthropic.com and any HTTP/streamable-HTTP MCP servers will then flow through MockServer and appear in the Traffic view."
+  - question: "Can I inspect HTTPS LLM traffic without changing my code?"
+    answer: "Yes. MockServer acts as a transparent HTTPS proxy using TLS MITM interception. Set the HTTPS_PROXY environment variable and trust the MockServer CA certificate — no application code changes are required. MockServer dynamically generates certificates for each upstream hostname and forwards traffic transparently, including SSE-streamed completions which are relayed incrementally with no buffering delay."
+  - question: "How do I trust the MockServer CA certificate?"
+    answer: "Fetch the CA path from the running instance: curl http://localhost:1080/mockserver/proxyConfiguration -H 'Accept: text/plain'. This prints ready-to-paste exports including the file path MockServer wrote to disk at startup. For Node.js tools set NODE_EXTRA_CA_CERTS to that path; for Python tools set SSL_CERT_FILE and REQUESTS_CA_BUNDLE. For shared or persistent setups, start MockServer with --proxy-setup to generate a unique local CA whose private key never leaves the machine."
 ---
 
 <p>When you use an AI coding agent such as Claude Code or OpenCode, or an AI library such as LangChain or LangGraph, you often have no visibility into the HTTPS traffic it sends to LLM APIs (Anthropic, OpenAI, etc.) and MCP servers. Running MockServer as an HTTPS proxy gives you a complete record of every request and response — including model selection, token counts, tool calls, and streamed completions — with no changes to application code.</p>
@@ -24,6 +34,15 @@ sitemap:
     <li><a href="#configure-tools">Configure your AI tool, SDK, or framework</a> to send traffic through the proxy</li>
     <li><a href="#view-traffic">View the captured traffic</a> in the dashboard or via the retrieve API</li>
 </ol>
+
+```mermaid
+flowchart LR
+    A["AI Tool\n(Claude Code, LangChain…)"] -->|"HTTPS request"| B["MockServer\nHTTPS Proxy\n(TLS MITM)"]
+    B -->|"forwards to"| C["LLM / MCP Upstream\n(Anthropic, OpenAI…)"]
+    C -->|"response / SSE stream"| B
+    B -->|"logs all traffic"| D["Event Log\n(requests, responses,\nSSE streams, token counts)"]
+    D -->|"view via"| E["Dashboard Traffic view\nor Retrieve API"]
+```
 
 <a id="start-mockserver" class="anchor" href="#start-mockserver">&nbsp;</a>
 

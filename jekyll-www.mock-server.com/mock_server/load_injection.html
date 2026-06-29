@@ -1,7 +1,7 @@
 ---
 title: Load Injection (Load Scenarios)
 shortTitle: Load Injection
-description: Drive API traffic from MockServer using declarative load scenarios — ramp virtual users, vary data across iterations with templates, and assert SLO verdicts over the generated traffic.
+description: "Drive load tests from MockServer with declarative scenarios: ramp virtual users, vary data per iteration, and assert SLO verdicts — no extra load tool needed."
 layout: page
 pageOrder: 1
 section: 'Performance Testing'
@@ -10,15 +10,100 @@ sitemap:
   priority: 0.8
   changefreq: 'monthly'
   lastmod: 2026-06-24T00:00:00+00:00
+keywords: load injection, mockserver load testing, mock server load generator, slo verdict, mockserver vs k6
+schema_faq:
+  - question: "Can MockServer generate load or act as a load testing tool?"
+    answer: "Yes. MockServer's built-in Load Scenarios turn any instance into a bounded load generator. Register a declarative scenario with stages (ramp or hold virtual users or an arrival rate), then trigger it — no external load tool required. One instance injects tens of thousands of requests per second."
+  - question: "How is MockServer load injection different from k6 or Gatling?"
+    answer: "MockServer combines mocking, chaos injection, and load generation in one control plane. You mock upstream dependencies, inject faults, drive load, and assert SLO verdicts — all from the same server. Reach for k6, Gatling, or JMeter when you need a dedicated distributed load tier, browser-level protocols, or very large raw throughput."
+  - question: "How do I assert an SLO over generated load?"
+    answer: "Add a thresholds array to your scenario with a metric, comparator, and threshold value. The run produces a PASS or FAIL verdict; after completion you can also call PUT /mockserver/verifySLO to assert SLO targets against the stored sample data. A JUnit XML summary report is available for CI integration."
+  - question: "Can I ramp virtual users with MockServer?"
+    answer: "Yes. Set the stage type to VU and supply startVus and endVus with a durationMillis to ramp concurrent virtual users linearly, quadratically, or exponentially. Alternatively use a named SPIKE or RAMP_HOLD shape to describe the traffic pattern without spelling out every stage."
 ---
 
-<p>MockServer can drive outbound API traffic on demand using <strong>Load Scenarios</strong> — a declarative, bounded load generator built into the server. A load scenario is an ordered list of templated request <em>steps</em> driven through a sequence of <em>stages</em> (a <em>load profile</em>), with per-iteration variable data. Each stage either holds or ramps the number of concurrent <strong>virtual users</strong> (<code class="inline code">VU</code>, closed model), holds or ramps an <strong>arrival rate</strong> in iterations per second (<code class="inline code">RATE</code>, open model), or <strong>pauses</strong>. Results feed both the metrics histograms and the SLO sample store so a load run can be asserted with <a href="/mock_server/chaos_testing.html#slo_resilience_verdicts"><code class="inline code">PUT /mockserver/verifySLO</code></a>.</p>
+<p itemprop="headline">Drive realistic API load from the same MockServer you already use for mocking — ramp virtual users or a fixed arrival rate, vary data per iteration, inject faults, and assert your SLOs over the generated traffic, all from one control plane with no second load tool. One instance injects tens of thousands of requests per second.</p>
+
+<table class="table-standard">
+    <thead>
+        <tr>
+            <th>Page</th>
+            <th>Question it answers</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><a href="/mock_server/performance.html">Scalability &amp; Latency</a></td>
+            <td>How much traffic can one instance <strong>serve</strong> as a mock?</td>
+        </tr>
+        <tr>
+            <td><a href="/mock_server/load_injection.html">Load Injection</a></td>
+            <td>How do I <strong>drive</strong> load from MockServer?</td>
+        </tr>
+        <tr>
+            <td><a href="/mock_server/load_injection_performance.html">Load Injection Performance</a></td>
+            <td>How much load can MockServer <strong>inject</strong>, and how does it scale?</td>
+        </tr>
+    </tbody>
+</table>
+
+<p>MockServer's built-in <strong>Load Scenarios</strong> are a declarative, bounded load generator. A load scenario is an ordered list of templated request <em>steps</em> driven through a sequence of <em>stages</em> (a <em>load profile</em>), with per-iteration variable data. Each stage either holds or ramps the number of concurrent <strong>virtual users</strong> (<code class="inline code">VU</code>, closed model), holds or ramps an <strong>arrival rate</strong> in iterations per second (<code class="inline code">RATE</code>, open model), or <strong>pauses</strong>. Results feed both the metrics histograms and the SLO sample store so a load run can be asserted with <a href="/mock_server/chaos_testing.html#slo_resilience_verdicts"><code class="inline code">PUT /mockserver/verifySLO</code></a>.</p>
 
 <p>This makes MockServer useful for <strong>resilience verification</strong>: inject a chaos fault (see <a href="/mock_server/chaos_testing.html">Chaos Testing</a>), apply load, then assert that your SLOs held — all from a single control plane, with no external load tool required.</p>
 
 <p>One instance injects tens of thousands of requests per second; to drive much more, run instances in parallel — see <a href="/mock_server/load_injection_performance.html">Load Injection Performance</a> for how injection scales across many instances.</p>
 
 <p><strong>Registry model: load, then trigger.</strong> Scenarios are organised as a <strong>registry of named scenarios</strong>. You first <strong>load</strong> (register) a scenario by name with <code class="inline code">PUT /mockserver/loadScenario</code> — this does <em>not</em> run it — then <strong>trigger</strong> one or many by name with <code class="inline code">PUT /mockserver/loadScenario/start</code> to run them <strong>concurrently</strong>, each with its own optional <strong>start delay</strong>. Loading is always allowed; <strong>triggering a run is off by default</strong>: <code class="inline code">start</code> returns <code class="inline code">403 Forbidden</code> until <code class="inline code">loadGenerationEnabled=true</code>. Hard caps on concurrent scenarios, virtual users, in-flight requests, RPS, duration, and step count prevent the feature from self-DoS-ing the server. Scenarios can be <strong>preloaded at startup</strong> from a JSON file via <code class="inline code">mockserver.loadScenarioInitializationJsonPath</code>.</p>
+
+<a id="when_to_use" class="anchor" href="#when_to_use">&nbsp;</a>
+
+<h2>When to use Load Scenarios vs k6 / Gatling / JMeter</h2>
+
+<p>The differentiating factor is <strong>a single control plane</strong>: MockServer mocks the upstreams, drives the load, injects faults, and asserts SLOs without a second tool. Reach for a dedicated load tool when you need its specific strengths.</p>
+
+<table class="table-standard">
+    <thead>
+        <tr>
+            <th>Need</th>
+            <th>MockServer Load Scenarios</th>
+            <th>k6 / Gatling / JMeter</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>Mock upstreams <strong>and</strong> drive load from one control plane</td>
+            <td>Yes &mdash; same server, no extra tool</td>
+            <td>No &mdash; requires a separate mock server alongside</td>
+        </tr>
+        <tr>
+            <td>Inject chaos faults (latency, errors, outages) alongside load</td>
+            <td>Yes &mdash; built-in chaos profiles</td>
+            <td>No &mdash; requires a separate fault injector</td>
+        </tr>
+        <tr>
+            <td>Assert SLO verdicts from the same server</td>
+            <td>Yes &mdash; thresholds + <code class="inline code">verifySLO</code> built in</td>
+            <td>Requires custom scripting or an external integration</td>
+        </tr>
+        <tr>
+            <td>Dedicated distributed load tier or browser-level protocols</td>
+            <td>No &mdash; single-instance or fan-out deployment pattern</td>
+            <td>Yes &mdash; built for this</td>
+        </tr>
+    </tbody>
+</table>
+
+<h3>How it works</h3>
+
+```mermaid
+flowchart LR
+    A["Register scenario\n(PUT /mockserver/loadScenario)"] --> B["Trigger run\n(PUT .../loadScenario/start)"]
+    B --> C["Stage loop\n(VU or RATE)"]
+    C --> D["Templated step\n(feeder + iteration vars)"]
+    D --> E["Target service"]
+    E --> F["Metrics + SLO sample store\n(mock_server_load_* series)"]
+    F --> G["Assert SLO\n(PUT /mockserver/verifySLO)"]
+```
 
 <a id="on_this_page" class="anchor" href="#on_this_page">&nbsp;</a>
 

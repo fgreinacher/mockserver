@@ -1,7 +1,7 @@
 ---
-title: Optimising AI / LLM Cost
+title: "Reduce LLM Cost: AI Agent Inference Optimisation"
 shortTitle: LLM Cost Optimisation
-description: Proxy your AI agent's LLM calls through MockServer, then export a one-click optimisation brief (Markdown) or JSON bundle to find ways to cut inference cost — tighter prompts, prompt caching, fewer tool round-trips, and direct HTTP/MCP endpoints.
+description: "Proxy your AI agent's LLM calls through MockServer and export a one-click brief to cut inference cost: tighter prompts, prompt caching, fewer tool calls."
 layout: page
 pageOrder: 10
 section: 'AI & MCP'
@@ -10,7 +10,16 @@ sitemap:
   priority: 0.8
   changefreq: 'monthly'
   lastmod: 2026-06-19T12:00:00+00:00
-keywords: llm cost optimisation, ai cost reduction, prompt caching, token reduction, mockserver optimisation, llm proxy, inference cost, agent cost
+keywords: reduce llm cost, llm cost optimization, ai inference cost, prompt caching, token reduction, mockserver optimisation, llm proxy, agent cost
+schema_faq:
+  - question: "How can I reduce my LLM/AI inference costs?"
+    answer: "Proxy your AI agent's LLM calls through MockServer using the HTTPS_PROXY environment variable. Once traffic is captured, call GET /mockserver/llm/optimisationReport to get a structured analysis. MockServer computes nine deterministic signals — repeated system prompts, low cache-hit rates, oversized tool results, duplicate calls, and more — along with estimated USD savings for each. No LLM call is made; every number is computed locally from your captured traffic."
+  - question: "How do I find wasted tokens in my AI agent?"
+    answer: "After running your agent through the MockServer proxy, open the dashboard LLM Optimise screen or call the REST endpoint. MockServer analyses the captured calls and emits signals such as REPEATED_SYSTEM_PROMPT (same system prompt resent every turn), OVERSIZED_TOOL_RESULT (tool returned more than 1,000 tokens), and UNUSED_TOOL_SCHEMA (tool definitions sent but never invoked). Each signal includes the affected call indices and an estimated token and USD saving."
+  - question: "What is prompt caching and does it save money?"
+    answer: "Prompt caching lets providers store a repeated prompt prefix so subsequent calls do not pay full input-token rates for the static portion. MockServer detects when the same system prompt or large context block is resent across calls without caching enabled and flags it as REPEATED_SYSTEM_PROMPT or LOW_CACHE_HIT_RATE. For Anthropic, the optimisation report includes a ready-to-paste cache_control snippet. For OpenAI and Gemini, the fix guidance explains how to keep the static prefix byte-identical so automatic caching applies."
+  - question: "Can MockServer measure LLM cost?"
+    answer: "Yes. MockServer maintains a built-in provider pricing table and uses it to estimate the USD cost of every captured LLM call. Costs appear in the dashboard hero cards, the per-call table, and the optimisation report's verdict headline (e.g. '$1.42 recoverable'). Figures are directional estimates — the costIsEstimated field in the JSON bundle is true when the provider did not return real usage tokens and MockServer estimated them from decoded text."
 ---
 
 <p>

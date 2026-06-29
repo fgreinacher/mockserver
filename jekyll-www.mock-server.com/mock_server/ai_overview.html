@@ -1,0 +1,103 @@
+---
+title: "AI & MCP Mocking with MockServer"
+shortTitle: "AI & MCP Overview"
+description: "MockServer supports three AI modes: MCP control plane for AI assistants, mocking AI/LLM services, and proxying/observing AI traffic."
+layout: page
+pageOrder: 0
+section: 'AI & MCP'
+subsection: true
+sitemap:
+  priority: 0.9
+  changefreq: 'monthly'
+  lastmod: 2026-06-29T00:00:00+00:00
+keywords: "mockserver ai, mcp mockserver, mock llm api, ai mocking, model context protocol, ai traffic inspection, openai mock, anthropic mock"
+schema_faq:
+  - question: "What is MCP in MockServer?"
+    answer: "MockServer includes a built-in MCP (Model Context Protocol) server at /mockserver/mcp. This lets AI coding assistants like Claude Code, Cursor, and Windsurf create mock expectations, verify requests, and debug HTTP failures by asking in plain English — no glue code required."
+  - question: "Can I test an AI agent without paying for API calls?"
+    answer: "Yes. MockServer's LLM Response Mocking feature lets you return realistic fake responses from OpenAI, Anthropic, Gemini, Azure OpenAI, Bedrock, and Ollama — with provider-correct formatting and SSE streaming. Your agent under test cannot tell the difference from the real API."
+  - question: "How do I mock the OpenAI or Anthropic API with MockServer?"
+    answer: "Use MockServer's LLM Response Mocking page. You can create single-turn completions, multi-turn scripted conversations, failover scenarios, and adversarial responses via the create_expectation MCP tool, the REST API, or any of the client libraries. All responses are deterministic and never call the real provider."
+  - question: "Which MockServer AI page do I need?"
+    answer: "There are three modes: (1) If you want your AI assistant to control MockServer — create mocks, verify calls, debug failures — start with MCP Setup. (2) If you want MockServer to return fake LLM or AI-protocol responses to your application under test, see LLM Response Mocking or AI Protocol Mocking. (3) If you want to proxy and inspect your AI agent's real API calls, see AI Traffic Inspection."
+  - question: "Does MockServer support MCP server mocking (not just the MCP control plane)?"
+    answer: "Yes, these are two separate things. MockServer's own MCP control plane lets AI assistants drive MockServer. Separately, the AI Protocol Mocking feature lets you stand up a fake MCP server or A2A agent for your application to connect to — so you can test your MCP client without running a real MCP server."
+  - question: "What AI coding assistants work with MockServer's MCP integration?"
+    answer: "Claude Code, Cursor, Windsurf, Cline, Continue, and OpenCode are all supported via the Streamable HTTP MCP transport. Programmatic MCP clients such as LangChain and LangGraph also work. Any tool that does not support MCP can use MockServer's OpenAPI specification as a REST API fallback."
+---
+
+<p>MockServer helps with AI in three distinct ways. Pick the mode that matches your goal:</p>
+
+<table class="comparison_table">
+    <thead>
+        <tr>
+            <th>I want to&hellip;</th>
+            <th>Use</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td colspan="2"><strong>Mode 1 — MockServer controlled by AI</strong> (AI coding assistant drives MockServer via MCP)</td>
+        </tr>
+        <tr>
+            <td>Connect Claude Code, Cursor, Windsurf, Cline, or OpenCode to MockServer</td>
+            <td><a href="/mock_server/ai_mcp_setup.html">MCP Setup</a></td>
+        </tr>
+        <tr>
+            <td>See all MCP tools my assistant can call (create_expectation, verify_request, etc.)</td>
+            <td><a href="/mock_server/ai_mcp_tools.html">MCP Tools Reference</a></td>
+        </tr>
+        <tr>
+            <td>Ask my assistant to capture traffic and explain why an API call failed</td>
+            <td><a href="/mock_server/ai_debugging.html">Debugging with AI</a></td>
+        </tr>
+        <tr>
+            <td>Have my assistant verify recorded traffic or run contract/resiliency tests</td>
+            <td><a href="/mock_server/ai_verification.html">Contract Verification</a></td>
+        </tr>
+        <tr>
+            <td>Use MockServer from an AI tool that does not support MCP (ChatGPT Actions, Copilot, etc.)</td>
+            <td><a href="/mock_server/ai_openapi.html">OpenAPI for AI (REST fallback)</a></td>
+        </tr>
+        <tr>
+            <td colspan="2"><strong>Mode 2 — MockServer mocking AI services</strong> (return fake LLM or agent-protocol responses)</td>
+        </tr>
+        <tr>
+            <td>Mock OpenAI, Anthropic, Gemini, Bedrock, Azure OpenAI, or Ollama responses</td>
+            <td><a href="/mock_server/llm_response_mocking.html">LLM Response Mocking</a></td>
+        </tr>
+        <tr>
+            <td>Stand up a fake MCP server or A2A agent for my application to connect to</td>
+            <td><a href="/mock_server/ai_protocol_mocking.html">AI Protocol Mocking (MCP &amp; A2A)</a></td>
+        </tr>
+        <tr>
+            <td colspan="2"><strong>Mode 3 — MockServer observing / optimising AI traffic</strong> (proxy real API calls)</td>
+        </tr>
+        <tr>
+            <td>Proxy and record my AI agent's real LLM calls (prompts, tokens, tool calls, streamed responses)</td>
+            <td><a href="/mock_server/ai_traffic_inspection.html">AI Traffic Inspection</a></td>
+        </tr>
+        <tr>
+            <td>Analyse captured LLM traffic and get costed advice on reducing inference spend</td>
+            <td><a href="/mock_server/ai_optimisation.html">LLM Cost Optimisation</a></td>
+        </tr>
+    </tbody>
+</table>
+
+```mermaid
+flowchart TD
+    subgraph mode1["Mode 1 — AI controls MockServer"]
+        A["AI Assistant\n(Claude Code, Cursor, Windsurf…)"] -->|"MCP tools"| B["MockServer\n(mock server)"]
+    end
+    subgraph mode2["Mode 2 — MockServer mocks AI services"]
+        C["Application\nunder test"] -->|"HTTP / SSE / WebSocket"| D["MockServer\n(fake LLM / MCP server / A2A agent)"]
+    end
+    subgraph mode3["Mode 3 — MockServer observes AI traffic"]
+        E["AI Agent"] -->|"via proxy"| F["MockServer\n(transparent proxy)"]
+        F -->|"forwards to"| G["Real LLM API"]
+    end
+```
+
+<p>The three modes are independent — you can use any combination of them. For example, you might use Mode 3 to capture real LLM traffic during development, Mode 2 to replay it deterministically in CI, and Mode 1 to let your AI assistant create the mock expectations for you.</p>
+
+{% include_subpage _includes/ai_see_also.html %}

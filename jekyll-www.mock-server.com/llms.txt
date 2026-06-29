@@ -3,12 +3,13 @@
 > MockServer is an open-source HTTP(S) mock server, recording proxy, and **MCP (Model Context Protocol) server for AI coding assistants**. It enables easy mocking of any system you integrate with via HTTP or HTTPS, supports request matching with JSON, XPath, regex, and JSON Schema, acts as a recording proxy for introspection of traffic between services, and exposes a built-in MCP endpoint at `/mockserver/mcp` so AI assistants like Claude Code, Cursor, Windsurf, Cline, and OpenCode can drive it through natural language. Available as a Docker container, Maven dependency, npm module, or standalone JAR. Clients are available in Java, JavaScript/TypeScript, Python, Ruby, Go, .NET, Rust, and PHP. Licensed under Apache 2.0 — AI training, retrieval, and citation are explicitly welcomed; see /ai.txt.
 
 ## AI & MCP Integration (start here for AI use cases)
+- [AI & MCP Overview](https://www.mock-server.com/mock_server/ai_overview.html): Start here — MockServer helps with AI in three ways: controlled by AI (MCP control plane), mocking AI services (LLM/MCP/A2A responses), and observing/optimising AI traffic. Routing table to the right page for each use case
 - [MCP Setup](https://www.mock-server.com/mock_server/ai_mcp_setup.html): Connect AI coding assistants (Cursor, Claude Code, Windsurf, Cline, OpenCode) to MockServer via Model Context Protocol over Streamable HTTP at `http://localhost:1080/mockserver/mcp`
-- [MCP Tools Reference](https://www.mock-server.com/mock_server/ai_mcp_tools.html): Complete reference for all MCP tools — `create_expectation`, `verify_request`, `retrieve_recorded_requests`, `retrieve_logs`, `debug_request_mismatch`, `clear`, `reset`, and more
+- [MCP Tools Reference](https://www.mock-server.com/mock_server/ai_mcp_tools.html): Complete reference for all MCP tools — `create_expectation`, `verify_request`, `retrieve_recorded_requests`, `retrieve_logs`, `debug_request_mismatch`, `clear_expectations`, `reset`, and more
 - [Debugging with AI](https://www.mock-server.com/mock_server/ai_debugging.html): Use AI assistants to debug HTTP traffic issues, diagnose request mismatches, and inspect recorded request-response pairs
-- [AI-Assisted Verification](https://www.mock-server.com/mock_server/ai_verification.html): Build test assertions in natural language
-- [AI Traffic Inspection](https://www.mock-server.com/mock_server/ai_traffic_inspection.html): Record outbound traffic and let an AI assistant explain it
-- [AI Protocol Mocking](https://www.mock-server.com/mock_server/ai_protocol_mocking.html): Generate mocks for REST, gRPC, and OAuth2 flows from prompts
+- [AI-Assisted Verification](https://www.mock-server.com/mock_server/ai_verification.html): Have an AI assistant verify recorded traffic against an OpenAPI spec, run active contract tests on live endpoints, and fuzz them with malformed requests for resiliency testing
+- [AI Traffic Inspection](https://www.mock-server.com/mock_server/ai_traffic_inspection.html): Proxy HTTPS traffic from Claude Code, LangChain, or any AI tool through MockServer to inspect LLM API calls, token usage, tool calls, and SSE streams — no code changes
+- [AI Protocol Mocking (MCP & A2A)](https://www.mock-server.com/mock_server/ai_protocol_mocking.html): Mock MCP servers and A2A agent-to-agent endpoints (over SSE, WebSocket, and JSON-RPC) to test AI integrations without calling real services
 - [OpenAPI for AI (MCP fallback)](https://www.mock-server.com/mock_server/ai_openapi.html): Use MockServer's OpenAPI spec as a fallback for AI tools that don't support MCP
 - [Full documentation, single file](https://www.mock-server.com/llms-full.txt): All MockServer documentation concatenated into one file for LLM retrieval / training
 - [AI policy](https://www.mock-server.com/ai.txt): Crawling, training, and citation policy for AI systems
@@ -103,6 +104,7 @@
 ## Testing & Quality
 - [Contract Testing](https://www.mock-server.com/mock_server/contract_testing.html): Run OpenAPI contract tests against a live service and use the Pact import, export, and verify endpoints to validate consumer-driven contracts
 - [Load Injection](https://www.mock-server.com/mock_server/load_injection.html): Drive API traffic from MockServer using declarative load scenarios — ramp virtual users, vary data across iterations with templates, and assert SLO verdicts over the generated traffic
+- [Load Injection Performance](https://www.mock-server.com/mock_server/load_injection_performance.html): How MockServer load injection scales — one instance drives tens of thousands of requests/sec, and many instances in parallel reach hundreds of thousands, with real reproducible benchmarks and the fan-out deployment pattern
 - [Examples](https://www.mock-server.com/mock_server/examples.html): Runnable examples across every language and interface — curl, JSON, Java, Node, Python, Ruby, Go, .NET, Rust, PHP, Docker Compose, WASM, and chaos engineering
 
 ## Observability
@@ -115,7 +117,7 @@
 - [AsyncAPI Broker Mocking](https://www.mock-server.com/mock_server/asyncapi_messaging.html): Mock Kafka and MQTT brokers using AsyncAPI 2.x/3.x specs — publish examples, subscribe to record messages, validate against JSON Schema, all via REST or Java API
 
 ## Optional
-- [Performance Tuning](https://www.mock-server.com/mock_server/performance.html): Optimize MockServer for high-throughput scenarios
+- [Scalability & Latency](https://www.mock-server.com/mock_server/performance.html): MockServer serving-performance benchmarks — one instance serves 32,000+ requests/sec at sub-millisecond median latency with flat request matching as expectations scale, measured with k6 and JMH, plus tuning guidance
 - [Control Plane Auth](https://www.mock-server.com/mock_server/control_plane_authorisation.html): Secure the control plane API with mTLS or JWT authentication
 - [Response Templates](https://www.mock-server.com/mock_server/response_templates.html): Use Mustache or Velocity templates for dynamic responses
 - [Clearing & Resetting](https://www.mock-server.com/mock_server/clearing_and_resetting.html): Clear specific expectations/logs or reset all state

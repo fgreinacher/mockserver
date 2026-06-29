@@ -10,8 +10,38 @@ sitemap:
   priority: 0.8
   changefreq: 'monthly'
   lastmod: 2026-05-07T00:00:00+00:00
+keywords: "mock mcp server, a2a protocol mocking, mock agent to agent, sse websocket mock"
+schema_faq:
+  - question: "How do I mock an MCP server with MockServer?"
+    answer: "Use MockServer's SSE response support (httpSseResponse) to return Server-Sent Events from any path. Combine it with JSON-RPC response matchers to handle MCP's Streamable HTTP protocol. Your AI client under test connects to MockServer instead of a real MCP server and receives deterministic tool-list and tool-call responses."
+  - question: "What is A2A protocol mocking?"
+    answer: "A2A (Agent-to-Agent Protocol) is a Google-defined standard for agent interoperability. MockServer can stand up a fake A2A agent that serves the /.well-known/agent.json discovery card, handles tasks/send and tasks/get JSON-RPC calls, and returns scripted task responses. Use this to test an A2A client without running a real agent."
+  - question: "Can MockServer mock SSE or WebSocket AI endpoints?"
+    answer: "Yes. MockServer supports SSE responses (httpSseResponse) with per-event delays, and WebSocket mocking that performs the upgrade handshake and streams text or binary frames. Both are commonly used by LLM streaming APIs, MCP's Streamable HTTP transport, and real-time agent protocols."
+  - question: "How is mocking an MCP server different from MockServer's own MCP control plane?"
+    answer: "They are completely separate features. MockServer's own MCP control plane (at /mockserver/mcp) lets AI coding assistants like Claude Code or Cursor control MockServer — creating expectations, verifying calls, and debugging traffic. The AI Protocol Mocking feature lets you stand up a fake third-party MCP server that your application under test connects to. One is about controlling MockServer; the other is about mocking an external service."
 ---
 
+```mermaid
+sequenceDiagram
+    participant C as AI Client (app under test)
+    participant M as MockServer (fake MCP/A2A server)
+
+    C->>M: GET /tools/list (MCP discovery)
+    M-->>C: SSE event: tool list (scripted)
+    C->>M: POST /tools/call (tool invocation)
+    M-->>C: SSE event: tool result (scripted)
+    Note over C,M: Client sees a real MCP server — no real AI infrastructure needed
+```
+
 {% include_subpage _includes/ai_protocol_mocking.html %}
+
+<h2>Related Pages</h2>
+
+<ul>
+    <li><a href="/mock_server/ai_overview.html"><strong>AI &amp; MCP Overview</strong></a> &mdash; start here to understand all three MockServer AI modes</li>
+    <li><a href="/mock_server/llm_response_mocking.html"><strong>LLM Response Mocking</strong></a> &mdash; mock OpenAI, Anthropic, Gemini, and other LLM provider APIs with provider-correct formatting and streaming</li>
+    <li><a href="/mock_server/ai_mcp_setup.html"><strong>MCP Setup</strong></a> &mdash; connect an AI assistant to MockServer's own MCP control plane (the reverse of this page)</li>
+</ul>
 
 {% include_subpage _includes/ai_see_also.html %}

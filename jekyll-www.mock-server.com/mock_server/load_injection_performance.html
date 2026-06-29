@@ -1,7 +1,7 @@
 ---
 title: Load Injection Performance
 shortTitle: Injection Performance
-description: "How MockServer's built-in load injection scales: one instance injects tens of thousands of requests per second, and running many instances in parallel scales near-linearly into the hundreds of thousands. Real, reproducible measurements against an Envoy direct-response sink, with the deployment pattern for fan-out injection."
+description: "MockServer load injection scaling: one instance injects ~20,000 req/s; many instances in parallel scale near-linearly into the hundreds of thousands."
 layout: page
 pageOrder: 2
 section: 'Performance Testing'
@@ -10,6 +10,16 @@ sitemap:
   priority: 0.8
   changefreq: 'monthly'
   lastmod: 2026-06-25T00:00:00+00:00
+keywords: mockserver load injection performance, load generator throughput, scale load injection
+schema_faq:
+  - question: "How much load can MockServer inject?"
+    answer: "A single instance injects up to about 20,000 requests/sec for a simple GET, or around 13,500 requests/sec for a 1 KB templated POST, measured with the keep-warm connection pool enabled. The ceiling is dispatch-path-bound, not CPU-bound — one instance reached the same rate at 1, 2, 4, and 8 cores."
+  - question: "How do I scale MockServer load injection?"
+    answer: "Run N instances in parallel — each injects independently, so aggregate throughput grows near-linearly with the number of instances. Deploy them with docker-compose scale or Kubernetes replicaCount, fan out the same scenario to every instance, then aggregate their mock_server_load_* Prometheus metrics by run_id."
+  - question: "Is MockServer load injection CPU-bound?"
+    answer: "No. A single instance is dispatch-path-bound: it uses only about 1–2 CPU cores at its injection ceiling and reaches the same ~18–20k req/s whether pinned to 1, 2, 4, or 8 cores. Allocate modest cores per instance (~2) and scale throughput by adding instances."
+  - question: "How many requests per second can one MockServer instance inject?"
+    answer: "On the measured hardware (16-vCPU CI box, Envoy direct-response sink, keep-warm pool enabled) one instance sustains about 20,000 req/s for a simple GET and about 13,500 req/s for a 1 KB templated POST. Real-world figures depend on your hardware, request complexity, and target latency — measure your own scenario's per-instance rate before sizing a fleet."
 ---
 
 <!--
@@ -29,6 +39,29 @@ sitemap:
 -->
 
 <p itemprop="headline">A single MockServer instance injects <strong>tens of thousands of requests per second</strong> of outbound load, and because injection is independent per instance you scale far beyond that by running <strong>N instances in parallel</strong> &mdash; aggregate injected throughput grows <strong>near-linearly</strong>, into the hundreds of thousands of requests/sec, by simply adding instances.</p>
+
+<table class="table-standard">
+    <thead>
+        <tr>
+            <th>Page</th>
+            <th>Question it answers</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><a href="/mock_server/performance.html">Scalability &amp; Latency</a></td>
+            <td>How much traffic can one instance <strong>serve</strong> as a mock?</td>
+        </tr>
+        <tr>
+            <td><a href="/mock_server/load_injection.html">Load Injection</a></td>
+            <td>How do I <strong>drive</strong> load from MockServer?</td>
+        </tr>
+        <tr>
+            <td><a href="/mock_server/load_injection_performance.html">Load Injection Performance</a></td>
+            <td>How much load can MockServer <strong>inject</strong>, and how does it scale?</td>
+        </tr>
+    </tbody>
+</table>
 
 <p>This page is about MockServer as a <strong>load generator</strong> &mdash; how much outbound traffic its built-in <a href="/mock_server/load_injection.html">Load Scenarios</a> can <em>inject</em> into a target, and how to scale that injection. (For how much traffic a single instance can <em>serve</em> as a mock, see <a href="/mock_server/performance.html">Scalability &amp; Latency</a>.) A single instance is a self-contained, bounded load generator; to drive much more load you run many instances together and aggregate their metrics. Jump to <a href="#how_measured">how injection performance is measured</a> for the methodology, or reproduce it from the harness at <span class="inline_code">mockserver-performance-test/stack/inject/</span>.</p>
 

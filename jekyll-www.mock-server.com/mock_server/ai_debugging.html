@@ -10,9 +10,29 @@ sitemap:
   priority: 0.8
   changefreq: 'monthly'
   lastmod: 2026-05-22T00:00:00+00:00
+keywords: "ai http debugging, debug api with ai, mockserver mcp debugging"
 ---
 
-<p>One of the most powerful uses of MockServer's MCP integration is <strong>AI-assisted HTTP debugging</strong>. By combining MockServer's traffic recording capabilities with an AI assistant's ability to analyse data and suggest fixes, you can quickly diagnose and resolve HTTP integration issues.</p>
+<p>When an API call fails, ask your AI assistant to capture the real traffic and tell you why — it sets up the proxy, retrieves the request/response, and pinpoints the mismatched header or status itself.</p>
+
+```mermaid
+sequenceDiagram
+    participant U as You
+    participant A as AI Assistant
+    participant M as MockServer
+    participant S as Upstream API
+
+    U->>A: "Capture traffic to api.example.com and debug why POST /api/orders fails"
+    A->>M: create_forward_expectation(/api/.*)
+    Note over M,S: Traffic now flows through MockServer
+    U->>M: POST /api/orders (via proxy)
+    M->>S: forwards request
+    S-->>M: response (e.g. 422)
+    M-->>U: response
+    A->>M: retrieve_request_responses(path=/api/orders)
+    M-->>A: recorded request + response
+    A->>U: "The 422 is because the Content-Type header is text/plain but the API requires application/json"
+```
 
 <h2>Overview</h2>
 
