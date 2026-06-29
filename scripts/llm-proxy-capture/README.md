@@ -43,12 +43,32 @@ rebuilding the jar. Exit the tool (or Ctrl+C) to tear the servers down. It is th
 LLM-capture sibling of `npm run demo` (which loads synthetic data instead). See
 `mockserver-ui/scripts/launch-with-llm-capture.sh --help`.
 
-## What it checks, per tool
+## The prompt ladder
 
-| Step | Meaning |
-|------|---------|
-| **CAPTURE** | the tool's LLM endpoint shows up in the recorded request log (proxy + TLS interception works) |
-| **CLASSIFY** | that call appears in the LLM optimisation report with the expected provider (it will render in LLM Traces / Optimise) |
+Each installed CLI is driven with a ladder of prompts (`CAPTURE_PROMPTS`, default all three)
+so both fast and slow responses — and a mixed-model request — are exercised:
+
+| Prompt | Kind | What it reproduces |
+|--------|------|--------------------|
+| `simple` | text | a one-word reply — the provider responds in seconds (fast baseline) |
+| `reasoning` | text-heavy | a three-proof maths question — the provider "thinks" for a long time before sending response headers. This is what makes opencode's **10s header-timeout** fire and retry on complex prompts |
+| `multimodal` | text + image | a "describe this image" question with a generated red/green/blue-stripe PNG attached (opencode via `-f`, claude/tabnine via a path reference) — captures a real mixed-model request |
+
+Subset with `CAPTURE_PROMPTS="simple"` for a quick cheap check; each prompt is a real model
+call against every installed tool, so the full ladder costs quota.
+
+## What it checks, per (prompt, tool)
+
+| Step | Meaning | Gates? |
+|------|---------|--------|
+| **CAPTURE** | the tool's LLM endpoint shows up in the recorded request log (proxy + TLS interception works) | yes |
+| **CLASSIFY** | that call appears in the LLM optimisation report with the expected provider (it will render in LLM Traces / Optimise) | yes |
+| **TIMING** | per-prompt wall-clock, the max upstream response time MockServer saw, whether it **streamed** (relayed incrementally), and any tool-reported **timeout/retry** | report-only by default; set `CAPTURE_FAIL_ON_TIMEOUT=1` to gate |
+
+The output is a table — e.g. the `reasoning` row showing a high `UPSTREAM` time with `STREAM=yes`
+confirms MockServer relayed the slow response incrementally (so the head reached the client
+promptly) rather than buffering it; a `TO/RTY` value there is the provider being slow to
+respond, not MockServer.
 
 ## Supported CLIs and the endpoints they use
 
@@ -85,9 +105,11 @@ hardened setup, generate your own CA and point `MOCKSERVER_CA` at it.
 |----------|---------|---------|
 | `MOCKSERVER_URL` | `http://localhost:1080` | base URL of a **running** MockServer proxy |
 | `MOCKSERVER_CA` | repo test CA | proxy CA certificate the CLIs must trust |
-| `CAPTURE_PROMPT` | `Reply with exactly the single word: hello` | prompt sent to each CLI |
-| `CAPTURE_TIMEOUT` | `120` | per-tool timeout (seconds) |
+| `CAPTURE_PROMPTS` | `simple reasoning multimodal` | which ladder steps to run |
+| `CAPTURE_PROMPT` | _unset_ | legacy: run only this one custom (simple/text) prompt |
+| `CAPTURE_TIMEOUT` | `180` | per-tool, per-prompt timeout (seconds) |
 | `CAPTURE_TOOLS` | `claude opencode tabnine` | subset to consider |
+| `CAPTURE_FAIL_ON_TIMEOUT` | `0` | set `1` to fail the run if any prompt timed out / retried |
 | `FORCE` | _unset_ | set `1` to run even when a CI env is detected |
 
 ## No secrets
