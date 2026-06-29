@@ -61,11 +61,11 @@
 #   CAPTURE_TOOLS     space-separated subset to consider (default: claude opencode tabnine)
 #   CAPTURE_FAIL_ON_TIMEOUT  set to 1 to FAIL the run if any prompt timed out / retried
 #                            (default 0: timeouts are reported but do not fail the gate)
-#   CAPTURE_DISABLE_MCP  default 1: run each CLI with its MCP servers disabled and in a
-#                        clean temp working dir, so the tool's own MCP/plugin startup (which
-#                        can add 30s+ — e.g. an unreachable chrome-devtools MCP) does not
-#                        pollute the timing. Set 0 to run the CLI exactly as configured.
 #   FORCE             set to 1 to run even when a CI environment is detected
+#
+# Tool startup overhead (a tool's own MCP servers, plugins, retries) can dominate the
+# wall-clock DUR — that is the TOOL's overhead, not the proxy's. The report's DUR-vs-UPSTREAM
+# NOTE makes that explicit; to speed a tool up, fix/disable its MCP servers in its own config.
 #
 set -uo pipefail
 
@@ -78,7 +78,6 @@ MOCKSERVER_CA="${MOCKSERVER_CA:-$REPO_ROOT/mockserver/mockserver-core/src/main/r
 CAPTURE_TIMEOUT="${CAPTURE_TIMEOUT:-180}"
 CAPTURE_TOOLS="${CAPTURE_TOOLS:-claude opencode tabnine}"
 CAPTURE_FAIL_ON_TIMEOUT="${CAPTURE_FAIL_ON_TIMEOUT:-0}"
-CAPTURE_DISABLE_MCP="${CAPTURE_DISABLE_MCP:-1}"
 
 note()  { printf '\033[36m[capture]\033[0m %s\n' "$*"; }
 ok()    { printf '\033[32m[ ok  ]\033[0m %s\n' "$*"; }
@@ -142,29 +141,14 @@ export NODE_USE_SYSTEM_CA=1 NODE_USE_ENV_PROXY=1 # tabnine honours these
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# --- isolation: run the CLIs in a clean temp dir, with their MCP servers disabled ---
-# A coding CLI launched in a project dir loads that project's (and the user's global)
-# config — including MCP servers. An MCP server that is slow or unreachable under the
-# proxy (e.g. a chrome-devtools MCP that shells out to npx + Chrome) can add 30s+ of
-# startup that has nothing to do with MockServer and would swamp the capture timing.
-# So by default each tool runs in $RUNCWD (empty) with MCP disabled.
-RUNCWD="$work/run"; mkdir -p "$RUNCWD"
-EMPTY_MCP="$work/empty-mcp.json"; printf '{"mcpServers":{}}' > "$EMPTY_MCP"
-if [ "$CAPTURE_DISABLE_MCP" = "1" ]; then
-  # opencode has no MCP CLI flag, so disable every globally-configured MCP server via a
-  # project config dropped in the run dir (reads the user's config — names only, no secrets).
-  python3 - "$RUNCWD/opencode.json" <<'PY' 2>/dev/null || true
-import json, os, sys
-mcp = {}
-try:
-    g = json.load(open(os.path.expanduser("~/.config/opencode/opencode.json")))
-    mcp = {k: {"enabled": False} for k in (g.get("mcp") or {})}
-except Exception:
-    pass
-json.dump({"$schema": "https://opencode.ai/config.json", "mcp": mcp}, open(sys.argv[1], "w"))
-PY
-  note "Tools run in a clean dir with MCP disabled (set CAPTURE_DISABLE_MCP=0 to run as-configured)."
-fi
+# NOTE on tool working dir / MCP: the CLIs run in the invocation directory and load
+# their normal (project + global) config, including any MCP servers. We deliberately do
+# NOT relocate them to a clean dir or force-disable MCP — opencode in particular needs a
+# real project context to make its codex call (a clean dir made it no-op without
+# capturing anything). A tool's own MCP startup can still add tens of seconds; that is
+# the tool's overhead, not the proxy's — the report's DUR-vs-UPSTREAM NOTE makes that
+# explicit rather than hiding it. (If you want a tool to start faster, fix/disable its MCP
+# servers in the tool's own config.)
 
 # --- prompt ladder: simple (fast) -> reasoning (slow) -> multimodal (text+image) ---
 SIMPLE_PROMPT="Reply with exactly the single word: hello"
@@ -236,34 +220,23 @@ if [ "${#INSTALLED_TOOLS[@]}" -eq 0 ]; then
 fi
 
 # --- run one tool with a prompt (+ optional image), capturing combined output ---
-# Each tool runs in $RUNCWD; with CAPTURE_DISABLE_MCP=1, MCP servers are turned off
-# (claude: --strict-mcp-config + empty config; tabnine: allowlist a sentinel name;
-# opencode: the disable config already written into $RUNCWD). Image input is best-effort:
-# opencode via -f, claude/tabnine via an absolute path reference in the prompt.
+# Image input is best-effort: opencode via -f, claude/tabnine via an absolute path
+# reference in the prompt — a tool that ignores it still sends a text request.
 run_tool() { # $1=tool $2=prompt $3=image(path or "") $4=outfile
   local tool="$1" prompt="$2" image="$3" outfile="$4" p
-  local nomcp="$CAPTURE_DISABLE_MCP"
   case "$tool" in
     claude)
       p="$prompt"; [ -n "$image" ] && p="$prompt The image to look at is the file at: $image"
-      if [ "$nomcp" = "1" ]; then
-        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" claude -p "$p" --strict-mcp-config --mcp-config "$EMPTY_MCP" </dev/null >"$outfile" 2>&1 )
-      else
-        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" claude -p "$p" </dev/null >"$outfile" 2>&1 )
-      fi ;;
+      run_with_timeout "$CAPTURE_TIMEOUT" claude -p "$p" </dev/null >"$outfile" 2>&1 ;;
     opencode)
       if [ -n "$image" ]; then
-        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" opencode run "$prompt" -f "$image" </dev/null >"$outfile" 2>&1 )
+        run_with_timeout "$CAPTURE_TIMEOUT" opencode run "$prompt" -f "$image" </dev/null >"$outfile" 2>&1
       else
-        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" opencode run "$prompt" </dev/null >"$outfile" 2>&1 )
+        run_with_timeout "$CAPTURE_TIMEOUT" opencode run "$prompt" </dev/null >"$outfile" 2>&1
       fi ;;
     tabnine)
       p="$prompt"; [ -n "$image" ] && p="$prompt @$image"
-      if [ "$nomcp" = "1" ]; then
-        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" tabnine --prompt "$p" --skip-trust --approval-mode plan --output-format text --allowed-mcp-server-names __none__ </dev/null >"$outfile" 2>&1 )
-      else
-        ( cd "$RUNCWD" && run_with_timeout "$CAPTURE_TIMEOUT" tabnine --prompt "$p" --skip-trust --approval-mode plan --output-format text </dev/null >"$outfile" 2>&1 )
-      fi ;;
+      run_with_timeout "$CAPTURE_TIMEOUT" tabnine --prompt "$p" --skip-trust --approval-mode plan --output-format text </dev/null >"$outfile" 2>&1 ;;
   esac
 }
 
@@ -389,8 +362,8 @@ if overhead_row and max_overhead >= 10:
     t, lab, d, u = overhead_row
     print(f"NOTE: '{t}' on '{lab}' spent ~{max_overhead:.0f}s OUTSIDE MockServer "
           f"(wall {d}s vs MockServer upstream {u}ms). That gap is the tool's own "
-          f"startup / MCP servers / retries — not the proxy. Disable MCP (default) and "
-          f"compare DUR to UPSTREAM to attribute slowness correctly.")
+          f"startup / MCP servers / retries — not the proxy. Compare DUR to UPSTREAM to "
+          f"attribute slowness correctly; to speed the tool up, fix/disable its MCP servers.")
 print()
 
 gate_ok = overall_ok and (not (fail_on_timeout and any_timeout))

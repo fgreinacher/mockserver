@@ -110,7 +110,6 @@ hardened setup, generate your own CA and point `MOCKSERVER_CA` at it.
 | `CAPTURE_TIMEOUT` | `180` | per-tool, per-prompt timeout (seconds) |
 | `CAPTURE_TOOLS` | `claude opencode tabnine` | subset to consider |
 | `CAPTURE_FAIL_ON_TIMEOUT` | `0` | set `1` to fail the run if any prompt timed out / retried |
-| `CAPTURE_DISABLE_MCP` | `1` | run each CLI in a clean temp dir with its MCP servers disabled (so MCP startup doesn't pollute timing); `0` to run as-configured |
 | `FORCE` | _unset_ | set `1` to run even when a CI env is detected |
 
 ### Reading the timing — `DUR` vs `UPSTREAM`
@@ -120,8 +119,10 @@ as MockServer measured it). `DUR` is the tool's whole wall-clock, which is domin
 **tool's own** startup, MCP servers, and retries — not the proxy. The report prints a `NOTE`
 when that gap is large, so a slow CLI is not mistaken for a slow proxy. (A real example found
 during development: opencode took ~36s where MockServer's part was ~2s — the rest was an
-unreachable `chrome-devtools` MCP server timing out for 32s. `CAPTURE_DISABLE_MCP=1`, the
-default, removes that.)
+unreachable `chrome-devtools` MCP server timing out for 32s.) The CLIs are run in the
+invocation directory with their normal config — the script does **not** relocate them to a
+clean dir or force-disable MCP, because some CLIs (opencode) need a real project context to
+make their call. To speed a tool up, fix or disable its MCP servers in the tool's own config.
 
 ## No secrets
 
