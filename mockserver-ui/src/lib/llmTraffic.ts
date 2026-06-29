@@ -29,6 +29,10 @@ export interface AnthropicContentBlock {
 export interface AnthropicUsage {
   input_tokens?: number;
   output_tokens?: number;
+  // Prompt-caching counters (agentic CLIs lean heavily on prompt caching).
+  // Without these the input side is materially undercounted.
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 }
 
 export interface AnthropicParsed {
@@ -366,6 +370,13 @@ interface ReassembledAnthropic {
   stopReason: string | null;
 }
 
+// Upper bound on the number of distinct SSE content-block indices we will
+// materialise. A hostile or buggy stream can carry an arbitrarily large
+// `index` (e.g. 100000000); without a cap the `while (length <= index)` growth
+// loop allocates a gigantic array and freezes the tab. Real responses have a
+// handful of blocks, so a few thousand is far above any legitimate ceiling.
+const MAX_ANTHROPIC_CONTENT_BLOCKS = 4096;
+
 function reassembleAnthropicSse(events: SseEvent[]): ReassembledAnthropic {
   const result: ReassembledAnthropic = {
     content: [],
@@ -390,12 +401,17 @@ function reassembleAnthropicSse(events: SseEvent[]): ReassembledAnthropic {
         if (usage) {
           const inputTokens = getNumber(usage, 'input_tokens');
           if (inputTokens !== null) result.usage.input_tokens = inputTokens;
+          const cacheCreation = getNumber(usage, 'cache_creation_input_tokens');
+          if (cacheCreation !== null) result.usage.cache_creation_input_tokens = cacheCreation;
+          const cacheRead = getNumber(usage, 'cache_read_input_tokens');
+          if (cacheRead !== null) result.usage.cache_read_input_tokens = cacheRead;
         }
       }
     } else if (evt.event === 'content_block_start') {
       const block = getObject(data, 'content_block');
       const index = getNumber(data, 'index');
-      if (block && index !== null) {
+      // Ignore out-of-range / hostile indices so the growth loop below stays bounded.
+      if (block && index !== null && index >= 0 && index <= MAX_ANTHROPIC_CONTENT_BLOCKS) {
         const type = getString(block, 'type') ?? 'text';
         const contentBlock: AnthropicContentBlock = { type };
         if (type === 'tool_use') {
@@ -501,6 +517,47 @@ function isOllamaPath(path: string | null): boolean {
 }
 
 /**
+ * Host-based provider detection, mirroring the server's LlmProviderSniffer.
+ * A request to a well-known provider host is classified as that provider
+ * regardless of the path, so the dashboard agrees with the server even for
+ * non-chat paths (e.g. /v1/models) to a known host. Returns the parser kind to
+ * use, or null when the host is unknown (callers then fall back to path / body
+ * shape). Maps to the parsers the dashboard implements: Azure -> openai (same
+ * wire format), Bedrock and Vertex map to the anthropic / gemini parsers.
+ *
+ * Note: embeddings-only hosts (api.cohere.com, api.voyageai.com) are recognised
+ * by the server but have no dedicated dashboard parser, so they are not mapped
+ * here and fall through to generic.
+ */
+function detectByHost(
+  host: string | null,
+  path: string | null,
+): 'anthropic' | 'openai' | 'openai_responses' | 'gemini' | null {
+  if (!host) return null;
+  // Strip any port suffix before matching (Host headers may include :443).
+  const h = host.toLowerCase().replace(/:\d+$/, '');
+
+  if (h === 'api.openai.com') {
+    // Distinguish the Responses API (/responses) from Chat Completions.
+    return path !== null && /\/responses/.test(path.toLowerCase()) ? 'openai_responses' : 'openai';
+  }
+  if (h.endsWith('.openai.azure.com')) return 'openai';
+  if (h === 'api.anthropic.com') return 'anthropic';
+  // OpenAI Codex backend used by coding CLIs (opencode): chatgpt.com serves the
+  // Responses API. Path-gated so non-LLM chatgpt.com traffic stays generic.
+  if (h === 'chatgpt.com' || h.endsWith('.chatgpt.com')) {
+    return isOpenAiResponsesPath(path) ? 'openai_responses' : null;
+  }
+  if (h === 'generativelanguage.googleapis.com') return 'gemini';
+  // Vertex AI: <region>-aiplatform.googleapis.com or aiplatform.googleapis.com.
+  if (h === 'aiplatform.googleapis.com' || h.endsWith('-aiplatform.googleapis.com')) return 'gemini';
+  // Bedrock: bedrock*.amazonaws.com — uses the native Anthropic wire shape.
+  if (h.endsWith('.amazonaws.com') && (h.startsWith('bedrock') || h.includes('.bedrock'))) return 'anthropic';
+
+  return null;
+}
+
+/**
  * Resilient fallback: infer the provider from the request/response BODY SHAPE
  * alone — no host or path required. The wire format is the provider's API
  * contract and changes far more slowly than the host/path a given CLI uses, so
@@ -525,28 +582,35 @@ function detectByBodyShape(
   resContent: unknown,
   requestHeaders: unknown,
 ): 'anthropic' | 'openai' | 'openai_responses' | 'gemini' | null {
-  // Response markers are the most distinctive — check them first.
+  // Response markers are the most distinctive — check them first. Each pattern
+  // is anchored to a JSON key/value or SSE-field boundary so a hostile message
+  // body that merely contains the substring (e.g. a user pasting "message_start"
+  // into a prompt) cannot force a misclassification. Real provider responses
+  // always carry these tokens as `"type":"…"` / `"object":"…"` values or as
+  // `event:` field names.
   const res = toBodyString(resContent);
   if (res) {
-    // Require the JSON value's opening quote so a stray substring can't match.
-    if (res.includes('"chat.completion')) return 'openai';
+    // OpenAI Chat Completions: object "chat.completion" / "chat.completion.chunk".
+    if (/"object"\s*:\s*"chat\.completion/.test(res)) return 'openai';
+    // OpenAI Responses: object "response" or any `"type":"response.*"` SSE event.
     if (
-      res.includes('response.output_text') ||
-      res.includes('response.created') ||
-      res.includes('response.completed') ||
-      res.includes('"object":"response"') ||
-      res.includes('"object": "response"')
+      /"type"\s*:\s*"response\./.test(res) ||
+      /"object"\s*:\s*"response"/.test(res)
     ) {
       return 'openai_responses';
     }
+    // Anthropic: streamed `content_block_*` / `message_start` / `message_delta`
+    // event types (as `"type":"…"` values or `event:` field names), or a
+    // non-streamed message envelope (`"type":"message"` with a stop_reason).
     if (
-      res.includes('content_block') ||
-      res.includes('message_start') ||
-      (res.includes('"type":"message"') && res.includes('stop_reason'))
+      /"type"\s*:\s*"(content_block|message_start|message_delta)/.test(res) ||
+      /(^|\n)event:\s*(content_block|message_start|message_delta)/.test(res) ||
+      (/"type"\s*:\s*"message"/.test(res) && res.includes('stop_reason'))
     ) {
       return 'anthropic';
     }
-    if (res.includes('"candidates"') && res.includes('usageMetadata')) return 'gemini';
+    // Gemini: a `candidates` array alongside `usageMetadata` (both as keys).
+    if (/"candidates"\s*:/.test(res) && /"usageMetadata"\s*:/.test(res)) return 'gemini';
   }
   // Anthropic sends the anthropic-version header on every request.
   if (getHeaderValue(requestHeaders, 'anthropic-version')) return 'anthropic';
@@ -569,14 +633,52 @@ function isMcpJsonRpc(body: unknown): boolean {
   return obj['jsonrpc'] === '2.0' && (typeof obj['method'] === 'string' || 'result' in obj || 'error' in obj);
 }
 
+/**
+ * Find the first JSON-RPC 2.0 message in a body, looking through three shapes
+ * that modern MCP transports use:
+ *   1. a single JSON-RPC object,
+ *   2. a JSON-RPC batch (top-level array of objects), and
+ *   3. JSON-RPC carried over SSE (`event: message\ndata: {jsonrpc...}`), as the
+ *      Streamable HTTP transport returns.
+ * Returns the first matching message, or null when the body is not MCP traffic.
+ */
+function firstJsonRpcMessage(bodyContent: unknown): Record<string, unknown> | null {
+  const parsed = safeParseJson(bodyContent);
+  if (Array.isArray(parsed)) {
+    const found = parsed.find(isMcpJsonRpc);
+    if (found) return found as Record<string, unknown>;
+  } else if (parsed && isMcpJsonRpc(parsed)) {
+    return parsed as Record<string, unknown>;
+  }
+
+  // SSE-framed JSON-RPC (Streamable HTTP transport).
+  if (typeof bodyContent === 'string' && /(^|\n)data:/.test(bodyContent.replace(/\r\n?/g, '\n'))) {
+    for (const evt of parseSseStream(bodyContent)) {
+      const data = safeParseJson(evt.data);
+      if (Array.isArray(data)) {
+        const found = data.find(isMcpJsonRpc);
+        if (found) return found as Record<string, unknown>;
+      } else if (data && isMcpJsonRpc(data)) {
+        return data as Record<string, unknown>;
+      }
+    }
+  }
+
+  return null;
+}
+
 function isStreamResponse(responseHeaders: unknown, responseBody: unknown): boolean {
   const contentType = getHeaderValue(responseHeaders, 'content-type');
   if (contentType && contentType.includes('text/event-stream')) return true;
 
-  // Check if body looks like SSE
+  // Check if the body looks like SSE. OpenAI Chat Completions and Gemini emit
+  // `data:`-only frames (no `event:` line), so requiring BOTH markers dropped
+  // those streams. A line that STARTS with `data:` or `event:` (after CR/LF
+  // normalisation) is the SSE field grammar — a JSON value like `{"data":...}`
+  // never begins a line with `data:`, so this stays conservative.
   if (typeof responseBody === 'string') {
-    const firstLines = responseBody.slice(0, 500);
-    return firstLines.includes('event:') && firstLines.includes('data:');
+    const head = responseBody.slice(0, 500).replace(/\r\n?/g, '\n');
+    return /(^|\n)data:/.test(head) || /(^|\n)event:/.test(head);
   }
 
   return false;
@@ -599,7 +701,10 @@ function parseAnthropicRequest(
 ): AnthropicParsed {
   const req = safeParseJson(requestBody) as Record<string, unknown> | undefined;
   const { streamed, truncated } = hasStreamingHeaders(responseHeaders);
-  const isStream = isStreamResponse(responseHeaders, responseBody);
+  // Trust the server's `x-mockserver-streamed` signal as well as body sniffing:
+  // a no-content-type SSE body (common for OpenAI-chat / Gemini) otherwise gets
+  // parsed as non-stream JSON, fails, and renders empty.
+  const isStream = streamed || isStreamResponse(responseHeaders, responseBody);
 
   const result: AnthropicParsed = {
     kind: 'anthropic',
@@ -649,7 +754,10 @@ function parseOpenAiRequest(
 ): OpenAiParsed {
   const req = safeParseJson(requestBody) as Record<string, unknown> | undefined;
   const { streamed, truncated } = hasStreamingHeaders(responseHeaders);
-  const isStream = isStreamResponse(responseHeaders, responseBody);
+  // Trust the server's `x-mockserver-streamed` signal too — OpenAI Chat
+  // Completions streams emit only `data:` frames with no content-type, which
+  // would otherwise be parsed as non-stream JSON and render empty.
+  const isStream = streamed || isStreamResponse(responseHeaders, responseBody);
 
   const result: OpenAiParsed = {
     kind: 'openai',
@@ -750,10 +858,10 @@ function parseOpenAiRequest(
   return result;
 }
 
-function parseMcpRequest(requestBody: unknown, responseBody: unknown): McpParsed {
-  const req = safeParseJson(requestBody) as Record<string, unknown> | undefined;
-  const res = safeParseJson(responseBody) as Record<string, unknown> | undefined;
-
+function parseMcpRequest(
+  req: Record<string, unknown> | null,
+  res: Record<string, unknown> | null,
+): McpParsed {
   // Could be a request or a response in JSON-RPC
   const isResponse = req ? !('method' in req) : false;
   const primary = isResponse ? res : req;
@@ -781,6 +889,7 @@ function parseOpenAiResponsesRequest(
 ): OpenAiResponsesParsed {
   const req = safeParseJson(requestBody) as Record<string, unknown> | undefined;
   const { streamed, truncated } = hasStreamingHeaders(responseHeaders);
+  const isStream = streamed || isStreamResponse(responseHeaders, responseBody);
 
   const result: OpenAiResponsesParsed = {
     kind: 'openai_responses',
@@ -795,7 +904,7 @@ function parseOpenAiResponsesRequest(
     streamTruncated: truncated,
   };
 
-  if (isStreamResponse(responseHeaders, responseBody) && typeof responseBody === 'string') {
+  if (isStream && typeof responseBody === 'string') {
     const events = parseSseStream(responseBody);
     result.sseEvents = events;
     const reassembled = reassembleResponsesSse(events);
@@ -897,13 +1006,28 @@ function reassembleGeminiSse(events: SseEvent[]): { candidates: unknown[]; usage
   return { candidates, usage, model };
 }
 
+/**
+ * Extract the Gemini model from the request path, e.g.
+ * `/v1beta/models/gemini-2.5-pro:generateContent` -> `gemini-2.5-pro`.
+ * The model is in the URL for Gemini, so it is available even when the response
+ * body omits `modelVersion` (notably on streamed or error responses).
+ */
+function modelFromGeminiPath(path: string | null): string | null {
+  if (!path) return null;
+  const m = path.match(/\/models\/([^/:?]+):(?:streamGenerateContent|generateContent)/);
+  return m ? m[1]! : null;
+}
+
 function parseGeminiRequest(
   requestBody: unknown,
   responseBody: unknown,
   responseHeaders: unknown,
+  path: string | null,
 ): GeminiParsed {
   const req = safeParseJson(requestBody) as Record<string, unknown> | undefined;
   const { streamed, truncated } = hasStreamingHeaders(responseHeaders);
+  const isStream = streamed || isStreamResponse(responseHeaders, responseBody);
+  const pathModel = modelFromGeminiPath(path);
 
   const result: GeminiParsed = {
     kind: 'gemini',
@@ -918,13 +1042,14 @@ function parseGeminiRequest(
     streamTruncated: truncated,
   };
 
-  if (isStreamResponse(responseHeaders, responseBody) && typeof responseBody === 'string') {
+  if (isStream && typeof responseBody === 'string') {
     const events = parseSseStream(responseBody);
     result.sseEvents = events;
     const reassembled = reassembleGeminiSse(events);
     result.candidates = reassembled.candidates;
     result.usage = reassembled.usage;
     if (reassembled.model && !result.model) result.model = reassembled.model;
+    if (!result.model) result.model = pathModel;
     return result;
   }
 
@@ -942,6 +1067,8 @@ function parseGeminiRequest(
       result.model = getString(res, 'modelVersion') ?? getString(res, 'model');
     }
   }
+
+  if (!result.model) result.model = pathModel;
 
   return result;
 }
@@ -1015,6 +1142,22 @@ export function parseTraffic(value: Record<string, unknown>): ParsedTraffic {
     // Extract body string or object — MockServer can encode body as { type, string } or { type, json }
     const reqBodyContent = extractBodyContent(requestBody);
     const resBodyContent = extractBodyContent(responseBody);
+    const requestHeaders = httpRequest ? httpRequest['headers'] : null;
+
+    // Host-based detection FIRST, mirroring the server (LlmProviderSniffer):
+    // a call to a well-known provider host is that provider regardless of path,
+    // so non-chat paths to a known host classify consistently with the server.
+    const host = getHeaderValue(requestHeaders, 'host');
+    switch (detectByHost(host, path)) {
+      case 'anthropic':
+        return parseAnthropicRequest(reqBodyContent, resBodyContent, responseHeaders);
+      case 'openai':
+        return parseOpenAiRequest(reqBodyContent, resBodyContent, responseHeaders);
+      case 'openai_responses':
+        return parseOpenAiResponsesRequest(reqBodyContent, resBodyContent, responseHeaders);
+      case 'gemini':
+        return parseGeminiRequest(reqBodyContent, resBodyContent, responseHeaders, path);
+    }
 
     if (isAnthropicPath(path)) {
       return parseAnthropicRequest(reqBodyContent, resBodyContent, responseHeaders);
@@ -1043,29 +1186,24 @@ export function parseTraffic(value: Record<string, unknown>): ParsedTraffic {
     }
 
     if (isGeminiPath(path)) {
-      return parseGeminiRequest(reqBodyContent, resBodyContent, responseHeaders);
+      return parseGeminiRequest(reqBodyContent, resBodyContent, responseHeaders, path);
     }
 
     if (isOllamaPath(path)) {
       return parseOllamaRequest(reqBodyContent, resBodyContent, responseHeaders);
     }
 
-    // Check MCP on request body
-    const parsedReqBody = safeParseJson(reqBodyContent);
-    if (parsedReqBody && isMcpJsonRpc(parsedReqBody)) {
-      return parseMcpRequest(reqBodyContent, resBodyContent);
-    }
-
-    // Check MCP on response body
-    const parsedResBody = safeParseJson(resBodyContent);
-    if (parsedResBody && isMcpJsonRpc(parsedResBody)) {
-      return parseMcpRequest(reqBodyContent, resBodyContent);
+    // Check MCP on request or response body. Handles a single JSON-RPC object, a
+    // JSON-RPC batch (top-level array), and JSON-RPC carried over SSE.
+    const reqRpc = firstJsonRpcMessage(reqBodyContent);
+    const resRpc = firstJsonRpcMessage(resBodyContent);
+    if (reqRpc || resRpc) {
+      return parseMcpRequest(reqRpc, resRpc);
     }
 
     // Resilient fallback: recognise LLM traffic by its body shape when the host/
     // path was not a known LLM endpoint (e.g. a coding CLI on a private gateway
     // or a renamed endpoint). The body is the slowest-moving signal.
-    const requestHeaders = httpRequest ? httpRequest['headers'] : null;
     switch (detectByBodyShape(reqBodyContent, resBodyContent, requestHeaders)) {
       case 'anthropic':
         return parseAnthropicRequest(reqBodyContent, resBodyContent, responseHeaders);
@@ -1074,7 +1212,7 @@ export function parseTraffic(value: Record<string, unknown>): ParsedTraffic {
       case 'openai_responses':
         return parseOpenAiResponsesRequest(reqBodyContent, resBodyContent, responseHeaders);
       case 'gemini':
-        return parseGeminiRequest(reqBodyContent, resBodyContent, responseHeaders);
+        return parseGeminiRequest(reqBodyContent, resBodyContent, responseHeaders, path);
     }
 
     const statusCode = httpResponse ? getNumber(httpResponse, 'statusCode') : null;
@@ -1196,6 +1334,9 @@ export function getTokenSummary(parsed: ParsedTraffic): string | null {
     const parts: string[] = [];
     if (parsed.usage.input_tokens != null) parts.push(`${parsed.usage.input_tokens} in`);
     if (parsed.usage.output_tokens != null) parts.push(`${parsed.usage.output_tokens} out`);
+    // Surface prompt-cache counters so agentic CLI traffic isn't undercounted.
+    if (parsed.usage.cache_creation_input_tokens != null) parts.push(`${parsed.usage.cache_creation_input_tokens} cache write`);
+    if (parsed.usage.cache_read_input_tokens != null) parts.push(`${parsed.usage.cache_read_input_tokens} cache read`);
     return parts.length > 0 ? parts.join(' / ') : null;
   }
   if (parsed.kind === 'openai' && parsed.usage) {

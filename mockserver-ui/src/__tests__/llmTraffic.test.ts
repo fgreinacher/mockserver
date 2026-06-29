@@ -1635,3 +1635,444 @@ describe('parseTraffic — body-shape fallback (resilience)', () => {
     expect(parsed.statusCode).toBe(200);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix 1 — No-content-type SSE streams (OpenAI-chat & Gemini) driven by the
+// x-mockserver-streamed header. These emit only `data:` frames, so requiring a
+// content-type OR both event:/data: markers parsed them empty.
+// ---------------------------------------------------------------------------
+
+describe('parseTraffic — no-content-type streams via x-mockserver-streamed', () => {
+  it('reassembles an OpenAI Chat stream with no content-type, only x-mockserver-streamed', () => {
+    const sseBody = [
+      'data: {"id":"c","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}',
+      '',
+      'data: {"id":"c","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":"stop"}]}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n');
+
+    const value = {
+      httpRequest: {
+        method: 'POST',
+        path: '/v1/chat/completions',
+        body: { type: 'JSON', json: '{"model":"gpt-4","stream":true,"messages":[]}' },
+      },
+      httpResponse: {
+        statusCode: 200,
+        // NB: no content-type header at all — only the server's streamed marker.
+        headers: [{ name: 'x-mockserver-streamed', values: ['true'] }],
+        body: { type: 'STRING', string: sseBody },
+      },
+    };
+
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('openai');
+    if (parsed.kind !== 'openai') return;
+    expect(parsed.sseEvents).not.toBeNull();
+    expect(parsed.choices).toHaveLength(1);
+    expect(parsed.choices[0]!.message?.content).toBe('Hello world');
+    expect(parsed.choices[0]!.finish_reason).toBe('stop');
+  });
+
+  it('reassembles a Gemini stream with no content-type, only x-mockserver-streamed', () => {
+    const sseBody = [
+      'data: {"candidates":[{"content":{"parts":[{"text":"Hi"}],"role":"model"}}]}',
+      '',
+      'data: {"candidates":[{"content":{"parts":[],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1}}',
+      '',
+    ].join('\n');
+
+    const value = {
+      httpRequest: {
+        method: 'POST',
+        path: '/v1beta/models/gemini-2.0-flash:streamGenerateContent',
+        body: { type: 'JSON', json: '{"contents":[]}' },
+      },
+      httpResponse: {
+        statusCode: 200,
+        headers: [{ name: 'x-mockserver-streamed', values: ['true'] }],
+        body: { type: 'STRING', string: sseBody },
+      },
+    };
+
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('gemini');
+    if (parsed.kind !== 'gemini') return;
+    expect(parsed.sseEvents).not.toBeNull();
+    expect(parsed.candidates).toHaveLength(1);
+    expect(getTokenSummary(parsed)).toBe('3 in / 1 out');
+    // Model recovered from the URL path (Fix 5) since the stream omits it.
+    expect(parsed.model).toBe('gemini-2.0-flash');
+  });
+
+  it('treats a data-only SSE body (no event: lines) as a stream even without the streamed header', () => {
+    const sseBody = [
+      'data: {"id":"c","object":"chat.completion.chunk","model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n');
+    const value = {
+      httpRequest: { method: 'POST', path: '/v1/chat/completions', body: { type: 'JSON', json: '{"model":"gpt-4","messages":[]}' } },
+      httpResponse: { statusCode: 200, body: { type: 'STRING', string: sseBody } },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('openai');
+    if (parsed.kind !== 'openai') return;
+    expect(parsed.choices[0]!.message?.content).toBe('Hi');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2 — Hostile SSE index must not trigger unbounded array growth.
+// ---------------------------------------------------------------------------
+
+describe('parseTraffic — hostile Anthropic SSE index (security)', () => {
+  it('ignores an out-of-range content-block index instead of allocating a giant array', () => {
+    const hostileSse = [
+      'event: message_start',
+      'data: {"type":"message_start","message":{"model":"claude","content":[],"usage":{"input_tokens":1}}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":100000000,"content_block":{"type":"text"}}',
+      '',
+    ].join('\n');
+
+    const value = {
+      httpRequest: { method: 'POST', path: '/v1/messages', body: { type: 'JSON', json: '{"model":"claude","stream":true,"messages":[]}' } },
+      httpResponse: { statusCode: 200, headers: [{ name: 'content-type', values: ['text/event-stream'] }], body: { type: 'STRING', string: hostileSse } },
+    };
+
+    const start = Date.now();
+    const parsed = parseTraffic(value);
+    const elapsed = Date.now() - start;
+
+    expect(parsed.kind).toBe('anthropic');
+    if (parsed.kind !== 'anthropic') return;
+    // Only the legitimate index-0 block materialises; the hostile index is dropped.
+    expect(parsed.responseContent).toHaveLength(1);
+    expect(parsed.responseContent[0]!.text).toBe('ok');
+    // And it stays fast — no multi-hundred-million-element allocation.
+    expect(elapsed).toBeLessThan(1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 3 — Host-based detection (mirrors the server LlmProviderSniffer).
+// ---------------------------------------------------------------------------
+
+describe('parseTraffic — host-based detection', () => {
+  it('classifies a non-chat path on api.openai.com as openai', () => {
+    const parsed = parseTraffic({
+      httpRequest: {
+        method: 'GET',
+        path: '/v1/models',
+        headers: [{ name: 'host', values: ['api.openai.com'] }],
+        body: { type: 'JSON', json: '{"model":"gpt-4"}' },
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"object":"list","data":[]}' } },
+    });
+    expect(parsed.kind).toBe('openai');
+  });
+
+  it('classifies /v1/responses on api.openai.com as openai_responses', () => {
+    const parsed = parseTraffic({
+      httpRequest: {
+        method: 'POST',
+        path: '/v1/responses',
+        headers: [{ name: 'host', values: ['api.openai.com'] }],
+        body: { type: 'JSON', json: '{"model":"gpt-4.1","input":[]}' },
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"model":"gpt-4.1","output":[]}' } },
+    });
+    expect(parsed.kind).toBe('openai_responses');
+  });
+
+  it('classifies any path on generativelanguage.googleapis.com as gemini', () => {
+    const parsed = parseTraffic({
+      httpRequest: {
+        method: 'POST',
+        path: '/v1beta/cachedContents',
+        headers: [{ name: 'host', values: ['generativelanguage.googleapis.com'] }],
+        body: { type: 'JSON', json: '{}' },
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"candidates":[]}' } },
+    });
+    expect(parsed.kind).toBe('gemini');
+  });
+
+  it('classifies a Vertex AI -aiplatform host as gemini', () => {
+    const parsed = parseTraffic({
+      httpRequest: {
+        method: 'POST',
+        path: '/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent',
+        headers: [{ name: 'host', values: ['us-central1-aiplatform.googleapis.com'] }],
+        body: { type: 'JSON', json: '{"contents":[]}' },
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"candidates":[]}' } },
+    });
+    expect(parsed.kind).toBe('gemini');
+  });
+
+  it('classifies a Bedrock amazonaws host as anthropic', () => {
+    const parsed = parseTraffic({
+      httpRequest: {
+        method: 'POST',
+        path: '/anything',
+        headers: [{ name: 'host', values: ['bedrock-runtime.us-east-1.amazonaws.com'] }],
+        body: { type: 'JSON', json: '{"messages":[]}' },
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"content":[],"usage":{"input_tokens":1,"output_tokens":1}}' } },
+    });
+    expect(parsed.kind).toBe('anthropic');
+  });
+
+  it('classifies an Azure OpenAI host on a non-deployment path as openai', () => {
+    const parsed = parseTraffic({
+      httpRequest: {
+        method: 'GET',
+        path: '/openai/models',
+        headers: [{ name: 'host', values: ['myresource.openai.azure.com'] }],
+        body: null,
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"data":[]}' } },
+    });
+    expect(parsed.kind).toBe('openai');
+  });
+
+  it('ignores a host:port suffix when matching', () => {
+    const parsed = parseTraffic({
+      httpRequest: {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: [{ name: 'host', values: ['api.anthropic.com:443'] }],
+        body: { type: 'JSON', json: '{"model":"claude","messages":[]}' },
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"content":[],"usage":{}}' } },
+    });
+    expect(parsed.kind).toBe('anthropic');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 4 — MCP over SSE and JSON-RPC batch.
+// ---------------------------------------------------------------------------
+
+describe('parseTraffic — MCP over SSE and batch', () => {
+  it('detects JSON-RPC carried over SSE in the response (Streamable HTTP transport)', () => {
+    const value = {
+      httpRequest: {
+        method: 'POST',
+        path: '/mcp',
+        body: { type: 'JSON', json: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 1, params: {} }) },
+      },
+      httpResponse: {
+        statusCode: 200,
+        headers: [{ name: 'content-type', values: ['text/event-stream'] }],
+        body: { type: 'STRING', string: 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"read_file"}]}}\n\n' },
+      },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('mcp');
+    if (parsed.kind !== 'mcp') return;
+    expect(parsed.method).toBe('tools/list');
+    expect(parsed.result).toEqual({ tools: [{ name: 'read_file' }] });
+  });
+
+  it('detects a JSON-RPC request carried over SSE even when the request is not JSON', () => {
+    const value = {
+      httpRequest: { method: 'POST', path: '/mcp', body: { type: 'STRING', string: 'GET handshake' } },
+      httpResponse: {
+        statusCode: 200,
+        body: { type: 'STRING', string: 'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/initialized"}\n\n' },
+      },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('mcp');
+  });
+
+  it('detects a JSON-RPC batch (top-level array)', () => {
+    const value = {
+      httpRequest: {
+        method: 'POST',
+        path: '/mcp',
+        body: {
+          type: 'JSON',
+          json: JSON.stringify([
+            { jsonrpc: '2.0', method: 'tools/list', id: 1 },
+            { jsonrpc: '2.0', method: 'resources/list', id: 2 },
+          ]),
+        },
+      },
+      httpResponse: {
+        statusCode: 200,
+        body: {
+          type: 'JSON',
+          json: JSON.stringify([
+            { jsonrpc: '2.0', id: 1, result: { tools: [] } },
+            { jsonrpc: '2.0', id: 2, result: { resources: [] } },
+          ]),
+        },
+      },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('mcp');
+    if (parsed.kind !== 'mcp') return;
+    // The first message of the batch represents the exchange.
+    expect(parsed.method).toBe('tools/list');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 5 — Gemini model recovered from the request path.
+// ---------------------------------------------------------------------------
+
+describe('parseTraffic — Gemini model from path fallback', () => {
+  it('uses the path model when the response omits modelVersion/model', () => {
+    const value = {
+      httpRequest: {
+        method: 'POST',
+        path: '/v1beta/models/gemini-2.5-pro:generateContent',
+        body: { type: 'JSON', json: '{"contents":[]}' },
+      },
+      httpResponse: {
+        statusCode: 200,
+        body: { type: 'JSON', json: '{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}' },
+      },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('gemini');
+    if (parsed.kind !== 'gemini') return;
+    expect(parsed.model).toBe('gemini-2.5-pro');
+  });
+
+  it('prefers the response modelVersion over the path when present', () => {
+    const value = {
+      httpRequest: {
+        method: 'POST',
+        path: '/v1beta/models/gemini-2.5-pro:generateContent',
+        body: { type: 'JSON', json: '{"contents":[]}' },
+      },
+      httpResponse: {
+        statusCode: 200,
+        body: { type: 'JSON', json: '{"candidates":[],"modelVersion":"gemini-2.5-pro-002"}' },
+      },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('gemini');
+    if (parsed.kind !== 'gemini') return;
+    expect(parsed.model).toBe('gemini-2.5-pro-002');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 6 — detectByBodyShape anchored to key/value boundaries (hostile content).
+// ---------------------------------------------------------------------------
+
+describe('parseTraffic — body-shape anchoring (hostile content)', () => {
+  it('does not classify as anthropic when the marker is only inside a string value', () => {
+    const value = {
+      httpRequest: {
+        method: 'POST',
+        path: '/internal/echo',
+        body: { type: 'JSON', json: JSON.stringify({ q: 'explain the content_block and message_start events' }) },
+      },
+      httpResponse: {
+        statusCode: 200,
+        body: { type: 'JSON', json: JSON.stringify({ answer: 'a message_start begins a content_block' }) },
+      },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('generic');
+  });
+
+  it('still classifies a genuine streamed Anthropic body on an unknown path', () => {
+    const sse = [
+      'event: message_start',
+      'data: {"type":"message_start","message":{"model":"claude","content":[],"usage":{"input_tokens":1}}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}',
+      '',
+      'event: message_delta',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+      '',
+    ].join('\n');
+    const value = {
+      httpRequest: { method: 'POST', path: '/internal/llm', body: { type: 'JSON', json: '{"model":"claude","stream":true,"messages":[]}' } },
+      httpResponse: { statusCode: 200, headers: [{ name: 'content-type', values: ['text/event-stream'] }], body: { type: 'STRING', string: sse } },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('anthropic');
+    if (parsed.kind !== 'anthropic') return;
+    expect(parsed.responseContent[0]!.text).toBe('hi');
+    expect(parsed.stopReason).toBe('end_turn');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 7 — Anthropic prompt-cache token capture.
+// ---------------------------------------------------------------------------
+
+describe('parseTraffic — Anthropic prompt-cache tokens', () => {
+  it('captures cache_creation/cache_read tokens from a non-streamed response', () => {
+    const value = {
+      httpRequest: { method: 'POST', path: '/v1/messages', body: { type: 'JSON', json: '{"model":"claude","messages":[]}' } },
+      httpResponse: {
+        statusCode: 200,
+        body: {
+          type: 'JSON',
+          json: JSON.stringify({
+            content: [{ type: 'text', text: 'hi' }],
+            usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 20, cache_read_input_tokens: 5 },
+            stop_reason: 'end_turn',
+          }),
+        },
+      },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('anthropic');
+    if (parsed.kind !== 'anthropic') return;
+    expect(parsed.usage?.cache_creation_input_tokens).toBe(20);
+    expect(parsed.usage?.cache_read_input_tokens).toBe(5);
+    expect(getTokenSummary(parsed)).toBe('100 in / 50 out / 20 cache write / 5 cache read');
+  });
+
+  it('captures cache tokens from a streamed message_start usage', () => {
+    const sse = [
+      'event: message_start',
+      'data: {"type":"message_start","message":{"model":"claude","content":[],"usage":{"input_tokens":100,"cache_creation_input_tokens":20,"cache_read_input_tokens":5}}}',
+      '',
+      'event: content_block_start',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}',
+      '',
+      'event: content_block_delta',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}',
+      '',
+      'event: message_delta',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}',
+      '',
+    ].join('\n');
+    const value = {
+      httpRequest: { method: 'POST', path: '/v1/messages', body: { type: 'JSON', json: '{"model":"claude","stream":true,"messages":[]}' } },
+      httpResponse: { statusCode: 200, headers: [{ name: 'content-type', values: ['text/event-stream'] }], body: { type: 'STRING', string: sse } },
+    };
+    const parsed = parseTraffic(value);
+    expect(parsed.kind).toBe('anthropic');
+    if (parsed.kind !== 'anthropic') return;
+    expect(parsed.usage?.cache_creation_input_tokens).toBe(20);
+    expect(parsed.usage?.cache_read_input_tokens).toBe(5);
+    expect(getTokenSummary(parsed)).toBe('100 in / 50 out / 20 cache write / 5 cache read');
+  });
+});
