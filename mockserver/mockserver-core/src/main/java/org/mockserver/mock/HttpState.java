@@ -1218,91 +1218,104 @@ public class HttpState {
                                 mockServerLogger.logEvent(logEntry);
                                 httpResponseFuture.complete(response);
                                 break;
-                            case JSON:
-                                mockServerLog
-                                    .retrieveRequestResponses(
-                                        requestDefinition,
-                                        httpRequestAndHttpResponses -> {
-                                            response.withBody(
-                                                getHttpRequestResponseSerializer().serialize(httpRequestAndHttpResponses),
-                                                MediaType.JSON_UTF_8
-                                            );
-                                            mockServerLogger.logEvent(logEntry);
-                                            httpResponseFuture.complete(response);
-                                        }
-                                    );
+                            case JSON: {
+                                // Materialize the (cheap) redacted list on the disruptor consumer thread, then
+                                // serialize on THIS caller thread — serializing potentially many large captured
+                                // bodies inside the single log-consumer callback raced the retrieve future timeout
+                                // and stalled all further logging (#3).
+                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
+                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
+                                    logCorrelationId, request
+                                );
+                                response.withBody(
+                                    getHttpRequestResponseSerializer().serialize(pairs),
+                                    MediaType.JSON_UTF_8
+                                );
+                                mockServerLogger.logEvent(logEntry);
+                                httpResponseFuture.complete(response);
                                 break;
-                            case LOG_ENTRIES:
-                                mockServerLog
-                                    .retrieveRequestResponseMessageLogEntries(
-                                        requestDefinition,
-                                        logEntries -> {
-                                            response.withBody(
-                                                getLogEntrySerializer().serialize(logEntries),
-                                                MediaType.JSON_UTF_8
-                                            );
-                                            mockServerLogger.logEvent(logEntry);
-                                            httpResponseFuture.complete(response);
-                                        }
-                                    );
+                            }
+                            case LOG_ENTRIES: {
+                                List<LogEntry> logEntries = awaitRetrieve(
+                                    consumer -> mockServerLog.retrieveRequestResponseMessageLogEntries(requestDefinition, consumer),
+                                    logCorrelationId, request
+                                );
+                                response.withBody(
+                                    getLogEntrySerializer().serialize(logEntries),
+                                    MediaType.JSON_UTF_8
+                                );
+                                mockServerLogger.logEvent(logEntry);
+                                httpResponseFuture.complete(response);
                                 break;
-                            case HAR:
-                                mockServerLog
-                                    .retrieveRequestResponses(
-                                        requestDefinition,
-                                        httpRequestAndHttpResponses -> {
-                                            response.withBody(
-                                                getHarConverter().serialize(httpRequestAndHttpResponses),
-                                                MediaType.JSON_UTF_8
-                                            );
-                                            mockServerLogger.logEvent(logEntry);
-                                            httpResponseFuture.complete(response);
-                                        }
-                                    );
+                            }
+                            case HAR: {
+                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
+                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
+                                    logCorrelationId, request
+                                );
+                                response.withBody(
+                                    getHarConverter().serialize(pairs),
+                                    MediaType.JSON_UTF_8
+                                );
+                                mockServerLogger.logEvent(logEntry);
+                                httpResponseFuture.complete(response);
                                 break;
-                            case OPENAPI:
-                                mockServerLog.retrieveRequestResponses(requestDefinition, pairs -> {
-                                    response.withBody(
-                                        getExpectationExportSerializer().serializeRequestResponsesAsOpenApi(pairs),
-                                        MediaType.JSON_UTF_8
-                                    );
-                                    mockServerLogger.logEvent(logEntry);
-                                    httpResponseFuture.complete(response);
-                                });
+                            }
+                            case OPENAPI: {
+                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
+                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
+                                    logCorrelationId, request
+                                );
+                                response.withBody(
+                                    getExpectationExportSerializer().serializeRequestResponsesAsOpenApi(pairs),
+                                    MediaType.JSON_UTF_8
+                                );
+                                mockServerLogger.logEvent(logEntry);
+                                httpResponseFuture.complete(response);
                                 break;
-                            case POSTMAN:
-                                mockServerLog.retrieveRequestResponses(requestDefinition, pairs -> {
-                                    response.withBody(
-                                        getExpectationExportSerializer().serializeRequestResponsesAsPostman(pairs),
-                                        MediaType.JSON_UTF_8
-                                    );
-                                    mockServerLogger.logEvent(logEntry);
-                                    httpResponseFuture.complete(response);
-                                });
+                            }
+                            case POSTMAN: {
+                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
+                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
+                                    logCorrelationId, request
+                                );
+                                response.withBody(
+                                    getExpectationExportSerializer().serializeRequestResponsesAsPostman(pairs),
+                                    MediaType.JSON_UTF_8
+                                );
+                                mockServerLogger.logEvent(logEntry);
+                                httpResponseFuture.complete(response);
                                 break;
-                            case BRUNO:
-                                mockServerLog.retrieveRequestResponses(requestDefinition, pairs -> {
-                                    response
-                                        .withBody(getExpectationExportSerializer().serializeRequestResponsesAsBruno(pairs))
-                                        .withHeader(io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE.toString(), "application/zip")
-                                        .withHeader("content-disposition", "attachment; filename=\"mockserver-traffic.bruno.zip\"");
-                                    mockServerLogger.logEvent(logEntry);
-                                    httpResponseFuture.complete(response);
-                                });
+                            }
+                            case BRUNO: {
+                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
+                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
+                                    logCorrelationId, request
+                                );
+                                response
+                                    .withBody(getExpectationExportSerializer().serializeRequestResponsesAsBruno(pairs))
+                                    .withHeader(io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE.toString(), "application/zip")
+                                    .withHeader("content-disposition", "attachment; filename=\"mockserver-traffic.bruno.zip\"");
+                                mockServerLogger.logEvent(logEntry);
+                                httpResponseFuture.complete(response);
                                 break;
-                            case CURL:
-                                mockServerLog.retrieveRequestResponses(requestDefinition, pairs -> {
-                                    List<HttpRequest> httpRequests = new java.util.ArrayList<>(pairs.size());
-                                    for (LogEventRequestAndResponse pair : pairs) {
-                                        if (pair.getHttpRequest() instanceof HttpRequest) {
-                                            httpRequests.add((HttpRequest) pair.getHttpRequest());
-                                        }
+                            }
+                            case CURL: {
+                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
+                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
+                                    logCorrelationId, request
+                                );
+                                List<HttpRequest> httpRequests = new java.util.ArrayList<>(pairs.size());
+                                for (LogEventRequestAndResponse pair : pairs) {
+                                    if (pair.getHttpRequest() instanceof HttpRequest) {
+                                        httpRequests.add((HttpRequest) pair.getHttpRequest());
                                     }
-                                    response.withBody(toCurlCommands(httpRequests), MediaType.PLAIN_TEXT_UTF_8);
-                                    mockServerLogger.logEvent(logEntry);
-                                    httpResponseFuture.complete(response);
-                                });
+                                }
+                                response.withBody(toCurlCommands(httpRequests), MediaType.PLAIN_TEXT_UTF_8);
+                                mockServerLogger.logEvent(logEntry);
+                                httpResponseFuture.complete(response);
                                 break;
+                            }
                         }
                         break;
                     }
@@ -1660,6 +1673,35 @@ public class HttpState {
             }
         } else {
             return response().withStatusCode(200);
+        }
+    }
+
+    /**
+     * Materialize a retrieve result list off the single disruptor log-consumer thread and return it to the
+     * CALLER, so any heavy serialization (JSON/HAR/OpenAPI/etc. over large captured response bodies) runs on
+     * the caller thread rather than inside the log-consumer callback. Previously the whole list was serialized
+     * inside the consumer callback (on the one log-processing thread): with many large captured streaming
+     * bodies that both raced the retrieve future timeout ({@code maxFutureTimeoutInMillis}) AND stalled all
+     * further logging (filling the ring buffer and dropping events) — see bug #3. The list the consumer
+     * receives is already fully materialized and redacted (cheap to produce), so only its construction runs on
+     * the consumer thread; the expensive serialize(...) now runs here. The consumer runs after the disruptor
+     * has drained prior log writes, so the list is a consistent snapshot.
+     */
+    private <T> T awaitRetrieve(Consumer<Consumer<T>> retriever, String logCorrelationId, HttpRequest request) {
+        CompletableFuture<T> listFuture = new CompletableFuture<>();
+        retriever.accept(listFuture::complete);
+        try {
+            return listFuture.get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
+        } catch (ExecutionException | InterruptedException | TimeoutException ex) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.ERROR)
+                    .setCorrelationId(logCorrelationId)
+                    .setMessageFormat("exception handling request:{}error:{}")
+                    .setArguments(request, ex.getMessage())
+                    .setThrowable(ex)
+            );
+            throw new RuntimeException("Exception retrieving state for " + request, ex);
         }
     }
 

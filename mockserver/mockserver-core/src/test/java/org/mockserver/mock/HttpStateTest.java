@@ -2073,6 +2073,114 @@ public class HttpStateTest {
     }
 
     @Test
+    public void shouldSerializeRequestResponsesRetrieveOffTheLogConsumerThread() throws Exception {
+        // bug #3: serializing the whole REQUEST_RESPONSES list inside the single disruptor log-consumer
+        // callback (thread "MockServer-EventLog*") both raced the retrieve future timeout and stalled all
+        // further logging. The fix materializes the (cheap) list on the consumer thread but performs the
+        // heavy serialize(...) on the CALLER thread. Prove that by recording the thread serialize() runs on.
+
+        // given - a recording serializer injected in place of the real one
+        final java.util.concurrent.atomic.AtomicReference<String> serializeThreadName = new java.util.concurrent.atomic.AtomicReference<>();
+        LogEventRequestAndResponseSerializer recordingSerializer = new LogEventRequestAndResponseSerializer(new MockServerLogger()) {
+            @Override
+            public String serialize(java.util.List<org.mockserver.model.LogEventRequestAndResponse> httpRequestAndHttpResponses) {
+                serializeThreadName.set(Thread.currentThread().getName());
+                return super.serialize(httpRequestAndHttpResponses);
+            }
+        };
+        java.lang.reflect.Field field = HttpState.class.getDeclaredField("httpRequestResponseSerializer");
+        field.setAccessible(true);
+        field.set(httpState, recordingSerializer);
+
+        httpState.log(
+            new LogEntry()
+                .setLogLevel(INFO)
+                .setType(EXPECTATION_RESPONSE)
+                .setHttpRequest(request("request_one"))
+                .setHttpResponse(response("response_one"))
+        );
+        httpState.log(
+            new LogEntry()
+                .setLogLevel(INFO)
+                .setType(EXPECTATION_RESPONSE)
+                .setHttpRequest(request("request_two"))
+                .setHttpResponse(response("response_two"))
+        );
+
+        // when
+        HttpResponse response = httpState
+            .retrieve(
+                request()
+                    .withQueryStringParameter("type", "request_responses")
+                    .withQueryStringParameter("format", "json")
+                    .withBody(requestDefinitionSerializer.serialize(request("request_.*")))
+            );
+
+        // then - retrieve completed with the correct content
+        assertThat(response.getStatusCode(), is(200));
+        assertThat(response.getBodyAsString(), containsString("request_one"));
+        assertThat(response.getBodyAsString(), containsString("request_two"));
+        // and - serialization ran on the caller (test) thread, NOT on the disruptor log-consumer thread
+        assertThat(serializeThreadName.get(), is(notNullValue()));
+        assertThat(serializeThreadName.get(), not(startsWith("MockServer-EventLog")));
+        assertThat(serializeThreadName.get(), is(Thread.currentThread().getName()));
+    }
+
+    @Test
+    public void shouldRetrieveManyLargeRequestResponsesWithoutTimingOut() {
+        // bug #3 regression guard: a log holding many large captured response bodies must serialize and
+        // return from a REQUEST_RESPONSES JSON retrieve without throwing a TimeoutException — the heavy
+        // serialization is no longer gated by the retrieve future timeout because it runs on the caller
+        // thread rather than inside the single log-consumer callback.
+
+        // given - a dedicated HttpState whose log retains all the entries we are about to write
+        final int entryCount = 2000;
+        final int bodyBytes = 64 * 1024;
+        Configuration largeLogConfiguration = configuration().maxLogEntries(entryCount + 100);
+        Scheduler scheduler = mock(Scheduler.class);
+        org.mockito.Mockito.when(scheduler.getExecutorService()).thenReturn(schedulerExecutor);
+        HttpState largeLogState = new HttpState(largeLogConfiguration, new MockServerLogger(largeLogConfiguration, MockServerLogger.class), scheduler);
+
+        StringBuilder largeBodyBuilder = new StringBuilder(bodyBytes);
+        for (int i = 0; i < bodyBytes; i++) {
+            largeBodyBuilder.append('x');
+        }
+        String largeBody = largeBodyBuilder.toString();
+        for (int i = 0; i < entryCount; i++) {
+            largeLogState.log(
+                new LogEntry()
+                    .setLogLevel(INFO)
+                    .setType(EXPECTATION_RESPONSE)
+                    .setHttpRequest(request("/req-" + i))
+                    .setHttpResponse(response(largeBody))
+            );
+        }
+
+        // when
+        long start = System.currentTimeMillis();
+        HttpResponse response = largeLogState
+            .retrieve(
+                request()
+                    .withQueryStringParameter("type", "request_responses")
+                    .withQueryStringParameter("format", "json")
+                    .withBody(requestDefinitionSerializer.serialize(request("/req-.*")))
+            );
+        long durationMillis = System.currentTimeMillis() - start;
+
+        // then - completed (no TimeoutException) and returned every entry
+        assertThat(response.getStatusCode(), is(200));
+        assertThat(durationMillis, lessThan(largeLogConfiguration.maxFutureTimeoutInMillis()));
+        String body = response.getBodyAsString();
+        assertThat(body, containsString("/req-0\""));
+        assertThat(body, containsString("/req-" + (entryCount - 1) + "\""));
+        int pathCount = 0;
+        for (int idx = body.indexOf("\"path\""); idx >= 0; idx = body.indexOf("\"path\"", idx + 1)) {
+            pathCount++;
+        }
+        assertThat(pathCount, is(entryCount));
+    }
+
+    @Test
     public void shouldRetrieveRecordedRequestsResponsesAsLogEntries() {
         // given
         httpState.log(

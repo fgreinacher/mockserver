@@ -232,6 +232,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BINARY` body, so it appeared empty in the dashboard's LLM Traces / Optimise text views. The captured bytes are
   now sniffed when no content-type is present — UTF-8 text (SSE/JSON) is stored as a readable `STRING`, while
   genuinely binary streams stay `BINARY`. Content-typed responses are unchanged.
+- **`retrieve` of recorded request/responses no longer times out under heavy log accumulation.** Retrieving
+  `REQUEST_RESPONSES` serialized the whole result set inside the single event-log consumer thread's callback, so a
+  large retrieval (e.g. many captured streaming bodies under a high `maxLogEntries` × `maxStreamingCaptureBytes`)
+  could exceed the response future timeout *and* stall all further logging. The consumer thread now only produces
+  the (cheap) materialised, redacted list; serialization runs on the caller thread. Applies to every
+  `REQUEST_RESPONSES` format (JSON, log entries, HAR, OpenAPI, Postman, Bruno, cURL). Output is byte-identical.
 - **Forward DNS resolution moved off the calling thread.** Forward actions hand the connect path an unresolved
   address so DNS runs on the Netty event loop; SSRF validation still resolves and rejects private/loopback
   targets first, and a missing SSRF guard was added to the forward-validate path.
