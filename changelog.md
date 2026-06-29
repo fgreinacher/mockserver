@@ -118,6 +118,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Pact import / export / verify, with verified response codes.
 
 #### Dashboard UI
+- **New "MCP Health" dashboard panel.** When a coding-assistant CLI is proxied through MockServer, its MCP
+  servers (e.g. `chrome-devtools`, `devbot`) are frequently the real latency bottleneck. The panel aggregates
+  captured MCP (JSON-RPC) traffic per server and shows, worst-first, each server's call count, error count and
+  rate (JSON-RPC errors or non-2xx responses), median / p95 / max latency, and its slowest method — with slow
+  (≥5s) and erroring servers flagged — so it is obvious which MCP server is stalling, rather than guessing.
 - **Anonymous, cookieless dashboard usage analytics (PostHog Cloud EU).** The dashboard reports coarse, enumerated usage events (`app_open`, `view_change`, `feature_used`, `error_shown`) to a cookieless, EU-hosted PostHog project to help improve the UI. No request URLs, hostnames, headers, bodies, or expectation data are ever sent, and no tracking cookie is set. The **official Docker images** ship with this enabled; it is **inactive in any build without `dashboardAnalyticsEndpoint` + `dashboardAnalyticsKey`** (so plain JARs/WARs and source/fork builds send nothing). Disable globally with `dashboardAnalyticsEnabled=false` (or `MOCKSERVER_DASHBOARD_ANALYTICS_ENABLED=false`); respects Do Not Track, Global Privacy Control, and a per-browser opt-out banner. See [dashboard privacy](https://www.mock-server.com/mock_server/dashboard_privacy.html).
 - **Official binary launcher bundles now also report anonymous cookieless dashboard usage analytics**, joining the Docker images and Helm deployments. The plain downloadable JAR and any embedded/library/dependency use remain inert (no endpoint or key configured). Analytics events from all official artefacts now include a `distribution` label (from the new `dashboardAnalyticsDistribution` config property) identifying which artefact produced the event (`docker-standard`, `docker-graaljs`, `docker-clustered`, `helm`, or `binary`); values outside the closed allow-list are normalised to `unknown` — free text is never forwarded.
 - **SLO verification dashboard panel.** A new dashboard view authors service-level objectives (latency

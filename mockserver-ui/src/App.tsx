@@ -53,6 +53,10 @@ const ComposerView = lazy(() => import('./components/ComposerView'));
 // dashboard load (it is only needed when the LLM Optimise tab is opened).
 const OptimiseView = lazy(() => import('./components/OptimiseView'));
 
+// Lazy-loaded so the MCP server health panel stays off the initial dashboard
+// load (it is only needed when the MCP Health tab is opened).
+const McpServerHealthPanel = lazy(() => import('./components/McpServerHealthPanel'));
+
 // Lazy-loaded so the @mui/x-charts bundle (shared with Metrics) only loads when
 // the Performance tab is opened, keeping it off the initial dashboard load.
 const LoadScenarioPanel = lazy(() => import('./components/LoadScenarioPanel'));
@@ -292,6 +296,11 @@ export default function App() {
             {view === 'optimise' && (
               <Suspense fallback={<Box sx={{ p: 2 }}>Loading LLM Optimise…</Box>}>
                 <OptimiseView connectionParams={params} />
+              </Suspense>
+            )}
+            {view === 'mcp-health' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading MCP Health…</Box>}>
+                <McpServerHealthPanel />
               </Suspense>
             )}
             {view === 'chaos' && <ServiceChaosPanel connectionParams={params} />}

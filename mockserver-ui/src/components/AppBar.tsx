@@ -33,6 +33,7 @@ import PostAddIcon from '@mui/icons-material/PostAdd';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
 import SpeedIcon from '@mui/icons-material/Speed';
 import SavingsIcon from '@mui/icons-material/Savings';
+import MonitorHeartIcon from '@mui/icons-material/MonitorHeart';
 import BoltIcon from '@mui/icons-material/Bolt';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
@@ -212,6 +213,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: <SavingsIcon sx={tabIconSx} />,
     tabs: [
       { value: 'optimise', label: 'LLM Optimise', ariaLabel: 'LLM Optimise view', description: 'Analyse captured LLM traffic to optimise prompts, inference cost, safety, and speed.', icon: <SavingsIcon sx={tabIconSx} /> },
+      { value: 'mcp-health', label: 'MCP Health', ariaLabel: 'MCP server health view', description: 'See which MCP servers your proxied tools call are slow or erroring — the MCP server is often the real bottleneck behind a slow coding assistant.', icon: <MonitorHeartIcon sx={tabIconSx} /> },
       { value: 'sessions', label: 'Trace', ariaLabel: 'Trace inspector view', description: 'Trace related requests grouped together — including LLM agent runs — to debug multi-step flows end to end.', icon: <AccountTreeIcon sx={tabIconSx} /> },
     ],
   },
@@ -258,6 +260,7 @@ const NAV_VIEW_GROUP_ID: Record<ViewMode, string> = NAV_GROUPS.reduce<Record<str
     composer: true, library: true, chaos: true, performance: true,
     metrics: true, drift: true, verification: true, slo: true, async: true,
     grpc: true, breakpoints: true, contract: true, cluster: true, optimise: true,
+    'mcp-health': true,
   };
   for (const v of Object.keys(ALL_VIEW_MODES) as ViewMode[]) {
     if (!(v in NAV_VIEW_GROUP_ID)) {

@@ -295,6 +295,7 @@ describe('AppBar responsive navigation', () => {
       contract: 'Contract test view',
       cluster: 'Cluster status view',
       optimise: 'LLM Optimise view',
+      'mcp-health': 'MCP server health view',
     };
     const allViews = Object.keys(expectedAria) as ViewMode[];
 
@@ -345,8 +346,8 @@ describe('AppBar responsive navigation', () => {
     // self-explanatory Get Started tab is intentionally omitted (no bar).
     const views = Object.keys(NAV_TAB_DESCRIPTIONS);
     // Exact count guards against descriptions being accidentally dropped from
-    // other tabs: 17 tabs carry one (every tab except the omitted Get Started).
-    expect(views.length).toBe(17);
+    // other tabs: 18 tabs carry one (every tab except the omitted Get Started).
+    expect(views.length).toBe(18);
     for (const v of views) {
       expect(NAV_TAB_DESCRIPTIONS[v as keyof typeof NAV_TAB_DESCRIPTIONS]?.length ?? 0).toBeGreaterThan(0);
     }

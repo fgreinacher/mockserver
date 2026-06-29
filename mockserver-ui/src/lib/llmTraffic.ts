@@ -1428,3 +1428,153 @@ export function getTimingBreakdown(timing: RequestTiming | null): string | null 
   if (timing.totalTimeInMillis !== null) parts.push(`total ${timing.totalTimeInMillis}ms`);
   return parts.length > 0 ? parts.join(' / ') : null;
 }
+
+// ---------------------------------------------------------------------------
+// MCP server health aggregation
+//
+// When a coding-assistant CLI is proxied through MockServer its MCP servers
+// (chrome-devtools, devbot, …) are frequently the real latency bottleneck — the
+// MCP server stalls for tens of seconds while MockServer's own part is a couple
+// of seconds. The dashboard surfaces per-MCP-server health so the user can SEE
+// which server is slow or erroring instead of guessing.
+//
+// This is a PURE aggregation over the same `summarizeTraffic` classification the
+// Traffic view uses (no duplicated MCP detection): it groups MCP JSON-RPC
+// exchanges by upstream host and derives call counts, error rate, latency
+// percentiles, the slowest method, and a slow flag. Kept React-free so it is
+// unit-testable.
+// ---------------------------------------------------------------------------
+
+/**
+ * Latency (ms) at or above which a server is flagged `slow`. A real
+ * chrome-devtools MCP exchange that stalled ~32s sits far above this; a healthy
+ * tool call returns in well under a second, so 5s cleanly separates the two.
+ */
+export const MCP_SLOW_THRESHOLD_MS = 5000;
+
+export interface McpServerHealth {
+  /** Upstream host the MCP server was reached on, or a placeholder when absent. */
+  server: string;
+  /** Total MCP JSON-RPC exchanges seen for this server. */
+  callCount: number;
+  /** Exchanges that carried a JSON-RPC `error` or a non-2xx HTTP status. */
+  errorCount: number;
+  /** errorCount / callCount, in 0..1. */
+  errorRate: number;
+  /** Slowest single exchange (ms), or null when no exchange had timing. */
+  maxLatencyMs: number | null;
+  /** 95th-percentile latency (ms, nearest-rank), or null when no timing. */
+  p95LatencyMs: number | null;
+  /** Median latency (ms, nearest-rank), or null when no timing. */
+  medianLatencyMs: number | null;
+  /** JSON-RPC method of the single slowest exchange, or null when unknown. */
+  slowestMethod: string | null;
+  /** True when p95 (or max, when p95 is unavailable) is at/over the threshold. */
+  slow: boolean;
+}
+
+const UNKNOWN_MCP_SERVER = '(unknown host)';
+
+/**
+ * Nearest-rank percentile over an already-ascending-sorted array. Returns null
+ * for an empty input. q is clamped to 0..1.
+ */
+function nearestRankPercentile(sortedAsc: number[], q: number): number | null {
+  if (sortedAsc.length === 0) return null;
+  const clamped = q < 0 ? 0 : q > 1 ? 1 : q;
+  const rank = Math.ceil(clamped * sortedAsc.length);
+  const index = Math.min(Math.max(rank, 1), sortedAsc.length) - 1;
+  return sortedAsc[index] ?? null;
+}
+
+interface McpServerAccumulator {
+  callCount: number;
+  errorCount: number;
+  latencies: number[];
+  maxLatencyMs: number | null;
+  slowestMethod: string | null;
+}
+
+/**
+ * Aggregate captured proxied/recorded request values into per-MCP-server health.
+ *
+ * @param values - The `JsonListItem.value` objects from the store's
+ *   `proxiedRequests` / `recordedRequests`. Non-MCP traffic is ignored.
+ * @param slowThresholdMs - Latency at/above which a server is flagged slow.
+ * @returns One entry per MCP server, sorted worst-first (errors, then latency).
+ */
+export function aggregateMcpServerHealth(
+  values: Array<Record<string, unknown>>,
+  slowThresholdMs: number = MCP_SLOW_THRESHOLD_MS,
+): McpServerHealth[] {
+  const byServer = new Map<string, McpServerAccumulator>();
+
+  for (const value of values) {
+    if (!value || typeof value !== 'object') continue;
+    let summary: TrafficSummary;
+    try {
+      summary = summarizeTraffic(value);
+    } catch {
+      continue;
+    }
+    if (summary.parsed.kind !== 'mcp') continue;
+    const parsed = summary.parsed;
+
+    const server = summary.host ?? UNKNOWN_MCP_SERVER;
+    let acc = byServer.get(server);
+    if (!acc) {
+      acc = { callCount: 0, errorCount: 0, latencies: [], maxLatencyMs: null, slowestMethod: null };
+      byServer.set(server, acc);
+    }
+
+    acc.callCount += 1;
+
+    // Error rule mirrors the Traffic view (mcpErrorInfo): a JSON-RPC `error`
+    // object OR a non-2xx HTTP status counts as a failed exchange.
+    const status = summary.statusCode;
+    const isError = parsed.error != null || (status != null && (status < 200 || status >= 300));
+    if (isError) acc.errorCount += 1;
+
+    const latency = summary.timing?.totalTimeInMillis ?? null;
+    if (latency != null && Number.isFinite(latency)) {
+      acc.latencies.push(latency);
+      if (acc.maxLatencyMs == null || latency > acc.maxLatencyMs) {
+        acc.maxLatencyMs = latency;
+        acc.slowestMethod = parsed.method;
+      }
+    }
+  }
+
+  const result: McpServerHealth[] = [];
+  for (const [server, acc] of byServer) {
+    const sorted = [...acc.latencies].sort((a, b) => a - b);
+    const p95 = nearestRankPercentile(sorted, 0.95);
+    const median = nearestRankPercentile(sorted, 0.5);
+    const slowBasis = p95 ?? acc.maxLatencyMs;
+    result.push({
+      server,
+      callCount: acc.callCount,
+      errorCount: acc.errorCount,
+      errorRate: acc.callCount > 0 ? acc.errorCount / acc.callCount : 0,
+      maxLatencyMs: acc.maxLatencyMs,
+      p95LatencyMs: p95,
+      medianLatencyMs: median,
+      slowestMethod: acc.slowestMethod,
+      slow: slowBasis != null && slowBasis >= slowThresholdMs,
+    });
+  }
+
+  // Worst-first: most errors, then highest error rate, then slowest (p95 or max),
+  // then busiest, then host name for a stable, deterministic order.
+  result.sort((a, b) => {
+    if (b.errorCount !== a.errorCount) return b.errorCount - a.errorCount;
+    if (b.errorRate !== a.errorRate) return b.errorRate - a.errorRate;
+    const aLat = a.p95LatencyMs ?? a.maxLatencyMs ?? -1;
+    const bLat = b.p95LatencyMs ?? b.maxLatencyMs ?? -1;
+    if (bLat !== aLat) return bLat - aLat;
+    if (b.callCount !== a.callCount) return b.callCount - a.callCount;
+    return a.server.localeCompare(b.server);
+  });
+
+  return result;
+}

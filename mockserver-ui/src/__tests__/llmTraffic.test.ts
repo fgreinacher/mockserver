@@ -9,6 +9,8 @@ import {
   getTimingLabel,
   getTimingBreakdown,
   extractBodyContent,
+  aggregateMcpServerHealth,
+  MCP_SLOW_THRESHOLD_MS,
 } from '../lib/llmTraffic';
 
 // ---------------------------------------------------------------------------
@@ -2074,5 +2076,146 @@ describe('parseTraffic — Anthropic prompt-cache tokens', () => {
     expect(parsed.usage?.cache_creation_input_tokens).toBe(20);
     expect(parsed.usage?.cache_read_input_tokens).toBe(5);
     expect(getTokenSummary(parsed)).toBe('100 in / 50 out / 20 cache write / 5 cache read');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCP server health aggregation
+// ---------------------------------------------------------------------------
+
+interface McpFixtureOpts {
+  host?: string | null;
+  method?: string;
+  id?: number;
+  /** JSON-RPC error object on the response (omit for a successful result). */
+  error?: unknown;
+  statusCode?: number;
+  totalTimeInMillis?: number | null;
+}
+
+/** Build a captured proxied request/response value that classifies as MCP. */
+function mcpValue(opts: McpFixtureOpts = {}): Record<string, unknown> {
+  const headers = opts.host === null ? [] : [{ name: 'host', values: [opts.host ?? 'mcp.example.com'] }];
+  const responsePayload: Record<string, unknown> = { jsonrpc: '2.0', id: opts.id ?? 1 };
+  if (opts.error !== undefined) responsePayload['error'] = opts.error;
+  else responsePayload['result'] = { ok: true };
+
+  const httpResponse: Record<string, unknown> = {
+    statusCode: opts.statusCode ?? 200,
+    body: { type: 'JSON', json: JSON.stringify(responsePayload) },
+  };
+  if (opts.totalTimeInMillis != null) {
+    httpResponse['timing'] = { totalTimeInMillis: opts.totalTimeInMillis };
+  }
+
+  return {
+    httpRequest: {
+      method: 'POST',
+      path: '/mcp',
+      headers,
+      body: {
+        type: 'JSON',
+        json: JSON.stringify({ jsonrpc: '2.0', id: opts.id ?? 1, method: opts.method ?? 'tools/call', params: {} }),
+      },
+    },
+    httpResponse,
+  };
+}
+
+describe('aggregateMcpServerHealth', () => {
+  it('returns an empty array for empty input', () => {
+    expect(aggregateMcpServerHealth([])).toEqual([]);
+  });
+
+  it('ignores non-MCP traffic', () => {
+    const anthropic = {
+      httpRequest: {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: [{ name: 'host', values: ['api.anthropic.com'] }],
+        body: { type: 'JSON', json: JSON.stringify({ model: 'claude', messages: [], stream: false }) },
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: JSON.stringify({ content: [] }) } },
+    };
+    expect(aggregateMcpServerHealth([anthropic])).toEqual([]);
+  });
+
+  it('groups MCP exchanges by host and counts calls', () => {
+    const rows = aggregateMcpServerHealth([
+      mcpValue({ host: 'chrome-devtools.local', totalTimeInMillis: 100 }),
+      mcpValue({ host: 'chrome-devtools.local', totalTimeInMillis: 200 }),
+      mcpValue({ host: 'devbot.local', totalTimeInMillis: 50 }),
+    ]);
+    expect(rows).toHaveLength(2);
+    const byServer = Object.fromEntries(rows.map((r) => [r.server, r]));
+    expect(byServer['chrome-devtools.local']!.callCount).toBe(2);
+    expect(byServer['devbot.local']!.callCount).toBe(1);
+  });
+
+  it('computes error count and rate from JSON-RPC errors and non-2xx status', () => {
+    const rows = aggregateMcpServerHealth([
+      mcpValue({ host: 'a.local', totalTimeInMillis: 10 }), // ok
+      mcpValue({ host: 'a.local', error: { code: -32601, message: 'Method not found' }, totalTimeInMillis: 20 }),
+      mcpValue({ host: 'a.local', statusCode: 500, totalTimeInMillis: 30 }), // non-2xx, no JSON-RPC error
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.callCount).toBe(3);
+    expect(rows[0]!.errorCount).toBe(2);
+    expect(rows[0]!.errorRate).toBeCloseTo(2 / 3, 5);
+  });
+
+  it('computes latency stats and records the slowest method', () => {
+    const rows = aggregateMcpServerHealth([
+      mcpValue({ host: 'slow.local', method: 'tools/list', totalTimeInMillis: 100 }),
+      mcpValue({ host: 'slow.local', method: 'tools/call', totalTimeInMillis: 200 }),
+      mcpValue({ host: 'slow.local', method: 'resources/read', totalTimeInMillis: 300 }),
+      mcpValue({ host: 'slow.local', method: 'navigate_page', totalTimeInMillis: 30000 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    const r = rows[0]!;
+    expect(r.maxLatencyMs).toBe(30000);
+    expect(r.medianLatencyMs).toBe(200); // nearest-rank q=0.5 over [100,200,300,30000]
+    expect(r.p95LatencyMs).toBe(30000);
+    expect(r.slowestMethod).toBe('navigate_page');
+    expect(r.slow).toBe(true);
+  });
+
+  it('flags slow only when p95/max is at or over the threshold', () => {
+    const fast = aggregateMcpServerHealth([
+      mcpValue({ host: 'fast.local', totalTimeInMillis: 100 }),
+      mcpValue({ host: 'fast.local', totalTimeInMillis: 200 }),
+    ]);
+    expect(fast[0]!.slow).toBe(false);
+
+    const atThreshold = aggregateMcpServerHealth([
+      mcpValue({ host: 'edge.local', totalTimeInMillis: MCP_SLOW_THRESHOLD_MS }),
+    ]);
+    expect(atThreshold[0]!.slow).toBe(true);
+  });
+
+  it('handles MCP exchanges with no timing (null latency, not slow)', () => {
+    const rows = aggregateMcpServerHealth([
+      mcpValue({ host: 'no-timing.local', totalTimeInMillis: null }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.maxLatencyMs).toBeNull();
+    expect(rows[0]!.p95LatencyMs).toBeNull();
+    expect(rows[0]!.medianLatencyMs).toBeNull();
+    expect(rows[0]!.slow).toBe(false);
+  });
+
+  it('uses a placeholder server name when the host header is absent', () => {
+    const rows = aggregateMcpServerHealth([mcpValue({ host: null, totalTimeInMillis: 10 })]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.server).toBe('(unknown host)');
+  });
+
+  it('sorts worst-first: errors, then slow latency, then healthy', () => {
+    const rows = aggregateMcpServerHealth([
+      mcpValue({ host: 'healthy.local', totalTimeInMillis: 100 }),
+      mcpValue({ host: 'slow.local', totalTimeInMillis: 20000 }),
+      mcpValue({ host: 'erroring.local', error: { code: -1, message: 'boom' }, totalTimeInMillis: 100 }),
+    ]);
+    expect(rows.map((r) => r.server)).toEqual(['erroring.local', 'slow.local', 'healthy.local']);
   });
 });
