@@ -2380,6 +2380,7 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
 <button id="button_configuration_stream_idle_timeout_seconds" class="accordion title"><strong>Streaming Response Idle Timeout</strong></button>
 <div class="panel title">
     <p>The maximum time in seconds a streaming response connection may be idle (no chunk received from the upstream server) before MockServer closes it and logs the captured portion as truncated. This replaces the fixed global socket timeout for streaming responses, which would otherwise terminate long-lived LLM completions. The timeout resets on every chunk received, so a slow-but-active stream is never cut off prematurely.</p>
+    <p>Set to <span class="this_value">0</span> to disable the idle bound entirely: a stream is then never closed for inactivity. Use with care — this removes the only inactivity limit on a streaming connection, so a stalled upstream that stops sending chunks will hold the connection open indefinitely.</p>
     <p>Type: <span class="keyword">int</span> Default: <span class="this_value">60</span> (seconds)</p>
     <p>Java Code:</p>
     <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.streamIdleTimeoutSeconds(int seconds)</code></pre>

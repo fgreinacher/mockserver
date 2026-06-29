@@ -259,6 +259,43 @@ public class StreamingAwareHttpObjectAggregatorTest {
 
         assertThat("read timeout removed so a long inter-chunk pause is governed by the stream idle bound",
             channel.pipeline().get(ReadTimeoutHandler.class), is(nullValue()));
+        assertThat("stream idle state handler installed to bound the stream when streamIdleTimeoutSeconds>0",
+            channel.pipeline().get("streamIdleStateHandler"), notNullValue());
+        assertThat("streaming relay handler installed",
+            channel.pipeline().get(StreamingResponseRelayHandler.class), notNullValue());
+
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    public void shouldRemoveReadTimeoutHandlerWhenStreamIdleTimeoutDisabled() {
+        // Regression guard for the streamIdleTimeoutSeconds=0 footgun: 0 means "no idle bound"
+        // (unbounded stream). The socket read timeout (maxSocketTimeout, ~20s) must STILL be removed
+        // on switching to streaming — otherwise a disabled idle bound paradoxically left the 20s
+        // socket timeout armed and truncated long-paused streams. With 0, no stream idle handler is
+        // installed (the stream runs unbounded) but the socket timeout is gone.
+        Configuration configuration = new Configuration();
+        configuration.streamingResponsesEnabled(true);
+        configuration.streamIdleTimeoutSeconds(0);
+
+        StreamingAwareHttpObjectAggregator aggregator =
+            new StreamingAwareHttpObjectAggregator(Integer.MAX_VALUE, configuration, null);
+        EmbeddedChannel channel = new EmbeddedChannel();
+        channel.pipeline().addLast("readTimeout", new ReadTimeoutHandler(20, TimeUnit.SECONDS));
+        channel.pipeline().addLast(aggregator);
+
+        channel.attr(AttributeKey.<Boolean>valueOf("EXPECT_STREAMING_RESPONSE")).set(true);
+        CompletableFuture<Message> responseFuture = new CompletableFuture<>();
+        channel.attr(AttributeKey.<CompletableFuture<Message>>valueOf("RESPONSE_FUTURE")).set(responseFuture);
+
+        DefaultHttpResponse head = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        HttpUtil.setTransferEncodingChunked(head, true);
+        channel.writeInbound(head);
+
+        assertThat("socket read timeout removed even when the stream idle bound is disabled (0)",
+            channel.pipeline().get(ReadTimeoutHandler.class), is(nullValue()));
+        assertThat("no stream idle state handler installed when streamIdleTimeoutSeconds=0 (unbounded)",
+            channel.pipeline().get("streamIdleStateHandler"), is(nullValue()));
         assertThat("streaming relay handler installed",
             channel.pipeline().get(StreamingResponseRelayHandler.class), notNullValue());
 

@@ -209,6 +209,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### Correctness & reliability
+- **`streamIdleTimeoutSeconds=0` now genuinely disables the streaming idle bound instead of truncating streams
+  at 20s.** `streamIdleTimeoutSeconds` is documented to *replace* the per-request socket read timeout
+  (`maxSocketTimeout`, default 20s) for streaming responses, but when set to `0` (disabled) the code left the 20s
+  socket timeout armed — so a streamed response with an inter-chunk pause longer than 20s (e.g. an LLM reasoning
+  gap) was cut off. The socket read timeout is now always removed once a response switches to streaming; with a
+  positive `streamIdleTimeoutSeconds` the stream is bounded by that idle timeout (default 60s), and with `0` it
+  runs unbounded as documented. The default (60s) is unaffected.
 - **Large `PUT /mockserver/retrieve` and the LLM optimisation report no longer stall logging or time out.**
   Retrieving logs, requests, or recorded expectations serialized the (potentially large, e.g. captured streaming
   bodies) result *inside* the single log-consumer thread's callback, which could exceed the retrieve future

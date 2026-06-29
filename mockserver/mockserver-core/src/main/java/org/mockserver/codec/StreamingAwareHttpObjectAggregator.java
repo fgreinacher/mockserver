@@ -172,21 +172,26 @@ public class StreamingAwareHttpObjectAggregator extends HttpObjectAggregator {
             pipeline.remove(MockServerHttpClientCodec.class);
         }
 
-        // Add idle state handler for stream timeout
+        // Swap the per-request socket read timeout for a stream-appropriate idle bound.
+        //
+        // The socket read timeout (maxSocketTimeout, default 20s) armed on non-pooled channels
+        // measures the gap between reads, which during streaming is the gap between chunks — a
+        // streaming LLM response can legitimately pause far longer than that between chunks (model
+        // reasoning), so it would kill a healthy stream. streamIdleTimeoutSeconds is documented to
+        // REPLACE that socket timeout for streaming responses, so once streaming begins the socket
+        // timeout is ALWAYS removed — otherwise streamIdleTimeoutSeconds=0 (disabled) would
+        // paradoxically leave the 20s socket timeout armed and truncate long-paused streams.
+        if (pipeline.get(ReadTimeoutHandler.class) != null) {
+            pipeline.remove(ReadTimeoutHandler.class);
+        }
         int idleTimeout = configuration.streamIdleTimeoutSeconds();
         if (idleTimeout > 0) {
-            // The per-request socket read timeout (maxSocketTimeout, default 20s) armed on
-            // non-pooled channels measures the gap between reads, which during streaming is the
-            // gap between chunks — a streaming LLM response can legitimately pause far longer
-            // than that between chunks (model reasoning), so it would kill a healthy stream.
-            // Replace it here with the stream-appropriate idle bound (streamIdleTimeoutSeconds,
-            // default 60s); only when that bound is enabled, so a stream is never left unbounded.
-            if (pipeline.get(ReadTimeoutHandler.class) != null) {
-                pipeline.remove(ReadTimeoutHandler.class);
-            }
+            // Bound the stream by the stream-appropriate idle timeout (default 60s).
             pipeline.addBefore(ctx.name(), "streamIdleStateHandler", new IdleStateHandler(0, 0, idleTimeout, TimeUnit.SECONDS));
             pipeline.addAfter("streamIdleStateHandler", "streamIdleTimeoutHandler", new StreamIdleTimeoutHandler(mockServerLogger));
         }
+        // idleTimeout == 0 explicitly disables the stream idle bound: the stream runs unbounded
+        // (the socket timeout has been removed above so a healthy long-paused stream is not cut).
 
         // Replace this aggregator with the streaming relay handler
         pipeline.replace(this, "streamingResponseRelayHandler", relayHandler);
