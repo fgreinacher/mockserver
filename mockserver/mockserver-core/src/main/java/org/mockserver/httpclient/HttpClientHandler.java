@@ -6,6 +6,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.DecoderException;
 import io.netty.handler.ssl.NotSslRecordException;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.HttpResponse;
@@ -93,6 +94,13 @@ public class HttpClientHandler extends SimpleChannelInboundHandler<Message> {
         // the client codec's decoder has no leftover undecoded bytes; otherwise close (fail-closed).
         if (!ChannelCleanliness.isQuiescent(channel)) {
             return false;
+        }
+        // Remove the in-flight read timeout armed for this request (NettyHttpClient#armPooledInFlightReadTimeout)
+        // BEFORE the channel goes idle in the pool — otherwise that read timeout would fire during legitimate
+        // idle keep-alive and tear down a healthy pooled connection. A streaming response would already have
+        // stripped it, so this is a guarded no-op in that case.
+        if (channel.pipeline().get(ReadTimeoutHandler.class) != null) {
+            channel.pipeline().remove(ReadTimeoutHandler.class);
         }
         // Detach the completed future so a stale reference cannot be completed again, and so the
         // connection-error handler does not error on a clean idle close.

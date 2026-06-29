@@ -552,6 +552,121 @@ public class NettyHttpClientConnectionPoolTest {
     }
 
     /**
+     * Regression for the pooled in-flight read-timeout gap: a REUSED keep-alive connection whose
+     * upstream has silently stalled (it answered the first request, was pooled, then never replies to
+     * the next) must TIME OUT promptly, not hang. Pooled channels carry no read timeout while idle in
+     * the pool (a blanket one would fire during legitimate idle keep-alive), so before the fix a request
+     * dispatched on such a stalled-on-reuse connection had nothing to bound it and blocked until the far
+     * larger forward future timeout (or indefinitely). The fix arms an in-flight read timeout when a
+     * request is dispatched on a pooled channel and removes it again on return to the pool, so the
+     * stalled reuse fails via the read timeout in ~{@code maxSocketTimeoutInMillis}. The request still
+     * reused the pooled connection (no fresh accept), proving the timeout — not a fresh-connection
+     * fallback — is what unblocked it.
+     */
+    @Test
+    public void shouldTimeOutAStalledReusedPooledConnectionInsteadOfHanging() throws Exception {
+        // given - upstream answers the first request (so the keep-alive channel is pooled) then never
+        // replies to the second request on that same reused connection
+        StallOnReusedRequestUpstreamServer stallingUpstream = new StallOnReusedRequestUpstreamServer();
+        try {
+            // a short socket timeout so the in-flight read timeout fires quickly on the stalled reuse
+            Configuration configuration = configuration()
+                .forwardConnectionPoolEnabled(true)
+                .maxSocketTimeoutInMillis(1500L);
+            NettyHttpClient client = new NettyHttpClient(configuration, mockServerLogger, clientEventLoopGroup, null, false);
+
+            // first request succeeds; the keep-alive channel is returned to the pool
+            HttpResponse first = client.sendRequest(request().withHeader("Host", "127.0.0.1:" + stallingUpstream.port()))
+                .get(10, TimeUnit.SECONDS);
+            assertThat(first.getStatusCode(), is(200));
+            assertThat("first connection was pooled (only one accepted)", stallingUpstream.acceptedConnections(), is(1));
+
+            // when - the second request reuses that pooled connection but the upstream never responds
+            long start = System.currentTimeMillis();
+            try {
+                client.sendRequest(request().withHeader("Host", "127.0.0.1:" + stallingUpstream.port()))
+                    .get(10, TimeUnit.SECONDS);
+                org.junit.Assert.fail("expected the stalled reused pooled connection to time out, not hang");
+            } catch (ExecutionException timedOut) {
+                // then - it failed via the in-flight read timeout, promptly (well under the 10s get bound,
+                // and not via the much larger forward future timeout), on the SAME reused connection
+                long elapsed = System.currentTimeMillis() - start;
+                assertThat("the in-flight read timeout fired promptly", elapsed, lessThan(8000L));
+                assertThat("the stalled request reused the pooled connection (no fresh accept)",
+                    stallingUpstream.acceptedConnections(), is(1));
+            }
+        } finally {
+            stallingUpstream.stop();
+        }
+    }
+
+    /**
+     * A minimal raw TCP upstream that, on a single accepted keep-alive connection, replies with a
+     * clean {@code 200 OK} to the FIRST request (so the client pools the channel) and then NEVER
+     * replies to any subsequent request on that same connection (it reads the bytes and stalls),
+     * simulating an upstream that has silently gone away on a reused keep-alive connection. Counts
+     * accepted connections so the test can assert the stalled request reused the pooled channel rather
+     * than opening a fresh one.
+     */
+    private static final class StallOnReusedRequestUpstreamServer {
+
+        private final EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+        private final EventLoopGroup workerGroup = new NioEventLoopGroup(2);
+        private final AtomicInteger accepted = new AtomicInteger();
+        private final Channel serverChannel;
+
+        StallOnReusedRequestUpstreamServer() {
+            ServerBootstrap bootstrap = new ServerBootstrap()
+                .group(bossGroup, workerGroup)
+                .channel(NioServerSocketChannel.class)
+                .childHandler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        accepted.incrementAndGet();
+                        ch.pipeline().addLast(new HttpServerCodec());
+                        ch.pipeline().addLast(new HttpObjectAggregator(64 * 1024));
+                        ch.pipeline().addLast(new SimpleChannelInboundHandler<FullHttpRequest>() {
+                            private int requestsOnThisConnection;
+
+                            @Override
+                            protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest msg) {
+                                requestsOnThisConnection++;
+                                if (requestsOnThisConnection == 1) {
+                                    // answer the first request and keep the connection alive so it pools
+                                    byte[] body = "OK".getBytes(StandardCharsets.UTF_8);
+                                    FullHttpResponse response = new DefaultFullHttpResponse(
+                                        HttpVersion.HTTP_1_1,
+                                        io.netty.handler.codec.http.HttpResponseStatus.OK,
+                                        ctx.alloc().buffer().writeBytes(body)
+                                    );
+                                    response.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.length);
+                                    response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                                    ctx.writeAndFlush(response);
+                                }
+                                // every subsequent request on this reused connection: read and STALL (no reply)
+                            }
+                        });
+                    }
+                });
+            serverChannel = bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).syncUninterruptibly().channel();
+        }
+
+        int port() {
+            return ((InetSocketAddress) serverChannel.localAddress()).getPort();
+        }
+
+        int acceptedConnections() {
+            return accepted.get();
+        }
+
+        void stop() {
+            serverChannel.close().syncUninterruptibly();
+            bossGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+            workerGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
      * A minimal raw TCP upstream that, on its FIRST accepted connection, writes a fixed raw byte
      * script verbatim (allowing exact control over framing — short Content-Length, pipelined extras,
      * chunked terminators, no-body statuses) and optionally keeps the socket open; on every subsequent

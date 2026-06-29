@@ -214,6 +214,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### Correctness & reliability
+- **A stalled upstream on a reused pooled keep-alive connection now times out instead of hanging.** With the
+  opt-in forward connection pool (`forwardConnectionPoolKeepAlive`) enabled, a pooled keep-alive connection
+  carries no read timeout while it sits idle in the pool (a blanket one would fire during legitimate idle
+  keep-alive). But a request dispatched on such a channel — a reused connection, or a fresh pooled channel's
+  first request — was left with nothing to bound it, so an upstream that connected/kept-alive but then went
+  silent hung the request until the far larger forward future timeout. An in-flight read timeout
+  (`maxSocketTimeout`) is now armed when a request is dispatched on a pooled channel and removed again when the
+  channel is returned to the pool, so a stalled reuse fails promptly. The default (pooling off) path is
+  unchanged.
 - **`streamIdleTimeoutSeconds=0` now genuinely disables the streaming idle bound instead of truncating streams
   at 20s.** `streamIdleTimeoutSeconds` is documented to *replace* the per-request socket read timeout
   (`maxSocketTimeout`, default 20s) for streaming responses, but when set to `0` (disabled) the code left the 20s

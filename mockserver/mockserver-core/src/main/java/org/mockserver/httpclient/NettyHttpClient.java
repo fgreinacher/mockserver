@@ -10,6 +10,7 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.AttributeKey;
 import org.apache.commons.lang3.StringUtils;
 import org.mockserver.configuration.Configuration;
@@ -195,6 +196,10 @@ public class NettyHttpClient {
                 reused.attr(EXPECT_STREAMING_RESPONSE).set(expectStreaming ? Boolean.TRUE : null);
                 reused.eventLoop().execute(() -> {
                     if (reused.isActive()) {
+                        // Guard this in-flight request: a reused idle connection whose upstream has
+                        // silently gone away would otherwise hang with no read timeout (pooled channels
+                        // carry none while idle). Removed again on return to the pool.
+                        armPooledInFlightReadTimeout(reused);
                         reused.writeAndFlush(httpRequest).addListener((ChannelFutureListener) writeFuture -> {
                             if (!writeFuture.isSuccess()) {
                                 responseFuture.completeExceptionally(writeFuture.cause());
@@ -305,6 +310,11 @@ public class NettyHttpClient {
                         if (throwable != null) {
                             httpResponseFuture.completeExceptionally(throwable);
                         } else {
+                            // A fresh POOLED channel skipped the build-time read timeout; arm it for this
+                            // first in-flight request so a connected-but-silent upstream cannot hang it.
+                            // (A non-pooled fresh channel already has its build-time read timeout, so this
+                            // is a no-op for it.) Removed again on return to the pool.
+                            armPooledInFlightReadTimeout(future.channel());
                             future.channel().writeAndFlush(httpRequest);
                         }
                     });
@@ -312,6 +322,33 @@ public class NettyHttpClient {
                     httpResponseFuture.completeExceptionally(future.cause());
                 }
             });
+    }
+
+    /**
+     * Arm an in-flight read timeout on a POOLED channel for the duration of one request.
+     * <p>
+     * Non-pooled channels get their {@link ReadTimeoutHandler} at pipeline-build time
+     * ({@link HttpClientInitializer#addReadTimeoutHandlerIfNotPooled}); pooled channels deliberately do
+     * NOT, because a blanket read timeout would fire while the connection sits idle in the pool between
+     * requests and tear down a healthy keep-alive connection. But a pooled channel with a request IN
+     * FLIGHT (a reused connection, or a fresh pooled channel's first request) was left unguarded — a
+     * stalled upstream that connects/keep-alives but never sends the response would hang the request
+     * future until {@code maxFutureTimeoutInMillis} at best, or indefinitely. We therefore arm the read
+     * timeout just before dispatching a request on a pooled channel and remove it again when the channel
+     * is returned to the pool ({@link HttpClientHandler#tryReturnToPool}); a streaming response removes
+     * it earlier ({@link org.mockserver.codec.StreamingAwareHttpObjectAggregator}, which strips any
+     * {@link ReadTimeoutHandler} by type when it switches to streaming, so a long inter-chunk pause is
+     * not mistaken for a stall). No-op for non-pooled channels (already guarded) and when the timeout is
+     * disabled or already armed.
+     */
+    private void armPooledInFlightReadTimeout(Channel channel) {
+        if (configuration == null || channel.attr(CONNECTION_POOL).get() == null) {
+            return;
+        }
+        Long readTimeoutMillis = configuration.maxSocketTimeoutInMillis();
+        if (readTimeoutMillis != null && readTimeoutMillis > 0 && channel.pipeline().get(ReadTimeoutHandler.class) == null) {
+            channel.pipeline().addFirst("pooledInFlightReadTimeout", new ReadTimeoutHandler(readTimeoutMillis, TimeUnit.MILLISECONDS));
+        }
     }
 
     /**
