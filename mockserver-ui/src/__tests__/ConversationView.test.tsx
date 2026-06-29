@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '@mui/material/styles';
 import { buildTheme } from '../theme';
-import { AnthropicConversationView, OpenAiConversationView, ScriptedTurnsPanel } from '../components/ConversationView';
+import {
+  AnthropicConversationView,
+  OpenAiConversationView,
+  ScriptedTurnsPanel,
+  responseLooksUnparseable,
+} from '../components/ConversationView';
 import type { ScriptedTurn } from '../components/ConversationView';
 import type { AnthropicParsed, OpenAiParsed } from '../lib/llmTraffic';
 import { useDashboardStore } from '../store';
@@ -365,5 +371,59 @@ describe('ScriptedTurnsPanel', () => {
   it('renders empty when no turns provided', () => {
     const { container } = wrap(<ScriptedTurnsPanel turns={[]} />);
     expect(container.textContent).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Truncated / malformed non-stream response notice
+// ---------------------------------------------------------------------------
+
+describe('responseLooksUnparseable', () => {
+  it('returns false for empty / absent bodies', () => {
+    expect(responseLooksUnparseable(undefined)).toBe(false);
+    expect(responseLooksUnparseable(null)).toBe(false);
+    expect(responseLooksUnparseable('')).toBe(false);
+    expect(responseLooksUnparseable('   ')).toBe(false);
+  });
+
+  it('returns false for a body that parses cleanly as JSON', () => {
+    expect(responseLooksUnparseable('{"content":[{"type":"text","text":"hi"}]}')).toBe(false);
+  });
+
+  it('returns true for a truncated / malformed JSON body', () => {
+    expect(responseLooksUnparseable('{"content":[{"type":"text","text":"hi')).toBe(true);
+  });
+});
+
+describe('ConversationView — truncated non-stream response warning', () => {
+  it('shows a warning chip and reveals the raw body for an unparseable response', async () => {
+    const user = userEvent.setup();
+    const rawResponseBody = '{"content":[{"type":"text","text":"partial respon';
+    wrap(
+      <AnthropicConversationView
+        parsed={makeAnthropicParsed({ messages: [{ role: 'user', content: 'Hello' }] })}
+        rawResponseBody={rawResponseBody}
+      />,
+    );
+
+    expect(screen.getByTestId('truncated-response-notice')).toBeInTheDocument();
+    expect(screen.getByText(/could not be parsed/i)).toBeInTheDocument();
+    // The "No conversation content" empty-state must NOT show — there IS content.
+    expect(screen.queryByText('No conversation content')).not.toBeInTheDocument();
+
+    // The raw body is revealed on demand.
+    expect(screen.queryByText(rawResponseBody)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /show raw body/i }));
+    expect(screen.getByText(rawResponseBody)).toBeInTheDocument();
+  });
+
+  it('does not show the warning when the response parsed cleanly', () => {
+    wrap(
+      <AnthropicConversationView
+        parsed={makeAnthropicParsed({ responseContent: [{ type: 'text', text: 'done' }] })}
+        rawResponseBody={'{"content":[{"type":"text","text":"done"}]}'}
+      />,
+    );
+    expect(screen.queryByTestId('truncated-response-notice')).not.toBeInTheDocument();
   });
 });

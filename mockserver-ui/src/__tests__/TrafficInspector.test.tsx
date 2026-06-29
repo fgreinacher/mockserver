@@ -3,7 +3,12 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '@mui/material/styles';
 import { buildTheme } from '../theme';
-import TrafficInspector from '../components/TrafficInspector';
+import TrafficInspector, {
+  maskSecretValue,
+  maskSecretsInValue,
+  mcpErrorInfo,
+} from '../components/TrafficInspector';
+import type { McpParsed } from '../lib/llmTraffic';
 import { useDashboardStore } from '../store';
 
 function renderTrafficInspector() {
@@ -886,5 +891,182 @@ describe('TrafficInspector — master/detail resize divider', () => {
     });
     renderTrafficInspector();
     expect(screen.queryByTestId('traffic-master-resizer')).not.toBeInTheDocument();
+  });
+});
+
+describe('TrafficInspector — secret-header masking (pure helper)', () => {
+  it('preserves the auth scheme and keeps the last 4 chars of a Bearer token', () => {
+    expect(maskSecretValue('Bearer sk-secret-abcd1234')).toBe('Bearer ••••1234');
+    expect(maskSecretValue('Basic dXNlcjpXXYY')).toBe('Basic ••••XXYY');
+  });
+
+  it('masks a raw token entirely when shorter than 5 chars', () => {
+    expect(maskSecretValue('abcd')).toBe('••••');
+    expect(maskSecretValue('')).toBe('');
+  });
+
+  it('masks an api-key value without a scheme, keeping the last 4 chars', () => {
+    expect(maskSecretValue('sk-ant-api03-XYZ9876')).toBe('••••9876');
+  });
+
+  it('masks secret headers in array form on httpRequest, leaving non-secrets intact', () => {
+    const value = {
+      httpRequest: {
+        method: 'POST',
+        path: '/v1/messages',
+        headers: [
+          { name: 'host', values: ['api.anthropic.com'] },
+          { name: 'authorization', values: ['Bearer sk-live-TOPSECRET4321'] },
+          { name: 'x-api-key', values: ['anthropic-key-ABCDEFGH'] },
+        ],
+      },
+    };
+    const masked = maskSecretsInValue(value) as typeof value;
+    const headers = masked.httpRequest.headers;
+    expect(headers[0]).toEqual({ name: 'host', values: ['api.anthropic.com'] });
+    expect(headers[1]!.values).toEqual(['Bearer ••••4321']);
+    expect(headers[2]!.values).toEqual(['••••EFGH']);
+    // The original object must not be mutated.
+    expect(value.httpRequest.headers[1]!.values[0]).toBe('Bearer sk-live-TOPSECRET4321');
+  });
+
+  it('masks secret headers in object form on httpResponse (e.g. Set-Cookie)', () => {
+    const value = {
+      httpResponse: {
+        statusCode: 200,
+        headers: { 'Set-Cookie': ['session=SUPERSECRETVALUE'], 'content-type': ['application/json'] },
+      },
+    };
+    const masked = maskSecretsInValue(value) as typeof value;
+    expect(masked.httpResponse.headers['Set-Cookie']).toEqual(['••••ALUE']);
+    expect(masked.httpResponse.headers['content-type']).toEqual(['application/json']);
+  });
+
+  it('returns the original reference when there is nothing to mask', () => {
+    const value = { httpRequest: { method: 'GET', headers: [{ name: 'host', values: ['x'] }] } };
+    expect(maskSecretsInValue(value)).toBe(value);
+  });
+});
+
+describe('TrafficInspector — masked secrets flow into the Diff/Compare view', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      recordedRequests: [
+        {
+          key: 'req-secret',
+          value: {
+            httpRequest: {
+              method: 'GET',
+              path: '/api/secure',
+              headers: [
+                { name: 'host', values: ['example.com'] },
+                { name: 'authorization', values: ['Bearer sk-secret-abcd1234'] },
+              ],
+            },
+            httpResponse: { statusCode: 200 },
+          },
+        },
+        {
+          key: 'req-plain',
+          value: {
+            httpRequest: { method: 'GET', path: '/api/plain', headers: [{ name: 'host', values: ['example.com'] }] },
+            httpResponse: { statusCode: 200 },
+          },
+        },
+      ],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+    });
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it('seeds the diff editor with the MASKED Authorization value, not the raw token', async () => {
+    const user = userEvent.setup();
+    renderTrafficInspector();
+
+    await user.click(screen.getByRole('button', { name: /Compare requests/i }));
+    const checkboxes = screen.getAllByRole('checkbox');
+    await user.click(checkboxes[0]!); // first row = /api/plain (newest at top) — order not important
+    await user.click(checkboxes[1]!);
+    await user.click(screen.getByRole('button', { name: /Diff \(2\/2\)/ }));
+
+    const dialog = await screen.findByRole('dialog');
+    // The masked token must appear in one of the seeded editors; the raw token never does.
+    const expected = within(dialog).getByLabelText('Expected request (JSON)') as HTMLTextAreaElement;
+    const actual = within(dialog).getByLabelText('Actual request (JSON)') as HTMLTextAreaElement;
+    const combined = `${expected.value}\n${actual.value}`;
+    expect(combined).toContain('••••1234');
+    expect(combined).not.toContain('sk-secret-abcd1234');
+  });
+});
+
+describe('TrafficInspector — search indexes decoded BINARY body text', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      recordedRequests: [],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+    });
+  });
+
+  it('matches a word that only exists in the DECODED base64 body', async () => {
+    const user = userEvent.setup();
+    useDashboardStore.setState({
+      recordedRequests: [
+        {
+          key: 'req-binary',
+          value: {
+            httpRequest: { method: 'POST', path: '/api/binary', headers: [{ name: 'host', values: ['example.com'] }] },
+            httpResponse: {
+              statusCode: 200,
+              // base64 of {"prompt":"PINEAPPLE-TOKEN"} — searching the base64 string would not match.
+              body: { type: 'BINARY', base64Bytes: btoa('{"prompt":"PINEAPPLE-TOKEN"}') },
+            },
+          },
+        },
+        {
+          key: 'req-other',
+          value: {
+            httpRequest: { method: 'GET', path: '/api/other', headers: [{ name: 'host', values: ['example.com'] }] },
+            httpResponse: { statusCode: 200 },
+          },
+        },
+      ],
+    });
+
+    renderTrafficInspector();
+    const search = screen.getByPlaceholderText('Search...');
+    await user.type(search, 'pineapple-token');
+
+    expect(screen.getByText(/\/api\/binary/)).toBeInTheDocument();
+    expect(screen.queryByText(/\/api\/other/)).not.toBeInTheDocument();
+  });
+});
+
+describe('TrafficInspector — MCP JSON-RPC error classification (pure helper)', () => {
+  const base: McpParsed = {
+    kind: 'mcp', method: 'tools/call', id: 1, params: {}, result: null, error: null, isResponse: true,
+  };
+
+  it('flags a JSON-RPC error object and exposes its numeric code + message', () => {
+    const info = mcpErrorInfo({ ...base, error: { code: -32601, message: 'Method not found' } }, 200);
+    expect(info.isError).toBe(true);
+    expect(info.code).toBe(-32601);
+    expect(info.message).toBe('Method not found');
+  });
+
+  it('flags a non-2xx HTTP status even without a JSON-RPC error object', () => {
+    expect(mcpErrorInfo(base, 500).isError).toBe(true);
+    expect(mcpErrorInfo(base, 400).isError).toBe(true);
+  });
+
+  it('treats a clean 2xx result as not an error', () => {
+    const info = mcpErrorInfo({ ...base, result: { ok: true } }, 200);
+    expect(info.isError).toBe(false);
+    expect(info.code).toBeNull();
   });
 });

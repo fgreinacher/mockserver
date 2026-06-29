@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, waitFor, within, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, within, cleanup, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '@mui/material/styles';
 import { buildTheme } from '../theme';
-import OptimiseView from '../components/OptimiseView';
+import OptimiseView, { safeHttpUrl } from '../components/OptimiseView';
+import { useDashboardStore } from '../store';
 import sample from '../__fixtures__/optimisationReport.sample.json';
 
 const params = { host: '127.0.0.1', port: '1080', secure: false };
@@ -265,5 +266,52 @@ describe('OptimiseView', () => {
     expect(await screen.findByTestId('optimise-error')).toBeInTheDocument();
     // 404 is humanised to the "feature not available" message
     expect(screen.getByText(/isn.t available on the connected MockServer/i)).toBeInTheDocument();
+  });
+});
+
+describe('safeHttpUrl (docsUrl scheme guard)', () => {
+  it('accepts absolute http / https URLs', () => {
+    expect(safeHttpUrl('https://www.mock-server.com/docs')).toBe('https://www.mock-server.com/docs');
+    expect(safeHttpUrl('http://example.com/x')).toBe('http://example.com/x');
+  });
+
+  it('rejects javascript:, data: and other non-http schemes', () => {
+    expect(safeHttpUrl('javascript:alert(1)')).toBeNull();
+    expect(safeHttpUrl('data:text/html,<script>alert(1)</script>')).toBeNull();
+    expect(safeHttpUrl('file:///etc/passwd')).toBeNull();
+  });
+
+  it('rejects relative / malformed / non-string values', () => {
+    expect(safeHttpUrl('/relative/path')).toBeNull();
+    expect(safeHttpUrl('not a url')).toBeNull();
+    expect(safeHttpUrl('')).toBeNull();
+    expect(safeHttpUrl(undefined)).toBeNull();
+    expect(safeHttpUrl(42)).toBeNull();
+  });
+});
+
+describe('OptimiseView — stale-traffic banner', () => {
+  it('shows a refresh banner when new traffic is captured after the report loads', async () => {
+    stubFetch();
+    act(() => {
+      useDashboardStore.setState({ proxiedRequests: [], recordedRequests: [] });
+    });
+    renderView();
+
+    // Wait for the report to finish loading.
+    await screen.findByTestId('optimise-hero');
+    expect(screen.queryByTestId('optimise-stale-banner')).not.toBeInTheDocument();
+
+    // New traffic arrives via a WebSocket push (store update).
+    act(() => {
+      useDashboardStore.setState({
+        proxiedRequests: [
+          { key: 'new-1', value: { httpRequest: { method: 'POST', path: '/v1/messages' }, httpResponse: { statusCode: 200 } } },
+        ],
+      });
+    });
+
+    const banner = await screen.findByTestId('optimise-stale-banner');
+    expect(within(banner).getByRole('button', { name: 'Refresh' })).toBeInTheDocument();
   });
 });

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
+import Alert from '@mui/material/Alert';
 import Paper from '@mui/material/Paper';
 import Card from '@mui/material/Card';
 import Typography from '@mui/material/Typography';
@@ -70,6 +71,24 @@ function severityColor(severity: SignalSeverity | string): 'error' | 'warning' |
 function formatPercent(ratio: number): string {
   if (!Number.isFinite(ratio)) return '—';
   return `${Math.round(ratio * 100)}%`;
+}
+
+/**
+ * Return the URL only when it is an absolute http/https URL, otherwise null.
+ * Defends an `href` against `javascript:` / `data:` (and other) schemes — the
+ * docsUrl comes from the server-rendered report but is still untrusted content.
+ */
+export function safeHttpUrl(url: unknown): string | null {
+  if (typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (trimmed === '') return null;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? trimmed : null;
+  } catch {
+    // Relative or malformed URLs throw here; treat as unsafe for an external link.
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -289,13 +308,16 @@ function SignalCard({ signal }: { signal: OptimisationSignal }) {
           )}
           {fix.configSnippet && <SnippetBlock label="config snippet" snippet={fix.configSnippet} />}
           {fix.exampleExpectation && <SnippetBlock label="example expectation" snippet={fix.exampleExpectation} />}
-          {fix.docsUrl && (
-            <Typography variant="body2" sx={{ mt: 0.5 }}>
-              <Box component="a" href={fix.docsUrl} target="_blank" rel="noopener noreferrer" sx={{ color: 'primary.main' }}>
-                Learn more
-              </Box>
-            </Typography>
-          )}
+          {(() => {
+            const docsHref = safeHttpUrl(fix.docsUrl);
+            return docsHref ? (
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                <Box component="a" href={docsHref} target="_blank" rel="noopener noreferrer" sx={{ color: 'primary.main' }}>
+                  Learn more
+                </Box>
+              </Typography>
+            ) : null;
+          })()}
         </Box>
       ) : (
         <Typography variant="body2" sx={{ fontWeight: 600 }}>
@@ -322,6 +344,19 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
   const [report, setReport] = useState<OptimisationReport | null>(null);
   const [state, setState] = useState<LoadState>('loading');
   const [error, setError] = useState<HumanError | null>(null);
+
+  // Track the live captured-traffic count so we can flag a displayed report as
+  // stale when new traffic arrives after it was fetched. The report is fetched
+  // once per mount/session-change; without this the cost/verdict silently lags
+  // behind newly captured calls. Kept in a ref so `load` need not depend on it
+  // (which would otherwise re-fetch on every WebSocket push).
+  const proxiedRequests = useDashboardStore((s) => s.proxiedRequests);
+  const recordedRequests = useDashboardStore((s) => s.recordedRequests);
+  const liveTrafficCount = proxiedRequests.length + recordedRequests.length;
+  const liveTrafficCountRef = useRef(liveTrafficCount);
+  liveTrafficCountRef.current = liveTrafficCount;
+  // Traffic count captured into the currently-displayed report (null until loaded).
+  const [loadedTrafficCount, setLoadedTrafficCount] = useState<number | null>(null);
   const [busyAction, setBusyAction] = useState<null | 'copy' | 'copyVerdict' | 'download'>(null);
   const [actionError, setActionError] = useState<HumanError | null>(null);
   const [copied, setCopied] = useState(false);
@@ -344,6 +379,8 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
           if (signal?.aborted) return;
           setReport(r);
           setState('ok');
+          // Snapshot the traffic count this report reflects so later captures mark it stale.
+          setLoadedTrafficCount(liveTrafficCountRef.current);
         })
         .catch((e) => {
           if (signal?.aborted) return;
@@ -465,6 +502,25 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
 
       {actionError && (
         <HumanErrorAlert error={actionError} sx={{ mb: 1.5 }} data-testid="optimise-action-error" onClose={() => setActionError(null)} />
+      )}
+
+      {state === 'ok' && loadedTrafficCount !== null && liveTrafficCount !== loadedTrafficCount && (
+        <Alert
+          severity="info"
+          data-testid="optimise-stale-banner"
+          sx={{ mb: 1.5 }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => { trackFeature('optimise_run'); load(); }}
+            >
+              Refresh
+            </Button>
+          }
+        >
+          New traffic captured since this report — refresh to update.
+        </Alert>
       )}
 
       {state === 'loading' && !report && (

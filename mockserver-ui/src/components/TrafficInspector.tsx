@@ -50,6 +50,7 @@ import { monospaceFontFamily, transitions } from '../theme';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
 import {
   summarizeTraffic,
+  extractBodyContent,
   getModelLabel,
   getTokenSummary,
   getTimingLabel,
@@ -99,6 +100,159 @@ function kindColor(parsed: ParsedTraffic): 'primary' | 'secondary' | 'info' | 'd
     case 'mcp': return 'info';
     case 'generic': return 'default';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Secret-header masking (UI guard)
+// ---------------------------------------------------------------------------
+
+// Header names whose values carry credentials. Captured traffic is shown verbatim
+// in the Raw JSON / Diff views (and flows into Replay), so mask these known secret
+// headers before rendering. This is a UI guard only — server-side redaction is a
+// separate concern. Matched case-insensitively.
+const SECRET_HEADER_NAMES = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'api-key',
+  'apikey',
+  'anthropic-api-key',
+  'openai-api-key',
+  'x-goog-api-key',
+  'x-api-token',
+]);
+
+/** Mask a bare token, keeping the last 4 chars for correlation when long enough. */
+function maskToken(token: string): string {
+  const trimmed = token.trim();
+  if (trimmed.length <= 4) return '••••';
+  return `••••${trimmed.slice(-4)}`;
+}
+
+/**
+ * Mask a secret header value. Preserves a leading auth scheme (Bearer/Basic/…) so
+ * the kind of credential stays visible, e.g. `Bearer sk-abc…1234` → `Bearer ••••1234`.
+ * Non-scheme values (raw API keys, cookies) become `••••1234` / `••••`.
+ */
+export function maskSecretValue(raw: unknown): string {
+  if (typeof raw !== 'string' || raw.length === 0) return typeof raw === 'string' ? raw : '••••';
+  const schemeMatch = /^(\S+)\s+(.+)$/.exec(raw);
+  if (schemeMatch && /^(bearer|basic|digest|token)$/i.test(schemeMatch[1]!)) {
+    return `${schemeMatch[1]} ${maskToken(schemeMatch[2]!)}`;
+  }
+  return maskToken(raw);
+}
+
+/**
+ * Return a copy of MockServer-format headers with any secret header values masked.
+ * Handles both the array form `[{name, values:[…]}]` and the object form
+ * `{name: [values]}`. Returns the original reference when nothing was masked so
+ * callers can cheaply detect "no change".
+ */
+function maskHeaders(headers: unknown): unknown {
+  if (Array.isArray(headers)) {
+    let changed = false;
+    const out = headers.map((h) => {
+      if (h && typeof h === 'object' && !Array.isArray(h)) {
+        const entry = h as Record<string, unknown>;
+        const name = entry['name'];
+        if (typeof name === 'string' && SECRET_HEADER_NAMES.has(name.toLowerCase())) {
+          const values = entry['values'];
+          if (Array.isArray(values)) {
+            changed = true;
+            return { ...entry, values: values.map((v) => maskSecretValue(String(v))) };
+          }
+        }
+      }
+      return h;
+    });
+    return changed ? out : headers;
+  }
+  if (headers && typeof headers === 'object') {
+    const map = headers as Record<string, unknown>;
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(map)) {
+      const v = map[key];
+      if (SECRET_HEADER_NAMES.has(key.toLowerCase())) {
+        changed = true;
+        if (Array.isArray(v)) out[key] = v.map((x) => maskSecretValue(String(x)));
+        else if (typeof v === 'string') out[key] = maskSecretValue(v);
+        else out[key] = v;
+      } else {
+        out[key] = v;
+      }
+    }
+    return changed ? out : headers;
+  }
+  return headers;
+}
+
+/**
+ * Return a shallow copy of a captured request value with secret headers masked on
+ * its httpRequest / httpResponse / forwarded-request sections. Only the touched
+ * paths are cloned; everything else shares references. Returns the original
+ * reference when nothing was masked.
+ */
+export function maskSecretsInValue(value: Record<string, unknown>): Record<string, unknown> {
+  let changed = false;
+  const out: Record<string, unknown> = { ...value };
+  for (const section of ['httpRequest', 'httpResponse', 'httpOverrideForwardedRequest'] as const) {
+    const sec = value[section];
+    if (sec && typeof sec === 'object' && !Array.isArray(sec)) {
+      const secObj = sec as Record<string, unknown>;
+      if ('headers' in secObj) {
+        const maskedHeaders = maskHeaders(secObj['headers']);
+        if (maskedHeaders !== secObj['headers']) {
+          out[section] = { ...secObj, headers: maskedHeaders };
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed ? out : value;
+}
+
+/**
+ * Extract the decoded (non-stream) response body text from a captured value, or
+ * undefined when the body parsed cleanly as JSON / is streamed / is absent. Used
+ * to flag a truncated-or-malformed non-stream response in the conversation view.
+ */
+function nonStreamResponseBodyText(
+  value: Record<string, unknown>,
+  parsed: ParsedTraffic,
+): string | undefined {
+  if ('streamed' in parsed && parsed.streamed) return undefined;
+  if ('sseEvents' in parsed && parsed.sseEvents) return undefined;
+  const httpResponse = value['httpResponse'];
+  if (!httpResponse || typeof httpResponse !== 'object') return undefined;
+  const body = (httpResponse as Record<string, unknown>)['body'];
+  const content = extractBodyContent(body);
+  // A string here means MockServer stored a non-JSON (or unparsed) body; an object
+  // means the body already parsed cleanly, so no truncation warning is warranted.
+  return typeof content === 'string' ? content : undefined;
+}
+
+/**
+ * Classify an MCP JSON-RPC exchange as an error. An error is present when the
+ * JSON-RPC `error` object exists, or the HTTP status is non-2xx. Exposes the
+ * numeric JSON-RPC error code and message when available.
+ */
+export function mcpErrorInfo(
+  parsed: McpParsed,
+  statusCode: number | null,
+): { isError: boolean; code: number | null; message: string | null } {
+  const errObj =
+    parsed.error && typeof parsed.error === 'object' && !Array.isArray(parsed.error)
+      ? (parsed.error as Record<string, unknown>)
+      : null;
+  const code = errObj && typeof errObj['code'] === 'number' ? (errObj['code'] as number) : null;
+  const message = errObj && typeof errObj['message'] === 'string' ? (errObj['message'] as string) : null;
+  const isError =
+    parsed.error != null || (statusCode != null && (statusCode < 200 || statusCode >= 300));
+  return { isError, code, message };
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +365,23 @@ const searchTextCache = new WeakMap<Record<string, unknown>, string>();
 function cachedSearchText(value: Record<string, unknown>): string {
   const hit = searchTextCache.get(value);
   if (hit !== undefined) return hit;
-  const text = JSON.stringify(value).toLowerCase();
+  // Index the raw JSON AND the decoded request/response body text. A BINARY/base64
+  // body is stored (and JSON.stringify'd) as base64, so without the decoded text a
+  // search for a prompt/response word would never match. extractBodyContent
+  // base64-decodes BINARY bodies and unwraps STRING/JSON bodies.
+  const parts = [JSON.stringify(value)];
+  for (const section of ['httpRequest', 'httpResponse'] as const) {
+    const sec = value[section];
+    if (sec && typeof sec === 'object') {
+      const content = extractBodyContent((sec as Record<string, unknown>)['body']);
+      if (typeof content === 'string') {
+        parts.push(content);
+      } else if (content && typeof content === 'object') {
+        try { parts.push(JSON.stringify(content)); } catch { /* ignore unserialisable */ }
+      }
+    }
+  }
+  const text = parts.join(' ').toLowerCase();
   searchTextCache.set(value, text);
   return text;
 }
@@ -465,13 +635,27 @@ function OpenAiMessagesPanel({ parsed }: { parsed: OpenAiParsed }) {
 // MCP panel (content only, no wrapping tabs)
 // ---------------------------------------------------------------------------
 
-function McpDetailPanel({ parsed }: { parsed: McpParsed }) {
+function McpDetailPanel({ parsed, statusCode }: { parsed: McpParsed; statusCode: number | null }) {
+  const { isError, code, message } = mcpErrorInfo(parsed, statusCode);
   return (
     <Box>
       <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 1 }}>
-        <Chip label="MCP JSON-RPC" size="small" color="info" variant="outlined" />
+        <Chip
+          label="MCP JSON-RPC"
+          size="small"
+          color={isError ? 'error' : 'info'}
+          variant={isError ? 'filled' : 'outlined'}
+        />
         {parsed.method && <Chip label={`Method: ${parsed.method}`} size="small" variant="outlined" />}
         {parsed.id != null && <Chip label={`ID: ${String(parsed.id)}`} size="small" variant="outlined" />}
+        {isError && (
+          <Chip
+            label={code != null ? `Error ${code}` : 'Error'}
+            size="small"
+            color="error"
+            variant="outlined"
+          />
+        )}
       </Box>
       {parsed.params != null && (
         <Box sx={{ mb: 1 }}>
@@ -487,7 +671,9 @@ function McpDetailPanel({ parsed }: { parsed: McpParsed }) {
       )}
       {parsed.error != null && (
         <Box sx={{ mb: 1 }}>
-          <Typography variant="caption" color="error" sx={{ fontWeight: 600 }}>Error</Typography>
+          <Typography variant="caption" color="error" sx={{ fontWeight: 600 }}>
+            Error{code != null ? ` (code ${code})` : ''}{message ? `: ${message}` : ''}
+          </Typography>
           <JsonViewer data={parsed.error as Record<string, unknown>} collapsed={2} />
         </Box>
       )}
@@ -913,6 +1099,15 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay }:
   const tabs = buildTabs(summary.parsed, scriptedTurns.length > 0);
   const [detailTab, setDetailTab] = useState(0);
   const canCapture = isCapturableTraffic(summary.parsed);
+  // Mask known secret headers before rendering the Raw JSON view so credentials
+  // (Authorization, x-api-key, Cookie, …) are not shown verbatim.
+  const maskedValue = useMemo(() => maskSecretsInValue(item.value), [item.value]);
+  // Decoded non-stream response body text, used to flag a truncated/malformed
+  // response in the conversation view (undefined when the body parsed cleanly).
+  const rawResponseBody = useMemo(
+    () => nonStreamResponseBodyText(item.value, summary.parsed),
+    [item.value, summary.parsed],
+  );
 
   // For generic traffic, render Raw JSON directly — no tab bar needed
   if (tabs.length === 0) {
@@ -947,7 +1142,7 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay }:
         </Box>
         <Divider />
         <Box sx={{ flex: 1, overflowY: 'auto', p: 1 }}>
-          <JsonViewer data={item.value} collapsed={2} />
+          <JsonViewer data={maskedValue} collapsed={2} />
         </Box>
       </Box>
     );
@@ -1012,19 +1207,19 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay }:
           <OllamaMessagesPanel parsed={summary.parsed} />
         )}
         {activeLabel === 'Conversation' && summary.parsed.kind === 'anthropic' && (
-          <AnthropicConversationView parsed={summary.parsed} />
+          <AnthropicConversationView parsed={summary.parsed} rawResponseBody={rawResponseBody} />
         )}
         {activeLabel === 'Conversation' && summary.parsed.kind === 'openai' && (
-          <OpenAiConversationView parsed={summary.parsed} />
+          <OpenAiConversationView parsed={summary.parsed} rawResponseBody={rawResponseBody} />
         )}
         {activeLabel === 'Conversation' && summary.parsed.kind === 'openai_responses' && (
-          <OpenAiResponsesConversationView parsed={summary.parsed} />
+          <OpenAiResponsesConversationView parsed={summary.parsed} rawResponseBody={rawResponseBody} />
         )}
         {activeLabel === 'Conversation' && summary.parsed.kind === 'gemini' && (
-          <GeminiConversationView parsed={summary.parsed} />
+          <GeminiConversationView parsed={summary.parsed} rawResponseBody={rawResponseBody} />
         )}
         {activeLabel === 'Conversation' && summary.parsed.kind === 'ollama' && (
-          <OllamaConversationView parsed={summary.parsed} />
+          <OllamaConversationView parsed={summary.parsed} rawResponseBody={rawResponseBody} />
         )}
         {activeLabel === 'Scripted Turns' && scriptedTurns.length > 0 && (
           <ScriptedTurnsPanel turns={scriptedTurns} />
@@ -1033,10 +1228,10 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay }:
           <SseTimeline events={summary.parsed.sseEvents} />
         )}
         {activeLabel === 'MCP' && summary.parsed.kind === 'mcp' && (
-          <McpDetailPanel parsed={summary.parsed} />
+          <McpDetailPanel parsed={summary.parsed} statusCode={summary.statusCode} />
         )}
         {activeLabel === 'Raw JSON' && (
-          <JsonViewer data={item.value} collapsed={2} />
+          <JsonViewer data={maskedValue} collapsed={2} />
         )}
       </Box>
     </Box>
@@ -1183,7 +1378,10 @@ export default function TrafficInspector() {
 
   const compareJson = useMemo(() => {
     const toRequestJson = (item: JsonListItem): string => {
-      const request = (item.value['httpRequest'] as Record<string, unknown> | undefined) ?? item.value;
+      // Mask secret headers before the diff so credentials aren't shown verbatim
+      // in the comparison editor (and don't flow into a replay from there).
+      const masked = maskSecretsInValue(item.value);
+      const request = (masked['httpRequest'] as Record<string, unknown> | undefined) ?? masked;
       return JSON.stringify(request, null, 2);
     };
     return validCompareKeys.map((key) => {
