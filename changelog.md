@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Documentation
 - **AI/LLM/MCP and load-injection documentation review — clarity, value, and discoverability.** Added an "AI & MCP Overview" landing page that routes readers by use case (MockServer controlled by AI, mocking AI services, or observing AI traffic); cross-listed LLM Response Mocking into the AI & MCP section; led the AI pages with value-first openings and added "how it works" Mermaid diagrams. Grouped the three performance pages (serving / driving / injecting) under Performance Testing with a shared signpost table and a "Load Scenarios vs k6/Gatling" positioning. For SEO and AI answer-engines: added FAQ structured data (FAQPage JSON-LD) to eight feature pages, tightened titles/meta descriptions, and corrected stale `llms.txt` entries.
 - **AI Traffic Inspection page now covers tools, SDKs, and frameworks via two clearly-labelled connection methods.** Method A (transparent HTTPS proxy) groups the existing Claude Code, OpenCode, and LangChain/LangGraph recipes; Method B (base-URL override) adds LlamaIndex and OpenAI Agents SDK recipes migrated from the former Agent Frameworks page. The separate Agent Frameworks page has been consolidated into AI Traffic Inspection and now redirects to the `#configure-tools` section.
+- **New `forwardProxyHttp2Upgrade` setting (default off).** Forwards a secure request to the upstream over HTTP/2 even when the inbound client is HTTP/1.1 (ALPN-negotiated, automatic fallback to HTTP/1.1 if the upstream does not offer HTTP/2; TLS only). This fixes a header-timeout some streaming upstreams exhibit, where the Server-Sent Events response head is sent immediately over HTTP/2 but withheld over HTTP/1.1.
 
 #### Load injection, chaos & SRE
 - **Chaos experiments can assert an SLO and emit a verdict.** A chaos experiment may now carry an optional
@@ -239,6 +240,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could exceed the response future timeout *and* stall all further logging. The consumer thread now only produces
   the (cheap) materialised, redacted list; serialization runs on the caller thread. Applies to every
   `REQUEST_RESPONSES` format (JSON, log entries, HAR, OpenAPI, Postman, Bruno, cURL). Output is byte-identical.
+- **HTTP/2 forwarded responses now stream incrementally instead of being buffered.** The HTTP/2 forward client was
+  rebuilt on the same multiplex stack the server uses (`Http2FrameCodec` + `Http2MultiplexHandler`), reusing the
+  existing HTTP/1.1 streaming relay per stream — a streamed upstream response (SSE) now has its head relayed to the
+  client as soon as it arrives rather than after the whole body. Non-streaming HTTP/2 responses are still aggregated.
+- **More consistent LLM provider detection across the proxy, traces and optimise views.** Embeddings/moderations
+  requests are no longer mis-classified as the OpenAI Responses API; the MCP `provider=AUTO` analysis now uses the
+  same host + body-shape detection as the dashboard and optimisation report; and Cohere, Voyage, Vertex AI Gemini,
+  and the AWS Bedrock Converse API are now recognised.
+- **The LLM optimisation report classifies and prices calls more honestly.** It now uses the response body when
+  detecting the provider (a header-less Anthropic call is no longer mis-labelled OpenAI), and a call whose model
+  has no known price — or only a placeholder rate — is flagged as unpriced/approximate instead of being shown as a
+  confident `$0.00`. The copy-paste optimisation brief also masks obvious credential shapes in prompt text.
+- **The dashboard renders more LLM responses correctly.** Streamed OpenAI Chat Completions and Gemini responses
+  that carry no `Content-Type` header now reassemble and display instead of showing empty; Anthropic prompt-cache
+  tokens are surfaced; a hostile/malformed Server-Sent Events index can no longer exhaust browser memory; and a
+  truncated or unparseable response body now shows a clear notice rather than a silent blank.
+- **Captured credentials are masked in the dashboard.** API keys and bearer tokens in `Authorization`, `x-api-key`,
+  `api-key`, cookies and similar headers are masked in the Traffic raw/diff views (the original value is still used
+  for replay), so a shared or screen-shared dashboard no longer exposes live credentials.
 - **Forward DNS resolution moved off the calling thread.** Forward actions hand the connect path an unresolved
   address so DNS runs on the Netty event loop; SSRF validation still resolves and rejects private/loopback
   targets first, and a missing SSRF guard was added to the forward-validate path.
