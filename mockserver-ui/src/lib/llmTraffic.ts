@@ -1496,6 +1496,25 @@ interface McpServerAccumulator {
 }
 
 /**
+ * Total response time in milliseconds for a recorded exchange, preferring the rich
+ * forward-path {@link RequestTiming} (`timing.totalTimeInMillis`, present on
+ * transparent-proxy traffic) and falling back to MockServer's measured
+ * `x-mockserver-response-time-ms` response header — present on recorded / replayed /
+ * expectation-forwarded responses that carry no full timing object. Null when neither
+ * is available.
+ */
+function exchangeLatencyMs(summary: TrafficSummary, value: Record<string, unknown>): number | null {
+  const fromTiming = summary.timing?.totalTimeInMillis ?? null;
+  if (fromTiming != null && Number.isFinite(fromTiming)) return fromTiming;
+  const httpResponse = getObject(value, 'httpResponse');
+  if (!httpResponse) return null;
+  const raw = getHeaderValue(httpResponse['headers'], 'x-mockserver-response-time-ms');
+  if (raw == null) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
  * Aggregate captured proxied/recorded request values into per-MCP-server health.
  *
  * @param values - The `JsonListItem.value` objects from the store's
@@ -1535,7 +1554,7 @@ export function aggregateMcpServerHealth(
     const isError = parsed.error != null || (status != null && (status < 200 || status >= 300));
     if (isError) acc.errorCount += 1;
 
-    const latency = summary.timing?.totalTimeInMillis ?? null;
+    const latency = exchangeLatencyMs(summary, value);
     if (latency != null && Number.isFinite(latency)) {
       acc.latencies.push(latency);
       if (acc.maxLatencyMs == null || latency > acc.maxLatencyMs) {

@@ -2091,6 +2091,8 @@ interface McpFixtureOpts {
   error?: unknown;
   statusCode?: number;
   totalTimeInMillis?: number | null;
+  /** Sets MockServer's `x-mockserver-response-time-ms` header (forwarded/recorded path). */
+  responseTimeHeaderMs?: number;
 }
 
 /** Build a captured proxied request/response value that classifies as MCP. */
@@ -2100,8 +2102,13 @@ function mcpValue(opts: McpFixtureOpts = {}): Record<string, unknown> {
   if (opts.error !== undefined) responsePayload['error'] = opts.error;
   else responsePayload['result'] = { ok: true };
 
+  const responseHeaders: Array<{ name: string; values: string[] }> = [];
+  if (opts.responseTimeHeaderMs != null) {
+    responseHeaders.push({ name: 'x-mockserver-response-time-ms', values: [String(opts.responseTimeHeaderMs)] });
+  }
   const httpResponse: Record<string, unknown> = {
     statusCode: opts.statusCode ?? 200,
+    headers: responseHeaders,
     body: { type: 'JSON', json: JSON.stringify(responsePayload) },
   };
   if (opts.totalTimeInMillis != null) {
@@ -2208,6 +2215,26 @@ describe('aggregateMcpServerHealth', () => {
     const rows = aggregateMcpServerHealth([mcpValue({ host: null, totalTimeInMillis: 10 })]);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.server).toBe('(unknown host)');
+  });
+
+  it('falls back to the x-mockserver-response-time-ms header when no timing object is present', () => {
+    // Forwarded / recorded / replayed responses carry no full timing object but DO carry
+    // MockServer's measured response-time header — the panel must still show latency (and flag slow).
+    const rows = aggregateMcpServerHealth([
+      mcpValue({ host: 'forwarded.local', method: 'tools/list', responseTimeHeaderMs: 120 }),
+      mcpValue({ host: 'forwarded.local', method: 'navigate_page', responseTimeHeaderMs: 6000 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.maxLatencyMs).toBe(6000);
+    expect(rows[0]!.slowestMethod).toBe('navigate_page');
+    expect(rows[0]!.slow).toBe(true);
+  });
+
+  it('prefers the timing object over the response-time header when both are present', () => {
+    const rows = aggregateMcpServerHealth([
+      mcpValue({ host: 'both.local', totalTimeInMillis: 250, responseTimeHeaderMs: 9999 }),
+    ]);
+    expect(rows[0]!.maxLatencyMs).toBe(250);
   });
 
   it('sorts worst-first: errors, then slow latency, then healthy', () => {
