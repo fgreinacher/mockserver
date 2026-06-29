@@ -12,6 +12,7 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.mockserver.client.MockServerClient;
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.model.Body;
 import org.mockserver.model.Header;
@@ -35,6 +36,7 @@ import java.util.function.BooleanSupplier;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
+import static org.mockserver.configuration.Configuration.configuration;
 import static org.mockserver.model.HttpForward.forward;
 import static org.mockserver.model.HttpOverrideForwardedRequest.forwardOverriddenRequest;
 import static org.mockserver.model.HttpRequest.request;
@@ -154,6 +156,8 @@ public class StreamingProxyResponseIntegrationTest {
                 sendAndCloseResponse(ctx);
             } else if ("/binary-stream".equals(path)) {
                 sendBinaryStreamResponse(ctx);
+            } else if ("/sse-long-pause".equals(path)) {
+                sendLongPauseSseResponse(ctx);
             } else if ("/codex-stream".equals(path)) {
                 sendNoContentTypeSseResponse(ctx);
             } else if ("/codex-binary-stream".equals(path)) {
@@ -285,6 +289,33 @@ public class StreamingProxyResponseIntegrationTest {
                             .addListener(ChannelFutureListener.CLOSE));
                 }
             }, 2000, TimeUnit.MILLISECONDS);
+        }
+
+        /**
+         * A genuine {@code text/event-stream} SSE response with a LONG inter-chunk pause. Sends the
+         * response head + an early {@code data:} event immediately, then withholds the late event for
+         * 1500ms before completing the stream. The 1500ms gap is deliberately longer than the short
+         * {@code maxSocketTimeout} used by
+         * {@link #shouldNotTruncateForwardedStreamWhenStreamIdleTimeoutDisabledAndPauseExceedsSocketTimeout()},
+         * so that test is decisive: the socket read timeout would fire during the pause unless it is
+         * removed when the response switches to streaming.
+         */
+        private void sendLongPauseSseResponse(ChannelHandlerContext ctx) {
+            DefaultHttpResponse head = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+            head.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/event-stream");
+            head.headers().set(HttpHeaderNames.CACHE_CONTROL, "no-cache");
+            HttpUtil.setTransferEncodingChunked(head, true);
+            ctx.writeAndFlush(head);
+            ctx.writeAndFlush(new DefaultHttpContent(
+                Unpooled.copiedBuffer("data: early\n\n", StandardCharsets.UTF_8)));
+            ctx.executor().schedule(() -> {
+                if (ctx.channel().isActive()) {
+                    ctx.writeAndFlush(new DefaultHttpContent(
+                        Unpooled.copiedBuffer("data: late\n\n", StandardCharsets.UTF_8)))
+                        .addListener(f -> ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT)
+                            .addListener(ChannelFutureListener.CLOSE));
+                }
+            }, 1500, TimeUnit.MILLISECONDS);
         }
 
         /**
@@ -778,5 +809,82 @@ public class StreamingProxyResponseIntegrationTest {
             r.body, allOf(containsString("data: early"), containsString("data: late")));
         assertThat("without a streaming request the response is buffered until completion (~2s)",
             r.firstByteMs, greaterThanOrEqualTo(1500L));
+    }
+
+    @Test(timeout = 30000)
+    public void shouldNotTruncateForwardedStreamWhenStreamIdleTimeoutDisabledAndPauseExceedsSocketTimeout() throws Exception {
+        // Regression test for the streamIdleTimeoutSeconds=0 truncation fix (commit 8a803f9a9).
+        //
+        // streamIdleTimeoutSeconds is documented to REPLACE the per-request socket read timeout
+        // (maxSocketTimeout) for streaming responses, with 0 meaning "no idle bound" (unbounded stream).
+        // The bug: the socket read timeout was only removed inside the "streamIdleTimeoutSeconds > 0"
+        // branch, so setting it to 0 paradoxically left the short socket timeout armed and truncated a
+        // long-paused stream.
+        //
+        // Here a dedicated MockServer is configured with maxSocketTimeout=800ms AND
+        // streamIdleTimeoutSeconds=0, forwarding to an SSE upstream that sends an early event
+        // immediately then PAUSES 1500ms (comfortably > 800ms) before the late event. The forward path
+        // arms a ReadTimeoutHandler(800ms) on the non-pooled upstream channel; once the response switches
+        // to streaming the fix removes it, so with idle bound disabled the stream runs unbounded and the
+        // late event survives. WITHOUT the fix the 800ms read timeout fires during the 1500ms pause,
+        // tears down the upstream connection, and the late event is lost (stream truncated).
+        Configuration configuration = configuration()
+            .streamingResponsesEnabled(true)
+            .streamIdleTimeoutSeconds(0)
+            .maxSocketTimeoutInMillis(800L);
+        MockServer streamingForwardServer = new MockServer(configuration);
+        int streamingForwardPort = streamingForwardServer.getLocalPort();
+        MockServerClient streamingForwardClient = new MockServerClient("localhost", streamingForwardPort);
+        try {
+            streamingForwardClient
+                .when(request().withPath("/sse-long-pause"))
+                .forward(forward().withHost("localhost").withPort(upstreamPort));
+
+            String req = "GET /sse-long-pause HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Accept: text/event-stream\r\n" +
+                "Connection: close\r\n\r\n";
+
+            List<String> receivedLines = new ArrayList<>();
+            long startTime = System.currentTimeMillis();
+            long firstByteMs;
+            try (Socket socket = new Socket("localhost", streamingForwardPort)) {
+                socket.setSoTimeout(10000);
+                OutputStream output = socket.getOutputStream();
+                output.write(req.getBytes(StandardCharsets.UTF_8));
+                output.flush();
+
+                java.io.InputStream in = socket.getInputStream();
+                int first = in.read(); // blocks until the first relayed byte (head + early event)
+                firstByteMs = System.currentTimeMillis() - startTime;
+                StringBuilder sb = new StringBuilder();
+                if (first != -1) {
+                    sb.append((char) first);
+                    byte[] buf = new byte[4096];
+                    int n;
+                    while ((n = in.read(buf)) != -1) {
+                        sb.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+                    }
+                }
+                for (String line : sb.toString().split("\n")) {
+                    receivedLines.add(line);
+                }
+            }
+
+            String fullResponse = String.join("\n", receivedLines);
+            assertThat("response should contain HTTP 200", fullResponse, containsString("200"));
+            // Decisive assertions: BOTH events arrive. The late event only survives the 1500ms pause
+            // because the 800ms socket read timeout was removed on switching to streaming (the fix).
+            assertThat("should receive the early event", fullResponse, containsString("data: early"));
+            assertThat("should receive the late event (stream NOT truncated by the socket timeout during the pause)",
+                fullResponse, containsString("data: late"));
+            // The head + early event are relayed promptly (incrementally), well before the 1500ms
+            // completion — proving the relay streams rather than buffering to the end.
+            assertThat("response head should arrive promptly (streaming), not after the 1500ms pause",
+                firstByteMs, lessThan(1200L));
+        } finally {
+            stopQuietly(streamingForwardClient);
+            stopQuietly(streamingForwardServer);
+        }
     }
 }

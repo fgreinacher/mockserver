@@ -11,6 +11,7 @@ import org.mockserver.lifecycle.LifeCycle;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mock.HttpState;
+import org.mockserver.model.HttpRequest;
 import org.mockserver.scheduler.Scheduler;
 import org.mockserver.serialization.ObjectMapperFactory;
 
@@ -319,5 +320,142 @@ public class RecordLlmFixturesIntegrationTest {
         // Should have a warning about truncation, and be a static response (httpResponse, not httpSseResponse)
         assertThat("Should contain truncation warning", fixtureContent, containsString("truncated"));
         assertThat("Should be a static response", fixtureContent, containsString("httpResponse"));
+    }
+
+    /**
+     * Builds a recorded request that carries credential-bearing query parameters the
+     * default redactor masks (Gemini's {@code ?key=}, AWS SigV4 {@code X-Amz-Signature})
+     * plus a non-sensitive {@code alt=sse} parameter that must survive redaction.
+     */
+    private HttpRequest geminiRequestWithQueryCredentials() {
+        return request().withMethod("POST")
+            .withPath("/v1beta/models/gemini-pro:streamGenerateContent")
+            .withQueryStringParameter("key", "AIza-SUPER-SECRET")
+            .withQueryStringParameter("X-Amz-Signature", "deadbeefSECRET")
+            .withQueryStringParameter("alt", "sse")
+            .withHeader("Content-Type", "application/json");
+    }
+
+    /**
+     * Behaviour #1 (FixtureRedactor query-string masking, shipped in 965b68c02):
+     * credential-bearing query parameters must be masked by default in recorded
+     * fixtures, while a non-sensitive parameter value is preserved. Driven through
+     * the real record flow — no body fields configured, so record_llm_fixtures uses
+     * the default FixtureRedactor whose default sensitive query-param set applies.
+     */
+    @Test
+    public void shouldRedactSensitiveQueryStringCredentialsInRecordedFixture() throws Exception {
+        // given -- forwarded traffic whose URL carries query-string credentials
+        httpState.log(new LogEntry()
+            .setType(FORWARDED_REQUEST)
+            .setLogLevel(org.slf4j.event.Level.INFO)
+            .setHttpRequest(geminiRequestWithQueryCredentials())
+            .setHttpResponse(response().withStatusCode(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}"))
+            .setExpectation(
+                geminiRequestWithQueryCredentials(),
+                response().withStatusCode(200)
+                    .withHeader("Content-Type", "application/json")
+                    .withBody("{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]}}]}"))
+            .setMessageFormat("returning response:{}for forwarded request")
+            .setArguments(response().withStatusCode(200))
+        );
+
+        // poll until the recorded expectation is visible
+        pollUntilTrue(() -> retrieveRecordedExpectationCount() >= 1);
+
+        // when -- record to fixture file (default redactor: no body fields configured)
+        File fixtureFile = new File(tempFolder.getRoot(), "query-cred-fixture.json");
+        ObjectNode recordParams = objectMapper.createObjectNode();
+        recordParams.put("path", fixtureFile.getAbsolutePath());
+        JsonNode recordResult = toolRegistry.callTool("record_llm_fixtures", recordParams);
+
+        // then -- fixture file written
+        assertThat(recordResult.path("status").asText(), is("written"));
+        assertThat(recordResult.path("count").asInt(), is(1));
+        assertThat(fixtureFile.exists(), is(true));
+
+        String fixtureContent = new String(Files.readAllBytes(fixtureFile.toPath()), StandardCharsets.UTF_8);
+
+        // sensitive query-param values masked, secrets absent anywhere in the file
+        assertThat("Sensitive query params should be redacted", fixtureContent, containsString("***REDACTED***"));
+        assertThat("Gemini API key must NOT appear", fixtureContent, not(containsString("AIza-SUPER-SECRET")));
+        assertThat("SigV4 signature must NOT appear", fixtureContent, not(containsString("deadbeefSECRET")));
+
+        // non-sensitive query param preserved (name and value)
+        assertThat("Non-sensitive param name preserved", fixtureContent, containsString("alt"));
+        assertThat("Non-sensitive param value preserved", fixtureContent, containsString("sse"));
+    }
+
+    /**
+     * Behaviour #2 (FixtureRedactor SSE-data-payload field masking, shipped in
+     * 965b68c02): a configured sensitive body field carried inside each SSE
+     * {@code data:} JSON payload must be redacted per-payload, preserving the
+     * surrounding event structure (other fields and the {@code [DONE]} marker)
+     * rather than destroying the body wholesale.
+     * <p>
+     * Driven through the real record flow with the record tool's {@code redactBodyFields}
+     * parameter. The SSE-body string path in FixtureRedactor only fires when the
+     * response is stored as a static body (a converted httpSseResponse only redacts
+     * headers) — the realistic capture that yields a static SSE body is a truncated
+     * stream, so the response is marked {@code x-mockserver-stream-truncated}.
+     */
+    @Test
+    public void shouldRedactConfiguredFieldInsideRecordedSseDataPayload() throws Exception {
+        // given -- a (truncated) SSE capture whose data: payloads carry an api_key,
+        // plus a [DONE] marker; truncation keeps it a static string body so the
+        // FixtureRedactor SSE-body redaction path applies.
+        String sseBody =
+            "event: message\n" +
+                "data: {\"api_key\":\"sk-LEAK-1234\",\"text\":\"hi\"}\n\n" +
+                "event: message\n" +
+                "data: {\"api_key\":\"sk-LEAK-1234\",\"text\":\" there\"}\n\n" +
+                "data: [DONE]\n\n";
+
+        httpState.log(new LogEntry()
+            .setType(FORWARDED_REQUEST)
+            .setLogLevel(org.slf4j.event.Level.INFO)
+            .setHttpRequest(request().withMethod("POST").withPath("/v1/messages"))
+            .setHttpResponse(response().withStatusCode(200)
+                .withHeader("Content-Type", "text/event-stream")
+                .withHeader("x-mockserver-streamed", "true")
+                .withHeader("x-mockserver-stream-truncated", "true")
+                .withBody(sseBody))
+            .setExpectation(
+                request().withMethod("POST").withPath("/v1/messages"),
+                response().withStatusCode(200)
+                    .withHeader("Content-Type", "text/event-stream")
+                    .withHeader("x-mockserver-streamed", "true")
+                    .withHeader("x-mockserver-stream-truncated", "true")
+                    .withBody(sseBody))
+            .setMessageFormat("returning response:{}for forwarded request")
+            .setArguments(response().withStatusCode(200))
+        );
+
+        // poll until the recorded expectation is visible
+        pollUntilTrue(() -> retrieveRecordedExpectationCount() >= 1);
+
+        // when -- record with api_key configured as a sensitive body field
+        File fixtureFile = new File(tempFolder.getRoot(), "sse-field-fixture.json");
+        ObjectNode recordParams = objectMapper.createObjectNode();
+        recordParams.put("path", fixtureFile.getAbsolutePath());
+        recordParams.putArray("redactBodyFields").add("api_key");
+        JsonNode recordResult = toolRegistry.callTool("record_llm_fixtures", recordParams);
+
+        // then -- fixture file written
+        assertThat(recordResult.path("status").asText(), is("written"));
+        assertThat(recordResult.path("count").asInt(), is(1));
+        assertThat(fixtureFile.exists(), is(true));
+
+        String fixtureContent = new String(Files.readAllBytes(fixtureFile.toPath()), StandardCharsets.UTF_8);
+
+        // the configured field value is masked per-payload, the secret is gone
+        assertThat("api_key value should be redacted", fixtureContent, containsString("***REDACTED***"));
+        assertThat("Leaked api_key must NOT appear", fixtureContent, not(containsString("sk-LEAK-1234")));
+
+        // surrounding SSE structure preserved (other field content and [DONE] marker survive)
+        assertThat("Non-sensitive text content preserved", fixtureContent, containsString("hi"));
+        assertThat("DONE marker preserved", fixtureContent, containsString("[DONE]"));
     }
 }
