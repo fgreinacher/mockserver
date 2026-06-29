@@ -88,7 +88,7 @@ const SELF_HOST = TARGET.hostname;
 const SELF_PORT = Number(TARGET.port || (TARGET.protocol === 'https:' ? 443 : 80));
 const SELF_SCHEME = TARGET.protocol === 'https:' ? 'HTTPS' : 'HTTP';
 
-const counts = { expectations: 0, requests: 0, unmatched: 0, serviceChaos: 0, tcpChaos: 0, grpcHealth: 0, grpcChaos: 0, experiments: 0, drift: 0, wasmModules: 0, scenarios: 0, grpcServices: 0, sideEffects: 0, cassettes: 0, asyncChannels: 0, mcpCalls: 0, loadScenario: 0 };
+const counts = { expectations: 0, requests: 0, unmatched: 0, serviceChaos: 0, tcpChaos: 0, grpcHealth: 0, grpcChaos: 0, experiments: 0, drift: 0, wasmModules: 0, scenarios: 0, grpcServices: 0, sideEffects: 0, cassettes: 0, asyncChannels: 0, mcpCalls: 0, mcpServerCalls: 0, loadScenario: 0 };
 function log(msg) { if (!quiet) console.log(msg); }
 
 // ---------------------------------------------------------------------------
@@ -1488,6 +1488,166 @@ async function asyncApiExamples() {
 }
 
 // ---------------------------------------------------------------------------
+// MCP server health (AI · MCP Health panel)
+// ---------------------------------------------------------------------------
+// Populates the dashboard's "MCP Health" panel, which aggregates captured MCP
+// (JSON-RPC) traffic PER SERVER (grouped by the request Host header) and shows
+// call count, error rate, and latency (median / p95 / max) so a user can see
+// which MCP server a coding-assistant CLI talks to is the bottleneck.
+//
+// To make that realistic each call is SELF-FORWARDED (httpOverrideForwardedRequest
+// back to a mock on THIS server) so the recorded exchange carries real round-trip
+// timing (including the target mock's `delay`) — mocked-only responses have no
+// timing. The requests are sent with raw node:http so a distinct Host header can be
+// set per server (the WHATWG fetch used elsewhere forbids overriding Host), which is
+// what the panel groups by. Four servers give a worst-first spread: a slow one, an
+// error-prone one, a moderate one with a transport error, and a healthy one.
+const MCP_HEALTH_SERVERS = [
+  {
+    host: 'chrome-devtools-mcp',
+    slug: 'cdp',
+    calls: [
+      { method: 'initialize', delayMs: 60 },
+      { method: 'tools/list', delayMs: 80 },
+      { method: 'tools/call', tool: 'take_snapshot', delayMs: 110 },
+      { method: 'tools/call', tool: 'list_console_messages', delayMs: 90 },
+      // the real-world villain: one slow browser navigation drags p95 over the 5s slow threshold
+      { method: 'tools/call', tool: 'navigate_page', delayMs: 5500 },
+    ],
+  },
+  {
+    host: 'filesystem-mcp',
+    slug: 'fs',
+    calls: [
+      { method: 'initialize', delayMs: 30 },
+      { method: 'tools/list', delayMs: 35 },
+      { method: 'tools/call', tool: 'read_file', delayMs: 45 },
+      { method: 'tools/call', tool: 'list_directory', delayMs: 40 },
+      { method: 'resources/read', delayMs: 50 },
+    ],
+  },
+  {
+    host: 'github-mcp',
+    slug: 'gh',
+    calls: [
+      { method: 'initialize', delayMs: 90 },
+      { method: 'tools/list', delayMs: 120 },
+      { method: 'tools/call', tool: 'search_issues', delayMs: 140 },
+      // a couple of JSON-RPC error responses (HTTP 200 with an `error` member) -> high error rate
+      { method: 'tools/call', tool: 'create_pull_request', delayMs: 130, error: 'jsonrpc' },
+      { method: 'tools/call', tool: 'merge_pull_request', delayMs: 110, error: 'jsonrpc' },
+    ],
+  },
+  {
+    host: 'devbot-mcp',
+    slug: 'devbot',
+    calls: [
+      { method: 'initialize', delayMs: 600 },
+      { method: 'tools/list', delayMs: 700 },
+      { method: 'tools/call', tool: 'run_query', delayMs: 850 },
+      { method: 'tools/call', tool: 'fetch_context', delayMs: 750 },
+      // one transport-level failure (HTTP 503) -> counted as an error via non-2xx status
+      { method: 'tools/call', tool: 'deploy_preview', delayMs: 300, error: 'http503' },
+    ],
+  },
+];
+
+function mcpJsonRpcRequest(id, call) {
+  return {
+    jsonrpc: '2.0',
+    id,
+    method: call.method,
+    params: call.tool ? { name: call.tool, arguments: {} } : {},
+  };
+}
+
+function mcpJsonRpcResponse(id, call) {
+  if (call.error === 'jsonrpc' || call.error === 'http503') {
+    return { jsonrpc: '2.0', id, error: { code: -32603, message: `MCP call failed: ${call.tool || call.method}` } };
+  }
+  return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `ok: ${call.tool || call.method}` }] } };
+}
+
+// Send a single MCP JSON-RPC POST with an explicit Host header via raw node:http
+// (fetch forbids overriding Host). HTTP only — the demo dashboard server is plain HTTP.
+function mcpForwardedCall(host, path, jsonRpcBody) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify(jsonRpcBody);
+    const req = http.request({
+      hostname: SELF_HOST,
+      port: SELF_PORT,
+      method: 'POST',
+      path,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        Host: host,
+      },
+    }, (res) => {
+      res.on('data', () => {});
+      res.on('end', () => resolve(res.statusCode));
+    });
+    req.on('error', () => resolve(0));
+    req.write(body);
+    req.end();
+  });
+}
+
+async function mcpServerHealthExpectations() {
+  log('\n→ MCP server health expectations (self-forwarded MCP servers for the MCP Health panel)');
+  if (SELF_SCHEME !== 'HTTP') {
+    log('   (skipped — MCP Health demo lane needs a plain-HTTP dashboard server)');
+    return;
+  }
+  let id = 0;
+  for (const server of MCP_HEALTH_SERVERS) {
+    for (let i = 0; i < server.calls.length; i++) {
+      const call = server.calls[i];
+      id++;
+      const fwdPath = `/mcp-fwd/${server.slug}/${i}`;
+      const upPath = `/mcp-up/${server.slug}/${i}`;
+      // inbound request -> forwarded back to the self-hosted target mock (gives real timing)
+      await expectation(`MCP forward ${server.host} ${call.method}`, {
+        httpRequest: { method: 'POST', path: fwdPath },
+        httpOverrideForwardedRequest: {
+          httpRequest: {
+            path: upPath,
+            socketAddress: { host: SELF_HOST, port: SELF_PORT, scheme: SELF_SCHEME },
+          },
+        },
+      });
+      // the target MCP "server" mock: a JSON-RPC response with the call's latency / error
+      await expectation(`MCP upstream ${server.host} ${call.method}`, {
+        httpRequest: { method: 'POST', path: upPath },
+        httpResponse: {
+          statusCode: call.error === 'http503' ? 503 : 200,
+          headers: { 'content-type': ['application/json'] },
+          body: JSON.stringify(mcpJsonRpcResponse(id, call)),
+          delay: { timeUnit: 'MILLISECONDS', value: call.delayMs },
+        },
+      });
+    }
+  }
+}
+
+async function mcpServerHealthTraffic() {
+  log('\n→ MCP server health traffic (per-server JSON-RPC calls -> MCP Health panel)');
+  if (SELF_SCHEME !== 'HTTP') return;
+  let id = 0;
+  for (const server of MCP_HEALTH_SERVERS) {
+    for (let i = 0; i < server.calls.length; i++) {
+      const call = server.calls[i];
+      id++;
+      const fwdPath = `/mcp-fwd/${server.slug}/${i}`;
+      const status = await mcpForwardedCall(server.host, fwdPath, mcpJsonRpcRequest(id, call));
+      counts.requests++;
+      counts.mcpServerCalls++;
+      log(`   > POST ${fwdPath}  (Host: ${server.host}, ${call.method})  ->  ${status}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // MCP tool calls (Tools · MCP panel + Metrics · "MCP tool calls" chart)
 // ---------------------------------------------------------------------------
 // Drives a handful of READ-ONLY MCP tools over POST /mockserver/mcp so the
@@ -1930,11 +2090,13 @@ async function main() {
   await grpcDescriptorExample();
   await asyncApiExamples();
   await driftExamples();
+  await mcpServerHealthExpectations();
   await plainHttpTraffic();
   await proxyTraffic();
   await llmTraffic();
   await agentLoops();
   await optimisationShowcase();
+  await mcpServerHealthTraffic();
   await mcpToolCallExamples();
   await matchedShowcaseTraffic();
   await loadInjectionExamples();
@@ -1957,6 +2119,7 @@ async function main() {
   log(` Drift scenarios      : ${counts.drift} (status / schema-added / schema-removed+type / header)`);
   log(` AsyncAPI channels    : ${counts.asyncChannels}${process.env.DEMO_MQTT_BROKER_URL ? ' (live MQTT broker — Recorded Messages ticking up)' : ' (broker-less; Recorded Messages need --with-broker)'}`);
   log(` MCP tool calls       : ${counts.mcpCalls} (read-only tools; Metrics · "MCP tool calls" chart + Tools · MCP panel)`);
+  log(` MCP server calls     : ${counts.mcpServerCalls} across ${MCP_HEALTH_SERVERS.length} servers (per-server latency/errors in AI · MCP Health — chrome-devtools-mcp is the slow one)`);
   if (counts.loadScenario) {
     log(` Load scenarios       : ${counts.loadScenario} loaded+triggered (checkout journey now + a 20s-delayed background poller; concurrent runs live in the Performance tab)`);
   }
@@ -1978,6 +2141,7 @@ async function main() {
   log('   Traffic            — recorded + proxied (forwarded) requests, incl. a lane per LLM provider + token/cost');
   log('   Sessions           — agent-001 / agent-002 loops + call graphs; Scenarios panel lists the seeded scenario state machines');
   log('   Optimise           — LLM cost-optimisation brief from a crafted 7-call support-agent run; all six signals fire (REPEATED_SYSTEM_PROMPT, LARGE_STATIC_CONTEXT_RESENT, DETERMINISTIC_TOOL_CALL, OVERSIZED_TOOL_RESULT, OUTPUT_TOKEN_BLOAT, DUPLICATE_CONSECUTIVE_CALL)');
+  log('   MCP Health         — per-MCP-server latency + error rate across 4 servers (chrome-devtools-mcp flagged SLOW, github-mcp high error rate), worst-first');
   log('   Chaos              — HTTP service chaos (incl. GraphQL-semantic) + gRPC chaos (health + fault injection with streaming/trailer faults) + TCP-layer chaos + a looping multi-stage Experiment');
   log('   Drift              — schema / status / header drift records from proxied-vs-stub comparison');
   log('   AsyncAPI           — Tools · AsyncAPI Broker Mock: loaded spec + Channels table (5 channels, varied schema/example counts)');
