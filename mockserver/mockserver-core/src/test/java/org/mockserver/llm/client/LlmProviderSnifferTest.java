@@ -460,4 +460,164 @@ public class LlmProviderSnifferTest {
             .withBody("{\"model\":\"claude-x\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}");
         assertThat(LlmProviderSniffer.detectForAnalysis(req, null), is(Optional.of(Provider.ANTHROPIC)));
     }
+
+    // --- Embeddings / moderations must NOT be mis-classified as OpenAI Responses ---
+    // A STRING-valued "input" is embeddings/moderations; only an "input" ARRAY (or a
+    // Responses-distinctive field) is the Responses API.
+
+    @Test
+    public void embeddingsRequestIsNotClassifiedAsResponses() {
+        HttpRequest req = request()
+            .withHeader("Host", "gateway.internal.example")
+            .withPath("/v1/embeddings")
+            .withBody("{\"model\":\"text-embedding-3-small\",\"input\":\"hi\"}");
+        assertThat(LlmProviderSniffer.sniffByBodyShape(req, null), is(Optional.empty()));
+        assertThat(LlmProviderSniffer.detectForAnalysis(req, null), is(Optional.empty()));
+    }
+
+    @Test
+    public void moderationsRequestIsNotClassifiedAsResponses() {
+        HttpRequest req = request()
+            .withHeader("Host", "gateway.internal.example")
+            .withPath("/v1/moderations")
+            .withBody("{\"model\":\"omni-moderation-latest\",\"input\":\"some text to score\"}");
+        assertThat(LlmProviderSniffer.sniffByBodyShape(req, null), is(Optional.empty()));
+    }
+
+    @Test
+    public void responsesRequestWithInputArrayIsClassifiedFromRequestBodyAlone() {
+        // No response body — the "input" ARRAY in the request still identifies Responses.
+        HttpRequest req = request()
+            .withHeader("Host", "gateway.internal.example")
+            .withPath("/v2/agent/run")
+            .withBody("{\"model\":\"gpt-x\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]}]}");
+        assertThat(LlmProviderSniffer.sniffByBodyShape(req, null), is(Optional.of(Provider.OPENAI_RESPONSES)));
+    }
+
+    @Test
+    public void responsesRequestWithPreviousResponseIdIsClassified() {
+        // Responses-distinctive field identifies it even with a string-valued input.
+        HttpRequest req = request()
+            .withHeader("Host", "gateway.internal.example")
+            .withPath("/v2/agent/run")
+            .withBody("{\"model\":\"gpt-x\",\"input\":\"hi\",\"previous_response_id\":\"resp_123\"}");
+        assertThat(LlmProviderSniffer.sniffByBodyShape(req, null), is(Optional.of(Provider.OPENAI_RESPONSES)));
+    }
+
+    @Test
+    public void responsesRequestWithInstructionsIsClassified() {
+        HttpRequest req = request()
+            .withHeader("Host", "gateway.internal.example")
+            .withPath("/v2/agent/run")
+            .withBody("{\"model\":\"gpt-x\",\"input\":\"hi\",\"instructions\":\"be terse\"}");
+        assertThat(LlmProviderSniffer.sniffByBodyShape(req, null), is(Optional.of(Provider.OPENAI_RESPONSES)));
+    }
+
+    @Test
+    public void chatCompletionsRequiresMessagesArrayNotBareSubstring() {
+        // A string-valued "messages" must NOT be classified as OpenAI Chat Completions.
+        HttpRequest req = request()
+            .withHeader("Host", "gateway.internal.example")
+            .withPath("/v2/agent/run")
+            .withBody("{\"model\":\"gpt-x\",\"messages\":\"not an array\"}");
+        assertThat(LlmProviderSniffer.sniffByBodyShape(req, null), is(Optional.empty()));
+    }
+
+    // --- Cohere / Voyage / Vertex host detection ---
+
+    @Test
+    public void detectsCohereByHost() {
+        assertThat(LlmProviderSniffer.sniffByHost("api.cohere.com"), is(Optional.of(Provider.COHERE)));
+    }
+
+    @Test
+    public void detectsVoyageByHost() {
+        assertThat(LlmProviderSniffer.sniffByHost("api.voyageai.com"), is(Optional.of(Provider.VOYAGE)));
+    }
+
+    @Test
+    public void detectsVertexGeminiByHost() {
+        assertThat(LlmProviderSniffer.sniffByHost("us-central1-aiplatform.googleapis.com"),
+            is(Optional.of(Provider.GEMINI)));
+    }
+
+    @Test
+    public void voyageHostDisambiguatesSharedRerankPath() {
+        // Both Cohere and Voyage use /v1/rerank; the host decides which one.
+        assertThat(LlmProviderSniffer.sniffByHostAndPath("api.voyageai.com", "/v1/rerank"),
+            is(Optional.of(Provider.VOYAGE)));
+        assertThat(LlmProviderSniffer.sniffByHostAndPath("api.cohere.com", "/v1/rerank"),
+            is(Optional.of(Provider.COHERE)));
+    }
+
+    // --- Cohere / Vertex / Bedrock-Converse path detection (host unknown) ---
+
+    @Test
+    public void sniffByPathDetectsCohereRerank() {
+        assertThat(LlmProviderSniffer.sniffByPath(request().withPath("/v1/rerank")), is(Optional.of(Provider.COHERE)));
+    }
+
+    @Test
+    public void sniffByPathDetectsCohereChat() {
+        assertThat(LlmProviderSniffer.sniffByPath(request().withPath("/v1/chat")), is(Optional.of(Provider.COHERE)));
+    }
+
+    @Test
+    public void sniffByPathKeepsChatCompletionsAsOpenAi() {
+        assertThat(LlmProviderSniffer.sniffByPath(request().withPath("/v1/chat/completions")),
+            is(Optional.of(Provider.OPENAI)));
+    }
+
+    @Test
+    public void sniffByPathDetectsVertexGemini() {
+        assertThat(LlmProviderSniffer.sniffByPath(request().withPath("/publishers/google/models/gemini-1.5-pro:generateContent")),
+            is(Optional.of(Provider.GEMINI)));
+    }
+
+    @Test
+    public void sniffByPathDetectsBedrockConverseForNonAnthropicModel() {
+        assertThat(LlmProviderSniffer.sniffByPath(request().withPath("/model/cohere.command-r-v1:0/converse")),
+            is(Optional.of(Provider.BEDROCK)));
+    }
+
+    @Test
+    public void sniffByPathDetectsBedrockInvokeWithResponseStream() {
+        assertThat(LlmProviderSniffer.sniffByPath(request().withPath("/model/anthropic.claude-3/invoke-with-response-stream")),
+            is(Optional.of(Provider.BEDROCK)));
+    }
+
+    // --- case-insensitive path matching ---
+
+    @Test
+    public void sniffByPathIsCaseInsensitive() {
+        assertThat(LlmProviderSniffer.sniffByPath(request().withPath("/V1/MESSAGES")), is(Optional.of(Provider.ANTHROPIC)));
+        assertThat(LlmProviderSniffer.sniffByPath(request().withPath("/V1/RESPONSES")), is(Optional.of(Provider.OPENAI_RESPONSES)));
+    }
+
+    @Test
+    public void sniffByPathDoesNotMatchCodexResponsesWithoutSegmentBoundary() {
+        assertThat(LlmProviderSniffer.sniffByPath(request().withPath("/mycodex/responses")), is(Optional.empty()));
+    }
+
+    // --- Cohere rerank body-shape detection ---
+
+    @Test
+    public void detectForAnalysisRecognisesCohereRerankByRequestBody() {
+        HttpRequest req = request()
+            .withHeader("Host", "gateway.internal.example")
+            .withPath("/v2/score")
+            .withBody("{\"query\":\"what is mockserver\",\"documents\":[\"a mock server\",\"a real server\"]}");
+        assertThat(LlmProviderSniffer.detectForAnalysis(req, null), is(Optional.of(Provider.COHERE)));
+    }
+
+    @Test
+    public void detectForAnalysisRecognisesCohereRerankByResponseBody() {
+        HttpRequest req = request()
+            .withHeader("Host", "gateway.internal.example")
+            .withPath("/v2/score")
+            .withBody("{}");
+        org.mockserver.model.HttpResponse res = org.mockserver.model.HttpResponse.response()
+            .withBody("{\"results\":[{\"index\":0,\"relevance_score\":0.97},{\"index\":1,\"relevance_score\":0.12}]}");
+        assertThat(LlmProviderSniffer.detectForAnalysis(req, res), is(Optional.of(Provider.COHERE)));
+    }
 }

@@ -142,4 +142,82 @@ public class ProviderDetectorTest {
         assertThat(ProviderDetector.detectFromPath("/model/anthropic.claude-v2/invoke"),
             is(Optional.of(Provider.BEDROCK)));
     }
+
+    // --- Bedrock Converse + non-Anthropic models (broadened path) ---
+
+    @Test
+    public void detectsBedrockConverseForNonAnthropicModel() {
+        assertThat(ProviderDetector.detectFromPath("/model/cohere.command-r-v1:0/converse"),
+            is(Optional.of(Provider.BEDROCK)));
+    }
+
+    @Test
+    public void detectsBedrockConverseStream() {
+        assertThat(ProviderDetector.detectFromPath("/model/meta.llama3-70b/converse-stream"),
+            is(Optional.of(Provider.BEDROCK)));
+    }
+
+    @Test
+    public void detectsBedrockInvokeWithResponseStream() {
+        assertThat(ProviderDetector.detectFromPath("/model/anthropic.claude-3-sonnet/invoke-with-response-stream"),
+            is(Optional.of(Provider.BEDROCK)));
+    }
+
+    // --- Vertex AI Gemini (publisher-model path) ---
+
+    @Test
+    public void detectsVertexGeminiFromPublisherPath() {
+        assertThat(ProviderDetector.detectFromPath("/publishers/google/models/gemini-1.5-pro:generateContent"),
+            is(Optional.of(Provider.GEMINI)));
+    }
+
+    @Test
+    public void detectsVertexGeminiStreamFromPublisherPath() {
+        assertThat(ProviderDetector.detectFromPath("/v1/projects/p/locations/l/publishers/google/models/gemini-2.0-flash:streamGenerateContent"),
+            is(Optional.of(Provider.GEMINI)));
+    }
+
+    // --- Cohere / Voyage rerank + Cohere chat ---
+
+    @Test
+    public void detectsCohereFromRerankPath() {
+        assertThat(ProviderDetector.detectFromPath("/v1/rerank"), is(Optional.of(Provider.COHERE)));
+    }
+
+    @Test
+    public void detectsCohereFromChatPath() {
+        // /v1/chat as a terminal segment is Cohere's chat endpoint, NOT chat/completions.
+        assertThat(ProviderDetector.detectFromPath("/v1/chat"), is(Optional.of(Provider.COHERE)));
+    }
+
+    @Test
+    public void chatCompletionsIsOpenAiNotCohere() {
+        // /v1/chat/completions must remain OpenAI even though it starts with /v1/chat.
+        assertThat(ProviderDetector.detectFromPath("/v1/chat/completions"), is(Optional.of(Provider.OPENAI)));
+    }
+
+    // --- case-insensitive path matching (consistency with sniffByPath) ---
+
+    @Test
+    public void detectsAnthropicFromUpperCasePath() {
+        assertThat(ProviderDetector.detectFromPath("/V1/MESSAGES"), is(Optional.of(Provider.ANTHROPIC)));
+    }
+
+    @Test
+    public void detectsOpenAiFromUpperCaseChatCompletionsPath() {
+        assertThat(ProviderDetector.detectFromPath("/V1/CHAT/COMPLETIONS"), is(Optional.of(Provider.OPENAI)));
+    }
+
+    @Test
+    public void detectsOpenAiResponsesFromUpperCasePath() {
+        assertThat(ProviderDetector.detectFromPath("/V1/RESPONSES"), is(Optional.of(Provider.OPENAI_RESPONSES)));
+    }
+
+    // --- codex/responses anchored to a path-segment boundary ---
+
+    @Test
+    public void doesNotMatchCodexResponsesWithoutSegmentBoundary() {
+        // /mycodex/responses must NOT be classified as OpenAI Responses.
+        assertThat(ProviderDetector.detectFromPath("/mycodex/responses"), is(Optional.empty()));
+    }
 }

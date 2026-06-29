@@ -13,7 +13,7 @@ import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.httpclient.NettyHttpClient;
 import org.mockserver.llm.IsolationSource;
 import org.mockserver.llm.ProviderCodecRegistry;
-import org.mockserver.llm.ProviderDetector;
+import org.mockserver.llm.client.LlmProviderSniffer;
 import org.mockserver.llm.analysis.AgentRunAnalyzer;
 import org.mockserver.llm.client.LlmBackend;
 import org.mockserver.llm.client.LlmBackendResolver;
@@ -4198,7 +4198,18 @@ public class McpToolRegistry {
     private Provider resolveProviderOrAuto(JsonNode params, List<HttpRequest> requests) {
         String providerStr = params.path("provider").asText(null);
         if (providerStr != null && "AUTO".equalsIgnoreCase(providerStr.trim())) {
-            return ProviderDetector.detectFromRequests(requests).orElse(null);
+            // Route AUTO detection through the analysis sniffer so it uses host +
+            // request-body shape (not path alone), matching the Optimise report and
+            // dashboard. Response bodies are not readily available here, so pass null.
+            if (requests != null) {
+                for (HttpRequest request : requests) {
+                    Provider detected = LlmProviderSniffer.detectForAnalysis(request, null).orElse(null);
+                    if (detected != null) {
+                        return detected;
+                    }
+                }
+            }
+            return null;
         }
         return parseProviderParam(params);
     }
