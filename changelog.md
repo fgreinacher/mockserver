@@ -227,6 +227,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forward connection to streaming, the per-request socket read timeout (`maxSocketTimeout`, default 20s) is now
   replaced by the stream-appropriate idle bound (`streamIdleTimeoutSeconds`, default 60s), so a streaming LLM
   response that pauses longer than 20s between chunks (model reasoning) is not killed mid-stream.
+- **A streamed proxy response with no `Content-Type` is logged as readable text, not empty binary.** The captured
+  body of a streamed forward response with no content-type (opencode's OpenAI Codex SSE backend) was stored as a
+  `BINARY` body, so it appeared empty in the dashboard's LLM Traces / Optimise text views. The captured bytes are
+  now sniffed when no content-type is present — UTF-8 text (SSE/JSON) is stored as a readable `STRING`, while
+  genuinely binary streams stay `BINARY`. Content-typed responses are unchanged.
 - **Forward DNS resolution moved off the calling thread.** Forward actions hand the connect path an unresolved
   address so DNS runs on the Netty event loop; SSRF validation still resolves and rejects private/loopback
   targets first, and a missing SSRF guard was added to the forward-validate path.

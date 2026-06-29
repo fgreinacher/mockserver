@@ -156,6 +156,8 @@ public class StreamingProxyResponseIntegrationTest {
                 sendBinaryStreamResponse(ctx);
             } else if ("/codex-stream".equals(path)) {
                 sendNoContentTypeSseResponse(ctx);
+            } else if ("/codex-binary-stream".equals(path)) {
+                sendNoContentTypeBinaryStreamResponse(ctx);
             } else {
                 DefaultFullHttpResponse resp = new DefaultFullHttpResponse(
                     HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_FOUND,
@@ -283,6 +285,22 @@ public class StreamingProxyResponseIntegrationTest {
                             .addListener(ChannelFutureListener.CLOSE));
                 }
             }, 2000, TimeUnit.MILLISECONDS);
+        }
+
+        /**
+         * Like {@link #sendNoContentTypeSseResponse} but streams genuinely binary bytes (with a
+         * NUL/control byte) and still no Content-Type. Guards the no-Content-Type body sniffing:
+         * such a stream must be logged as BINARY, not coerced into a STRING.
+         */
+        private void sendNoContentTypeBinaryStreamResponse(ChannelHandlerContext ctx) {
+            DefaultHttpResponse head = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+            // Deliberately NO Content-Type.
+            HttpUtil.setTransferEncodingChunked(head, true);
+            ctx.writeAndFlush(head);
+            byte[] binaryData = new byte[]{0x00, 0x01, 0x02, (byte) 0xFF, (byte) 0xFE, (byte) 0xFD};
+            ctx.writeAndFlush(new DefaultHttpContent(Unpooled.copiedBuffer(binaryData)))
+                .addListener(f -> ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT)
+                    .addListener(ChannelFutureListener.CLOSE));
         }
 
         private void scheduleChunks(ChannelHandlerContext ctx, String[] chunks, int index, long delayMs, boolean closeAfterLast) {
@@ -687,6 +705,56 @@ public class StreamingProxyResponseIntegrationTest {
         // proving the stream was relayed incrementally (not buffered) despite no content-type.
         assertThat("response headers should arrive promptly (streaming), not after the 2s body delay",
             r.firstByteMs, lessThan(1500L));
+
+        // The recorded body must capture the streamed SSE text even though the upstream sent no
+        // Content-Type. Regression guard for the opencode/Codex LLM-trace bug where the streamed
+        // forward logged an empty (4-byte BINARY "null") body instead of the SSE event text.
+        pollUntilTrue(() -> mockServerClient.retrieveRecordedRequestsAndResponses(
+            request().withPath("/codex-stream")).length >= 1);
+        LogEventRequestAndResponse[] recorded = mockServerClient.retrieveRecordedRequestsAndResponses(
+            request().withPath("/codex-stream"));
+        assertThat("should have recorded at least one codex-stream request", recorded.length, greaterThanOrEqualTo(1));
+        HttpResponse loggedResponse = recorded[0].getHttpResponse();
+        assertThat("logged response should not be null", loggedResponse, notNullValue());
+        assertThat("logged response should have a body", loggedResponse.getBody(), notNullValue());
+        // A text SSE stream with no Content-Type must still be logged as STRING, not BINARY.
+        assertThat("no-content-type SSE streaming body should be logged as STRING, not BINARY",
+            loggedResponse.getBody().getType(), is(Body.Type.STRING));
+        String bodyString = loggedResponse.getBodyAsString();
+        assertThat("logged body should contain the early SSE event text",
+            bodyString, containsString("data: early"));
+        assertThat("logged body should contain the late SSE event text",
+            bodyString, containsString("data: late"));
+    }
+
+    @Test
+    public void shouldLogNoContentTypeBinaryStreamAsBinary() throws Exception {
+        // Guard for the no-Content-Type body sniffing: a streamed response with no Content-Type
+        // whose bytes are genuinely binary (contain NUL/control bytes) must stay BINARY, not be
+        // coerced into a STRING by the text heuristic that recovers SSE/JSON streams.
+        mockServerClient
+            .when(request().withPath("/codex-binary-stream"))
+            .forward(forward().withHost("localhost").withPort(upstreamPort));
+
+        String body = "{\"stream\":true}";
+        String req = "POST /codex-binary-stream HTTP/1.1\r\n" +
+            "Host: localhost\r\n" +
+            "Content-Type: application/json\r\n" +
+            "Content-Length: " + body.getBytes(StandardCharsets.UTF_8).length + "\r\n" +
+            "Connection: close\r\n\r\n" + body;
+
+        sendAndMeasure(req, 10000);
+
+        pollUntilTrue(() -> mockServerClient.retrieveRecordedRequestsAndResponses(
+            request().withPath("/codex-binary-stream")).length >= 1);
+        LogEventRequestAndResponse[] recorded = mockServerClient.retrieveRecordedRequestsAndResponses(
+            request().withPath("/codex-binary-stream"));
+        assertThat("should have recorded at least one codex-binary-stream request",
+            recorded.length, greaterThanOrEqualTo(1));
+        HttpResponse loggedResponse = recorded[0].getHttpResponse();
+        assertThat("logged response should have a body", loggedResponse.getBody(), notNullValue());
+        assertThat("genuinely binary no-content-type stream should be logged as BINARY",
+            loggedResponse.getBody().getType(), is(Body.Type.BINARY));
     }
 
     @Test

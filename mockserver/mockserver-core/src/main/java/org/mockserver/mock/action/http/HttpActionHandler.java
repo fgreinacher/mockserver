@@ -3163,6 +3163,13 @@ public class HttpActionHandler {
      * (see {@code maxStreamingCaptureBytes}), so it is stored verbatim as text rather
      * than re-parsed into a structured JsonBody/XmlBody - re-parsing would fail to
      * serialize when the captured JSON is incomplete.
+     * <p>
+     * When the response carries NO {@code Content-Type} header at all — as the OpenAI
+     * Codex backend used by the opencode CLI does for its SSE stream — the captured bytes
+     * are sniffed: valid UTF-8 text (SSE/JSON/plain) is stored as a readable STRING so the
+     * dashboard and LLM trace/optimise views render it, while genuinely binary streams fall
+     * back to BINARY. Without this, a no-Content-Type SSE stream was stored as BINARY and
+     * appeared empty/unreadable in the LLM body views.
      */
     private static void setCapturedStreamingBody(HttpResponse logResponse, byte[] captured) {
         if (captured.length == 0) {
@@ -3175,8 +3182,45 @@ public class HttpActionHandler {
                 logResponse.withBody(new String(captured, mediaType.getCharsetOrDefault()));
                 return;
             }
+            // Explicit non-textual content type (e.g. application/octet-stream): store as binary.
+            logResponse.withBody(captured);
+            return;
         }
-        logResponse.withBody(captured);
+        // No Content-Type header: sniff the captured bytes so text streams stay readable.
+        if (isProbablyUtf8Text(captured)) {
+            logResponse.withBody(new String(captured, StandardCharsets.UTF_8));
+        } else {
+            logResponse.withBody(captured);
+        }
+    }
+
+    /**
+     * Heuristic used only when a streamed response has no {@code Content-Type} header, to
+     * decide whether the captured bytes should be stored as a readable STRING or as BINARY.
+     * Returns true when the bytes look like UTF-8 text (SSE/JSON/plain): they contain no NUL
+     * or non-whitespace C0 control bytes (the hallmark of binary data) and decode as UTF-8
+     * with at most a single replacement character (tolerating one multi-byte character split
+     * by capture truncation). Returns false for empty or binary-looking content.
+     */
+    private static boolean isProbablyUtf8Text(byte[] bytes) {
+        if (bytes.length == 0) {
+            return false;
+        }
+        for (byte b : bytes) {
+            int c = b & 0xFF;
+            if (c == 0 || (c < 0x20 && c != '\t' && c != '\n' && c != '\r')) {
+                return false;
+            }
+        }
+        // Lenient decode: clean text yields no U+FFFD; allow one for a truncated trailing char.
+        String decoded = new String(bytes, StandardCharsets.UTF_8);
+        int replacements = 0;
+        for (int i = 0; i < decoded.length(); i++) {
+            if (decoded.charAt(i) == '�' && ++replacements > 1) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
