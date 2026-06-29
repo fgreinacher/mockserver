@@ -15,25 +15,7 @@ keywords: "openapi contract verification, ai contract testing, api resiliency te
 
 <p>Prove your service honours its OpenAPI contract — and survives bad input — by having your AI assistant run three checks: validate recorded traffic, contract-test live endpoints, and fuzz them with malformed requests.</p>
 
-```mermaid
-flowchart LR
-    subgraph w1["1 — Passive validation"]
-        A["Recorded traffic\n(MockServer log)"] --> B["verify_traffic_against_openapi"]
-        B --> C["Per-pair\nconformance report"]
-    end
-    subgraph w2["2 — Active contract test"]
-        D["OpenAPI spec"] --> E["run_contract_test"]
-        E -->|"sends example requests to"| F["Live service"]
-        F --> E
-        E --> G["Pass / Fail\nper operation"]
-    end
-    subgraph w3["3 — Resiliency / fuzz"]
-        H["OpenAPI spec"] --> I["run_resiliency_test"]
-        I -->|"sends malformed inputs to"| J["Live service"]
-        J --> I
-        I --> K["HANDLED / UNEXPECTED\nper mutation"]
-    end
-```
+<p style="width: 80%; margin: 1em auto;"><img src="../images/mockserver_ai_verification.png" alt="Three AI-assisted verification workflows: passive validation of recorded traffic against OpenAPI, active contract testing of a live service, and resiliency/fuzz testing with malformed inputs." style="max-width:100%;"></p>
 
 <h2>Overview</h2>
 

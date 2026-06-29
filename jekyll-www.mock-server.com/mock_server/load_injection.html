@@ -95,15 +95,7 @@ schema_faq:
 
 <h3>How it works</h3>
 
-```mermaid
-flowchart LR
-    A["Register scenario\n(PUT /mockserver/loadScenario)"] --> B["Trigger run\n(PUT .../loadScenario/start)"]
-    B --> C["Stage loop\n(VU or RATE)"]
-    C --> D["Templated step\n(feeder + iteration vars)"]
-    D --> E["Target service"]
-    E --> F["Metrics + SLO sample store\n(mock_server_load_* series)"]
-    F --> G["Assert SLO\n(PUT /mockserver/verifySLO)"]
-```
+<p style="width: 80%; margin: 1em auto;"><img src="../images/mockserver_load_injection.png" alt="MockServer load injection flow: trigger a load scenario, ramp virtual users against the target service, record metrics into the SLO sample store, then verify the SLO." style="max-width:100%;"></p>
 
 <a id="on_this_page" class="anchor" href="#on_this_page">&nbsp;</a>
 

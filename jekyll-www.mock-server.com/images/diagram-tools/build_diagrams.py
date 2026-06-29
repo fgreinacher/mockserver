@@ -20,6 +20,7 @@ in render_diagrams.py SLIDES so it renders to PNG.
 Usage:  python3 build_diagrams.py
 """
 import copy
+import os
 from pathlib import Path
 from pptx import Presentation
 from pptx.oxml.ns import qn
@@ -92,9 +93,25 @@ def recolor(slide, target_accent):
 
 def main():
     prs = Presentation(str(PPTX))
+    lst = prs.slides._sldIdLst
+    # SAFETY GUARD: the committed deck has since grown to 19+ genuine source slides
+    # (the TLS, single-page-app and retrieve-logs diagrams now live at idx 11..14,
+    # and the AI / load-injection diagrams are appended at idx 19+ by
+    # build_ai_diagrams.py / render_ai_architecture.py). This legacy script assumes
+    # ORIGINAL_SLIDES=11 and would DELETE everything from idx 11 onward — destroying
+    # those real slides. Refuse to run unless the deck still matches the old shape.
+    # To intentionally regenerate the old 4 diagrams, set FORCE_REBUILD=1 (and first
+    # re-sync the clone source indices below to the current deck).
+    if len(list(lst)) != ORIGINAL_SLIDES + 4 and not os.environ.get("FORCE_REBUILD"):
+        raise SystemExit(
+            f"build_diagrams.py is LEGACY and unsafe for the current deck "
+            f"({len(list(lst))} slides). Use build_ai_diagrams.py (flow diagrams) and "
+            f"render_ai_architecture.py (architecture diagrams) to add new diagrams; "
+            f"they append additively and never delete existing slides. "
+            f"Set FORCE_REBUILD=1 only after re-syncing ORIGINAL_SLIDES and the clone "
+            f"source indices to the current deck.")
     # reset: drop any previously-generated slides (parts + rels + list entries)
     # so this is idempotent and never leaves orphaned/duplicate slide parts
-    lst = prs.slides._sldIdLst
     for sldId in list(lst)[ORIGINAL_SLIDES:]:
         prs.part.drop_rel(sldId.get(qn('r:id')))
         lst.remove(sldId)

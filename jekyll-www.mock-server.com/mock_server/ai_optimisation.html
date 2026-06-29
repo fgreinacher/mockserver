@@ -49,13 +49,7 @@ schema_faq:
     <li><a href="#signals">Act on the detected opportunities</a> — nine signal types, each mapped to a concrete lever</li>
 </ol>
 
-```mermaid
-flowchart LR
-    A["AI Agent\n(e.g. Claude Code)"] -->|"HTTPS via proxy"| B["MockServer\n(captures traffic)"]
-    B -->|"forwards to"| C["LLM API\n(OpenAI, Anthropic…)"]
-    B -->|"GET /mockserver/llm/optimisationReport"| D["Optimisation Report\n(JSON bundle + Markdown brief + CSV)"]
-    D -->|"paste into"| E["Any LLM\n(cost-reduction advice)"]
-```
+<p style="width: 80%; margin: 1em auto;"><img src="../images/mockserver_llm_optimisation.png" alt="LLM cost optimisation flow: proxy the AI agent's LLM calls, record the traffic, request a brief, analyse the traffic, and export the optimisation brief." style="max-width:100%;"></p>
 
 <a id="proxy-setup" class="anchor" href="#proxy-setup">&nbsp;</a>
 

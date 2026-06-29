@@ -38,18 +38,7 @@ keywords: shared mockserver, centralised mock server, centralized mock server, c
 
 <h3>Architecture</h3>
 
-<div class="mermaid">
-flowchart LR
-    LB["Load Balancer / Ingress\n(optional, single upstream)"]
-    MS["MockServer\n(single node)"]
-    T1["Team A CI"]
-    T2["Team B CI"]
-    T3["Team C CI"]
-    T1 --> LB
-    T2 --> LB
-    T3 --> LB
-    LB --> MS
-</div>
+<p style="width: 80%; margin: 1em auto;"><img src="../images/mockserver_centralized_single.png" alt="Centralised single-node deployment: multiple team CI pipelines send traffic through an optional load balancer to one shared MockServer instance." style="max-width:100%;"></p>
 
 <p>
     One MockServer process (or Kubernetes Deployment with <code class="inline code">replicas: 1</code>) receives all traffic.
@@ -168,24 +157,7 @@ app:
 
 <h3>Architecture</h3>
 
-<div class="mermaid">
-flowchart LR
-    LB["Load Balancer / Ingress"]
-    NA["MockServer Node A"]
-    NB["MockServer Node B"]
-    NC["MockServer Node C"]
-    INF["JGroups REPL_SYNC\n(Infinispan embedded)"]
-    T1["Team A CI"]
-    T2["Team B CI"]
-    T1 --> LB
-    T2 --> LB
-    LB --> NA
-    LB --> NB
-    LB --> NC
-    NA <--> INF
-    NB <--> INF
-    NC <--> INF
-</div>
+<p style="width: 80%; margin: 1em auto;"><img src="../images/mockserver_centralized_clustered.png" alt="Centralised clustered deployment: team CI pipelines reach a load balancer that distributes across MockServer Node A, B, and C, which share state via Infinispan (JGroups REPL_SYNC)." style="max-width:100%;"></p>
 
 <p>
     Infinispan runs <strong>embedded inside each MockServer node</strong> &mdash; there is no separate data grid to operate.

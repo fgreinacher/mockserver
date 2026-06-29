@@ -35,14 +35,7 @@ schema_faq:
     <li><a href="#view-traffic">View the captured traffic</a> in the dashboard or via the retrieve API</li>
 </ol>
 
-```mermaid
-flowchart LR
-    A["AI Tool\n(Claude Code, LangChain…)"] -->|"HTTPS request"| B["MockServer\nHTTPS Proxy\n(TLS MITM)"]
-    B -->|"forwards to"| C["LLM / MCP Upstream\n(Anthropic, OpenAI…)"]
-    C -->|"response / SSE stream"| B
-    B -->|"logs all traffic"| D["Event Log\n(requests, responses,\nSSE streams, token counts)"]
-    D -->|"view via"| E["Dashboard Traffic view\nor Retrieve API"]
-```
+<p style="width: 80%; margin: 1em auto;"><img src="../images/mockserver_ai_traffic_inspection.png" alt="AI traffic inspection flow: proxy the AI tool's call, record the traffic, then inspect and export it from the dashboard or retrieve API." style="max-width:100%;"></p>
 
 <a id="start-mockserver" class="anchor" href="#start-mockserver">&nbsp;</a>
 

@@ -84,19 +84,7 @@ schema_faq:
     </tbody>
 </table>
 
-```mermaid
-flowchart TD
-    subgraph mode1["Mode 1 — AI controls MockServer"]
-        A["AI Assistant\n(Claude Code, Cursor, Windsurf…)"] -->|"MCP tools"| B["MockServer\n(mock server)"]
-    end
-    subgraph mode2["Mode 2 — MockServer mocks AI services"]
-        C["Application\nunder test"] -->|"HTTP / SSE / WebSocket"| D["MockServer\n(fake LLM / MCP server / A2A agent)"]
-    end
-    subgraph mode3["Mode 3 — MockServer observes AI traffic"]
-        E["AI Agent"] -->|"via proxy"| F["MockServer\n(transparent proxy)"]
-        F -->|"forwards to"| G["Real LLM API"]
-    end
-```
+<p style="width: 80%; margin: 1em auto;"><img src="../images/mockserver_ai_overview.png" alt="Three ways MockServer works with AI: an AI assistant controls MockServer via MCP; MockServer mocks AI services (fake LLM/MCP/A2A); and MockServer observes AI traffic as a transparent proxy." style="max-width:100%;"></p>
 
 <p>The three modes are independent — you can use any combination of them. For example, you might use Mode 3 to capture real LLM traffic during development, Mode 2 to replay it deterministically in CI, and Mode 1 to let your AI assistant create the mock expectations for you.</p>
 

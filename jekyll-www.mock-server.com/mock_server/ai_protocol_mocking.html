@@ -22,17 +22,7 @@ schema_faq:
     answer: "They are completely separate features. MockServer's own MCP control plane (at /mockserver/mcp) lets AI coding assistants like Claude Code or Cursor control MockServer — creating expectations, verifying calls, and debugging traffic. The AI Protocol Mocking feature lets you stand up a fake third-party MCP server that your application under test connects to. One is about controlling MockServer; the other is about mocking an external service."
 ---
 
-```mermaid
-sequenceDiagram
-    participant C as AI Client (app under test)
-    participant M as MockServer (fake MCP/A2A server)
-
-    C->>M: GET /tools/list (MCP discovery)
-    M-->>C: SSE event: tool list (scripted)
-    C->>M: POST /tools/call (tool invocation)
-    M-->>C: SSE event: tool result (scripted)
-    Note over C,M: Client sees a real MCP server — no real AI infrastructure needed
-```
+<p style="width: 80%; margin: 1em auto;"><img src="../images/mockserver_ai_protocol_mocking.png" alt="AI protocol mocking flow: MockServer receives an MCP or A2A call, matches a request expectation, and streams a scripted SSE result." style="max-width:100%;"></p>
 
 {% include_subpage _includes/ai_protocol_mocking.html %}
 

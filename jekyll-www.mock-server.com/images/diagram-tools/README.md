@@ -23,9 +23,20 @@ Requires `python-pptx` and `Pillow` (`pip3 install python-pptx Pillow`).
 
 | Script | Role |
 |--------|------|
-| `build_diagrams.py` | Clones original slides into NEW slides (12+), relabels text, recolours via the theme matrix. Idempotent — re-running regenerates slides 12+ from the 11 originals. **Overwrites the .pptx**; the 11 originals are never touched. |
-| `render_diagrams.py` | Renders the **flow-style** diagrams (Expectation/Proxy boxes, matcher, action, cylinders) straight from the slide geometry into PNGs in `../`. Read-only on the .pptx. |
+| `build_ai_diagrams.py` | **Additive.** Appends the AI / load-injection **flow** diagrams as NEW editable slides by cloning house-style flow slides and relabelling. Idempotent — drops anything at index ≥ `BASELINE` (19) and re-adds. Never touches the existing slides. Run `render_diagrams.py` after it to emit their PNGs. |
+| `render_ai_architecture.py` | **Additive.** Builds + renders the **architecture-style** AI diagrams (AI overview, contract verification, centralised deployment) from a single box/arrow spec: emits BOTH a matching editable slide (appended, index ≥ 23) AND the shipped PNG, so slide and image stay in sync. Run after `build_ai_diagrams.py`. |
+| `render_diagrams.py` | Renders the **flow-style** diagrams (Expectation/Proxy boxes, matcher, action, cylinders) straight from the slide geometry into PNGs in `../`. Read-only on the .pptx. `SLIDES` maps the current deck's flow-slide indices → output PNGs. |
 | `make_response_verification.py` | Renders the **architecture-style** "verify responses" diagram by copying `system_under_test_with_mockserver_proxy.png` and swapping one label, so it matches the "Verifying Requests" diagram exactly. |
+| `build_diagrams.py` | **LEGACY — do not run.** It assumes the deck has only 11 originals + 4 generated and would DELETE the now-genuine slides at idx 11–14 (TLS / single-page-app / retrieve-logs) and everything the additive scripts append. It now refuses to run unless `FORCE_REBUILD=1` (and you first re-sync `ORIGINAL_SLIDES` and the clone source indices to the current deck). Kept only as the historical definition of the first four generated diagrams. |
+
+### Current deck layout (slide indices, 0-based)
+
+- **0–14** genuine source slides (architecture + flow vocabulary, incl. TLS, single-page-app, retrieve-logs).
+- **15–18** the four originally generated flow PNGs (chaos, LLM mocking, verify-responses, LLM optimise).
+- **19–22** AI / load-injection **flow** diagrams appended by `build_ai_diagrams.py`.
+- **23–26** AI **architecture** diagrams appended by `render_ai_architecture.py`.
+
+To regenerate everything additively: `python3 build_ai_diagrams.py && python3 render_diagrams.py && python3 render_ai_architecture.py`.
 
 ## Current generated diagrams
 

@@ -27,9 +27,10 @@ W = 1600          # output width in px
 SS = 2            # supersample factor for crisp anti-aliasing
 
 THEME = {
-    'accent1': (0x4F,0x81,0xBD), 'accent4': (0x80,0x64,0xA2),
-    'accent5': (0x4B,0xAC,0xC6), 'red': (0xC0,0x00,0x00),
-    'black': (0x40,0x40,0x40),
+    'accent1': (0x4F,0x81,0xBD), 'accent2': (0xC0,0x50,0x4D),
+    'accent3': (0x9B,0xBB,0x59), 'accent4': (0x80,0x64,0xA2),
+    'accent5': (0x4B,0xAC,0xC6), 'accent6': (0xF7,0x96,0x46),
+    'red': (0xC0,0x00,0x00), 'black': (0x40,0x40,0x40),
 }
 FONTS = ["/System/Library/Fonts/Helvetica.ttc",
          "/System/Library/Fonts/Supplemental/Arial.ttf"]
@@ -40,9 +41,15 @@ FONTS = ["/System/Library/Fonts/Helvetica.ttc",
 # architecture style (Test / System Under Test / Mock Server / Service boxes);
 # it is produced by make_response_verification.py instead, not here.
 SLIDES = {
-    11: ('accent1', 'mockserver_chaos_action'),
-    12: ('accent4', 'mockserver_llm_mocking'),
-    14: ('accent5', 'mockserver_llm_optimisation'),
+    # existing generated flow diagrams (indices corrected to the current 19-slide deck)
+    15: ('accent1', 'mockserver_chaos_action'),
+    16: ('accent4', 'mockserver_llm_mocking'),
+    18: ('accent5', 'mockserver_llm_optimisation'),
+    # AI / load-injection flow diagrams appended by build_ai_diagrams.py (idx 19+)
+    19: ('accent3', 'mockserver_load_injection'),
+    20: ('accent1', 'mockserver_ai_traffic_inspection'),
+    21: ('accent6', 'mockserver_ai_debugging'),
+    22: ('accent4', 'mockserver_ai_protocol_mocking'),
 }
 
 def font(px):
