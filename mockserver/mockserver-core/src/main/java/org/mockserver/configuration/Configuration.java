@@ -134,6 +134,7 @@ public class Configuration {
     private Integer forwardProxyRetryCount;
     private Long forwardProxyRetryBackoffMillis;
     private Boolean forwardProxyHttp2Enabled;
+    private Boolean forwardProxyHttp2Upgrade;
     private Boolean forwardProxyCircuitBreakerEnabled;
     private Integer forwardProxyCircuitBreakerFailureThreshold;
     private Long forwardProxyCircuitBreakerWindowMillis;
@@ -2024,6 +2025,30 @@ public class Configuration {
      */
     public Configuration forwardProxyHttp2Enabled(Boolean forwardProxyHttp2Enabled) {
         this.forwardProxyHttp2Enabled = forwardProxyHttp2Enabled;
+        return this;
+    }
+
+    public Boolean forwardProxyHttp2Upgrade() {
+        if (forwardProxyHttp2Upgrade == null) {
+            return ConfigurationProperties.forwardProxyHttp2Upgrade();
+        }
+        return forwardProxyHttp2Upgrade;
+    }
+
+    /**
+     * If false (the default) a forwarded or proxied request is only sent upstream over HTTP/2 when the
+     * inbound request itself used HTTP/2 and {@code forwardProxyHttp2Enabled} is set. If true, a secure
+     * (TLS) forward is sent upstream over HTTP/2 via ALPN even when the inbound client is HTTP/1.1, with
+     * automatic fallback to HTTP/1.1 if the upstream does not negotiate h2.
+     * <p>
+     * Useful when an upstream sends a streaming (Server-Sent Events) response head immediately over
+     * HTTP/2 but withholds it over HTTP/1.1. HTTP/2 only flows over TLS+ALPN (no h2c cleartext path — a
+     * non-secure request stays HTTP/1.1). HTTP/2 forward connections are not pooled.
+     *
+     * @param forwardProxyHttp2Upgrade forward a secure request upstream over HTTP/2 even when the inbound client is HTTP/1.1
+     */
+    public Configuration forwardProxyHttp2Upgrade(Boolean forwardProxyHttp2Upgrade) {
+        this.forwardProxyHttp2Upgrade = forwardProxyHttp2Upgrade;
         return this;
     }
 

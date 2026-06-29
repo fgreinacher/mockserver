@@ -43,13 +43,17 @@ public class HttpForwardActionHttp2Test {
     }
 
     private HttpRequest captureForwardedRequest(Configuration configuration, HttpRequest inbound) {
+        return captureForwardedRequest(configuration, inbound, HttpForward.Scheme.HTTPS);
+    }
+
+    private HttpRequest captureForwardedRequest(Configuration configuration, HttpRequest inbound, HttpForward.Scheme scheme) {
         HttpForwardActionHandler handler = new HttpForwardActionHandler(logFormatter, configuration, mockHttpClient);
         CompletableFuture<HttpResponse> responseFuture = new CompletableFuture<>();
         when(mockHttpClient.sendRequest(any(HttpRequest.class), any(InetSocketAddress.class))).thenReturn(responseFuture);
         HttpForward httpForward = forward()
             .withHost("some_host")
             .withPort(1090)
-            .withScheme(HttpForward.Scheme.HTTPS);
+            .withScheme(scheme);
 
         handler.handle(httpForward, inbound);
 
@@ -122,5 +126,45 @@ public class HttpForwardActionHttp2Test {
 
         // then - preserved as HTTP/1.1
         assertThat(forwarded.getProtocol(), is(Protocol.HTTP_1_1));
+    }
+
+    @Test
+    public void shouldUpgradeSecureForwardToHttp2WhenUpgradeFlagEnabledAndInboundIsHttp1() {
+        // given - upgrade flag on, secure (HTTPS) forward, inbound is HTTP/1.1
+        Configuration configuration = Configuration.configuration().forwardProxyHttp2Upgrade(true);
+        HttpRequest inbound = request().withProtocol(Protocol.HTTP_1_1);
+
+        // when
+        HttpRequest forwarded = captureForwardedRequest(configuration, inbound);
+
+        // then - the secure forward is upgraded to HTTP/2 even though the inbound client was HTTP/1.1
+        assertThat(forwarded.getProtocol(), is(Protocol.HTTP_2));
+    }
+
+    @Test
+    public void shouldUpgradeSecureForwardToHttp2EvenWhenInboundHasNoProtocol() {
+        // given - upgrade flag on, secure (HTTPS) forward, inbound has no protocol marker. The upgrade
+        // takes precedence over the preserve-inbound case (which would otherwise leave protocol null).
+        Configuration configuration = Configuration.configuration().forwardProxyHttp2Upgrade(true);
+        HttpRequest inbound = request();
+
+        // when
+        HttpRequest forwarded = captureForwardedRequest(configuration, inbound);
+
+        // then
+        assertThat(forwarded.getProtocol(), is(Protocol.HTTP_2));
+    }
+
+    @Test
+    public void shouldNotUpgradeNonSecureForwardEvenWhenUpgradeFlagEnabled() {
+        // given - upgrade flag on but the forward is plain HTTP (not secure); HTTP/2 needs TLS+ALPN
+        Configuration configuration = Configuration.configuration().forwardProxyHttp2Upgrade(true);
+        HttpRequest inbound = request().withProtocol(Protocol.HTTP_1_1);
+
+        // when - forwarded over a non-secure (HTTP) scheme
+        HttpRequest forwarded = captureForwardedRequest(configuration, inbound, HttpForward.Scheme.HTTP);
+
+        // then - not upgraded, protocol nulled (HTTP/1.1)
+        assertThat(forwarded.getProtocol(), is(nullValue()));
     }
 }

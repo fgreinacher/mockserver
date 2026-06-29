@@ -135,6 +135,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_FORWARD_PROXY_RETRY_COUNT = "mockserver.forwardProxyRetryCount";
     private static final String MOCKSERVER_FORWARD_PROXY_RETRY_BACKOFF_MILLIS = "mockserver.forwardProxyRetryBackoffMillis";
     private static final String MOCKSERVER_FORWARD_PROXY_HTTP2_ENABLED = "mockserver.forwardProxyHttp2Enabled";
+    private static final String MOCKSERVER_FORWARD_PROXY_HTTP2_UPGRADE = "mockserver.forwardProxyHttp2Upgrade";
     private static final String MOCKSERVER_FORWARD_PROXY_CIRCUIT_BREAKER_ENABLED = "mockserver.forwardProxyCircuitBreakerEnabled";
     private static final String MOCKSERVER_FORWARD_PROXY_CIRCUIT_BREAKER_FAILURE_THRESHOLD = "mockserver.forwardProxyCircuitBreakerFailureThreshold";
     private static final String MOCKSERVER_FORWARD_PROXY_CIRCUIT_BREAKER_WINDOW_MILLIS = "mockserver.forwardProxyCircuitBreakerWindowMillis";
@@ -2161,6 +2162,27 @@ public class ConfigurationProperties {
      */
     public static void forwardProxyHttp2Enabled(boolean enable) {
         setProperty(MOCKSERVER_FORWARD_PROXY_HTTP2_ENABLED, "" + enable);
+    }
+
+    public static boolean forwardProxyHttp2Upgrade() {
+        return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_FORWARD_PROXY_HTTP2_UPGRADE, "MOCKSERVER_FORWARD_PROXY_HTTP2_UPGRADE", "" + false));
+    }
+
+    /**
+     * If false (the default) a forwarded or proxied request is only sent upstream over HTTP/2 when the
+     * inbound request itself used HTTP/2 and {@code forwardProxyHttp2Enabled} is set. If true, a secure
+     * (TLS) forward is sent upstream over HTTP/2 via ALPN even when the inbound client is HTTP/1.1, with
+     * automatic fallback to HTTP/1.1 if the upstream does not negotiate h2.
+     * <p>
+     * This is useful when an upstream sends a streaming (Server-Sent Events) response head immediately
+     * over HTTP/2 but withholds it over HTTP/1.1 — forwarding over HTTP/2 lets MockServer relay the head
+     * to the client promptly. HTTP/2 only flows over TLS+ALPN (there is no h2c cleartext path — a
+     * non-secure request is unaffected and stays HTTP/1.1). HTTP/2 forward connections are not pooled.
+     *
+     * @param enable forward a secure request upstream over HTTP/2 even when the inbound client is HTTP/1.1
+     */
+    public static void forwardProxyHttp2Upgrade(boolean enable) {
+        setProperty(MOCKSERVER_FORWARD_PROXY_HTTP2_UPGRADE, "" + enable);
     }
 
     public static boolean forwardProxyCircuitBreakerEnabled() {

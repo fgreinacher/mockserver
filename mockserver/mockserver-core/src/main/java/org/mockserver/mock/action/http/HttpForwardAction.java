@@ -58,10 +58,20 @@ public abstract class HttpForwardAction {
             // HTTP/1.1, so cleartext (h2c) is never attempted. HTTP/2 forwards are not pooled.
             boolean forwardProxyHttp2Enabled = configuration != null
                 && Boolean.TRUE.equals(configuration.forwardProxyHttp2Enabled());
+            // forwardProxyHttp2Upgrade forces a SECURE (TLS) forward upstream over HTTP/2 via ALPN even
+            // when the inbound client is HTTP/1.1 (ALPN falls back to HTTP/1.1 if the upstream does not
+            // negotiate h2). This takes precedence over the preserve-inbound case so an h1 inbound is
+            // upgraded; a non-secure request is left unchanged (HTTP/2 needs TLS+ALPN — NettyHttpClient
+            // downgrades a non-secure HTTP/2 request back to HTTP/1.1 anyway).
+            boolean forwardProxyHttp2Upgrade = configuration != null
+                && Boolean.TRUE.equals(configuration.forwardProxyHttp2Upgrade())
+                && Boolean.TRUE.equals(request.isSecure());
             HttpRequest filtered = hopByHopHeaderFilter.onRequest(request);
-            HttpRequest toSend = forwardProxyHttp2Enabled
-                ? filtered.withProtocol(request.getProtocol())
-                : filtered.withProtocol(null);
+            HttpRequest toSend = forwardProxyHttp2Upgrade
+                ? filtered.withProtocol(org.mockserver.model.Protocol.HTTP_2)
+                : forwardProxyHttp2Enabled
+                    ? filtered.withProtocol(request.getProtocol())
+                    : filtered.withProtocol(null);
 
             // Per-upstream circuit breaker (default off): when the breaker for this upstream is
             // open, fail fast with a 503 instead of attempting the forward. Resolve the key from the

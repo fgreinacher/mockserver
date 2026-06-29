@@ -221,6 +221,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Integer forwardProxyRetryCount;
     private Long forwardProxyRetryBackoffMillis;
     private Boolean forwardProxyHttp2Enabled;
+    private Boolean forwardProxyHttp2Upgrade;
     private Boolean forwardProxyCircuitBreakerEnabled;
     private Integer forwardProxyCircuitBreakerFailureThreshold;
     private Long forwardProxyCircuitBreakerWindowMillis;
@@ -508,6 +509,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.forwardProxyRetryCount = configuration.forwardProxyRetryCount();
             this.forwardProxyRetryBackoffMillis = configuration.forwardProxyRetryBackoffMillis();
             this.forwardProxyHttp2Enabled = configuration.forwardProxyHttp2Enabled();
+            this.forwardProxyHttp2Upgrade = configuration.forwardProxyHttp2Upgrade();
             this.forwardProxyCircuitBreakerEnabled = configuration.forwardProxyCircuitBreakerEnabled();
             this.forwardProxyCircuitBreakerFailureThreshold = configuration.forwardProxyCircuitBreakerFailureThreshold();
             this.forwardProxyCircuitBreakerWindowMillis = configuration.forwardProxyCircuitBreakerWindowMillis();
@@ -836,6 +838,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.forwardProxyRetryCount(forwardProxyRetryCount);
         configuration.forwardProxyRetryBackoffMillis(forwardProxyRetryBackoffMillis);
         configuration.forwardProxyHttp2Enabled(forwardProxyHttp2Enabled);
+        configuration.forwardProxyHttp2Upgrade(forwardProxyHttp2Upgrade);
         configuration.forwardProxyCircuitBreakerEnabled(forwardProxyCircuitBreakerEnabled);
         configuration.forwardProxyCircuitBreakerFailureThreshold(forwardProxyCircuitBreakerFailureThreshold);
         configuration.forwardProxyCircuitBreakerWindowMillis(forwardProxyCircuitBreakerWindowMillis);
@@ -1463,6 +1466,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (forwardProxyHttp2Enabled != null) {
             target.forwardProxyHttp2Enabled(forwardProxyHttp2Enabled);
+        }
+        if (forwardProxyHttp2Upgrade != null) {
+            target.forwardProxyHttp2Upgrade(forwardProxyHttp2Upgrade);
         }
         if (forwardProxyCircuitBreakerEnabled != null) {
             target.forwardProxyCircuitBreakerEnabled(forwardProxyCircuitBreakerEnabled);
@@ -3339,6 +3345,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setForwardProxyHttp2Enabled(Boolean forwardProxyHttp2Enabled) {
         this.forwardProxyHttp2Enabled = forwardProxyHttp2Enabled;
+        return this;
+    }
+
+    public Boolean getForwardProxyHttp2Upgrade() {
+        return forwardProxyHttp2Upgrade;
+    }
+
+    public ConfigurationDTO setForwardProxyHttp2Upgrade(Boolean forwardProxyHttp2Upgrade) {
+        this.forwardProxyHttp2Upgrade = forwardProxyHttp2Upgrade;
         return this;
     }
 

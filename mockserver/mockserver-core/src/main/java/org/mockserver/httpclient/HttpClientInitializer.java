@@ -1,5 +1,6 @@
 package org.mockserver.httpclient;
 
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
@@ -149,30 +150,105 @@ public class HttpClientInitializer extends ChannelInitializer<SocketChannel> {
         protocolFuture.complete(Protocol.HTTP_1_1);
     }
 
+    /**
+     * Builds a streaming-capable HTTP/2 forward pipeline using the same multiplex stack the server side
+     * uses ({@link Http2FrameCodecBuilder#forClient()} + {@link Http2MultiplexHandler}), so that — unlike
+     * the previous {@code InboundHttp2ToHttpAdapter} path which aggregated the whole response — a streamed
+     * upstream response (Server-Sent Events) is relayed incrementally to the proxy client.
+     * <p>
+     * The MockServer request is written to the parent channel by {@link NettyHttpClient} exactly as for
+     * HTTP/1.1; {@link Http2ForwardRequestDispatchHandler} (at the tail) intercepts that write, opens a
+     * single outbound stream and dispatches the request to it. The per-stream response pipeline (decode,
+     * decompress, streaming-aware aggregate, relay) is built by {@link Http2ForwardStreamChildInitializer}.
+     * <p>
+     * ALPN has already proven HTTP/2 by the time this runs, so {@code protocolFuture} is completed with
+     * {@link Protocol#HTTP_2} here; the frame codec consumes the SETTINGS frame, so the old
+     * {@link Http2SettingsHandler} (which waited for SETTINGS) is not used.
+     */
     private void configureHttp2Pipeline(ChannelPipeline pipeline) {
-        addReadTimeoutHandlerIfNotPooled(pipeline);
-        final Http2Connection connection = new DefaultHttp2Connection(false);
-        final HttpToHttp2ConnectionHandlerBuilder http2ConnectionHandlerBuilder = new HttpToHttp2ConnectionHandlerBuilder()
-            .frameListener(
-                new DelegatingDecompressorFrameListener(
-                    connection,
-                    new InboundHttp2ToHttpAdapterBuilder(connection)
-                        .maxContentLength(configuration != null ? configuration.maxResponseBodySize() : org.mockserver.configuration.ConfigurationProperties.maxResponseBodySize())
-                        .propagateSettings(true)
-                        .validateHttpHeaders(false)
-                        .build()
-                )
-            )
-            .connection(connection)
-            .flushPreface(true);
+        // NOTE: deliberately NO parent-channel read timeout here. The per-stream ReadTimeoutHandler is
+        // armed on the CHILD pipeline (Http2ForwardStreamChildInitializer) and is swapped for the longer
+        // stream IdleStateHandler (streamIdleTimeoutSeconds) when a streaming response is detected. A read
+        // timeout on the PARENT would never be swapped, so an inter-event pause longer than maxSocketTimeout
+        // (default 20s) during a streaming response — e.g. an LLM reasoning gap — would trip it and close the
+        // connection, truncating the stream. The pre-dispatch window (connect + TLS handshake) is already
+        // covered by the connect timeout and TLS handshake timeout.
+
+        int maxFrameSize = configuration != null ? configuration.maxResponseBodySize() : org.mockserver.configuration.ConfigurationProperties.maxResponseBodySize();
+        Http2FrameCodecBuilder frameCodecBuilder = Http2FrameCodecBuilder.forClient()
+            .initialSettings(Http2Settings.defaultSettings()
+                // We are a client: never accept server push.
+                .pushEnabled(false)
+                .maxFrameSize(maxFrameSize < Http2CodecUtil.MAX_FRAME_SIZE_LOWER_BOUND
+                    ? Http2CodecUtil.MAX_FRAME_SIZE_LOWER_BOUND
+                    : Math.min(maxFrameSize, Http2CodecUtil.MAX_FRAME_SIZE_UPPER_BOUND)));
         if (mockServerLogger.isEnabledForInstance(TRACE)) {
-            http2ConnectionHandlerBuilder.frameLogger(new Http2FrameLogger(LogLevel.TRACE, HttpClientHandler.class.getName()));
+            frameCodecBuilder.frameLogger(new Http2FrameLogger(LogLevel.TRACE, HttpClientHandler.class.getName()));
         }
-        pipeline.addLast(http2ConnectionHandlerBuilder.build());
-        pipeline.addLast(new Http2SettingsHandler(protocolFuture));
-        pipeline.addLast(new TimeToFirstByteHandler());
-        pipeline.addLast(new MockServerHttpClientCodec(mockServerLogger, proxyConfigurations));
-        pipeline.addLast(httpClientHandler);
+        pipeline.addLast(frameCodecBuilder.build());
+
+        Http2ForwardStreamChildInitializer childInitializer = new Http2ForwardStreamChildInitializer(configuration, mockServerLogger, proxyConfigurations, httpClientHandler, httpClientConnectionHandler);
+        // Server-initiated (inbound) streams are unexpected for a forward client (push is disabled) — close them.
+        pipeline.addLast(new Http2MultiplexHandler(new ClosedInboundHttp2StreamHandler()));
+        // Intercepts the MockServer request written to the parent channel and dispatches it on a new stream.
+        pipeline.addLast(new Http2ForwardRequestDispatchHandler(childInitializer));
+
+        // ALPN already proved HTTP/2; the frame codec consumes SETTINGS, so complete immediately.
+        protocolFuture.complete(Protocol.HTTP_2);
+    }
+
+    /**
+     * Tail outbound handler on the parent HTTP/2 connection. {@link NettyHttpClient} writes the MockServer
+     * {@link org.mockserver.model.HttpRequest} to the parent channel exactly as it does for HTTP/1.1; this
+     * handler intercepts that write, opens a single outbound stream channel (configured by
+     * {@link Http2ForwardStreamChildInitializer}) and writes the request to it, where the child's encoder
+     * turns it into HEADERS + DATA frames. Keeping the dispatch here means {@link NettyHttpClient} needs no
+     * HTTP/2-specific code.
+     */
+    private static class Http2ForwardRequestDispatchHandler extends io.netty.channel.ChannelOutboundHandlerAdapter {
+
+        private final Http2ForwardStreamChildInitializer childInitializer;
+
+        private Http2ForwardRequestDispatchHandler(Http2ForwardStreamChildInitializer childInitializer) {
+            this.childInitializer = childInitializer;
+        }
+
+        @Override
+        public void write(io.netty.channel.ChannelHandlerContext ctx, Object msg, io.netty.channel.ChannelPromise promise) throws Exception {
+            if (msg instanceof org.mockserver.model.HttpRequest) {
+                new Http2StreamChannelBootstrap(ctx.channel())
+                    .handler(childInitializer)
+                    .open()
+                    .addListener((io.netty.util.concurrent.GenericFutureListener<io.netty.util.concurrent.Future<Http2StreamChannel>>) openFuture -> {
+                        if (openFuture.isSuccess()) {
+                            Http2StreamChannel streamChannel = openFuture.getNow();
+                            streamChannel.writeAndFlush(msg).addListener(writeFuture -> {
+                                if (writeFuture.isSuccess()) {
+                                    promise.setSuccess();
+                                } else {
+                                    promise.setFailure(writeFuture.cause());
+                                    streamChannel.close();
+                                }
+                            });
+                        } else {
+                            promise.setFailure(openFuture.cause());
+                        }
+                    });
+            } else {
+                super.write(ctx, msg, promise);
+            }
+        }
+    }
+
+    /**
+     * Handler installed by {@link Http2MultiplexHandler} for any server-initiated (inbound) stream. A
+     * forward client disables server push and never expects an inbound stream, so close it immediately.
+     */
+    private static class ClosedInboundHttp2StreamHandler extends ChannelInitializer<Channel> {
+        @Override
+        protected void initChannel(Channel ch) {
+            ch.close();
+        }
     }
 
     private void configureBinaryPipeline(ChannelPipeline pipeline) {
