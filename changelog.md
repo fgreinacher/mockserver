@@ -252,6 +252,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applies the same upgrade: with `forwardProxyHttp2Upgrade` enabled, a secure request is forwarded upstream over
   HTTP/2 via ALPN (falling back to HTTP/1.1 if the upstream declines), so the backend streams the head
   immediately. Off by default; enable it for transparent-proxy streaming capture.
+- **`forwardProxyHttp2Upgrade` now also applies to the `proxyPassMappings` reverse-proxy route.** The
+  HTTP/2-upgrade is now honoured across all forward routes — matched `forward()` expectations, the
+  transparent/unmatched proxy path, and the `proxyPassMappings` reverse-proxy path — so a streaming SSE
+  backend reached via a proxy-pass mapping (e.g. the OpenAI Codex endpoint) streams its head immediately
+  instead of staying on HTTP/1.1. Only the opt-in flag + a secure (`https`) target triggers it.
 - **The transparent (CONNECT) proxy now streams a no-`Content-Type` SSE response end-to-end to the client.** When
   capturing a coding-assistant CLI through MockServer as an HTTPS proxy, the response relayed back to the client
   switched to streaming only when the upstream sent `Content-Type: text/event-stream`. A backend that streams SSE

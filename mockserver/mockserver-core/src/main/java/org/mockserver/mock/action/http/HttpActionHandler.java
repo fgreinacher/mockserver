@@ -1371,6 +1371,19 @@ public class HttpActionHandler {
                             return;
                         }
 
+                        // Apply the same HTTP/2-upgrade protocol selection as the matched forward and
+                        // transparent-proxy paths so the proxyPassMappings reverse-proxy route also honours
+                        // forwardProxyHttp2Upgrade. Without it a streaming SSE backend reached via a proxy-pass
+                        // mapping (e.g. the OpenAI Codex endpoint) stays on HTTP/1.1, where it withholds the
+                        // response head until completion, collapsing time-to-first-byte. Only the opt-in flag +
+                        // a secure target triggers it (clonedRequest.isSecure() reflects mapping.isTargetSecure(),
+                        // set above), so the default path is unchanged; ALPN falls back to HTTP/1.1 if the
+                        // upstream declines.
+                        if (configuration != null
+                            && Boolean.TRUE.equals(configuration.forwardProxyHttp2Upgrade())
+                            && Boolean.TRUE.equals(clonedRequest.isSecure())) {
+                            clonedRequest.withProtocol(Protocol.HTTP_2);
+                        }
                         long forwardStartNanos = org.mockserver.time.TimeService.nanoTime();
                         final HttpForwardActionResult responseFuture = new HttpForwardActionResult(clonedRequest, httpClient.sendRequest(clonedRequest, targetAddress), null, targetAddress);
                         HttpResponse response = responseFuture.getHttpResponse().get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
