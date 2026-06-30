@@ -13,6 +13,7 @@ import java.nio.channels.ClosedSelectorException;
 import static org.mockserver.exception.ExceptionHandling.closeOnFlush;
 import static org.mockserver.exception.ExceptionHandling.connectionClosedException;
 import static org.mockserver.exception.ExceptionHandling.isSslOrDecoderFault;
+import static org.mockserver.exception.ExceptionHandling.sniDescription;
 
 public class DownstreamProxyRelayHandler extends SimpleChannelInboundHandler<HttpObject> {
 
@@ -72,7 +73,7 @@ public class DownstreamProxyRelayHandler extends SimpleChannelInboundHandler<Htt
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by downstream relay handler -> closing pipeline " + ctx.channel())
+                    .setMessageFormat("SSL or decoder fault caught by downstream relay handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel(), upstreamChannel))
                     .setThrowable(cause)
             );
         }

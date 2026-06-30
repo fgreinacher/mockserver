@@ -41,6 +41,7 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.mockserver.exception.ExceptionHandling.closeOnFlush;
 import static org.mockserver.exception.ExceptionHandling.connectionClosedException;
 import static org.mockserver.exception.ExceptionHandling.isSslOrDecoderFault;
+import static org.mockserver.exception.ExceptionHandling.sniDescription;
 import static org.mockserver.log.model.LogEntry.LogMessageType.AUTHENTICATION_FAILED;
 import static org.mockserver.metrics.Metrics.Name.REQUESTS_RECEIVED_COUNT;
 import static org.mockserver.mock.HttpState.PATH_PREFIX;
@@ -587,7 +588,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by " + server.getClass() + " handler -> closing pipeline " + ctx.channel())
+                    .setMessageFormat("SSL or decoder fault caught by " + server.getClass() + " handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel()))
                     .setThrowable(cause)
             );
         }

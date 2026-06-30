@@ -650,7 +650,7 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by port unification handler -> closing pipeline " + ctx.channel())
+                    .setMessageFormat("SSL or decoder fault caught by port unification handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel()))
                     .setThrowable(throwable)
             );
         }

@@ -35,6 +35,13 @@ public class SniHandler extends AbstractSniHandler<SslContext> {
     private static final AttributeKey<Certificate[]> UPSTREAM_CLIENT_CERTIFICATES = AttributeKey.valueOf("UPSTREAM_CLIENT_CERTIFICATES");
     private static final AttributeKey<Protocol> NEGOTIATED_APPLICATION_PROTOCOL = AttributeKey.valueOf("NEGOTIATED_APPLICATION_PROTOCOL");
 
+    /**
+     * The SNI hostname presented by the client during the TLS handshake, recorded on the channel so
+     * that diagnostic log lines (e.g. SSL/decoder-fault messages) can identify which target host /
+     * client a failed connection was for. Captured in {@link #lookup(ChannelHandlerContext, String)}.
+     */
+    public static final AttributeKey<String> SNI_HOSTNAME = AttributeKey.valueOf("SNI_HOSTNAME");
+
     private final Configuration configuration;
     private final NettySslContextFactory nettySslContextFactory;
 
@@ -47,6 +54,7 @@ public class SniHandler extends AbstractSniHandler<SslContext> {
     protected Future<SslContext> lookup(ChannelHandlerContext ctx, String hostname) {
         if (isNotBlank(hostname)) {
             configuration.addSubjectAlternativeName(hostname);
+            ctx.channel().attr(SNI_HOSTNAME).set(hostname);
         }
         return ctx.executor().newSucceededFuture(nettySslContextFactory.createServerSslContext());
     }
@@ -128,6 +136,18 @@ public class SniHandler extends AbstractSniHandler<SslContext> {
         if (channel != null && protocol != null) {
             channel.attr(NEGOTIATED_APPLICATION_PROTOCOL).set(protocol);
         }
+    }
+
+    /**
+     * Returns the SNI hostname recorded on the given channel during the TLS handshake, or
+     * {@code null} if none was captured (e.g. plaintext connection, or no SNI presented).
+     * Null-safe — a {@code null} channel returns {@code null}.
+     *
+     * @param channel the channel to read the SNI hostname from
+     * @return the SNI hostname, or {@code null}
+     */
+    public static String getSniHostname(io.netty.channel.Channel channel) {
+        return channel != null ? channel.attr(SNI_HOSTNAME).get() : null;
     }
 
     public static Protocol getALPNProtocol(MockServerLogger mockServerLogger, ChannelHandlerContext ctx) {

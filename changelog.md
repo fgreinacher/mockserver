@@ -190,6 +190,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **TLS/decoder fault logs now name the SNI host.** When a client's TLS handshake through the proxy fails
+  (e.g. `SSLHandshakeException: Received fatal alert: unknown_ca`, meaning the client does not trust
+  MockServer's CA), the WARN log now appends the SNI hostname the connection was for — e.g.
+  `… closing pipeline [id: 0x…] (SNI: chatgpt.com)` — across the relay, SOCKS, port-unification, binary-proxy,
+  MCP and dashboard/websocket handlers, so the failing target/client is identifiable instead of anonymous. The
+  message is unchanged when no SNI was negotiated.
 - **Dashboard UI titles are now consistently Title Case.** Page/view headings, section headings, dialog
   titles, tab labels, navigation labels, and the tools/clear menu items now use Title Case throughout
   (e.g. "Server configuration" → "Server Configuration", "MCP server health" → "MCP Server Health"),

@@ -9,6 +9,7 @@ import io.netty.util.internal.PlatformDependent;
 import org.mockserver.httpclient.SocketConnectionException;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.socket.tls.SniHandler;
 
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLHandshakeException;
@@ -102,6 +103,29 @@ public class ExceptionHandling {
         }
 
         void acceptThrows(T elem) throws Exception;
+    }
+
+    /**
+     * Returns a log suffix identifying the SNI hostname of the failed connection, formatted as
+     * {@code " (SNI: <host>)"}, using the first non-null SNI hostname found across the given channels,
+     * or {@code ""} when none of the channels carried an SNI hostname. Several channels can be passed
+     * (e.g. relay handlers hold both an upstream and a downstream channel) so the SNI is found
+     * whichever channel recorded it. Null-safe — a {@code null} array, or {@code null} elements within
+     * it, are skipped.
+     *
+     * @param channels the channels to search for a recorded SNI hostname
+     * @return {@code " (SNI: <host>)"} for the first hostname found, otherwise {@code ""}
+     */
+    public static String sniDescription(Channel... channels) {
+        if (channels != null) {
+            for (Channel channel : channels) {
+                String sniHostname = SniHandler.getSniHostname(channel);
+                if (sniHostname != null) {
+                    return " (SNI: " + sniHostname + ")";
+                }
+            }
+        }
+        return "";
     }
 
     /**

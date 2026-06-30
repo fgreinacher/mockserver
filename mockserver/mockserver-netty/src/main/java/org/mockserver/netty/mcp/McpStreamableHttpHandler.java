@@ -27,6 +27,7 @@ import java.util.concurrent.RejectedExecutionException;
 
 import static org.mockserver.exception.ExceptionHandling.connectionClosedException;
 import static org.mockserver.exception.ExceptionHandling.isSslOrDecoderFault;
+import static org.mockserver.exception.ExceptionHandling.sniDescription;
 
 /**
  * Netty channel handler that intercepts MCP (Model Context Protocol) requests
@@ -97,7 +98,7 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by MCP handler")
+                    .setMessageFormat("SSL or decoder fault caught by MCP handler" + sniDescription(ctx.channel()))
                     .setThrowable(cause)
             );
         }

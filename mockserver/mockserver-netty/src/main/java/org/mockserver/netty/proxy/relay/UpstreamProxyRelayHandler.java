@@ -18,6 +18,7 @@ import java.nio.channels.ClosedSelectorException;
 import static org.mockserver.exception.ExceptionHandling.closeOnFlush;
 import static org.mockserver.exception.ExceptionHandling.connectionClosedException;
 import static org.mockserver.exception.ExceptionHandling.isSslOrDecoderFault;
+import static org.mockserver.exception.ExceptionHandling.sniDescription;
 import static org.mockserver.model.Protocol.HTTP_2;
 import static org.mockserver.netty.unification.PortUnificationHandler.isSslEnabledDownstream;
 import static org.mockserver.netty.unification.PortUnificationHandler.nettySslContextFactory;
@@ -54,6 +55,11 @@ public class UpstreamProxyRelayHandler extends SimpleChannelInboundHandler<FullH
         // keep-alive tunnel carrying many requests applies the intent only to the response it belongs to.
         downstreamChannel.attr(StreamingAwareHttpObjectAggregator.EXPECT_STREAMING_RESPONSE)
             .set(StreamingAwareHttpObjectAggregator.requestExpectsStreamingResponse(request) ? Boolean.TRUE : null);
+        // Diagnostic only — record the forward time and request line so the relay-only
+        // StreamingAwareHttpObjectAggregator can report a time-to-first-byte in its DEBUG
+        // streaming-decision log when the matching response head arrives. Behaviour-preserving.
+        downstreamChannel.attr(StreamingAwareHttpObjectAggregator.REQUEST_FORWARDED_NANOS).set(System.nanoTime());
+        downstreamChannel.attr(StreamingAwareHttpObjectAggregator.REQUEST_LINE).set(request.method() + " " + request.uri());
         downstreamChannel.writeAndFlush(request).addListener((ChannelFutureListener) future -> {
             if (future.isSuccess()) {
                 ctx.channel().read();
@@ -93,7 +99,7 @@ public class UpstreamProxyRelayHandler extends SimpleChannelInboundHandler<FullH
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by upstream relay handler -> closing pipeline " + ctx.channel())
+                    .setMessageFormat("SSL or decoder fault caught by upstream relay handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel(), upstreamChannel, downstreamChannel))
                     .setThrowable(cause)
             );
         }

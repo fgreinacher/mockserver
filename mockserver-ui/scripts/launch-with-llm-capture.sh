@@ -25,6 +25,12 @@
 #   given it is launched interactively in the foreground with the proxy env set;
 #   exit the tool (or Ctrl+C) to tear everything down.
 #
+# Environment:
+#   CAPTURE_LOG_LEVEL=DEBUG  Run MockServer at DEBUG to surface the new diagnostics: the
+#                            per-response streaming decision (STREAM vs AGGREGATE, why, and the
+#                            time-to-first-byte) and the SNI hostname on SSL/decoder-fault logs.
+#                            Default INFO.
+#
 # Options:
 #   --rebuild        Force rebuild of the MockServer JAR even if one exists
 #   --no-browser     Do not auto-open the dashboard
@@ -158,6 +164,11 @@ CAPTURE_MAX_EVENT_LOG_BYTES="${CAPTURE_MAX_EVENT_LOG_BYTES:-268435456}"
 # in-memory window evicts under the byte budget above, nothing is lost — the file keeps the complete history
 # for offline processing / LLM-Optimise export. One compact JSON object (request + response) per line.
 CAPTURE_RECORDED_REQUESTS_PATH="${CAPTURE_RECORDED_REQUESTS_PATH:-$UI_DIR/recordedRequests.ndjson}"
+# Log level (default INFO). Set CAPTURE_LOG_LEVEL=DEBUG to surface the new streaming-decision diagnostics
+# (STREAM vs AGGREGATE, the triggering condition, and time-to-first-byte) and the SNI hostname appended to
+# SSL/decoder-fault log lines — useful when debugging whether MockServer is streaming a response correctly
+# or which target host a failed TLS handshake was for.
+CAPTURE_LOG_LEVEL="${CAPTURE_LOG_LEVEL:-INFO}"
 # Head-wait budget (ms). Default 300s: a reasoning model on a very large prompt (observed a 74KB / ~73k
 # -token Codex turn return NOTHING within 120s) can take minutes to its first token; MockServer must wait
 # at least as long as the CLI's own request timeout or it 502s a slow-but-healthy call. Override via env.
@@ -206,7 +217,7 @@ java -Xmx"$DEMO_MAX_HEAP" -Dmockserver.maxLogEntries="$DEMO_MAX_LOG_ENTRIES" \
      -Dmockserver.persistedRecordedRequestsPath="$CAPTURE_RECORDED_REQUESTS_PATH" \
      -jar "$MOCKSERVER_JAR" -serverPort "$MOCKSERVER_PORT" \
      ${REVERSE_ARGS[@]+"${REVERSE_ARGS[@]}"} \
-     -logLevel INFO > "$MOCKSERVER_LOG" 2>&1 &
+     -logLevel "$CAPTURE_LOG_LEVEL" > "$MOCKSERVER_LOG" 2>&1 &
 MOCKSERVER_PID=$!
 
 UI_PID=""

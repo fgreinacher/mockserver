@@ -10,7 +10,9 @@ import io.netty.util.AttributeKey;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.httpclient.HttpClientHandler;
 import org.mockserver.httpclient.StreamingResponseRelayHandler;
+import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.slf4j.event.Level;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
@@ -126,6 +128,23 @@ public class StreamingAwareHttpObjectAggregator extends HttpObjectAggregator {
     public static final AttributeKey<Boolean> EXPECT_STREAMING_RESPONSE = AttributeKey.valueOf("EXPECT_STREAMING_RESPONSE");
 
     /**
+     * Diagnostic-only channel attribute recording {@code System.nanoTime()} at the moment the request
+     * was forwarded to the upstream on the CONNECT-proxy loopback relay path (set by
+     * {@code UpstreamProxyRelayHandler}). Used purely to compute a time-to-first-byte (TTFB) for the
+     * DEBUG streaming-decision diagnostic when the matching response head arrives; absent on non-relay
+     * paths, in which case the TTFB fields are simply omitted. Behaviour-preserving.
+     */
+    public static final AttributeKey<Long> REQUEST_FORWARDED_NANOS = AttributeKey.valueOf("REQUEST_FORWARDED_NANOS");
+
+    /**
+     * Diagnostic-only channel attribute recording the request line ({@code METHOD uri}) of the request
+     * forwarded on the CONNECT-proxy loopback relay path (set by {@code UpstreamProxyRelayHandler}),
+     * so the DEBUG streaming-decision diagnostic can identify which request a response belongs to.
+     * Absent on non-relay paths. Behaviour-preserving.
+     */
+    public static final AttributeKey<String> REQUEST_LINE = AttributeKey.valueOf("REQUEST_LINE");
+
+    /**
      * A JSON request body that turns on streaming, e.g. {@code {"stream": true}} (OpenAI/Anthropic/Codex).
      * Mirrors the detection in {@code NettyHttpClient} for the forward leg.
      */
@@ -172,6 +191,8 @@ public class StreamingAwareHttpObjectAggregator extends HttpObjectAggregator {
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         if (msg instanceof HttpResponse && !(msg instanceof FullHttpResponse)) {
             HttpResponse response = (HttpResponse) msg;
+            // Diagnostic only — observe the decision and log it at DEBUG without changing the decision.
+            logStreamingDecision(ctx, response);
             if (isStreamingEnabled() && !isStreamingDisabledOnChannel(ctx)
                 && (isStreamingResponse(response) || isStreamingExpectedByRequest(ctx))) {
                 switchToStreamingMode(ctx, response);
@@ -180,6 +201,50 @@ public class StreamingAwareHttpObjectAggregator extends HttpObjectAggregator {
         }
         // Non-streaming: delegate to super (standard aggregation)
         super.channelRead(ctx, msg);
+    }
+
+    /**
+     * Emits one DEBUG diagnostic LogEntry describing whether this response head will be relayed as a
+     * {@code STREAM} or {@code AGGREGATE}d, the response status, the content-type (or {@code <none>}),
+     * which condition triggered streaming ({@code sse-content-type} / {@code request-expected-streaming}
+     * / {@code none}), and — when available on the (relay) channel — the time-to-first-byte and the
+     * request line. Purely observational: it recomputes the same booleans the decision uses but does
+     * not change control flow. Gated so it is silent unless DEBUG is enabled and a logger is present
+     * (the relay/backwards-compatible constructors pass a {@code null} logger, in which case nothing
+     * is emitted).
+     */
+    private void logStreamingDecision(ChannelHandlerContext ctx, HttpResponse response) {
+        if (!MockServerLogger.isEnabled(Level.DEBUG) || mockServerLogger == null) {
+            return;
+        }
+        boolean sseContentType = isStreamingResponse(response);
+        boolean expectedByRequest = isStreamingExpectedByRequest(ctx);
+        boolean willStream = isStreamingEnabled() && !isStreamingDisabledOnChannel(ctx)
+            && (sseContentType || expectedByRequest);
+        String decision = willStream ? "STREAM" : "AGGREGATE";
+        String contentType = response.headers().get(HttpHeaderNames.CONTENT_TYPE);
+        String contentTypeDescription = contentType != null ? contentType : "<none>";
+        String trigger = sseContentType
+            ? "sse-content-type"
+            : (expectedByRequest ? "request-expected-streaming" : "none");
+        Long forwardedNanos = ctx.channel().attr(REQUEST_FORWARDED_NANOS).get();
+        if (forwardedNanos != null) {
+            long ttfbMs = (System.nanoTime() - forwardedNanos) / 1_000_000L;
+            String requestLine = ctx.channel().attr(REQUEST_LINE).get();
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.DEBUG)
+                    .setMessageFormat("streaming decision:{} status:{} content-type:{} trigger:{} ttfbMs:{} request:{}")
+                    .setArguments(decision, response.status().code(), contentTypeDescription, trigger, ttfbMs, requestLine != null ? requestLine : "<unknown>")
+            );
+        } else {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.DEBUG)
+                    .setMessageFormat("streaming decision:{} status:{} content-type:{} trigger:{}")
+                    .setArguments(decision, response.status().code(), contentTypeDescription, trigger)
+            );
+        }
     }
 
     private boolean isStreamingEnabled() {
@@ -196,6 +261,14 @@ public class StreamingAwareHttpObjectAggregator extends HttpObjectAggregator {
     }
 
     private void switchToStreamingMode(ChannelHandlerContext ctx, HttpResponse responseHead) {
+        if (MockServerLogger.isEnabled(Level.DEBUG) && mockServerLogger != null) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.DEBUG)
+                    .setMessageFormat("switching response to streaming relay (relayOnly={})")
+                    .setArguments(relayOnly)
+            );
+        }
         ChannelPipeline pipeline = ctx.pipeline();
 
         if (relayOnly) {
