@@ -125,6 +125,7 @@ When `resetKeys` changes (the user navigates to another tab), the boundary clear
 | AsyncAPI | `useAutoRefresh` (interval, 5 s) |
 | gRPC Services | `useAutoRefresh` (interval, 5 s) |
 | MCP tools panel | `useAutoRefresh` (interval, 3 s) |
+| MCP Server Health | WebSocket push (reads `proxiedRequests` + `recordedRequests` from store; no independent polling) |
 | Chaos | `setInterval` poll every 4 s (predates `useAutoRefresh`) |
 | Performance — live status | `useAutoRefresh` (interval, 1 s) polling `GET /mockserver/loadScenario` |
 | Performance — metrics graph | `usePolling` (interval, 3 s) scraping `GET /mockserver/metrics` (shared with Metrics view) |
@@ -147,13 +148,13 @@ When `resetKeys` changes (the user navigates to another tab), the boundary clear
 
 ## Top-Level Views
 
-The dashboard has **eighteen top-level views** controlled by the AppBar. The view state is stored in Zustand as `view: ViewMode` where:
+The dashboard has **nineteen top-level views** controlled by the AppBar. The view state is stored in Zustand as `view: ViewMode` where:
 
 ```
 ViewMode = 'dashboard' | 'traffic' | 'sessions' | 'composer' | 'library'
          | 'chaos' | 'performance' | 'metrics' | 'drift' | 'verification'
          | 'slo' | 'async' | 'grpc' | 'breakpoints'
-         | 'contract' | 'cluster' | 'optimise' | 'get-started'
+         | 'contract' | 'cluster' | 'optimise' | 'mcp-health' | 'get-started'
 ```
 
 `'composer'` is surfaced in the UI under the button label **Mocks**; `'async'` is the **AsyncAPI** broker view; `'performance'` is the **Performance** load-scenario panel; `'sessions'` is labelled **Trace** in the nav; `'get-started'` is the initial onboarding view shown to new users before any data arrives.
@@ -178,6 +179,7 @@ The Request Filter panel is shown on Dashboard, Traffic, and Trace views. It is 
 | `contract` | Contract | `ContractTestPanel.tsx` | Validate mocks and traffic against an OpenAPI contract |
 | `cluster` | Cluster | `ClusterPanel.tsx` | Monitor MockServer cluster nodes and shared state |
 | `optimise` | LLM Optimise | `OptimiseView.tsx` | Analyse captured LLM traffic to optimise prompts, inference cost, safety, and speed |
+| `mcp-health` | MCP Health | `McpServerHealthPanel.tsx` | Per-MCP-server latency and error rate derived from captured proxied/recorded traffic; highlights slow or erroring servers worst-first (see [MCP Server Health View](#mcp-server-health-view)) |
 | `async` | Async | `AsyncApiPanel.tsx` | AsyncAPI broker mock status: loaded spec, channels/topics, publisher/subscriber summary, and recorded broker messages |
 | `grpc` | gRPC | `GrpcServicesPanel.tsx` | gRPC services and methods loaded from protobuf descriptors, with per-service health-check status (see [gRPC Services View](#grpc-services-view)) |
 | `metrics` | Metrics | `MetricsView.tsx` | Prometheus metrics polling: request counters, latency percentiles, JVM stats, chaos gauges |
@@ -218,6 +220,8 @@ grouped nav: 6 dropdown groups"]
 (view = 'cluster')"]
     OP["OptimiseView.tsx
 (view = 'optimise')"]
+    MHP["McpServerHealthPanel.tsx
+(view = 'mcp-health')"]
     AAP["AsyncApiPanel.tsx
 (view = 'async')"]
     GP["GrpcServicesPanel.tsx
@@ -244,6 +248,7 @@ grouped nav: 6 dropdown groups"]
     APP -->|view = contract| CO
     APP -->|view = cluster| CL
     APP -->|view = optimise| OP
+    APP -->|view = mcp-health| MHP
     APP -->|view = async| AAP
     APP -->|view = grpc| GP
     APP -->|view = metrics| MV
@@ -543,6 +548,35 @@ Results are rendered as a report table with columns: operation, status code rece
 
 `OptimiseView.tsx` (view = `optimise`, AppBar label **LLM Optimise**, under the **AI** group) analyses captured LLM proxy traffic and exports a brief recommending optimisations to prompts, inference cost, safety, and speed. It calls the LLM optimise REST endpoint, renders per-call signals (token usage, cost, cache-hit rate, one-shot rate, latency), and assigns an A–F verdict with a dollar-value "recoverable" attribution capped at actual spend. An export button downloads the full JSON report.
 
+## MCP Server Health View
+
+`McpServerHealthPanel.tsx` (view = `mcp-health`, AppBar label **MCP Health**, in the **AI** group) shows which MCP servers your proxied coding-assistant CLI traffic is calling, and which ones are slow or erroring. The MCP server is often the real bottleneck while MockServer's own forwarding is fast; this view surfaces the culprit at a glance.
+
+**Data source.** The panel reads `proxiedRequests` + `recordedRequests` from the Zustand store — both pushed over the main dashboard WebSocket — and passes their `.value` objects to the pure client-side function `aggregateMcpServerHealth` in `src/lib/llmTraffic.ts`. Only MCP JSON-RPC entries (where the parsed kind is `mcp`) contribute to the table; all other traffic is silently ignored. No independent polling is performed.
+
+**Columns.**
+
+| Column | Content |
+|--------|---------|
+| Server | Upstream `Host` header value (or `(unknown host)` when absent) |
+| Calls | Total MCP JSON-RPC exchanges seen for this server |
+| Errors | Count and rate — a JSON-RPC `error` field or a non-2xx HTTP status counts as an error |
+| Median | Median round-trip latency (ms or s), nearest-rank percentile |
+| p95 | 95th-percentile latency (ms or s), nearest-rank percentile |
+| Max | Slowest single exchange; shown in warning colour when the `slow` flag is set |
+| Slowest method | JSON-RPC method name of the single slowest exchange |
+
+**Flags.** Each row carries two optional flags:
+
+- **errors** (red chip) — `errorCount > 0`; the row gets an error-tinted background
+- **slow** (amber chip, only when no errors) — p95 (or max when p95 is unavailable) is at or over `MCP_SLOW_THRESHOLD_MS` (5 000 ms); the row gets a warning-tinted background
+
+Rows are sorted worst-first: most errors → highest error rate → slowest (p95 or max) → busiest → host name for a stable tie-break.
+
+**Empty state.** When no MCP traffic has been captured, an info alert reads: "No MCP traffic captured. Proxy a tool that talks to MCP servers (JSON-RPC over HTTP) and its per-server health will appear here."
+
+**Lazy loading.** `McpServerHealthPanel` is lazy-loaded in `App.tsx` via `React.lazy`, so the chunk is not fetched until the MCP Health tab is first opened.
+
 ## AsyncAPI View
 
 `AsyncApiPanel.tsx` (view = `async`, AppBar label **Async**) shows the live status of the AsyncAPI broker mock (the `mockserver-async` module). It **polls** `GET /mockserver/asyncapi` every 5s via `getAsyncApiStatus` in `lib/asyncApi.ts` (with a manual refresh button) rather than using the WebSocket. It renders:
@@ -633,7 +667,7 @@ The AppBar navigation is driven by `NAV_GROUPS` — six top-level group-button e
 | **Observe** | Dashboard, Traffic, Trace, Metrics |
 | **Verify** | Verify, Contract, SLO, Drift |
 | **Resilience** | Chaos, Performance |
-| **AI** | LLM Optimise |
+| **AI** | LLM Optimise, MCP Health, Trace |
 | **Inspect** | Breakpoints, Library, Cluster |
 
 The group button whose group contains the active view is highlighted (a translucent-white tint in light mode; the theme action-selected overlay in dark mode). Clicking a group button opens a dropdown `Menu`; selecting an item calls `setView` and closes the menu. One shared `<Menu>` is reused across all groups rather than one per group.
@@ -712,7 +746,7 @@ The AppBar "Import / export" (wrench) menu groups one-off control-plane tools, e
   receivedSearch: '',
   proxiedSearch: '',
   trafficSearch: '',
-  view: 'get-started',          // 18 values — see ViewMode in store/index.ts; 'sessions' is labelled "Trace", 'composer' is "Mocks", 'async' is AsyncAPI, 'slo' is SLO, 'contract' is Contract, 'cluster' is Cluster, 'optimise' is "LLM Optimise"
+  view: 'get-started',          // 19 values — see ViewMode in store/index.ts; 'sessions' is labelled "Trace", 'composer' is "Mocks", 'async' is AsyncAPI, 'slo' is SLO, 'contract' is Contract, 'cluster' is Cluster, 'optimise' is "LLM Optimise", 'mcp-health' is "MCP Health"
   selectedTrafficIndex: null,
   actionTypeFilter: [],
   llmProviderFilter: [],
@@ -742,7 +776,7 @@ graph TB
 Orchestrator: theme, WebSocket, shortcuts"]
     AB["AppBar.tsx
 Title bar: status, theme, clear menu
-grouped nav (18 views)"]
+grouped nav (19 views)"]
     FP["FilterPanel.tsx
 Collapsible request filter form"]
     DG["DashboardGrid.tsx
@@ -822,7 +856,7 @@ Expandable match failure reasons"]
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| `AppBar` | `AppBar.tsx` | Title bar with connection status chip, keyboard shortcut hints, auto-scroll toggle, dark/light mode toggle, clear/reset menu; on wide screens (`>= lg`): six grouped dropdown buttons (Mock / Observe / Verify / Resilience / AI / Inspect), each opening a `Menu` of its views; on narrow screens: hamburger icon with all 18 views in labelled sections |
+| `AppBar` | `AppBar.tsx` | Title bar with connection status chip, keyboard shortcut hints, auto-scroll toggle, dark/light mode toggle, clear/reset menu; on wide screens (`>= lg`): six grouped dropdown buttons (Mock / Observe / Verify / Resilience / AI / Inspect), each opening a `Menu` of its views; on narrow screens: hamburger icon with all 19 views in labelled sections |
 | `FilterPanel` | `FilterPanel.tsx` | Collapsible request filter form (method, path, headers, query params, cookies) with debounced WebSocket send; shown on dashboard/traffic/sessions |
 | `DashboardGrid` | `DashboardGrid.tsx` | 2×2 CSS grid layout for the four panels |
 | `TrafficInspector` | `TrafficInspector.tsx` | Full-width master list + adaptive detail pane for all captured traffic (mock-matched + proxied) |

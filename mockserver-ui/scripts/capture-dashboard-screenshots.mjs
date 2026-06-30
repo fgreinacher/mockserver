@@ -117,6 +117,7 @@ const TABS = [
     },
   },
   { value: 'optimise',     ariaLabel: 'LLM Optimise view',         file: 'MockServerOptimise.png',     lazy: true, settleMs: SLOW_SETTLE },
+  { value: 'mcp-health',   ariaLabel: 'MCP server health view',    file: 'MockServerMcpHealth.png',    lazy: true, settleMs: SLOW_SETTLE },
   { value: 'async',        ariaLabel: 'AsyncAPI broker mock view', file: 'MockServerAsyncAPI.png' },
   { value: 'grpc',         ariaLabel: 'gRPC services view',        file: 'MockServerGRPC.png',         settleMs: SLOW_SETTLE },
   { value: 'sessions',     ariaLabel: 'Trace inspector view',      file: 'MockServerSessions.png',     settleMs: SLOW_SETTLE },
@@ -124,29 +125,44 @@ const TABS = [
   { value: 'drift',        ariaLabel: 'Drift detection view',      file: 'MockServerDrift.png' },
   { value: 'verification', ariaLabel: 'Verification view',         file: 'MockServerVerification.png' },
   { value: 'contract',     ariaLabel: 'Contract test view',        file: 'MockServerContract.png' },
+  { value: 'slo',          ariaLabel: 'SLO verification view',     file: 'MockServerSLO.png',          settleMs: SLOW_SETTLE },
   { value: 'cluster',      ariaLabel: 'Cluster status view',       file: 'MockServerCluster.png' },
   { value: 'metrics',      ariaLabel: 'Metrics view',              file: 'MockServerMetrics.png',      lazy: true, settleMs: CHART_SETTLE },
 ];
 
-// Navigate to a tab. The inline ToggleButtons carry data-nav-tab; the compact
-// hamburger and the "More" overflow menus only carry aria-label on their items,
-// so fall back to opening whichever menu is present and clicking by aria-label.
+// Which nav group (by its group-button aria-label) each view lives under in the
+// grouped AppBar nav (NAV_GROUPS in src/components/AppBar.tsx). `sessions` (Trace)
+// appears under both Observe and AI; Observe is used here for navigation.
+const GROUP_OF = {
+  'get-started': 'Mock views', composer: 'Mock views', grpc: 'Mock views', async: 'Mock views',
+  dashboard: 'Observe views', traffic: 'Observe views', sessions: 'Observe views', metrics: 'Observe views',
+  verification: 'Verify views', contract: 'Verify views', slo: 'Verify views', drift: 'Verify views',
+  chaos: 'Resilience views', performance: 'Resilience views',
+  optimise: 'AI views', 'mcp-health': 'AI views',
+  breakpoints: 'Inspect views', library: 'Inspect views', cluster: 'Inspect views',
+};
+
+// Navigate to a tab. The AppBar nav has two layouts (AppBar.tsx `compactNav`,
+// `useMediaQuery(down('lg'))`): below lg a single "Open navigation menu"
+// hamburger lists every view; at/above lg (our 1920 capture width) one button
+// per GROUP opens a dropdown of that group's views. In both layouts each view is
+// a `[role="menuitem"]` whose accessible name is `tab.ariaLabel`.
 async function gotoTab(page, tab) {
-  const toggle = page.locator(`[data-nav-tab="${tab.value}"]`).first();
-  if (await toggle.isVisible().catch(() => false)) {
-    await toggle.click();
-    return;
-  }
+  const item = page.locator(`[role="menuitem"][aria-label="${tab.ariaLabel}"]`).first();
   const compact = page.locator('[aria-label="Open navigation menu"]').first();
-  const more = page.locator('[aria-label="More views"]').first();
   if (await compact.isVisible().catch(() => false)) {
     await compact.click();
-  } else if (await more.isVisible().catch(() => false)) {
-    await more.click();
   } else {
-    throw new Error(`No way to reach tab "${tab.value}" — neither inline button nor a nav menu is visible`);
+    const groupLabel = GROUP_OF[tab.value];
+    if (!groupLabel) throw new Error(`No nav group mapped for tab "${tab.value}"`);
+    const groupButton = page.locator(`button[aria-label="${groupLabel}"]`).first();
+    if (!(await groupButton.isVisible().catch(() => false))) {
+      throw new Error(`No way to reach tab "${tab.value}" — neither the hamburger nor the "${groupLabel}" group button is visible`);
+    }
+    await groupButton.click();
   }
-  await page.locator(`[role="menuitem"][aria-label="${tab.ariaLabel}"]`).first().click();
+  await item.waitFor({ state: 'visible', timeout: 8000 });
+  await item.click();
 }
 
 async function main() {
@@ -163,6 +179,14 @@ async function main() {
     deviceScaleFactor: SCALE,
     colorScheme: THEME,
   });
+  // Force the dashboard's own theme to THEME before the app boots. The app does
+  // NOT honour the browser `colorScheme`/prefers-color-scheme — it reads its own
+  // `mockserver-theme` localStorage key (default 'dark', see store getInitialTheme),
+  // so without this the shots come out dark regardless of the context colorScheme.
+  await context.addInitScript((mode) => {
+    try { window.localStorage.setItem('mockserver-theme', mode); } catch { /* localStorage unavailable */ }
+  }, THEME);
+
   const page = await context.newPage();
 
   console.log(`→ Opening ${DASHBOARD_URL}`);
@@ -172,7 +196,7 @@ async function main() {
   // connect — the dashboard fills the traffic/log/expectation stores from the
   // server's snapshot only once the header flips from "Connecting" to
   // "Connected". Capturing before that yields empty panels.
-  await page.waitForSelector('[data-nav-tab], [aria-label="Open navigation menu"]', { timeout: 30000 });
+  await page.waitForSelector('[aria-label="Open navigation menu"], button[aria-label="Mock views"]', { timeout: 30000 });
   await page
     .waitForFunction(() => /\bConnected\b/.test(document.body.innerText || ''), null, { timeout: 30000 })
     .catch(() => console.warn('    ! header never showed "Connected" — panels may be empty (is load injection saturating the connection?)'));

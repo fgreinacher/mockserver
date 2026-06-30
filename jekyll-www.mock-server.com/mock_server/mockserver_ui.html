@@ -23,12 +23,14 @@ sitemap:
     <li><strong><a href="#ui_chaos_section">Chaos</a></strong> — configure and inject HTTP, gRPC, and TCP faults (chaos experiments) that apply to all forwarded requests to a given upstream host or service. The HTTP fault set covers error responses, dropped connections, latency, body corruption, slow-response chunking, quotas/rate limits, count and time windows, gradual degradation, and a GraphQL error envelope, with a TTL so chaos auto-expires</li>
     <li><strong><a href="#ui_performance_section">Performance</a></strong> — create and run <a href="/mock_server/load_injection.html">load scenarios</a>: a stage-builder for VU and arrival-rate stages with ramp curves, live run status (current stage, target, active VUs), and a combined toggleable latency/throughput metrics graph</li>
     <li><strong><a href="#ui_optimise_section">LLM Optimise</a></strong> — analyse captured LLM traffic for cost, token, latency, and prompt-hygiene opportunities, and export an optimisation brief</li>
+    <li><strong><a href="#ui_mcp_health_section">MCP Server Health</a></strong> — per-MCP-server latency and error rate for the MCP servers your proxied tools call, worst-first, so you can see which server is the real bottleneck</li>
     <li><strong><a href="#ui_async_section">Async</a></strong> — inspect the AsyncAPI broker mock: loaded spec, active channels, and messages recorded from broker subscriptions</li>
     <li><strong><a href="#ui_grpc_section">gRPC</a></strong> — list mocked gRPC services and methods loaded from protobuf descriptors, with streaming kind and health serving status</li>
     <li><strong><a href="#ui_library_section">Library</a></strong> — import expectations, export traffic, and manage cassette files, WASM modules, and gRPC descriptors</li>
     <li><strong><a href="#ui_drift_section">Drift</a></strong> — review mock drift records where stubbed responses diverge from the real upstream</li>
     <li><strong><a href="#ui_verification_section">Verify</a></strong> — assert that MockServer received the requests you expected (a single request a given number of times, or an ordered sequence) without writing test code</li>
     <li><strong><a href="#ui_contract_section">Contract</a></strong> — run an OpenAPI spec's operations against a live service and validate every response against the contract</li>
+    <li><strong><a href="#ui_slo_section">SLO</a></strong> — assert service-level objectives (latency percentiles and error rate) against recorded traffic without writing test code</li>
     <li><strong><a href="#ui_cluster_section">Cluster</a></strong> — view the state-backend cluster this node participates in: node id, coordinator, and member roles</li>
     <li><strong><a href="#ui_metrics_section">Metrics</a></strong> — JVM, request-latency, chaos, expectations-by-type, and MCP-tool-call charts (shown when metrics are enabled)</li>
 </ul>
@@ -116,9 +118,9 @@ sitemap:
 <p>Click the clear icon in the title bar to access three options:</p>
 
 <ul>
-    <li><strong>Clear server logs</strong> — removes all log messages while keeping expectations and request history</li>
-    <li><strong>Clear server expectations</strong> — removes all active expectations while keeping logs and request history</li>
-    <li><strong>Reset server (all)</strong> — clears everything: logs, expectations, received requests, and proxied requests</li>
+    <li><strong>Clear Server Logs</strong> — removes all log messages while keeping expectations and request history</li>
+    <li><strong>Clear Server Expectations</strong> — removes all active expectations while keeping logs and request history</li>
+    <li><strong>Reset Server (all)</strong> — clears everything: logs, expectations, received requests, and proxied requests</li>
 </ul>
 
 <h3>Menu Bar (left side)</h3>
@@ -145,10 +147,10 @@ sitemap:
         <tr><th>Tool</th><th>Description</th><th>Documentation</th></tr>
     </thead>
     <tbody>
-        <tr><td>Server clock</td><td>Freeze or advance the server's clock to test time-sensitive behaviour</td><td><a href="/mock_server/clock_control.html">Clock Control</a></td></tr>
-        <tr><td>Explain unmatched requests</td><td>Show why a request did not match any expectation (closest-match diff)</td><td><a href="/mock_server/troubleshooting_matching.html">Troubleshooting Matching</a></td></tr>
-        <tr><td>Server configuration</td><td>View and edit configuration properties at runtime</td><td><a href="/mock_server/configuration_properties.html">Configuration Properties</a></td></tr>
-        <tr><td>Operating mode (SIMULATE / SPY / CAPTURE)</td><td>Controls how unmatched requests are handled — return 404, or forward to the real upstream and record</td><td><a href="/mock_server/isolating_single_service.html#mock_mode">Operating Mode</a></td></tr>
+        <tr><td>Server Clock</td><td>Freeze or advance the server's clock to test time-sensitive behaviour</td><td><a href="/mock_server/clock_control.html">Clock Control</a></td></tr>
+        <tr><td>Explain Unmatched Requests</td><td>Show why a request did not match any expectation (closest-match diff)</td><td><a href="/mock_server/troubleshooting_matching.html">Troubleshooting Matching</a></td></tr>
+        <tr><td>Server Configuration</td><td>View and edit configuration properties at runtime</td><td><a href="/mock_server/configuration_properties.html">Configuration Properties</a></td></tr>
+        <tr><td>Operating Mode (SIMULATE / SPY / CAPTURE)</td><td>Controls how unmatched requests are handled — return 404, or forward to the real upstream and record</td><td><a href="/mock_server/isolating_single_service.html#mock_mode">Operating Mode</a></td></tr>
     </tbody>
 </table>
 
@@ -163,12 +165,12 @@ sitemap:
     <tbody>
         <tr><td>Import OpenAPI</td><td>Generate expectations from an OpenAPI / Swagger specification</td><td><a href="/mock_server/using_openapi.html">Using OpenAPI</a></td></tr>
         <tr><td>Import WSDL</td><td>Generate expectations from a WSDL (SOAP) document</td><td><a href="/mock_server/using_openapi.html#generate_expectations_from_wsdl">Generate Expectations From WSDL</a></td></tr>
-        <tr><td>Pact contract (export / verify)</td><td>Export expectations as a Pact contract, or verify against one</td><td><a href="/mock_server/pact_export.html">Pact Export</a></td></tr>
-        <tr><td>Mock OIDC provider</td><td>Mock an OpenID Connect / OAuth2 provider</td><td><a href="/mock_server/mocking_oauth2.html">Mocking OAuth2 / OIDC</a></td></tr>
-        <tr><td>AsyncAPI broker mock</td><td>Mock a Kafka / MQTT / AMQP message broker from an AsyncAPI spec</td><td><a href="/mock_server/asyncapi_messaging.html">AsyncAPI Messaging</a></td></tr>
-        <tr><td>Register CRUD resource</td><td>Create a CRUD data store backed by mock expectations</td><td><a href="/mock_server/crud_data_store.html">CRUD Data Store</a></td></tr>
-        <tr><td>Mock file store</td><td>Serve files from a mock file store</td><td><a href="/mock_server/file_storage.html">File Storage</a></td></tr>
-        <tr><td>Diff two requests</td><td>Compare two recorded requests side by side (dashboard-only tool)</td><td>&mdash;</td></tr>
+        <tr><td>Pact Contract (export / verify)</td><td>Export expectations as a Pact contract, or verify against one</td><td><a href="/mock_server/pact_export.html">Pact Export</a></td></tr>
+        <tr><td>Mock OIDC Provider</td><td>Mock an OpenID Connect / OAuth2 provider</td><td><a href="/mock_server/mocking_oauth2.html">Mocking OAuth2 / OIDC</a></td></tr>
+        <tr><td>AsyncAPI Broker Mock</td><td>Mock a Kafka / MQTT / AMQP message broker from an AsyncAPI spec</td><td><a href="/mock_server/asyncapi_messaging.html">AsyncAPI Messaging</a></td></tr>
+        <tr><td>Register CRUD Resource</td><td>Create a CRUD data store backed by mock expectations</td><td><a href="/mock_server/crud_data_store.html">CRUD Data Store</a></td></tr>
+        <tr><td>Mock File Store</td><td>Serve files from a mock file store</td><td><a href="/mock_server/file_storage.html">File Storage</a></td></tr>
+        <tr><td>Diff Two Requests</td><td>Compare two recorded requests side by side (dashboard-only tool)</td><td>&mdash;</td></tr>
     </tbody>
 </table>
 
@@ -382,7 +384,7 @@ sitemap:
 <ol>
     <li>Click <strong>Compare</strong> to enter compare mode. Rows in the master list become selectable.</li>
     <li>Pick exactly two requests. The button next to the toggle shows the running count (<strong>Diff (1/2)</strong>, <strong>Diff (2/2)</strong>) and only enables once two are selected.</li>
-    <li>Click <strong>Diff</strong> to open the <em>Diff two requests</em> dialog. The two selected requests are pre-filled as JSON into the <strong>Expected request</strong> and <strong>Actual request</strong> boxes — you can edit either, or hand-author one. Click the dialog's <strong>Compare</strong> button to run the comparison.</li>
+    <li>Click <strong>Diff</strong> to open the <em>Diff Two Requests</em> dialog. The two selected requests are pre-filled as JSON into the <strong>Expected request</strong> and <strong>Actual request</strong> boxes — you can edit either, or hand-author one. Click the dialog's <strong>Compare</strong> button to run the comparison.</li>
     <li>The result is shown as a table of the fields that differ — <strong>Field</strong>, <strong>Expected</strong>, <strong>Actual</strong>, and a <strong>Type</strong> chip (<code>ADDED</code>, <code>REMOVED</code>, or <code>CHANGED</code>) — with a count of the differences. When the two requests match, it reports that they are identical.</li>
 </ol>
 
@@ -673,9 +675,28 @@ sitemap:
 
 <img class="ui_image" src="/images/MockServerOptimise.png" alt="MockServer LLM Optimise">
 
-<p>A header strip summarises the analysed traffic — estimated total cost, input and output token totals, call count, and latency — with a <strong>Session</strong> selector to scope the analysis (for example, all captured LLM traffic). Below it, <strong>Detected opportunities</strong> lists each finding as a card with a severity, an explanation, and a concrete <strong>Recommendation</strong>. Signals include repeated identical system prompts (candidates for prompt caching), large static context resent every turn, tool lookups that could be made deterministic, oversized tool results, duplicate consecutive calls, and output-token bloat.</p>
+<p>A header strip summarises the analysed traffic — estimated total cost, input and output token totals, call count, and latency — with a <strong>Session</strong> selector to scope the analysis (for example, all captured LLM traffic). Below it, <strong>Detected Opportunities</strong> lists each finding as a card with a severity, an explanation, and a concrete <strong>Recommendation</strong>. Signals include repeated identical system prompts (candidates for prompt caching), large static context resent every turn, tool lookups that could be made deterministic, oversized tool results, duplicate consecutive calls, and output-token bloat.</p>
 
 <p>Use <strong>Copy optimisation brief</strong> to copy a Markdown summary for an LLM or teammate to act on, or <strong>Download bundle</strong> for the full JSON. The same report is available over the control plane and as an <a href="/mock_server/ai_mcp_tools.html">MCP tool</a>. See <a href="/mock_server/ai_optimisation.html">LLM Optimisation</a> for the full signal set.</p>
+
+<a id="ui_mcp_health_section" class="anchor" href="#ui_mcp_health_section">&nbsp;</a>
+
+<h2>MCP Server Health</h2>
+
+<p>The MCP Server Health view shows, per MCP server, how the <a href="/mock_server/ai_mcp_tools.html">MCP servers</a> your proxied tools call are actually performing — so when a coding-assistant CLI feels slow, you can see whether the MCP server is the real bottleneck rather than MockServer itself. Switch to it using the <strong>MCP Health</strong> button (in the <strong>AI</strong> group) in the navigation bar. It is read-only analysis derived from the MCP (JSON-RPC over HTTP) traffic MockServer has already proxied or recorded; it does not change any mocks.</p>
+
+<img class="ui_image" src="/images/MockServerMcpHealth.png" alt="MockServer MCP Server Health">
+
+<p>Each row is one MCP server (grouped by host), shown worst-first, with:</p>
+
+<ul>
+    <li><strong>Calls</strong> — how many MCP tool calls were made to that server.</li>
+    <li><strong>Errors</strong> — the error count and rate (a JSON-RPC error response or a non-2xx status).</li>
+    <li><strong>Median</strong>, <strong>p95</strong>, and <strong>Max</strong> latency — how long that server took to respond.</li>
+    <li><strong>Slowest method</strong> — the tool method behind the slowest call.</li>
+</ul>
+
+<p>A server is flagged <strong>slow</strong> when its p95 or max latency is at or over the slow threshold, and <strong>errors</strong> when any call failed, so the servers most likely to be hurting your assistant rise to the top. When no MCP traffic has been captured yet, the view explains that proxying a tool that talks to MCP servers will populate it. See <a href="/mock_server/ai_mcp_tools.html">MCP Tools</a> for MockServer's MCP support.</p>
 
 <a id="ui_async_section" class="anchor" href="#ui_async_section">&nbsp;</a>
 
@@ -693,7 +714,7 @@ sitemap:
     <li><strong>Recorded Messages</strong> — messages captured from broker subscriptions, showing the channel, message key, payload, schema-validity, and time. A filter box narrows the list by channel, key, or payload.</li>
 </ul>
 
-<p>Load a spec from the <strong>AsyncAPI broker mock</strong> entry in the title-bar Tools menu (or via the <code>PUT /mockserver/asyncapi</code> endpoint). To see recorded messages, enable consumers in your broker configuration and publish messages to the channels. If the optional AsyncAPI module is not on the server's classpath, the view shows an <em>unavailable</em> notice instead.</p>
+<p>Load a spec from the <strong>AsyncAPI Broker Mock</strong> entry in the title-bar Tools menu (or via the <code>PUT /mockserver/asyncapi</code> endpoint). To see recorded messages, enable consumers in your broker configuration and publish messages to the channels. If the optional AsyncAPI module is not on the server's classpath, the view shows an <em>unavailable</em> notice instead.</p>
 
 <a id="ui_grpc_section" class="anchor" href="#ui_grpc_section">&nbsp;</a>
 
@@ -792,6 +813,16 @@ sitemap:
 <img class="ui_image" src="/images/MockServerContract.png" alt="MockServer Contract Test">
 
 <p>Supply the <strong>OpenAPI spec</strong> as a URL, file path, or inline document, set the <strong>Target base URL</strong> of the service to exercise, and optionally narrow the run to a single <strong>operationId</strong>. Click <strong>Run contract test</strong> and MockServer calls each operation and checks the responses (status, headers, and body schema) against the contract, reporting any violations. See <a href="/mock_server/using_openapi.html">Using OpenAPI</a> for how MockServer works with OpenAPI specifications.</p>
+
+<a id="ui_slo_section" class="anchor" href="#ui_slo_section">&nbsp;</a>
+
+<h2>SLO</h2>
+
+<p>The SLO view lets you assert service-level objectives — latency percentiles and error rate — against the traffic MockServer has recorded, straight from the dashboard and without writing any test code. Switch to it using the <strong>SLO</strong> button (in the <strong>Verify</strong> group) in the navigation bar. Each objective compares an observed indicator against a threshold over a trailing window; every objective must hold for the check to PASS.</p>
+
+<img class="ui_image" src="/images/MockServerSLO.png" alt="MockServer SLO Verification">
+
+<p>Give the SLO a <strong>Name</strong>, a <strong>Lookback</strong> window (seconds) and a minimum sample count, and optionally narrow it to specific <strong>Upstream hosts</strong>. Add one or more <strong>Objectives</strong> — each picks an <strong>Indicator</strong> (such as latency p95 in milliseconds, or error rate), a <strong>Comparator</strong>, and a <strong>Threshold</strong>. Click <strong>Verify SLO</strong> to evaluate every objective against recorded traffic and see which held and which breached. SLO tracking must be enabled on the server (<code>sloTrackingEnabled=true</code>).</p>
 
 <a id="ui_cluster_section" class="anchor" href="#ui_cluster_section">&nbsp;</a>
 

@@ -36,7 +36,7 @@ DEMO_TIMEOUT="${DEMO_TIMEOUT:-300}"
 CHART_WARMUP_S="${CHART_WARMUP_S:-90}"
 SKIP_CHARTS="${SKIP_CHARTS:-false}"
 
-CONTENT_TABS="get-started,dashboard,traffic,breakpoints,composer,chaos,optimise,async,grpc,sessions,library,drift,verification,contract,cluster"
+CONTENT_TABS="get-started,dashboard,traffic,breakpoints,composer,chaos,optimise,mcp-health,async,grpc,sessions,library,drift,verification,contract,slo,cluster"
 
 LOG_FILE="$(mktemp -t mockserver-demo-screenshots.XXXXXX.log)"
 DEMO_PID=""
