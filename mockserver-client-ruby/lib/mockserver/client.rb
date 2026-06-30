@@ -204,6 +204,319 @@ module MockServer
       response_body && !response_body.empty? ? JSON.parse(response_body) : {}
     end
 
+    # -------------------------------------------------------------------
+    # Metrics
+    # -------------------------------------------------------------------
+
+    # Retrieve the JSON metric counter snapshot
+    # (PUT /mockserver/retrieve?type=METRICS).
+    #
+    # Returns a Hash mapping each metric name to its long value. When metrics
+    # are disabled on the server the snapshot is an empty Hash.
+    #
+    # @return [Hash] metric name => value
+    def retrieve_metrics
+      status, response_body = do_request(
+        'PUT', '/mockserver/retrieve', '', { 'type' => 'METRICS' }
+      )
+      if status >= 400
+        raise Error, "Failed to retrieve metrics (status=#{status}): #{response_body}"
+      end
+
+      response_body && !response_body.empty? ? JSON.parse(response_body) : {}
+    end
+
+    # Scrape the Prometheus exposition text (GET /mockserver/metrics).
+    #
+    # Returns the raw Prometheus/OpenMetrics exposition text. When metrics are
+    # disabled on the server this endpoint returns 404 and an {Error} is raised.
+    #
+    # @return [String] the Prometheus exposition text
+    def scrape_metrics
+      status, response_body = request('GET', '/mockserver/metrics')
+      if status == 404
+        raise Error, 'Failed to scrape metrics (status=404): metrics are disabled ' \
+                     '(set metricsEnabled=true on the server to enable them)'
+      end
+      if status >= 400
+        raise Error, "Failed to scrape metrics (status=#{status}): #{response_body}"
+      end
+
+      response_body || ''
+    end
+
+    # -------------------------------------------------------------------
+    # Configuration
+    # -------------------------------------------------------------------
+
+    # Read the effective live configuration (GET /mockserver/configuration).
+    #
+    # @return [String] the serialized configuration JSON
+    def retrieve_configuration
+      status, response_body = request('GET', '/mockserver/configuration')
+      if status >= 400
+        raise Error, "Failed to retrieve configuration (status=#{status}): #{response_body}"
+      end
+
+      response_body || ''
+    end
+
+    # Update the live configuration (PUT /mockserver/configuration).
+    #
+    # +config_json+ is a ConfigurationDTO JSON document; only the fields present
+    # are applied (partial update). A nil value is sent as an empty body.
+    #
+    # @param config_json [String, nil] the ConfigurationDTO JSON
+    # @return [String] the serialized updated configuration JSON
+    def update_configuration(config_json)
+      body = config_json.nil? ? '' : config_json.to_s
+      status, response_body = request('PUT', '/mockserver/configuration', body)
+      if status >= 400
+        raise Error, "Failed to update configuration (status=#{status}): #{response_body}"
+      end
+
+      response_body || ''
+    end
+
+    # -------------------------------------------------------------------
+    # Pact (import / export / verify)
+    # -------------------------------------------------------------------
+
+    # Import a Pact v3 contract as expectations (PUT /mockserver/pact/import).
+    #
+    # @param json [String] the Pact v3 contract JSON (must not be blank)
+    # @return [String] the JSON array of upserted expectations
+    # @raise [ArgumentError] if +json+ is nil or blank
+    def pact_import(json)
+      if json.nil? || json.to_s.strip.empty?
+        raise ArgumentError, 'pact JSON must not be empty'
+      end
+
+      status, response_body = request('PUT', '/mockserver/pact/import', json.to_s)
+      if status >= 400
+        raise Error, "Failed to import pact (status=#{status}): #{response_body}"
+      end
+
+      response_body || ''
+    end
+
+    # Export the active expectations as a Pact v3 contract
+    # (PUT /mockserver/pact?consumer=&provider=).
+    #
+    # A query param is only added when its value is non-blank; otherwise the
+    # server defaults are used.
+    #
+    # @param consumer [String, nil] the Pact consumer name
+    # @param provider [String, nil] the Pact provider name
+    # @return [String] the generated Pact v3 contract JSON
+    def pact_export(consumer: nil, provider: nil)
+      query_params = {}
+      query_params['consumer'] = consumer if consumer && !consumer.to_s.empty?
+      query_params['provider'] = provider if provider && !provider.to_s.empty?
+      status, response_body = do_request(
+        'PUT', '/mockserver/pact', nil, query_params.empty? ? nil : query_params
+      )
+      if status >= 400
+        raise Error, "Failed to export pact (status=#{status}): #{response_body}"
+      end
+
+      response_body || ''
+    end
+
+    # Verify a Pact v3 contract against the active expectations
+    # (PUT /mockserver/pact/verify).
+    #
+    # The server encodes the verdict in the HTTP status: 202 when every
+    # interaction matches (PASS), 406 when verification fails (FAIL). Both
+    # carry the verification report JSON, which is returned verbatim in both
+    # cases (a FAIL does not raise) so callers can inspect the report.
+    #
+    # @param json [String] the Pact v3 contract JSON to verify (must not be blank)
+    # @return [String] the verification report JSON
+    # @raise [ArgumentError] if +json+ is nil or blank
+    def pact_verify(json)
+      if json.nil? || json.to_s.strip.empty?
+        raise ArgumentError, 'pact JSON must not be empty'
+      end
+
+      status, response_body = request('PUT', '/mockserver/pact/verify', json.to_s)
+      if status == 202 || status == 406
+        return response_body || ''
+      end
+      if status >= 400
+        raise Error, "Failed to verify pact (status=#{status}): #{response_body}"
+      end
+
+      response_body || ''
+    end
+
+    # -------------------------------------------------------------------
+    # File store (store / retrieve / list / delete)
+    # -------------------------------------------------------------------
+
+    # Store a file in the in-memory file store (PUT /mockserver/files/store).
+    #
+    # @param name [String] the file name/key
+    # @param content [String] the UTF-8 file content
+    # @return [Hash] response of the form { "name" => ..., "size" => ... }
+    def store_file(name, content)
+      body = JSON.generate({ 'name' => name, 'content' => content })
+      status, response_body = request('PUT', '/mockserver/files/store', body)
+      if status >= 400
+        raise Error, "Failed to store file (status=#{status}): #{response_body}"
+      end
+
+      response_body && !response_body.empty? ? JSON.parse(response_body) : {}
+    end
+
+    # Retrieve a file's raw content (PUT /mockserver/files/retrieve).
+    #
+    # Returns the raw 200 body verbatim. An unknown file yields a 404 which
+    # raises an {Error} (there is no null-on-404 fallback).
+    #
+    # @param name [String] the file name/key
+    # @return [String] the raw file content
+    def retrieve_file(name)
+      body = JSON.generate({ 'name' => name })
+      status, response_body = request('PUT', '/mockserver/files/retrieve', body)
+      if status == 404
+        raise Error, "File not found (status=404): #{name}"
+      end
+      if status >= 400
+        raise Error, "Failed to retrieve file (status=#{status}): #{response_body}"
+      end
+
+      response_body || ''
+    end
+
+    # List the names of all stored files (PUT /mockserver/files/list).
+    #
+    # @return [Array<String>] the file names
+    def list_files
+      status, response_body = request('PUT', '/mockserver/files/list')
+      if status >= 400
+        raise Error, "Failed to list files (status=#{status}): #{response_body}"
+      end
+
+      if response_body && !response_body.empty?
+        parsed = JSON.parse(response_body)
+        return parsed if parsed.is_a?(Array)
+      end
+      []
+    end
+
+    # Delete a stored file (PUT /mockserver/files/delete).
+    #
+    # An unknown file yields a 404 which raises an {Error}.
+    #
+    # @param name [String] the file name/key
+    # @return [nil]
+    def delete_file(name)
+      body = JSON.generate({ 'name' => name })
+      status, response_body = request('PUT', '/mockserver/files/delete', body)
+      if status == 404
+        raise Error, "File not found (status=404): #{name}"
+      end
+      if status >= 400
+        raise Error, "Failed to delete file (status=#{status}): #{response_body}"
+      end
+
+      nil
+    end
+
+    # -------------------------------------------------------------------
+    # Import (HAR / Postman)
+    # -------------------------------------------------------------------
+
+    # Import a HAR document as expectations (PUT /mockserver/import?format=har).
+    #
+    # @param har_json [String] the HAR JSON document (must not be blank)
+    # @return [Array<Expectation>] the upserted expectations
+    # @raise [ArgumentError] if +har_json+ is nil or blank
+    def import_har(har_json)
+      import_document(har_json, 'har')
+    end
+
+    # Import a Postman collection as expectations
+    # (PUT /mockserver/import?format=postman).
+    #
+    # @param collection_json [String] the Postman collection JSON (must not be blank)
+    # @return [Array<Expectation>] the upserted expectations
+    # @raise [ArgumentError] if +collection_json+ is nil or blank
+    def import_postman_collection(collection_json)
+      import_document(collection_json, 'postman')
+    end
+
+    # -------------------------------------------------------------------
+    # Operating mode (SIMULATE / SPY / CAPTURE)
+    # -------------------------------------------------------------------
+
+    # Valid operating modes (parallels +org.mockserver.mock.MockMode+).
+    MODE_SIMULATE = 'SIMULATE'
+    MODE_SPY = 'SPY'
+    MODE_CAPTURE = 'CAPTURE'
+
+    # Set the high-level operating mode (PUT /mockserver/mode?mode=<MODE>).
+    #
+    # +mode+ may be a Symbol or String (case-insensitive), one of
+    # +:simulate+/+:spy+/+:capture+ (or the {MODE_SIMULATE}, {MODE_SPY},
+    # {MODE_CAPTURE} constants). Setting the mode also flips the
+    # proxy-on-no-match behaviour on the server.
+    #
+    # @param mode [String, Symbol] the operating mode
+    # @return [Hash] response of the form
+    #   { "mode" => ..., "proxyUnmatchedRequests" => ... }
+    def set_mode(mode)
+      mode_value = mode.to_s.upcase
+      status, response_body = do_request(
+        'PUT', '/mockserver/mode', nil, { 'mode' => mode_value }
+      )
+      if status >= 400
+        raise Error, "Failed to set mode (status=#{status}): #{response_body}"
+      end
+
+      response_body && !response_body.empty? ? JSON.parse(response_body) : {}
+    end
+
+    # Read the current operating mode (GET /mockserver/mode).
+    #
+    # @return [Hash] response of the form
+    #   { "mode" => ..., "proxyUnmatchedRequests" => ... }
+    def retrieve_mode
+      status, response_body = request('GET', '/mockserver/mode')
+      if status >= 400
+        raise Error, "Failed to retrieve mode (status=#{status}): #{response_body}"
+      end
+
+      response_body && !response_body.empty? ? JSON.parse(response_body) : {}
+    end
+
+    # -------------------------------------------------------------------
+    # WSDL -> expectations
+    # -------------------------------------------------------------------
+
+    # Generate expectations from a WSDL document (PUT /mockserver/wsdl).
+    #
+    # The WSDL XML is sent as the raw request body with an XML content type.
+    #
+    # @param wsdl [String] the WSDL document (XML, must not be blank)
+    # @return [Array<Expectation>] the generated (upserted) expectations
+    # @raise [ArgumentError] if +wsdl+ is nil or blank
+    def wsdl_expectation(wsdl)
+      if wsdl.nil? || wsdl.to_s.strip.empty?
+        raise ArgumentError, 'WSDL must not be empty'
+      end
+
+      status, response_body = request(
+        'PUT', '/mockserver/wsdl', wsdl.to_s, content_type: 'application/xml'
+      )
+      if status >= 400
+        raise Error, "Failed to generate WSDL expectations (status=#{status}): #{response_body}"
+      end
+
+      expectations_from_response(response_body)
+    end
+
     # Register a service-scoped HTTP chaos profile for an upstream host. The profile
     # is applied to every matched forward expectation to that host that does not
     # define its own chaos (an expectation's own chaos always wins). The host is
@@ -1179,6 +1492,34 @@ module MockServer
       raise ArgumentError, 'name must not be nil or empty' if value.nil? || value.to_s.empty?
 
       URI.encode_www_form_component(value.to_s).gsub('+', '%20')
+    end
+
+    # @api private
+    # Import a document (HAR/Postman/Pact) via PUT /mockserver/import?format=<format>
+    # and return the upserted expectations.
+    def import_document(json, format)
+      if json.nil? || json.to_s.strip.empty?
+        raise ArgumentError, "import #{format} document must not be empty"
+      end
+
+      status, response_body = do_request(
+        'PUT', '/mockserver/import', json.to_s, { 'format' => format }
+      )
+      if status >= 400
+        raise Error, "Failed to import #{format} (status=#{status}): #{response_body}"
+      end
+
+      expectations_from_response(response_body)
+    end
+
+    # @api private
+    # Parse a JSON array of expectations from a control-plane response body.
+    def expectations_from_response(response_body)
+      if response_body && !response_body.empty?
+        parsed = JSON.parse(response_body)
+        return parsed.map { |e| Expectation.from_hash(e) } if parsed.is_a?(Array)
+      end
+      []
     end
 
     # @api private
