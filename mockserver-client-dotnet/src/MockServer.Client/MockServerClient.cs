@@ -1624,6 +1624,503 @@ public sealed class MockServerClient : IDisposable
     }
 
     // -------------------------------------------------------------------
+    // Clock control (freeze / advance / reset / status)
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Freeze the simulated clock (PUT /mockserver/clock, action "freeze"). When
+    /// <paramref name="instant"/> is supplied it must be an ISO-8601 instant string
+    /// (e.g. "2024-01-01T00:00:00Z"); when null the clock freezes at the current time.
+    /// Returns this client for chaining.
+    /// </summary>
+    public MockServerClient FreezeClock(string? instant = null)
+        => FreezeClockAsync(instant).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Freeze the simulated clock (async). See <see cref="FreezeClock"/>.
+    /// </summary>
+    public async Task<MockServerClient> FreezeClockAsync(string? instant = null)
+    {
+        var payload = new Dictionary<string, object?> { ["action"] = "freeze" };
+        if (!string.IsNullOrEmpty(instant)) payload["instant"] = instant;
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        var (statusCode, body) = await PutAsync("/mockserver/clock", json).ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to freeze clock (HTTP {statusCode}): {body}");
+        return this;
+    }
+
+    /// <summary>
+    /// Advance the frozen simulated clock by <paramref name="durationMillis"/> milliseconds
+    /// (PUT /mockserver/clock, action "advance"). The duration must be positive.
+    /// Returns this client for chaining.
+    /// </summary>
+    public MockServerClient AdvanceClock(long durationMillis)
+        => AdvanceClockAsync(durationMillis).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Advance the frozen simulated clock (async). See <see cref="AdvanceClock"/>.
+    /// </summary>
+    public async Task<MockServerClient> AdvanceClockAsync(long durationMillis)
+    {
+        var json = JsonSerializer.Serialize(
+            new Dictionary<string, object?> { ["action"] = "advance", ["durationMillis"] = durationMillis }, JsonOptions);
+        var (statusCode, body) = await PutAsync("/mockserver/clock", json).ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to advance clock (HTTP {statusCode}): {body}");
+        return this;
+    }
+
+    /// <summary>
+    /// Reset the simulated clock back to the real system clock (PUT /mockserver/clock,
+    /// action "reset"). Returns this client for chaining.
+    /// </summary>
+    public MockServerClient ResetClock()
+        => ResetClockAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Reset the simulated clock (async). See <see cref="ResetClock"/>.
+    /// </summary>
+    public async Task<MockServerClient> ResetClockAsync()
+    {
+        var json = JsonSerializer.Serialize(new Dictionary<string, object?> { ["action"] = "reset" }, JsonOptions);
+        var (statusCode, body) = await PutAsync("/mockserver/clock", json).ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to reset clock (HTTP {statusCode}): {body}");
+        return this;
+    }
+
+    /// <summary>
+    /// Read the current clock status (GET /mockserver/clock). Returns the raw JSON body,
+    /// e.g. <c>{"currentInstant":"...","currentEpochMillis":...,"frozen":true}</c>.
+    /// </summary>
+    public string ClockStatus()
+        => ClockStatusAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Read the current clock status (async). See <see cref="ClockStatus"/>.
+    /// </summary>
+    public async Task<string> ClockStatusAsync()
+    {
+        var (statusCode, body) = await GetAsync("/mockserver/clock").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to get clock status (HTTP {statusCode}): {body}");
+        return body ?? "";
+    }
+
+    // -------------------------------------------------------------------
+    // Metrics
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Retrieve the JSON counter snapshot of internal metrics
+    /// (PUT /mockserver/retrieve?type=METRICS). Returns the raw JSON object mapping each
+    /// metric name to its long value, or <c>{}</c> when metrics are disabled.
+    /// </summary>
+    public string RetrieveMetrics()
+        => RetrieveMetricsAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Retrieve the JSON metrics snapshot (async). See <see cref="RetrieveMetrics"/>.
+    /// </summary>
+    public async Task<string> RetrieveMetricsAsync()
+    {
+        var (statusCode, body) = await PutAsync("/mockserver/retrieve?type=METRICS", "").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to retrieve metrics (HTTP {statusCode}): {body}");
+        return body ?? "";
+    }
+
+    /// <summary>
+    /// Scrape the Prometheus exposition-format metrics (GET /mockserver/metrics). Returns the
+    /// exposition text. Requires the server to be started with metrics enabled; otherwise the
+    /// scrape endpoint returns <c>404</c>. This is distinct from <see cref="RetrieveMetrics"/>
+    /// (the JSON counter snapshot).
+    /// </summary>
+    public string ScrapeMetrics()
+        => ScrapeMetricsAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Scrape the Prometheus exposition-format metrics (async). See <see cref="ScrapeMetrics"/>.
+    /// </summary>
+    public async Task<string> ScrapeMetricsAsync()
+    {
+        var (statusCode, body) = await GetAsync("/mockserver/metrics").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to scrape metrics (HTTP {statusCode}): {body}");
+        return body ?? "";
+    }
+
+    // -------------------------------------------------------------------
+    // Configuration (read / update)
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Read the effective live configuration (GET /mockserver/configuration). Returns the
+    /// serialized configuration JSON body.
+    /// </summary>
+    public string RetrieveConfiguration()
+        => RetrieveConfigurationAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Read the effective live configuration (async). See <see cref="RetrieveConfiguration"/>.
+    /// </summary>
+    public async Task<string> RetrieveConfigurationAsync()
+    {
+        var (statusCode, body) = await GetAsync("/mockserver/configuration").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to retrieve configuration (HTTP {statusCode}): {body}");
+        return body ?? "";
+    }
+
+    /// <summary>
+    /// Update the live configuration with a partial ConfigurationDTO JSON document
+    /// (PUT /mockserver/configuration). Only the fields present are applied. Returns the
+    /// serialized updated-configuration JSON body. A null body is sent as an empty document.
+    /// </summary>
+    public string UpdateConfiguration(string? configJson)
+        => UpdateConfigurationAsync(configJson).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Update the live configuration (async). See <see cref="UpdateConfiguration"/>.
+    /// </summary>
+    public async Task<string> UpdateConfigurationAsync(string? configJson)
+    {
+        var (statusCode, body) = await PutAsync("/mockserver/configuration", configJson ?? "").ConfigureAwait(false);
+
+        if (statusCode == 400)
+            throw new MockServerClientException($"Invalid configuration: {body}");
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to update configuration (HTTP {statusCode}): {body}");
+        return body ?? "";
+    }
+
+    // -------------------------------------------------------------------
+    // Pact (import / export / verify)
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Import a Pact v3 contract, creating/updating the matching expectations
+    /// (PUT /mockserver/pact/import). Returns the serialized JSON array of upserted
+    /// expectations.
+    /// </summary>
+    /// <exception cref="ArgumentException">If <paramref name="json"/> is null or blank.</exception>
+    public List<Expectation> PactImport(string json)
+        => PactImportAsync(json).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Import a Pact v3 contract (async). See <see cref="PactImport"/>.
+    /// </summary>
+    public async Task<List<Expectation>> PactImportAsync(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            throw new ArgumentException("pact contract JSON must not be empty", nameof(json));
+        var (statusCode, body) = await PutAsync("/mockserver/pact/import", json).ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to import pact (HTTP {statusCode}): {body}");
+        return DeserializeExpectations(body);
+    }
+
+    /// <summary>
+    /// Export the active expectations as a Pact v3 contract
+    /// (PUT /mockserver/pact?consumer=&amp;provider=). Blank consumer/provider use server
+    /// defaults. Returns the generated Pact contract JSON.
+    /// </summary>
+    public string PactExport(string? consumer = null, string? provider = null)
+        => PactExportAsync(consumer, provider).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Export the active expectations as a Pact v3 contract (async). See <see cref="PactExport"/>.
+    /// </summary>
+    public async Task<string> PactExportAsync(string? consumer = null, string? provider = null)
+    {
+        var query = new List<string>();
+        if (!string.IsNullOrEmpty(consumer)) query.Add("consumer=" + Uri.EscapeDataString(consumer));
+        if (!string.IsNullOrEmpty(provider)) query.Add("provider=" + Uri.EscapeDataString(provider));
+        var path = "/mockserver/pact" + (query.Count > 0 ? "?" + string.Join("&", query) : "");
+        var (statusCode, body) = await PutAsync(path, "").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to export pact (HTTP {statusCode}): {body}");
+        return body ?? "";
+    }
+
+    /// <summary>
+    /// Verify a Pact v3 contract against the active expectations (PUT /mockserver/pact/verify).
+    /// Returns <c>true</c> when every interaction matched (HTTP 202), <c>false</c> when
+    /// verification failed (HTTP 406). Does not throw for a verification failure.
+    /// </summary>
+    /// <exception cref="ArgumentException">If <paramref name="json"/> is null or blank.</exception>
+    public bool PactVerify(string json)
+        => PactVerifyAsync(json).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Verify a Pact v3 contract (async). See <see cref="PactVerify"/>.
+    /// </summary>
+    public async Task<bool> PactVerifyAsync(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            throw new ArgumentException("pact contract JSON must not be empty", nameof(json));
+        var (statusCode, body) = await PutAsync("/mockserver/pact/verify", json).ConfigureAwait(false);
+
+        if (statusCode == 202) return true;
+        if (statusCode == 406) return false;
+        throw new MockServerClientException($"Failed to verify pact (HTTP {statusCode}): {body}");
+    }
+
+    // -------------------------------------------------------------------
+    // File store (store / retrieve / list / delete)
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Store a UTF-8 text file in the in-memory file store (PUT /mockserver/files/store).
+    /// Returns this client for chaining.
+    /// </summary>
+    public MockServerClient StoreFile(string name, string content)
+        => StoreFileAsync(name, content).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Store a text file (async). See <see cref="StoreFile"/>.
+    /// </summary>
+    public async Task<MockServerClient> StoreFileAsync(string name, string content)
+    {
+        if (string.IsNullOrEmpty(name)) throw new ArgumentException("name is required", nameof(name));
+        if (content == null) throw new ArgumentNullException(nameof(content));
+        var json = JsonSerializer.Serialize(
+            new Dictionary<string, object?> { ["name"] = name, ["content"] = content }, JsonOptions);
+        var (statusCode, body) = await PutAsync("/mockserver/files/store", json).ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to store file '{name}' (HTTP {statusCode}): {body}");
+        return this;
+    }
+
+    /// <summary>
+    /// Retrieve the raw bytes of a stored file (PUT /mockserver/files/retrieve). The server
+    /// returns the file content as the raw response body.
+    /// </summary>
+    /// <exception cref="MockServerClientException">If the file does not exist (HTTP 404).</exception>
+    public byte[] RetrieveFile(string name)
+        => RetrieveFileAsync(name).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Retrieve the raw bytes of a stored file (async). See <see cref="RetrieveFile"/>.
+    /// </summary>
+    public async Task<byte[]> RetrieveFileAsync(string name)
+    {
+        if (string.IsNullOrEmpty(name)) throw new ArgumentException("name is required", nameof(name));
+        var json = JsonSerializer.Serialize(new Dictionary<string, object?> { ["name"] = name }, JsonOptions);
+        var (statusCode, body) = await PutBytesResponseAsync("/mockserver/files/retrieve", json).ConfigureAwait(false);
+
+        if (statusCode == 404)
+            throw new MockServerClientException($"File not found: {name} (HTTP 404)");
+        if (statusCode >= 400)
+            throw new MockServerClientException(
+                $"Failed to retrieve file '{name}' (HTTP {statusCode}): {Encoding.UTF8.GetString(body)}");
+        return body;
+    }
+
+    /// <summary>
+    /// List the names of all files in the in-memory file store (PUT /mockserver/files/list).
+    /// </summary>
+    public List<string> ListFiles()
+        => ListFilesAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// List the names of all stored files (async). See <see cref="ListFiles"/>.
+    /// </summary>
+    public async Task<List<string>> ListFilesAsync()
+    {
+        var (statusCode, body) = await PutAsync("/mockserver/files/list", "").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to list files (HTTP {statusCode}): {body}");
+
+        if (!string.IsNullOrEmpty(body))
+        {
+            var result = JsonSerializer.Deserialize<List<string>>(body, JsonOptions);
+            if (result != null) return result;
+        }
+        return new List<string>();
+    }
+
+    /// <summary>
+    /// Delete a stored file by name (PUT /mockserver/files/delete). Returns this client for
+    /// chaining.
+    /// </summary>
+    /// <exception cref="MockServerClientException">If the file does not exist (HTTP 404).</exception>
+    public MockServerClient DeleteFile(string name)
+        => DeleteFileAsync(name).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Delete a stored file by name (async). See <see cref="DeleteFile"/>.
+    /// </summary>
+    public async Task<MockServerClient> DeleteFileAsync(string name)
+    {
+        if (string.IsNullOrEmpty(name)) throw new ArgumentException("name is required", nameof(name));
+        var json = JsonSerializer.Serialize(new Dictionary<string, object?> { ["name"] = name }, JsonOptions);
+        var (statusCode, body) = await PutAsync("/mockserver/files/delete", json).ConfigureAwait(false);
+
+        if (statusCode == 404)
+            throw new MockServerClientException($"File not found: {name} (HTTP 404)");
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to delete file '{name}' (HTTP {statusCode}): {body}");
+        return this;
+    }
+
+    // -------------------------------------------------------------------
+    // Import (HAR / Postman)
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Import a HAR document, creating/updating the matching expectations
+    /// (PUT /mockserver/import?format=har). Returns the serialized JSON array of upserted
+    /// expectations.
+    /// </summary>
+    /// <exception cref="ArgumentException">If <paramref name="harJson"/> is null or blank.</exception>
+    public List<Expectation> ImportHar(string harJson)
+        => ImportHarAsync(harJson).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Import a HAR document (async). See <see cref="ImportHar"/>.
+    /// </summary>
+    public Task<List<Expectation>> ImportHarAsync(string harJson)
+        => ImportDocumentAsync(harJson, "har");
+
+    /// <summary>
+    /// Import a Postman collection, creating/updating the matching expectations
+    /// (PUT /mockserver/import?format=postman). Returns the serialized JSON array of upserted
+    /// expectations.
+    /// </summary>
+    /// <exception cref="ArgumentException">If <paramref name="collectionJson"/> is null or blank.</exception>
+    public List<Expectation> ImportPostmanCollection(string collectionJson)
+        => ImportPostmanCollectionAsync(collectionJson).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Import a Postman collection (async). See <see cref="ImportPostmanCollection"/>.
+    /// </summary>
+    public Task<List<Expectation>> ImportPostmanCollectionAsync(string collectionJson)
+        => ImportDocumentAsync(collectionJson, "postman");
+
+    private async Task<List<Expectation>> ImportDocumentAsync(string json, string format)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            throw new ArgumentException($"{format} document JSON must not be empty", nameof(json));
+        var path = "/mockserver/import?format=" + Uri.EscapeDataString(format);
+        var (statusCode, body) = await PutAsync(path, json).ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to import {format} document (HTTP {statusCode}): {body}");
+        return DeserializeExpectations(body);
+    }
+
+    // -------------------------------------------------------------------
+    // Operating mode (SIMULATE / SPY / CAPTURE)
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Set the high-level operating mode (PUT /mockserver/mode?mode=&lt;MODE&gt;). Returns this
+    /// client for chaining.
+    /// </summary>
+    public MockServerClient SetMode(MockMode mode)
+        => SetModeAsync(mode).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Set the operating mode (async). See <see cref="SetMode"/>.
+    /// </summary>
+    public async Task<MockServerClient> SetModeAsync(MockMode mode)
+    {
+        var path = "/mockserver/mode?mode=" + mode.ToString().ToUpperInvariant();
+        var (statusCode, body) = await PutAsync(path, "").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to set mode (HTTP {statusCode}): {body}");
+        return this;
+    }
+
+    /// <summary>
+    /// Read the current operating mode (GET /mockserver/mode). Returns the parsed
+    /// <see cref="MockMode"/> from the server's <c>{"mode":"..."}</c> response.
+    /// </summary>
+    public MockMode RetrieveMode()
+        => RetrieveModeAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Read the current operating mode (async). See <see cref="RetrieveMode"/>.
+    /// </summary>
+    public async Task<MockMode> RetrieveModeAsync()
+    {
+        var (statusCode, body) = await GetAsync("/mockserver/mode").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to retrieve mode (HTTP {statusCode}): {body}");
+
+        var mode = string.Empty;
+        if (!string.IsNullOrEmpty(body))
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("mode", out var modeElement))
+                mode = modeElement.GetString() ?? string.Empty;
+        }
+        return mode.ToUpperInvariant() switch
+        {
+            "SPY" => MockMode.Spy,
+            "CAPTURE" => MockMode.Capture,
+            "SIMULATE" => MockMode.Simulate,
+            _ => throw new MockServerClientException($"Unknown operating mode in response: '{mode}'")
+        };
+    }
+
+    // -------------------------------------------------------------------
+    // WSDL -> expectations
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Generate expectations from a WSDL document (PUT /mockserver/wsdl). The WSDL XML is sent
+    /// as the raw request body. Returns the serialized JSON array of generated (upserted)
+    /// expectations.
+    /// </summary>
+    /// <exception cref="ArgumentException">If <paramref name="wsdl"/> is null or blank.</exception>
+    public List<Expectation> WsdlExpectation(string wsdl)
+        => WsdlExpectationAsync(wsdl).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Generate expectations from a WSDL document (async). See <see cref="WsdlExpectation"/>.
+    /// </summary>
+    public async Task<List<Expectation>> WsdlExpectationAsync(string wsdl)
+    {
+        if (string.IsNullOrWhiteSpace(wsdl))
+            throw new ArgumentException("WSDL document must not be empty", nameof(wsdl));
+        var request = new HttpRequestMessage(HttpMethod.Put, _baseUrl + "/mockserver/wsdl")
+        {
+            Content = new StringContent(wsdl, Encoding.UTF8, "text/xml")
+        };
+        var (statusCode, body) = await SendAsync(request).ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to generate WSDL expectations (HTTP {statusCode}): {body}");
+        return DeserializeExpectations(body);
+    }
+
+    private static List<Expectation> DeserializeExpectations(string body)
+    {
+        if (!string.IsNullOrEmpty(body))
+        {
+            var result = JsonSerializer.Deserialize<List<Expectation>>(body, JsonOptions);
+            if (result != null) return result;
+        }
+        return new List<Expectation>();
+    }
+
+    // -------------------------------------------------------------------
     // Internal: called by ForwardChainExpectation
     // -------------------------------------------------------------------
 
@@ -1646,6 +2143,26 @@ public sealed class MockServerClient : IDisposable
             var responseBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             return ((int)response.StatusCode, responseBody);
         }
+    }
+
+    private async Task<(int StatusCode, byte[] Body)> SendBytesAsync(HttpRequestMessage request)
+    {
+        ApplyControlPlaneAuth(request);
+        using (request)
+        {
+            using var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
+            var responseBytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            return ((int)response.StatusCode, responseBytes);
+        }
+    }
+
+    private Task<(int StatusCode, byte[] Body)> PutBytesResponseAsync(string path, string jsonBody)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Put, _baseUrl + path)
+        {
+            Content = new StringContent(jsonBody ?? "", Encoding.UTF8, "application/json")
+        };
+        return SendBytesAsync(request);
     }
 
     private Task<(int StatusCode, string Body)> PutAsync(string path, string jsonBody)
