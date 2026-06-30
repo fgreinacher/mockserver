@@ -128,44 +128,6 @@ keywords: contract testing, consumer-driven contracts, Pact, OpenAPI contract te
 
 <button id="button_contract_test_openapi" class="accordion">run OpenAPI contract tests against a live service</button>
 <div class="panel">
-  <button class="accordion inner">REST API</button>
-  <div class="panel">
-    <p>Test all operations in a spec hosted at a URL:</p>
-    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/contractTest" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
-    "baseUrl": "https://petstore3.swagger.io"
-  }'</code></pre>
-    <p>Test a single operation using an inline spec:</p>
-    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/contractTest" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "spec": {
-      "openapi": "3.0.0",
-      "info": {"title": "Users API", "version": "1.0.0"},
-      "paths": {
-        "/api/users": {
-          "get": {
-            "operationId": "getUsers",
-            "responses": {
-              "200": {
-                "description": "list of users",
-                "content": {
-                  "application/json": {
-                    "schema": {"type": "array", "items": {"type": "object"}}
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "baseUrl": "http://localhost:8080",
-    "operationId": "getUsers"
-  }'</code></pre>
-  </div>
   <button class="accordion inner">Java</button>
   <div class="panel">
     <p>Use the typed <code>contractTest</code> helper on <code>MockServerClient</code> — it builds the request, parses the response, and returns a structured <code>ContractReport</code>:</p>
@@ -224,6 +186,44 @@ mockServerClient('localhost', 1080)
             }
         });
     });</code></pre>
+  </div>
+  <button class="accordion inner">REST API</button>
+  <div class="panel">
+    <p>Test all operations in a spec hosted at a URL:</p>
+    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/contractTest" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
+    "baseUrl": "https://petstore3.swagger.io"
+  }'</code></pre>
+    <p>Test a single operation using an inline spec:</p>
+    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/contractTest" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "spec": {
+      "openapi": "3.0.0",
+      "info": {"title": "Users API", "version": "1.0.0"},
+      "paths": {
+        "/api/users": {
+          "get": {
+            "operationId": "getUsers",
+            "responses": {
+              "200": {
+                "description": "list of users",
+                "content": {
+                  "application/json": {
+                    "schema": {"type": "array", "items": {"type": "object"}}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "baseUrl": "http://localhost:8080",
+    "operationId": "getUsers"
+  }'</code></pre>
   </div>
 </div>
 

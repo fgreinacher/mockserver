@@ -58,15 +58,6 @@ ConfigurationProperties.corsAllowHeaders("Allow, Content-Encoding, Content-Lengt
 ConfigurationProperties.corsAllowCredentials(true);
 ConfigurationProperties.corsMaxAgeInSeconds(300);</code></pre>
     </div>
-    <button class="accordion inner">Command Line</button>
-    <div class="panel">
-        <pre class="prettyprint lang-bash code"><code class="code">java -Dmockserver.enableCORSForAllResponses=true \
--Dmockserver.corsAllowMethods="CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE" \
--Dmockserver.corsAllowHeaders="Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization" \
--Dmockserver.corsAllowCredentials="true" \
--Dmockserver.corsMaxAgeInSeconds="300" \
--jar "~/Downloads/mockserver-netty-{{ site.mockserver_version }}-no-dependencies.jar" -serverPort 1080</code></pre>
-    </div>
     <button class="accordion inner">JavaScript: mockserver-node</button>
     <div class="panel">
         <pre class="prettyprint lang-javascript code"><code class="code">var mockserver = require('mockserver-node');
@@ -79,6 +70,15 @@ mockserver.start_mockserver({
         "-Dmockserver.corsMaxAgeInSeconds=\"300\""
 });</code></pre>
     </div>
+    <button class="accordion inner">Command Line</button>
+    <div class="panel">
+        <pre class="prettyprint lang-bash code"><code class="code">java -Dmockserver.enableCORSForAllResponses=true \
+-Dmockserver.corsAllowMethods="CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE" \
+-Dmockserver.corsAllowHeaders="Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization" \
+-Dmockserver.corsAllowCredentials="true" \
+-Dmockserver.corsMaxAgeInSeconds="300" \
+-jar "~/Downloads/mockserver-netty-{{ site.mockserver_version }}-no-dependencies.jar" -serverPort 1080</code></pre>
+    </div>
 </div>
 <button id="button_enabled_permissive_cors_for_control_plane_api" class="accordion">enabled permissive CORS for control plane API</button>
 <div class="panel">
@@ -89,15 +89,6 @@ ConfigurationProperties.corsAllowMethods("CONNECT, DELETE, GET, HEAD, OPTIONS, P
 ConfigurationProperties.corsAllowHeaders("Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization");
 ConfigurationProperties.corsAllowCredentials(true);
 ConfigurationProperties.corsMaxAgeInSeconds(300);</code></pre>
-    </div>
-    <button class="accordion inner">Command Line</button>
-    <div class="panel">
-        <pre class="prettyprint lang-bash code"><code class="code">java -Dmockserver.enableCORSForAPI=true \
--Dmockserver.corsAllowMethods="CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE" \
--Dmockserver.corsAllowHeaders="Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization" \
--Dmockserver.corsAllowCredentials="true" \
--Dmockserver.corsMaxAgeInSeconds="300" \
--jar "~/Downloads/mockserver-netty-{{ site.mockserver_version }}-no-dependencies.jar" -serverPort 1080</code></pre>
     </div>
     <button class="accordion inner">JavaScript: mockserver-node</button>
     <div class="panel">
@@ -110,6 +101,15 @@ mockserver.start_mockserver({
         "-Dmockserver.corsAllowCredentials=\"true\" " +
         "-Dmockserver.corsMaxAgeInSeconds=\"300\""
 });</code></pre>
+    </div>
+    <button class="accordion inner">Command Line</button>
+    <div class="panel">
+        <pre class="prettyprint lang-bash code"><code class="code">java -Dmockserver.enableCORSForAPI=true \
+-Dmockserver.corsAllowMethods="CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE" \
+-Dmockserver.corsAllowHeaders="Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization" \
+-Dmockserver.corsAllowCredentials="true" \
+-Dmockserver.corsMaxAgeInSeconds="300" \
+-jar "~/Downloads/mockserver-netty-{{ site.mockserver_version }}-no-dependencies.jar" -serverPort 1080</code></pre>
     </div>
 </div>
 

@@ -4339,6 +4339,21 @@ mockServerClient("localhost", 1080)
 <button id="button_file_store_api" class="accordion">file store REST API (store, retrieve, list, and delete files)</button>
 <div class="panel">
     <p>MockServer provides an in-memory file store that can be used with the <a href="#button_response_file_body">FileBody</a> type. Files stored via the file store API can be referenced in expectations by name. The file store is cleared when MockServer is reset.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">MockServerClient mockServerClient = new MockServerClient("localhost", 1080);
+
+// Store a file, then reference it in an expectation using FileBody
+mockServerClient
+    .when(
+        request()
+            .withPath("/api/data")
+    )
+    .respond(
+        response()
+            .withBodyFromFile("sample.json", MediaType.APPLICATION_JSON)
+    );</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code"># Store a file
@@ -4358,21 +4373,6 @@ curl -v -X PUT "http://localhost:1080/mockserver/files/list"
 curl -v -X PUT "http://localhost:1080/mockserver/files/delete" \
     -H "Content-Type: application/json" \
     -d '{"name": "sample.json"}'</code></pre>
-    </div>
-    <button class="accordion inner">Java</button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">MockServerClient mockServerClient = new MockServerClient("localhost", 1080);
-
-// Store a file, then reference it in an expectation using FileBody
-mockServerClient
-    .when(
-        request()
-            .withPath("/api/data")
-    )
-    .respond(
-        response()
-            .withBodyFromFile("sample.json", MediaType.APPLICATION_JSON)
-    );</code></pre>
     </div>
     <p><strong>Endpoints:</strong></p>
     <ul>

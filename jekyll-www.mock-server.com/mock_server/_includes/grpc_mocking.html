@@ -102,30 +102,6 @@ message HelloResponse {
 
 <button id="button_grpc_unary" class="accordion title"><strong>Unary RPC Code Examples</strong></button>
 <div class="panel title">
-    <button class="accordion inner">REST API</button>
-    <div class="panel">
-    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
-  "httpRequest": {
-    "method": "POST",
-    "path": "/com.example.grpc.GreetingService/Greeting",
-    "headers": {
-      "x-grpc-service": ["com.example.grpc.GreetingService"],
-      "x-grpc-method": ["Greeting"]
-    },
-    "body": {
-      "type": "JSON",
-      "json": "{\"name\": \"World\"}"
-    }
-  },
-  "httpResponse": {
-    "statusCode": 200,
-    "headers": {
-      "grpc-status": ["0"]
-    },
-    "body": "{\"greeting\": \"Hello World\"}"
-  }
-}'</code></pre>
-    </div>
     <button class="accordion inner">Java</button>
     <div class="panel">
     <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
@@ -143,6 +119,35 @@ message HelloResponse {
             .withHeader("grpc-status", "0")
             .withBody("{\"greeting\": \"Hello World\"}")
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/com.example.grpc.GreetingService/Greeting",
+        "headers": {
+            "x-grpc-service": ["com.example.grpc.GreetingService"],
+            "x-grpc-method": ["Greeting"]
+        },
+        "body": {
+            "type": "JSON",
+            "json": "{\"name\": \"World\"}"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": {
+            "grpc-status": ["0"]
+        },
+        "body": "{\"greeting\": \"Hello World\"}"
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
@@ -190,35 +195,6 @@ client.when(
     body: '{"greeting": "Hello World"}'
   )
 )</code></pre>
-    </div>
-    <button class="accordion inner">JavaScript</button>
-    <div class="panel">
-    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
-mockServerClient("localhost", 1080).mockAnyResponse({
-    "httpRequest": {
-        "method": "POST",
-        "path": "/com.example.grpc.GreetingService/Greeting",
-        "headers": {
-            "x-grpc-service": ["com.example.grpc.GreetingService"],
-            "x-grpc-method": ["Greeting"]
-        },
-        "body": {
-            "type": "JSON",
-            "json": "{\"name\": \"World\"}"
-        }
-    },
-    "httpResponse": {
-        "statusCode": 200,
-        "headers": {
-            "grpc-status": ["0"]
-        },
-        "body": "{\"greeting\": \"Hello World\"}"
-    }
-}).then(
-    function () { console.log("expectation created"); },
-    function (error) { console.log(error); }
-);</code></pre>
-        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
@@ -299,6 +275,30 @@ $client-&gt;when(
         -&gt;body('{"greeting": "Hello World"}')
 );</code></pre>
     </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/com.example.grpc.GreetingService/Greeting",
+    "headers": {
+      "x-grpc-service": ["com.example.grpc.GreetingService"],
+      "x-grpc-method": ["Greeting"]
+    },
+    "body": {
+      "type": "JSON",
+      "json": "{\"name\": \"World\"}"
+    }
+  },
+  "httpResponse": {
+    "statusCode": 200,
+    "headers": {
+      "grpc-status": ["0"]
+    },
+    "body": "{\"greeting\": \"Hello World\"}"
+  }
+}'</code></pre>
+    </div>
 </div>
 
 <a id="server_streaming_rpc" class="anchor" href="#server_streaming_rpc">&nbsp;</a>
@@ -309,27 +309,6 @@ $client-&gt;when(
 
 <button id="button_grpc_stream" class="accordion title"><strong>Server Streaming RPC Code Examples</strong></button>
 <div class="panel title">
-    <button class="accordion inner">REST API</button>
-    <div class="panel">
-    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
-  "httpRequest": {
-    "method": "POST",
-    "path": "/com.example.grpc.GreetingService/ListGreetings",
-    "headers": {
-      "x-grpc-service": ["com.example.grpc.GreetingService"],
-      "x-grpc-method": ["ListGreetings"]
-    }
-  },
-  "grpcStreamResponse": {
-    "statusName": "OK",
-    "messages": [
-      {"json": "{\"greeting\": \"Hello Alice\"}"},
-      {"json": "{\"greeting\": \"Hello Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 100}},
-      {"json": "{\"greeting\": \"Hello Charlie\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 200}}
-    ]
-  }
-}'</code></pre>
-    </div>
     <button class="accordion inner">Java</button>
     <div class="panel">
     <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
@@ -347,6 +326,32 @@ $client-&gt;when(
             .withMessage("{\"greeting\": \"Hello Bob\"}", delay(MILLISECONDS, 100))
             .withMessage("{\"greeting\": \"Hello Charlie\"}", delay(MILLISECONDS, 200))
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/com.example.grpc.GreetingService/ListGreetings",
+        "headers": {
+            "x-grpc-service": ["com.example.grpc.GreetingService"],
+            "x-grpc-method": ["ListGreetings"]
+        }
+    },
+    "grpcStreamResponse": {
+        "statusName": "OK",
+        "messages": [
+            {"json": "{\"greeting\": \"Hello Alice\"}"},
+            {"json": "{\"greeting\": \"Hello Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 100}},
+            {"json": "{\"greeting\": \"Hello Charlie\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 200}}
+        ]
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
@@ -398,32 +403,6 @@ client.when(
     ]
   )
 )</code></pre>
-    </div>
-    <button class="accordion inner">JavaScript</button>
-    <div class="panel">
-    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
-mockServerClient("localhost", 1080).mockAnyResponse({
-    "httpRequest": {
-        "method": "POST",
-        "path": "/com.example.grpc.GreetingService/ListGreetings",
-        "headers": {
-            "x-grpc-service": ["com.example.grpc.GreetingService"],
-            "x-grpc-method": ["ListGreetings"]
-        }
-    },
-    "grpcStreamResponse": {
-        "statusName": "OK",
-        "messages": [
-            {"json": "{\"greeting\": \"Hello Alice\"}"},
-            {"json": "{\"greeting\": \"Hello Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 100}},
-            {"json": "{\"greeting\": \"Hello Charlie\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 200}}
-        ]
-    }
-}).then(
-    function () { console.log("expectation created"); },
-    function (error) { console.log(error); }
-);</code></pre>
-        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
@@ -549,6 +528,27 @@ curl_setopt_array($ch, [
 curl_exec($ch);
 curl_close($ch);</code></pre>{% endraw %}
     </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/com.example.grpc.GreetingService/ListGreetings",
+    "headers": {
+      "x-grpc-service": ["com.example.grpc.GreetingService"],
+      "x-grpc-method": ["ListGreetings"]
+    }
+  },
+  "grpcStreamResponse": {
+    "statusName": "OK",
+    "messages": [
+      {"json": "{\"greeting\": \"Hello Alice\"}"},
+      {"json": "{\"greeting\": \"Hello Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 100}},
+      {"json": "{\"greeting\": \"Hello Charlie\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 200}}
+    ]
+  }
+}'</code></pre>
+    </div>
 </div>
 
 <a id="client_streaming_rpc" class="anchor" href="#client_streaming_rpc">&nbsp;</a>
@@ -573,39 +573,6 @@ curl_close($ch);</code></pre>{% endraw %}
 
 <button id="button_grpc_bidi" class="accordion title"><strong>Bidirectional Streaming RPC Code Examples</strong></button>
 <div class="panel title">
-    <button class="accordion inner">REST API</button>
-    <div class="panel">
-    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
-  "httpRequest": {
-    "method": "POST",
-    "path": "/com.example.grpc.ChatService/BidiChat",
-    "headers": {
-      "x-grpc-service": ["com.example.grpc.ChatService"],
-      "x-grpc-method": ["BidiChat"]
-    }
-  },
-  "grpcBidiResponse": {
-    "statusName": "OK",
-    "messages": [
-      {"json": "{\"message\": \"Welcome to the chat!\"}"}
-    ],
-    "rules": [
-      {
-        "matchJson": "{\"message\": \"hello\"}",
-        "responses": [
-          {"json": "{\"message\": \"Hello! How can I help?\"}"}
-        ]
-      },
-      {
-        "matchJson": ".*goodbye.*",
-        "responses": [
-          {"json": "{\"message\": \"Goodbye! Have a nice day.\"}"}
-        ]
-      }
-    ]
-  }
-}'</code></pre>
-    </div>
     <button class="accordion inner">Java</button>
     <div class="panel">
     <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
@@ -625,6 +592,44 @@ curl_close($ch);</code></pre>{% endraw %}
             .withRule(grpcBidiRule(".*goodbye.*")
                 .withResponse("{\"message\": \"Goodbye! Have a nice day.\"}"))
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/com.example.grpc.ChatService/BidiChat",
+        "headers": {
+            "x-grpc-service": ["com.example.grpc.ChatService"],
+            "x-grpc-method": ["BidiChat"]
+        }
+    },
+    "grpcBidiResponse": {
+        "statusName": "OK",
+        "messages": [
+            {"json": "{\"message\": \"Welcome to the chat!\"}"}
+        ],
+        "rules": [
+            {
+                "matchJson": "{\"message\": \"hello\"}",
+                "responses": [
+                    {"json": "{\"message\": \"Hello! How can I help?\"}"}
+                ]
+            },
+            {
+                "matchJson": ".*goodbye.*",
+                "responses": [
+                    {"json": "{\"message\": \"Goodbye! Have a nice day.\"}"}
+                ]
+            }
+        ]
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
@@ -691,44 +696,6 @@ client.when(
     ]
   )
 )</code></pre>
-    </div>
-    <button class="accordion inner">JavaScript</button>
-    <div class="panel">
-    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
-mockServerClient("localhost", 1080).mockAnyResponse({
-    "httpRequest": {
-        "method": "POST",
-        "path": "/com.example.grpc.ChatService/BidiChat",
-        "headers": {
-            "x-grpc-service": ["com.example.grpc.ChatService"],
-            "x-grpc-method": ["BidiChat"]
-        }
-    },
-    "grpcBidiResponse": {
-        "statusName": "OK",
-        "messages": [
-            {"json": "{\"message\": \"Welcome to the chat!\"}"}
-        ],
-        "rules": [
-            {
-                "matchJson": "{\"message\": \"hello\"}",
-                "responses": [
-                    {"json": "{\"message\": \"Hello! How can I help?\"}"}
-                ]
-            },
-            {
-                "matchJson": ".*goodbye.*",
-                "responses": [
-                    {"json": "{\"message\": \"Goodbye! Have a nice day.\"}"}
-                ]
-            }
-        ]
-    }
-}).then(
-    function () { console.log("expectation created"); },
-    function (error) { console.log(error); }
-);</code></pre>
-        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
@@ -897,6 +864,39 @@ curl_setopt_array($ch, [
 ]);
 curl_exec($ch);
 curl_close($ch);</code></pre>{% endraw %}
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/com.example.grpc.ChatService/BidiChat",
+    "headers": {
+      "x-grpc-service": ["com.example.grpc.ChatService"],
+      "x-grpc-method": ["BidiChat"]
+    }
+  },
+  "grpcBidiResponse": {
+    "statusName": "OK",
+    "messages": [
+      {"json": "{\"message\": \"Welcome to the chat!\"}"}
+    ],
+    "rules": [
+      {
+        "matchJson": "{\"message\": \"hello\"}",
+        "responses": [
+          {"json": "{\"message\": \"Hello! How can I help?\"}"}
+        ]
+      },
+      {
+        "matchJson": ".*goodbye.*",
+        "responses": [
+          {"json": "{\"message\": \"Goodbye! Have a nice day.\"}"}
+        ]
+      }
+    ]
+  }
+}'</code></pre>
     </div>
 </div>
 

@@ -678,14 +678,14 @@ $logMessages = $client-&gt;retrieveLogMessages(
 
 <button id="button_client_retrieve_metrics" class="accordion">retrieve metrics via REST API</button>
 <div class="panel">
-    <button class="accordion inner">REST API</button>
-    <div class="panel">
-        <pre class="prettyprint code"><code class="code">curl -X PUT "http://localhost:1080/mockserver/retrieve?type=METRICS"</code></pre>
-    </div>
     <button class="accordion inner">Java</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">String metrics = new MockServerClient("localhost", 1080)
     .retrieveMetrics();</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -X PUT "http://localhost:1080/mockserver/retrieve?type=METRICS"</code></pre>
     </div>
 </div>
 
@@ -699,6 +699,16 @@ $logMessages = $client-&gt;retrieveLogMessages(
 
 <button id="button_client_retrieve_configuration" class="accordion">retrieve and update configuration via REST API</button>
 <div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">// retrieve current configuration
+String config = new MockServerClient("localhost", 1080)
+    .retrieveConfiguration();
+
+// update configuration
+new MockServerClient("localhost", 1080)
+    .updateConfiguration("{\"logLevel\": \"DEBUG\"}");</code></pre>
+    </div>
     <button class="accordion inner">Retrieve Configuration (REST API)</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -X GET "http://localhost:1080/mockserver/configuration"</code></pre>
@@ -709,16 +719,6 @@ $logMessages = $client-&gt;retrieveLogMessages(
   -H "Content-Type: application/json" \
   -d '{"logLevel": "DEBUG", "maxExpectations": 5000}'</code></pre>
         <p>Only the properties included in the request body are updated; all other properties retain their current values.</p>
-    </div>
-    <button class="accordion inner">Java</button>
-    <div class="panel">
-        <pre class="prettyprint code"><code class="code">// retrieve current configuration
-String config = new MockServerClient("localhost", 1080)
-    .retrieveConfiguration();
-
-// update configuration
-new MockServerClient("localhost", 1080)
-    .updateConfiguration("{\"logLevel\": \"DEBUG\"}");</code></pre>
     </div>
 </div>
 

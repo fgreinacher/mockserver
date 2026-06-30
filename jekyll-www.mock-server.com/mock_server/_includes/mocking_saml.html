@@ -23,14 +23,14 @@
 
 <button id="button_saml_defaults" class="accordion">mock a SAML IdP with default settings</button>
 <div class="panel">
-    <button class="accordion inner">REST API</button>
-    <div class="panel">
-        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/saml"</code></pre>
-    </div>
     <button class="accordion inner">Java</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">new MockServerClient("localhost", 1080)
     .mockSamlProvider();</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/saml"</code></pre>
     </div>
 </div>
 
@@ -40,6 +40,20 @@
 
 <button id="button_saml_custom" class="accordion">mock a SAML IdP with a custom subject, attributes, and SP details</button>
 <div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">new MockServerClient("localhost", 1080)
+    .mockSamlProvider(
+        new SamlProviderConfiguration()
+            .setIdpEntityId("https://idp.example.com/saml/idp")
+            .setSpEntityId("https://sp.example.com/metadata")
+            .setAssertionConsumerServiceUrl("https://sp.example.com/acs")
+            .setSpSingleLogoutServiceUrl("https://sp.example.com/slo")
+            .setSubjectNameId("alice@example.com")
+            .setAttributes(Map.of("email", "alice@example.com", "role", "admin"))
+            .setSigningAlgorithm("ES256")
+    );</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/saml" -d '{
@@ -54,20 +68,6 @@
     },
     "signingAlgorithm": "ES256"
 }'</code></pre>
-    </div>
-    <button class="accordion inner">Java</button>
-    <div class="panel">
-        <pre class="prettyprint code"><code class="code">new MockServerClient("localhost", 1080)
-    .mockSamlProvider(
-        new SamlProviderConfiguration()
-            .setIdpEntityId("https://idp.example.com/saml/idp")
-            .setSpEntityId("https://sp.example.com/metadata")
-            .setAssertionConsumerServiceUrl("https://sp.example.com/acs")
-            .setSpSingleLogoutServiceUrl("https://sp.example.com/slo")
-            .setSubjectNameId("alice@example.com")
-            .setAttributes(Map.of("email", "alice@example.com", "role", "admin"))
-            .setSigningAlgorithm("ES256")
-    );</code></pre>
     </div>
 </div>
 
