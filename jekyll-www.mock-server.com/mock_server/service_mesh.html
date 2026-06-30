@@ -1,5 +1,5 @@
 ---
-title: Transparent Proxy (Sidecar & Host-level Interception)
+title: Transparent Proxy<br/>(Sidecar & Host-level Interception)
 shortTitle: Transparent Proxy
 description: Run MockServer as a transparent proxy that intercepts outbound traffic with no application changes, on any Linux host (containers, VMs, bare metal) or as a Kubernetes sidecar, for mocking, recording, or chaos.
 layout: page
@@ -210,6 +210,8 @@ spec:
 <a id="original_destination_resolution" class="anchor" href="#original_destination_resolution">&nbsp;</a>
 
 <h2>Original Destination Resolution</h2>
+
+<p><strong>What "the original destination" is, and why it must be recovered:</strong> it is the host and port the client was actually trying to reach (for example <code class="inline code">api.stripe.com:443</code>). Because transparent interception redirects the connection to MockServer's own address, the original destination is overwritten &mdash; so by the time the request arrives, MockServer no longer knows where the client meant to go. It must <strong>recover</strong> the original destination to do two things: match an expectation by host, and forward the request on to the real upstream.</p>
 
 <p>MockServer uses a pluggable, ordered chain of strategies to resolve the original destination of transparently intercepted connections. The first strategy that returns a result wins; if none do, MockServer falls back to the <code class="inline code">Host</code> header. The strategies below are listed in the real priority order MockServer applies them: TPROXY, then eBPF, then SO_ORIGINAL_DST, then conntrack, then DNS-intent, then the Host header. A PROXY protocol header, when present, is detected and consumed earlier in the pipeline — before this resolver chain runs.</p>
 

@@ -17,7 +17,7 @@ keywords: transparent interception, iptables redirect, tproxy, dns steering, htt
 
 <ol>
     <li><strong>Traffic must reach MockServer</strong> — covered by this page. Mechanisms range from OS firewall rules to cloud route tables.</li>
-    <li><strong>MockServer must recover the original destination</strong> — covered by <a href="/mock_server/service_mesh.html">Transparent Proxy / Sidecar Mode</a>, which explains the resolver chain (PROXY protocol v1/v2, then TPROXY, eBPF, SO_ORIGINAL_DST, Linux conntrack, DNS-intent, and Host header fallback).</li>
+    <li><strong>MockServer must recover the original destination</strong> &mdash; that is, work out which host and port the client was <em>actually</em> trying to reach. Transparent interception redirects the connection to MockServer's own address, which overwrites the original target, so MockServer has to reconstruct it before it can match an expectation by host or forward the request on to the real upstream. <a href="/mock_server/service_mesh.html">Transparent Proxy</a> explains the resolver chain that does this (PROXY protocol v1/v2, then TPROXY, eBPF, SO_ORIGINAL_DST, Linux conntrack, DNS-intent, and Host header fallback).</li>
 </ol>
 
 <p>This page catalogues the delivery mechanisms — (1) above. For each mechanism, the relevant resolver strategy from (2) is noted so you can check whether it is implemented or future work.</p>
