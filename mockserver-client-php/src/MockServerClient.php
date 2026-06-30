@@ -34,6 +34,24 @@ use MockServer\Exception\VerificationException;
  */
 class MockServerClient
 {
+    /**
+     * Operating mode: match expectations only; unmatched requests return 404
+     * (proxy-on-no-match disabled). This is the default mode.
+     */
+    public const MODE_SIMULATE = 'SIMULATE';
+
+    /**
+     * Operating mode: match expectations; unmatched requests are forwarded to the
+     * real upstream and recorded (proxy-on-no-match enabled).
+     */
+    public const MODE_SPY = 'SPY';
+
+    /**
+     * Operating mode: forward and record. With no expectations defined this
+     * captures all traffic (same underlying proxy flag as {@see MODE_SPY}).
+     */
+    public const MODE_CAPTURE = 'CAPTURE';
+
     private GuzzleClient $httpClient;
     private string $baseUri;
 
@@ -1410,8 +1428,679 @@ class MockServerClient
     }
 
     // -----------------------------------------------------------------
+    // Clock control (freeze / advance / reset / status)
+    // -----------------------------------------------------------------
+
+    /**
+     * Freeze the MockServer clock.
+     *
+     * With no argument the clock freezes at the current time. Supplying an
+     * ISO-8601 instant string (e.g. {@code "2024-01-01T00:00:00Z"}) freezes the
+     * clock at that instant instead. Wraps {@code PUT /mockserver/clock} with
+     * body {@code {"action":"freeze"[,"instant":"<instant>"]}}.
+     *
+     * @param string|null $instant Optional ISO-8601 instant to freeze at; null
+     *        (the default) freezes at the current time.
+     * @return $this
+     * @throws InvalidRequestException If the instant is rejected (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function freezeClock(?string $instant = null): self
+    {
+        $payload = ['action' => 'freeze'];
+        if ($instant !== null) {
+            $payload['instant'] = $instant;
+        }
+        $body = json_encode($payload, JSON_THROW_ON_ERROR);
+        $response = $this->put('/mockserver/clock', $body);
+
+        $this->expectClockSuccess($response, 'freeze clock');
+
+        return $this;
+    }
+
+    /**
+     * Advance the (frozen) MockServer clock by a number of milliseconds.
+     *
+     * Wraps {@code PUT /mockserver/clock} with body
+     * {@code {"action":"advance","durationMillis":<millis>}}. The duration must
+     * be positive; a non-positive value is rejected by the server (HTTP 400).
+     *
+     * @param int $durationMillis Positive number of milliseconds to advance by.
+     * @return $this
+     * @throws InvalidRequestException If the duration is rejected (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function advanceClock(int $durationMillis): self
+    {
+        $body = json_encode(
+            ['action' => 'advance', 'durationMillis' => $durationMillis],
+            JSON_THROW_ON_ERROR,
+        );
+        $response = $this->put('/mockserver/clock', $body);
+
+        $this->expectClockSuccess($response, 'advance clock');
+
+        return $this;
+    }
+
+    /**
+     * Reset the MockServer clock to real wall-clock time.
+     *
+     * Wraps {@code PUT /mockserver/clock} with body {@code {"action":"reset"}}.
+     *
+     * @return $this
+     * @throws MockServerException On communication errors.
+     */
+    public function resetClock(): self
+    {
+        $body = json_encode(['action' => 'reset'], JSON_THROW_ON_ERROR);
+        $response = $this->put('/mockserver/clock', $body);
+
+        $this->expectClockSuccess($response, 'reset clock');
+
+        return $this;
+    }
+
+    /**
+     * Retrieve the current clock status.
+     *
+     * Wraps {@code GET /mockserver/clock}; returns the response body verbatim,
+     * a JSON object with fields {@code currentInstant}, {@code currentEpochMillis}
+     * and {@code frozen}.
+     *
+     * @return string The clock status JSON document.
+     * @throws MockServerException On communication errors.
+     */
+    public function clockStatus(): string
+    {
+        $response = $this->get('/mockserver/clock');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status >= 400) {
+            throw new MockServerException("Failed to get clock status (HTTP {$status}): {$responseBody}");
+        }
+
+        return $responseBody;
+    }
+
+    // -----------------------------------------------------------------
+    // Metrics
+    // -----------------------------------------------------------------
+
+    /**
+     * Retrieve the JSON counter snapshot of server metrics.
+     *
+     * Wraps {@code PUT /mockserver/retrieve?type=METRICS}; returns the response
+     * body verbatim, a flat JSON object mapping each metric name to its long
+     * value (or {@code {}} when metrics are disabled). This is distinct from
+     * {@see scrapeMetrics()} (the Prometheus exposition text).
+     *
+     * @return string The metrics snapshot JSON document.
+     * @throws MockServerException On communication errors.
+     */
+    public function retrieveMetrics(): string
+    {
+        $response = $this->put('/mockserver/retrieve?type=METRICS', '');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status >= 400) {
+            throw new MockServerException("Failed to retrieve metrics (HTTP {$status}): {$responseBody}");
+        }
+
+        return $responseBody;
+    }
+
+    /**
+     * Scrape the Prometheus exposition-format metrics text.
+     *
+     * Wraps {@code GET /mockserver/metrics}; returns the exposition text body.
+     * When metrics are disabled the server replies {@code 404} — surfaced as a
+     * {@see FeatureNotEnabledException}. This is distinct from
+     * {@see retrieveMetrics()} (the JSON counter snapshot).
+     *
+     * @return string The Prometheus exposition text.
+     * @throws FeatureNotEnabledException If metrics are disabled (HTTP 404).
+     * @throws MockServerException On communication errors.
+     */
+    public function scrapeMetrics(): string
+    {
+        $response = $this->get('/mockserver/metrics');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 404) {
+            throw new FeatureNotEnabledException(
+                'Failed to scrape metrics: metrics are disabled '
+                . '(start MockServer with metricsEnabled=true to enable them) (HTTP 404)'
+            );
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to scrape metrics (HTTP {$status}): {$responseBody}");
+        }
+
+        return $responseBody;
+    }
+
+    // -----------------------------------------------------------------
+    // Configuration (read / update)
+    // -----------------------------------------------------------------
+
+    /**
+     * Retrieve the effective live server configuration.
+     *
+     * Wraps {@code GET /mockserver/configuration}; returns the serialized
+     * {@code Configuration} JSON document verbatim.
+     *
+     * @return string The configuration JSON document.
+     * @throws MockServerException On communication errors.
+     */
+    public function retrieveConfiguration(): string
+    {
+        $response = $this->get('/mockserver/configuration');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status >= 400) {
+            throw new MockServerException("Failed to retrieve configuration (HTTP {$status}): {$responseBody}");
+        }
+
+        return $responseBody;
+    }
+
+    /**
+     * Update the live server configuration (partial update).
+     *
+     * Wraps {@code PUT /mockserver/configuration} with a {@code ConfigurationDTO}
+     * JSON document; only the fields present are applied. Returns the serialized
+     * updated configuration JSON document verbatim.
+     *
+     * @param string $configJson The {@code ConfigurationDTO} JSON document.
+     * @return string The updated configuration JSON document.
+     * @throws InvalidRequestException If the configuration JSON is rejected (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function updateConfiguration(string $configJson): string
+    {
+        $response = $this->put('/mockserver/configuration', $configJson);
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 400) {
+            throw new InvalidRequestException("Invalid configuration JSON: {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to update configuration (HTTP {$status}): {$responseBody}");
+        }
+
+        return $responseBody;
+    }
+
+    // -----------------------------------------------------------------
+    // Pact (import / export / verify)
+    // -----------------------------------------------------------------
+
+    /**
+     * Import a Pact v3 consumer contract as expectations.
+     *
+     * Wraps {@code PUT /mockserver/pact/import}; returns the upserted
+     * expectations as a JSON array string (as returned by the server).
+     *
+     * @param string $json The Pact v3 contract JSON document.
+     * @return string The upserted expectations JSON array document.
+     * @throws \InvalidArgumentException If the contract JSON is blank.
+     * @throws InvalidRequestException If the contract is rejected (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function pactImport(string $json): string
+    {
+        if (trim($json) === '') {
+            throw new \InvalidArgumentException('pactImport requires a non-empty pact contract JSON');
+        }
+
+        $response = $this->put('/mockserver/pact/import', $json);
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 400) {
+            throw new InvalidRequestException("Invalid pact contract: {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to import pact (HTTP {$status}): {$responseBody}");
+        }
+
+        return $responseBody;
+    }
+
+    /**
+     * Export the active expectations as a Pact v3 consumer contract.
+     *
+     * Wraps {@code PUT /mockserver/pact?consumer=&provider=}; a blank consumer or
+     * provider is omitted so the server default is used. Returns the generated
+     * Pact v3 contract JSON document.
+     *
+     * @param string $consumer The consumer name (blank uses the server default).
+     * @param string $provider The provider name (blank uses the server default).
+     * @return string The Pact v3 contract JSON document.
+     * @throws MockServerException On communication errors.
+     */
+    public function pactExport(string $consumer, string $provider): string
+    {
+        $query = [];
+        if (trim($consumer) !== '') {
+            $query[] = 'consumer=' . urlencode($consumer);
+        }
+        if (trim($provider) !== '') {
+            $query[] = 'provider=' . urlencode($provider);
+        }
+        $path = '/mockserver/pact';
+        if ($query !== []) {
+            $path .= '?' . implode('&', $query);
+        }
+
+        $response = $this->put($path, '');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status >= 400) {
+            throw new MockServerException("Failed to export pact (HTTP {$status}): {$responseBody}");
+        }
+
+        return $responseBody;
+    }
+
+    /**
+     * Verify a Pact v3 consumer contract against the active expectations.
+     *
+     * Wraps {@code PUT /mockserver/pact/verify}. The server replies
+     * {@code 202 ACCEPTED} when every interaction matches an expectation (returns
+     * {@code true}) and {@code 406 NOT_ACCEPTABLE} otherwise (returns
+     * {@code false}); the verification report body is discarded in both cases —
+     * use the boolean verdict. A malformed contract is surfaced as an exception.
+     *
+     * @param string $json The Pact v3 contract JSON document.
+     * @return bool True when the contract verified (HTTP 202), false on a FAIL
+     *         verdict (HTTP 406).
+     * @throws \InvalidArgumentException If the contract JSON is blank.
+     * @throws InvalidRequestException If the contract is malformed (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function pactVerify(string $json): bool
+    {
+        if (trim($json) === '') {
+            throw new \InvalidArgumentException('pactVerify requires a non-empty pact contract JSON');
+        }
+
+        $response = $this->put('/mockserver/pact/verify', $json);
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 202) {
+            return true;
+        }
+        if ($status === 406) {
+            return false;
+        }
+        if ($status === 400) {
+            throw new InvalidRequestException("Invalid pact contract: {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to verify pact (HTTP {$status}): {$responseBody}");
+        }
+
+        // Any other 2xx (unexpected) is treated as a pass.
+        return true;
+    }
+
+    // -----------------------------------------------------------------
+    // File store (store / retrieve / list / delete)
+    // -----------------------------------------------------------------
+
+    /**
+     * Store a named file (UTF-8 text content) in the server's in-memory file store.
+     *
+     * Wraps {@code PUT /mockserver/files/store} with body
+     * {@code {"name":"<name>","content":"<content>"}}.
+     *
+     * @param string $name The file name/key.
+     * @param string $content The UTF-8 file content.
+     * @return $this
+     * @throws InvalidRequestException If name/content are missing (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function storeFile(string $name, string $content): self
+    {
+        $body = json_encode(
+            ['name' => $name, 'content' => $content],
+            JSON_THROW_ON_ERROR,
+        );
+        $response = $this->put('/mockserver/files/store', $body);
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 400) {
+            throw new InvalidRequestException("Failed to store file: {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to store file (HTTP {$status}): {$responseBody}");
+        }
+
+        return $this;
+    }
+
+    /**
+     * Retrieve a named file's content from the server's in-memory file store.
+     *
+     * Wraps {@code PUT /mockserver/files/retrieve} with body
+     * {@code {"name":"<name>"}}; returns the raw {@code 200} response body. A
+     * missing file (HTTP 404) is signalled as a clear not-found exception rather
+     * than returning the server's "file not found" text as if it were content —
+     * this matches the Go/.NET/Ruby/Rust clients, which all throw on a 404 here.
+     *
+     * @param string $name The file name/key.
+     * @return string The raw file content.
+     * @throws InvalidRequestException If the file does not exist (HTTP 404) or
+     *         the name is blank (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function retrieveFile(string $name): string
+    {
+        $body = json_encode(['name' => $name], JSON_THROW_ON_ERROR);
+        $response = $this->put('/mockserver/files/retrieve', $body);
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 404) {
+            throw new InvalidRequestException("file not found: {$name}");
+        }
+        if ($status === 400) {
+            throw new InvalidRequestException("Failed to retrieve file (HTTP 400): {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to retrieve file (HTTP {$status}): {$responseBody}");
+        }
+
+        return $responseBody;
+    }
+
+    /**
+     * List the names of all files in the server's in-memory file store.
+     *
+     * Wraps {@code PUT /mockserver/files/list}; returns the decoded JSON array of
+     * file-name strings.
+     *
+     * @return array<int, string> The file names.
+     * @throws MockServerException On communication errors.
+     */
+    public function listFiles(): array
+    {
+        $response = $this->put('/mockserver/files/list', '');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status >= 400) {
+            throw new MockServerException("Failed to list files (HTTP {$status}): {$responseBody}");
+        }
+
+        if ($responseBody !== '') {
+            $parsed = json_decode($responseBody, true);
+            if (is_array($parsed)) {
+                return array_values($parsed);
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Delete a named file from the server's in-memory file store.
+     *
+     * Wraps {@code PUT /mockserver/files/delete} with body
+     * {@code {"name":"<name>"}}.
+     *
+     * @param string $name The file name/key.
+     * @return $this
+     * @throws InvalidRequestException If the file is unknown (HTTP 404) or the
+     *         name is blank (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function deleteFile(string $name): self
+    {
+        $body = json_encode(['name' => $name], JSON_THROW_ON_ERROR);
+        $response = $this->put('/mockserver/files/delete', $body);
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 400 || $status === 404) {
+            throw new InvalidRequestException("Failed to delete file (HTTP {$status}): {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to delete file (HTTP {$status}): {$responseBody}");
+        }
+
+        return $this;
+    }
+
+    // -----------------------------------------------------------------
+    // Import (HAR / Postman)
+    // -----------------------------------------------------------------
+
+    /**
+     * Import a HAR (HTTP Archive) document as expectations.
+     *
+     * Wraps {@code PUT /mockserver/import?format=har}; returns the decoded JSON
+     * array of upserted expectations.
+     *
+     * @param string $harJson The HAR JSON document.
+     * @return array<int, array<string, mixed>> The created/updated expectations.
+     * @throws InvalidRequestException If the document is rejected (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function importHar(string $harJson): array
+    {
+        return $this->importDocument($harJson, 'har', 'import HAR');
+    }
+
+    /**
+     * Import a Postman collection document as expectations.
+     *
+     * Wraps {@code PUT /mockserver/import?format=postman}; returns the decoded
+     * JSON array of upserted expectations.
+     *
+     * @param string $collectionJson The Postman collection JSON document.
+     * @return array<int, array<string, mixed>> The created/updated expectations.
+     * @throws InvalidRequestException If the document is rejected (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function importPostmanCollection(string $collectionJson): array
+    {
+        return $this->importDocument($collectionJson, 'postman', 'import Postman collection');
+    }
+
+    // -----------------------------------------------------------------
+    // Operating mode (high-level proxy/record mode)
+    // -----------------------------------------------------------------
+
+    /**
+     * Set the server's high-level operating mode.
+     *
+     * Wraps {@code PUT /mockserver/mode?mode=<MODE>}. Use the {@code MODE_*}
+     * constants — {@see MODE_SIMULATE}, {@see MODE_SPY}, {@see MODE_CAPTURE}
+     * (case-insensitive on the wire).
+     *
+     * @param string $mode One of {@code SIMULATE}, {@code SPY}, {@code CAPTURE}.
+     * @return $this
+     * @throws InvalidRequestException If the mode is invalid/blank (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function setMode(string $mode): self
+    {
+        $response = $this->put('/mockserver/mode?mode=' . urlencode($mode), '');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 400) {
+            throw new InvalidRequestException("Invalid operating mode: {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to set operating mode (HTTP {$status}): {$responseBody}");
+        }
+
+        return $this;
+    }
+
+    /**
+     * Retrieve the server's current high-level operating mode.
+     *
+     * Wraps {@code GET /mockserver/mode}; returns the decoded JSON object
+     * {@code {"mode":"<MODE>","proxyUnmatchedRequests":<boolean>}}.
+     *
+     * @return array<string, mixed> The current mode status.
+     * @throws MockServerException On communication errors.
+     */
+    public function retrieveMode(): array
+    {
+        $response = $this->get('/mockserver/mode');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status >= 400) {
+            throw new MockServerException("Failed to retrieve operating mode (HTTP {$status}): {$responseBody}");
+        }
+
+        if ($responseBody !== '') {
+            $parsed = json_decode($responseBody, true);
+            if (is_array($parsed)) {
+                return $parsed;
+            }
+        }
+
+        return [];
+    }
+
+    // -----------------------------------------------------------------
+    // WSDL -> expectations
+    // -----------------------------------------------------------------
+
+    /**
+     * Generate expectations from a WSDL document.
+     *
+     * Wraps {@code PUT /mockserver/wsdl} with the raw WSDL XML as the request
+     * body ({@code text/xml}); returns the decoded JSON array of the generated
+     * (upserted) expectations.
+     *
+     * @param string $wsdl The WSDL document (XML).
+     * @return array<int, array<string, mixed>> The generated expectations.
+     * @throws \InvalidArgumentException If the WSDL is blank.
+     * @throws InvalidRequestException If the WSDL is invalid (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    public function wsdlExpectation(string $wsdl): array
+    {
+        if (trim($wsdl) === '') {
+            throw new \InvalidArgumentException('wsdlExpectation requires a non-empty WSDL document');
+        }
+
+        $response = $this->put('/mockserver/wsdl', $wsdl, 'text/xml');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 400) {
+            throw new InvalidRequestException("Invalid WSDL: {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to generate WSDL expectations (HTTP {$status}): {$responseBody}");
+        }
+
+        if ($responseBody !== '') {
+            $parsed = json_decode($responseBody, true);
+            if (is_array($parsed)) {
+                return $parsed;
+            }
+        }
+
+        return [];
+    }
+
+    // -----------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------
+
+    /**
+     * Assert a clock-control PUT succeeded, mapping the documented error codes to
+     * typed exceptions.
+     *
+     * @param \Psr\Http\Message\ResponseInterface $response
+     * @param string $action Human-readable action used in error messages.
+     * @throws InvalidRequestException If the request was rejected (HTTP 400).
+     * @throws MockServerException On other error statuses.
+     */
+    private function expectClockSuccess(
+        \Psr\Http\Message\ResponseInterface $response,
+        string $action,
+    ): void {
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 400) {
+            throw new InvalidRequestException("Failed to {$action} (HTTP 400): {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to {$action} (HTTP {$status}): {$responseBody}");
+        }
+    }
+
+    /**
+     * Shared HAR/Postman import: PUT /mockserver/import?format=<format>, decode
+     * the upserted-expectations JSON array.
+     *
+     * @param string $json The document to import.
+     * @param string $format The {@code ?format=} value (har or postman).
+     * @param string $action Human-readable action used in error messages.
+     * @return array<int, array<string, mixed>> The created/updated expectations.
+     * @throws InvalidRequestException If the document is rejected (HTTP 400).
+     * @throws MockServerException On communication errors.
+     */
+    private function importDocument(string $json, string $format, string $action): array
+    {
+        $response = $this->put('/mockserver/import?format=' . urlencode($format), $json);
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status === 400) {
+            throw new InvalidRequestException("Failed to {$action} (HTTP 400): {$responseBody}");
+        }
+        if ($status >= 400) {
+            throw new MockServerException("Failed to {$action} (HTTP {$status}): {$responseBody}");
+        }
+
+        if ($responseBody !== '') {
+            $parsed = json_decode($responseBody, true);
+            if (is_array($parsed)) {
+                return $parsed;
+            }
+        }
+
+        return [];
+    }
 
     /**
      * Coerce a value-object-or-array argument into a JSON-encodable array.
