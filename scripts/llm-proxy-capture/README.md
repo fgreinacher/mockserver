@@ -53,6 +53,45 @@ rebuilding the jar. Exit the tool (or Ctrl+C) to tear the servers down. It is th
 LLM-capture sibling of `npm run demo` (which loads synthetic data instead). See
 `mockserver-ui/scripts/launch-with-llm-capture.sh --help`.
 
+## Reverse-proxy mode (no `HTTPS_PROXY`)
+
+By default the launcher runs MockServer as a **forward** proxy (the tool sets `HTTPS_PROXY` and
+MockServer TLS-intercepts via CONNECT). Pass `--reverse-proxy HOST[:PORT]` to instead run it as a
+**reverse** (port-forwarding) proxy to a single upstream, so the tool points its **base URL** at
+MockServer rather than using `HTTPS_PROXY`:
+
+```bash
+npm run capture -- --reverse-proxy api.openai.com   # OPENAI_BASE_URL is set for you
+```
+
+This route goes through the same streaming + `forwardProxyHttp2Upgrade` path as the forward proxy
+(not the CONNECT loopback), so it's also a clean way to isolate whether a streaming timeout is
+CONNECT-specific. Note: `opencode`'s Codex backend (`chatgpt.com`) is pinned to its ChatGPT
+subscription auth and is **not** base-URL-overridable, so reverse mode suits standard-API tools
+(`OPENAI_BASE_URL`); use the default forward mode for `opencode`.
+
+## Capturing stdio MCP servers — `mcp-stdio-capture.mjs`
+
+A coding-assistant CLI's MCP servers are only captured if they speak HTTP/SSE through the proxy. A
+**stdio** MCP server (e.g. `chrome-devtools-mcp`, which talks the Chrome DevTools Protocol over a
+local pipe) never makes an outbound HTTP request, so the HTTP proxy can't see it. `mcp-stdio-capture.mjs`
+is a thin **passthrough bridge** you register *in place of* the real MCP command: it relays the child's
+stdio byte-for-byte (the CLI behaves exactly as before) while tee-ing each JSON-RPC exchange to MockServer
+over HTTP, so the stdio MCP server appears in the **AI · MCP Health** panel alongside the LLM traffic —
+with per-server call count, error rate (JSON-RPC errors are tee'd as a 5xx), the methods called, and the
+**real per-call latency** (measured by the bridge and forwarded as `x-mcp-latency-ms`, which the panel
+prefers over MockServer's own processing time).
+
+```bash
+# register this as opencode's MCP "command"; everything after `--` is the REAL command, spawned untouched:
+node scripts/llm-proxy-capture/mcp-stdio-capture.mjs \
+     --server chrome-devtools-mcp --mockserver http://localhost:1080 \
+     -- npx chrome-devtools-mcp@latest
+```
+
+It's a prototype/proof-of-concept of "proxying a stdio process", not a hardened tool. See its header
+comment for the framing assumptions and limitations.
+
 ## The prompt ladder
 
 Each installed CLI is driven with a ladder of prompts (`CAPTURE_PROMPTS`, default all three)

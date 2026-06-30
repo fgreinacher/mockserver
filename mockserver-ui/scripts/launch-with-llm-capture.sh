@@ -33,6 +33,12 @@
 #   --port PORT      MockServer / proxy port (default: 1080)
 #   --ui-port PORT   UI dev server port (default: 3000)
 #   --ca PATH        Proxy CA cert the tool must trust (default: MockServer's repo test CA)
+#   --reverse-proxy HOST[:PORT]
+#                    Run MockServer as a REVERSE proxy (port-forwarding) to a single upstream
+#                    (default port 443) instead of a forward/HTTPS_PROXY proxy; the tool points its
+#                    BASE URL at MockServer (OPENAI_BASE_URL is set for you). Suits standard-API tools
+#                    and isolates whether a timeout is CONNECT-specific. (opencode/Codex can't use it —
+#                    its chatgpt.com backend is not base-URL-overridable; use forward mode for opencode.)
 #   --help           Show this help
 #
 # Anything after a literal `--` is passed through to the launched tool.
@@ -53,6 +59,10 @@ UI_PORT=3000
 REBUILD=false
 NO_BROWSER=false
 KEEP_LOG=false
+# --reverse-proxy HOST[:PORT] runs MockServer as a REVERSE proxy (port-forwarding) to a single
+# upstream instead of a forward (HTTPS_PROXY) proxy. The tool then points its BASE URL at MockServer
+# (no HTTPS_PROXY) — useful for standard-API tools (OPENAI_BASE_URL) and as a CONNECT-bypass test.
+REVERSE_PROXY=""
 CA_CERT="$REPO_ROOT/mockserver/mockserver-core/src/main/resources/org/mockserver/socket/CertificateAuthorityCertificate.pem"
 TOOL="none"
 TOOL_ARGS=()
@@ -66,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --port) MOCKSERVER_PORT="$2"; shift 2 ;;
     --ui-port) UI_PORT="$2"; shift 2 ;;
     --ca) CA_CERT="$2"; shift 2 ;;
+    --reverse-proxy) REVERSE_PROXY="$2"; shift 2 ;;
     --help|-h) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; TOOL_ARGS+=("$@"); break ;;
     claude|opencode|tabnine|none) TOOL="$1"; shift ;;
@@ -134,7 +145,20 @@ MOCKSERVER_LOG="$UI_DIR/mockserver-capture.log"
 HEAP_DUMP="$UI_DIR/mockserver-capture-heap.hprof"
 DEMO_MAX_HEAP="${CAPTURE_MAX_HEAP:-1g}"
 DEMO_MAX_LOG_ENTRIES="${CAPTURE_MAX_LOG_ENTRIES:-5000}"
-echo "→ Starting MockServer (proxy) on port $MOCKSERVER_PORT (max heap: $DEMO_MAX_HEAP, log: $MOCKSERVER_LOG)..."
+# Reverse-proxy (port-forwarding) mode: when --reverse-proxy HOST[:PORT] is given, MockServer forwards
+# ALL traffic to that single upstream (default port 443), so the tool points its BASE URL at MockServer
+# instead of setting HTTPS_PROXY. This route goes through the same streaming + forwardProxyHttp2Upgrade
+# path as the forward proxy (NOT the CONNECT loopback), so it is also a clean way to isolate whether a
+# timeout is CONNECT-specific.
+REVERSE_ARGS=()
+if [ -n "$REVERSE_PROXY" ]; then
+  REVERSE_HOST="${REVERSE_PROXY%%:*}"
+  REVERSE_PORT="${REVERSE_PROXY##*:}"; [ "$REVERSE_PORT" = "$REVERSE_PROXY" ] && REVERSE_PORT=443
+  REVERSE_ARGS=(-proxyRemoteHost "$REVERSE_HOST" -proxyRemotePort "$REVERSE_PORT")
+  echo "→ Starting MockServer (REVERSE proxy → https://$REVERSE_HOST:$REVERSE_PORT) on port $MOCKSERVER_PORT (log: $MOCKSERVER_LOG)..."
+else
+  echo "→ Starting MockServer (proxy) on port $MOCKSERVER_PORT (max heap: $DEMO_MAX_HEAP, log: $MOCKSERVER_LOG)..."
+fi
 # forwardProxyHttp2Upgrade: forward the (HTTP/1.1) CLI's TLS-intercepted requests to the upstream over
 # HTTP/2 via ALPN, so a streaming SSE backend that streams the response head over HTTP/2 sends it
 # immediately. ALPN falls back to HTTP/1.1 if the upstream does not offer HTTP/2, so this is safe for
@@ -157,7 +181,9 @@ java -Xmx"$DEMO_MAX_HEAP" -Dmockserver.maxLogEntries="$DEMO_MAX_LOG_ENTRIES" \
      -Dmockserver.metricsEnabled=true -Dmockserver.wasmEnabled=true \
      -Dmockserver.forwardProxyHttp2Upgrade=true \
      -Dmockserver.maxSocketTimeoutInMillis=120000 \
-     -jar "$MOCKSERVER_JAR" -serverPort "$MOCKSERVER_PORT" -logLevel INFO > "$MOCKSERVER_LOG" 2>&1 &
+     -jar "$MOCKSERVER_JAR" -serverPort "$MOCKSERVER_PORT" \
+     ${REVERSE_ARGS[@]+"${REVERSE_ARGS[@]}"} \
+     -logLevel INFO > "$MOCKSERVER_LOG" 2>&1 &
 MOCKSERVER_PID=$!
 
 UI_PID=""
@@ -201,11 +227,19 @@ if [ "$NO_BROWSER" = false ]; then
   elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$UI_URL"; fi
 fi
 
-# --- proxy env every launched tool needs ----------------------------------
-export HTTPS_PROXY="http://localhost:$MOCKSERVER_PORT" HTTP_PROXY="http://localhost:$MOCKSERVER_PORT"
-export https_proxy="http://localhost:$MOCKSERVER_PORT" http_proxy="http://localhost:$MOCKSERVER_PORT"
+# --- env every launched tool needs ----------------------------------------
 export NODE_EXTRA_CA_CERTS="$CA_CERT" SSL_CERT_FILE="$CA_CERT" REQUESTS_CA_BUNDLE="$CA_CERT"
-export NODE_USE_SYSTEM_CA=1 NODE_USE_ENV_PROXY=1
+export NODE_USE_SYSTEM_CA=1
+if [ -n "$REVERSE_PROXY" ]; then
+  # Reverse mode: the tool points its BASE URL at MockServer (no HTTPS_PROXY). For a standard
+  # OpenAI-API tool, OPENAI_BASE_URL is enough; other tools need their own base-URL setting.
+  export OPENAI_BASE_URL="https://localhost:$MOCKSERVER_PORT/v1"
+  export OPENAI_API_BASE="https://localhost:$MOCKSERVER_PORT/v1"
+else
+  export HTTPS_PROXY="http://localhost:$MOCKSERVER_PORT" HTTP_PROXY="http://localhost:$MOCKSERVER_PORT"
+  export https_proxy="http://localhost:$MOCKSERVER_PORT" http_proxy="http://localhost:$MOCKSERVER_PORT"
+  export NODE_USE_ENV_PROXY=1
+fi
 
 echo ""
 echo "========================================"
@@ -215,11 +249,20 @@ echo "  Dashboard : $UI_URL"
 echo "              (Traffic · LLM Traces · LLM Optimise tabs)"
 echo "  MockServer log: $MOCKSERVER_LOG"
 echo ""
-echo "  To proxy a coding CLI through MockServer in any terminal, export:"
-echo "    export HTTPS_PROXY=http://localhost:$MOCKSERVER_PORT"
-echo "    export NODE_EXTRA_CA_CERTS=$CA_CERT"
-echo "    export SSL_CERT_FILE=$CA_CERT"
-echo "  then run:  claude   |   opencode   |   tabnine --skip-trust"
+if [ -n "$REVERSE_PROXY" ]; then
+  echo "  REVERSE proxy → https://$REVERSE_PROXY  (no HTTPS_PROXY). Point your tool's BASE URL here:"
+  echo "    export OPENAI_BASE_URL=https://localhost:$MOCKSERVER_PORT/v1"
+  echo "    export SSL_CERT_FILE=$CA_CERT   (and NODE_EXTRA_CA_CERTS for node tools)"
+  echo "  NOTE: opencode's Codex backend (chatgpt.com) is pinned to its subscription auth and is NOT"
+  echo "        base-URL-overridable, so reverse mode suits standard-API tools; for opencode use the"
+  echo "        default forward (HTTPS_PROXY) mode."
+else
+  echo "  To proxy a coding CLI through MockServer in any terminal, export:"
+  echo "    export HTTPS_PROXY=http://localhost:$MOCKSERVER_PORT"
+  echo "    export NODE_EXTRA_CA_CERTS=$CA_CERT"
+  echo "    export SSL_CERT_FILE=$CA_CERT"
+  echo "  then run:  claude   |   opencode   |   tabnine --skip-trust"
+fi
 echo "========================================"
 echo ""
 
