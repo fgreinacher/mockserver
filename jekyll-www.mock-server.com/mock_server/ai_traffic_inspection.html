@@ -329,11 +329,176 @@ curl -s -X PUT "http://localhost:1080/mockserver/retrieve?type=REQUEST_RESPONSES
 <pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/retrieve?type=REQUEST_RESPONSES \
   -d '{"headers": {"host": [{"value": "api.anthropic.com"}]}}'</code></pre>
 
+<a id="headless-scripted-capture" class="anchor" href="#headless-scripted-capture">&nbsp;</a>
+
+<h2>5. Headless &amp; Scripted Capture (CI / Remote Machine)</h2>
+
+<p>The sections above cover capturing traffic interactively — a developer running an AI tool in their terminal with MockServer already running nearby. This section automates the same capture end-to-end for headless, unattended use: CI pipelines, remote build agents, and batch capture runs where no one is sitting at a keyboard.</p>
+
+<p>The entire flow runs on a single host — the remote machine where both MockServer and opencode execute. The script below starts MockServer as an LLM-capture proxy, waits until it is ready, runs <code class="code inline">opencode run</code> in headless (non-interactive) mode through the proxy, retrieves the captured traffic, and stops MockServer — all automatically, even if an earlier step fails.</p>
+
+<h3>Complete Capture Script</h3>
+
+<pre class="prettyprint lang-bash code"><code class="code">#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# headless-capture.sh — run opencode through MockServer and collect LLM traffic
+# Usage: ./headless-capture.sh "Your prompt here"
+# ---------------------------------------------------------------------------
+
+PROMPT="${1:-Summarise the files in this directory.}"
+CAPTURE_DIR="${CAPTURE_DIR:-./mockserver-capture}"
+MOCKSERVER_PORT="${MOCKSERVER_PORT:-1080}"
+MOCKSERVER_JAR="mockserver-netty-no-dependencies-{{ site.mockserver_version }}.jar"
+MOCKSERVER_LOG="$CAPTURE_DIR/mockserver.log"
+
+mkdir -p "$CAPTURE_DIR"
+
+# --- Cleanup: always stop MockServer on exit ---
+MOCKSERVER_PID=""
+cleanup() {
+    if [ -n "$MOCKSERVER_PID" ]; then
+        echo "Stopping MockServer (PID $MOCKSERVER_PID)..."
+        curl -sf -X PUT "http://localhost:$MOCKSERVER_PORT/mockserver/stop" >/dev/null 2>&1 \
+            || kill "$MOCKSERVER_PID" 2>/dev/null || true
+        wait "$MOCKSERVER_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+# --- 1. Start MockServer ---
+# --proxy-setup generates a unique local CA whose private key never leaves this machine.
+# Required on any remote or shared host — do not omit it (see §2 security warning).
+java \
+    -Dmockserver.persistRecordedRequestsToDisk=true \
+    -Dmockserver.persistedRecordedRequestsPath="$CAPTURE_DIR/recordedRequests.ndjson" \
+    -Dmockserver.maxEventLogSizeInBytes=268435456 \
+    -Dmockserver.maxSocketTimeoutInMillis=300000 \
+    -Dmockserver.forwardProxyHttp2Upgrade=true \
+    -Dmockserver.redactSecretsInLog=true \
+    -jar "$MOCKSERVER_JAR" \
+    -serverPort "$MOCKSERVER_PORT" \
+    --proxy-setup \
+    -logLevel WARN \
+    > "$MOCKSERVER_LOG" 2>&1 &
+MOCKSERVER_PID=$!
+echo "MockServer started (PID $MOCKSERVER_PID), log: $MOCKSERVER_LOG"
+
+# --- 2. Wait for MockServer to be ready ---
+echo "Waiting for MockServer on port $MOCKSERVER_PORT..."
+until curl -sf -X PUT "http://localhost:$MOCKSERVER_PORT/mockserver/status" >/dev/null 2>&1; do
+    sleep 1
+done
+echo "MockServer is ready."
+
+# --- 3. Locate the CA certificate ---
+# MockServer writes the active CA to ./mockserver-ca.pem at startup (see §2).
+# Fall back to fetching it from GET /mockserver/proxyConfiguration if needed.
+CA_PEM="./mockserver-ca.pem"
+if [ ! -f "$CA_PEM" ]; then
+    echo "CA not found at $CA_PEM — fetching from /mockserver/proxyConfiguration..."
+    curl -sf "http://localhost:$MOCKSERVER_PORT/mockserver/proxyConfiguration" \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['caCertificatePem'])" \
+        > "$CA_PEM"
+fi
+cp "$CA_PEM" "$CAPTURE_DIR/mockserver-ca.pem"
+
+# --- 4. Run opencode in headless mode through the proxy ---
+# 'opencode run "<message>"' executes a single non-interactive prompt and exits.
+# Add -m provider/model to pin a model, e.g. -m anthropic/claude-opus-4-5.
+# To run multiple prompts, wrap this block in a loop over an array of messages.
+# '|| echo ...' lets the retrieve step below still run if opencode exits non-zero,
+# so a failed or interrupted run does not lose the captured traffic.
+echo "Running opencode: $PROMPT"
+HTTPS_PROXY="http://localhost:$MOCKSERVER_PORT" \
+HTTP_PROXY="http://localhost:$MOCKSERVER_PORT" \
+NODE_EXTRA_CA_CERTS="$CA_PEM" \
+SSL_CERT_FILE="$CA_PEM" \
+NODE_USE_ENV_PROXY=1 \
+    opencode run "$PROMPT" || echo "opencode exited non-zero — continuing to retrieve captured traffic."
+echo "opencode run complete."
+
+# --- 5. Retrieve the captured traffic ---
+# The NDJSON archive (recordedRequests.ndjson) is written continuously throughout
+# the run — one compact JSON object per line — and is the durable source of truth.
+# It is safe to stream-process with jq and survives even if the retrieve step below fails.
+#
+# The retrieve API gives a single consolidated snapshot: JSON for reloading into
+# MockServer or post-processing, HAR for browser DevTools and HAR analysers.
+echo "Retrieving captured traffic..."
+curl -sf -X PUT \
+    "http://localhost:$MOCKSERVER_PORT/mockserver/retrieve?type=REQUEST_RESPONSES&amp;format=JSON" \
+    -o "$CAPTURE_DIR/capture.json"
+
+curl -sf -X PUT \
+    "http://localhost:$MOCKSERVER_PORT/mockserver/retrieve?type=REQUEST_RESPONSES&amp;format=HAR" \
+    -o "$CAPTURE_DIR/capture.har"
+
+echo "Capture saved to $CAPTURE_DIR/"
+ls -lh "$CAPTURE_DIR/"
+
+# cleanup() runs here via trap EXIT, stopping MockServer.</code></pre>
+
+<h3>What Gets Saved</h3>
+
+<table class="table">
+    <thead>
+        <tr><th>File</th><th>Format</th><th>Written</th><th>When to use</th></tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><code class="code inline">recordedRequests.ndjson</code></td>
+            <td>NDJSON — one compact JSON object per line</td>
+            <td>Continuously, as each exchange completes</td>
+            <td>Durable archive; survives a crash or failed retrieve step; stream-process with <code class="code inline">jq</code></td>
+        </tr>
+        <tr>
+            <td><code class="code inline">capture.json</code></td>
+            <td>MockServer JSON array</td>
+            <td>On demand, at retrieve step</td>
+            <td>Reload into MockServer; post-process with <code class="code inline">jq</code>; pass to <code class="code inline">record_llm_fixtures</code></td>
+        </tr>
+        <tr>
+            <td><code class="code inline">capture.har</code></td>
+            <td>HAR (HTTP Archive)</td>
+            <td>On demand, at retrieve step</td>
+            <td>Open in browser DevTools or HAR analysers</td>
+        </tr>
+        <tr>
+            <td><code class="code inline">mockserver.log</code></td>
+            <td>Plain text (WARN level)</td>
+            <td>Continuously</td>
+            <td>Diagnose startup or proxy errors</td>
+        </tr>
+        <tr>
+            <td><code class="code inline">mockserver-ca.pem</code></td>
+            <td>PEM certificate</td>
+            <td>At MockServer startup</td>
+            <td>Trust-store reference for later analysis tools</td>
+        </tr>
+    </tbody>
+</table>
+
+<h3>Running on a Remote Machine</h3>
+
+<p>Run the script directly on the remote host via SSH or as a CI job step — no local display or browser is needed. After it completes, copy the capture directory back:</p>
+
+<pre class="prettyprint code"><code class="code">scp -r user@remote-host:/path/to/mockserver-capture ./local-capture/</code></pre>
+
+<p>Alternatively, if you want a snapshot while the script is still running, call the retrieve <code class="code inline">curl</code> commands from a control machine against the remote host's port 1080 directly — no file copy required.</p>
+
+<div class="alert" style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 16px; margin: 16px 0;">
+    <p><strong>Security: do not expose port 1080 publicly.</strong> Bind MockServer to <code class="code inline">localhost</code> or a private network interface and access it over an SSH tunnel if you need it from another machine:</p>
+    <pre class="prettyprint code"><code class="code">ssh -L 1080:localhost:1080 user@remote-host</code></pre>
+    <p>Always use <code class="code inline">--proxy-setup</code> on any remote or shared host (the script above includes it). Without it, the default CA private key is publicly known — any party on the network can impersonate any HTTPS host to a client that trusts this CA. See the <a href="#trust-ca">security warning in §2</a> and <a href="/mock_server/configuration_properties.html#proxy_configuration">proxy configuration properties</a>.</p>
+</div>
+
 <h2>Streamed Response Capture</h2>
 
 <p>LLM APIs stream completions as Server-Sent Events. MockServer relays each chunk immediately to the client (so the agent sees live output) and simultaneously captures up to <a href="/mock_server/configuration_properties.html#button_configuration_streaming_responses_enabled">256 KB</a> of the stream body in the event log. When a streamed response body exceeds this limit, the logged body is truncated and marked with the response header <code class="code inline">x-mockserver-stream-truncated: true</code>; the full stream still reaches the client.</p>
 
-<p>The streaming relay applies to HTTP/1.1 proxied responses only. Streaming is auto-detected from the <code class="code inline">Content-Type: text/event-stream</code> response header. Ordinary chunked responses (without <code class="code inline">text/event-stream</code>) are aggregated normally. Non-streaming responses are handled identically to before — this feature adds no overhead for ordinary JSON responses.</p>
+<p>The streaming relay applies to HTTP/1.1 and HTTP/2 proxied responses (enable HTTP/2 relay with <code class="code inline">-Dmockserver.forwardProxyHttp2Upgrade=true</code>). Streaming is detected from the response <code class="code inline">Content-Type: text/event-stream</code> header; when the upstream omits this header, MockServer also infers streaming from the client's request intent — an <code class="code inline">Accept: text/event-stream</code> request header or a <code class="code inline">"stream": true</code> field in the request body. Ordinary chunked responses (without any streaming signal) are aggregated normally. Non-streaming responses are handled identically to before — this feature adds no overhead for ordinary JSON responses.</p>
 
 <p>Relevant configuration properties:</p>
 
