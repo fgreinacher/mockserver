@@ -230,6 +230,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### Correctness & reliability
+- **Recorded streaming responses no longer pin the live streaming sink in memory.** Each captured streaming
+  (SSE) forward/proxy exchange stored a log entry whose response still referenced the live streaming body — its
+  in-memory capture buffer, the upstream event loop, and the per-chunk callbacks — for the entry's whole lifetime
+  in the log ring buffer, roughly doubling per-entry memory and pinning event-loop-adjacent objects. The retained
+  log copy now holds only the fixed captured bytes and releases the live streaming reference.
 - **`forwardProxyHttp2Upgrade` now also applies to the transparent-proxy path, fixing slow streaming captures.**
   The HTTP/2-upgrade setting was honoured only by matched `forward()` expectations, not by the transparent
   (unmatched) proxy path most LLM/agent capture uses. So a coding-assistant CLI proxied over HTTP/1.1 was

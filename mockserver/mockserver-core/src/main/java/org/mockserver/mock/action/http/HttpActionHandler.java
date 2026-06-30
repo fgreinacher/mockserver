@@ -3202,6 +3202,13 @@ public class HttpActionHandler {
      * appeared empty/unreadable in the LLM body views.
      */
     private static void setCapturedStreamingBody(HttpResponse logResponse, byte[] captured) {
+        // Clear the live StreamingBody reference copied by clone() so the retained log entry
+        // does not pin the live ≤256 KB capture buffer, the upstream EventLoop, or the
+        // onChunk/requestMore callbacks for the entry's lifetime in the ring buffer. The
+        // FIXED captured bytes are stored as the body below; the live sink is no longer needed.
+        // Done here (rather than at each call site) so all four streaming-completion paths are
+        // covered in one place — this helper is only ever called from those paths.
+        logResponse.withStreamingBody(null);
         if (captured.length == 0) {
             return;
         }
