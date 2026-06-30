@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Typed client methods for control-plane operations that previously needed a hand-written REST call.** The
+  client libraries gain first-class methods for clock control (freeze / advance / reset / status), metrics
+  (the JSON counter snapshot and the Prometheus scrape), configuration read/update, Pact import / export / verify,
+  the file store (store / retrieve / list / delete), HAR and Postman import, the high-level operating mode
+  (`SIMULATE` / `SPY` / `CAPTURE`), and generating expectations from a WSDL — so these no longer require a manual
+  `PUT /mockserver/…` request. Rolling out across the Java, Node, Python, Ruby, Go, .NET, Rust and PHP clients.
+
 ### Security
 
 - **Fixture redaction now also masks credentials in query strings and streamed bodies, and fails closed on

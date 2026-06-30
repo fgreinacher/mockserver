@@ -18,6 +18,7 @@ import org.mockserver.load.RampCurve;
 import org.mockserver.matchers.TimeToLive;
 import org.mockserver.matchers.Times;
 import org.mockserver.mock.Expectation;
+import org.mockserver.mock.MockMode;
 import org.mockserver.model.*;
 import org.mockserver.serialization.*;
 import org.mockserver.serialization.model.*;
@@ -31,7 +32,9 @@ import org.mockserver.verify.VerificationTimes;
 import org.mockserver.version.Version;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
@@ -2410,6 +2413,264 @@ public class MockServerClientTest {
     public void shouldRejectBlankPactImportAndVerify() {
         assertThrows(IllegalArgumentException.class, () -> mockServerClient.pactImport(" "));
         assertThrows(IllegalArgumentException.class, () -> mockServerClient.pactVerify(" "));
+    }
+
+    // -------------------------------------------------------------------
+    // Metrics (Prometheus exposition)
+    // -------------------------------------------------------------------
+
+    @Test
+    public void shouldSendScrapeMetricsRequest() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(OK.code()).withBody("# HELP foo\nfoo 1\n"));
+
+        // when
+        String result = mockServerClient.scrapeMetrics();
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("GET"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/metrics"));
+        assertThat(result, containsString("foo 1"));
+    }
+
+    // -------------------------------------------------------------------
+    // File store
+    // -------------------------------------------------------------------
+
+    @Test
+    public void shouldSendStoreFileTextRequest() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(CREATED.code()).withBody("{\"name\":\"a.txt\",\"size\":5}"));
+
+        // when
+        mockServerClient.storeFile("a.txt", "hello");
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/files/store"));
+        assertThat(sent.getBodyAsString(), containsString("\"name\":\"a.txt\""));
+        assertThat(sent.getBodyAsString(), containsString("\"content\":\"hello\""));
+        assertThat(sent.getBodyAsString(), not(containsString("base64")));
+    }
+
+    @Test
+    public void shouldSendStoreFileBinaryRequestBase64Encoded() {
+        // given
+        byte[] content = new byte[]{1, 2, 3, 4};
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(CREATED.code()).withBody("{\"name\":\"a.bin\",\"size\":4}"));
+
+        // when
+        mockServerClient.storeFile("a.bin", content);
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/files/store"));
+        assertThat(sent.getBodyAsString(), containsString("\"name\":\"a.bin\""));
+        assertThat(sent.getBodyAsString(), containsString("\"base64\":true"));
+        assertThat(sent.getBodyAsString(), containsString("\"content\":\"" + Base64.getEncoder().encodeToString(content) + "\""));
+    }
+
+    @Test
+    public void shouldSendRetrieveFileRequestAndReturnRawBytes() {
+        // given
+        byte[] content = new byte[]{9, 8, 7};
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(OK.code()).withBody(new BinaryBody(content)));
+
+        // when
+        byte[] result = mockServerClient.retrieveFile("a.bin");
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/files/retrieve"));
+        assertThat(sent.getBodyAsString(), containsString("\"name\":\"a.bin\""));
+        assertThat(result, is(content));
+    }
+
+    @Test
+    public void shouldSendListFilesRequestAndParseNames() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(OK.code()).withBody("[ \"a.txt\", \"b.bin\" ]"));
+
+        // when
+        Set<String> result = mockServerClient.listFiles();
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/files/list"));
+        assertThat(result, hasItems("a.txt", "b.bin"));
+        assertThat(result, hasSize(2));
+    }
+
+    @Test
+    public void shouldSendDeleteFileRequest() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(OK.code()));
+
+        // when
+        mockServerClient.deleteFile("a.txt");
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/files/delete"));
+        assertThat(sent.getBodyAsString(), containsString("\"name\":\"a.txt\""));
+    }
+
+    @Test
+    public void shouldRejectBlankFileNames() {
+        assertThrows(IllegalArgumentException.class, () -> mockServerClient.storeFile(" ", "x"));
+        assertThrows(IllegalArgumentException.class, () -> mockServerClient.storeFile(" ", new byte[0]));
+        assertThrows(IllegalArgumentException.class, () -> mockServerClient.retrieveFile(" "));
+        assertThrows(IllegalArgumentException.class, () -> mockServerClient.deleteFile(" "));
+    }
+
+    // -------------------------------------------------------------------
+    // Import (HAR / Postman collection)
+    // -------------------------------------------------------------------
+
+    @Test
+    public void shouldSendImportHarRequestWithFormatQueryParam() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(CREATED.code()).withBody("[]"));
+
+        // when
+        Expectation[] result = mockServerClient.importHar("{\"log\":{\"entries\":[]}}");
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/import"));
+        assertThat(sent.getFirstQueryStringParameter("format"), is("har"));
+        assertThat(result == null || result.length == 0, is(true));
+    }
+
+    @Test
+    public void shouldSendImportPostmanCollectionRequestWithFormatQueryParam() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(CREATED.code()).withBody("[]"));
+
+        // when
+        mockServerClient.importPostmanCollection("{\"info\":{},\"item\":[]}");
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/import"));
+        assertThat(sent.getFirstQueryStringParameter("format"), is("postman"));
+    }
+
+    @Test
+    public void shouldSendImportDocumentRequestWithoutFormatWhenBlankForAutoDetect() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(CREATED.code()).withBody("[]"));
+
+        // when
+        mockServerClient.importDocument("{\"log\":{\"entries\":[]}}", null);
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getPath().getValue(), is("/mockserver/import"));
+        assertThat(sent.getQueryStringParameters() == null || sent.getQueryStringParameters().getEntries().isEmpty(), is(true));
+    }
+
+    @Test
+    public void shouldRejectBlankImportDocument() {
+        assertThrows(IllegalArgumentException.class, () -> mockServerClient.importHar(" "));
+        assertThrows(IllegalArgumentException.class, () -> mockServerClient.importPostmanCollection(" "));
+        assertThrows(IllegalArgumentException.class, () -> mockServerClient.importDocument(" ", "har"));
+    }
+
+    // -------------------------------------------------------------------
+    // Operating mode
+    // -------------------------------------------------------------------
+
+    @Test
+    public void shouldSendSetModeRequestWithModeQueryParam() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(OK.code()).withBody("{\"mode\":\"SPY\",\"proxyUnmatchedRequests\":true}"));
+
+        // when
+        mockServerClient.setMode(MockMode.SPY);
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/mode"));
+        assertThat(sent.getFirstQueryStringParameter("mode"), is("SPY"));
+    }
+
+    @Test
+    public void shouldSendRetrieveModeRequestAndParseMode() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(OK.code()).withBody("{\"mode\":\"CAPTURE\",\"proxyUnmatchedRequests\":true}"));
+
+        // when
+        MockMode result = mockServerClient.retrieveMode();
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("GET"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/mode"));
+        assertThat(result, is(MockMode.CAPTURE));
+    }
+
+    @Test
+    public void shouldRejectNullMode() {
+        assertThrows(IllegalArgumentException.class, () -> mockServerClient.setMode(null));
+    }
+
+    // -------------------------------------------------------------------
+    // WSDL
+    // -------------------------------------------------------------------
+
+    @Test
+    public void shouldSendWsdlExpectationRequestWithXmlBody() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(CREATED.code()).withBody("[]"));
+
+        // when
+        Expectation[] result = mockServerClient.wsdlExpectation("<definitions/>");
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/wsdl"));
+        assertThat(sent.getBodyAsString(), is("<definitions/>"));
+        assertThat(result == null || result.length == 0, is(true));
+    }
+
+    @Test
+    public void shouldRejectBlankWsdl() {
+        assertThrows(IllegalArgumentException.class, () -> mockServerClient.wsdlExpectation(" "));
     }
 
     // SRE control-plane: verifySLO
