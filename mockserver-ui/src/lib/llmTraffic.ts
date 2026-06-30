@@ -1509,6 +1509,17 @@ interface McpServerAccumulator {
 function exchangeLatencyMs(summary: TrafficSummary, value: Record<string, unknown>): number | null {
   const fromTiming = summary.timing?.totalTimeInMillis ?? null;
   if (fromTiming != null && Number.isFinite(fromTiming)) return fromTiming;
+  // An externally-measured latency hint on the REQUEST, used when MockServer did not itself time the
+  // call: the stdio-MCP capture bridge (scripts/llm-proxy-capture/mcp-stdio-capture.mjs) times the real
+  // out-of-band MCP exchange and forwards it as `x-mcp-latency-ms`, since MockServer's own response time
+  // would otherwise reflect only its tiny processing time for that injected record. Preferred over the
+  // response-time header so a slow stdio MCP server shows its true latency in the panel.
+  const httpRequest = getObject(value, 'httpRequest');
+  if (httpRequest) {
+    const ext = getHeaderValue(httpRequest['headers'], 'x-mcp-latency-ms');
+    const extMs = ext != null ? Number(ext) : NaN;
+    if (Number.isFinite(extMs)) return extMs;
+  }
   const httpResponse = getObject(value, 'httpResponse');
   if (!httpResponse) return null;
   const raw = getHeaderValue(httpResponse['headers'], 'x-mockserver-response-time-ms');

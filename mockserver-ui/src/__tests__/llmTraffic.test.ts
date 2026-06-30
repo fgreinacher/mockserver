@@ -2123,11 +2123,16 @@ interface McpFixtureOpts {
   totalTimeInMillis?: number | null;
   /** Sets MockServer's `x-mockserver-response-time-ms` header (forwarded/recorded path). */
   responseTimeHeaderMs?: number;
+  /** Sets the externally-measured `x-mcp-latency-ms` REQUEST header (stdio-MCP capture bridge). */
+  requestLatencyHeaderMs?: number;
 }
 
 /** Build a captured proxied request/response value that classifies as MCP. */
 function mcpValue(opts: McpFixtureOpts = {}): Record<string, unknown> {
   const headers = opts.host === null ? [] : [{ name: 'host', values: [opts.host ?? 'mcp.example.com'] }];
+  if (opts.requestLatencyHeaderMs != null) {
+    headers.push({ name: 'x-mcp-latency-ms', values: [String(opts.requestLatencyHeaderMs)] });
+  }
   const responsePayload: Record<string, unknown> = { jsonrpc: '2.0', id: opts.id ?? 1 };
   if (opts.error !== undefined) responsePayload['error'] = opts.error;
   else responsePayload['result'] = { ok: true };
@@ -2263,6 +2268,26 @@ describe('aggregateMcpServerHealth', () => {
   it('prefers the timing object over the response-time header when both are present', () => {
     const rows = aggregateMcpServerHealth([
       mcpValue({ host: 'both.local', totalTimeInMillis: 250, responseTimeHeaderMs: 9999 }),
+    ]);
+    expect(rows[0]!.maxLatencyMs).toBe(250);
+  });
+
+  it('uses the externally-measured x-mcp-latency-ms request header for stdio-MCP captures', () => {
+    // The stdio-MCP bridge times the real out-of-band call; MockServer's own response time is tiny,
+    // so the real latency (and the slow flag) must come from x-mcp-latency-ms.
+    const rows = aggregateMcpServerHealth([
+      mcpValue({ host: 'chrome-devtools-mcp', method: 'take_snapshot', requestLatencyHeaderMs: 80, responseTimeHeaderMs: 3 }),
+      mcpValue({ host: 'chrome-devtools-mcp', method: 'navigate_page', requestLatencyHeaderMs: 7000, responseTimeHeaderMs: 4 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.maxLatencyMs).toBe(7000);
+    expect(rows[0]!.slowestMethod).toBe('navigate_page');
+    expect(rows[0]!.slow).toBe(true);
+  });
+
+  it('prefers the timing object over the x-mcp-latency-ms header when both are present', () => {
+    const rows = aggregateMcpServerHealth([
+      mcpValue({ host: 'both.local', totalTimeInMillis: 250, requestLatencyHeaderMs: 9999 }),
     ]);
     expect(rows[0]!.maxLatencyMs).toBe(250);
   });
