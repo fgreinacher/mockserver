@@ -143,8 +143,21 @@ fi
 # --- start MockServer (default built-in CA so NODE_EXTRA_CA_CERTS=repo CA is trusted) ---
 MOCKSERVER_LOG="$UI_DIR/mockserver-capture.log"
 HEAP_DUMP="$UI_DIR/mockserver-capture-heap.hprof"
-DEMO_MAX_HEAP="${CAPTURE_MAX_HEAP:-1g}"
+# Default heap raised to 2g: LLM capture retains whole request/response bodies (tool schemas + growing
+# conversation context + accumulated SSE) in the event log; the previous 1g default OOM'd on long sessions.
+DEMO_MAX_HEAP="${CAPTURE_MAX_HEAP:-2g}"
 DEMO_MAX_LOG_ENTRIES="${CAPTURE_MAX_LOG_ENTRIES:-5000}"
+# OOM guard — byte budget for the in-memory event log (mockserver.maxEventLogSizeInBytes). maxLogEntries
+# caps the COUNT of entries, not their SIZE, so a few thousand multi-hundred-KB LLM turns can still blow the
+# heap. This caps the retained request/response BODY bytes; once exceeded, the oldest entries are evicted.
+# It measures primary body bytes only (actual heap retention is a small multiple), so keep it well under the
+# heap. Default 256 MB of bodies under the 2g heap. Set 0 to disable (count-only, the old behaviour).
+CAPTURE_MAX_EVENT_LOG_BYTES="${CAPTURE_MAX_EVENT_LOG_BYTES:-268435456}"
+# Disk capture — append every proxied exchange (FULL bodies) to an NDJSON file as it completes
+# (mockserver.persistRecordedRequestsToDisk). This is the durable record of the whole session: even as the
+# in-memory window evicts under the byte budget above, nothing is lost — the file keeps the complete history
+# for offline processing / LLM-Optimise export. One compact JSON object (request + response) per line.
+CAPTURE_RECORDED_REQUESTS_PATH="${CAPTURE_RECORDED_REQUESTS_PATH:-$UI_DIR/recordedRequests.ndjson}"
 # Head-wait budget (ms). Default 300s: a reasoning model on a very large prompt (observed a 74KB / ~73k
 # -token Codex turn return NOTHING within 120s) can take minutes to its first token; MockServer must wait
 # at least as long as the CLI's own request timeout or it 502s a slow-but-healthy call. Override via env.
@@ -180,11 +193,17 @@ fi
 # OutOfMemoryError in the log — so if the process dies you can distinguish a real OOM (OutOfMemoryError in
 # the log + a heap dump at $HEAP_DUMP) from an EXTERNAL kill (process gone, NO Java error in the log — e.g.
 # another tool/session SIGKILLing it, or the OS OOM-killer; check `dmesg` on Linux).
+# Fresh archive each session (unless --keep-log): MockServer opens the NDJSON in APPEND mode at startup, so
+# truncate it here BEFORE launching, so you see only this session's captured exchanges.
+if [ "$KEEP_LOG" = false ]; then : > "$CAPTURE_RECORDED_REQUESTS_PATH" || true; fi
 java -Xmx"$DEMO_MAX_HEAP" -Dmockserver.maxLogEntries="$DEMO_MAX_LOG_ENTRIES" \
      -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath="$HEAP_DUMP" -XX:+ExitOnOutOfMemoryError \
      -Dmockserver.metricsEnabled=true -Dmockserver.wasmEnabled=true \
      -Dmockserver.forwardProxyHttp2Upgrade=true \
      -Dmockserver.maxSocketTimeoutInMillis="$CAPTURE_SOCKET_TIMEOUT_MS" \
+     -Dmockserver.maxEventLogSizeInBytes="$CAPTURE_MAX_EVENT_LOG_BYTES" \
+     -Dmockserver.persistRecordedRequestsToDisk=true \
+     -Dmockserver.persistedRecordedRequestsPath="$CAPTURE_RECORDED_REQUESTS_PATH" \
      -jar "$MOCKSERVER_JAR" -serverPort "$MOCKSERVER_PORT" \
      ${REVERSE_ARGS[@]+"${REVERSE_ARGS[@]}"} \
      -logLevel INFO > "$MOCKSERVER_LOG" 2>&1 &
@@ -252,6 +271,8 @@ echo "========================================"
 echo "  Dashboard : $UI_URL"
 echo "              (Traffic · LLM Traces · LLM Optimise tabs)"
 echo "  MockServer log: $MOCKSERVER_LOG"
+echo "  Captured exchanges (NDJSON, full bodies): $CAPTURE_RECORDED_REQUESTS_PATH"
+echo "  Event-log memory cap: $CAPTURE_MAX_EVENT_LOG_BYTES bytes of bodies (older entries evicted; disk archive keeps all)"
 echo ""
 if [ -n "$REVERSE_PROXY" ]; then
   echo "  REVERSE proxy → https://$REVERSE_PROXY  (no HTTPS_PROXY). Point your tool's BASE URL here:"

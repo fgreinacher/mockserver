@@ -120,6 +120,8 @@ mockserver_keystore_*_jks
 /*/mockserverInitialization*.json
 persistedExpectations.json
 mockserverInitialization.json
+recordedRequests.ndjson
+/**/recordedRequests.ndjson
 /*.pem
 _test*.java
 go_client
@@ -212,3 +214,7 @@ examples/go/create_expectation/create_expectation
 examples/go/modify_proxied_response/modify_proxied_response
 examples/go/scenario/scenario
 examples/go/callback/callback
+
+# JVM heap dumps (e.g. from the LLM-capture launcher's -XX:+HeapDumpOnOutOfMemoryError) #
+########################################################################################
+*.hprof

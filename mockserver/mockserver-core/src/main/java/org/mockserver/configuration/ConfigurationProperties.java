@@ -101,6 +101,9 @@ public class ConfigurationProperties {
     // memory usage
     private static final String MOCKSERVER_MAX_EXPECTATIONS = "mockserver.maxExpectations";
     private static final String MOCKSERVER_MAX_LOG_ENTRIES = "mockserver.maxLogEntries";
+    // LLM-capture disk-offload + OOM guard (config plumbing only — eviction/persistence behaviour added later)
+    private static final String MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES = "mockserver.maxEventLogSizeInBytes";
+    private static final String MOCKSERVER_MAX_LOGGED_BODY_BYTES = "mockserver.maxLoggedBodyBytes";
     private static final String MOCKSERVER_RING_BUFFER_SIZE = "mockserver.ringBufferSize";
     // Default ceiling for the in-flight disruptor ring buffer, decoupling it from maxLogEntries
     // retention. The ring only has to absorb event bursts between the producer (Netty I/O threads)
@@ -284,6 +287,10 @@ public class ConfigurationProperties {
     // recorded expectation persistence
     private static final String MOCKSERVER_PERSIST_RECORDED_EXPECTATIONS = "mockserver.persistRecordedExpectations";
     private static final String MOCKSERVER_PERSISTED_RECORDED_EXPECTATIONS_PATH = "mockserver.persistedRecordedExpectationsPath";
+
+    // recorded request persistence (LLM-capture disk-offload — config plumbing only, behaviour added later)
+    private static final String MOCKSERVER_PERSIST_RECORDED_REQUESTS_TO_DISK = "mockserver.persistRecordedRequestsToDisk";
+    private static final String MOCKSERVER_PERSISTED_RECORDED_REQUESTS_PATH = "mockserver.persistedRecordedRequestsPath";
 
     // state backend (G10 phase 2a)
     private static final String MOCKSERVER_STATE_BACKEND = "mockserver.stateBackend";
@@ -1685,6 +1692,42 @@ public class ConfigurationProperties {
      */
     public static void maxLogEntries(int count) {
         setProperty(MOCKSERVER_MAX_LOG_ENTRIES, "" + count);
+    }
+
+    public static long maxEventLogSizeInBytes() {
+        return Math.max(0L, readLongProperty(MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES, "MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES", 0L));
+    }
+
+    /**
+     * <p>
+     * Maximum total size in bytes of the in-memory event log before older entries are evicted from memory (the oldest first).
+     * </p>
+     * <p>
+     * The default is 0, which disables the size-based limit (the event log is bounded only by {@code maxLogEntries}).
+     * </p>
+     *
+     * @param maxEventLogSizeInBytes maximum total size in bytes of the in-memory event log (0 disables the limit)
+     */
+    public static void maxEventLogSizeInBytes(long maxEventLogSizeInBytes) {
+        setProperty(MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES, "" + maxEventLogSizeInBytes);
+    }
+
+    public static int maxLoggedBodyBytes() {
+        return Math.max(0, readIntegerProperty(MOCKSERVER_MAX_LOGGED_BODY_BYTES, "MOCKSERVER_MAX_LOGGED_BODY_BYTES", 0));
+    }
+
+    /**
+     * <p>
+     * Maximum number of bytes of a request or response body retained in each log entry; bodies larger than this are truncated.
+     * </p>
+     * <p>
+     * The default is 0, which means unlimited (bodies are retained in full).
+     * </p>
+     *
+     * @param maxLoggedBodyBytes maximum number of body bytes retained per log entry (0 means unlimited)
+     */
+    public static void maxLoggedBodyBytes(int maxLoggedBodyBytes) {
+        setProperty(MOCKSERVER_MAX_LOGGED_BODY_BYTES, "" + maxLoggedBodyBytes);
     }
 
     public static int ringBufferSize() {
@@ -3639,6 +3682,38 @@ public class ConfigurationProperties {
      */
     public static void persistedRecordedExpectationsPath(String persistedRecordedExpectationsPath) {
         setProperty(MOCKSERVER_PERSISTED_RECORDED_EXPECTATIONS_PATH, persistedRecordedExpectationsPath);
+    }
+
+    // recorded request persistence (LLM-capture disk-offload)
+
+    public static boolean persistRecordedRequestsToDisk() {
+        return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_PERSIST_RECORDED_REQUESTS_TO_DISK, "MOCKSERVER_PERSIST_RECORDED_REQUESTS_TO_DISK", "" + false));
+    }
+
+    /**
+     * Enable the persisting of recorded requests (captured traffic) to disk
+     * <p>
+     * The default is false
+     *
+     * @param enable the persisting of recorded requests to disk
+     */
+    public static void persistRecordedRequestsToDisk(boolean enable) {
+        setProperty(MOCKSERVER_PERSIST_RECORDED_REQUESTS_TO_DISK, "" + enable);
+    }
+
+    public static String persistedRecordedRequestsPath() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_PERSISTED_RECORDED_REQUESTS_PATH, "MOCKSERVER_PERSISTED_RECORDED_REQUESTS_PATH", "recordedRequests.ndjson");
+    }
+
+    /**
+     * The file path used to save persisted recorded requests, which is updated whenever a new request is captured
+     * <p>
+     * The default is "recordedRequests.ndjson"
+     *
+     * @param persistedRecordedRequestsPath file path used to save persisted recorded requests
+     */
+    public static void persistedRecordedRequestsPath(String persistedRecordedRequestsPath) {
+        setProperty(MOCKSERVER_PERSISTED_RECORDED_REQUESTS_PATH, persistedRecordedRequestsPath);
     }
 
     // state backend (G10 phase 2a)

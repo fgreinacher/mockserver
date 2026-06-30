@@ -501,6 +501,98 @@ public class ConfigurationTest {
     }
 
     @Test
+    public void shouldSetAndGetMaxEventLogSizeInBytes() {
+        try {
+            // default
+            clearPropertyAndCache("mockserver.maxEventLogSizeInBytes");
+            assertThat(ConfigurationProperties.maxEventLogSizeInBytes(), equalTo(0L));
+            assertThat(new Configuration().maxEventLogSizeInBytes(), equalTo(0L));
+
+            // system property -> property
+            ConfigurationProperties.maxEventLogSizeInBytes(1048576L);
+            assertThat(ConfigurationProperties.maxEventLogSizeInBytes(), equalTo(1048576L));
+            assertThat(System.getProperty("mockserver.maxEventLogSizeInBytes"), equalTo("1048576"));
+            assertThat(new Configuration().maxEventLogSizeInBytes(), equalTo(1048576L));
+
+            // fluent setter -> property (instance value overrides the static one)
+            assertThat(configuration.maxEventLogSizeInBytes(2097152L).maxEventLogSizeInBytes(), equalTo(2097152L));
+
+            // validation: negative values clamp to 0 (>= 0, 0 = disabled)
+            ConfigurationProperties.maxEventLogSizeInBytes(-5L);
+            assertThat(ConfigurationProperties.maxEventLogSizeInBytes(), equalTo(0L));
+        } finally {
+            clearPropertyAndCache("mockserver.maxEventLogSizeInBytes");
+        }
+    }
+
+    @Test
+    public void shouldSetAndGetMaxLoggedBodyBytes() {
+        try {
+            // default
+            clearPropertyAndCache("mockserver.maxLoggedBodyBytes");
+            assertThat(ConfigurationProperties.maxLoggedBodyBytes(), equalTo(0));
+            assertThat(new Configuration().maxLoggedBodyBytes(), equalTo(0));
+
+            // system property -> property
+            ConfigurationProperties.maxLoggedBodyBytes(4096);
+            assertThat(ConfigurationProperties.maxLoggedBodyBytes(), equalTo(4096));
+            assertThat(System.getProperty("mockserver.maxLoggedBodyBytes"), equalTo("4096"));
+            assertThat(new Configuration().maxLoggedBodyBytes(), equalTo(4096));
+
+            // fluent setter -> property (instance value overrides the static one)
+            assertThat(configuration.maxLoggedBodyBytes(8192).maxLoggedBodyBytes(), equalTo(8192));
+
+            // validation: negative values clamp to 0 (>= 0, 0 = unlimited)
+            ConfigurationProperties.maxLoggedBodyBytes(-5);
+            assertThat(ConfigurationProperties.maxLoggedBodyBytes(), equalTo(0));
+        } finally {
+            clearPropertyAndCache("mockserver.maxLoggedBodyBytes");
+        }
+    }
+
+    @Test
+    public void shouldSetAndGetPersistRecordedRequestsToDisk() {
+        try {
+            // default
+            clearPropertyAndCache("mockserver.persistRecordedRequestsToDisk");
+            assertThat(ConfigurationProperties.persistRecordedRequestsToDisk(), equalTo(false));
+            assertThat(new Configuration().persistRecordedRequestsToDisk(), equalTo(false));
+
+            // system property -> property
+            ConfigurationProperties.persistRecordedRequestsToDisk(true);
+            assertThat(ConfigurationProperties.persistRecordedRequestsToDisk(), equalTo(true));
+            assertThat(System.getProperty("mockserver.persistRecordedRequestsToDisk"), equalTo("true"));
+            assertThat(new Configuration().persistRecordedRequestsToDisk(), equalTo(true));
+
+            // fluent setter -> property (instance value overrides the static one)
+            assertThat(configuration.persistRecordedRequestsToDisk(false).persistRecordedRequestsToDisk(), equalTo(false));
+        } finally {
+            clearPropertyAndCache("mockserver.persistRecordedRequestsToDisk");
+        }
+    }
+
+    @Test
+    public void shouldSetAndGetPersistedRecordedRequestsPath() {
+        try {
+            // default
+            clearPropertyAndCache("mockserver.persistedRecordedRequestsPath");
+            assertThat(ConfigurationProperties.persistedRecordedRequestsPath(), equalTo("recordedRequests.ndjson"));
+            assertThat(new Configuration().persistedRecordedRequestsPath(), equalTo("recordedRequests.ndjson"));
+
+            // system property -> property
+            ConfigurationProperties.persistedRecordedRequestsPath("target/captured.ndjson");
+            assertThat(ConfigurationProperties.persistedRecordedRequestsPath(), equalTo("target/captured.ndjson"));
+            assertThat(System.getProperty("mockserver.persistedRecordedRequestsPath"), equalTo("target/captured.ndjson"));
+            assertThat(new Configuration().persistedRecordedRequestsPath(), equalTo("target/captured.ndjson"));
+
+            // fluent setter -> property (instance value overrides the static one)
+            assertThat(configuration.persistedRecordedRequestsPath("target/other.ndjson").persistedRecordedRequestsPath(), equalTo("target/other.ndjson"));
+        } finally {
+            clearPropertyAndCache("mockserver.persistedRecordedRequestsPath");
+        }
+    }
+
+    @Test
     public void shouldDecoupleRingBufferSizeFromMaxLogEntriesByDefault() {
         int originalMaxLogEntries = ConfigurationProperties.maxLogEntries();
         try {

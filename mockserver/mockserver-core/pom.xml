@@ -733,6 +733,8 @@
                         <exclude>**/PerExpectationMetricsTest.java</exclude>
                         <!-- T10: mutates the global mockserver.redactSecretsInLog system property -->
                         <exclude>**/LogEntryRedactionTest.java</exclude>
+                        <!-- Mutates the global mockserver.redactSecretsInLog system property to assert the NDJSON archive honours redaction -->
+                        <exclude>**/RecordedRequestsFileSystemPersistenceTest.java</exclude>
                         <!-- Mutate global ConfigurationProperties.llmProvider/llmApiKey/llmModel/llmBaseUrl/llmBackendsConfig -->
                         <exclude>**/LlmBackendResolverTest.java</exclude>
                         <exclude>**/LlmProviderSnifferTest.java</exclude>
@@ -865,6 +867,7 @@
                                 <include>**/LlmMetricsTest.java</include>
                                 <include>**/PerExpectationMetricsTest.java</include>
                                 <include>**/LogEntryRedactionTest.java</include>
+                                <include>**/RecordedRequestsFileSystemPersistenceTest.java</include>
                                 <include>**/LlmBackendResolverTest.java</include>
                                 <include>**/LlmProviderSnifferTest.java</include>
                                 <include>**/ForwardPathGenAiSpansTest.java</include>

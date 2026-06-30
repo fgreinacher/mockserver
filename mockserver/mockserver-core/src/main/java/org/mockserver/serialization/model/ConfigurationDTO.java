@@ -37,6 +37,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     private Integer maxExpectations;
     private Integer maxLogEntries;
+    private Long maxEventLogSizeInBytes;
+    private Integer maxLoggedBodyBytes;
     private Integer ringBufferSize;
     private Integer maxWebSocketExpectations;
     private Boolean outputMemoryUsageCsv;
@@ -97,6 +99,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     private Boolean persistRecordedExpectations;
     private String persistedRecordedExpectationsPath;
+
+    private Boolean persistRecordedRequestsToDisk;
+    private String persistedRecordedRequestsPath;
 
     private Integer maximumNumberOfRequestToReturnInVerificationFailure;
     private Boolean attachMismatchDiagnosticToResponse;
@@ -313,6 +318,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
             this.maxExpectations = configuration.maxExpectations();
             this.maxLogEntries = configuration.maxLogEntries();
+            this.maxEventLogSizeInBytes = configuration.maxEventLogSizeInBytes();
+            this.maxLoggedBodyBytes = configuration.maxLoggedBodyBytes();
             this.ringBufferSize = configuration.ringBufferSize();
             this.maxWebSocketExpectations = configuration.maxWebSocketExpectations();
             this.outputMemoryUsageCsv = configuration.outputMemoryUsageCsv();
@@ -374,6 +381,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
             this.persistRecordedExpectations = configuration.persistRecordedExpectations();
             this.persistedRecordedExpectationsPath = configuration.persistedRecordedExpectationsPath();
+
+            this.persistRecordedRequestsToDisk = configuration.persistRecordedRequestsToDisk();
+            this.persistedRecordedRequestsPath = configuration.persistedRecordedRequestsPath();
 
             this.maximumNumberOfRequestToReturnInVerificationFailure = configuration.maximumNumberOfRequestToReturnInVerificationFailure();
             this.attachMismatchDiagnosticToResponse = configuration.attachMismatchDiagnosticToResponse();
@@ -586,6 +596,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (maxLogEntries != null && (maxLogEntries < 0 || maxLogEntries > 1000000)) {
             throw new IllegalArgumentException("maxLogEntries must be between 0 and 1000000, got: " + maxLogEntries);
         }
+        if (maxEventLogSizeInBytes != null && maxEventLogSizeInBytes < 0) {
+            throw new IllegalArgumentException("maxEventLogSizeInBytes must be greater than or equal to 0, got: " + maxEventLogSizeInBytes);
+        }
+        if (maxLoggedBodyBytes != null && maxLoggedBodyBytes < 0) {
+            throw new IllegalArgumentException("maxLoggedBodyBytes must be greater than or equal to 0, got: " + maxLoggedBodyBytes);
+        }
         if (ringBufferSize != null && (ringBufferSize < 0 || ringBufferSize > 1073741824)) {
             throw new IllegalArgumentException("ringBufferSize must be between 0 and 1073741824, got: " + ringBufferSize);
         }
@@ -639,6 +655,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
         configuration.maxExpectations(maxExpectations);
         configuration.maxLogEntries(maxLogEntries);
+        configuration.maxEventLogSizeInBytes(maxEventLogSizeInBytes);
+        configuration.maxLoggedBodyBytes(maxLoggedBodyBytes);
         configuration.ringBufferSize(ringBufferSize);
         configuration.maxWebSocketExpectations(maxWebSocketExpectations);
         configuration.outputMemoryUsageCsv(outputMemoryUsageCsv);
@@ -701,6 +719,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
         configuration.persistRecordedExpectations(persistRecordedExpectations);
         configuration.persistedRecordedExpectationsPath(persistedRecordedExpectationsPath);
+
+        configuration.persistRecordedRequestsToDisk(persistRecordedRequestsToDisk);
+        configuration.persistedRecordedRequestsPath(persistedRecordedRequestsPath);
 
         configuration.maximumNumberOfRequestToReturnInVerificationFailure(maximumNumberOfRequestToReturnInVerificationFailure);
         configuration.attachMismatchDiagnosticToResponse(attachMismatchDiagnosticToResponse);
@@ -972,6 +993,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (maxLogEntries != null) {
             target.maxLogEntries(maxLogEntries);
         }
+        if (maxEventLogSizeInBytes != null) {
+            target.maxEventLogSizeInBytes(maxEventLogSizeInBytes);
+        }
+        if (maxLoggedBodyBytes != null) {
+            target.maxLoggedBodyBytes(maxLoggedBodyBytes);
+        }
         if (ringBufferSize != null) {
             target.ringBufferSize(ringBufferSize);
         }
@@ -1121,6 +1148,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (persistedRecordedExpectationsPath != null) {
             target.persistedRecordedExpectationsPath(persistedRecordedExpectationsPath);
+        }
+        if (persistRecordedRequestsToDisk != null) {
+            target.persistRecordedRequestsToDisk(persistRecordedRequestsToDisk);
+        }
+        if (persistedRecordedRequestsPath != null) {
+            target.persistedRecordedRequestsPath(persistedRecordedRequestsPath);
         }
         if (maximumNumberOfRequestToReturnInVerificationFailure != null) {
             target.maximumNumberOfRequestToReturnInVerificationFailure(maximumNumberOfRequestToReturnInVerificationFailure);
@@ -1849,6 +1882,24 @@ public class ConfigurationDTO implements DTO<Configuration> {
         return this;
     }
 
+    public Long getMaxEventLogSizeInBytes() {
+        return maxEventLogSizeInBytes;
+    }
+
+    public ConfigurationDTO setMaxEventLogSizeInBytes(Long maxEventLogSizeInBytes) {
+        this.maxEventLogSizeInBytes = maxEventLogSizeInBytes;
+        return this;
+    }
+
+    public Integer getMaxLoggedBodyBytes() {
+        return maxLoggedBodyBytes;
+    }
+
+    public ConfigurationDTO setMaxLoggedBodyBytes(Integer maxLoggedBodyBytes) {
+        this.maxLoggedBodyBytes = maxLoggedBodyBytes;
+        return this;
+    }
+
     public Integer getRingBufferSize() {
         return ringBufferSize;
     }
@@ -2296,6 +2347,24 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setPersistedRecordedExpectationsPath(String persistedRecordedExpectationsPath) {
         this.persistedRecordedExpectationsPath = persistedRecordedExpectationsPath;
+        return this;
+    }
+
+    public Boolean getPersistRecordedRequestsToDisk() {
+        return persistRecordedRequestsToDisk;
+    }
+
+    public ConfigurationDTO setPersistRecordedRequestsToDisk(Boolean persistRecordedRequestsToDisk) {
+        this.persistRecordedRequestsToDisk = persistRecordedRequestsToDisk;
+        return this;
+    }
+
+    public String getPersistedRecordedRequestsPath() {
+        return persistedRecordedRequestsPath;
+    }
+
+    public ConfigurationDTO setPersistedRecordedRequestsPath(String persistedRecordedRequestsPath) {
+        this.persistedRecordedRequestsPath = persistedRecordedRequestsPath;
         return this;
     }
 

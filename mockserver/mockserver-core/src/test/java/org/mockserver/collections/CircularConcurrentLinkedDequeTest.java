@@ -115,6 +115,94 @@ public class CircularConcurrentLinkedDequeTest {
      * well under a second; the timeout is deliberately generous to avoid CI flakiness while still
      * failing fast if the O(n) behaviour ever returns.
      */
+    @Test
+    public void shouldEvictOldestEntriesUntilUnderByteBudget() {
+        // given — generous count bound so only the byte budget can trigger eviction; weight = length
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(100, 10, String::length, null);
+        queue.add("12345"); // 5  (total 5)
+        queue.add("67");    // 2  (total 7)
+        queue.add("89");    // 2  (total 9)
+
+        // when — adding 2 more bytes would make 11 > 10, so the oldest ("12345") is evicted first
+        queue.add("ab");    // 2
+
+        // then
+        assertThat(queue.size(), is(3));
+        assertThat(queue, contains("67", "89", "ab"));
+    }
+
+    @Test
+    public void shouldStillRetainSingleElementLargerThanByteBudget() {
+        // given
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(100, 4, String::length, null);
+
+        // when — a single element heavier than the whole budget must still be admitted
+        queue.add("abcdef"); // 6 > 4
+
+        // then
+        assertThat(queue.size(), is(1));
+        assertThat(queue, contains("abcdef"));
+
+        // and adding another element evicts the oversized one to make room (budget stops at empty)
+        queue.add("x"); // 1
+        assertThat(queue.size(), is(1));
+        assertThat(queue, contains("x"));
+    }
+
+    @Test
+    public void shouldResetByteTotalOnClearSoLaterAddsAreNotSpuriouslyEvicted() {
+        // given — fill exactly to the byte budget then clear
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(100, 6, String::length, null);
+        queue.add("aaa"); // 3
+        queue.add("bbb"); // 3 (total 6)
+        queue.clear();
+
+        // when — after clear the running byte total must be zero, so both new entries fit
+        queue.add("ccc"); // 3
+        queue.add("ddd"); // 3 (total 6)
+
+        // then — if totalBytes had not reset, "ccc" would have been wrongly evicted
+        assertThat(queue.size(), is(2));
+        assertThat(queue, contains("ccc", "ddd"));
+    }
+
+    @Test
+    public void shouldKeepByteTotalConsistentAcrossRemoveItem() {
+        // given — total 6 of a 6 budget
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(100, 6, String::length, null);
+        queue.add("aaa"); // 3
+        queue.add("bbb"); // 3
+
+        // when — removing one frees its weight so a new same-size entry fits without eviction
+        assertThat(queue.removeItem("aaa"), is(true));
+        queue.add("ccc"); // 3 (total back to 6)
+
+        // then
+        assertThat(queue.size(), is(2));
+        assertThat(queue, contains("bbb", "ccc"));
+    }
+
+    @Test
+    public void shouldIgnoreByteBudgetWhenDisabledViaFourArgConstructor() {
+        // given — maxBytes 0 disables the budget; only the count bound applies, exactly as the 2-arg ctor
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(3, 0, String::length, null);
+
+        // when — large elements that would blow any small byte budget
+        queue.add("aaaaaaaaaa");
+        queue.add("bbbbbbbbbb");
+        queue.add("cccccccccc");
+        queue.add("dddddddddd");
+
+        // then — bounded only by count
+        assertThat(queue.size(), is(3));
+        assertThat(queue, contains("bbbbbbbbbb", "cccccccccc", "dddddddddd"));
+    }
+
     @Test(timeout = 30000)
     public void shouldAddAtCapacityInConstantTimeRegardlessOfSize() {
         // given

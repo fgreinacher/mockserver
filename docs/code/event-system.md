@@ -31,8 +31,13 @@ Pre-allocated LogEntry slots"]
 
     subgraph "Single Consumer Thread"
         PROC[processLogEntry]
-        PROC --> STORE["CircularConcurrentLinkedDeque
-Bounded event store"]
+        PROC -->|"1 disk write first"| NDJSON["RecordedRequestsFileSystemPersistence
+NDJSON file (full bodies)"]
+        PROC -->|"2 optional truncation"| TRUNC["truncateBodiesForLog
+x-mockserver-body-truncated header"]
+        TRUNC --> STORE["CircularConcurrentLinkedDeque
+Count bound: maxLogEntries
+Byte bound: maxEventLogSizeInBytes"]
         PROC --> NOTIFY[notifyListeners]
         PROC --> SLF4J[SLF4J / Console output]
     end
@@ -166,7 +171,10 @@ If the upstream connection closes mid-stream (`channelInactive`), the relay hand
 
 ## Event Log Storage
 
-`CircularConcurrentLinkedDeque<LogEntry>` is a bounded, thread-safe deque. When capacity (`maxLogEntries`) is reached, the oldest entries are evicted and their `clear()` method is called (releasing references for GC).
+`CircularConcurrentLinkedDeque<LogEntry>` is a bounded, thread-safe deque. When either bound is reached, the oldest entries are evicted and their `clear()` method is called (releasing references for GC):
+
+- **Count bound** — `maxLogEntries` (default: heap-based formula, up to 100,000).
+- **Byte-budget bound** — `maxEventLogSizeInBytes` (default: 0 = disabled). When set, the deque also tracks a running total of body bytes (`LogEntry.estimatedHeapSize()`) and evicts oldest-first when an incoming entry would push the total over the budget. See [memory-management.md](memory-management.md) for the full byte-budget eviction design.
 
 ### Filtering Predicates
 
@@ -513,7 +521,50 @@ retrieved request JSON, one `verify(...)` per request, rather than by a server-s
 
 ## Persistence System
 
-### File Persistence
+### Disk Capture for Recorded Requests (NDJSON)
+
+When `persistRecordedRequestsToDisk` is `true`, every `FORWARDED_REQUEST` log entry is appended to an NDJSON file (one compact JSON object per line) by `RecordedRequestsFileSystemPersistence`, wired in as a per-entry hook on the Disruptor consumer thread.
+
+```mermaid
+sequenceDiagram
+    participant CT as Consumer Thread
+    participant FP as RecordedRequestsFileSystemPersistence
+    participant FS as NDJSON file
+    participant EL as Event Log (in-memory)
+
+    CT->>CT: processLogEntry(logEntry)
+    Note over CT: 1. disk capture runs FIRST (full bodies)
+    CT->>FP: recordedRequestConsumer.accept(logEntry)
+    FP->>FP: serialize to compact NDJSON line
+    FP->>FS: writer.write(line + "\n")
+    FP->>FS: writer.flush()
+    Note over CT: 2. optional in-memory truncation
+    CT->>CT: truncateBodiesForLog(logEntry) [if maxLoggedBodyBytes > 0]
+    Note over CT: 3. add to bounded in-memory log
+    CT->>EL: eventLog.add(logEntry)
+```
+
+**Key design points:**
+
+- **Disk-before-truncation ordering.** The disk write runs in `processLogEntry` before `truncateBodiesForLog()`, so the NDJSON archive always receives full-fidelity bodies even when `maxLoggedBodyBytes` clips the in-memory copy.
+- **Append-only, flush-per-line.** The file is opened with `StandardOpenOption.CREATE | APPEND`. Each line is flushed immediately after writing, so a crash or OOM-kill loses at most the in-flight entry, not the whole session.
+- **Does not touch `/mockserver/retrieve`.** The NDJSON file is a write-only side-channel. All read operations (retrieve, verify, dashboard) query the in-memory `CircularConcurrentLinkedDeque` only. Entries evicted from memory under the byte budget are on disk but not accessible via the REST API or dashboard without an offline re-import.
+- **Inert when disabled.** When `persistRecordedRequestsToDisk` is `false`, the `RecordedRequestsFileSystemPersistence` instance has all fields `null` and `append()` / `stop()` are no-ops. The hook (`recordedRequestConsumer`) is not set on `MockServerEventLog`.
+- **Only `FORWARDED_REQUEST` entries.** The hook is guarded by `logEntry.getType() == FORWARDED_REQUEST` in `processLogEntry`. Other event types (RECEIVED_REQUEST, EXPECTATION_RESPONSE, etc.) are not written to the NDJSON file.
+
+**Format.** Each line is a serialized `HttpRequestAndHttpResponse` (via `HttpRequestAndHttpResponseSerializer`) with formatting whitespace collapsed so the entire object is one line. The format is identical to what `PUT /mockserver/retrieve?type=REQUEST_RESPONSES` returns for a single entry.
+
+**Recommended combo.** Pair disk capture with `maxEventLogSizeInBytes` to get bounded memory and complete session history on disk:
+
+```
+persistRecordedRequestsToDisk=true      # full bodies to disk
+maxEventLogSizeInBytes=268435456        # 256 MB in-memory byte budget
+maxLoggedBodyBytes=0                    # keep in-memory bodies untruncated (budget evicts instead)
+```
+
+The launcher `mockserver-ui/scripts/launch-with-llm-capture.sh` uses exactly this combination by default.
+
+### File Persistence for Expectations
 
 When `configuration.persistExpectations()` is true, `ExpectationFileSystemPersistence` implements `MockServerMatcherListener` and writes all active expectations to a JSON file whenever they change.
 
@@ -669,6 +720,7 @@ flowchart LR
 | `HttpResponseMatcher` | `mockserver-core/.../matchers/HttpResponseMatcher.java` | Response matcher for response verification (status, headers, body) |
 | `BodyMatcherBuilder` | `mockserver-core/.../matchers/BodyMatcherBuilder.java` | Factory for body matchers, shared by request and response matching |
 | `ExpectationFileSystemPersistence` | `mockserver-core/.../persistence/ExpectationFileSystemPersistence.java` | Write expectations to disk |
+| `RecordedRequestsFileSystemPersistence` | `mockserver-core/.../persistence/RecordedRequestsFileSystemPersistence.java` | Append-only NDJSON disk capture for recorded proxy exchanges |
 | `ExpectationFileWatcher` | `mockserver-core/.../persistence/ExpectationFileWatcher.java` | Monitor initialization files |
 | `FileWatcher` | `mockserver-core/.../persistence/FileWatcher.java` | Low-level file polling |
 | `MockServerEventLogNotifier` | `mockserver-core/.../mock/listeners/MockServerEventLogNotifier.java` | Observer pattern base for log |

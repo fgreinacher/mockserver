@@ -108,6 +108,8 @@ public class Configuration {
     // memory usage
     private Integer maxExpectations;
     private Integer maxLogEntries;
+    private Long maxEventLogSizeInBytes;
+    private Integer maxLoggedBodyBytes;
     private Integer ringBufferSize;
     private Integer maxWebSocketExpectations;
     private Boolean outputMemoryUsageCsv;
@@ -225,6 +227,9 @@ public class Configuration {
     // recorded expectation persistence
     private Boolean persistRecordedExpectations;
     private String persistedRecordedExpectationsPath;
+
+    private Boolean persistRecordedRequestsToDisk;
+    private String persistedRecordedRequestsPath;
 
     // state backend (G10 phase 2a)
     private String stateBackend;
@@ -1549,6 +1554,50 @@ public class Configuration {
      */
     public Configuration maxLogEntries(Integer maxLogEntries) {
         this.maxLogEntries = maxLogEntries;
+        return this;
+    }
+
+    public Long maxEventLogSizeInBytes() {
+        if (maxEventLogSizeInBytes == null) {
+            return ConfigurationProperties.maxEventLogSizeInBytes();
+        }
+        return maxEventLogSizeInBytes;
+    }
+
+    /**
+     * <p>
+     * Maximum total size in bytes of the in-memory event log before older entries are evicted from memory (the oldest first).
+     * </p>
+     * <p>
+     * The default is 0, which disables the size-based limit (the event log is bounded only by {@link #maxLogEntries}).
+     * </p>
+     *
+     * @param maxEventLogSizeInBytes maximum total size in bytes of the in-memory event log (0 disables the limit)
+     */
+    public Configuration maxEventLogSizeInBytes(Long maxEventLogSizeInBytes) {
+        this.maxEventLogSizeInBytes = maxEventLogSizeInBytes;
+        return this;
+    }
+
+    public Integer maxLoggedBodyBytes() {
+        if (maxLoggedBodyBytes == null) {
+            return ConfigurationProperties.maxLoggedBodyBytes();
+        }
+        return maxLoggedBodyBytes;
+    }
+
+    /**
+     * <p>
+     * Maximum number of bytes of a request or response body retained in each log entry; bodies larger than this are truncated.
+     * </p>
+     * <p>
+     * The default is 0, which means unlimited (bodies are retained in full).
+     * </p>
+     *
+     * @param maxLoggedBodyBytes maximum number of body bytes retained per log entry (0 means unlimited)
+     */
+    public Configuration maxLoggedBodyBytes(Integer maxLoggedBodyBytes) {
+        this.maxLoggedBodyBytes = maxLoggedBodyBytes;
         return this;
     }
 
@@ -3262,6 +3311,44 @@ public class Configuration {
      */
     public Configuration persistedRecordedExpectationsPath(String persistedRecordedExpectationsPath) {
         this.persistedRecordedExpectationsPath = persistedRecordedExpectationsPath;
+        return this;
+    }
+
+    public Boolean persistRecordedRequestsToDisk() {
+        if (persistRecordedRequestsToDisk == null) {
+            return ConfigurationProperties.persistRecordedRequestsToDisk();
+        }
+        return persistRecordedRequestsToDisk;
+    }
+
+    /**
+     * Enable the persisting of recorded requests (captured traffic) to disk
+     * <p>
+     * The default is false
+     *
+     * @param persistRecordedRequestsToDisk the persisting of recorded requests to disk
+     */
+    public Configuration persistRecordedRequestsToDisk(Boolean persistRecordedRequestsToDisk) {
+        this.persistRecordedRequestsToDisk = persistRecordedRequestsToDisk;
+        return this;
+    }
+
+    public String persistedRecordedRequestsPath() {
+        if (persistedRecordedRequestsPath == null) {
+            return ConfigurationProperties.persistedRecordedRequestsPath();
+        }
+        return persistedRecordedRequestsPath;
+    }
+
+    /**
+     * The file path used to save persisted recorded requests, which is updated whenever a new request is captured
+     * <p>
+     * The default is "recordedRequests.ndjson"
+     *
+     * @param persistedRecordedRequestsPath file path used to save persisted recorded requests
+     */
+    public Configuration persistedRecordedRequestsPath(String persistedRecordedRequestsPath) {
+        this.persistedRecordedRequestsPath = persistedRecordedRequestsPath;
         return this;
     }
 

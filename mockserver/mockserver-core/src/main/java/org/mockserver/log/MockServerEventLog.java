@@ -155,6 +155,13 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     // mock_server_dropped_log_events Prometheus counter) makes the cliff observable.
     private final AtomicLong droppedLogEvents = new AtomicLong(0);
     private final AtomicBoolean droppedLogEventWarned = new AtomicBoolean(false);
+    // Header name added to the in-memory (and, if it ran before disk-write, persisted) copy of a
+    // request/response body that was truncated by maxLoggedBodyBytes; its value is the original
+    // (pre-truncation) body length in bytes.
+    private static final String TRUNCATED_BODY_HEADER = "x-mockserver-body-truncated";
+    // Optional per-entry hook invoked (off the matching/forwarding path) for each FORWARDED_REQUEST
+    // log entry, used to persist recorded requests to disk. Null when disk persistence is disabled.
+    private Consumer<LogEntry> recordedRequestConsumer;
 
     public MockServerEventLog(Configuration configuration, MockServerLogger mockServerLogger, Scheduler scheduler, boolean asynchronousEventProcessing) {
         super(scheduler);
@@ -163,7 +170,11 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         this.matcherBuilder = new MatcherBuilder(configuration, mockServerLogger);
         this.requestDefinitionSerializer = new RequestDefinitionSerializer(mockServerLogger);
         this.asynchronousEventProcessing = asynchronousEventProcessing;
-        this.eventLog = new CircularConcurrentLinkedDeque<>(configuration.maxLogEntries(), LogEntry::clear);
+        this.eventLog = new CircularConcurrentLinkedDeque<>(
+            configuration.maxLogEntries(),
+            configuration.maxEventLogSizeInBytes(),
+            LogEntry::estimatedHeapSize,
+            LogEntry::clear);
         startRingBuffer();
     }
 
@@ -262,11 +273,67 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         disruptor.start();
     }
 
+    /**
+     * Register a hook invoked once per FORWARDED_REQUEST log entry, off the request-matching /
+     * forwarding hot path, so a recorded proxied exchange can be persisted to disk without coupling
+     * file I/O into this class. The hook receives the entry with FULL (un-truncated) bodies because
+     * {@link #processLogEntry} invokes it BEFORE applying {@code maxLoggedBodyBytes} truncation.
+     */
+    public void setRecordedRequestConsumer(Consumer<LogEntry> recordedRequestConsumer) {
+        this.recordedRequestConsumer = recordedRequestConsumer;
+    }
+
     private void processLogEntry(LogEntry logEntry) {
         logEntry = logEntry.cloneAndClear();
+        // Disk capture runs FIRST so persisted recorded requests keep full fidelity even when
+        // maxLoggedBodyBytes truncates the in-memory copy below. (Recommended combo: disk-capture ON
+        // with maxLoggedBodyBytes=0, so memory is bounded by the byte budget and disk is complete.)
+        if (recordedRequestConsumer != null && logEntry.getType() == FORWARDED_REQUEST) {
+            recordedRequestConsumer.accept(logEntry);
+        }
+        // Secondary memory valve: cap the body bytes retained per entry. Builds NEW copies (never
+        // mutates the shared live request/response) because LogEntry.clone() copies them by reference.
+        if (configuration.maxLoggedBodyBytes() > 0) {
+            truncateBodiesForLog(logEntry);
+        }
+        // add() weighs the (possibly truncated) entry via LogEntry::estimatedHeapSize for the byte
+        // budget — truncation has already run, and the estimate is computed lazily inside add().
         eventLog.add(logEntry);
         notifyListeners(this, false);
         writeToSystemOut(logger, logEntry, configuration);
+    }
+
+    /**
+     * Replace the request and/or response on the (already-cloned) log entry with body-truncated COPIES
+     * when their raw body exceeds {@code maxLoggedBodyBytes}. The original request/response objects are
+     * shared by reference with the live proxied exchange (LogEntry.clone() copies them by reference), so
+     * we must build fresh clones — {@link HttpRequest#clone()} / {@link HttpResponse#clone()} also clone
+     * the headers map, so adding the truncation marker header never mutates the live objects. The header
+     * value is the original body length so a reader can tell the body was clipped.
+     */
+    private void truncateBodiesForLog(LogEntry logEntry) {
+        int maxLoggedBodyBytes = configuration.maxLoggedBodyBytes();
+        RequestDefinition requestDefinition = logEntry.getHttpRequest();
+        if (requestDefinition instanceof HttpRequest) {
+            HttpRequest httpRequest = (HttpRequest) requestDefinition;
+            byte[] body = httpRequest.getBodyAsRawBytes();
+            if (body != null && body.length > maxLoggedBodyBytes) {
+                logEntry.setHttpRequest(httpRequest
+                    .clone()
+                    .withBody(Arrays.copyOf(body, maxLoggedBodyBytes))
+                    .withHeader(TRUNCATED_BODY_HEADER, String.valueOf(body.length)));
+            }
+        }
+        HttpResponse httpResponse = logEntry.getHttpResponse();
+        if (httpResponse != null) {
+            byte[] body = httpResponse.getBodyAsRawBytes();
+            if (body != null && body.length > maxLoggedBodyBytes) {
+                logEntry.setHttpResponse(httpResponse
+                    .clone()
+                    .withBody(Arrays.copyOf(body, maxLoggedBodyBytes))
+                    .withHeader(TRUNCATED_BODY_HEADER, String.valueOf(body.length)));
+            }
+        }
     }
 
     private void drainDisruptor() {

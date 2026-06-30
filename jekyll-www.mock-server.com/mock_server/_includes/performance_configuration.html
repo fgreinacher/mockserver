@@ -204,6 +204,56 @@
 
 <p>This creates a <span class="inline_code">memoryUsage_&lt;date&gt;.csv</span> file that records heap usage, log entry count, and expectation count over time. If you see heap usage consistently near the maximum, increase <span class="inline_code">-Xmx</span> or reduce <span class="inline_code">maxLogEntries</span>.</p>
 
+<a id="proxying_large_bodies" class="anchor" href="#proxying_large_bodies">&nbsp;</a>
+
+<h3>Proxying LLM / Large-Body Traffic Without OOM</h3>
+
+<p><strong>TL;DR:</strong> enable disk capture so every exchange is durable, and set a byte budget so the in-memory log stays bounded. Memory never grows unbounded; disk holds the complete session history.</p>
+
+<p>When MockServer proxies LLM traffic — tool schemas, growing conversation context, SSE chunk accumulation — individual request/response bodies can be hundreds of kilobytes each. The in-memory event log is normally bounded only by <em>entry count</em> (<span class="inline_code">maxLogEntries</span>), not by body size, so even a few thousand LLM exchanges can exhaust the heap.</p>
+
+<p>Two complementary settings address this:</p>
+
+<table>
+    <tr>
+        <th>Setting</th>
+        <th>What it does</th>
+        <th>When to use</th>
+    </tr>
+    <tr>
+        <td><a href="/mock_server/configuration_properties.html#button_configuration_max_event_log_size_in_bytes"><span class="inline_code">maxEventLogSizeInBytes</span></a></td>
+        <td>Caps the total request+response body bytes held in memory. Once exceeded, the oldest entries are evicted (oldest-first), in addition to the entry-count bound.</td>
+        <td>Always, when proxying traffic with large bodies. Set it well under the JVM heap — for a 2 GB heap, 256 MB (<span class="inline_code">268435456</span>) is a good starting point.</td>
+    </tr>
+    <tr>
+        <td><a href="/mock_server/configuration_properties.html#button_configuration_persist_recorded_requests_to_disk"><span class="inline_code">persistRecordedRequestsToDisk</span></a></td>
+        <td>Appends every proxied exchange — full request and response — as a single NDJSON line to a file, flushed immediately. The file is the durable record: entries evicted from the in-memory window are never lost from disk.</td>
+        <td>Always paired with <span class="inline_code">maxEventLogSizeInBytes</span>. The disk write happens before any in-memory truncation, so the archive is always full-fidelity.</td>
+    </tr>
+</table>
+
+<p><strong>Recommended combo for LLM / large-body capture:</strong></p>
+<pre class="code" style="padding: 2px;"><code class="code">java -Xmx2g \
+  -Dmockserver.maxLogEntries=5000 \
+  -Dmockserver.maxEventLogSizeInBytes=268435456 \
+  -Dmockserver.persistRecordedRequestsToDisk=true \
+  -Dmockserver.persistedRecordedRequestsPath=recordedRequests.ndjson \
+  -jar mockserver-netty.jar -serverPort 1080</code></pre>
+
+<p>With this configuration:</p>
+<ul>
+    <li>Every proxied exchange is written to <span class="inline_code">recordedRequests.ndjson</span> in full as it completes</li>
+    <li>The in-memory log retains at most the most recent 256 MB of body bytes (plus up to 5,000 entries by count) — the dashboard shows this recent window</li>
+    <li>Older entries evicted from memory are still on disk — nothing is lost</li>
+</ul>
+
+<p>The <span class="inline_code">mockserver-ui/scripts/launch-with-llm-capture.sh</span> script uses exactly this combination by default (2 GB heap, 256 MB byte budget, NDJSON disk capture). Run it with a tool name to start MockServer as an HTTPS proxy capturing that tool's LLM traffic:</p>
+<pre class="code" style="padding: 2px;"><code class="code">./mockserver-ui/scripts/launch-with-llm-capture.sh opencode</code></pre>
+
+<p><strong>Optional secondary valve — <a href="/mock_server/configuration_properties.html#button_configuration_max_logged_body_bytes"><span class="inline_code">maxLoggedBodyBytes</span></a>:</strong> when set to a positive value, bodies are truncated in memory beyond that many bytes (the in-memory copy gets a <span class="inline_code">x-mockserver-body-truncated: &lt;originalLength&gt;</span> header). The disk write is <em>not</em> affected. Use this only when you want the dashboard to show abbreviated bodies — leave it at 0 (the default) when the byte-budget eviction (<span class="inline_code">maxEventLogSizeInBytes</span>) is sufficient.</p>
+
+<p><strong>Security — data at rest:</strong> the <span class="inline_code">recordedRequests.ndjson</span> archive contains the full recorded request and response bodies on disk, which for proxied LLM and API traffic can include credentials (<span class="inline_code">Authorization</span> headers, API keys) and other sensitive data. The archive honours <a href="/mock_server/configuration_properties.html"><span class="inline_code">redactSecretsInLog</span></a> — enable it to mask known secret headers and configured body fields in the file just as they are masked in the dashboard. Treat the file as sensitive regardless: store it on a protected volume and delete it when you are done. The capture launcher truncates it at the start of each session (unless you pass <span class="inline_code">--keep-log</span>).</p>
+
 <a id="scalability_configuration" class="anchor" href="#scalability_configuration">&nbsp;</a>
 <h2>Scalability Configuration:</h2>
 

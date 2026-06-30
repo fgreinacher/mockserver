@@ -156,6 +156,42 @@
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.persistedRecordedExpectationsPath="recordedExpectations.json"</code></pre>
 </div>
 
+<button id="button_configuration_persist_recorded_requests_to_disk" class="accordion title"><strong>Persist Recorded Requests To Disk (NDJSON)</strong></button>
+<div class="panel title">
+    <p>When enabled, every proxied exchange (<span class="inline_code">FORWARDED_REQUEST</span> log event) is appended to an NDJSON file as it completes — one compact JSON object per line (request + response), flushed immediately after each line. The file is opened in append mode, so it survives process restarts and captures the complete session history even as the in-memory event log window evicts old entries under a byte budget.</p>
+    <p>This is the recommended pairing with <a href="/mock_server/configuration_properties.html#button_configuration_max_event_log_size_in_bytes">maxEventLogSizeInBytes</a> for proxying LLM traffic or any workload with large bodies: disk holds everything durably; memory stays bounded. See <a href="/mock_server/performance.html#proxying_large_bodies">Proxying LLM / Large-Body Traffic Without OOM</a> for the full worked example.</p>
+    <p><strong>Note:</strong> disk capture writes the <em>full</em> body before any in-memory truncation (<span class="inline_code">maxLoggedBodyBytes</span>) is applied, so the archive is always complete even when the dashboard shows truncated bodies.</p>
+    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">false</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.persistRecordedRequestsToDisk(boolean enable)</code></pre>
+    <pre class="prettyprint lang-java code"><code class="code">Configuration.persistRecordedRequestsToDisk(Boolean enable)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.persistRecordedRequestsToDisk=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_PERSIST_RECORDED_REQUESTS_TO_DISK=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.persistRecordedRequestsToDisk=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.persistRecordedRequestsToDisk="true"</code></pre>
+</div>
+
+<button id="button_configuration_persisted_recorded_requests_path" class="accordion title"><strong>Persisted Recorded Requests File Path</strong></button>
+<div class="panel title">
+    <p>The file path for the NDJSON archive written when <a href="#button_configuration_persist_recorded_requests_to_disk">persistRecordedRequestsToDisk</a> is enabled. The file is opened in append mode on startup, so a fresh session extends the same file. Truncate it manually between sessions, or use <span class="inline_code">--keep-log</span> / omit to start fresh (the <span class="inline_code">launch-with-llm-capture.sh</span> script truncates it automatically unless <span class="inline_code">--keep-log</span> is passed).</p>
+    <p>Type: <span class="keyword">string</span> Default: <span class="this_value">recordedRequests.ndjson</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.persistedRecordedRequestsPath(String path)</code></pre>
+    <pre class="prettyprint lang-java code"><code class="code">Configuration.persistedRecordedRequestsPath(String path)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.persistedRecordedRequestsPath=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_PERSISTED_RECORDED_REQUESTS_PATH=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.persistedRecordedRequestsPath=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.persistedRecordedRequestsPath="recordedRequests.ndjson"</code></pre>
+</div>
+
 <a id="verification_configuration" class="anchor" href="#verification_configuration">&nbsp;</a>
 
 <h2>Verification Configuration:</h2>

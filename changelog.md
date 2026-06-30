@@ -188,6 +188,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CA on first startup, equivalent to `dynamicallyCreateCertificateAuthorityCertificate=true`. Recommended for
   any shared, persistent, or team-facing proxy deployment. Without it, MockServer uses the built-in default CA
   whose private key is published in the git repository (safe only for isolated local development).
+- **Bounded-memory event log + disk capture for proxying LLM / large-body traffic without running out of
+  memory.** Proxying large request/response bodies (LLM tool schemas, growing conversation context, accumulated
+  SSE) previously retained every exchange in full in the in-memory event log, which is bounded only by entry
+  *count* (`maxLogEntries`), never by size — so a long capture session could exhaust the heap and crash the
+  proxy. Three new opt-in properties address this: `mockserver.maxEventLogSizeInBytes` (env
+  `MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES`, default `0` = disabled) caps the retained body bytes and evicts the
+  oldest entries from memory once exceeded; `mockserver.persistRecordedRequestsToDisk` (env
+  `MOCKSERVER_PERSIST_RECORDED_REQUESTS_TO_DISK`, default `false`) with `mockserver.persistedRecordedRequestsPath`
+  (default `recordedRequests.ndjson`) appends every proxied exchange — full request and response — as one compact
+  JSON object per line (NDJSON) to disk as it completes, flushed per line, so the complete session survives even
+  as the in-memory window evicts; and `mockserver.maxLoggedBodyBytes` (env `MOCKSERVER_MAX_LOGGED_BODY_BYTES`,
+  default `0` = unlimited) truncates bodies kept in memory beyond a byte limit (marking the copy with an
+  `x-mockserver-body-truncated` header) without affecting the disk archive. The NDJSON archive honours
+  `redactSecretsInLog`, masking credentials on disk exactly as the dashboard does. The recommended pairing —
+  byte budget plus disk capture — keeps memory bounded while disk holds everything; the
+  `mockserver-ui/scripts/launch-with-llm-capture.sh` capture launcher now enables it by default (2 GB heap,
+  256 MB byte budget, NDJSON disk capture).
 
 ### Changed
 

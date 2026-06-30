@@ -95,9 +95,50 @@ public class LogEntry implements EventTranslator<LogEntry> {
     private String message;
     private Object[] arguments;
     private String because;
+    /**
+     * Memoized estimate of the heap retained by the stable primary request/response bodies of this
+     * entry, used as the weight by the byte-budget eviction in {@link org.mockserver.collections.CircularConcurrentLinkedDeque}.
+     * Lazily computed once and cached so the weight is identical at add-time and at evict-time (the
+     * deque recomputes the weight when it evicts). {@code -1} means "not yet computed".
+     */
+    private transient long estimatedHeapSize = -1;
 
     public LogEntry() {
 
+    }
+
+    /**
+     * Stable lower-bound estimate of the bytes this entry retains on the heap, counting only the
+     * primary request/response body bytes (the dominant cost for large LLM-capture exchanges). It
+     * deliberately ignores the lazily-derived {@code httpUpdated*} copies and the {@code arguments}
+     * array so the value never changes after the entry is built — the byte-budget eviction relies on
+     * the add-time weight matching the evict-time weight exactly. Reads the {@code httpRequests} field
+     * directly (not {@link #getHttpRequests()}, which substitutes a default request when unset).
+     */
+    @JsonIgnore
+    public long estimatedHeapSize() {
+        if (estimatedHeapSize < 0) {
+            long size = 0;
+            RequestDefinition[] reqs = this.httpRequests;
+            if (reqs != null) {
+                for (RequestDefinition rd : reqs) {
+                    if (rd instanceof HttpRequest) {
+                        byte[] b = ((HttpRequest) rd).getBodyAsRawBytes();
+                        if (b != null) {
+                            size += b.length;
+                        }
+                    }
+                }
+            }
+            if (httpResponse != null) {
+                byte[] b = httpResponse.getBodyAsRawBytes();
+                if (b != null) {
+                    size += b.length;
+                }
+            }
+            estimatedHeapSize = size;
+        }
+        return estimatedHeapSize;
     }
 
     private LogEntry setId(String id) {
@@ -137,6 +178,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         message = null;
         arguments = null;
         because = null;
+        estimatedHeapSize = -1;
     }
 
     public Level getLogLevel() {

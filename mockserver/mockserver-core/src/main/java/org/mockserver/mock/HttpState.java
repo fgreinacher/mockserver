@@ -89,6 +89,7 @@ public class HttpState {
     private final Scheduler scheduler;
     private ExpectationFileSystemPersistence expectationFileSystemPersistence;
     private org.mockserver.persistence.RecordedExpectationFileSystemPersistence recordedExpectationFileSystemPersistence;
+    private org.mockserver.persistence.RecordedRequestsFileSystemPersistence recordedRequestsFileSystemPersistence;
     private ExpectationFileWatcher expectationFileWatcher;
     // mockserver
     private final RequestMatchers requestMatchers;
@@ -268,6 +269,10 @@ public class HttpState {
         }
         if (configuration.persistRecordedExpectations()) {
             this.recordedExpectationFileSystemPersistence = new org.mockserver.persistence.RecordedExpectationFileSystemPersistence(configuration, mockServerLogger, mockServerLog, stateBackend.blobs());
+        }
+        if (configuration.persistRecordedRequestsToDisk()) {
+            this.recordedRequestsFileSystemPersistence = new org.mockserver.persistence.RecordedRequestsFileSystemPersistence(configuration, mockServerLogger);
+            mockServerLog.setRecordedRequestConsumer(recordedRequestsFileSystemPersistence::append);
         }
         if (isNotBlank(configuration.initializationJsonPath()) || isNotBlank(configuration.initializationOpenAPIPath()) || isNotBlank(configuration.initializationClass())) {
             ExpectationInitializerLoader expectationInitializerLoader = new ExpectationInitializerLoader(configuration, mockServerLogger, requestMatchers);
@@ -5899,6 +5904,9 @@ public class HttpState {
         }
         if (recordedExpectationFileSystemPersistence != null) {
             recordedExpectationFileSystemPersistence.stop();
+        }
+        if (recordedRequestsFileSystemPersistence != null) {
+            recordedRequestsFileSystemPersistence.stop();
         }
         if (expectationFileWatcher != null) {
             expectationFileWatcher.stop();
