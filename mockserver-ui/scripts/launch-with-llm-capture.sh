@@ -145,6 +145,10 @@ MOCKSERVER_LOG="$UI_DIR/mockserver-capture.log"
 HEAP_DUMP="$UI_DIR/mockserver-capture-heap.hprof"
 DEMO_MAX_HEAP="${CAPTURE_MAX_HEAP:-1g}"
 DEMO_MAX_LOG_ENTRIES="${CAPTURE_MAX_LOG_ENTRIES:-5000}"
+# Head-wait budget (ms). Default 300s: a reasoning model on a very large prompt (observed a 74KB / ~73k
+# -token Codex turn return NOTHING within 120s) can take minutes to its first token; MockServer must wait
+# at least as long as the CLI's own request timeout or it 502s a slow-but-healthy call. Override via env.
+CAPTURE_SOCKET_TIMEOUT_MS="${CAPTURE_SOCKET_TIMEOUT_MS:-300000}"
 # Reverse-proxy (port-forwarding) mode: when --reverse-proxy HOST[:PORT] is given, MockServer forwards
 # ALL traffic to that single upstream (default port 443), so the tool points its BASE URL at MockServer
 # instead of setting HTTPS_PROXY. This route goes through the same streaming + forwardProxyHttp2Upgrade
@@ -163,14 +167,14 @@ fi
 # HTTP/2 via ALPN, so a streaming SSE backend that streams the response head over HTTP/2 sends it
 # immediately. ALPN falls back to HTTP/1.1 if the upstream does not offer HTTP/2, so this is safe for
 # every provider.
-# maxSocketTimeoutInMillis (head-wait budget): a reasoning LLM can legitimately take far longer than the
-# 20s default to produce its FIRST token on a large prompt (observed ~19s for an 80k-token Codex prompt,
-# bumping the 20s ceiling and 502-ing the call). Raise it to 120s so MockServer waits for a slow-but-
-# healthy streaming head instead of returning 502 Bad Gateway. Once the head arrives the streaming relay
-# takes over and streamIdleTimeoutSeconds (default 60s) governs the per-chunk pace. (This is the only
-# MockServer-side lever for these timeouts — the first-token latency itself is the model's compute time,
-# and if a CLI's own request/header timeout is shorter than the upstream first token it must be raised
-# CLI-side.)
+# maxSocketTimeoutInMillis (head-wait budget, $CAPTURE_SOCKET_TIMEOUT_MS): a reasoning LLM can take far
+# longer than the 20s default to produce its FIRST token on a large prompt — on a 74KB/~73k-token Codex
+# turn the upstream returned NOTHING within 120s, so MockServer 502'd it (ReadTimeoutException) even though
+# opencode's own (longer) timeout would have waited it out. MockServer must wait at least as long as the
+# CLI does. Once the head arrives the streaming relay takes over and streamIdleTimeoutSeconds (default 60s)
+# governs the per-chunk pace. (This is the only MockServer-side lever for these timeouts — the first-token
+# latency itself is the model's compute time; if a CLI's own request timeout is shorter than the upstream
+# first token, raise it CLI-side too.)
 # Crash diagnostics: all stdout+stderr go to $MOCKSERVER_LOG. HeapDumpOnOutOfMemoryError +
 # ExitOnOutOfMemoryError turn a Java heap exhaustion into a captured .hprof and a clean exit with an
 # OutOfMemoryError in the log — so if the process dies you can distinguish a real OOM (OutOfMemoryError in
@@ -180,7 +184,7 @@ java -Xmx"$DEMO_MAX_HEAP" -Dmockserver.maxLogEntries="$DEMO_MAX_LOG_ENTRIES" \
      -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath="$HEAP_DUMP" -XX:+ExitOnOutOfMemoryError \
      -Dmockserver.metricsEnabled=true -Dmockserver.wasmEnabled=true \
      -Dmockserver.forwardProxyHttp2Upgrade=true \
-     -Dmockserver.maxSocketTimeoutInMillis=120000 \
+     -Dmockserver.maxSocketTimeoutInMillis="$CAPTURE_SOCKET_TIMEOUT_MS" \
      -jar "$MOCKSERVER_JAR" -serverPort "$MOCKSERVER_PORT" \
      ${REVERSE_ARGS[@]+"${REVERSE_ARGS[@]}"} \
      -logLevel INFO > "$MOCKSERVER_LOG" 2>&1 &
