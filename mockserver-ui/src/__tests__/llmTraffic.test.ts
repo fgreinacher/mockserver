@@ -11,6 +11,8 @@ import {
   extractBodyContent,
   aggregateMcpServerHealth,
   MCP_SLOW_THRESHOLD_MS,
+  groupConversationTurns,
+  type ConversationEntryInput,
 } from '../lib/llmTraffic';
 
 // ---------------------------------------------------------------------------
@@ -2272,5 +2274,180 @@ describe('aggregateMcpServerHealth', () => {
       mcpValue({ host: 'erroring.local', error: { code: -1, message: 'boom' }, totalTimeInMillis: 100 }),
     ]);
     expect(rows.map((r) => r.server)).toEqual(['erroring.local', 'slow.local', 'healthy.local']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// groupConversationTurns — growing-conversation collapsing
+// ---------------------------------------------------------------------------
+
+/** Build a grouping input entry for an OpenAI Chat Completions exchange. */
+function openaiEntry(
+  id: string,
+  messages: unknown[],
+  responseText: string,
+  host = 'api.openai.com',
+): ConversationEntryInput<string> {
+  const value = {
+    httpRequest: {
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: [{ name: 'host', values: [host] }],
+      body: { type: 'JSON', json: JSON.stringify({ model: 'gpt-4o', messages }) },
+    },
+    httpResponse: {
+      statusCode: 200,
+      body: {
+        type: 'JSON',
+        json: JSON.stringify({
+          model: 'gpt-4o',
+          choices: [{ message: { role: 'assistant', content: responseText } }],
+          usage: { prompt_tokens: 5, completion_tokens: 3 },
+        }),
+      },
+    },
+  };
+  const summary = summarizeTraffic(value);
+  return { parsed: summary.parsed, host: summary.host, data: id };
+}
+
+/** Build a grouping input entry for an OpenAI Responses exchange (different message shape). */
+function responsesEntry(
+  id: string,
+  input: unknown[],
+  outputText: string,
+): ConversationEntryInput<string> {
+  const value = {
+    httpRequest: {
+      method: 'POST',
+      path: '/v1/responses',
+      headers: [{ name: 'host', values: ['api.openai.com'] }],
+      body: { type: 'JSON', json: JSON.stringify({ model: 'gpt-4o', input }) },
+    },
+    httpResponse: {
+      statusCode: 200,
+      body: {
+        type: 'JSON',
+        json: JSON.stringify({
+          model: 'gpt-4o',
+          output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] }],
+          usage: { input_tokens: 5, output_tokens: 3 },
+        }),
+      },
+    },
+  };
+  const summary = summarizeTraffic(value);
+  return { parsed: summary.parsed, host: summary.host, data: id };
+}
+
+describe('groupConversationTurns', () => {
+  it('collapses a 3-turn growing conversation into one group with correct per-turn deltas', () => {
+    // Each turn resends the whole prior history plus the new turn — the classic
+    // stateless-CLI pattern. The request message list grows as a prefix each time.
+    const u = (content: string) => ({ role: 'user', content });
+    const a = (content: string) => ({ role: 'assistant', content });
+
+    const groups = groupConversationTurns([
+      openaiEntry('t0', [u('hi')], 'r0'),
+      openaiEntry('t1', [u('hi'), a('r0'), u('next')], 'r1'),
+      openaiEntry('t2', [u('hi'), a('r0'), u('next'), a('r1'), u('more')], 'r2'),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    const group = groups[0]!;
+    expect(group.collapsed).toBe(true);
+    expect(group.kind).toBe('openai');
+    expect(group.host).toBe('api.openai.com');
+    expect(group.entries).toEqual(['t0', 't1', 't2']);
+    expect(group.turns).toHaveLength(3);
+
+    // Turn 0's delta is the full initial history (1 message).
+    expect(group.turns[0]!.newMessages).toHaveLength(1);
+    // Turn 1 added the prior assistant reply + the new user message.
+    expect(group.turns[1]!.newMessages).toHaveLength(2);
+    expect(group.turns[1]!.newMessages).toEqual([a('r0'), u('next')]);
+    // Turn 2 likewise added 2 messages.
+    expect(group.turns[2]!.newMessages).toEqual([a('r1'), u('more')]);
+
+    // The final assistant response is carried on the last turn's parsed.
+    const last = group.turns[2]!.parsed;
+    expect(last.kind).toBe('openai');
+    if (last.kind === 'openai') {
+      expect(last.choices[0]?.message?.content).toBe('r2');
+    }
+  });
+
+  it('keeps two unrelated requests as separate single-turn groups', () => {
+    const groups = groupConversationTurns([
+      openaiEntry('a', [{ role: 'user', content: 'alpha' }], 'ra'),
+      openaiEntry('b', [{ role: 'user', content: 'beta' }], 'rb'),
+    ]);
+    expect(groups).toHaveLength(2);
+    expect(groups.every((g) => !g.collapsed && g.turns.length === 1)).toBe(true);
+    expect(groups.map((g) => g.entries[0])).toEqual(['a', 'b']);
+  });
+
+  it('treats a single request as its own group with the full history as turn 0', () => {
+    const messages = [{ role: 'user', content: 'only' }];
+    const groups = groupConversationTurns([openaiEntry('solo', messages, 'r')]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.collapsed).toBe(false);
+    expect(groups[0]!.turns).toHaveLength(1);
+    expect(groups[0]!.turns[0]!.newMessages).toEqual(messages);
+  });
+
+  it('does NOT collapse when the history was edited (no longer a prefix)', () => {
+    // Turn 1 changed an earlier message, so turn 0 is not a prefix of turn 1.
+    const groups = groupConversationTurns([
+      openaiEntry('e0', [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: 'b' },
+        { role: 'user', content: 'c' },
+      ], 'r0'),
+      openaiEntry('e1', [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: 'b-EDITED' },
+        { role: 'user', content: 'c' },
+        { role: 'user', content: 'd' },
+      ], 'r1'),
+    ]);
+    expect(groups).toHaveLength(2);
+    expect(groups.every((g) => !g.collapsed)).toBe(true);
+  });
+
+  it('never merges across different hosts even when the prefix matches', () => {
+    const groups = groupConversationTurns([
+      openaiEntry('h1', [{ role: 'user', content: 'hi' }], 'r0', 'gateway-a.local'),
+      openaiEntry('h2', [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'r0' }, { role: 'user', content: 'next' }], 'r1', 'gateway-b.local'),
+    ]);
+    expect(groups).toHaveLength(2);
+  });
+
+  it('is provider-agnostic: collapses a growing OpenAI Responses (input array) conversation', () => {
+    const ui = (text: string) => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
+    const ai = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+    const groups = groupConversationTurns([
+      responsesEntry('r0', [ui('hi')], 'a0'),
+      responsesEntry('r1', [ui('hi'), ai('a0'), ui('again')], 'a1'),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.kind).toBe('openai_responses');
+    expect(groups[0]!.collapsed).toBe(true);
+    expect(groups[0]!.turns[1]!.newMessages).toHaveLength(2);
+  });
+
+  it('collapses an exact duplicate resend with an empty delta on the second turn', () => {
+    const messages = [{ role: 'user', content: 'same' }];
+    const groups = groupConversationTurns([
+      openaiEntry('d0', messages, 'r0'),
+      openaiEntry('d1', messages, 'r1'),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.collapsed).toBe(true);
+    expect(groups[0]!.turns[1]!.newMessages).toEqual([]);
+  });
+
+  it('handles an empty input list', () => {
+    expect(groupConversationTurns([])).toEqual([]);
   });
 });

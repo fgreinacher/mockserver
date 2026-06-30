@@ -16,14 +16,18 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { useDashboardStore } from '../store';
 import { groupBySession, parseIsolationSource, shortenScenarioName, type Session, type SessionRequest } from '../lib/sessionGrouping';
-import { getModelLabel, getTokenSummary, getNumericTokens } from '../lib/llmTraffic';
+import {
+  getModelLabel,
+  getTokenSummary,
+  getNumericTokens,
+  summarizeTraffic,
+  groupConversationTurns,
+} from '../lib/llmTraffic';
 import { estimateCostUsd } from '../lib/llmPricing';
 import {
   AnthropicConversationView,
   OpenAiConversationView,
-  OpenAiResponsesConversationView,
-  GeminiConversationView,
-  OllamaConversationView,
+  GroupedConversationView,
 } from './ConversationView';
 import AgentRunGraph from './AgentRunGraph';
 import { CompareRunsBody } from './CompareRunsDialog';
@@ -144,51 +148,52 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 const providerLabel = (kind: string): string => PROVIDER_LABELS[kind] ?? kind;
 
-/** Renders a single parsed request with the matching Traffic-tab conversation view. */
-function ConversationByKind({ parsed }: { parsed: SessionRequest['parsed'] }) {
-  switch (parsed.kind) {
-    case 'anthropic': return <AnthropicConversationView parsed={parsed} />;
-    case 'openai': return <OpenAiConversationView parsed={parsed} />;
-    case 'openai_responses': return <OpenAiResponsesConversationView parsed={parsed} />;
-    case 'gemini': return <GeminiConversationView parsed={parsed} />;
-    case 'ollama': return <OllamaConversationView parsed={parsed} />;
-    default: return null;
-  }
-}
-
 /**
- * Session-level conversation view (replaces the old call-graph visualisation).
- * In an agent run each successive request resends the full accumulated message
- * history, so the *last* conversation-capable request carries the complete
- * transcript — rendering its provider Conversation view shows the whole session
- * as chat bubbles, matching the Traffic tab's Conversation view. Collapsed by
- * default to keep the lanes compact.
+ * Session-level conversation view. A stateless agent CLI resends its whole
+ * growing history on every turn, so rendering each captured request in full reads
+ * as endless near-duplicate history. Instead we collapse a run of requests whose
+ * message lists grow as prefixes of one another into ONE thread (via the pure
+ * `groupConversationTurns`), and render it as a single conversation that GROWS —
+ * each turn contributes only the new content it added, plus the final response.
+ *
+ * When the history diverges (edited prompt) or the lane mixes unrelated requests
+ * or providers, grouping yields more than one thread; we render each separately
+ * so nothing is hidden. The raw per-request data is always reachable via the
+ * request chips above. Collapsed by default to keep the lanes compact.
  */
-function SessionConversation({ requests, isUnscoped }: { requests: SessionRequest[]; isUnscoped: boolean }) {
+function SessionConversation({ requests }: { requests: SessionRequest[] }) {
   const [open, setOpen] = useState(false);
   const convRequests = useMemo(
     () => requests.filter((r) => CONVERSATION_KINDS.has(r.parsed.kind)),
     [requests],
   );
-  const primary = useMemo(
-    () => (convRequests.length > 0 ? convRequests[convRequests.length - 1] : undefined),
+  // Group consecutive growing-history requests into threads. `requests` is already
+  // sorted chronologically (oldest first) by the session grouping, which is the
+  // order the prefix walk needs.
+  const groups = useMemo(
+    () =>
+      groupConversationTurns(
+        convRequests.map((r) => ({
+          parsed: r.parsed,
+          host: summarizeTraffic(r.item.value).host,
+          data: r,
+        })),
+      ),
     [convRequests],
   );
-  const providerKinds = useMemo(
-    () => Array.from(new Set(convRequests.map((r) => r.parsed.kind))),
-    [convRequests],
-  );
-  // A normal agent session resends one growing history to a single provider, so the
-  // last conversation-capable request alone is the full transcript — show it plainly.
-  // The <unscoped> catch-all instead groups UNRELATED requests (often across several
-  // providers); there is no single conversation, so whenever it holds more than one we
-  // render the most recent and flag that the others are only viewable by expanding
-  // their request above. (A multi-provider lane is always treated as mixed.)
-  const mixed = (isUnscoped && convRequests.length > 1) || providerKinds.length > 1;
 
-  if (!primary) return null;
+  if (convRequests.length === 0) return null;
 
-  const providerList = providerKinds.map(providerLabel).join(', ');
+  const multipleThreads = groups.length > 1;
+  const onlyGroup = groups.length === 1 ? groups[0]! : null;
+  // Button label: a single multi-turn thread says how many turns collapsed; a
+  // single one-shot is just "Conversation"; multiple threads says how many.
+  const label = multipleThreads
+    ? `Conversations (${groups.length})`
+    : onlyGroup && onlyGroup.collapsed
+      ? `Conversation (${onlyGroup.turns.length} turns)`
+      : 'Conversation';
+
   return (
     <Box sx={{ px: 1.5, pb: 0.75 }}>
       <Button
@@ -198,25 +203,33 @@ function SessionConversation({ requests, isUnscoped }: { requests: SessionReques
         startIcon={open ? <ExpandMoreIcon fontSize="small" /> : <ChevronRightIcon fontSize="small" />}
         sx={{ textTransform: 'none', fontSize: '0.7rem', color: 'text.secondary', px: 0.5, minWidth: 0 }}
       >
-        {mixed ? `Conversation (latest of ${convRequests.length})` : 'Conversation'}
+        {label}
       </Button>
       <Collapse in={open} unmountOnExit>
         <Box sx={{ mt: 0.5, maxHeight: 500, overflowY: 'auto' }}>
-          {mixed && (
+          {multipleThreads && (
             <Typography
               variant="caption"
               color="text.secondary"
               sx={{ display: 'block', mb: 0.5, fontStyle: 'italic' }}
             >
-              This lane groups {convRequests.length} unrelated LLM requests
-              {providerKinds.length > 1
-                ? ` across ${providerKinds.length} providers (${providerList})`
-                : ` (${providerList})`}
-              . Showing only the most recent ({providerLabel(primary.parsed.kind)}) — expand a request
-              above to view the others.
+              This lane holds {groups.length} separate conversation threads — the request
+              history diverged or mixes unrelated requests. Each is shown below.
             </Typography>
           )}
-          <ConversationByKind parsed={primary.parsed} />
+          {groups.map((group, i) => (
+            <Box key={group.key}>
+              {multipleThreads && (
+                <Typography
+                  variant="overline"
+                  sx={{ display: 'block', fontSize: '0.6rem', color: 'text.secondary', mt: i > 0 ? 1 : 0 }}
+                >
+                  {providerLabel(group.kind)} thread {i + 1}
+                </Typography>
+              )}
+              <GroupedConversationView group={group} />
+            </Box>
+          ))}
         </Box>
       </Collapse>
     </Box>
@@ -425,7 +438,7 @@ function SessionLane({ session, connectionParams }: SessionLaneProps) {
       {/* Session-level conversation transcript (chat-bubble Conversation view,
           same as the Traffic tab). Shown for any session with a detectable LLM
           provider, including unscoped proxy traffic. */}
-      <SessionConversation requests={session.requests} isUnscoped={isUnscoped} />
+      <SessionConversation requests={session.requests} />
 
       {/* "Show Mermaid" link below the Conversation section — opens the
           correlated agent-run call graph (fetched on demand via explain_agent_run)

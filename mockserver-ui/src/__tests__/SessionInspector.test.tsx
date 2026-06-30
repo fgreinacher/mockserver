@@ -18,6 +18,7 @@ function renderInspector() {
 function makeAnthropicRequest(
   key: string,
   agentId?: string,
+  messages: unknown[] = [{ role: 'user', content: 'Hello' }],
 ): JsonListItem {
   const headers: Array<{ name: string; values: string[] }> = [
     { name: 'host', values: ['api.anthropic.com'] },
@@ -36,7 +37,7 @@ function makeAnthropicRequest(
           type: 'JSON',
           json: JSON.stringify({
             model: 'claude-sonnet-4-20250514',
-            messages: [{ role: 'user', content: 'Hello' }],
+            messages,
           }),
         },
       },
@@ -313,11 +314,12 @@ describe('SessionInspector', () => {
 
     // No correlated agent-run graph for the heterogeneous catch-all.
     expect(screen.queryByText('Show graph')).not.toBeInTheDocument();
-    // The Conversation flags that it shows only the most recent of several.
-    const convBtn = screen.getByText(/Conversation \(latest of 2\)/);
+    // Two different providers cannot be a growing prefix of one another, so the
+    // grouping yields two separate conversation threads.
+    const convBtn = screen.getByText(/Conversations \(2\)/);
     await user.click(convBtn);
     expect(
-      screen.getByText(/This lane groups 2 unrelated LLM requests across 2 providers/),
+      screen.getByText(/2 separate conversation threads/),
     ).toBeInTheDocument();
   });
 
@@ -335,20 +337,57 @@ describe('SessionInspector', () => {
     expect(screen.queryByText(/latest of/)).not.toBeInTheDocument();
   });
 
-  it('flags a single-provider unscoped lane that holds multiple unrelated requests', async () => {
+  it('renders two unrelated same-provider requests as separate threads', async () => {
     const user = userEvent.setup();
-    // Two unrelated Anthropic requests, same host, no isolation → one <unscoped> lane.
-    const r1 = makeAnthropicRequest('u1');
-    const r2 = makeAnthropicRequest('u2');
+    // Two unrelated Anthropic requests (different content), same host, no isolation.
+    // Neither is a prefix of the other, so they do NOT collapse into one thread.
+    const r1 = makeAnthropicRequest('u1', undefined, [{ role: 'user', content: 'First question' }]);
+    const r2 = makeAnthropicRequest('u2', undefined, [{ role: 'user', content: 'Totally separate' }]);
     useDashboardStore.setState({ proxiedRequests: [r1, r2], activeExpectations: [] });
 
     renderInspector();
 
-    // Even with one provider, the unscoped lane shows only the latest and says so.
-    const convBtn = screen.getByText(/Conversation \(latest of 2\)/);
+    const convBtn = screen.getByText(/Conversations \(2\)/);
     await user.click(convBtn);
-    expect(
-      screen.getByText(/This lane groups 2 unrelated LLM requests \(Anthropic\)/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/2 separate conversation threads/)).toBeInTheDocument();
+  });
+
+  it('collapses a growing multi-turn conversation into one thread of turn deltas', async () => {
+    const user = userEvent.setup();
+    // A stateless CLI resends the whole history each turn — the message list grows
+    // as a prefix. Three such requests collapse into one growing thread.
+    const turn0 = makeAnthropicRequest('g0', 'agent-A', [
+      { role: 'user', content: 'turn-zero-question' },
+    ]);
+    const turn1 = makeAnthropicRequest('g1', 'agent-A', [
+      { role: 'user', content: 'turn-zero-question' },
+      { role: 'assistant', content: 'reply-zero' },
+      { role: 'user', content: 'turn-one-followup' },
+    ]);
+    const turn2 = makeAnthropicRequest('g2', 'agent-A', [
+      { role: 'user', content: 'turn-zero-question' },
+      { role: 'assistant', content: 'reply-zero' },
+      { role: 'user', content: 'turn-one-followup' },
+      { role: 'assistant', content: 'reply-one' },
+      { role: 'user', content: 'turn-two-followup' },
+    ]);
+    useDashboardStore.setState({
+      proxiedRequests: [turn0, turn1, turn2],
+      activeExpectations: [makeIsolatedExpectation('__llm_conv_chat__iso=header:x-agent-id')],
+    });
+
+    renderInspector();
+
+    // One growing thread, labelled with its turn count (not three full transcripts).
+    const convBtn = screen.getByText(/Conversation \(3 turns\)/);
+    await user.click(convBtn);
+
+    // The grouped growing-thread view is rendered (not a single flat transcript).
+    expect(screen.getByTestId('grouped-conversation')).toBeInTheDocument();
+    // Each turn's NEW content is shown exactly once — the later follow-ups appear,
+    // and the initial question is not repeated for every turn.
+    expect(screen.getByText('turn-one-followup')).toBeInTheDocument();
+    expect(screen.getByText('turn-two-followup')).toBeInTheDocument();
+    expect(screen.getAllByText('turn-zero-question')).toHaveLength(1);
   });
 });

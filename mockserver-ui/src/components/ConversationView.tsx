@@ -18,6 +18,8 @@ import type {
   GeminiParsed,
   OllamaParsed,
   OpenAiResponsesParsed,
+  ParsedTraffic,
+  ConversationGroup,
 } from '../lib/llmTraffic';
 
 // ---------------------------------------------------------------------------
@@ -1080,6 +1082,183 @@ export function OpenAiResponsesConversationView({ parsed, rawResponseBody }: { p
           No conversation content
         </Typography>
       )}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Grouped (growing-conversation) view
+//
+// A stateless coding-assistant CLI resends its whole growing history every turn.
+// `groupConversationTurns` (llmTraffic.ts) collapses such a run into ONE group
+// whose turns each carry only the NEW messages they added. This view renders the
+// group as a single thread that GROWS — each turn contributes only its delta, not
+// the whole replayed history — reusing the per-provider Conversation views above.
+//
+// Trick: for each turn we synthesise a parsed object whose request-message array
+// is just that turn's delta, and we keep the assistant response / model / token
+// metadata only on the LAST turn (every earlier turn's response reappears as a
+// message in the next turn's delta, so showing it again would duplicate it).
+// ---------------------------------------------------------------------------
+
+/** The subset of ParsedTraffic kinds that carry a renderable conversation. */
+type ConversationParsed =
+  | AnthropicParsed
+  | OpenAiParsed
+  | OpenAiResponsesParsed
+  | GeminiParsed
+  | OllamaParsed;
+
+function isConversationParsed(parsed: ParsedTraffic): parsed is ConversationParsed {
+  return (
+    parsed.kind === 'anthropic' ||
+    parsed.kind === 'openai' ||
+    parsed.kind === 'openai_responses' ||
+    parsed.kind === 'gemini' ||
+    parsed.kind === 'ollama'
+  );
+}
+
+/**
+ * Build a per-turn parsed object: the request-message array is replaced with this
+ * turn's delta; response/model/token metadata is retained only on the last turn
+ * and the system prompt only on the first. SSE events are dropped (already
+ * reassembled into the response on the last turn).
+ */
+function turnParsed(
+  parsed: ConversationParsed,
+  delta: unknown[],
+  isFirst: boolean,
+  isLast: boolean,
+): ConversationParsed {
+  const model = isLast ? parsed.model : null;
+  const streamed = isLast ? parsed.streamed : false;
+  const streamTruncated = isLast ? parsed.streamTruncated : false;
+  switch (parsed.kind) {
+    case 'anthropic':
+      return {
+        ...parsed,
+        messages: delta,
+        system: isFirst ? parsed.system : null,
+        model,
+        responseContent: isLast ? parsed.responseContent : [],
+        usage: isLast ? parsed.usage : null,
+        stopReason: isLast ? parsed.stopReason : null,
+        sseEvents: null,
+        streamed,
+        streamTruncated,
+      };
+    case 'openai':
+      return {
+        ...parsed,
+        messages: delta,
+        model,
+        choices: isLast ? parsed.choices : [],
+        usage: isLast ? parsed.usage : null,
+        sseEvents: null,
+        streamed,
+        streamTruncated,
+      };
+    case 'openai_responses':
+      return {
+        ...parsed,
+        input: delta,
+        model,
+        output: isLast ? parsed.output : [],
+        usage: isLast ? parsed.usage : null,
+        sseEvents: null,
+        streamed,
+        streamTruncated,
+      };
+    case 'gemini':
+      return {
+        ...parsed,
+        contents: delta,
+        model,
+        candidates: isLast ? parsed.candidates : [],
+        usage: isLast ? parsed.usage : null,
+        sseEvents: null,
+        streamed,
+        streamTruncated,
+      };
+    case 'ollama':
+      return {
+        ...parsed,
+        messages: delta,
+        model,
+        responseMessage: isLast ? parsed.responseMessage : null,
+        usage: isLast ? parsed.usage : null,
+        sseEvents: null,
+        streamed,
+        streamTruncated,
+      };
+  }
+}
+
+function renderConversationByKind(parsed: ConversationParsed) {
+  switch (parsed.kind) {
+    case 'anthropic':
+      return <AnthropicConversationView parsed={parsed} />;
+    case 'openai':
+      return <OpenAiConversationView parsed={parsed} />;
+    case 'openai_responses':
+      return <OpenAiResponsesConversationView parsed={parsed} />;
+    case 'gemini':
+      return <GeminiConversationView parsed={parsed} />;
+    case 'ollama':
+      return <OllamaConversationView parsed={parsed} />;
+  }
+}
+
+/** A labelled divider between turns in the growing thread. */
+function TurnDivider({ label }: { label: string }) {
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, my: 0.75 }}>
+      <Divider sx={{ flex: 1 }} />
+      <Chip
+        label={label}
+        size="small"
+        variant="outlined"
+        color="primary"
+        sx={{ height: 18, fontSize: '0.6rem', fontWeight: 600 }}
+      />
+      <Divider sx={{ flex: 1 }} />
+    </Box>
+  );
+}
+
+/**
+ * Render one grouped conversation as a single growing thread. A single-turn group
+ * renders exactly as the underlying per-provider Conversation view does today; a
+ * multi-turn group shows each turn's delta under a "Turn N" divider.
+ */
+export function GroupedConversationView<T>({ group }: { group: ConversationGroup<T> }) {
+  const { turns } = group;
+  if (turns.length === 0) return null;
+
+  // A single-turn group is just the one request — render it unchanged.
+  if (turns.length === 1) {
+    const only = turns[0]!.parsed;
+    return isConversationParsed(only) ? renderConversationByKind(only) : null;
+  }
+
+  return (
+    <Box data-testid="grouped-conversation" sx={{ display: 'flex', flexDirection: 'column' }}>
+      {turns.map((turn, i) => {
+        const isFirst = i === 0;
+        const isLast = i === turns.length - 1;
+        // An exact duplicate resend adds nothing new — skip it unless it carries
+        // the final response (the last turn always renders so the reply shows).
+        if (turn.newMessages.length === 0 && !isLast) return null;
+        if (!isConversationParsed(turn.parsed)) return null;
+        const synthesized = turnParsed(turn.parsed, turn.newMessages, isFirst, isLast);
+        return (
+          <Box key={i}>
+            <TurnDivider label={isLast ? `Turn ${i + 1} · response` : `Turn ${i + 1}`} />
+            {renderConversationByKind(synthesized)}
+          </Box>
+        );
+      })}
     </Box>
   );
 }

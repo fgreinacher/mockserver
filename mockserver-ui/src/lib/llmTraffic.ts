@@ -1600,3 +1600,198 @@ export function aggregateMcpServerHealth(
 
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// Growing-conversation grouping
+//
+// A stateless coding-assistant CLI (e.g. opencode → OpenAI Codex) resends its
+// ENTIRE growing conversation on every turn: 10 consecutive requests to the same
+// endpoint each carry a message list that is a growing SUPERSET of the previous
+// one. Rendered one-per-request that reads as endless near-duplicate history.
+//
+// `groupConversationTurns` is a PURE, provider-agnostic, deterministic walk that
+// collapses a run of consecutive entries into ONE conversation whenever each
+// entry's request-message list is a prefix (leading subset) of the next entry's.
+// Within a group, each turn exposes only the NEW messages it added (the delta
+// beyond the previous turn); the final assistant response is carried on the last
+// turn's `parsed`. Entries that are not part of a growing run stay as their own
+// single-turn group. Grouping is non-destructive: every turn keeps its original
+// `parsed` and opaque `data` payload, so the raw per-request data stays reachable.
+// ---------------------------------------------------------------------------
+
+/** Provider kinds that carry a request-side conversation message list. */
+const CONVERSATION_KINDS: ReadonlySet<ParsedTraffic['kind']> = new Set([
+  'anthropic',
+  'openai',
+  'openai_responses',
+  'gemini',
+  'ollama',
+]);
+
+/**
+ * The ordered request-side message list for a parsed entry, or null when the
+ * kind has no conversation history (mcp / generic). Each provider stores the
+ * growing history under a different field; this normalises them to one array of
+ * raw provider message objects without altering their shape.
+ */
+function conversationMessageList(parsed: ParsedTraffic): unknown[] | null {
+  switch (parsed.kind) {
+    case 'anthropic':
+    case 'openai':
+    case 'ollama':
+      return parsed.messages;
+    case 'openai_responses':
+      return parsed.input;
+    case 'gemini':
+      return parsed.contents;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Stable text signature of a single message, used only for the prefix
+ * comparison. The CLI resends byte-identical history, so JSON.stringify yields
+ * identical strings for unchanged leading messages. Total — never throws.
+ */
+function messageSignature(message: unknown): string {
+  try {
+    const json = JSON.stringify(message);
+    return json === undefined ? ` ${String(message)}` : json;
+  } catch {
+    return ` ${String(message)}`;
+  }
+}
+
+/**
+ * True when `prev` is a leading prefix of `next` (equality allowed, so an exact
+ * resend still counts as the same conversation). A single differing or missing
+ * leading message means the histories diverged (edited history) — not a prefix.
+ */
+function isSignaturePrefix(prev: readonly string[], next: readonly string[]): boolean {
+  if (prev.length > next.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    if (prev[i] !== next[i]) return false;
+  }
+  return true;
+}
+
+/** One entry to be grouped: its parsed traffic, upstream host, and an opaque payload. */
+export interface ConversationEntryInput<T> {
+  parsed: ParsedTraffic;
+  /** Upstream host (from the Host header). Two different hosts never group together. */
+  host: string | null;
+  /** Opaque per-entry payload returned untouched on the resulting turn (e.g. the request item). */
+  data: T;
+}
+
+/** One turn within a grouped conversation. */
+export interface ConversationTurn<T> {
+  /** 0-based position of this turn within its group. */
+  turnIndex: number;
+  parsed: ParsedTraffic;
+  data: T;
+  /**
+   * The messages this turn added relative to the previous turn (the full initial
+   * history for turn 0). Raw provider message objects, in order. Empty when a
+   * turn re-sent an identical history (an exact duplicate resend).
+   */
+  newMessages: unknown[];
+}
+
+/** A run of consecutive entries that form one growing conversation (or a lone entry). */
+export interface ConversationGroup<T> {
+  /** Stable, unique key for React lists (deterministic given input order). */
+  key: string;
+  host: string | null;
+  kind: ParsedTraffic['kind'];
+  /** The opaque payloads of every entry in this group, in order. */
+  entries: T[];
+  turns: ConversationTurn<T>[];
+  /** True when the group collapses more than one entry into a single thread. */
+  collapsed: boolean;
+}
+
+/**
+ * Group a chronological (oldest-first) list of LLM entries into growing
+ * conversation threads. See the section comment above for the collapse rule.
+ *
+ * Conservative by construction: a group only extends while the next entry's
+ * request-message list is a genuine prefix-extension of the current one AND the
+ * provider kind and host match. Any divergence starts a fresh group, so
+ * unrelated or edited-history requests are never merged. Non-conversation
+ * traffic (mcp / generic) is always its own single-turn group.
+ */
+export function groupConversationTurns<T>(
+  entries: ReadonlyArray<ConversationEntryInput<T>>,
+): ConversationGroup<T>[] {
+  const groups: ConversationGroup<T>[] = [];
+  let counter = 0;
+
+  // Build state for the group currently being extended.
+  let current:
+    | { group: ConversationGroup<T>; lastSignatures: string[]; lastLength: number }
+    | null = null;
+
+  const flush = () => {
+    if (current) {
+      current.group.collapsed = current.group.turns.length > 1;
+      groups.push(current.group);
+      current = null;
+    }
+  };
+
+  for (const entry of entries) {
+    const messages = conversationMessageList(entry.parsed);
+
+    // Non-conversation traffic never groups — always a standalone single-turn group.
+    if (messages === null) {
+      flush();
+      groups.push({
+        key: `${entry.parsed.kind}:${counter++}`,
+        host: entry.host,
+        kind: entry.parsed.kind,
+        entries: [entry.data],
+        turns: [{ turnIndex: 0, parsed: entry.parsed, data: entry.data, newMessages: [] }],
+        collapsed: false,
+      });
+      continue;
+    }
+
+    const signatures = messages.map(messageSignature);
+    const canExtend =
+      current !== null &&
+      current.group.kind === entry.parsed.kind &&
+      current.group.host === entry.host &&
+      isSignaturePrefix(current.lastSignatures, signatures);
+
+    if (canExtend && current) {
+      current.group.turns.push({
+        turnIndex: current.group.turns.length,
+        parsed: entry.parsed,
+        data: entry.data,
+        newMessages: messages.slice(current.lastLength),
+      });
+      current.group.entries.push(entry.data);
+      current.lastSignatures = signatures;
+      current.lastLength = messages.length;
+    } else {
+      flush();
+      const group: ConversationGroup<T> = {
+        key: `${entry.parsed.kind}:${counter++}`,
+        host: entry.host,
+        kind: entry.parsed.kind,
+        entries: [entry.data],
+        // Turn 0's delta is the full initial history.
+        turns: [{ turnIndex: 0, parsed: entry.parsed, data: entry.data, newMessages: messages }],
+        collapsed: false,
+      };
+      current = { group, lastSignatures: signatures, lastLength: messages.length };
+    }
+  }
+
+  flush();
+  return groups;
+}
+
+export { CONVERSATION_KINDS };

@@ -220,6 +220,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Trace view is now reachable from the AI menu as well as Observe.** Trace groups related requests —
   including LLM agent runs — so it is now listed under AI alongside LLM Optimise, while remaining under Observe,
   making it easier to find when debugging multi-step AI flows.
+- **The Trace view collapses a multi-turn LLM conversation into one growing thread.** A stateless coding-assistant
+  CLI (e.g. the OpenAI Codex backend used by `opencode`) resends its entire growing conversation/reasoning context
+  on every turn, so consecutive recorded requests each "contained everything so far" and the view read as endless
+  duplicates. Consecutive requests whose message history is a growing prefix of the next (same provider and host)
+  now render as a single conversation showing each turn's *new* content, instead of N full-history blobs. Grouping
+  is conservative (edited history, a different provider, or a different host never merge) and non-destructive — the
+  raw per-request data is still reachable.
 - **Expectation matching scales to large expectation sets.** A candidate index buckets literal
   `(method, exact-path)` expectations so a request evaluates only plausible candidates instead of scanning
   every expectation; non-literal matchers (regex/notted/optional/schema/path-param) are always checked, so
