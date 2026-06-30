@@ -131,6 +131,7 @@ fi
 
 # --- start MockServer (default built-in CA so NODE_EXTRA_CA_CERTS=repo CA is trusted) ---
 MOCKSERVER_LOG="$UI_DIR/mockserver-capture.log"
+HEAP_DUMP="$UI_DIR/mockserver-capture-heap.hprof"
 DEMO_MAX_HEAP="${CAPTURE_MAX_HEAP:-1g}"
 DEMO_MAX_LOG_ENTRIES="${CAPTURE_MAX_LOG_ENTRIES:-5000}"
 echo "→ Starting MockServer (proxy) on port $MOCKSERVER_PORT (max heap: $DEMO_MAX_HEAP, log: $MOCKSERVER_LOG)..."
@@ -146,7 +147,13 @@ echo "→ Starting MockServer (proxy) on port $MOCKSERVER_PORT (max heap: $DEMO_
 # MockServer-side lever for these timeouts — the first-token latency itself is the model's compute time,
 # and if a CLI's own request/header timeout is shorter than the upstream first token it must be raised
 # CLI-side.)
+# Crash diagnostics: all stdout+stderr go to $MOCKSERVER_LOG. HeapDumpOnOutOfMemoryError +
+# ExitOnOutOfMemoryError turn a Java heap exhaustion into a captured .hprof and a clean exit with an
+# OutOfMemoryError in the log — so if the process dies you can distinguish a real OOM (OutOfMemoryError in
+# the log + a heap dump at $HEAP_DUMP) from an EXTERNAL kill (process gone, NO Java error in the log — e.g.
+# another tool/session SIGKILLing it, or the OS OOM-killer; check `dmesg` on Linux).
 java -Xmx"$DEMO_MAX_HEAP" -Dmockserver.maxLogEntries="$DEMO_MAX_LOG_ENTRIES" \
+     -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath="$HEAP_DUMP" -XX:+ExitOnOutOfMemoryError \
      -Dmockserver.metricsEnabled=true -Dmockserver.wasmEnabled=true \
      -Dmockserver.forwardProxyHttp2Upgrade=true \
      -Dmockserver.maxSocketTimeoutInMillis=120000 \

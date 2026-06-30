@@ -12,10 +12,14 @@ Point a coding-assistant CLI at MockServer running as an HTTPS proxy and MockSer
 #    streaming SSE backend that streams its head over HTTP/2 sends it immediately. maxSocketTimeoutInMillis
 #    raises the FIRST-byte wait from the 20s default to 120s: a reasoning model can take ~20s to emit its
 #    first token on a big prompt, and the 20s default 502s those slow-but-healthy streaming heads.
+#    The redirect + heap-dump flags make any process death diagnosable: a real Java OOM leaves an
+#    OutOfMemoryError in mockserver.log AND a heap dump; if the process just vanishes with neither, it was
+#    killed externally (another tool/session, or the OS OOM-killer — check `dmesg` on Linux).
 java -Dmockserver.forwardProxyHttp2Upgrade=true \
      -Dmockserver.maxSocketTimeoutInMillis=120000 \
+     -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=mockserver-heap.hprof -XX:+ExitOnOutOfMemoryError \
      -jar mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar \
-     -serverPort 1080 -logLevel INFO
+     -serverPort 1080 -logLevel INFO > mockserver.log 2>&1
 
 # 2. run the smoke test — it drives whichever CLIs are installed + authed, then asserts capture
 scripts/llm-proxy-capture/capture-smoke.sh
