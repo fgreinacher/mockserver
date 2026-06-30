@@ -560,6 +560,184 @@ curl_close($ch);</code></pre>{% endraw %}
     <li><strong>Test proxy/load balancer failover:</strong> simulate a backend disappearing mid-request to verify failover behaviour</li>
 </ul>
 
+<button id="button_chaos_connection_drop" class="accordion">drop ~50% of connections without a response</button>
+<div class="panel">
+    <p>Close the TCP connection without sending any response on approximately 50% of matched requests, simulating a hard network failure or connection reset. Connection drops take priority over error and latency injection.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/api/service")
+    )
+    .withChaos(
+        httpChaosProfile()
+            .withDropConnectionProbability(0.5)
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("{\"status\":\"ok\"}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "dropConnectionProbability": 0.5
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, HttpRequest, HttpResponse, HttpChaosProfile
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest.request("/api/service")
+).with_chaos(
+    HttpChaosProfile(drop_connection_probability=0.5)
+).respond(
+    HttpResponse.response('{"status":"ok"}', status_code=200)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.request(path: '/api/service')
+).with_chaos(
+    MockServer::HttpChaosProfile.new(drop_connection_probability: 0.5)
+).respond(
+    MockServer::HttpResponse.response(body: '{"status":"ok"}', status_code: 200)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "dropConnectionProbability": 0.5
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/api/service""
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""status\"":\""ok\""}""
+    },
+    ""chaos"": {
+        ""dropConnectionProbability"": 0.5
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "dropConnectionProbability": 0.5
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        {% raw %}<pre class="prettyprint lang-php code"><code class="code">// chaos profiles are not supported in the PHP client;
+// use the REST API directly
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
+    CURLOPT_POSTFIELDS =&gt; json_encode([[
+        'httpRequest' =&gt; ['path' =&gt; '/api/service'],
+        'httpResponse' =&gt; ['statusCode' =&gt; 200, 'body' =&gt; '{"status":"ok"}'],
+        'chaos' =&gt; [
+            'dropConnectionProbability' =&gt; 0.5,
+        ],
+    ]]),
+    CURLOPT_RETURNTRANSFER =&gt; true,
+    CURLOPT_HTTPHEADER =&gt; ['Content-Type: application/json; charset=utf-8'],
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>{% endraw %}
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "dropConnectionProbability": 0.5
+    }
+}'</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 <a id="error_injection" class="anchor" href="#error_injection">&nbsp;</a>
 
 <h2>Error Injection</h2>
@@ -1003,6 +1181,191 @@ curl_close($ch);</code></pre>{% endraw %}
     <li><strong>Test a flaky upstream in proxy mode:</strong> attach body corruption to a forward action to see how your application copes with a dependency returning damaged payloads.</li>
 </ul>
 
+<button id="button_chaos_body_corruption" class="accordion">truncate and malform the response body</button>
+<div class="panel">
+    <p>Corrupt the response body on every matched request: keep only the first half of the bytes (<code class="inline code">truncateBodyAtFraction: 0.5</code>) then append a broken-JSON fragment (<code class="inline code">malformedBody: true</code>). Body corruption is deterministic — no probability draw — and tests how robustly your client parses a partial / garbled payload.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/api/service")
+    )
+    .withChaos(
+        httpChaosProfile()
+            .withTruncateBodyAtFraction(0.5)
+            .withMalformedBody(true)
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("{\"status\":\"ok\",\"items\":[1,2,3,4]}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\",\"items\":[1,2,3,4]}"
+    },
+    "chaos": {
+        "truncateBodyAtFraction": 0.5,
+        "malformedBody": true
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, HttpRequest, HttpResponse, HttpChaosProfile
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest.request("/api/service")
+).with_chaos(
+    HttpChaosProfile(truncate_body_at_fraction=0.5, malformed_body=True)
+).respond(
+    HttpResponse.response('{"status":"ok","items":[1,2,3,4]}', status_code=200)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.request(path: '/api/service')
+).with_chaos(
+    MockServer::HttpChaosProfile.new(truncate_body_at_fraction: 0.5, malformed_body: true)
+).respond(
+    MockServer::HttpResponse.response(body: '{"status":"ok","items":[1,2,3,4]}', status_code: 200)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\",\"items\":[1,2,3,4]}"
+    },
+    "chaos": {
+        "truncateBodyAtFraction": 0.5,
+        "malformedBody": true
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/api/service""
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""status\"":\""ok\"",\""items\"":[1,2,3,4]}""
+    },
+    ""chaos"": {
+        ""truncateBodyAtFraction"": 0.5,
+        ""malformedBody"": true
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\",\"items\":[1,2,3,4]}"
+    },
+    "chaos": {
+        "truncateBodyAtFraction": 0.5,
+        "malformedBody": true
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        {% raw %}<pre class="prettyprint lang-php code"><code class="code">// chaos profiles are not supported in the PHP client;
+// use the REST API directly
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
+    CURLOPT_POSTFIELDS =&gt; json_encode([[
+        'httpRequest' =&gt; ['path' =&gt; '/api/service'],
+        'httpResponse' =&gt; ['statusCode' =&gt; 200, 'body' =&gt; '{"status":"ok","items":[1,2,3,4]}'],
+        'chaos' =&gt; [
+            'truncateBodyAtFraction' =&gt; 0.5,
+            'malformedBody' =&gt; true,
+        ],
+    ]]),
+    CURLOPT_RETURNTRANSFER =&gt; true,
+    CURLOPT_HTTPHEADER =&gt; ['Content-Type: application/json; charset=utf-8'],
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>{% endraw %}
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\",\"items\":[1,2,3,4]}"
+    },
+    "chaos": {
+        "truncateBodyAtFraction": 0.5,
+        "malformedBody": true
+    }
+}'</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 <a id="graphql_error_injection" class="anchor" href="#graphql_error_injection">&nbsp;</a>
 
 <h2>GraphQL Error Injection</h2>
@@ -1062,6 +1425,214 @@ PUT /mockserver/serviceChaos
     <li><strong>Test read timeouts:</strong> dribble a body in 1-byte chunks with a 1-second delay and verify your client's socket read timeout fires.</li>
     <li><strong>Test slow-network handling:</strong> trickle a large payload to verify progress indicators and partial-read handling.</li>
 </ul>
+
+<button id="button_chaos_slow_response" class="accordion">dribble the response body one byte per second</button>
+<div class="panel">
+    <p>Trickle the response body to the client one byte at a time with a one-second delay between chunks, instead of sending it all at once. Both <code class="inline code">slowResponseChunkSize</code> (bytes per chunk) <em>and</em> <code class="inline code">slowResponseChunkDelay</code> (the delay between chunks) are required for the slow response to take effect. Useful for exercising read timeouts.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/api/service")
+    )
+    .withChaos(
+        httpChaosProfile()
+            .withSlowResponseChunkSize(1)
+            .withSlowResponseChunkDelay(
+                new Delay(TimeUnit.MILLISECONDS, 1000)
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("{\"status\":\"ok\"}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "slowResponseChunkSize": 1,
+        "slowResponseChunkDelay": {
+            "timeUnit": "MILLISECONDS",
+            "value": 1000
+        }
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, HttpRequest, HttpResponse, HttpChaosProfile, Delay
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest.request("/api/service")
+).with_chaos(
+    HttpChaosProfile(
+        slow_response_chunk_size=1,
+        slow_response_chunk_delay=Delay(time_unit="MILLISECONDS", value=1000)
+    )
+).respond(
+    HttpResponse.response('{"status":"ok"}', status_code=200)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.request(path: '/api/service')
+).with_chaos(
+    MockServer::HttpChaosProfile.new(
+        slow_response_chunk_size: 1,
+        slow_response_chunk_delay: MockServer::Delay.new(time_unit: 'MILLISECONDS', value: 1000)
+    )
+).respond(
+    MockServer::HttpResponse.response(body: '{"status":"ok"}', status_code: 200)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "slowResponseChunkSize": 1,
+        "slowResponseChunkDelay": {
+            "timeUnit": "MILLISECONDS",
+            "value": 1000
+        }
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/api/service""
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""status\"":\""ok\""}""
+    },
+    ""chaos"": {
+        ""slowResponseChunkSize"": 1,
+        ""slowResponseChunkDelay"": {
+            ""timeUnit"": ""MILLISECONDS"",
+            ""value"": 1000
+        }
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "slowResponseChunkSize": 1,
+        "slowResponseChunkDelay": {
+            "timeUnit": "MILLISECONDS",
+            "value": 1000
+        }
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        {% raw %}<pre class="prettyprint lang-php code"><code class="code">// chaos profiles are not supported in the PHP client;
+// use the REST API directly
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
+    CURLOPT_POSTFIELDS =&gt; json_encode([[
+        'httpRequest' =&gt; ['path' =&gt; '/api/service'],
+        'httpResponse' =&gt; ['statusCode' =&gt; 200, 'body' =&gt; '{"status":"ok"}'],
+        'chaos' =&gt; [
+            'slowResponseChunkSize' =&gt; 1,
+            'slowResponseChunkDelay' =&gt; ['timeUnit' =&gt; 'MILLISECONDS', 'value' =&gt; 1000],
+        ],
+    ]]),
+    CURLOPT_RETURNTRANSFER =&gt; true,
+    CURLOPT_HTTPHEADER =&gt; ['Content-Type: application/json; charset=utf-8'],
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>{% endraw %}
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "slowResponseChunkSize": 1,
+        "slowResponseChunkDelay": {
+            "timeUnit": "MILLISECONDS",
+            "value": 1000
+        }
+    }
+}'</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <a id="request_quota" class="anchor" href="#request_quota">&nbsp;</a>
 
@@ -1337,6 +1908,198 @@ PATCH /mockserver/serviceChaos
 
 <p><strong>How it works:</strong> set <code class="inline code">degradationRampMillis</code>. The probabilistic fault rates — <code class="inline code">errorProbability</code> and <code class="inline code">dropConnectionProbability</code> — are scaled by a factor that climbs linearly from <code class="inline code">0.0</code> at the expectation's first matched request to <code class="inline code">1.0</code> once the ramp duration has elapsed, then stays at full strength. So an expectation with <code class="inline code">errorProbability: 1.0</code> and <code class="inline code">degradationRampMillis: 600000</code> injects no errors at first, ~50% of requests at the 5-minute mark, and 100% after 10 minutes. The ramp is measured with MockServer's controllable clock, so it is deterministic under clock freeze/advance (<code class="inline code">PUT /mockserver/clock</code>) with no real-time waiting. Only the probabilistic rates ramp — the deterministic faults (latency, body corruption, slow response, quota) are unaffected.</p>
 
+<button id="button_chaos_gradual_degradation" class="accordion">ramp the error rate up to 100% over 10 minutes</button>
+<div class="panel">
+    <p>Model a dependency that deteriorates over time: with <code class="inline code">errorProbability: 1.0</code> and <code class="inline code">degradationRampMillis: 600000</code>, no errors are injected at first, ~50% of requests fail at the 5-minute mark, and 100% fail after 10 minutes. The ramp is measured with MockServer's controllable clock, so it is deterministic under clock freeze/advance.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/api/service")
+    )
+    .withChaos(
+        httpChaosProfile()
+            .withErrorStatus(503)
+            .withErrorProbability(1.0)
+            .withDegradationRampMillis(600000L)
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("{\"status\":\"ok\"}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 1.0,
+        "degradationRampMillis": 600000
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, HttpRequest, HttpResponse, HttpChaosProfile
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest.request("/api/service")
+).with_chaos(
+    HttpChaosProfile(error_status=503, error_probability=1.0, degradation_ramp_millis=600000)
+).respond(
+    HttpResponse.response('{"status":"ok"}', status_code=200)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.request(path: '/api/service')
+).with_chaos(
+    MockServer::HttpChaosProfile.new(error_status: 503, error_probability: 1.0, degradation_ramp_millis: 600000)
+).respond(
+    MockServer::HttpResponse.response(body: '{"status":"ok"}', status_code: 200)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 1.0,
+        "degradationRampMillis": 600000
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/api/service""
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""status\"":\""ok\""}""
+    },
+    ""chaos"": {
+        ""errorStatus"": 503,
+        ""errorProbability"": 1.0,
+        ""degradationRampMillis"": 600000
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 1.0,
+        "degradationRampMillis": 600000
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        {% raw %}<pre class="prettyprint lang-php code"><code class="code">// chaos profiles are not supported in the PHP client;
+// use the REST API directly
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
+    CURLOPT_POSTFIELDS =&gt; json_encode([[
+        'httpRequest' =&gt; ['path' =&gt; '/api/service'],
+        'httpResponse' =&gt; ['statusCode' =&gt; 200, 'body' =&gt; '{"status":"ok"}'],
+        'chaos' =&gt; [
+            'errorStatus' =&gt; 503,
+            'errorProbability' =&gt; 1.0,
+            'degradationRampMillis' =&gt; 600000,
+        ],
+    ]]),
+    CURLOPT_RETURNTRANSFER =&gt; true,
+    CURLOPT_HTTPHEADER =&gt; ['Content-Type: application/json; charset=utf-8'],
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>{% endraw %}
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/api/service"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"status\":\"ok\"}"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 1.0,
+        "degradationRampMillis": 600000
+    }
+}'</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 <a id="reproducibility" class="anchor" href="#reproducibility">&nbsp;</a>
 
 <h2>Reproducibility with Seed</h2>
@@ -1609,26 +2372,237 @@ curl_close($ch);</code></pre>{% endraw %}
 
 <p>The most common "misbehaving upstream" pattern: match everything, forward to the real backend, and degrade every response. Register a single catch-all expectation:</p>
 
-<pre class="prettyprint code"><code class="code">PUT /mockserver/expectation
-{
-  "httpRequest": {},
-  "httpForward": {
-    "host": "payments.example.com",
-    "port": 443,
-    "scheme": "HTTPS"
-  },
-  "chaos": {
-    "errorStatus": 503,
-    "errorProbability": 0.3,
-    "latency": {
-      "timeUnit": "MILLISECONDS",
-      "value": 500
+<button id="button_chaos_catch_all" class="accordion">catch-all forward expectation with chaos</button>
+<div class="panel">
+    <p>Match <em>all</em> requests, forward each to the real backend, and degrade every response — a 503 error on 30% of responses plus 500 ms latency on every response. This turns MockServer into a misbehaving upstream for <code class="inline code">payments.example.com</code> without any application code change.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+    )
+    .withChaos(
+        httpChaosProfile()
+            .withErrorStatus(503)
+            .withErrorProbability(0.3)
+            .withLatency(
+                new Delay(TimeUnit.MILLISECONDS, 500)
+            )
+    )
+    .forward(
+        forward()
+            .withHost("payments.example.com")
+            .withPort(443)
+            .withScheme(HttpForward.Scheme.HTTPS)
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {},
+    "httpForward": {
+        "host": "payments.example.com",
+        "port": 443,
+        "scheme": "HTTPS"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 0.3,
+        "latency": {
+            "timeUnit": "MILLISECONDS",
+            "value": 500
+        }
+    },
+    "times": {
+        "unlimited": true
     }
-  },
-  "times": {
-    "unlimited": true
-  }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, HttpRequest, HttpChaosProfile, HttpForward, Delay
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest.request()
+).with_chaos(
+    HttpChaosProfile(
+        error_status=503,
+        error_probability=0.3,
+        latency=Delay(time_unit="MILLISECONDS", value=500)
+    )
+).forward(
+    HttpForward(host="payments.example.com", port=443, scheme="HTTPS")
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.request
+).with_chaos(
+    MockServer::HttpChaosProfile.new(
+        error_status: 503,
+        error_probability: 0.3,
+        latency: MockServer::Delay.new(time_unit: 'MILLISECONDS', value: 500)
+    )
+).forward(
+    MockServer::HttpForward.new(host: 'payments.example.com', port: 443, scheme: 'HTTPS')
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {},
+    "httpForward": {
+        "host": "payments.example.com",
+        "port": 443,
+        "scheme": "HTTPS"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 0.3,
+        "latency": {
+            "timeUnit": "MILLISECONDS",
+            "value": 500
+        }
+    },
+    "times": {
+        "unlimited": true
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {},
+    ""httpForward"": {
+        ""host"": ""payments.example.com"",
+        ""port"": 443,
+        ""scheme"": ""HTTPS""
+    },
+    ""chaos"": {
+        ""errorStatus"": 503,
+        ""errorProbability"": 0.3,
+        ""latency"": {
+            ""timeUnit"": ""MILLISECONDS"",
+            ""value"": 500
+        }
+    },
+    ""times"": {
+        ""unlimited"": true
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {},
+    "httpForward": {
+        "host": "payments.example.com",
+        "port": 443,
+        "scheme": "HTTPS"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 0.3,
+        "latency": {
+            "timeUnit": "MILLISECONDS",
+            "value": 500
+        }
+    },
+    "times": {
+        "unlimited": true
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        {% raw %}<pre class="prettyprint lang-php code"><code class="code">// chaos profiles are not supported in the PHP client;
+// use the REST API directly
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
+    CURLOPT_POSTFIELDS =&gt; json_encode([[
+        'httpRequest' =&gt; new stdClass(),
+        'httpForward' =&gt; [
+            'host' =&gt; 'payments.example.com',
+            'port' =&gt; 443,
+            'scheme' =&gt; 'HTTPS',
+        ],
+        'chaos' =&gt; [
+            'errorStatus' =&gt; 503,
+            'errorProbability' =&gt; 0.3,
+            'latency' =&gt; ['timeUnit' =&gt; 'MILLISECONDS', 'value' =&gt; 500],
+        ],
+        'times' =&gt; ['unlimited' =&gt; true],
+    ]]),
+    CURLOPT_RETURNTRANSFER =&gt; true,
+    CURLOPT_HTTPHEADER =&gt; ['Content-Type: application/json; charset=utf-8'],
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>{% endraw %}
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {},
+    "httpForward": {
+        "host": "payments.example.com",
+        "port": 443,
+        "scheme": "HTTPS"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 0.3,
+        "latency": {
+            "timeUnit": "MILLISECONDS",
+            "value": 500
+        }
+    },
+    "times": {
+        "unlimited": true
+    }
+}'</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <p>This expectation matches <em>all</em> requests, forwards each one to <code class="inline code">payments.example.com:443</code>, and — before returning the response to the caller — injects a 503 error on 30% of responses and adds 500 ms latency to every response. Your application connects to MockServer; MockServer connects to the real backend. No application code changes are required.</p>
 
