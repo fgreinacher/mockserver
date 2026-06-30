@@ -85,7 +85,7 @@ export default function OidcDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth fullScreen={fullScreen} aria-labelledby="oidc-dialog-title">
-      <DialogTitle id="oidc-dialog-title">Mock OIDC provider</DialogTitle>
+      <DialogTitle id="oidc-dialog-title">Mock OIDC Provider</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Register a mock OIDC/OAuth2 provider — discovery document, JWKS, and token / userinfo /

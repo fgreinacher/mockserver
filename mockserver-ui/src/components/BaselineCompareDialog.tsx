@@ -81,7 +81,7 @@ export default function BaselineCompareDialog({ open, onClose, connectionParams 
 
   return (
     <Dialog open={open} onClose={handleClose} fullScreen={fullScreen} maxWidth="md" fullWidth>
-      <DialogTitle>Compare against baseline</DialogTitle>
+      <DialogTitle>Compare Against Baseline</DialogTitle>
       <DialogContent dividers>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Paste a known-good <strong>baseline</strong> array of expectations to
@@ -130,7 +130,7 @@ export default function BaselineCompareDialog({ open, onClose, connectionParams 
               <Chip size="small" label={`${report.changed.length} changed`} variant="outlined" />
             </Box>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-              Diff report
+              Diff Report
             </Typography>
             <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1, maxHeight: 360, overflow: 'auto' }}>
               <JsonViewer data={report as unknown as Record<string, unknown>} collapsed={2} />

@@ -590,7 +590,7 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
           {/* Registration form */}
           <Paper variant="outlined" sx={{ p: 1.5, mb: 1.5 }}>
             <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
-              Register a new breakpoint matcher
+              Register a New Breakpoint Matcher
             </Typography>
             <Box sx={{ display: 'flex', gap: 1, mb: 1, flexWrap: 'wrap' }}>
               <TextField
@@ -681,7 +681,7 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
-              Registered matchers ({matchers.length})
+              Registered Matchers ({matchers.length})
             </Typography>
             <Box sx={{ flex: 1 }} />
             <Tooltip title="Refresh matchers">

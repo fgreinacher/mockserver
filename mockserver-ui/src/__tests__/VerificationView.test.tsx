@@ -373,7 +373,7 @@ describe('VerificationView', () => {
 
   it('shows generated code panel even when no matchers are filled (empty form = verify any request)', () => {
     renderView();
-    expect(screen.getByText('Generated code')).toBeInTheDocument();
+    expect(screen.getByText('Generated Code')).toBeInTheDocument();
     // Java tab should be present and selected by default
     expect(screen.getByRole('tab', { name: 'Java' })).toBeInTheDocument();
     // The empty-form code should contain a verify call with request()
@@ -387,7 +387,7 @@ describe('VerificationView', () => {
     const pathField = screen.getByLabelText('Path');
     await user.type(pathField, '/api/orders');
 
-    expect(screen.getByText('Generated code')).toBeInTheDocument();
+    expect(screen.getByText('Generated Code')).toBeInTheDocument();
     // Java tab should be present and selected by default
     expect(screen.getByRole('tab', { name: 'Java' })).toBeInTheDocument();
     // The code should contain the Java verify call
@@ -398,7 +398,7 @@ describe('VerificationView', () => {
   it('shows generated code panel in sequence mode even with empty steps', () => {
     renderView();
     // The panel is always present, even before switching to sequence mode
-    expect(screen.getByText('Generated code')).toBeInTheDocument();
+    expect(screen.getByText('Generated Code')).toBeInTheDocument();
   });
 
   it('shows all 9 language tabs in the generated code panel', () => {

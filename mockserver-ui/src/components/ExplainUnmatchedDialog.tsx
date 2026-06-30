@@ -85,7 +85,7 @@ export default function ExplainUnmatchedDialog({
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth fullScreen={fullScreen} aria-labelledby="explain-unmatched-dialog-title">
       <DialogTitle id="explain-unmatched-dialog-title">
-        Explain unmatched requests
+        Explain Unmatched Requests
         <Button size="small" sx={{ ml: 2 }} disabled={loading} onClick={refresh}>Refresh</Button>
       </DialogTitle>
       <DialogContent>

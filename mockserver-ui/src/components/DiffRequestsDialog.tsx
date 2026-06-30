@@ -90,7 +90,7 @@ export default function DiffRequestsDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth fullScreen={fullScreen} aria-labelledby="diff-requests-title">
-      <DialogTitle id="diff-requests-title">Diff two requests</DialogTitle>
+      <DialogTitle id="diff-requests-title">Diff Two Requests</DialogTitle>
       <DialogContent>
         {/* Diff result is shown at the top so it is the most visible thing in the
             dialog (the editable request JSON is below for tweaking and re-running). */}

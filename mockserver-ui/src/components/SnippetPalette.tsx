@@ -75,7 +75,7 @@ export default function SnippetPalette({ engine, onInsert }: SnippetPaletteProps
       >
         <Box sx={{ px: 2, pt: 1.5, pb: 0.5 }}>
           <Typography variant="subtitle2">
-            Template snippets
+            Template Snippets
           </Typography>
           <Typography variant="caption" color="text.secondary">
             Click a snippet to insert {engine === 'VELOCITY' ? 'Velocity' : engine === 'MUSTACHE' ? 'Mustache' : 'JavaScript'} syntax

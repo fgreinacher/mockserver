@@ -93,7 +93,7 @@ export default function CrudDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth fullScreen={fullScreen} aria-labelledby="crud-dialog-title">
-      <DialogTitle id="crud-dialog-title">Register CRUD resource</DialogTitle>
+      <DialogTitle id="crud-dialog-title">Register CRUD Resource</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Register auto-CRUD expectations for a resource path — GET, POST, PUT, and DELETE

@@ -178,7 +178,7 @@ describe('DebugMismatchDialog', () => {
       });
       render(<DebugMismatchDialog connectionParams={connectionParams} />);
 
-      await user.click(screen.getByRole('tab', { name: 'Visual diff' }));
+      await user.click(screen.getByRole('tab', { name: 'Visual Diff' }));
 
       // Diff table header from DiffPanel.
       expect(screen.getByText('Expected')).toBeInTheDocument();
@@ -199,7 +199,7 @@ describe('DebugMismatchDialog', () => {
       });
       render(<DebugMismatchDialog connectionParams={connectionParams} />);
 
-      await user.click(screen.getByRole('tab', { name: 'Visual diff' }));
+      await user.click(screen.getByRole('tab', { name: 'Visual Diff' }));
       // exp-2's only difference is on `method`; it must NOT appear because exp-1 is closest.
       expect(screen.queryByText('method')).not.toBeInTheDocument();
     });
@@ -212,7 +212,7 @@ describe('DebugMismatchDialog', () => {
       });
       render(<DebugMismatchDialog connectionParams={connectionParams} />);
 
-      await user.click(screen.getByRole('tab', { name: 'Visual diff' }));
+      await user.click(screen.getByRole('tab', { name: 'Visual Diff' }));
       // exp-1 (10/12) outscores exp-2 (6/12), so its fields drive the diff.
       expect(screen.getByText('path')).toBeInTheDocument();
     });
@@ -239,7 +239,7 @@ describe('DebugMismatchDialog', () => {
       });
       render(<DebugMismatchDialog connectionParams={connectionParams} />);
 
-      await user.click(screen.getByRole('tab', { name: 'Visual diff' }));
+      await user.click(screen.getByRole('tab', { name: 'Visual Diff' }));
       expect(
         screen.getByText(/No closest expectation with field-level differences/),
       ).toBeInTheDocument();

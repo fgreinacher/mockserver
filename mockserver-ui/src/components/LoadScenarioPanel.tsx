@@ -1546,7 +1546,7 @@ MOCKSERVER_LOAD_GENERATION_ENABLED=true`}
       {/* Registered scenarios (Wave C) — shared across both sub-tabs */}
       <Paper variant="outlined" sx={{ p: 1.25, mb: 1.5 }} data-testid="load-registry">
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
-          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Registered scenarios</Typography>
+          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Registered Scenarios</Typography>
           <Chip size="small" label={registry.length} variant="outlined" />
           <Box sx={{ flex: 1 }} />
           <Button
@@ -1659,7 +1659,7 @@ MOCKSERVER_LOAD_GENERATION_ENABLED=true`}
       {runningEntries.length > 0 && (
         <Paper variant="outlined" sx={{ p: 1.25, mb: 1.5 }} data-testid="load-running-scenarios">
           <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-            Running now ({runningEntries.length})
+            Running Now ({runningEntries.length})
           </Typography>
           {runningEntries.map((entry) => {
             const st = entry.status;
@@ -1857,7 +1857,7 @@ MOCKSERVER_LOAD_GENERATION_ENABLED=true`}
       <Paper variant="outlined" sx={{ p: 1.25, mb: 1.5 }} data-testid="load-author-form">
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
           <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-            {running ? 'Edit / restart scenario' : 'Create a load scenario'}
+            {running ? 'Edit / Restart Scenario' : 'Create a Load Scenario'}
           </Typography>
           <Box sx={{ flex: 1 }} />
           <Button size="small" variant="outlined" onClick={() => setGenerateSource('openapi')} data-testid="load-generate-openapi-open">
@@ -1904,8 +1904,8 @@ MOCKSERVER_LOAD_GENERATION_ENABLED=true`}
             onChange={(_, v: number) => setForm((p) => ({ ...p, profileMode: v === 1 ? 'SHAPE' : 'STAGES' }))}
             sx={{ minHeight: 30, '& .MuiTab-root': { minHeight: 30, py: 0.25, fontSize: '0.75rem', minWidth: 0, px: 1.5 } }}
           >
-            <Tab label="Explicit stages" data-testid="load-profile-mode-stages" />
-            <Tab label="Named shape" data-testid="load-profile-mode-shape" />
+            <Tab label="Explicit Stages" data-testid="load-profile-mode-stages" />
+            <Tab label="Named Shape" data-testid="load-profile-mode-shape" />
           </Tabs>
           {form.profileMode === 'STAGES' && (
             <Button size="small" startIcon={<AddIcon />} onClick={addStage}>Add stage</Button>
@@ -2426,7 +2426,7 @@ function GenerateDialog({
     })();
   };
 
-  const title = source === 'openapi' ? 'Generate from OpenAPI' : 'Generate from recording';
+  const title = source === 'openapi' ? 'Generate from OpenAPI' : 'Generate from Recording';
   const canSubmit = name.trim() !== '' && (source === 'recording' || spec.trim() !== '');
 
   return (

@@ -57,7 +57,7 @@ export default function LoadScenarioReview(props: LoadScenarioReviewProps) {
   return (
     <Box sx={{ py: 1 }} data-testid="load-code-review">
       <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>
-        Generated code — register &amp; start
+        Generated Code — Register &amp; Start
       </Typography>
       <Tabs
         value={safeTab}

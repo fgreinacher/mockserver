@@ -104,7 +104,7 @@ export default function McpServerHealthPanel() {
   return (
     <Box sx={{ p: 2, overflow: 'auto' }}>
       <Typography variant="h6" sx={{ fontWeight: 700 }}>
-        MCP server health
+        MCP Server Health
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1.5 }}>
         Per-server latency and error rate for MCP servers your proxied tools call. When a

@@ -478,7 +478,7 @@ describe('LoadScenarioPanel', () => {
     render(<LoadScenarioPanel connectionParams={params} />);
     await waitFor(() => expect(screen.getByTestId('load-running-r1')).toBeInTheDocument());
     expect(screen.getByTestId('load-running-r2')).toBeInTheDocument();
-    expect(screen.getByTestId('load-running-scenarios')).toHaveTextContent('Running now (2)');
+    expect(screen.getByTestId('load-running-scenarios')).toHaveTextContent('Running Now (2)');
     // The flat live fields rendered through into the running card (Active VUs = 3 is unique to r1).
     const r1 = screen.getByTestId('load-running-r1');
     expect(within(r1).getByText('3')).toBeInTheDocument();

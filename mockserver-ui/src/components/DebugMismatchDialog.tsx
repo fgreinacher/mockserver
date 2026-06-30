@@ -272,8 +272,8 @@ export default function DebugMismatchDialog({ connectionParams }: DebugMismatchD
                 variant="fullWidth"
                 sx={{ borderBottom: 1, borderColor: 'divider', minHeight: 40 }}
               >
-                <Tab value="results" label="Match results" sx={{ minHeight: 40, py: 0 }} />
-                <Tab value="diff" label="Visual diff" sx={{ minHeight: 40, py: 0 }} />
+                <Tab value="results" label="Match Results" sx={{ minHeight: 40, py: 0 }} />
+                <Tab value="diff" label="Visual Diff" sx={{ minHeight: 40, py: 0 }} />
               </Tabs>
               {tab === 'results' &&
                 (result.results.length === 0 ? (
@@ -306,7 +306,7 @@ export default function DebugMismatchDialog({ connectionParams }: DebugMismatchD
                         result={diffResult}
                         loading={false}
                         error={null}
-                        title="Request vs closest expectation"
+                        title="Request vs Closest Expectation"
                         identicalMessage="No field-level differences were reported for the closest expectation."
                       />
                     </>

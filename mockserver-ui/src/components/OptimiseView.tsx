@@ -608,7 +608,7 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
           {/* Detected opportunities */}
           <Paper variant="outlined" sx={{ p: 1.25, mb: 1.5 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-              Detected opportunities {sortedSignals.length > 0 && `(${sortedSignals.length})`}
+              Detected Opportunities {sortedSignals.length > 0 && `(${sortedSignals.length})`}
             </Typography>
             {sortedSignals.length === 0 ? (
               <Typography variant="body2" color="text.secondary">

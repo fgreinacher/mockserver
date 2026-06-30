@@ -62,12 +62,12 @@ describe('OpenApiImportDialog named-example picker', () => {
     const user = userEvent.setup();
     render(<OpenApiImportDialog open onClose={() => {}} connectionParams={connectionParams} />);
 
-    expect(screen.queryByText('Named examples')).not.toBeInTheDocument();
+    expect(screen.queryByText('Named Examples')).not.toBeInTheDocument();
 
     await user.click(screen.getByLabelText('OpenAPI spec or URL'));
     await user.paste(specWithNamedExamples);
 
-    await waitFor(() => expect(screen.getByText('Named examples')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Named Examples')).toBeInTheDocument());
     expect(screen.getByRole('combobox', { name: /listPets \(200\)/ })).toBeInTheDocument();
   });
 
@@ -79,7 +79,7 @@ describe('OpenApiImportDialog named-example picker', () => {
     await user.click(screen.getByLabelText('OpenAPI spec or URL'));
     await user.paste(specWithNamedExamples);
 
-    await waitFor(() => expect(screen.getByText('Named examples')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Named Examples')).toBeInTheDocument());
     await user.click(screen.getByRole('combobox', { name: /listPets \(200\)/ }));
     await user.click(screen.getByRole('option', { name: 'twoDogs' }));
 
@@ -127,7 +127,7 @@ describe('OpenApiImportDialog named-example picker', () => {
     await user.click(screen.getByLabelText('OpenAPI spec or URL'));
     await user.paste(multiOpSpec);
 
-    await waitFor(() => expect(screen.getByText('Named examples')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Named Examples')).toBeInTheDocument());
     await user.click(screen.getByRole('combobox', { name: /listPets \(200\)/ }));
     await user.click(screen.getByRole('option', { name: 'twoDogs' }));
 
@@ -154,7 +154,7 @@ describe('OpenApiImportDialog named-example picker', () => {
     await user.click(screen.getByLabelText('OpenAPI spec or URL'));
     await user.paste(specWithNamedExamples);
 
-    await waitFor(() => expect(screen.getByText('Named examples')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Named Examples')).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Import' }));
 
     await waitFor(() => expect(calls.length).toBe(1));

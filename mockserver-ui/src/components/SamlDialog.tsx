@@ -92,7 +92,7 @@ export default function SamlDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth fullScreen={fullScreen} aria-labelledby="saml-dialog-title">
-      <DialogTitle id="saml-dialog-title">Mock SAML provider</DialogTitle>
+      <DialogTitle id="saml-dialog-title">Mock SAML Provider</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Register a mock SAML 2.0 identity provider — IdP metadata plus an SSO endpoint

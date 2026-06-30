@@ -16,7 +16,7 @@ function renderDialog(open = true, onClose = vi.fn()) {
 describe('ShortcutsDialog', () => {
   it('lists all keyboard shortcuts when open', () => {
     renderDialog();
-    expect(screen.getByText('Keyboard shortcuts')).toBeInTheDocument();
+    expect(screen.getByText('Keyboard Shortcuts')).toBeInTheDocument();
     expect(screen.getByText('Focus the log search field')).toBeInTheDocument();
     expect(screen.getByText('Clear server logs (asks for confirmation)')).toBeInTheDocument();
     expect(screen.getByText('Show / hide the request filter panel')).toBeInTheDocument();
@@ -27,7 +27,7 @@ describe('ShortcutsDialog', () => {
 
   it('does not render content when closed', () => {
     renderDialog(false);
-    expect(screen.queryByText('Keyboard shortcuts')).not.toBeInTheDocument();
+    expect(screen.queryByText('Keyboard Shortcuts')).not.toBeInTheDocument();
   });
 
   it('calls onClose when Close is clicked', async () => {

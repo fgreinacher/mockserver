@@ -103,7 +103,7 @@ describe('CaptureAsMockDialog', () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole('tab', { name: 'Preview diff' }));
+    await user.click(screen.getByRole('tab', { name: 'Preview Diff' }));
 
     // The diff is rendered (mocked DiffEditor exposes original/modified panes).
     // It loads via a lazy/Suspense split point (JsonDiffViewerLazy keeps monaco
@@ -121,7 +121,7 @@ describe('CaptureAsMockDialog', () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole('tab', { name: 'Preview diff' }));
+    await user.click(screen.getByRole('tab', { name: 'Preview Diff' }));
     // JsonDiffViewerLazy resolves asynchronously (Suspense), so await its pane.
     const previewModified = ((await screen.findByTestId('monaco-diff-modified')) as HTMLTextAreaElement).value;
 

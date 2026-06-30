@@ -146,7 +146,7 @@ export default function MatcherPlaygroundDialog({
         <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', md: 'row' } }}>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-              Candidate expectation (JSON)
+              Candidate Expectation (JSON)
             </Typography>
             <TextField
               value={expectationText}
@@ -162,7 +162,7 @@ export default function MatcherPlaygroundDialog({
 
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-              Sample request
+              Sample Request
             </Typography>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <TextField size="small" label="Method" value={sample.method} onChange={setField('method')}

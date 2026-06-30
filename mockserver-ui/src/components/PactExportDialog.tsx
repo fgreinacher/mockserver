@@ -100,7 +100,7 @@ export default function PactExportDialog({ open, onClose, connectionParams }: Pa
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="md" fullWidth fullScreen={fullScreen} aria-labelledby="pact-dialog-title">
-      <DialogTitle id="pact-dialog-title">Pact contract</DialogTitle>
+      <DialogTitle id="pact-dialog-title">Pact Contract</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
           Export the active response expectations as a Pact v3 consumer contract for publishing to
@@ -138,7 +138,7 @@ export default function PactExportDialog({ open, onClose, connectionParams }: Pa
 
         <Divider sx={{ my: 2 }} />
 
-        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>Verify a contract</Typography>
+        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>Verify a Contract</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
           Paste a Pact contract to check it against the registered expectations.
         </Typography>

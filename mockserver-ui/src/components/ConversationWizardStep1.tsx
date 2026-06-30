@@ -76,7 +76,7 @@ export default function ConversationWizardStep1({
       {/* Isolation toggle */}
       <Box>
         <Typography variant="subtitle2" sx={{ mb: 1 }}>
-          Per-session isolation (optional)
+          Per-Session Isolation (optional)
         </Typography>
         <ToggleButtonGroup
           value={isolationEnabled ? (isolateBy?.source ?? 'header') : null}

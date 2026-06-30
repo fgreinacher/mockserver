@@ -65,7 +65,7 @@ export default function VerificationReview(props: VerificationReviewProps) {
   return (
     <Box sx={{ py: 1 }}>
       <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>
-        Generated code
+        Generated Code
       </Typography>
       <Tabs
         value={safeTab}

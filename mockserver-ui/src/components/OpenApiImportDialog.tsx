@@ -111,7 +111,7 @@ export default function OpenApiImportDialog({ open, onClose, connectionParams }:
         {operationExamples.length > 0 && (
           <Box sx={{ mt: 2 }}>
             <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              Named examples
+              Named Examples
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
               Some operations declare multiple named response examples. Pick one to use for the

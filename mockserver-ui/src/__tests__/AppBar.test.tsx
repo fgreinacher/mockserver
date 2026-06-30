@@ -72,10 +72,10 @@ describe('AppBar', () => {
     expect(clearButton).toBeDefined();
 
     await user.click(clearButton!);
-    expect(screen.getByText('Reset server (all)')).toBeInTheDocument();
+    expect(screen.getByText('Reset Server (all)')).toBeInTheDocument();
 
     // Reset is destructive — it opens a confirmation dialog rather than firing immediately.
-    await user.click(screen.getByText('Reset server (all)'));
+    await user.click(screen.getByText('Reset Server (all)'));
     expect(props.onClearServer).not.toHaveBeenCalled();
     expect(screen.getByText('Reset the entire server?')).toBeInTheDocument();
 
@@ -109,7 +109,7 @@ describe('AppBar', () => {
       (b) => b.querySelector('[data-testid="DeleteSweepIcon"]'),
     );
     await user.click(clearButton!);
-    await user.click(screen.getByText('Clear server logs'));
+    await user.click(screen.getByText('Clear Server Logs'));
 
     expect(props.onClearLogs).toHaveBeenCalledOnce();
     expect(props.onClearServer).not.toHaveBeenCalled();
@@ -174,9 +174,9 @@ describe('AppBar', () => {
     expect(toolsButton).toBeDefined();
     await user.click(toolsButton!);
 
-    await user.click(screen.getByText('Mock SAML provider…'));
+    await user.click(screen.getByText('Mock SAML Provider…'));
     // The dialog title appears once the SAML dialog opens.
-    expect(screen.getByText('Mock SAML provider')).toBeInTheDocument();
+    expect(screen.getByText('Mock SAML Provider')).toBeInTheDocument();
   });
 
   it('opens the baseline compare dialog from the tools menu', async () => {
@@ -189,9 +189,9 @@ describe('AppBar', () => {
     expect(toolsButton).toBeDefined();
     await user.click(toolsButton!);
 
-    await user.click(screen.getByText('Compare against baseline…'));
+    await user.click(screen.getByText('Compare Against Baseline…'));
     // The dialog heading appears once the baseline compare dialog opens.
-    expect(screen.getByRole('heading', { name: 'Compare against baseline' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Compare Against Baseline' })).toBeInTheDocument();
   });
 });
 

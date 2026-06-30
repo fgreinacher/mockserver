@@ -97,7 +97,7 @@ export default function AsyncApiDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="md" fullWidth fullScreen={fullScreen} aria-labelledby="asyncapi-dialog-title">
-      <DialogTitle id="asyncapi-dialog-title">AsyncAPI broker mock</DialogTitle>
+      <DialogTitle id="asyncapi-dialog-title">AsyncAPI Broker Mock</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Register an AsyncAPI spec to mock a message broker — paste the spec (JSON or YAML), or a
@@ -135,7 +135,7 @@ export default function AsyncApiDialog({
         )}
 
         <Divider sx={{ my: 2 }} />
-        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>Verify messages</Typography>
+        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>Verify Messages</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
           Check observed broker messages against a verification request.
         </Typography>

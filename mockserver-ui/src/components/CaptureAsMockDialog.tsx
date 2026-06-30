@@ -247,7 +247,7 @@ export default function CaptureAsMockDialog({
     return !draft.path;
   }, [registering, draft]);
 
-  const tabLabels = ['Edit', 'Preview diff', 'Copy as JSON', 'Copy as Java'];
+  const tabLabels = ['Edit', 'Preview Diff', 'Copy as JSON', 'Copy as Java'];
 
   return (
     <>

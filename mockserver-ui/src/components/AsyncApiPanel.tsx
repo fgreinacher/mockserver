@@ -163,7 +163,7 @@ export default function AsyncApiPanel({ connectionParams }: AsyncApiPanelProps) 
 
       {unavailable && (
         <Alert severity="warning" sx={{ mb: 1.5 }}>
-          <AlertTitle>Module unavailable</AlertTitle>
+          <AlertTitle>Module Unavailable</AlertTitle>
           The AsyncAPI module (mockserver-async) is not on this server&apos;s classpath.
           Broker mocking requires the mockserver-async jar.
         </Alert>

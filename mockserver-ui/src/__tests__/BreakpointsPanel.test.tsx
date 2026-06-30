@@ -124,7 +124,7 @@ describe('BreakpointsPanel — Matchers tab', () => {
     })));
 
     renderPanel();
-    expect(screen.getByText('Register a new breakpoint matcher')).toBeInTheDocument();
+    expect(screen.getByText('Register a New Breakpoint Matcher')).toBeInTheDocument();
     expect(screen.getByLabelText(/Path/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Register Matcher/ })).toBeInTheDocument();
   });

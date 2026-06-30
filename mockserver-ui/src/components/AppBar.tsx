@@ -659,7 +659,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><LayersClearIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>Clear server logs</ListItemText>
+            <ListItemText>Clear Server Logs</ListItemText>
           </MenuItem>
           <MenuItem
             onClick={() => {
@@ -673,7 +673,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><LayersClearIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>Clear server expectations</ListItemText>
+            <ListItemText>Clear Server Expectations</ListItemText>
           </MenuItem>
           <Divider />
           <MenuItem
@@ -689,7 +689,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             sx={{ color: 'error.main' }}
           >
             <ListItemIcon><RestartAltIcon fontSize="small" color="error" /></ListItemIcon>
-            <ListItemText>Reset server (all)</ListItemText>
+            <ListItemText>Reset Server (all)</ListItemText>
           </MenuItem>
         </Menu>
         <Menu
@@ -722,7 +722,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><DownloadIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>Pact contract (export / verify)…</ListItemText>
+            <ListItemText>Pact Contract (export / verify)…</ListItemText>
           </MenuItem>
           <MenuItem
             onClick={() => {
@@ -731,7 +731,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><VpnKeyIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>Mock OIDC provider…</ListItemText>
+            <ListItemText>Mock OIDC Provider…</ListItemText>
           </MenuItem>
           <MenuItem
             onClick={() => {
@@ -740,7 +740,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><VpnKeyIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>Mock SAML provider…</ListItemText>
+            <ListItemText>Mock SAML Provider…</ListItemText>
           </MenuItem>
           <MenuItem
             onClick={() => {
@@ -749,7 +749,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><HubIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>AsyncAPI broker mock…</ListItemText>
+            <ListItemText>AsyncAPI Broker Mock…</ListItemText>
           </MenuItem>
           <Divider />
           <MenuItem
@@ -759,7 +759,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><StorageIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>Register CRUD resource…</ListItemText>
+            <ListItemText>Register CRUD Resource…</ListItemText>
           </MenuItem>
           <MenuItem
             onClick={() => {
@@ -768,7 +768,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><FolderOpenIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>Mock file store…</ListItemText>
+            <ListItemText>Mock File Store…</ListItemText>
           </MenuItem>
           <MenuItem
             onClick={() => {
@@ -777,7 +777,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><CompareArrowsIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>Diff two requests…</ListItemText>
+            <ListItemText>Diff Two Requests…</ListItemText>
           </MenuItem>
           <MenuItem
             onClick={() => {
@@ -786,7 +786,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             }}
           >
             <ListItemIcon><CompareArrowsIcon fontSize="small" /></ListItemIcon>
-            <ListItemText>Compare against baseline…</ListItemText>
+            <ListItemText>Compare Against Baseline…</ListItemText>
           </MenuItem>
         </Menu>
         <OpenApiImportDialog

@@ -4717,7 +4717,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
             data-testid="register-success"
             onClose={() => setRegisteredLabel(null)}
           >
-            <AlertTitle sx={{ mb: 0.5 }}>Mock registered</AlertTitle>
+            <AlertTitle sx={{ mb: 0.5 }}>Mock Registered</AlertTitle>
             <Typography variant="body2" sx={{ mb: 1 }}>
               <code>{registeredLabel}</code> is now live. What next?
             </Typography>

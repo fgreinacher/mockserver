@@ -128,7 +128,7 @@ export default function ConfigurationDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth fullScreen={fullScreen} aria-labelledby="configuration-dialog-title">
-      <DialogTitle id="configuration-dialog-title">Server configuration</DialogTitle>
+      <DialogTitle id="configuration-dialog-title">Server Configuration</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Inspect the running server configuration and change common runtime settings. Changes apply

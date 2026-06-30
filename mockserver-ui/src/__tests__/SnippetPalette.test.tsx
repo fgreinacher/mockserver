@@ -114,13 +114,13 @@ describe('SnippetPalette (unit)', () => {
     const user = userEvent.setup();
     renderPalette();
     await user.click(screen.getByRole('button', { name: /insert snippet/i }));
-    expect(screen.getByText('Template snippets')).toBeInTheDocument();
+    expect(screen.getByText('Template Snippets')).toBeInTheDocument();
 
     await user.click(screen.getByText('UUID'));
 
     // The popover title should no longer be visible
     await waitFor(() => {
-      expect(screen.queryByText('Template snippets')).not.toBeInTheDocument();
+      expect(screen.queryByText('Template Snippets')).not.toBeInTheDocument();
     });
   });
 

@@ -227,7 +227,7 @@ export default function FileStoreDialog({ open, onClose, connectionParams }: Fil
         )}
 
         {/* Add file form */}
-        <Typography variant="subtitle2" sx={{ mt: 1, mb: 1 }}>Add file</Typography>
+        <Typography variant="subtitle2" sx={{ mt: 1, mb: 1 }}>Add File</Typography>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
           <TextField
             label="File name"

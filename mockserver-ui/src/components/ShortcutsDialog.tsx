@@ -34,7 +34,7 @@ export default function ShortcutsDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth fullScreen={fullScreen} aria-labelledby="shortcuts-dialog-title">
-      <DialogTitle id="shortcuts-dialog-title">Keyboard shortcuts</DialogTitle>
+      <DialogTitle id="shortcuts-dialog-title">Keyboard Shortcuts</DialogTitle>
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Shortcuts are ignored while you are typing in a text field.
