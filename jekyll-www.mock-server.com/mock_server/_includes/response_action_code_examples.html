@@ -4703,7 +4703,19 @@ mockServerClient("localhost", 1080)
     <div class="panel">
         <pre class="prettyprint lang-java code"><code class="code">MockServerClient mockServerClient = new MockServerClient("localhost", 1080);
 
-// Store a file, then reference it in an expectation using FileBody
+// Store a file
+mockServerClient.storeFile("sample.json", "{\"id\": 1, \"name\": \"example\"}");
+
+// Retrieve a file (throws ClientException if the file does not exist)
+byte[] content = mockServerClient.retrieveFile("sample.json");
+
+// List all stored files
+Set&lt;String&gt; names = mockServerClient.listFiles();
+
+// Delete a file (throws ClientException if the file does not exist)
+mockServerClient.deleteFile("sample.json");
+
+// A stored file can then be referenced in an expectation using FileBody
 mockServerClient
     .when(
         request()
@@ -4716,186 +4728,128 @@ mockServerClient
     </div>
     <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-javascript code"><code class="code">// the file store has no typed client helper, call the control-plane endpoints over raw HTTP
-const http = require('http');
-
-function fileStore(path, body) {
-    const req = http.request({
-        host: "localhost", port: 1080, method: "PUT",
-        path: "/mockserver/files/" + path,
-        headers: { "Content-Type": "application/json" }
-    });
-    if (body !== undefined) {
-        req.write(body);
-    }
-    req.end();
-}
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+var client = mockServerClient("localhost", 1080);
 
 // Store a file
-fileStore("store?name=sample.json", '{"id": 1, "name": "example"}');
-// Retrieve a file
-fileStore("retrieve", '{"name": "sample.json"}');
-// List all stored files
-fileStore("list");
-// Delete a file
-fileStore("delete", '{"name": "sample.json"}');</code></pre>
+await client.storeFile("sample.json", '{"id": 1, "name": "example"}');
+
+// Retrieve a file (the returned promise rejects if the file does not exist)
+var content = await client.retrieveFile("sample.json");
+
+// List all stored files (resolves to an array of file-name strings)
+var names = await client.listFiles();
+
+// Delete a file (rejects if the file does not exist)
+await client.deleteFile("sample.json");</code></pre>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code"># the file store has no typed client helper, call the control-plane endpoints over raw HTTP
-import requests
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
 
-base = "http://localhost:1080/mockserver/files"
+client = MockServerClient("localhost", 1080)
 
 # Store a file
-requests.put(base + "/store", params={"name": "sample.json"},
-             headers={"Content-Type": "application/json"},
-             data='{"id": 1, "name": "example"}')
-# Retrieve a file
-requests.put(base + "/retrieve",
-             headers={"Content-Type": "application/json"},
-             data='{"name": "sample.json"}')
-# List all stored files
-requests.put(base + "/list")
-# Delete a file
-requests.put(base + "/delete",
-             headers={"Content-Type": "application/json"},
-             data='{"name": "sample.json"}')</code></pre>
+client.store_file("sample.json", '{"id": 1, "name": "example"}')
+
+# Retrieve a file (raises MockServerError if the file does not exist)
+content = client.retrieve_file("sample.json")
+
+# List all stored files (returns a list of file-name strings)
+names = client.list_files()
+
+# Delete a file (raises MockServerError if the file does not exist)
+client.delete_file("sample.json")</code></pre>
     </div>
     <button class="accordion inner">Ruby</button>
     <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code"># the file store has no typed client helper, call the control-plane endpoints over raw HTTP
-require 'net/http'
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
 
-base = URI('http://localhost:1080/mockserver/files/')
-
-def file_store(base, path, body = nil)
-    uri = base + path
-    req = Net::HTTP::Put.new(uri)
-    req['Content-Type'] = 'application/json'
-    req.body = body if body
-    Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }
-end
+client = MockServer::Client.new('localhost', 1080)
 
 # Store a file
-file_store(base, 'store?name=sample.json', '{"id": 1, "name": "example"}')
-# Retrieve a file
-file_store(base, 'retrieve', '{"name": "sample.json"}')
-# List all stored files
-file_store(base, 'list')
-# Delete a file
-file_store(base, 'delete', '{"name": "sample.json"}')</code></pre>
+client.store_file('sample.json', '{"id": 1, "name": "example"}')
+
+# Retrieve a file (raises MockServer::Error if the file does not exist)
+content = client.retrieve_file('sample.json')
+
+# List all stored files (returns an array of file-name strings)
+names = client.list_files
+
+# Delete a file (raises MockServer::Error if the file does not exist)
+client.delete_file('sample.json')</code></pre>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">package main
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
 
-import (
-    "net/http"
-    "strings"
-)
+client := mockserver.New("localhost", 1080)
 
-// the file store has no typed client helper, call the control-plane endpoints over raw HTTP
-func fileStore(path, body string) {
-    req, _ := http.NewRequest("PUT",
-        "http://localhost:1080/mockserver/files/"+path,
-        strings.NewReader(body))
-    req.Header.Set("Content-Type", "application/json")
-    http.DefaultClient.Do(req)
-}
+// Store a file
+client.StoreFile("sample.json", `{"id": 1, "name": "example"}`)
 
-func main() {
-    // Store a file
-    fileStore("store?name=sample.json", `{"id": 1, "name": "example"}`)
-    // Retrieve a file
-    fileStore("retrieve", `{"name": "sample.json"}`)
-    // List all stored files
-    fileStore("list", "")
-    // Delete a file
-    fileStore("delete", `{"name": "sample.json"}`)
-}</code></pre>
+// Retrieve a file (returns an error if the file does not exist)
+content, err := client.RetrieveFile("sample.json")
+
+// List all stored files (returns a slice of file-name strings)
+names, err := client.ListFiles()
+
+// Delete a file (returns an error if the file does not exist)
+err = client.DeleteFile("sample.json")</code></pre>
     </div>
     <button class="accordion inner">.NET</button>
     <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
-using System.Text;
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 
-// the file store has no typed client helper, call the control-plane endpoints over raw HTTP
-using var httpClient = new HttpClient();
-
-async Task FileStore(string path, string body)
-{
-    var content = body == null
-        ? null
-        : new StringContent(body, Encoding.UTF8, "application/json");
-    await httpClient.PutAsync("http://localhost:1080/mockserver/files/" + path, content);
-}
+using var client = new MockServerClient("localhost", 1080);
 
 // Store a file
-await FileStore("store?name=sample.json", @"{""id"": 1, ""name"": ""example""}");
-// Retrieve a file
-await FileStore("retrieve", @"{""name"": ""sample.json""}");
-// List all stored files
-await FileStore("list", null);
-// Delete a file
-await FileStore("delete", @"{""name"": ""sample.json""}");</code></pre>
+client.StoreFile("sample.json", "{\"id\": 1, \"name\": \"example\"}");
+
+// Retrieve a file (throws MockServerClientException if the file does not exist)
+byte[] content = client.RetrieveFile("sample.json");
+
+// List all stored files (returns a List&lt;string&gt; of file names)
+List&lt;string&gt; names = client.ListFiles();
+
+// Delete a file (throws MockServerClientException if the file does not exist)
+client.DeleteFile("sample.json");</code></pre>
     </div>
     <button class="accordion inner">Rust</button>
     <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
 
-// the file store has no typed client helper, call the control-plane endpoints over raw HTTP
-let client = Client::new();
-let base = "http://localhost:1080/mockserver/files";
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
 
-// Store a file
-client.put(format!("{base}/store?name=sample.json"))
-    .header("Content-Type", "application/json")
-    .body(r#"{"id": 1, "name": "example"}"#)
-    .send()
-    .unwrap();
-// Retrieve a file
-client.put(format!("{base}/retrieve"))
-    .header("Content-Type", "application/json")
-    .body(r#"{"name": "sample.json"}"#)
-    .send()
-    .unwrap();
-// List all stored files
-client.put(format!("{base}/list")).send().unwrap();
-// Delete a file
-client.put(format!("{base}/delete"))
-    .header("Content-Type", "application/json")
-    .body(r#"{"name": "sample.json"}"#)
-    .send()
-    .unwrap();</code></pre>
+// Store a file (content is passed as bytes)
+client.store_file("sample.json", br#"{"id": 1, "name": "example"}"#).unwrap();
+
+// Retrieve a file (returns Err(Error::NotFound) if the file does not exist)
+let content = client.retrieve_file("sample.json").unwrap();
+
+// List all stored files (returns Vec&lt;String&gt; of file names)
+let names = client.list_files().unwrap();
+
+// Delete a file (returns Err(Error::NotFound) if the file does not exist)
+client.delete_file("sample.json").unwrap();</code></pre>
     </div>
     <button class="accordion inner">PHP</button>
     <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
-// the file store has no typed client helper, call the control-plane endpoints over raw HTTP
-function file_store($path, $body = null) {
-    $ch = curl_init('http://localhost:1080/mockserver/files/' . $path);
-    $opts = [
-        CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
-        CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json'],
-        CURLOPT_RETURNTRANSFER =&gt; true,
-    ];
-    if ($body !== null) {
-        $opts[CURLOPT_POSTFIELDS] = $body;
-    }
-    curl_setopt_array($ch, $opts);
-    curl_exec($ch);
-    curl_close($ch);
-}
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+
+$client = new MockServerClient('localhost', 1080);
 
 // Store a file
-file_store('store?name=sample.json', '{"id": 1, "name": "example"}');
-// Retrieve a file
-file_store('retrieve', '{"name": "sample.json"}');
-// List all stored files
-file_store('list');
-// Delete a file
-file_store('delete', '{"name": "sample.json"}');</code></pre>
+$client-&gt;storeFile('sample.json', '{"id": 1, "name": "example"}');
+
+// Retrieve a file (throws InvalidRequestException if the file does not exist)
+$content = $client-&gt;retrieveFile('sample.json');
+
+// List all stored files (returns an array of file-name strings)
+$names = $client-&gt;listFiles();
+
+// Delete a file (throws InvalidRequestException if the file does not exist)
+$client-&gt;deleteFile('sample.json');</code></pre>
     </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">

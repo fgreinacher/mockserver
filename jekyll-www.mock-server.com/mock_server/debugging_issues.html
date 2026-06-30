@@ -685,89 +685,59 @@ $logMessages = $client-&gt;retrieveLogMessages(
     </div>
     <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-javascript code"><code class="code">// metrics is a control-plane endpoint with no typed client helper, so use raw HTTP
-fetch("http://localhost:1080/mockserver/retrieve?type=METRICS", {
-    method: "PUT"
-}).then(function (response) {
-    return response.json();
-}).then(function (metrics) {
-    console.log(JSON.stringify(metrics));
-});</code></pre>
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080)
+    .retrieveMetrics()
+    .then(
+        function (metrics) {
+            console.log(JSON.stringify(metrics));
+        },
+        function (error) {
+            console.log(error);
+        }
+    );</code></pre>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code">import requests
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
 
-# metrics is a control-plane endpoint with no typed client helper, so use raw HTTP
-metrics = requests.put(
-    "http://localhost:1080/mockserver/retrieve?type=METRICS"
-).json()</code></pre>
+client = MockServerClient("localhost", 1080)
+metrics = client.retrieve_metrics()</code></pre>
     </div>
     <button class="accordion inner">Ruby</button>
     <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
-require 'json'
-require 'uri'
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
 
-# metrics is a control-plane endpoint with no typed client helper, so use raw HTTP
-uri = URI('http://localhost:1080/mockserver/retrieve?type=METRICS')
-request = Net::HTTP::Put.new(uri)
-response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
-metrics = JSON.parse(response.body)</code></pre>
+client = MockServer::Client.new('localhost', 1080)
+metrics = client.retrieve_metrics</code></pre>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">package main
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
 
-import (
-    "io"
-    "net/http"
-)
-
-func main() {
-    // metrics is a control-plane endpoint with no typed client helper, so use raw HTTP
-    req, _ := http.NewRequest("PUT",
-        "http://localhost:1080/mockserver/retrieve?type=METRICS", nil)
-    resp, _ := http.DefaultClient.Do(req)
-    defer resp.Body.Close()
-    metrics, _ := io.ReadAll(resp.Body)
-    _ = metrics
-}</code></pre>
+client := mockserver.New("localhost", 1080)
+metrics, err := client.RetrieveMetrics()</code></pre>
     </div>
     <button class="accordion inner">.NET</button>
     <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 
-// metrics is a control-plane endpoint with no typed client helper, so use raw HTTP
-using var httpClient = new HttpClient();
-var response = await httpClient.PutAsync(
-    "http://localhost:1080/mockserver/retrieve?type=METRICS",
-    null
-);
-var metrics = await response.Content.ReadAsStringAsync();</code></pre>
+using var client = new MockServerClient("localhost", 1080);
+var metrics = client.RetrieveMetrics();</code></pre>
     </div>
     <button class="accordion inner">Rust</button>
     <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
 
-// metrics is a control-plane endpoint with no typed client helper, so use raw HTTP
-let client = Client::new();
-let metrics = client.put("http://localhost:1080/mockserver/retrieve?type=METRICS")
-    .send()
-    .unwrap()
-    .text()
-    .unwrap();</code></pre>
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+let metrics = client.retrieve_metrics().unwrap();</code></pre>
     </div>
     <button class="accordion inner">PHP</button>
     <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">// metrics is a control-plane endpoint with no typed client helper, so use raw HTTP
-$ch = curl_init('http://localhost:1080/mockserver/retrieve?type=METRICS');
-curl_setopt_array($ch, [
-    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
-    CURLOPT_RETURNTRANSFER =&gt; true,
-]);
-$metrics = curl_exec($ch);
-curl_close($ch);</code></pre>
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+
+$client = new MockServerClient('localhost', 1080);
+$metrics = $client-&gt;retrieveMetrics();</code></pre>
     </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
@@ -791,150 +761,102 @@ curl_close($ch);</code></pre>
 String config = new MockServerClient("localhost", 1080)
     .retrieveConfiguration();
 
-// update configuration
+// update configuration (only the properties supplied are changed)
 new MockServerClient("localhost", 1080)
-    .updateConfiguration("{\"logLevel\": \"DEBUG\"}");</code></pre>
+    .updateConfiguration("{\"logLevel\": \"DEBUG\", \"maxExpectations\": 5000}");</code></pre>
     </div>
     <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-javascript code"><code class="code">// configuration is a control-plane endpoint with no typed client helper, so use raw HTTP
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+var client = mockServerClient("localhost", 1080);
 
 // retrieve current configuration
-fetch("http://localhost:1080/mockserver/configuration")
-    .then(function (response) {
-        return response.json();
-    })
-    .then(function (config) {
+client.retrieveConfiguration().then(
+    function (config) {
         console.log(JSON.stringify(config));
-    });
+    },
+    function (error) {
+        console.log(error);
+    }
+);
 
 // update configuration (only the properties supplied are changed)
-fetch("http://localhost:1080/mockserver/configuration", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ "logLevel": "DEBUG", "maxExpectations": 5000 })
+client.updateConfiguration({
+    "logLevel": "DEBUG",
+    "maxExpectations": 5000
 });</code></pre>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code">import requests
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
 
-# configuration is a control-plane endpoint with no typed client helper, so use raw HTTP
+client = MockServerClient("localhost", 1080)
 
 # retrieve current configuration
-config = requests.get("http://localhost:1080/mockserver/configuration").json()
+config = client.retrieve_configuration()
 
 # update configuration (only the properties supplied are changed)
-requests.put(
-    "http://localhost:1080/mockserver/configuration",
-    json={"logLevel": "DEBUG", "maxExpectations": 5000}
-)</code></pre>
+client.update_configuration('{"logLevel": "DEBUG", "maxExpectations": 5000}')</code></pre>
     </div>
     <button class="accordion inner">Ruby</button>
     <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
-require 'json'
-require 'uri'
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
 
-# configuration is a control-plane endpoint with no typed client helper, so use raw HTTP
-
-uri = URI('http://localhost:1080/mockserver/configuration')
+client = MockServer::Client.new('localhost', 1080)
 
 # retrieve current configuration
-config = JSON.parse(Net::HTTP.get(uri))
+config = client.retrieve_configuration
 
 # update configuration (only the properties supplied are changed)
-request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
-request.body = { 'logLevel' => 'DEBUG', 'maxExpectations' => 5000 }.to_json
-Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }</code></pre>
+client.update_configuration('{"logLevel": "DEBUG", "maxExpectations": 5000}')</code></pre>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">package main
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
 
-import (
-    "bytes"
-    "io"
-    "net/http"
-)
+client := mockserver.New("localhost", 1080)
 
-func main() {
-    // configuration is a control-plane endpoint with no typed client helper, so use raw HTTP
+// retrieve current configuration
+config, err := client.RetrieveConfiguration()
 
-    // retrieve current configuration
-    resp, _ := http.Get("http://localhost:1080/mockserver/configuration")
-    config, _ := io.ReadAll(resp.Body)
-    resp.Body.Close()
-    _ = config
-
-    // update configuration (only the properties supplied are changed)
-    body := []byte(`{"logLevel": "DEBUG", "maxExpectations": 5000}`)
-    req, _ := http.NewRequest("PUT",
-        "http://localhost:1080/mockserver/configuration",
-        bytes.NewReader(body))
-    req.Header.Set("Content-Type", "application/json")
-    http.DefaultClient.Do(req)
-}</code></pre>
+// update configuration (only the properties supplied are changed)
+_, err = client.UpdateConfiguration(`{"logLevel": "DEBUG", "maxExpectations": 5000}`)</code></pre>
     </div>
     <button class="accordion inner">.NET</button>
     <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
-using System.Text;
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 
-// configuration is a control-plane endpoint with no typed client helper, so use raw HTTP
-using var httpClient = new HttpClient();
+using var client = new MockServerClient("localhost", 1080);
 
 // retrieve current configuration
-var config = await httpClient.GetStringAsync(
-    "http://localhost:1080/mockserver/configuration"
-);
+var config = client.RetrieveConfiguration();
 
 // update configuration (only the properties supplied are changed)
-var json = @"{""logLevel"": ""DEBUG"", ""maxExpectations"": 5000}";
-await httpClient.PutAsync(
-    "http://localhost:1080/mockserver/configuration",
-    new StringContent(json, Encoding.UTF8, "application/json")
-);</code></pre>
+client.UpdateConfiguration(@"{""logLevel"": ""DEBUG"", ""maxExpectations"": 5000}");</code></pre>
     </div>
     <button class="accordion inner">Rust</button>
     <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
 
-// configuration is a control-plane endpoint with no typed client helper, so use raw HTTP
-let client = Client::new();
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
 
 // retrieve current configuration
-let config = client.get("http://localhost:1080/mockserver/configuration")
-    .send()
-    .unwrap()
-    .text()
-    .unwrap();
+let config = client.retrieve_configuration().unwrap();
 
 // update configuration (only the properties supplied are changed)
-client.put("http://localhost:1080/mockserver/configuration")
-    .header("Content-Type", "application/json")
-    .body(r#"{"logLevel": "DEBUG", "maxExpectations": 5000}"#)
-    .send()
-    .unwrap();</code></pre>
+client.update_configuration(r#"{"logLevel": "DEBUG", "maxExpectations": 5000}"#).unwrap();</code></pre>
     </div>
     <button class="accordion inner">PHP</button>
     <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">// configuration is a control-plane endpoint with no typed client helper, so use raw HTTP
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+
+$client = new MockServerClient('localhost', 1080);
 
 // retrieve current configuration
-$config = file_get_contents('http://localhost:1080/mockserver/configuration');
+$config = $client-&gt;retrieveConfiguration();
 
 // update configuration (only the properties supplied are changed)
-$json = '{"logLevel": "DEBUG", "maxExpectations": 5000}';
-$ch = curl_init('http://localhost:1080/mockserver/configuration');
-curl_setopt_array($ch, [
-    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
-    CURLOPT_POSTFIELDS     =&gt; $json,
-    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
-    CURLOPT_RETURNTRANSFER =&gt; true,
-]);
-curl_exec($ch);
-curl_close($ch);</code></pre>
+$client-&gt;updateConfiguration('{"logLevel": "DEBUG", "maxExpectations": 5000}');</code></pre>
     </div>
     <button class="accordion inner">Retrieve Configuration (REST API)</button>
     <div class="panel">

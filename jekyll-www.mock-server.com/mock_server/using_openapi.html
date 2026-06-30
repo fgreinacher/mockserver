@@ -1524,14 +1524,11 @@ curl_close($ch);
 </div>
 <button id="button_wsdl_inline" class="accordion">generate expectations from an inline WSDL string</button>
 <div class="panel">
-    <p>As with the WSDL file above, no client exposes a typed WSDL method &mdash; every language submits the raw WSDL XML directly to the <span class="inline_code">PUT /mockserver/wsdl</span> endpoint with <span class="inline_code">Content-Type: text/xml</span>. The only difference here is that the WSDL is held as an inline string rather than read from a file. MockServer returns <span class="inline_code">201 Created</span> with the generated expectations as JSON.</p>
+    <p>Each client exposes a typed <span class="inline_code">wsdlExpectation(wsdl)</span> method (<span class="inline_code">wsdl_expectation</span> in Python and Ruby, <span class="inline_code">WsdlExpectation</span> in Go and .NET) that takes the WSDL XML, submits it to the <span class="inline_code">PUT /mockserver/wsdl</span> endpoint with <span class="inline_code">Content-Type: text/xml</span>, and returns the generated (upserted) expectations. The only difference from the WSDL file example above is that the WSDL is held as an inline string rather than read from a file.</p>
     <button class="accordion inner">Java</button>
     <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">// The Java client has no dedicated WSDL method; use an HTTP client to call the REST endpoint directly
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+        <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
+import org.mockserver.mock.Expectation;
 
 String wsdl = "&lt;?xml version=\"1.0\" encoding=\"UTF-8\"?&gt;\n"
     + "&lt;definitions xmlns=\"http://schemas.xmlsoap.org/wsdl/\"\n"
@@ -1561,18 +1558,13 @@ String wsdl = "&lt;?xml version=\"1.0\" encoding=\"UTF-8\"?&gt;\n"
     + "    &lt;/port&gt;\n"
     + "  &lt;/service&gt;\n"
     + "&lt;/definitions&gt;";
-HttpClient httpClient = HttpClient.newHttpClient();
-HttpRequest request = HttpRequest.newBuilder()
-    .uri(URI.create("http://localhost:1080/mockserver/wsdl"))
-    .header("Content-Type", "text/xml")
-    .PUT(HttpRequest.BodyPublishers.ofString(wsdl))
-    .build();
-HttpResponse&lt;String&gt; response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-// response.statusCode() == 201; response.body() contains the generated expectations as JSON</code></pre>
+Expectation[] expectations = new MockServerClient("localhost", 1080)
+    .wsdlExpectation(wsdl);
+// expectations contains the generated (upserted) expectations</code></pre>
     </div>
     <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-javascript code"><code class="code">const fetch = require('node-fetch'); // or use the built-in fetch in Node 18+
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
 
 const wsdl = `&lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
@@ -1602,16 +1594,15 @@ const wsdl = `&lt;?xml version="1.0" encoding="UTF-8"?&gt;
     &lt;/port&gt;
   &lt;/service&gt;
 &lt;/definitions&gt;`;
-const response = await fetch('http://localhost:1080/mockserver/wsdl', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'text/xml' },
-    body: wsdl,
-});
-// response.status === 201; response.json() returns the generated expectations</code></pre>
+mockServerClient("localhost", 1080)
+    .wsdlExpectation(wsdl)
+    .then(function (expectations) {
+        console.log("created " + expectations.length + " expectations");
+    });</code></pre>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code">import requests
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
 
 wsdl = """&lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
@@ -1642,16 +1633,13 @@ wsdl = """&lt;?xml version="1.0" encoding="UTF-8"?&gt;
   &lt;/service&gt;
 &lt;/definitions&gt;"""
 
-response = requests.put(
-    'http://localhost:1080/mockserver/wsdl',
-    data=wsdl,
-    headers={'Content-Type': 'text/xml'},
-)
-# response.status_code == 201; response.json() returns the generated expectations</code></pre>
+client = MockServerClient("localhost", 1080)
+expectations = client.wsdl_expectation(wsdl)
+# expectations is the list of generated (upserted) expectations</code></pre>
     </div>
     <button class="accordion inner">Ruby</button>
     <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
 
 wsdl = &lt;&lt;~XML
   &lt;?xml version="1.0" encoding="UTF-8"?&gt;
@@ -1684,19 +1672,13 @@ wsdl = &lt;&lt;~XML
   &lt;/definitions&gt;
 XML
 
-uri  = URI('http://localhost:1080/mockserver/wsdl')
-http = Net::HTTP.new(uri.host, uri.port)
-request = Net::HTTP::Put.new(uri.path, 'Content-Type' =&gt; 'text/xml')
-request.body = wsdl
-response = http.request(request)
-# response.code == '201'; JSON.parse(response.body) returns the generated expectations</code></pre>
+client = MockServer::Client.new('localhost', 1080)
+expectations = client.wsdl_expectation(wsdl)
+# expectations is the array of generated (upserted) expectations</code></pre>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">import (
-    "bytes"
-    "net/http"
-)
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
 
 wsdl := `&lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
@@ -1726,16 +1708,14 @@ wsdl := `&lt;?xml version="1.0" encoding="UTF-8"?&gt;
     &lt;/port&gt;
   &lt;/service&gt;
 &lt;/definitions&gt;`
-req, _ := http.NewRequest("PUT", "http://localhost:1080/mockserver/wsdl", bytes.NewReader([]byte(wsdl)))
-req.Header.Set("Content-Type", "text/xml")
-resp, err := http.DefaultClient.Do(req)
-// resp.StatusCode == 201; decode resp.Body as JSON to read the generated expectations</code></pre>
+client := mockserver.New("localhost", 1080)
+expectations, err := client.WsdlExpectation(wsdl)
+// expectations holds the generated (upserted) expectations</code></pre>
     </div>
     <button class="accordion inner">.NET</button>
     <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Text;
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
 
 var wsdl = @"&lt;?xml version=""1.0"" encoding=""UTF-8""?&gt;
 &lt;definitions xmlns=""http://schemas.xmlsoap.org/wsdl/""
@@ -1765,16 +1745,15 @@ var wsdl = @"&lt;?xml version=""1.0"" encoding=""UTF-8""?&gt;
     &lt;/port&gt;
   &lt;/service&gt;
 &lt;/definitions&gt;";
-using var httpClient = new HttpClient();
-var content = new StringContent(wsdl, Encoding.UTF8);
-content.Headers.ContentType = new MediaTypeHeaderValue("text/xml");
-var response = await httpClient.PutAsync("http://localhost:1080/mockserver/wsdl", content);
-// response.StatusCode == HttpStatusCode.Created (201)
-// await response.Content.ReadAsStringAsync() returns the generated expectations as JSON</code></pre>
+using var client = new MockServerClient("localhost", 1080);
+var expectations = client.WsdlExpectation(wsdl);
+// expectations is the List&lt;Expectation&gt; of generated (upserted) expectations</code></pre>
     </div>
     <button class="accordion inner">Rust</button>
     <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">let wsdl = r#"&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
+
+let wsdl = r#"&lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
              xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
              xmlns:tns="http://example.com/weather"
@@ -1802,17 +1781,15 @@ var response = await httpClient.PutAsync("http://localhost:1080/mockserver/wsdl"
     &lt;/port&gt;
   &lt;/service&gt;
 &lt;/definitions&gt;"#;
-let client = reqwest::blocking::Client::new();
-let response = client.put("http://localhost:1080/mockserver/wsdl")
-    .header("Content-Type", "text/xml")
-    .body(wsdl)
-    .send()
-    .unwrap();
-// response.status() == 201; response.text() contains the generated expectations as JSON</code></pre>
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+let expectations = client.wsdl_expectation(wsdl).unwrap();
+// expectations is the Vec&lt;Expectation&gt; of generated (upserted) expectations</code></pre>
     </div>
     <button class="accordion inner">PHP</button>
     <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">$wsdl = &lt;&lt;&lt;XML
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+
+$wsdl = &lt;&lt;&lt;XML
 &lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
              xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
@@ -1843,17 +1820,9 @@ let response = client.put("http://localhost:1080/mockserver/wsdl")
 &lt;/definitions&gt;
 XML;
 
-$ch = curl_init('http://localhost:1080/mockserver/wsdl');
-curl_setopt_array($ch, [
-    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
-    CURLOPT_HTTPHEADER    =&gt; ['Content-Type: text/xml'],
-    CURLOPT_POSTFIELDS    =&gt; $wsdl,
-    CURLOPT_RETURNTRANSFER =&gt; true,
-]);
-$result = curl_exec($ch);
-$info   = curl_getinfo($ch);
-curl_close($ch);
-// $info['http_code'] == 201; $result contains the generated expectations as JSON</code></pre>
+$client = new MockServerClient('localhost', 1080);
+$expectations = $client-&gt;wsdlExpectation($wsdl);
+// $expectations is the array of generated (upserted) expectations</code></pre>
     </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">

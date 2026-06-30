@@ -43,134 +43,59 @@ new MockServerClient("localhost", 1080)
     </div>
     <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-javascript code"><code class="code">// the JavaScript client has no typed clock helper, so call the
-// control-plane endpoint directly with the built-in fetch
-fetch("http://localhost:1080/mockserver/clock", {
-    method: "PUT",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-        "action": "freeze",
-        "instant": "2025-01-15T09:30:00Z"
-    })
-}).then(
-    function () {
-        console.log("clock frozen");
-    },
-    function (error) {
-        console.log(error);
-    }
-);</code></pre>
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080)
+    .freezeClock("2025-01-15T09:30:00Z")
+    .then(
+        function () {
+            console.log("clock frozen");
+        },
+        function (error) {
+            console.log(error);
+        }
+    );</code></pre>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code"># the Python client has no typed clock helper, so call the
-# control-plane endpoint directly with requests
-import requests
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
 
-requests.put(
-    "http://localhost:1080/mockserver/clock",
-    headers={"Content-Type": "application/json"},
-    json={
-        "action": "freeze",
-        "instant": "2025-01-15T09:30:00Z"
-    }
-)</code></pre>
+client = MockServerClient("localhost", 1080)
+client.freeze_clock("2025-01-15T09:30:00Z")</code></pre>
     </div>
     <button class="accordion inner">Ruby</button>
     <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code"># the Ruby client has no typed clock helper, so call the
-# control-plane endpoint directly with net/http
-require 'net/http'
-require 'json'
-require 'uri'
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
 
-uri = URI('http://localhost:1080/mockserver/clock')
-http = Net::HTTP.new(uri.host, uri.port)
-request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
-request.body = {
-    'action' => 'freeze',
-    'instant' => '2025-01-15T09:30:00Z'
-}.to_json
-http.request(request)</code></pre>
+client = MockServer::Client.new('localhost', 1080)
+client.freeze_clock('2025-01-15T09:30:00Z')</code></pre>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">// the Go client has no typed clock helper, so call the
-// control-plane endpoint directly with net/http
-package main
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
 
-import (
-    "bytes"
-    "net/http"
-)
-
-func main() {
-    body := []byte(`{
-    "action": "freeze",
-    "instant": "2025-01-15T09:30:00Z"
-}`)
-    req, _ := http.NewRequest("PUT",
-        "http://localhost:1080/mockserver/clock",
-        bytes.NewReader(body))
-    req.Header.Set("Content-Type", "application/json")
-    http.DefaultClient.Do(req)
-}</code></pre>
+client := mockserver.New("localhost", 1080)
+client.FreezeClock("2025-01-15T09:30:00Z")</code></pre>
     </div>
     <button class="accordion inner">.NET</button>
     <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">// the .NET client has no typed clock helper, so call the
-// control-plane endpoint directly with HttpClient
-using System.Net.Http;
-using System.Text;
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 
-using var httpClient = new HttpClient();
-var json = @"{
-    ""action"": ""freeze"",
-    ""instant"": ""2025-01-15T09:30:00Z""
-}";
-await httpClient.PutAsync(
-    "http://localhost:1080/mockserver/clock",
-    new StringContent(json, Encoding.UTF8, "application/json")
-);</code></pre>
+using var client = new MockServerClient("localhost", 1080);
+client.FreezeClock("2025-01-15T09:30:00Z");</code></pre>
     </div>
     <button class="accordion inner">Rust</button>
     <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">// the Rust client has no typed clock helper, so call the
-// control-plane endpoint directly with reqwest
-use reqwest::blocking::Client;
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
 
-let client = Client::new();
-let body = r#"{
-    "action": "freeze",
-    "instant": "2025-01-15T09:30:00Z"
-}"#;
-client.put("http://localhost:1080/mockserver/clock")
-    .header("Content-Type", "application/json")
-    .body(body.to_string())
-    .send()
-    .unwrap();</code></pre>
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.freeze_clock(Some("2025-01-15T09:30:00Z")).unwrap();</code></pre>
     </div>
     <button class="accordion inner">PHP</button>
     <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
-// the PHP client has no typed clock helper, so call the
-// control-plane endpoint directly with cURL
-$json = &lt;&lt;&lt;'JSON'
-{
-    "action": "freeze",
-    "instant": "2025-01-15T09:30:00Z"
-}
-JSON;
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
 
-$ch = curl_init('http://localhost:1080/mockserver/clock');
-curl_setopt_array($ch, [
-    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
-    CURLOPT_POSTFIELDS     =&gt; $json,
-    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
-    CURLOPT_RETURNTRANSFER =&gt; true,
-]);
-curl_exec($ch);
-curl_close($ch);</code></pre>
+$client = new MockServerClient('localhost', 1080);
+$client-&gt;freezeClock('2025-01-15T09:30:00Z');</code></pre>
     </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
@@ -199,134 +124,59 @@ curl_close($ch);</code></pre>
     </div>
     <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-javascript code"><code class="code">// the JavaScript client has no typed clock helper, so call the
-// control-plane endpoint directly with the built-in fetch
-fetch("http://localhost:1080/mockserver/clock", {
-    method: "PUT",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-        "action": "advance",
-        "durationMillis": 3600000
-    })
-}).then(
-    function () {
-        console.log("clock advanced");
-    },
-    function (error) {
-        console.log(error);
-    }
-);</code></pre>
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080)
+    .advanceClock(3600000)
+    .then(
+        function () {
+            console.log("clock advanced");
+        },
+        function (error) {
+            console.log(error);
+        }
+    );</code></pre>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code"># the Python client has no typed clock helper, so call the
-# control-plane endpoint directly with requests
-import requests
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
 
-requests.put(
-    "http://localhost:1080/mockserver/clock",
-    headers={"Content-Type": "application/json"},
-    json={
-        "action": "advance",
-        "durationMillis": 3600000
-    }
-)</code></pre>
+client = MockServerClient("localhost", 1080)
+client.advance_clock(3600000)</code></pre>
     </div>
     <button class="accordion inner">Ruby</button>
     <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code"># the Ruby client has no typed clock helper, so call the
-# control-plane endpoint directly with net/http
-require 'net/http'
-require 'json'
-require 'uri'
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
 
-uri = URI('http://localhost:1080/mockserver/clock')
-http = Net::HTTP.new(uri.host, uri.port)
-request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
-request.body = {
-    'action' => 'advance',
-    'durationMillis' => 3600000
-}.to_json
-http.request(request)</code></pre>
+client = MockServer::Client.new('localhost', 1080)
+client.advance_clock(3600000)</code></pre>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">// the Go client has no typed clock helper, so call the
-// control-plane endpoint directly with net/http
-package main
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
 
-import (
-    "bytes"
-    "net/http"
-)
-
-func main() {
-    body := []byte(`{
-    "action": "advance",
-    "durationMillis": 3600000
-}`)
-    req, _ := http.NewRequest("PUT",
-        "http://localhost:1080/mockserver/clock",
-        bytes.NewReader(body))
-    req.Header.Set("Content-Type", "application/json")
-    http.DefaultClient.Do(req)
-}</code></pre>
+client := mockserver.New("localhost", 1080)
+client.AdvanceClock(3600000)</code></pre>
     </div>
     <button class="accordion inner">.NET</button>
     <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">// the .NET client has no typed clock helper, so call the
-// control-plane endpoint directly with HttpClient
-using System.Net.Http;
-using System.Text;
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 
-using var httpClient = new HttpClient();
-var json = @"{
-    ""action"": ""advance"",
-    ""durationMillis"": 3600000
-}";
-await httpClient.PutAsync(
-    "http://localhost:1080/mockserver/clock",
-    new StringContent(json, Encoding.UTF8, "application/json")
-);</code></pre>
+using var client = new MockServerClient("localhost", 1080);
+client.AdvanceClock(3600000);</code></pre>
     </div>
     <button class="accordion inner">Rust</button>
     <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">// the Rust client has no typed clock helper, so call the
-// control-plane endpoint directly with reqwest
-use reqwest::blocking::Client;
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
 
-let client = Client::new();
-let body = r#"{
-    "action": "advance",
-    "durationMillis": 3600000
-}"#;
-client.put("http://localhost:1080/mockserver/clock")
-    .header("Content-Type", "application/json")
-    .body(body.to_string())
-    .send()
-    .unwrap();</code></pre>
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.advance_clock(3600000).unwrap();</code></pre>
     </div>
     <button class="accordion inner">PHP</button>
     <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
-// the PHP client has no typed clock helper, so call the
-// control-plane endpoint directly with cURL
-$json = &lt;&lt;&lt;'JSON'
-{
-    "action": "advance",
-    "durationMillis": 3600000
-}
-JSON;
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
 
-$ch = curl_init('http://localhost:1080/mockserver/clock');
-curl_setopt_array($ch, [
-    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
-    CURLOPT_POSTFIELDS     =&gt; $json,
-    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
-    CURLOPT_RETURNTRANSFER =&gt; true,
-]);
-curl_exec($ch);
-curl_close($ch);</code></pre>
+$client = new MockServerClient('localhost', 1080);
+$client-&gt;advanceClock(3600000);</code></pre>
     </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
@@ -355,127 +205,59 @@ curl_close($ch);</code></pre>
     </div>
     <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-javascript code"><code class="code">// the JavaScript client has no typed clock helper, so call the
-// control-plane endpoint directly with the built-in fetch
-fetch("http://localhost:1080/mockserver/clock", {
-    method: "PUT",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-        "action": "reset"
-    })
-}).then(
-    function () {
-        console.log("clock reset");
-    },
-    function (error) {
-        console.log(error);
-    }
-);</code></pre>
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080)
+    .resetClock()
+    .then(
+        function () {
+            console.log("clock reset");
+        },
+        function (error) {
+            console.log(error);
+        }
+    );</code></pre>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code"># the Python client has no typed clock helper, so call the
-# control-plane endpoint directly with requests
-import requests
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
 
-requests.put(
-    "http://localhost:1080/mockserver/clock",
-    headers={"Content-Type": "application/json"},
-    json={
-        "action": "reset"
-    }
-)</code></pre>
+client = MockServerClient("localhost", 1080)
+client.reset_clock()</code></pre>
     </div>
     <button class="accordion inner">Ruby</button>
     <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code"># the Ruby client has no typed clock helper, so call the
-# control-plane endpoint directly with net/http
-require 'net/http'
-require 'json'
-require 'uri'
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
 
-uri = URI('http://localhost:1080/mockserver/clock')
-http = Net::HTTP.new(uri.host, uri.port)
-request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
-request.body = {
-    'action' => 'reset'
-}.to_json
-http.request(request)</code></pre>
+client = MockServer::Client.new('localhost', 1080)
+client.reset_clock</code></pre>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">// the Go client has no typed clock helper, so call the
-// control-plane endpoint directly with net/http
-package main
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
 
-import (
-    "bytes"
-    "net/http"
-)
-
-func main() {
-    body := []byte(`{
-    "action": "reset"
-}`)
-    req, _ := http.NewRequest("PUT",
-        "http://localhost:1080/mockserver/clock",
-        bytes.NewReader(body))
-    req.Header.Set("Content-Type", "application/json")
-    http.DefaultClient.Do(req)
-}</code></pre>
+client := mockserver.New("localhost", 1080)
+client.ResetClock()</code></pre>
     </div>
     <button class="accordion inner">.NET</button>
     <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">// the .NET client has no typed clock helper, so call the
-// control-plane endpoint directly with HttpClient
-using System.Net.Http;
-using System.Text;
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 
-using var httpClient = new HttpClient();
-var json = @"{
-    ""action"": ""reset""
-}";
-await httpClient.PutAsync(
-    "http://localhost:1080/mockserver/clock",
-    new StringContent(json, Encoding.UTF8, "application/json")
-);</code></pre>
+using var client = new MockServerClient("localhost", 1080);
+client.ResetClock();</code></pre>
     </div>
     <button class="accordion inner">Rust</button>
     <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">// the Rust client has no typed clock helper, so call the
-// control-plane endpoint directly with reqwest
-use reqwest::blocking::Client;
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
 
-let client = Client::new();
-let body = r#"{
-    "action": "reset"
-}"#;
-client.put("http://localhost:1080/mockserver/clock")
-    .header("Content-Type", "application/json")
-    .body(body.to_string())
-    .send()
-    .unwrap();</code></pre>
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.reset_clock().unwrap();</code></pre>
     </div>
     <button class="accordion inner">PHP</button>
     <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
-// the PHP client has no typed clock helper, so call the
-// control-plane endpoint directly with cURL
-$json = &lt;&lt;&lt;'JSON'
-{
-    "action": "reset"
-}
-JSON;
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
 
-$ch = curl_init('http://localhost:1080/mockserver/clock');
-curl_setopt_array($ch, [
-    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
-    CURLOPT_POSTFIELDS     =&gt; $json,
-    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
-    CURLOPT_RETURNTRANSFER =&gt; true,
-]);
-curl_exec($ch);
-curl_close($ch);</code></pre>
+$client = new MockServerClient('localhost', 1080);
+$client-&gt;resetClock();</code></pre>
     </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
@@ -503,93 +285,59 @@ curl_close($ch);</code></pre>
     </div>
     <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-javascript code"><code class="code">// the JavaScript client has no typed clock helper, so call the
-// control-plane endpoint directly with the built-in fetch
-fetch("http://localhost:1080/mockserver/clock", {
-    method: "GET"
-}).then(
-    function (response) {
-        return response.json();
-    }
-).then(
-    function (clock) {
-        console.log(clock);
-    }
-);</code></pre>
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080)
+    .clockStatus()
+    .then(
+        function (clock) {
+            console.log(clock);
+        },
+        function (error) {
+            console.log(error);
+        }
+    );</code></pre>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code"># the Python client has no typed clock helper, so call the
-# control-plane endpoint directly with requests
-import requests
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
 
-response = requests.get("http://localhost:1080/mockserver/clock")
-print(response.json())</code></pre>
+client = MockServerClient("localhost", 1080)
+print(client.clock_status())</code></pre>
     </div>
     <button class="accordion inner">Ruby</button>
     <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code"># the Ruby client has no typed clock helper, so call the
-# control-plane endpoint directly with net/http
-require 'net/http'
-require 'uri'
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
 
-uri = URI('http://localhost:1080/mockserver/clock')
-response = Net::HTTP.get_response(uri)
-puts response.body</code></pre>
+client = MockServer::Client.new('localhost', 1080)
+puts client.clock_status</code></pre>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">// the Go client has no typed clock helper, so call the
-// control-plane endpoint directly with net/http
-package main
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
 
-import (
-    "io"
-    "net/http"
-    "os"
-)
-
-func main() {
-    resp, _ := http.Get("http://localhost:1080/mockserver/clock")
-    defer resp.Body.Close()
-    io.Copy(os.Stdout, resp.Body)
-}</code></pre>
+client := mockserver.New("localhost", 1080)
+clockJson, _ := client.ClockStatus()</code></pre>
     </div>
     <button class="accordion inner">.NET</button>
     <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">// the .NET client has no typed clock helper, so call the
-// control-plane endpoint directly with HttpClient
-using System.Net.Http;
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 
-using var httpClient = new HttpClient();
-var clockJson = await httpClient.GetStringAsync(
-    "http://localhost:1080/mockserver/clock"
-);</code></pre>
+using var client = new MockServerClient("localhost", 1080);
+var clockJson = client.ClockStatus();</code></pre>
     </div>
     <button class="accordion inner">Rust</button>
     <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">// the Rust client has no typed clock helper, so call the
-// control-plane endpoint directly with reqwest
-use reqwest::blocking::Client;
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
 
-let client = Client::new();
-let clock_json = client.get("http://localhost:1080/mockserver/clock")
-    .send()
-    .unwrap()
-    .text()
-    .unwrap();</code></pre>
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+let clock_json = client.clock_status().unwrap();</code></pre>
     </div>
     <button class="accordion inner">PHP</button>
     <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
-// the PHP client has no typed clock helper, so call the
-// control-plane endpoint directly with cURL
-$ch = curl_init('http://localhost:1080/mockserver/clock');
-curl_setopt_array($ch, [
-    CURLOPT_RETURNTRANSFER =&gt; true,
-]);
-$clockJson = curl_exec($ch);
-curl_close($ch);</code></pre>
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+
+$client = new MockServerClient('localhost', 1080);
+$clockJson = $client-&gt;clockStatus();</code></pre>
     </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
