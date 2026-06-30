@@ -542,6 +542,20 @@ public class LlmProviderSnifferTest {
     }
 
     @Test
+    public void detectsGlobalVertexGeminiByHost() {
+        assertThat(LlmProviderSniffer.sniffByHost("aiplatform.googleapis.com"),
+            is(Optional.of(Provider.GEMINI)));
+    }
+
+    @Test
+    public void doesNotDetectSpoofedHostGluedBeforeVertexDomain() {
+        // Security: an arbitrary host must not be prefixed onto the Vertex domain
+        // and be mis-detected as gemini (incomplete URL substring sanitization).
+        assertThat(LlmProviderSniffer.sniffByHost("evil.com-aiplatform.googleapis.com"),
+            is(Optional.empty()));
+    }
+
+    @Test
     public void voyageHostDisambiguatesSharedRerankPath() {
         // Both Cohere and Voyage use /v1/rerank; the host decides which one.
         assertThat(LlmProviderSniffer.sniffByHostAndPath("api.voyageai.com", "/v1/rerank"),

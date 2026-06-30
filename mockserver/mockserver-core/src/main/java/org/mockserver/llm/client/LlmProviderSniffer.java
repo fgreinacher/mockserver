@@ -68,6 +68,11 @@ public final class LlmProviderSniffer {
     // lower-case the path before matching).
     private static final java.util.regex.Pattern OPENAI_RESPONSES_PATH_PATTERN = java.util.regex.Pattern.compile(
         "/v1/responses|(^|/)codex/responses(?:[/?]|$)");
+    // Vertex AI Gemini host: global aiplatform.googleapis.com or regional
+    // <region>-aiplatform.googleapis.com. Fully anchored (the region label has no
+    // dot) so an arbitrary host cannot be glued in front. Compiled once.
+    private static final java.util.regex.Pattern VERTEX_HOST_PATTERN = java.util.regex.Pattern.compile(
+        "(?:[a-z0-9-]+-)?aiplatform\\.googleapis\\.com");
     // Bedrock Runtime invocation paths: any model id, both invoke and Converse APIs
     // (invoke, invoke-with-response-stream, converse, converse-stream). Not anchored
     // to anthropic.* — non-Anthropic models use the same path shape.
@@ -331,8 +336,9 @@ public final class LlmProviderSniffer {
         if (lowerHost.equals("generativelanguage.googleapis.com")) {
             return Optional.of(Provider.GEMINI);
         }
-        // Vertex AI Gemini: <region>-aiplatform.googleapis.com
-        if (lowerHost.endsWith("-aiplatform.googleapis.com")) {
+        // Vertex AI Gemini: aiplatform.googleapis.com or <region>-aiplatform.googleapis.com.
+        // matches() anchors the whole string, so an arbitrary host cannot be glued in front.
+        if (VERTEX_HOST_PATTERN.matcher(lowerHost).matches()) {
             return Optional.of(Provider.GEMINI);
         }
         if (lowerHost.equals("api.cohere.com")) {

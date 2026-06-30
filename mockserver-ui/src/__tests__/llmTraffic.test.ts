@@ -1824,6 +1824,34 @@ describe('parseTraffic — host-based detection', () => {
     expect(parsed.kind).toBe('gemini');
   });
 
+  it('classifies the global Vertex AI aiplatform host as gemini', () => {
+    const parsed = parseTraffic({
+      httpRequest: {
+        method: 'POST',
+        path: '/v1/projects/p/locations/global/publishers/google/models/gemini-2.5-pro:generateContent',
+        headers: [{ name: 'host', values: ['aiplatform.googleapis.com'] }],
+        body: { type: 'JSON', json: '{"contents":[]}' },
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"candidates":[]}' } },
+    });
+    expect(parsed.kind).toBe('gemini');
+  });
+
+  it('does NOT classify a spoofed host glued before -aiplatform.googleapis.com', () => {
+    // Security: an arbitrary host must not be prefixed onto the Vertex domain to
+    // be mis-detected as gemini (CodeQL js/incomplete-url-substring-sanitization).
+    const parsed = parseTraffic({
+      httpRequest: {
+        method: 'POST',
+        path: '/anything',
+        headers: [{ name: 'host', values: ['evil.com-aiplatform.googleapis.com'] }],
+        body: { type: 'JSON', json: '{"foo":"bar"}' },
+      },
+      httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"ok":true}' } },
+    });
+    expect(parsed.kind).not.toBe('gemini');
+  });
+
   it('classifies a Bedrock amazonaws host as anthropic', () => {
     const parsed = parseTraffic({
       httpRequest: {

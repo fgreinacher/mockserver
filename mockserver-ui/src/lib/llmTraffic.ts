@@ -549,8 +549,11 @@ function detectByHost(
     return isOpenAiResponsesPath(path) ? 'openai_responses' : null;
   }
   if (h === 'generativelanguage.googleapis.com') return 'gemini';
-  // Vertex AI: <region>-aiplatform.googleapis.com or aiplatform.googleapis.com.
-  if (h === 'aiplatform.googleapis.com' || h.endsWith('-aiplatform.googleapis.com')) return 'gemini';
+  // Vertex AI: aiplatform.googleapis.com or <region>-aiplatform.googleapis.com.
+  // Fully anchored so an arbitrary host cannot be glued in front (e.g.
+  // evil.com-aiplatform.googleapis.com): the region label is [a-z0-9-]+ and
+  // contains no dot, so only genuine *.googleapis.com Vertex hosts match.
+  if (/^(?:[a-z0-9-]+-)?aiplatform\.googleapis\.com$/.test(h)) return 'gemini';
   // Bedrock: bedrock*.amazonaws.com — uses the native Anthropic wire shape.
   if (h.endsWith('.amazonaws.com') && (h.startsWith('bedrock') || h.includes('.bedrock'))) return 'anthropic';
 
