@@ -215,6 +215,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### Correctness & reliability
+- **`forwardProxyHttp2Upgrade` now also applies to the transparent-proxy path, fixing slow streaming captures.**
+  The HTTP/2-upgrade setting was honoured only by matched `forward()` expectations, not by the transparent
+  (unmatched) proxy path most LLM/agent capture uses. So a coding-assistant CLI proxied over HTTP/1.1 was
+  always forwarded to the upstream over HTTP/1.1 — and some streaming backends (notably the OpenAI Codex SSE
+  endpoint used by the `opencode` CLI) withhold the response head over HTTP/1.1 and only flush at completion,
+  so MockServer's streaming relay (which does engage) had nothing to relay until the end and time-to-first-byte
+  collapsed to total time, surfacing as a client-side streaming timeout. The transparent-proxy forward now
+  applies the same upgrade: with `forwardProxyHttp2Upgrade` enabled, a secure request is forwarded upstream over
+  HTTP/2 via ALPN (falling back to HTTP/1.1 if the upstream declines), so the backend streams the head
+  immediately. Off by default; enable it for transparent-proxy streaming capture.
 - **A stalled upstream on a reused pooled keep-alive connection now times out instead of hanging.** With the
   opt-in forward connection pool (`forwardConnectionPoolKeepAlive`) enabled, a pooled keep-alive connection
   carries no read timeout while it sits idle in the pool (a blanket one would fire during legitimate idle

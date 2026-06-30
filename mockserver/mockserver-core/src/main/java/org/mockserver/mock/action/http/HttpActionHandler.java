@@ -939,6 +939,20 @@ public class HttpActionHandler {
                             }
                         }
 
+                        // Apply the same HTTP/2-upgrade protocol selection as the breakpoint-continuation
+                        // forward (executeUnmatchedForward) and the MATCHED forward path (HttpForwardAction),
+                        // so the common (no-breakpoint) transparent-proxy / unmatched forward also honours
+                        // forwardProxyHttp2Upgrade. This is the path the opencode CLI actually hits: an
+                        // HTTP/1.1 inbound that matches no expectation. Without it the upstream leg stays
+                        // HTTP/1.1 and streaming SSE backends (e.g. the OpenAI Codex endpoint) withhold the
+                        // response head until completion, collapsing time-to-first-byte to total time. Only
+                        // activates for the opt-in flag AND secure requests (ALPN; falls back to HTTP/1.1 if
+                        // the upstream declines), so the default path is unchanged.
+                        if (configuration != null
+                            && Boolean.TRUE.equals(configuration.forwardProxyHttp2Upgrade())
+                            && Boolean.TRUE.equals(clonedRequest.isSecure())) {
+                            clonedRequest.withProtocol(Protocol.HTTP_2);
+                        }
                         long forwardStartNanos = org.mockserver.time.TimeService.nanoTime();
                         final HttpForwardActionResult responseFuture = new HttpForwardActionResult(clonedRequest, httpClient.sendRequest(clonedRequest, remoteAddress, potentiallyHttpProxy ? 1000 : configuration.socketConnectionTimeoutInMillis()), null, remoteAddress);
                         HttpResponse response = responseFuture.getHttpResponse().get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
@@ -1130,6 +1144,22 @@ public class HttpActionHandler {
                 return;
             }
 
+            // Apply the same HTTP/2-upgrade protocol selection the MATCHED forward path uses
+            // (HttpForwardAction.sendRequest), so the transparent-proxy (unmatched) path also honours
+            // forwardProxyHttp2Upgrade. Without it an HTTP/1.1 inbound (e.g. the opencode CLI) is always
+            // forwarded upstream over HTTP/1.1; some streaming backends — notably the OpenAI Codex SSE
+            // endpoint (chatgpt.com/backend-api/codex/responses) — withhold the response head over HTTP/1.1
+            // and only flush at completion, so MockServer's streaming relay (which DOES engage here) has
+            // nothing to relay until the end and time-to-first-byte collapses to total time. Forcing the
+            // upstream leg to HTTP/2 via ALPN (TLS only; ALPN falls back to HTTP/1.1 if the upstream
+            // declines) lets the backend stream the head immediately. This only activates when the opt-in
+            // flag is set AND the request is secure, so the default path is unchanged; the unmatched path
+            // already preserves the inbound protocol otherwise, so no explicit downgrade is applied.
+            if (configuration != null
+                && Boolean.TRUE.equals(configuration.forwardProxyHttp2Upgrade())
+                && Boolean.TRUE.equals(requestToForward.isSecure())) {
+                requestToForward.withProtocol(Protocol.HTTP_2);
+            }
             long forwardStartNanos = org.mockserver.time.TimeService.nanoTime();
             final HttpForwardActionResult responseFuture = new HttpForwardActionResult(
                 requestToForward,
