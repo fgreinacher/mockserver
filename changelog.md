@@ -191,6 +191,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dashboard UI titles are now consistently Title Case.** Page/view headings, section headings, dialog
+  titles, tab labels, navigation labels, and the tools/clear menu items now use Title Case throughout
+  (e.g. "Server configuration" → "Server Configuration", "MCP server health" → "MCP Server Health"),
+  so a menu item and the dialog it opens always match. Acronyms and brand names (MockServer, AsyncAPI,
+  OpenAPI, gRPC, OIDC, SAML, SLO, CRUD, MCP, LLM, Pact) are preserved, and descriptive/help text, tooltips,
+  and form labels are unchanged.
+- **Dashboard documentation and screenshots refreshed.** The website dashboard page and the internal UI
+  architecture docs now cover the **MCP Server Health** and **SLO** views, and every dashboard screenshot has
+  been regenerated against the current grouped navigation in a consistent light theme.
 - **`generateFromRecording` in `TEMPLATIZED` mode now reproduces the recorded traffic mix.** Each generated
   step's `weight` is set to the route's observed hit count and the scenario uses `stepSelection: WEIGHTED`,
   so replaying picks routes in proportion to how often they appeared in the recording (instead of plain
