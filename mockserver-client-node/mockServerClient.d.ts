@@ -64,6 +64,40 @@ export interface ClockStatus {
     frozen: boolean;
 }
 
+/**
+ * The valid high-level operating modes (server enum MockMode):
+ * - SIMULATE: match expectations, unmatched -> 404 (the default; proxy-on-no-match disabled)
+ * - SPY:      match expectations; unmatched are forwarded to the real upstream and recorded
+ * - CAPTURE:  forward + record (captures all traffic when no expectations are defined)
+ */
+export type MockMode = 'SIMULATE' | 'SPY' | 'CAPTURE';
+
+/** String constants for the operating modes (also usable as raw strings). */
+export declare const MockMode: {
+    readonly SIMULATE: 'SIMULATE';
+    readonly SPY: 'SPY';
+    readonly CAPTURE: 'CAPTURE';
+};
+
+/** Result of GET/PUT /mockserver/mode. */
+export interface ModeStatus {
+    mode: MockMode;
+    proxyUnmatchedRequests: boolean;
+}
+
+/** Result of PUT /mockserver/files/store. */
+export interface StoredFile {
+    name: string;
+    size: number;
+}
+
+/** Result of pactVerify — the verification report. Inspect `verified`. */
+export interface PactVerificationReport {
+    verified: boolean;
+    interactions?: any[];
+    [key: string]: any;
+}
+
 export interface SuccessFullRequest {
     statusCode: number;
     body: string;
@@ -290,6 +324,106 @@ export interface MockServerClient {
     resetClock(): Promise<RequestResponse>;
 
     clockStatus(): Promise<ClockStatus>;
+
+    /**
+     * Retrieve the JSON counter snapshot (PUT /mockserver/retrieve?type=METRICS).
+     * Resolves to a flat map of metric name -> long value, or {} when disabled.
+     */
+    retrieveMetrics(): Promise<{ [name: string]: number }>;
+
+    /**
+     * Scrape the Prometheus exposition text (GET /mockserver/metrics). Rejects
+     * with "404 Not Found" when metrics are disabled (metricsEnabled=false).
+     */
+    scrapeMetrics(): Promise<string>;
+
+    /** Retrieve the effective live configuration (GET /mockserver/configuration). */
+    retrieveConfiguration(): Promise<any>;
+
+    /**
+     * Update the live configuration (PUT /mockserver/configuration). Only fields
+     * present in the supplied document are applied (partial update). Resolves to
+     * the updated configuration.
+     */
+    updateConfiguration(configuration: object | string): Promise<any>;
+
+    /**
+     * Import a Pact v3 contract as expectations (PUT /mockserver/pact/import).
+     * Resolves to the array of upserted expectations.
+     */
+    pactImport(pactJson: object | string): Promise<Expectation[]>;
+
+    /**
+     * Export the active expectations as a Pact v3 consumer contract
+     * (PUT /mockserver/pact). Blank consumer/provider use the server defaults.
+     */
+    pactExport(consumer?: string, provider?: string): Promise<any>;
+
+    /**
+     * Verify a Pact v3 contract against the active expectations
+     * (PUT /mockserver/pact/verify). The server replies 202 on pass and 406 on
+     * fail; the report body is returned in BOTH cases, so this RESOLVES with the
+     * report for both (inspect `verified`). A malformed request (400) rejects.
+     */
+    pactVerify(pactJson: object | string): Promise<PactVerificationReport>;
+
+    /**
+     * Store a UTF-8 text file in the in-memory file store
+     * (PUT /mockserver/files/store).
+     */
+    storeFile(name: string, content: string): Promise<StoredFile>;
+
+    /**
+     * Store a binary file (base64-encoded on the wire) in the in-memory file
+     * store (PUT /mockserver/files/store).
+     */
+    storeBinaryFile(name: string, content: Buffer | Uint8Array | ArrayBuffer | string): Promise<StoredFile>;
+
+    /**
+     * Retrieve a file's content (PUT /mockserver/files/retrieve). Resolves with
+     * the raw file content string on success; REJECTS with an Error carrying the
+     * server's "file not found: <name>" message when the file is unknown (404), so
+     * a missing file is caught rather than mistaken for success. Mirrors the other
+     * MockServer clients, which return the content directly.
+     */
+    retrieveFile(name: string): Promise<string>;
+
+    /** List all file names in the in-memory file store (PUT /mockserver/files/list). */
+    listFiles(): Promise<string[]>;
+
+    /**
+     * Delete a file from the in-memory file store (PUT /mockserver/files/delete).
+     * An unknown file rejects with the server's 404 text body.
+     */
+    deleteFile(name: string): Promise<RequestResponse>;
+
+    /**
+     * Import a HAR, Postman collection, or Pact contract as expectations
+     * (PUT /mockserver/import). When format is blank the server auto-detects.
+     */
+    importDocument(json: object | string, format?: 'har' | 'postman' | 'pact'): Promise<Expectation[]>;
+
+    /** Import a HAR document as expectations (PUT /mockserver/import?format=har). */
+    importHar(harJson: object | string): Promise<Expectation[]>;
+
+    /** Import a Postman collection as expectations (PUT /mockserver/import?format=postman). */
+    importPostmanCollection(collectionJson: object | string): Promise<Expectation[]>;
+
+    /**
+     * Set the high-level operating mode (PUT /mockserver/mode?mode=<MODE>). Also
+     * flips attemptToProxyIfNoMatchingExpectation server-side.
+     */
+    setMode(mode: MockMode): Promise<ModeStatus>;
+
+    /** Read the current high-level operating mode (GET /mockserver/mode). */
+    retrieveMode(): Promise<ModeStatus>;
+
+    /**
+     * Generate and upsert expectations from a WSDL document (PUT /mockserver/wsdl).
+     * The raw WSDL XML is sent as the request body. Resolves to the generated
+     * (upserted) expectations.
+     */
+    wsdlExpectation(wsdl: string): Promise<Expectation[]>;
 
     setServiceChaos(host: string, chaos: HttpChaosProfile, ttlMillis?: number): Promise<RequestResponse>;
 

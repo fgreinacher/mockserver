@@ -399,6 +399,40 @@ var mockServerClient;
             };
         });
 
+        // PUT that resolves {statusCode, body} for EVERY status (never rejects on
+        // 4xx). Used by control-plane helpers whose non-2xx responses are expected
+        // outcomes carrying a meaningful body (files/retrieve 404, pact/verify 406).
+        var makeRawRequest = (runningInNode() ? require('./sendRequest').sendRawRequest(tls, caCertPemFilePath, options) : function (host, port, path, body, contentType) {
+            var requestBody = (typeof body === "string" ? body : JSON.stringify(body || ""));
+            var url = (tls ? 'https' : 'http') + '://' + host + ':' + port + (contextPath ? (contextPath.indexOf("/") === 0 ? contextPath : "/" + contextPath) : "") + path;
+
+            return {
+                then: function (sucess, error) {
+                    try {
+                        var xmlhttp = new XMLHttpRequest();
+                        xmlhttp.addEventListener("load", (function (sucess) {
+                            return function () {
+                                if (sucess) {
+                                    sucess({
+                                        statusCode: this.status,
+                                        body: this.responseText
+                                    });
+                                }
+                            };
+                        })(sucess));
+                        xmlhttp.open('PUT', url);
+                        xmlhttp.setRequestHeader("Content-Type", contentType || "application/json; charset=utf-8");
+                        _setBrowserAuthHeader(xmlhttp);
+                        xmlhttp.send(requestBody);
+                    } catch (e) {
+                        if (error) {
+                            error(e);
+                        }
+                    }
+                }
+            };
+        });
+
         var cleanedContextPath = (function (contextPath) {
             if (contextPath) {
                 if (!contextPath.endsWith("/")) {
@@ -1943,6 +1977,446 @@ var mockServerClient;
                 }
             };
         };
+
+        // -------------------------------------------------------------------
+        // Metrics
+        // -------------------------------------------------------------------
+        /**
+         * Retrieve the JSON counter snapshot (PUT /mockserver/retrieve?type=METRICS).
+         * Resolves with a flat object mapping each metric name to its long value,
+         * or {} when metrics are disabled (metricsEnabled=false).
+         *
+         * @return promise resolving to the parsed metrics object
+         */
+        var retrieveMetrics = function () {
+            return {
+                then: function (sucess, error) {
+                    makeRequest(host, port, "/mockserver/retrieve?type=METRICS", "")
+                        .then(function (result) {
+                            sucess(result.body ? JSON.parse(result.body) : {});
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Scrape the Prometheus exposition text (GET /mockserver/metrics). Distinct
+         * from retrieveMetrics() (the JSON snapshot) — this returns the raw
+         * Prometheus/OpenMetrics text. Rejects with "404 Not Found" when metrics
+         * are disabled (metricsEnabled=false).
+         *
+         * @return promise resolving to the Prometheus exposition text string
+         */
+        var scrapeMetrics = function () {
+            return {
+                then: function (sucess, error) {
+                    makeGetRequest(host, port, "/mockserver/metrics")
+                        .then(function (result) {
+                            sucess(result.body);
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+
+        // -------------------------------------------------------------------
+        // Configuration
+        // -------------------------------------------------------------------
+        /**
+         * Retrieve the effective live configuration (GET /mockserver/configuration).
+         *
+         * @return promise resolving to the parsed Configuration object
+         */
+        var retrieveConfiguration = function () {
+            return {
+                then: function (sucess, error) {
+                    makeGetRequest(host, port, "/mockserver/configuration")
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Update the live configuration (PUT /mockserver/configuration). Only the
+         * fields present in the supplied document are applied (partial update).
+         *
+         * @param configuration  a ConfigurationDTO object (or JSON string)
+         * @return promise resolving to the parsed updated Configuration object
+         */
+        var updateConfiguration = function (configuration) {
+            return {
+                then: function (sucess, error) {
+                    makeRequest(host, port, "/mockserver/configuration", configuration || "")
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+
+        // -------------------------------------------------------------------
+        // Pact (import / export / verify)
+        // -------------------------------------------------------------------
+        /**
+         * Import a Pact v3 contract as expectations (PUT /mockserver/pact/import).
+         *
+         * @param pactJson  the Pact v3 contract (object or JSON string)
+         * @return promise resolving to the array of upserted expectations
+         */
+        var pactImport = function (pactJson) {
+            if (pactJson === undefined || pactJson === null || pactJson === "") {
+                throw new Error("pactImport(pactJson) requires a non null pact contract");
+            }
+            return {
+                then: function (sucess, error) {
+                    makeRequest(host, port, "/mockserver/pact/import", pactJson)
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Export the active expectations as a Pact v3 consumer contract
+         * (PUT /mockserver/pact?consumer=&provider=). Blank consumer/provider use
+         * the server defaults.
+         *
+         * @param consumer  optional consumer name
+         * @param provider  optional provider name
+         * @return promise resolving to the parsed Pact v3 contract object
+         */
+        var pactExport = function (consumer, provider) {
+            var query = [];
+            if (consumer) {
+                query.push("consumer=" + encodeURIComponent(consumer));
+            }
+            if (provider) {
+                query.push("provider=" + encodeURIComponent(provider));
+            }
+            var path = "/mockserver/pact" + (query.length ? "?" + query.join("&") : "");
+            return {
+                then: function (sucess, error) {
+                    makeRequest(host, port, path, "")
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Verify a Pact v3 contract against the active expectations
+         * (PUT /mockserver/pact/verify). The server replies 202 ACCEPTED when every
+         * interaction matches and 406 NOT_ACCEPTABLE otherwise; the verification
+         * report body is returned in BOTH cases. This method RESOLVES with the
+         * parsed report for both pass and fail (mirroring the Java client, which
+         * does not throw on a FAIL verdict) — inspect the report's `verified`
+         * boolean to tell them apart. A malformed request (400) REJECTS.
+         *
+         * @param pactJson  the Pact v3 contract (object or JSON string)
+         * @return promise resolving to the parsed verification report
+         *         ({verified: boolean, interactions: [...]})
+         */
+        var pactVerify = function (pactJson) {
+            if (pactJson === undefined || pactJson === null || pactJson === "") {
+                throw new Error("pactVerify(pactJson) requires a non null pact contract");
+            }
+            return {
+                then: function (sucess, error) {
+                    makeRawRequest(host, port, "/mockserver/pact/verify", pactJson)
+                        .then(function (result) {
+                            var parsed = result.body ? JSON.parse(result.body) : {};
+                            // 202 = pass, 406 = fail (both carry the report);
+                            // 400 = bad input, carries {error}.
+                            if (result.statusCode === 400) {
+                                if (error) {
+                                    error(parsed.error || result.body);
+                                }
+                                return;
+                            }
+                            if (sucess) {
+                                sucess(parsed);
+                            }
+                        }, function (err) {
+                            if (error) {
+                                error(err);
+                            }
+                        });
+                }
+            };
+        };
+
+        // -------------------------------------------------------------------
+        // File store (store / retrieve / list / delete)
+        // -------------------------------------------------------------------
+        /**
+         * Store a UTF-8 text file in the in-memory file store
+         * (PUT /mockserver/files/store).
+         *
+         * @param name     the file name/key (required)
+         * @param content  the file content as a UTF-8 string (required)
+         * @return promise resolving to {name, size}
+         */
+        var storeFile = function (name, content) {
+            if (!name) {
+                throw new Error("storeFile(name, content) requires a non null name");
+            }
+            return {
+                then: function (sucess, error) {
+                    makeRequest(host, port, "/mockserver/files/store", {name: name, content: content === undefined || content === null ? "" : content})
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Store a binary file in the in-memory file store
+         * (PUT /mockserver/files/store). The bytes are base64-encoded and sent with
+         * "base64": true so the server stores the raw bytes verbatim.
+         *
+         * @param name     the file name/key (required)
+         * @param content  the file content as a Buffer, Uint8Array, ArrayBuffer or
+         *                 base64 string
+         * @return promise resolving to {name, size}
+         */
+        var storeBinaryFile = function (name, content) {
+            if (!name) {
+                throw new Error("storeBinaryFile(name, content) requires a non null name");
+            }
+            var base64;
+            if (typeof content === "string") {
+                base64 = content;
+            } else if (typeof Buffer !== "undefined") {
+                base64 = Buffer.from(content || []).toString("base64");
+            } else {
+                throw new Error("storeBinaryFile(name, content) requires a Buffer or base64 string content in this environment");
+            }
+            return {
+                then: function (sucess, error) {
+                    makeRequest(host, port, "/mockserver/files/store", {name: name, content: base64, base64: true})
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Retrieve a file's content from the in-memory file store
+         * (PUT /mockserver/files/retrieve). Resolves with the raw file content
+         * (a string) on success. An unknown file REJECTS with an Error carrying the
+         * server's not-found message ("file not found: <name>"), so a missing file
+         * is caught via try/catch rather than mistaken for success. This matches
+         * the other MockServer clients (Java/Go/.NET/Ruby/Rust/Python/PHP), which
+         * return the content directly and signal a missing file as an error.
+         *
+         * @param name  the file name/key (required)
+         * @return promise resolving to the file content string (200); rejects with
+         *         an Error on 404 (file not found)
+         */
+        var retrieveFile = function (name) {
+            if (!name) {
+                throw new Error("retrieveFile(name) requires a non null name");
+            }
+            return {
+                then: function (sucess, error) {
+                    makeRawRequest(host, port, "/mockserver/files/retrieve", {name: name})
+                        .then(function (result) {
+                            if (result.statusCode >= 400) {
+                                if (error) {
+                                    error(new Error(result.body || ("file not found: " + name)));
+                                }
+                                return;
+                            }
+                            if (sucess) {
+                                sucess(result.body);
+                            }
+                        }, function (err) {
+                            if (error) {
+                                error(err);
+                            }
+                        });
+                }
+            };
+        };
+        /**
+         * List the names of all files in the in-memory file store
+         * (PUT /mockserver/files/list).
+         *
+         * @return promise resolving to an array of file-name strings
+         */
+        var listFiles = function () {
+            return {
+                then: function (sucess, error) {
+                    makeRequest(host, port, "/mockserver/files/list", "")
+                        .then(function (result) {
+                            sucess(result.body ? JSON.parse(result.body) : []);
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Delete a file from the in-memory file store
+         * (PUT /mockserver/files/delete). An unknown file rejects with the server's
+         * 404 text body.
+         *
+         * @param name  the file name/key (required)
+         * @return promise resolving to {statusCode, body}
+         */
+        var deleteFile = function (name) {
+            if (!name) {
+                throw new Error("deleteFile(name) requires a non null name");
+            }
+            return makeRequest(host, port, "/mockserver/files/delete", {name: name});
+        };
+
+        // -------------------------------------------------------------------
+        // Import (HAR / Postman / Pact / auto-detect)
+        // -------------------------------------------------------------------
+        /**
+         * Import a HAR, Postman collection, or Pact contract as expectations
+         * (PUT /mockserver/import). When format is blank the server auto-detects
+         * the format from the JSON shape.
+         *
+         * @param json    the document (object or JSON string, required)
+         * @param format  one of "har", "postman", "pact", or null/blank for auto-detect
+         * @return promise resolving to the array of upserted expectations
+         */
+        var importDocument = function (json, format) {
+            if (json === undefined || json === null || json === "") {
+                throw new Error("importDocument(json, format) requires a non null document");
+            }
+            var path = "/mockserver/import" + (format ? "?format=" + encodeURIComponent(format) : "");
+            return {
+                then: function (sucess, error) {
+                    makeRequest(host, port, path, json)
+                        .then(function (result) {
+                            sucess(result.body ? JSON.parse(result.body) : []);
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Import a HAR (HTTP Archive) document as expectations
+         * (PUT /mockserver/import?format=har).
+         *
+         * @param harJson  the HAR document (object or JSON string)
+         * @return promise resolving to the array of upserted expectations
+         */
+        var importHar = function (harJson) {
+            return importDocument(harJson, "har");
+        };
+        /**
+         * Import a Postman collection as expectations
+         * (PUT /mockserver/import?format=postman).
+         *
+         * @param collectionJson  the Postman collection (object or JSON string)
+         * @return promise resolving to the array of upserted expectations
+         */
+        var importPostmanCollection = function (collectionJson) {
+            return importDocument(collectionJson, "postman");
+        };
+
+        // -------------------------------------------------------------------
+        // Operating mode (SIMULATE / SPY / CAPTURE)
+        // -------------------------------------------------------------------
+        /**
+         * Set the high-level operating mode (PUT /mockserver/mode?mode=<MODE>).
+         * Setting the mode also flips attemptToProxyIfNoMatchingExpectation
+         * server-side.
+         *
+         * @param mode  one of "SIMULATE", "SPY", "CAPTURE" (case-insensitive;
+         *              MockMode.SIMULATE/SPY/CAPTURE constants are also exported)
+         * @return promise resolving to {mode, proxyUnmatchedRequests}
+         */
+        var setMode = function (mode) {
+            if (!mode) {
+                throw new Error("setMode(mode) requires a non null mode (one of SIMULATE, SPY, CAPTURE)");
+            }
+            return {
+                then: function (sucess, error) {
+                    makeRequest(host, port, "/mockserver/mode?mode=" + encodeURIComponent(String(mode).toUpperCase()), "")
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Read the current high-level operating mode (GET /mockserver/mode).
+         *
+         * @return promise resolving to {mode, proxyUnmatchedRequests}
+         */
+        var retrieveMode = function () {
+            return {
+                then: function (sucess, error) {
+                    makeGetRequest(host, port, "/mockserver/mode")
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+
+        // -------------------------------------------------------------------
+        // WSDL -> expectations
+        // -------------------------------------------------------------------
+        /**
+         * Generate and upsert expectations from a WSDL document
+         * (PUT /mockserver/wsdl). The raw WSDL XML is sent as the request body with
+         * an XML content type.
+         *
+         * @param wsdl  the WSDL document XML (required)
+         * @return promise resolving to the array of generated (upserted) expectations
+         */
+        var wsdlExpectation = function (wsdl) {
+            if (wsdl === undefined || wsdl === null || wsdl === "") {
+                throw new Error("wsdlExpectation(wsdl) requires a non null WSDL document");
+            }
+            return {
+                then: function (sucess, error) {
+                    makeRawRequest(host, port, "/mockserver/wsdl", String(wsdl), "application/xml; charset=utf-8")
+                        .then(function (result) {
+                            if (result.statusCode >= 400) {
+                                if (error) {
+                                    error(result.body);
+                                }
+                                return;
+                            }
+                            if (sucess) {
+                                sucess(result.body ? JSON.parse(result.body) : []);
+                            }
+                        }, function (err) {
+                            if (error) {
+                                error(err);
+                            }
+                        });
+                }
+            };
+        };
+
         /**
          * Register a service-scoped HTTP chaos profile for an upstream host. The
          * profile is applied to every matched forward expectation to that host that
@@ -2768,6 +3242,24 @@ var mockServerClient;
             advanceClock: advanceClock,
             resetClock: resetClock,
             clockStatus: clockStatus,
+            retrieveMetrics: retrieveMetrics,
+            scrapeMetrics: scrapeMetrics,
+            retrieveConfiguration: retrieveConfiguration,
+            updateConfiguration: updateConfiguration,
+            pactImport: pactImport,
+            pactExport: pactExport,
+            pactVerify: pactVerify,
+            storeFile: storeFile,
+            storeBinaryFile: storeBinaryFile,
+            retrieveFile: retrieveFile,
+            listFiles: listFiles,
+            deleteFile: deleteFile,
+            importDocument: importDocument,
+            importHar: importHar,
+            importPostmanCollection: importPostmanCollection,
+            setMode: setMode,
+            retrieveMode: retrieveMode,
+            wsdlExpectation: wsdlExpectation,
             setServiceChaos: setServiceChaos,
             removeServiceChaos: removeServiceChaos,
             clearServiceChaos: clearServiceChaos,
@@ -2837,9 +3329,19 @@ var mockServerClient;
         return _this;
     };
 
+    // The valid high-level operating modes (server enum MockMode). Exposed as
+    // string constants so callers can write setMode(MockMode.SPY) instead of a
+    // raw string literal. setMode also accepts the equivalent strings directly.
+    var MockMode = Object.freeze({
+        SIMULATE: "SIMULATE",
+        SPY: "SPY",
+        CAPTURE: "CAPTURE"
+    });
+
     if (typeof module !== 'undefined') {
         module.exports = {
             mockServerClient: mockServerClient,
+            MockMode: MockMode,
             llm: require('./llm'),
             mcpMock: require('./mcpMockBuilder').mcpMock,
             a2aMock: require('./a2aMockBuilder').a2aMock,

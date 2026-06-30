@@ -1880,4 +1880,194 @@ describe('mock server node client (no proxy)', { concurrency: 1 }, function () {
         var expectations = await client.retrieveRecordedExpectations("/.*");
         assert.ok(Array.isArray(expectations), "should return an array");
     });
+
+    // ========================================================================
+    // PARITY TESTS: control-plane helpers ported from the Java client —
+    // metrics, configuration, pact, file store, import, operating mode, WSDL.
+    // ========================================================================
+
+    // --- Metrics -----------------------------------------------------------
+    it('should retrieve the JSON metrics snapshot', async function () {
+        var metrics = await client.retrieveMetrics();
+        // metricsEnabled defaults to false -> {} ; either way it is an object.
+        assert.ok(metrics && typeof metrics === 'object', "retrieveMetrics should resolve an object");
+        assert.ok(!Array.isArray(metrics), "metrics snapshot is a map, not an array");
+    });
+
+    it('should scrape Prometheus metrics or 404 when disabled', async function () {
+        // The integration server is started without metricsEnabled, so the
+        // scrape endpoint replies 404 (rejected by the transport). When enabled
+        // it resolves the exposition text. Accept either deterministically.
+        try {
+            var text = await client.scrapeMetrics();
+            assert.ok(typeof text === 'string', "scrapeMetrics should resolve a string when enabled");
+        } catch (err) {
+            assert.equal(err, "404 Not Found", "scrapeMetrics should 404 when metrics disabled");
+        }
+    });
+
+    // --- Configuration -----------------------------------------------------
+    it('should retrieve and update configuration', async function () {
+        var config = await client.retrieveConfiguration();
+        assert.ok(config && typeof config === 'object', "retrieveConfiguration should resolve an object");
+        // Partial update: flip a single boolean and confirm it round-trips.
+        var updated = await client.updateConfiguration({ logLevel: "WARN" });
+        assert.ok(updated && typeof updated === 'object', "updateConfiguration should resolve the updated config");
+        assert.equal(updated.logLevel, "WARN", "updateConfiguration should apply logLevel");
+    });
+
+    // --- File store --------------------------------------------------------
+    it('should store, list, retrieve and delete a text file', async function () {
+        var name = "node-parity-" + guid() + ".txt";
+        var stored = await client.storeFile(name, "hello world");
+        assert.equal(stored.name, name);
+        assert.equal(stored.size, Buffer.byteLength("hello world"));
+
+        var names = await client.listFiles();
+        assert.ok(Array.isArray(names), "listFiles should resolve an array");
+        assert.ok(names.indexOf(name) !== -1, "listFiles should include the stored file");
+
+        var retrieved = await client.retrieveFile(name);
+        assert.equal(retrieved, "hello world", "retrieveFile should resolve the raw content directly");
+
+        await client.deleteFile(name);
+        // A missing file REJECTS (matches the other clients) so callers catch it
+        // rather than mistaking a 404 object for success. The client returns a
+        // custom thenable, so await it inside a function for assert.rejects.
+        await assert.rejects(
+            async function () { await client.retrieveFile(name); },
+            function (err) {
+                return err instanceof Error && err.message.indexOf("file not found") !== -1;
+            },
+            "retrieveFile should reject with a not-found Error for an unknown file"
+        );
+    });
+
+    it('should store a binary file (base64 on the wire)', async function () {
+        var name = "node-parity-bin-" + guid();
+        var bytes = Buffer.from([0x00, 0x01, 0x02, 0xff]);
+        var stored = await client.storeBinaryFile(name, bytes);
+        assert.equal(stored.name, name);
+        assert.equal(stored.size, bytes.length, "binary file size should be the decoded byte length");
+    });
+
+    // --- Operating mode ----------------------------------------------------
+    it('should set and retrieve the operating mode', async function () {
+        var spy = await client.setMode(mockServer.MockMode.SPY);
+        assert.equal(spy.mode, "SPY");
+        assert.equal(spy.proxyUnmatchedRequests, true, "SPY should enable proxy-on-no-match");
+
+        var current = await client.retrieveMode();
+        assert.equal(current.mode, "SPY");
+
+        // Reset to the default so later tests are unaffected.
+        var simulate = await client.setMode("simulate");
+        assert.equal(simulate.mode, "SIMULATE");
+        assert.equal(simulate.proxyUnmatchedRequests, false, "SIMULATE should disable proxy-on-no-match");
+    });
+
+    // --- Import (HAR) ------------------------------------------------------
+    it('should import a HAR document as expectations', async function () {
+        var har = {
+            log: {
+                version: "1.2",
+                entries: [
+                    {
+                        request: { method: "GET", url: "http://localhost/har-imported", headers: [], queryString: [] },
+                        response: {
+                            status: 200,
+                            headers: [{ name: "Content-Type", value: "application/json" }],
+                            content: { mimeType: "application/json", text: "{\"har\":true}" }
+                        }
+                    }
+                ]
+            }
+        };
+        var expectations = await client.importHar(har);
+        assert.ok(Array.isArray(expectations), "importHar should resolve an array of expectations");
+        assert.ok(expectations.length >= 1, "importHar should create at least one expectation");
+    });
+
+    // --- Pact import / export / verify ------------------------------------
+    it('should export, import and verify a Pact contract', async function () {
+        await client.mockSimpleResponse('/pact-endpoint', { ok: true }, 200);
+
+        // Export the active expectations as a Pact contract.
+        var contract = await client.pactExport("node-consumer", "node-provider");
+        assert.ok(contract && typeof contract === 'object', "pactExport should resolve a contract object");
+        assert.ok(contract.interactions, "exported contract should contain interactions");
+
+        // Re-import it (round-trip) and verify against the active expectations.
+        var imported = await client.pactImport(contract);
+        assert.ok(Array.isArray(imported), "pactImport should resolve an array of expectations");
+
+        var report = await client.pactVerify(contract);
+        assert.equal(typeof report.verified, "boolean", "pactVerify report should carry a `verified` boolean");
+        assert.equal(report.verified, true, "round-tripped contract should verify as passed (202)");
+    });
+
+    it('should resolve pactVerify with verified=false on a failing contract (406)', async function () {
+        // A contract whose interaction has no matching expectation -> 406 FAIL.
+        // pactVerify must RESOLVE (not throw) with verified:false.
+        var failingContract = {
+            consumer: { name: "node-consumer" },
+            provider: { name: "node-provider" },
+            interactions: [
+                {
+                    description: "unmatched interaction",
+                    request: { method: "GET", path: "/no-such-pact-path" },
+                    response: { status: 200 }
+                }
+            ],
+            metadata: { pactSpecification: { version: "3.0.0" } }
+        };
+        var report = await client.pactVerify(failingContract);
+        assert.equal(typeof report.verified, "boolean");
+        assert.equal(report.verified, false, "pactVerify should resolve verified:false on 406, not throw");
+    });
+
+    // --- WSDL --------------------------------------------------------------
+    it('should generate expectations from a WSDL document', async function () {
+        var wsdl =
+            '<?xml version="1.0" encoding="UTF-8"?>' +
+            '<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"' +
+            ' xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"' +
+            ' xmlns:tns="http://example.com/stock" xmlns:xsd="http://www.w3.org/2001/XMLSchema"' +
+            ' targetNamespace="http://example.com/stock">' +
+            '  <wsdl:types>' +
+            '    <xsd:schema targetNamespace="http://example.com/stock">' +
+            '      <xsd:element name="GetPriceRequest"><xsd:complexType><xsd:sequence>' +
+            '        <xsd:element name="symbol" type="xsd:string"/>' +
+            '      </xsd:sequence></xsd:complexType></xsd:element>' +
+            '      <xsd:element name="GetPriceResponse"><xsd:complexType><xsd:sequence>' +
+            '        <xsd:element name="price" type="xsd:double"/>' +
+            '      </xsd:sequence></xsd:complexType></xsd:element>' +
+            '    </xsd:schema>' +
+            '  </wsdl:types>' +
+            '  <wsdl:message name="GetPriceInput"><wsdl:part name="body" element="tns:GetPriceRequest"/></wsdl:message>' +
+            '  <wsdl:message name="GetPriceOutput"><wsdl:part name="body" element="tns:GetPriceResponse"/></wsdl:message>' +
+            '  <wsdl:portType name="StockPortType">' +
+            '    <wsdl:operation name="GetPrice">' +
+            '      <wsdl:input message="tns:GetPriceInput"/>' +
+            '      <wsdl:output message="tns:GetPriceOutput"/>' +
+            '    </wsdl:operation>' +
+            '  </wsdl:portType>' +
+            '  <wsdl:binding name="StockBinding" type="tns:StockPortType">' +
+            '    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>' +
+            '    <wsdl:operation name="GetPrice">' +
+            '      <soap:operation soapAction="http://example.com/stock/GetPrice"/>' +
+            '      <wsdl:input><soap:body use="literal"/></wsdl:input>' +
+            '      <wsdl:output><soap:body use="literal"/></wsdl:output>' +
+            '    </wsdl:operation>' +
+            '  </wsdl:binding>' +
+            '  <wsdl:service name="StockService">' +
+            '    <wsdl:port name="StockPort" binding="tns:StockBinding">' +
+            '      <soap:address location="http://example.com/stock"/>' +
+            '    </wsdl:port>' +
+            '  </wsdl:service>' +
+            '</wsdl:definitions>';
+        var expectations = await client.wsdlExpectation(wsdl);
+        assert.ok(Array.isArray(expectations), "wsdlExpectation should resolve an array");
+        assert.ok(expectations.length >= 1, "wsdlExpectation should generate at least one expectation");
+    });
 });

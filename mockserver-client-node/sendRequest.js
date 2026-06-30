@@ -367,11 +367,72 @@
             };
         };
 
+        // Like sendRequest, but NEVER rejects on a >= 400 status — it always
+        // resolves with {statusCode, body} for every response (including 404 and
+        // 406). This is required by control-plane helpers whose non-2xx responses
+        // are expected outcomes carrying a meaningful body, e.g. files/retrieve
+        // (404 NOT_FOUND with a text body) and pact/verify (406 NOT_ACCEPTABLE
+        // with the verification report). The caller inspects statusCode itself.
+        // Only a transport-level failure (connection refused, etc.) rejects.
+        var sendRawRequest = function (tls, caCertPath, clientOptions) {
+            var http = tls ? require('https') : require('http');
+            return function (host, port, path, body, contentType) {
+                var deferred = defer();
+                downloadCACert(tls, caCertPath, function (ca) {
+
+                    var requestBody = (typeof body === "string" ? body : JSON.stringify(body || ""));
+                    var options = applyControlPlaneAuth({
+                        protocol: tls ? 'https:' : 'http:',
+                        method: 'PUT',
+                        host: host,
+                        path: path,
+                        port: port,
+                        ca: ca,
+                        headers: {
+                            'Content-Type': contentType || "application/json; charset=utf-8"
+                        },
+                    }, clientOptions);
+
+                    var req = http.request(options);
+
+                    req.once('response', function (response) {
+                        var data = '';
+
+                        response.on('data', function (chunk) {
+                            data += chunk;
+                        });
+
+                        response.on('end', function () {
+                            // Resolve for every status — the caller interprets it.
+                            deferred.resolve({
+                                statusCode: response.statusCode,
+                                body: data
+                            });
+                        });
+                    });
+
+                    req.once('error', function (error) {
+                        if (error.code && error.code === "ECONNREFUSED") {
+                            deferred.reject("Can't connect to MockServer running on host: \"" + host + "\" and port: \"" + port + "\"");
+                        } else {
+                            deferred.reject(error.message || String(error));
+                        }
+                    });
+
+                    req.write(requestBody);
+                    req.end();
+
+                });
+                return deferred.promise;
+            };
+        };
+
         module.exports = {
             sendRequest: sendRequest,
             sendGetRequest: sendGetRequest,
             sendBinaryRequest: sendBinaryRequest,
-            sendDeleteRequest: sendDeleteRequest
+            sendDeleteRequest: sendDeleteRequest,
+            sendRawRequest: sendRawRequest
         };
     }
 })();
