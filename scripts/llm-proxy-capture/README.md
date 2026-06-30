@@ -8,10 +8,12 @@ Point a coding-assistant CLI at MockServer running as an HTTPS proxy and MockSer
 
 ```bash
 # 1. start MockServer as a proxy (any port; 1080 used here).
-#    forwardProxyHttp2Upgrade=true forwards the CLI's TLS traffic to the upstream over HTTP/2 so
-#    streaming SSE backends (notably the OpenAI Codex endpoint opencode uses) send the response head
-#    immediately instead of withholding it over HTTP/1.1 (which shows up as a streaming header timeout).
+#    forwardProxyHttp2Upgrade=true forwards the CLI's TLS traffic to the upstream over HTTP/2 so a
+#    streaming SSE backend that streams its head over HTTP/2 sends it immediately. maxSocketTimeoutInMillis
+#    raises the FIRST-byte wait from the 20s default to 120s: a reasoning model can take ~20s to emit its
+#    first token on a big prompt, and the 20s default 502s those slow-but-healthy streaming heads.
 java -Dmockserver.forwardProxyHttp2Upgrade=true \
+     -Dmockserver.maxSocketTimeoutInMillis=120000 \
      -jar mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar \
      -serverPort 1080 -logLevel INFO
 

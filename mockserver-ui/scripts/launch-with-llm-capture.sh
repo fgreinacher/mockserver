@@ -135,13 +135,21 @@ DEMO_MAX_HEAP="${CAPTURE_MAX_HEAP:-1g}"
 DEMO_MAX_LOG_ENTRIES="${CAPTURE_MAX_LOG_ENTRIES:-5000}"
 echo "→ Starting MockServer (proxy) on port $MOCKSERVER_PORT (max heap: $DEMO_MAX_HEAP, log: $MOCKSERVER_LOG)..."
 # forwardProxyHttp2Upgrade: forward the (HTTP/1.1) CLI's TLS-intercepted requests to the upstream over
-# HTTP/2 via ALPN. Streaming SSE backends — notably the OpenAI Codex endpoint the opencode CLI uses —
-# withhold the response head over HTTP/1.1 and only flush at completion, which surfaces as a streaming
-# header timeout in the CLI; forwarding over HTTP/2 makes the head arrive immediately. ALPN falls back to
-# HTTP/1.1 if the upstream does not offer HTTP/2, so this is safe for every provider.
+# HTTP/2 via ALPN, so a streaming SSE backend that streams the response head over HTTP/2 sends it
+# immediately. ALPN falls back to HTTP/1.1 if the upstream does not offer HTTP/2, so this is safe for
+# every provider.
+# maxSocketTimeoutInMillis (head-wait budget): a reasoning LLM can legitimately take far longer than the
+# 20s default to produce its FIRST token on a large prompt (observed ~19s for an 80k-token Codex prompt,
+# bumping the 20s ceiling and 502-ing the call). Raise it to 120s so MockServer waits for a slow-but-
+# healthy streaming head instead of returning 502 Bad Gateway. Once the head arrives the streaming relay
+# takes over and streamIdleTimeoutSeconds (default 60s) governs the per-chunk pace. (This is the only
+# MockServer-side lever for these timeouts — the first-token latency itself is the model's compute time,
+# and if a CLI's own request/header timeout is shorter than the upstream first token it must be raised
+# CLI-side.)
 java -Xmx"$DEMO_MAX_HEAP" -Dmockserver.maxLogEntries="$DEMO_MAX_LOG_ENTRIES" \
      -Dmockserver.metricsEnabled=true -Dmockserver.wasmEnabled=true \
      -Dmockserver.forwardProxyHttp2Upgrade=true \
+     -Dmockserver.maxSocketTimeoutInMillis=120000 \
      -jar "$MOCKSERVER_JAR" -serverPort "$MOCKSERVER_PORT" -logLevel INFO > "$MOCKSERVER_LOG" 2>&1 &
 MOCKSERVER_PID=$!
 
