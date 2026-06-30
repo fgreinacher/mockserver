@@ -1,6 +1,5 @@
 package org.mockserver.httpclient;
 
-import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
@@ -176,15 +175,34 @@ public class HttpClientInitializer extends ChannelInitializer<SocketChannel> {
     }
 
     /**
-     * Builds a streaming-capable HTTP/2 forward pipeline using the same multiplex stack the server side
+     * Builds a streaming-capable HTTP/2 client pipeline using the same multiplex stack the server side
      * uses ({@link Http2FrameCodecBuilder#forClient()} + {@link Http2MultiplexHandler}), so that — unlike
      * the previous {@code InboundHttp2ToHttpAdapter} path which aggregated the whole response — a streamed
-     * upstream response (Server-Sent Events) is relayed incrementally to the proxy client.
+     * upstream response (Server-Sent Events) is relayed incrementally to the proxy client. This is selected
+     * purely by ALPN, so it serves BOTH direct HTTP/2 clients and forward-over-HTTP/2.
      * <p>
      * The MockServer request is written to the parent channel by {@link NettyHttpClient} exactly as for
      * HTTP/1.1; {@link Http2ForwardRequestDispatchHandler} (at the tail) intercepts that write, opens a
      * single outbound stream and dispatches the request to it. The per-stream response pipeline (decode,
      * decompress, streaming-aware aggregate, relay) is built by {@link Http2ForwardStreamChildInitializer}.
+     * <p>
+     * ROUND-TRIP vs STREAMING / stream correlation: a spec-compliant HTTP/2 upstream answers on the SAME
+     * (client-initiated, odd) stream the request was sent on, so the response arrives on the bootstrap
+     * child stream and is handled there. However MockServer's OWN non-multiplex HTTP/2 server (the
+     * {@code HttpToHttp2ConnectionHandler} path in PortUnificationHandler) does not propagate the request's
+     * stream id onto its responses, so it returns responses generally — ordinary aggregated mock responses
+     * as well as gRPC reflection and websocket object-callback forwards — on a fresh SERVER-INITIATED (even)
+     * stream rather than echoing the request's stream id. A strict multiplex client treats such a stream as an
+     * unsolicited inbound stream; the original implementation RST-reset it via {@code ClosedInboundHttp2-
+     * StreamHandler}, so the response was discarded and the request's stream never completed (the round
+     * trip hung until timeout — the regression this fixes). The old aggregating client tolerated it because
+     * {@code InboundHttp2ToHttpAdapter} correlates at the connection level, not by strict stream identity.
+     * <p>
+     * Because this client disables server push ({@code pushEnabled(false)}), an inbound (server-initiated)
+     * stream is never a legitimate push — it can only be such a misattributed response — so the inbound
+     * stream is routed through the SAME per-stream response pipeline ({@code childInitializer}) instead of
+     * being reset. That completes the response future for these paths while leaving the compliant
+     * same-stream path (and the incremental SSE streaming feature) unchanged.
      * <p>
      * ALPN has already proven HTTP/2 by the time this runs, so {@code protocolFuture} is completed with
      * {@link Protocol#HTTP_2} here; the frame codec consumes the SETTINGS frame, so the old
@@ -213,8 +231,12 @@ public class HttpClientInitializer extends ChannelInitializer<SocketChannel> {
         pipeline.addLast(frameCodecBuilder.build());
 
         Http2ForwardStreamChildInitializer childInitializer = new Http2ForwardStreamChildInitializer(configuration, mockServerLogger, proxyConfigurations, httpClientHandler, httpClientConnectionHandler);
-        // Server-initiated (inbound) streams are unexpected for a forward client (push is disabled) — close them.
-        pipeline.addLast(new Http2MultiplexHandler(new ClosedInboundHttp2StreamHandler()));
+        // Push is disabled, so an inbound (server-initiated) stream is never a push — it is a response
+        // MockServer's own non-multiplex HTTP/2 server returned on a server-initiated stream instead of the
+        // request's stream. Route it through the same response pipeline (NOT reset) so the round trip
+        // completes; a compliant upstream answers on the client-initiated stream opened below and never
+        // creates an inbound stream, so this leaves the same-stream / streaming path untouched.
+        pipeline.addLast(new Http2MultiplexHandler(childInitializer));
         // Intercepts the MockServer request written to the parent channel and dispatches it on a new stream.
         pipeline.addLast(new Http2ForwardRequestDispatchHandler(childInitializer));
 
@@ -263,17 +285,6 @@ public class HttpClientInitializer extends ChannelInitializer<SocketChannel> {
             } else {
                 super.write(ctx, msg, promise);
             }
-        }
-    }
-
-    /**
-     * Handler installed by {@link Http2MultiplexHandler} for any server-initiated (inbound) stream. A
-     * forward client disables server push and never expects an inbound stream, so close it immediately.
-     */
-    private static class ClosedInboundHttp2StreamHandler extends ChannelInitializer<Channel> {
-        @Override
-        protected void initChannel(Channel ch) {
-            ch.close();
         }
     }
 
