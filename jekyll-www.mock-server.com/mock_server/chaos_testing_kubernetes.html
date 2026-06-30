@@ -34,6 +34,8 @@ schema_faq:
 
 <p>This page builds on the <a href="/mock_server/chaos_testing.html">Chaos Testing &amp; Fault Injection</a> page, which covers the <code class="inline code">chaos</code> profile fields in detail. Here we focus on <strong>deployment patterns in Kubernetes</strong> that put MockServer in the request path so chaos profiles apply to real upstream traffic.</p>
 
+<p><strong>These patterns use explicit routing</strong> &mdash; you point your application at MockServer by swapping a Kubernetes Service, setting <code class="inline code">HTTP_PROXY</code>, or configuring a sidecar's remote host. If you instead want MockServer to intercept outbound traffic <strong>transparently, with no application or routing changes</strong> (and on any Linux host, not only Kubernetes), see <a href="/mock_server/service_mesh.html">Transparent Proxy</a> &mdash; that page covers the <em>interception mechanism</em>, which you can combine with the chaos profiles described here.</p>
+
 <a id="on_this_page" class="anchor" href="#on_this_page">&nbsp;</a>
 
 <h2>On this page</h2>

@@ -1,7 +1,7 @@
 ---
-title: Transparent Proxy / Sidecar Mode
+title: Transparent Proxy (Sidecar & Host-level Interception)
 shortTitle: Transparent Proxy
-description: Run MockServer as a Kubernetes sidecar with transparent proxy interception for service mesh integration.
+description: Run MockServer as a transparent proxy that intercepts outbound traffic with no application changes, on any Linux host (containers, VMs, bare metal) or as a Kubernetes sidecar, for mocking, recording, or chaos.
 layout: page
 pageOrder: 3
 section: 'Chaos Testing'
@@ -13,7 +13,9 @@ sitemap:
 keywords: sidecar proxy, transparent proxy, kubernetes sidecar, iptables redirect, mockserver sidecar, conntrack, proxy protocol, NLB, HAProxy
 ---
 
-<p>MockServer can run as a <strong>Kubernetes sidecar</strong> with transparent HTTP proxy interception. This enables service mesh integration patterns where MockServer intercepts traffic destined for external services without any application code changes.</p>
+<p>MockServer can run as a <strong>transparent proxy</strong> that intercepts outbound HTTP(S) traffic with <strong>no application code or proxy-configuration changes</strong>. It works on any Linux host &mdash; containers, VMs, or bare metal &mdash; using <code class="inline code">iptables</code>/eBPF interception; running it as a <strong>Kubernetes sidecar</strong> is the most common deployment, but not the only one (it also fronts traffic behind an AWS NLB / HAProxy or as an OS-level proxy on a host &mdash; see <a href="#deployment_contexts">Deployment Contexts</a>).</p>
+
+<p><strong>This page is about the interception mechanism</strong> &mdash; <em>how</em> traffic transparently reaches MockServer &mdash; independent of what MockServer then does with it (mock, record, or inject faults). If you instead want to inject faults into real upstream calls using <strong>explicit</strong> Kubernetes routing (swapping a Service, setting <code class="inline code">HTTP_PROXY</code>, or a sidecar with a fixed remote host), see <a href="/mock_server/chaos_testing_kubernetes.html">Chaos Proxy in Kubernetes</a>.</p>
 
 <a id="on_this_page" class="anchor" href="#on_this_page">&nbsp;</a>
 
