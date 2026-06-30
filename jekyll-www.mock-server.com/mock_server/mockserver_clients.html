@@ -1838,6 +1838,20 @@ $client-&gt;reset();</code></pre>
             0
         );</code></pre>
         </div>
+        <button class="accordion inner">JavaScript</button>
+        <div class="panel">
+            <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080)
+  .bind([0])
+  .then(
+    function (boundPorts) {
+      console.log(JSON.stringify(boundPorts));
+    },
+    function (error) {
+      console.log(error);
+    }
+  );</code></pre>
+        </div>
         <button class="accordion inner">Python</button>
         <div class="panel">
             <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient
@@ -1906,6 +1920,20 @@ $boundPorts = $client-&gt;bind(0);</code></pre>
             <pre class="prettyprint lang-java code"><code class="code">List&lt;Integer&gt; boundPorts = new ClientAndServer(1080).bind(
             1081, 1082
         );</code></pre>
+        </div>
+        <button class="accordion inner">JavaScript</button>
+        <div class="panel">
+            <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080)
+  .bind([1081, 1082])
+  .then(
+    function (boundPorts) {
+      console.log(JSON.stringify(boundPorts));
+    },
+    function (error) {
+      console.log(error);
+    }
+  );</code></pre>
         </div>
         <button class="accordion inner">Python</button>
         <div class="panel">

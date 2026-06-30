@@ -1370,6 +1370,182 @@ $client-&gt;verify(
         VerificationTimes.atLeast(1)
     );</code></pre>
     </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080)
+  .verifyRequestAndResponse(
+    {
+      'path': '/api/users'
+    },
+    {
+      'statusCode': 200,
+      'body': {
+        'type': 'JSON_SCHEMA',
+        'jsonSchema': JSON.stringify({
+          type: 'object',
+          required: ['id', 'name'],
+          properties: {
+            id: {type: 'integer'},
+            name: {type: 'string'}
+          }
+        })
+      }
+    }, 1)
+  .then(
+    function () {
+      console.log("matching request-response pair found at least once");
+    },
+    function (error) {
+      console.log(error);
+    }
+  );</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/verify/put_verify" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import HttpRequest, HttpResponse, VerificationTimes
+
+client = MockServerClient("localhost", 1080)
+client.verify(
+    HttpRequest(path="/api/users"),
+    VerificationTimes.at_least(1),
+    response=HttpResponse(
+        status_code=200,
+        body={
+            "type": "JSON_SCHEMA",
+            "jsonSchema": "{\"type\":\"object\",\"required\":[\"id\",\"name\"],\"properties\":{\"id\":{\"type\":\"integer\"},\"name\":{\"type\":\"string\"}}}"
+        }
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.verify(
+    MockServer::HttpRequest.new(path: '/api/users'),
+    times: MockServer::VerificationTimes.at_least(1),
+    response: MockServer::HttpResponse.new(
+        status_code: 200,
+        body: {
+            'type' =&gt; 'JSON_SCHEMA',
+            'jsonSchema' =&gt; '{"type":"object","required":["id","name"],"properties":{"id":{"type":"integer"},"name":{"type":"string"}}}'
+        }
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // the Go ResponseBuilder body is a plain string, so a JSON_SCHEMA
+    // response-body matcher is sent via the REST API directly
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/api/users"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": {
+            "type": "JSON_SCHEMA",
+            "jsonSchema": "{\"type\":\"object\",\"required\":[\"id\",\"name\"],\"properties\":{\"id\":{\"type\":\"integer\"},\"name\":{\"type\":\"string\"}}}"
+        }
+    },
+    "times": {
+        "atLeast": 1
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/verify",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Collections.Generic;
+using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.Verify(
+    HttpRequest.Request().WithPath("/api/users"),
+    new HttpResponse
+    {
+        StatusCode = 200,
+        Body = new Dictionary&lt;string, object&gt;
+        {
+            ["type"] = "JSON_SCHEMA",
+            ["jsonSchema"] = "{\"type\":\"object\",\"required\":[\"id\",\"name\"],\"properties\":{\"id\":{\"type\":\"integer\"},\"name\":{\"type\":\"string\"}}}"
+        }
+    },
+    VerificationTimes.AtLeastTimes(1)
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+// the Rust HttpResponse body is a plain string, so a JSON_SCHEMA
+// response-body matcher is sent via the REST API directly
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/api/users"
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": {
+            "type": "JSON_SCHEMA",
+            "jsonSchema": "{\"type\":\"object\",\"required\":[\"id\",\"name\"],\"properties\":{\"id\":{\"type\":\"integer\"},\"name\":{\"type\":\"string\"}}}"
+        }
+    },
+    "times": {
+        "atLeast": 1
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/verify")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">// the PHP HttpResponse body() setter takes a string, so a JSON_SCHEMA
+// response-body matcher is sent via the REST API directly
+$json = json_encode([
+    'httpRequest' =&gt; ['path' =&gt; '/api/users'],
+    'httpResponse' =&gt; [
+        'statusCode' =&gt; 200,
+        'body' =&gt; [
+            'type' =&gt; 'JSON_SCHEMA',
+            'jsonSchema' =&gt; '{"type":"object","required":["id","name"],"properties":{"id":{"type":"integer"},"name":{"type":"string"}}}',
+        ],
+    ],
+    'times' =&gt; ['atLeast' =&gt; 1],
+]);
+
+$ch = curl_init('http://localhost:1080/mockserver/verify');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
             <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/verify" -d '{

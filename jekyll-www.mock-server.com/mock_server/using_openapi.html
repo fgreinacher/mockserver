@@ -784,7 +784,7 @@ curl_close($ch);</code></pre>
 </div>
 <button id="button_open_api_inline_yaml_specification" class="accordion">create expectation from an inline yaml specification</button>
 <div class="panel">
-    <p>The spec payload can be supplied inline as a <strong>YAML</strong> string instead of JSON &mdash; everything else (the client call, and the full set of language and REST API examples) is identical to the <a href="#button_open_api_inline_json_specification">inline JSON specification</a> above; only the spec string changes from JSON to YAML. The Java example below is representative; for the other clients (JavaScript, Python, Ruby, Go, .NET, Rust, PHP and the REST API) use the inline-JSON examples above with a YAML spec string.</p>
+    <p>The spec payload can be supplied inline as a <strong>YAML</strong> string instead of JSON &mdash; the client call is identical to the <a href="#button_open_api_inline_json_specification">inline JSON specification</a> above; only the spec string changes from JSON to YAML. The clients that expose a typed OpenAPI method (Java, JavaScript, Python, Ruby) pass the YAML directly as <span class="inline_code">specUrlOrPayload</span>; the remaining clients submit the same YAML as raw JSON via the <span class="inline_code">PUT /mockserver/openapi</span> REST endpoint.</p>
     <button class="accordion inner">Java</button>
     <div class="panel">
 <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
@@ -826,6 +826,368 @@ curl_close($ch);</code></pre>
             "      items:\n" +
             "        $ref: '#/components/schemas/Pet'\n")
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+var spec = `---
+openapi: 3.0.0
+info:
+  version: 1.0.0
+  title: Swagger Petstore
+servers:
+  - url: http://petstore.swagger.io/v1
+paths:
+  /pets:
+    get:
+      summary: List all pets
+      operationId: listPets
+      responses:
+        '200':
+          description: A paged array of pets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pets'
+components:
+  schemas:
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+    Pets:
+      type: array
+      items:
+        $ref: '#/components/schemas/Pet'
+`;
+mockServerClient("localhost", 1080).openAPIExpectation({
+    "specUrlOrPayload": spec
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, OpenAPIExpectation
+
+spec = """---
+openapi: 3.0.0
+info:
+  version: 1.0.0
+  title: Swagger Petstore
+servers:
+  - url: http://petstore.swagger.io/v1
+paths:
+  /pets:
+    get:
+      summary: List all pets
+      operationId: listPets
+      responses:
+        '200':
+          description: A paged array of pets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pets'
+components:
+  schemas:
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+    Pets:
+      type: array
+      items:
+        $ref: '#/components/schemas/Pet'
+"""
+
+client = MockServerClient("localhost", 1080)
+client.open_api_expectation(OpenAPIExpectation(
+    spec_url_or_payload=spec
+))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+include MockServer
+
+spec = <<~YAML
+  ---
+  openapi: 3.0.0
+  info:
+    version: 1.0.0
+    title: Swagger Petstore
+  servers:
+    - url: http://petstore.swagger.io/v1
+  paths:
+    /pets:
+      get:
+        summary: List all pets
+        operationId: listPets
+        responses:
+          '200':
+            description: A paged array of pets
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/Pets'
+  components:
+    schemas:
+      Pet:
+        type: object
+        required:
+          - id
+          - name
+        properties:
+          id:
+            type: integer
+            format: int64
+          name:
+            type: string
+      Pets:
+        type: array
+        items:
+          $ref: '#/components/schemas/Pet'
+YAML
+
+client = MockServer::Client.new('localhost', 1080)
+client.open_api_expectation(OpenAPIExpectation.new(
+  spec_url_or_payload: spec
+))</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import (
+    "bytes"
+    "encoding/json"
+    "net/http"
+)
+
+// Go client submits the inline YAML spec as raw JSON via the REST API
+spec := `---
+openapi: 3.0.0
+info:
+  version: 1.0.0
+  title: Swagger Petstore
+servers:
+  - url: http://petstore.swagger.io/v1
+paths:
+  /pets:
+    get:
+      summary: List all pets
+      operationId: listPets
+      responses:
+        '200':
+          description: A paged array of pets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pets'
+components:
+  schemas:
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+    Pets:
+      type: array
+      items:
+        $ref: '#/components/schemas/Pet'
+`
+payload, _ := json.Marshal(map[string]string{
+    "specUrlOrPayload": spec,
+})
+resp, err := http.DefaultClient.Do(
+    must(http.NewRequest("PUT", "http://localhost:1080/mockserver/openapi", bytes.NewReader(payload))),
+)</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+
+// .NET client submits the inline YAML spec as raw JSON via the REST API
+var spec = @"---
+openapi: 3.0.0
+info:
+  version: 1.0.0
+  title: Swagger Petstore
+servers:
+  - url: http://petstore.swagger.io/v1
+paths:
+  /pets:
+    get:
+      summary: List all pets
+      operationId: listPets
+      responses:
+        '200':
+          description: A paged array of pets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pets'
+components:
+  schemas:
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+    Pets:
+      type: array
+      items:
+        $ref: '#/components/schemas/Pet'
+";
+var payload = JsonSerializer.Serialize(new { specUrlOrPayload = spec });
+using var httpClient = new HttpClient();
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/openapi",
+    new StringContent(payload, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">// Rust client submits the inline YAML spec as raw JSON via the REST API
+let spec = r#"---
+openapi: 3.0.0
+info:
+  version: 1.0.0
+  title: Swagger Petstore
+servers:
+  - url: http://petstore.swagger.io/v1
+paths:
+  /pets:
+    get:
+      summary: List all pets
+      operationId: listPets
+      responses:
+        '200':
+          description: A paged array of pets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pets'
+components:
+  schemas:
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+    Pets:
+      type: array
+      items:
+        $ref: '#/components/schemas/Pet'
+"#;
+let payload = serde_json::json!({ "specUrlOrPayload": spec });
+
+let client = reqwest::blocking::Client::new();
+client.put("http://localhost:1080/mockserver/openapi")
+    .header("Content-Type", "application/json")
+    .json(&amp;payload)
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">// PHP client submits the inline YAML spec as raw JSON via the REST API
+$spec = &lt;&lt;&lt;YAML
+---
+openapi: 3.0.0
+info:
+  version: 1.0.0
+  title: Swagger Petstore
+servers:
+  - url: http://petstore.swagger.io/v1
+paths:
+  /pets:
+    get:
+      summary: List all pets
+      operationId: listPets
+      responses:
+        '200':
+          description: A paged array of pets
+          content:
+            application/json:
+              schema:
+                \$ref: '#/components/schemas/Pets'
+components:
+  schemas:
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+    Pets:
+      type: array
+      items:
+        \$ref: '#/components/schemas/Pet'
+YAML;
+
+$ch = curl_init('http://localhost:1080/mockserver/openapi');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
+    CURLOPT_HTTPHEADER =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_POSTFIELDS =&gt; json_encode([
+        'specUrlOrPayload' =&gt; $spec,
+    ]),
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+$result = curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/openapi" -d '{
+    "specUrlOrPayload": "---\nopenapi: 3.0.0\ninfo:\n  version: 1.0.0\n  title: Swagger Petstore\nservers:\n  - url: http://petstore.swagger.io/v1\npaths:\n  /pets:\n    get:\n      summary: List all pets\n      operationId: listPets\n      responses:\n        '\''200'\'':\n          description: A paged array of pets\n          content:\n            application/json:\n              schema:\n                $ref: '\''#/components/schemas/Pets'\''\ncomponents:\n  schemas:\n    Pet:\n      type: object\n      required:\n        - id\n        - name\n      properties:\n        id:\n          type: integer\n          format: int64\n        name:\n          type: string\n    Pets:\n      type: array\n      items:\n        $ref: '\''#/components/schemas/Pet'\''\n"
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
     <p>For the complete Petstore specification used by the examples on this page, see <a href="https://github.com/mock-server/mockserver/search?q=openapi_petstore_example.json" target="_blank" rel="noopener noreferrer">openapi_petstore_example.json</a> in the MockServer repository.</p>
 </div>
@@ -1162,6 +1524,337 @@ curl_close($ch);
 </div>
 <button id="button_wsdl_inline" class="accordion">generate expectations from an inline WSDL string</button>
 <div class="panel">
+    <p>As with the WSDL file above, no client exposes a typed WSDL method &mdash; every language submits the raw WSDL XML directly to the <span class="inline_code">PUT /mockserver/wsdl</span> endpoint with <span class="inline_code">Content-Type: text/xml</span>. The only difference here is that the WSDL is held as an inline string rather than read from a file. MockServer returns <span class="inline_code">201 Created</span> with the generated expectations as JSON.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">// The Java client has no dedicated WSDL method; use an HTTP client to call the REST endpoint directly
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+String wsdl = "&lt;?xml version=\"1.0\" encoding=\"UTF-8\"?&gt;\n"
+    + "&lt;definitions xmlns=\"http://schemas.xmlsoap.org/wsdl/\"\n"
+    + "             xmlns:soap=\"http://schemas.xmlsoap.org/wsdl/soap/\"\n"
+    + "             xmlns:tns=\"http://example.com/weather\"\n"
+    + "             targetNamespace=\"http://example.com/weather\"\n"
+    + "             name=\"WeatherService\"&gt;\n"
+    + "  &lt;message name=\"GetWeatherRequest\"/&gt;\n"
+    + "  &lt;message name=\"GetWeatherResponse\"/&gt;\n"
+    + "  &lt;portType name=\"WeatherPortType\"&gt;\n"
+    + "    &lt;operation name=\"GetWeather\"&gt;\n"
+    + "      &lt;input message=\"tns:GetWeatherRequest\"/&gt;\n"
+    + "      &lt;output message=\"tns:GetWeatherResponse\"/&gt;\n"
+    + "    &lt;/operation&gt;\n"
+    + "  &lt;/portType&gt;\n"
+    + "  &lt;binding name=\"WeatherBinding\" type=\"tns:WeatherPortType\"&gt;\n"
+    + "    &lt;soap:binding style=\"document\" transport=\"http://schemas.xmlsoap.org/soap/http\"/&gt;\n"
+    + "    &lt;operation name=\"GetWeather\"&gt;\n"
+    + "      &lt;soap:operation soapAction=\"http://example.com/GetWeather\"/&gt;\n"
+    + "      &lt;input&gt;&lt;soap:body use=\"literal\"/&gt;&lt;/input&gt;\n"
+    + "      &lt;output&gt;&lt;soap:body use=\"literal\"/&gt;&lt;/output&gt;\n"
+    + "    &lt;/operation&gt;\n"
+    + "  &lt;/binding&gt;\n"
+    + "  &lt;service name=\"WeatherService\"&gt;\n"
+    + "    &lt;port name=\"WeatherPort\" binding=\"tns:WeatherBinding\"&gt;\n"
+    + "      &lt;soap:address location=\"http://localhost/ws/weather\"/&gt;\n"
+    + "    &lt;/port&gt;\n"
+    + "  &lt;/service&gt;\n"
+    + "&lt;/definitions&gt;";
+HttpClient httpClient = HttpClient.newHttpClient();
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create("http://localhost:1080/mockserver/wsdl"))
+    .header("Content-Type", "text/xml")
+    .PUT(HttpRequest.BodyPublishers.ofString(wsdl))
+    .build();
+HttpResponse&lt;String&gt; response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+// response.statusCode() == 201; response.body() contains the generated expectations as JSON</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const fetch = require('node-fetch'); // or use the built-in fetch in Node 18+
+
+const wsdl = `&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://example.com/weather"
+             targetNamespace="http://example.com/weather"
+             name="WeatherService"&gt;
+  &lt;message name="GetWeatherRequest"/&gt;
+  &lt;message name="GetWeatherResponse"/&gt;
+  &lt;portType name="WeatherPortType"&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;input message="tns:GetWeatherRequest"/&gt;
+      &lt;output message="tns:GetWeatherResponse"/&gt;
+    &lt;/operation&gt;
+  &lt;/portType&gt;
+  &lt;binding name="WeatherBinding" type="tns:WeatherPortType"&gt;
+    &lt;soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;soap:operation soapAction="http://example.com/GetWeather"/&gt;
+      &lt;input&gt;&lt;soap:body use="literal"/&gt;&lt;/input&gt;
+      &lt;output&gt;&lt;soap:body use="literal"/&gt;&lt;/output&gt;
+    &lt;/operation&gt;
+  &lt;/binding&gt;
+  &lt;service name="WeatherService"&gt;
+    &lt;port name="WeatherPort" binding="tns:WeatherBinding"&gt;
+      &lt;soap:address location="http://localhost/ws/weather"/&gt;
+    &lt;/port&gt;
+  &lt;/service&gt;
+&lt;/definitions&gt;`;
+const response = await fetch('http://localhost:1080/mockserver/wsdl', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/xml' },
+    body: wsdl,
+});
+// response.status === 201; response.json() returns the generated expectations</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+wsdl = """&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://example.com/weather"
+             targetNamespace="http://example.com/weather"
+             name="WeatherService"&gt;
+  &lt;message name="GetWeatherRequest"/&gt;
+  &lt;message name="GetWeatherResponse"/&gt;
+  &lt;portType name="WeatherPortType"&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;input message="tns:GetWeatherRequest"/&gt;
+      &lt;output message="tns:GetWeatherResponse"/&gt;
+    &lt;/operation&gt;
+  &lt;/portType&gt;
+  &lt;binding name="WeatherBinding" type="tns:WeatherPortType"&gt;
+    &lt;soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;soap:operation soapAction="http://example.com/GetWeather"/&gt;
+      &lt;input&gt;&lt;soap:body use="literal"/&gt;&lt;/input&gt;
+      &lt;output&gt;&lt;soap:body use="literal"/&gt;&lt;/output&gt;
+    &lt;/operation&gt;
+  &lt;/binding&gt;
+  &lt;service name="WeatherService"&gt;
+    &lt;port name="WeatherPort" binding="tns:WeatherBinding"&gt;
+      &lt;soap:address location="http://localhost/ws/weather"/&gt;
+    &lt;/port&gt;
+  &lt;/service&gt;
+&lt;/definitions&gt;"""
+
+response = requests.put(
+    'http://localhost:1080/mockserver/wsdl',
+    data=wsdl,
+    headers={'Content-Type': 'text/xml'},
+)
+# response.status_code == 201; response.json() returns the generated expectations</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+wsdl = &lt;&lt;~XML
+  &lt;?xml version="1.0" encoding="UTF-8"?&gt;
+  &lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+               xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+               xmlns:tns="http://example.com/weather"
+               targetNamespace="http://example.com/weather"
+               name="WeatherService"&gt;
+    &lt;message name="GetWeatherRequest"/&gt;
+    &lt;message name="GetWeatherResponse"/&gt;
+    &lt;portType name="WeatherPortType"&gt;
+      &lt;operation name="GetWeather"&gt;
+        &lt;input message="tns:GetWeatherRequest"/&gt;
+        &lt;output message="tns:GetWeatherResponse"/&gt;
+      &lt;/operation&gt;
+    &lt;/portType&gt;
+    &lt;binding name="WeatherBinding" type="tns:WeatherPortType"&gt;
+      &lt;soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/&gt;
+      &lt;operation name="GetWeather"&gt;
+        &lt;soap:operation soapAction="http://example.com/GetWeather"/&gt;
+        &lt;input&gt;&lt;soap:body use="literal"/&gt;&lt;/input&gt;
+        &lt;output&gt;&lt;soap:body use="literal"/&gt;&lt;/output&gt;
+      &lt;/operation&gt;
+    &lt;/binding&gt;
+    &lt;service name="WeatherService"&gt;
+      &lt;port name="WeatherPort" binding="tns:WeatherBinding"&gt;
+        &lt;soap:address location="http://localhost/ws/weather"/&gt;
+      &lt;/port&gt;
+    &lt;/service&gt;
+  &lt;/definitions&gt;
+XML
+
+uri  = URI('http://localhost:1080/mockserver/wsdl')
+http = Net::HTTP.new(uri.host, uri.port)
+request = Net::HTTP::Put.new(uri.path, 'Content-Type' =&gt; 'text/xml')
+request.body = wsdl
+response = http.request(request)
+# response.code == '201'; JSON.parse(response.body) returns the generated expectations</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import (
+    "bytes"
+    "net/http"
+)
+
+wsdl := `&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://example.com/weather"
+             targetNamespace="http://example.com/weather"
+             name="WeatherService"&gt;
+  &lt;message name="GetWeatherRequest"/&gt;
+  &lt;message name="GetWeatherResponse"/&gt;
+  &lt;portType name="WeatherPortType"&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;input message="tns:GetWeatherRequest"/&gt;
+      &lt;output message="tns:GetWeatherResponse"/&gt;
+    &lt;/operation&gt;
+  &lt;/portType&gt;
+  &lt;binding name="WeatherBinding" type="tns:WeatherPortType"&gt;
+    &lt;soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;soap:operation soapAction="http://example.com/GetWeather"/&gt;
+      &lt;input&gt;&lt;soap:body use="literal"/&gt;&lt;/input&gt;
+      &lt;output&gt;&lt;soap:body use="literal"/&gt;&lt;/output&gt;
+    &lt;/operation&gt;
+  &lt;/binding&gt;
+  &lt;service name="WeatherService"&gt;
+    &lt;port name="WeatherPort" binding="tns:WeatherBinding"&gt;
+      &lt;soap:address location="http://localhost/ws/weather"/&gt;
+    &lt;/port&gt;
+  &lt;/service&gt;
+&lt;/definitions&gt;`
+req, _ := http.NewRequest("PUT", "http://localhost:1080/mockserver/wsdl", bytes.NewReader([]byte(wsdl)))
+req.Header.Set("Content-Type", "text/xml")
+resp, err := http.DefaultClient.Do(req)
+// resp.StatusCode == 201; decode resp.Body as JSON to read the generated expectations</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+
+var wsdl = @"&lt;?xml version=""1.0"" encoding=""UTF-8""?&gt;
+&lt;definitions xmlns=""http://schemas.xmlsoap.org/wsdl/""
+             xmlns:soap=""http://schemas.xmlsoap.org/wsdl/soap/""
+             xmlns:tns=""http://example.com/weather""
+             targetNamespace=""http://example.com/weather""
+             name=""WeatherService""&gt;
+  &lt;message name=""GetWeatherRequest""/&gt;
+  &lt;message name=""GetWeatherResponse""/&gt;
+  &lt;portType name=""WeatherPortType""&gt;
+    &lt;operation name=""GetWeather""&gt;
+      &lt;input message=""tns:GetWeatherRequest""/&gt;
+      &lt;output message=""tns:GetWeatherResponse""/&gt;
+    &lt;/operation&gt;
+  &lt;/portType&gt;
+  &lt;binding name=""WeatherBinding"" type=""tns:WeatherPortType""&gt;
+    &lt;soap:binding style=""document"" transport=""http://schemas.xmlsoap.org/soap/http""/&gt;
+    &lt;operation name=""GetWeather""&gt;
+      &lt;soap:operation soapAction=""http://example.com/GetWeather""/&gt;
+      &lt;input&gt;&lt;soap:body use=""literal""/&gt;&lt;/input&gt;
+      &lt;output&gt;&lt;soap:body use=""literal""/&gt;&lt;/output&gt;
+    &lt;/operation&gt;
+  &lt;/binding&gt;
+  &lt;service name=""WeatherService""&gt;
+    &lt;port name=""WeatherPort"" binding=""tns:WeatherBinding""&gt;
+      &lt;soap:address location=""http://localhost/ws/weather""/&gt;
+    &lt;/port&gt;
+  &lt;/service&gt;
+&lt;/definitions&gt;";
+using var httpClient = new HttpClient();
+var content = new StringContent(wsdl, Encoding.UTF8);
+content.Headers.ContentType = new MediaTypeHeaderValue("text/xml");
+var response = await httpClient.PutAsync("http://localhost:1080/mockserver/wsdl", content);
+// response.StatusCode == HttpStatusCode.Created (201)
+// await response.Content.ReadAsStringAsync() returns the generated expectations as JSON</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">let wsdl = r#"&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://example.com/weather"
+             targetNamespace="http://example.com/weather"
+             name="WeatherService"&gt;
+  &lt;message name="GetWeatherRequest"/&gt;
+  &lt;message name="GetWeatherResponse"/&gt;
+  &lt;portType name="WeatherPortType"&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;input message="tns:GetWeatherRequest"/&gt;
+      &lt;output message="tns:GetWeatherResponse"/&gt;
+    &lt;/operation&gt;
+  &lt;/portType&gt;
+  &lt;binding name="WeatherBinding" type="tns:WeatherPortType"&gt;
+    &lt;soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;soap:operation soapAction="http://example.com/GetWeather"/&gt;
+      &lt;input&gt;&lt;soap:body use="literal"/&gt;&lt;/input&gt;
+      &lt;output&gt;&lt;soap:body use="literal"/&gt;&lt;/output&gt;
+    &lt;/operation&gt;
+  &lt;/binding&gt;
+  &lt;service name="WeatherService"&gt;
+    &lt;port name="WeatherPort" binding="tns:WeatherBinding"&gt;
+      &lt;soap:address location="http://localhost/ws/weather"/&gt;
+    &lt;/port&gt;
+  &lt;/service&gt;
+&lt;/definitions&gt;"#;
+let client = reqwest::blocking::Client::new();
+let response = client.put("http://localhost:1080/mockserver/wsdl")
+    .header("Content-Type", "text/xml")
+    .body(wsdl)
+    .send()
+    .unwrap();
+// response.status() == 201; response.text() contains the generated expectations as JSON</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$wsdl = &lt;&lt;&lt;XML
+&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:tns="http://example.com/weather"
+             targetNamespace="http://example.com/weather"
+             name="WeatherService"&gt;
+  &lt;message name="GetWeatherRequest"/&gt;
+  &lt;message name="GetWeatherResponse"/&gt;
+  &lt;portType name="WeatherPortType"&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;input message="tns:GetWeatherRequest"/&gt;
+      &lt;output message="tns:GetWeatherResponse"/&gt;
+    &lt;/operation&gt;
+  &lt;/portType&gt;
+  &lt;binding name="WeatherBinding" type="tns:WeatherPortType"&gt;
+    &lt;soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/&gt;
+    &lt;operation name="GetWeather"&gt;
+      &lt;soap:operation soapAction="http://example.com/GetWeather"/&gt;
+      &lt;input&gt;&lt;soap:body use="literal"/&gt;&lt;/input&gt;
+      &lt;output&gt;&lt;soap:body use="literal"/&gt;&lt;/output&gt;
+    &lt;/operation&gt;
+  &lt;/binding&gt;
+  &lt;service name="WeatherService"&gt;
+    &lt;port name="WeatherPort" binding="tns:WeatherBinding"&gt;
+      &lt;soap:address location="http://localhost/ws/weather"/&gt;
+    &lt;/port&gt;
+  &lt;/service&gt;
+&lt;/definitions&gt;
+XML;
+
+$ch = curl_init('http://localhost:1080/mockserver/wsdl');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
+    CURLOPT_HTTPHEADER    =&gt; ['Content-Type: text/xml'],
+    CURLOPT_POSTFIELDS    =&gt; $wsdl,
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+$result = curl_exec($ch);
+$info   = curl_getinfo($ch);
+curl_close($ch);
+// $info['http_code'] == 201; $result contains the generated expectations as JSON</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/wsdl" \

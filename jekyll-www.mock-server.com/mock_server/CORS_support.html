@@ -48,6 +48,7 @@ ConfigurationProperties.corsMaxAgeInSeconds(300);</code></pre>
 
 <h2>Examples:</h2>
 
+<p>CORS is a server-startup configuration, so it is applied when MockServer starts rather than per-expectation. The examples below launch (or configure) the server with the same CORS settings in each language. The detailed <code class="inline code">corsAllow*</code> / <code class="inline code">corsMaxAgeInSeconds</code> values are read once at startup, so set them when the server is launched (the <a href="#cors_examples">REST API</a> tab can toggle the enable flag at runtime, but does not re-apply the detailed values).</p>
 <button id="button_enabled_permissive_cors_for_all_response" class="accordion">enabled permissive CORS for all responses</button>
 <div class="panel">
     <button class="accordion inner">Java</button>
@@ -69,6 +70,100 @@ mockserver.start_mockserver({
         "-Dmockserver.corsAllowCredentials=\"true\" " +
         "-Dmockserver.corsMaxAgeInSeconds=\"300\""
 });</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import start_server
+
+# the launcher passes these JVM system properties straight through to the server
+server = start_server(port=1080, extra_args=[
+    "-Dmockserver.enableCORSForAllResponses=true",
+    "-Dmockserver.corsAllowMethods=CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE",
+    "-Dmockserver.corsAllowHeaders=Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization",
+    "-Dmockserver.corsAllowCredentials=true",
+    "-Dmockserver.corsMaxAgeInSeconds=300",
+])</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+# the launcher passes these JVM system properties straight through to the server
+server = MockServer::BinaryLauncher.start(port: 1080, extra_args: [
+    '-Dmockserver.enableCORSForAllResponses=true',
+    '-Dmockserver.corsAllowMethods=CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE',
+    '-Dmockserver.corsAllowHeaders=Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization',
+    '-Dmockserver.corsAllowCredentials=true',
+    '-Dmockserver.corsMaxAgeInSeconds=300'
+])</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import (
+    "os"
+
+    mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+)
+
+// the launched server inherits these environment variables
+os.Setenv("MOCKSERVER_ENABLE_CORS_FOR_ALL_RESPONSES", "true")
+os.Setenv("MOCKSERVER_CORS_ALLOW_METHODS", "CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE")
+os.Setenv("MOCKSERVER_CORS_ALLOW_HEADERS", "Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization")
+os.Setenv("MOCKSERVER_CORS_ALLOW_CREDENTIALS", "true")
+os.Setenv("MOCKSERVER_CORS_MAX_AGE_IN_SECONDS", "300")
+
+server, _ := mockserver.StartServer(1080, "", nil)</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System;
+using MockServer.Client;
+
+// the launched server inherits these environment variables
+Environment.SetEnvironmentVariable("MOCKSERVER_ENABLE_CORS_FOR_ALL_RESPONSES", "true");
+Environment.SetEnvironmentVariable("MOCKSERVER_CORS_ALLOW_METHODS", "CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE");
+Environment.SetEnvironmentVariable("MOCKSERVER_CORS_ALLOW_HEADERS", "Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization");
+Environment.SetEnvironmentVariable("MOCKSERVER_CORS_ALLOW_CREDENTIALS", "true");
+Environment.SetEnvironmentVariable("MOCKSERVER_CORS_MAX_AGE_IN_SECONDS", "300");
+
+var server = MockServerBinaryLauncher.Start(port: 1080);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::launcher;
+
+// the launched server inherits these environment variables
+std::env::set_var("MOCKSERVER_ENABLE_CORS_FOR_ALL_RESPONSES", "true");
+std::env::set_var("MOCKSERVER_CORS_ALLOW_METHODS", "CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE");
+std::env::set_var("MOCKSERVER_CORS_ALLOW_HEADERS", "Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization");
+std::env::set_var("MOCKSERVER_CORS_ALLOW_CREDENTIALS", "true");
+std::env::set_var("MOCKSERVER_CORS_MAX_AGE_IN_SECONDS", "300");
+
+let server = launcher::start(1080).unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\BinaryLauncher;
+
+// the launcher passes these JVM system properties straight through to the server
+$server = (new BinaryLauncher())-&gt;start(1080, [
+    '-Dmockserver.enableCORSForAllResponses=true',
+    '-Dmockserver.corsAllowMethods=CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE',
+    '-Dmockserver.corsAllowHeaders=Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization',
+    '-Dmockserver.corsAllowCredentials=true',
+    '-Dmockserver.corsMaxAgeInSeconds=300',
+]);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/configuration" -d '{
+    "enableCORSForAllResponses": true,
+    "corsAllowMethods": "CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE",
+    "corsAllowHeaders": "Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization",
+    "corsAllowCredentials": true,
+    "corsMaxAgeInSeconds": 300
+}'</code></pre>
+        <p>The <code class="inline code">enableCORSForAllResponses</code> flag takes effect at runtime; the detailed <code class="inline code">corsAllow*</code> / <code class="inline code">corsMaxAgeInSeconds</code> values are only applied when the server starts, so set those at launch (see the other tabs).</p>
     </div>
     <button class="accordion inner">Command Line</button>
     <div class="panel">
@@ -101,6 +196,100 @@ mockserver.start_mockserver({
         "-Dmockserver.corsAllowCredentials=\"true\" " +
         "-Dmockserver.corsMaxAgeInSeconds=\"300\""
 });</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import start_server
+
+# the launcher passes these JVM system properties straight through to the server
+server = start_server(port=1080, extra_args=[
+    "-Dmockserver.enableCORSForAPI=true",
+    "-Dmockserver.corsAllowMethods=CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE",
+    "-Dmockserver.corsAllowHeaders=Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization",
+    "-Dmockserver.corsAllowCredentials=true",
+    "-Dmockserver.corsMaxAgeInSeconds=300",
+])</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+# the launcher passes these JVM system properties straight through to the server
+server = MockServer::BinaryLauncher.start(port: 1080, extra_args: [
+    '-Dmockserver.enableCORSForAPI=true',
+    '-Dmockserver.corsAllowMethods=CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE',
+    '-Dmockserver.corsAllowHeaders=Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization',
+    '-Dmockserver.corsAllowCredentials=true',
+    '-Dmockserver.corsMaxAgeInSeconds=300'
+])</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import (
+    "os"
+
+    mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+)
+
+// the launched server inherits these environment variables
+os.Setenv("MOCKSERVER_ENABLE_CORS_FOR_API", "true")
+os.Setenv("MOCKSERVER_CORS_ALLOW_METHODS", "CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE")
+os.Setenv("MOCKSERVER_CORS_ALLOW_HEADERS", "Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization")
+os.Setenv("MOCKSERVER_CORS_ALLOW_CREDENTIALS", "true")
+os.Setenv("MOCKSERVER_CORS_MAX_AGE_IN_SECONDS", "300")
+
+server, _ := mockserver.StartServer(1080, "", nil)</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System;
+using MockServer.Client;
+
+// the launched server inherits these environment variables
+Environment.SetEnvironmentVariable("MOCKSERVER_ENABLE_CORS_FOR_API", "true");
+Environment.SetEnvironmentVariable("MOCKSERVER_CORS_ALLOW_METHODS", "CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE");
+Environment.SetEnvironmentVariable("MOCKSERVER_CORS_ALLOW_HEADERS", "Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization");
+Environment.SetEnvironmentVariable("MOCKSERVER_CORS_ALLOW_CREDENTIALS", "true");
+Environment.SetEnvironmentVariable("MOCKSERVER_CORS_MAX_AGE_IN_SECONDS", "300");
+
+var server = MockServerBinaryLauncher.Start(port: 1080);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::launcher;
+
+// the launched server inherits these environment variables
+std::env::set_var("MOCKSERVER_ENABLE_CORS_FOR_API", "true");
+std::env::set_var("MOCKSERVER_CORS_ALLOW_METHODS", "CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE");
+std::env::set_var("MOCKSERVER_CORS_ALLOW_HEADERS", "Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization");
+std::env::set_var("MOCKSERVER_CORS_ALLOW_CREDENTIALS", "true");
+std::env::set_var("MOCKSERVER_CORS_MAX_AGE_IN_SECONDS", "300");
+
+let server = launcher::start(1080).unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\BinaryLauncher;
+
+// the launcher passes these JVM system properties straight through to the server
+$server = (new BinaryLauncher())-&gt;start(1080, [
+    '-Dmockserver.enableCORSForAPI=true',
+    '-Dmockserver.corsAllowMethods=CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE',
+    '-Dmockserver.corsAllowHeaders=Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization',
+    '-Dmockserver.corsAllowCredentials=true',
+    '-Dmockserver.corsMaxAgeInSeconds=300',
+]);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/configuration" -d '{
+    "enableCORSForAPI": true,
+    "corsAllowMethods": "CONNECT, DELETE, GET, HEAD, OPTIONS, POST, PUT, PATCH, TRACE",
+    "corsAllowHeaders": "Allow, Content-Encoding, Content-Length, Content-Type, ETag, Expires, Last-Modified, Location, Server, Vary, Authorization",
+    "corsAllowCredentials": true,
+    "corsMaxAgeInSeconds": 300
+}'</code></pre>
+        <p>The <code class="inline code">enableCORSForAPI</code> flag takes effect at runtime; the detailed <code class="inline code">corsAllow*</code> / <code class="inline code">corsMaxAgeInSeconds</code> values are only applied when the server starts, so set those at launch (see the other tabs).</p>
     </div>
     <button class="accordion inner">Command Line</button>
     <div class="panel">

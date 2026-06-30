@@ -413,6 +413,148 @@ $client-&gt;when(
             .withBody("some_response_body")
     );</code></pre>
     </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/some/path",
+        "protocol": "HTTP_2"
+    },
+    "httpResponse": {
+        "body": "some_response_body"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation.from_dict({
+  "httpRequest" : {
+    "path" : "/some/path",
+    "protocol" : "HTTP_2"
+  },
+  "httpResponse" : {
+    "body" : "some_response_body"
+  }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.upsert(MockServer::Expectation.from_hash({
+  "httpRequest" : {
+    "path" : "/some/path",
+    "protocol" : "HTTP_2"
+  },
+  "httpResponse" : {
+    "body" : "some_response_body"
+  }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+  "httpRequest" : {
+    "path" : "/some/path",
+    "protocol" : "HTTP_2"
+  },
+  "httpResponse" : {
+    "body" : "some_response_body"
+  }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+  ""httpRequest"" : {
+    ""path"" : ""/some/path"",
+    ""protocol"" : ""HTTP_2""
+  },
+  ""httpResponse"" : {
+    ""body"" : ""some_response_body""
+  }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+  "httpRequest" : {
+    "path" : "/some/path",
+    "protocol" : "HTTP_2"
+  },
+  "httpResponse" : {
+    "body" : "some_response_body"
+  }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+  "httpRequest" : {
+    "path" : "/some/path",
+    "protocol" : "HTTP_2"
+  },
+  "httpResponse" : {
+    "body" : "some_response_body"
+  }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
@@ -6145,6 +6287,28 @@ curl_close($ch);</code></pre>
         <li><strong>filenames</strong> (optional) &mdash; map of field name to list of expected filename patterns (regex-capable)</li>
         <li><strong>partContentTypes</strong> (optional) &mdash; map of field name to list of expected part content-type patterns</li>
     </ul>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/upload")
+            .withBody(
+                multipart(
+                    param("description", "monthly report"),
+                    param("file", ".*")
+                )
+                    .withFilenames(param("file", "report.*\\.pdf"))
+                    .withPartContentTypes(param("file", "application/pdf"))
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(HttpStatusCode.CREATED_201.code())
+            .withBody("upload accepted")
+    );</code></pre>
+    </div>
     <button class="accordion inner">JavaScript</button>
     <div class="panel">
         <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
@@ -7485,6 +7649,7 @@ curl_close($ch);</code></pre>
 </div>
 <button id="button_match_request_by_body_with_xml_schema_by_classpath" class="accordion">match request by body with xml schema by classpath</button>
 <div class="panel">
+    <p>The Java client can load the XML schema from a classpath resource. Other clients do not have access to the JVM classpath, so they send an <span class="inline_code">XML_SCHEMA</span> body with the schema inlined &mdash; the matching behaviour is identical.</p>
     <button class="accordion inner">Java</button>
     <div class="panel">
         <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
@@ -7498,6 +7663,177 @@ curl_close($ch);</code></pre>
         response()
             .withBody("some_response_body")
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient(&quot;localhost&quot;, 1080).mockAnyResponse({
+    &quot;httpRequest&quot;: {
+        &quot;body&quot;: {
+            &quot;type&quot;: &quot;XML_SCHEMA&quot;,
+            &quot;xmlSchema&quot;: &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt; &lt;xs:schema xmlns:xs=\&quot;http://www.w3.org/2001/XMLSchema\&quot; elementFormDefault=\&quot;qualified\&quot; attributeFormDefault=\&quot;unqualified\&quot;&gt; &lt;xs:element name=\&quot;notes\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;note\&quot; maxOccurs=\&quot;unbounded\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;to\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;from\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;heading\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;body\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:schema&gt;&quot;
+        }
+    },
+    &quot;httpResponse&quot;: {
+        &quot;body&quot;: &quot;some_response_body&quot;
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation.from_dict({
+  &quot;httpRequest&quot; : {
+    &quot;body&quot; : {
+      &quot;type&quot; : &quot;XML_SCHEMA&quot;,
+      &quot;xmlSchema&quot; : &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt; &lt;xs:schema xmlns:xs=\&quot;http://www.w3.org/2001/XMLSchema\&quot; elementFormDefault=\&quot;qualified\&quot; attributeFormDefault=\&quot;unqualified\&quot;&gt; &lt;xs:element name=\&quot;notes\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;note\&quot; maxOccurs=\&quot;unbounded\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;to\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;from\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;heading\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;body\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:schema&gt;&quot;
+    }
+  },
+  &quot;httpResponse&quot; : {
+    &quot;body&quot; : &quot;some_response_body&quot;
+  }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.upsert(MockServer::Expectation.from_hash({
+  &quot;httpRequest&quot; : {
+    &quot;body&quot; : {
+      &quot;type&quot; : &quot;XML_SCHEMA&quot;,
+      &quot;xmlSchema&quot; : &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt; &lt;xs:schema xmlns:xs=\&quot;http://www.w3.org/2001/XMLSchema\&quot; elementFormDefault=\&quot;qualified\&quot; attributeFormDefault=\&quot;unqualified\&quot;&gt; &lt;xs:element name=\&quot;notes\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;note\&quot; maxOccurs=\&quot;unbounded\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;to\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;from\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;heading\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;body\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:schema&gt;&quot;
+    }
+  },
+  &quot;httpResponse&quot; : {
+    &quot;body&quot; : &quot;some_response_body&quot;
+  }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+  &quot;httpRequest&quot; : {
+    &quot;body&quot; : {
+      &quot;type&quot; : &quot;XML_SCHEMA&quot;,
+      &quot;xmlSchema&quot; : &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt; &lt;xs:schema xmlns:xs=\&quot;http://www.w3.org/2001/XMLSchema\&quot; elementFormDefault=\&quot;qualified\&quot; attributeFormDefault=\&quot;unqualified\&quot;&gt; &lt;xs:element name=\&quot;notes\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;note\&quot; maxOccurs=\&quot;unbounded\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;to\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;from\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;heading\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;body\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:schema&gt;&quot;
+    }
+  },
+  &quot;httpResponse&quot; : {
+    &quot;body&quot; : &quot;some_response_body&quot;
+  }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+  &quot;httpRequest&quot; : {
+    &quot;body&quot; : {
+      &quot;type&quot; : &quot;XML_SCHEMA&quot;,
+      &quot;xmlSchema&quot; : &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt; &lt;xs:schema xmlns:xs=\&quot;http://www.w3.org/2001/XMLSchema\&quot; elementFormDefault=\&quot;qualified\&quot; attributeFormDefault=\&quot;unqualified\&quot;&gt; &lt;xs:element name=\&quot;notes\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;note\&quot; maxOccurs=\&quot;unbounded\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;to\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;from\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;heading\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;body\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:schema&gt;&quot;
+    }
+  },
+  &quot;httpResponse&quot; : {
+    &quot;body&quot; : &quot;some_response_body&quot;
+  }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+  &quot;httpRequest&quot; : {
+    &quot;body&quot; : {
+      &quot;type&quot; : &quot;XML_SCHEMA&quot;,
+      &quot;xmlSchema&quot; : &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt; &lt;xs:schema xmlns:xs=\&quot;http://www.w3.org/2001/XMLSchema\&quot; elementFormDefault=\&quot;qualified\&quot; attributeFormDefault=\&quot;unqualified\&quot;&gt; &lt;xs:element name=\&quot;notes\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;note\&quot; maxOccurs=\&quot;unbounded\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;to\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;from\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;heading\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;body\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:schema&gt;&quot;
+    }
+  },
+  &quot;httpResponse&quot; : {
+    &quot;body&quot; : &quot;some_response_body&quot;
+  }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+  "httpRequest" : {
+    "body" : {
+      "type" : "XML_SCHEMA",
+      "xmlSchema" : "&lt;?xml version=\"1.0\" encoding=\"UTF-8\"?&gt; &lt;xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" elementFormDefault=\"qualified\" attributeFormDefault=\"unqualified\"&gt; &lt;xs:element name=\"notes\"&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\"note\" maxOccurs=\"unbounded\"&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\"to\" minOccurs=\"1\" maxOccurs=\"1\" type=\"xs:string\"&gt;&lt;/xs:element&gt; &lt;xs:element name=\"from\" minOccurs=\"1\" maxOccurs=\"1\" type=\"xs:string\"&gt;&lt;/xs:element&gt; &lt;xs:element name=\"heading\" minOccurs=\"1\" maxOccurs=\"1\" type=\"xs:string\"&gt;&lt;/xs:element&gt; &lt;xs:element name=\"body\" minOccurs=\"1\" maxOccurs=\"1\" type=\"xs:string\"&gt;&lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:schema&gt;"
+    }
+  },
+  "httpResponse" : {
+    "body" : "some_response_body"
+  }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  &quot;httpRequest&quot; : {
+    &quot;body&quot; : {
+      &quot;type&quot; : &quot;XML_SCHEMA&quot;,
+      &quot;xmlSchema&quot; : &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt; &lt;xs:schema xmlns:xs=\&quot;http://www.w3.org/2001/XMLSchema\&quot; elementFormDefault=\&quot;qualified\&quot; attributeFormDefault=\&quot;unqualified\&quot;&gt; &lt;xs:element name=\&quot;notes\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;note\&quot; maxOccurs=\&quot;unbounded\&quot;&gt; &lt;xs:complexType&gt; &lt;xs:sequence&gt; &lt;xs:element name=\&quot;to\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;from\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;heading\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;xs:element name=\&quot;body\&quot; minOccurs=\&quot;1\&quot; maxOccurs=\&quot;1\&quot; type=\&quot;xs:string\&quot;&gt;&lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:sequence&gt; &lt;/xs:complexType&gt; &lt;/xs:element&gt; &lt;/xs:schema&gt;&quot;
+    }
+  },
+  &quot;httpResponse&quot; : {
+    &quot;body&quot; : &quot;some_response_body&quot;
+  }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
 </div>
 <button id="button_match_request_by_body_with_json_exactly" class="accordion">match request by body with json exactly</button>
@@ -8582,6 +8918,34 @@ curl_close($ch);</code></pre>
             .withBody("some_response_body")
     );</code></pre>
         <p>This expectation will match requests containing <strong>{"id": 1.0, "price": 12.50}</strong> as well as <strong>{"id": 1, "price": 12.5}</strong>.</p>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "body": {
+            "type": "JSON",
+            "json": {
+                "id": 1,
+                "price": 12.5
+            },
+            "matchNumbersAsStrings": true
+        }
+    },
+    "httpResponse": {
+        "statusCode": 202,
+        "body": "some_response_body"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
     <button class="accordion inner">Python</button>
     <div class="panel">

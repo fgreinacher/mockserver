@@ -177,6 +177,102 @@ node server.js</code></pre>
 
 <button id="button_set_mode" class="accordion">set operating mode</button>
 <div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+// the operating mode is a control-plane endpoint with no typed client helper, so use raw HTTP
+// switch mode by changing the mode query parameter to SPY, CAPTURE or SIMULATE
+HttpClient httpClient = HttpClient.newHttpClient();
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create("http://localhost:1080/mockserver/mode?mode=SPY"))
+    .PUT(HttpRequest.BodyPublishers.noBody())
+    .build();
+httpClient.send(request, HttpResponse.BodyHandlers.ofString());</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">// the operating mode is a control-plane endpoint with no typed client helper, so use raw HTTP
+// switch mode by changing the mode query parameter to SPY, CAPTURE or SIMULATE
+fetch("http://localhost:1080/mockserver/mode?mode=SPY", {
+    method: "PUT"
+}).then(function () {
+    console.log("operating mode set");
+});</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# the operating mode is a control-plane endpoint with no typed client helper, so use raw HTTP
+# switch mode by changing the mode query parameter to SPY, CAPTURE or SIMULATE
+requests.put("http://localhost:1080/mockserver/mode?mode=SPY")</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'uri'
+
+# the operating mode is a control-plane endpoint with no typed client helper, so use raw HTTP
+# switch mode by changing the mode query parameter to SPY, CAPTURE or SIMULATE
+uri = URI('http://localhost:1080/mockserver/mode?mode=SPY')
+request = Net::HTTP::Put.new(uri)
+Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "net/http"
+)
+
+func main() {
+    // the operating mode is a control-plane endpoint with no typed client helper, so use raw HTTP
+    // switch mode by changing the mode query parameter to SPY, CAPTURE or SIMULATE
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/mode?mode=SPY", nil)
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+
+// the operating mode is a control-plane endpoint with no typed client helper, so use raw HTTP
+// switch mode by changing the mode query parameter to SPY, CAPTURE or SIMULATE
+using var httpClient = new HttpClient();
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/mode?mode=SPY",
+    null
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+// the operating mode is a control-plane endpoint with no typed client helper, so use raw HTTP
+// switch mode by changing the mode query parameter to SPY, CAPTURE or SIMULATE
+let client = Client::new();
+client.put("http://localhost:1080/mockserver/mode?mode=SPY")
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">// the operating mode is a control-plane endpoint with no typed client helper, so use raw HTTP
+// switch mode by changing the mode query parameter to SPY, CAPTURE or SIMULATE
+$ch = curl_init('http://localhost:1080/mockserver/mode?mode=SPY');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
     <button class="accordion inner">REST API &mdash; set SPY mode</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/mode?mode=SPY"</code></pre>

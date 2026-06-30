@@ -187,6 +187,181 @@ mockServerClient('localhost', 1080)
         });
     });</code></pre>
   </div>
+  <button class="accordion inner">Python</button>
+  <div class="panel">
+    <p>There is no typed contract-test helper, so send the raw <span class="inline_code">PUT /mockserver/contractTest</span> request:</p>
+    <pre class="prettyprint lang-python code"><code class="code">import json
+import urllib.request
+
+body = json.dumps({
+    "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
+    "baseUrl": "https://petstore3.swagger.io"
+}).encode("utf-8")
+
+req = urllib.request.Request(
+    "http://localhost:1080/mockserver/contractTest",
+    data=body,
+    method="PUT",
+    headers={"Content-Type": "application/json"}
+)
+with urllib.request.urlopen(req) as response:
+    report = json.loads(response.read().decode("utf-8"))
+
+print("All passed:", report["allPassed"])
+for result in report["results"]:
+    print(result["method"], result["path"], "PASS" if result["passed"] else "FAIL")
+    for error in result["validationErrors"]:
+        print("  ", error)</code></pre>
+  </div>
+  <button class="accordion inner">Ruby</button>
+  <div class="panel">
+    <p>There is no typed contract-test helper, so send the raw <span class="inline_code">PUT /mockserver/contractTest</span> request:</p>
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'uri'
+require 'json'
+
+uri = URI('http://localhost:1080/mockserver/contractTest')
+req = Net::HTTP::Put.new(uri)
+req['Content-Type'] = 'application/json'
+req.body = {
+    spec: 'https://petstore3.swagger.io/api/v3/openapi.json',
+    baseUrl: 'https://petstore3.swagger.io'
+}.to_json
+
+response = Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }
+report = JSON.parse(response.body)
+
+puts "All passed: #{report['allPassed']}"
+report['results'].each do |result|
+    puts "#{result['method']} #{result['path']} #{result['passed'] ? 'PASS' : 'FAIL'}"
+    result['validationErrors'].each { |error| puts "  #{error}" }
+end</code></pre>
+  </div>
+  <button class="accordion inner">Go</button>
+  <div class="panel">
+    <p>There is no typed contract-test helper, so send the raw <span class="inline_code">PUT /mockserver/contractTest</span> request:</p>
+    <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
+    "baseUrl": "https://petstore3.swagger.io"
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/contractTest",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    resp, _ := http.DefaultClient.Do(req)
+    defer resp.Body.Close()
+
+    raw, _ := io.ReadAll(resp.Body)
+    var report struct {
+        AllPassed bool `json:"allPassed"`
+        Results   []struct {
+            Method           string   `json:"method"`
+            Path             string   `json:"path"`
+            Passed           bool     `json:"passed"`
+            ValidationErrors []string `json:"validationErrors"`
+        } `json:"results"`
+    }
+    json.Unmarshal(raw, &amp;report)
+
+    fmt.Println("All passed:", report.AllPassed)
+    for _, result := range report.Results {
+        status := "FAIL"
+        if result.Passed {
+            status = "PASS"
+        }
+        fmt.Println(result.Method, result.Path, status)
+    }
+}</code></pre>
+  </div>
+  <button class="accordion inner">.NET</button>
+  <div class="panel">
+    <p>There is no typed contract-test helper, so send the raw <span class="inline_code">PUT /mockserver/contractTest</span> request:</p>
+    <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""spec"": ""https://petstore3.swagger.io/api/v3/openapi.json"",
+    ""baseUrl"": ""https://petstore3.swagger.io""
+}";
+var response = await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/contractTest",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);
+
+using var report = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+Console.WriteLine("All passed: " + report.RootElement.GetProperty("allPassed").GetBoolean());
+foreach (var result in report.RootElement.GetProperty("results").EnumerateArray())
+{
+    Console.WriteLine(
+        result.GetProperty("method").GetString() + " " +
+        result.GetProperty("path").GetString() + " " +
+        (result.GetProperty("passed").GetBoolean() ? "PASS" : "FAIL"));
+}</code></pre>
+  </div>
+  <button class="accordion inner">Rust</button>
+  <div class="panel">
+    <p>There is no typed contract-test helper, so send the raw <span class="inline_code">PUT /mockserver/contractTest</span> request:</p>
+    <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+use serde_json::Value;
+
+let client = Client::new();
+let body = r#"{
+    "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
+    "baseUrl": "https://petstore3.swagger.io"
+}"#;
+let report: Value = client
+    .put("http://localhost:1080/mockserver/contractTest")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap()
+    .json()
+    .unwrap();
+
+println!("All passed: {}", report["allPassed"]);
+for result in report["results"].as_array().unwrap() {
+    let status = if result["passed"].as_bool().unwrap() { "PASS" } else { "FAIL" };
+    println!("{} {} {}", result["method"], result["path"], status);
+}</code></pre>
+  </div>
+  <button class="accordion inner">PHP</button>
+  <div class="panel">
+    <p>There is no typed contract-test helper, so send the raw <span class="inline_code">PUT /mockserver/contractTest</span> request:</p>
+    <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "spec": "https://petstore3.swagger.io/api/v3/openapi.json",
+    "baseUrl": "https://petstore3.swagger.io"
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/contractTest');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+$report = json_decode(curl_exec($ch), true);
+curl_close($ch);
+
+echo 'All passed: ' . ($report['allPassed'] ? 'true' : 'false') . "\n";
+foreach ($report['results'] as $result) {
+    echo $result['method'] . ' ' . $result['path'] . ' ' . ($result['passed'] ? 'PASS' : 'FAIL') . "\n";
+}</code></pre>
+  </div>
   <button class="accordion inner">REST API</button>
   <div class="panel">
     <p>Test all operations in a spec hosted at a URL:</p>
@@ -356,6 +531,345 @@ System.out.println(verificationReport);</code></pre>
     <pre class="prettyprint lang-java code"><code class="code">// Import a Pact contract; returns a JSON array of the generated expectations
 String expectations = client.pactImport(pactJson);
 System.out.println("Created expectations: " + expectations);</code></pre>
+  </div>
+  <button class="accordion inner">JavaScript</button>
+  <div class="panel">
+    <p>Create the expectation with the typed client, then drive the Pact endpoints (which have no typed helper) with raw <span class="inline_code">http</span> requests:</p>
+    <p><strong>Step 1 — Consumer: create expectations and export the contract</strong></p>
+    <pre class="prettyprint lang-javascript code"><code class="code">const mockServerClient = require('mockserver-client').mockServerClient;
+const http = require('http');
+
+const client = mockServerClient('localhost', 1080);
+
+// Helper that sends a raw PUT to a control-plane endpoint
+const put = (path, body) => new Promise((resolve, reject) => {
+    const req = http.request(
+        {host: 'localhost', port: 1080, method: 'PUT', path,
+         headers: {'Content-Type': 'application/json'}},
+        res => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => resolve({statusCode: res.statusCode, body: data}));
+        });
+    req.on('error', reject);
+    if (body) { req.write(body); }
+    req.end();
+});
+
+// Create an expectation with the typed client
+await client.mockAnyResponse({
+    httpRequest: {method: 'GET', path: '/api/users'},
+    httpResponse: {
+        statusCode: 200,
+        headers: {'content-type': ['application/json']},
+        body: {users: [{id: 1, name: 'Alice'}]}
+    }
+});
+
+// Export active expectations as a Pact v3 contract
+const exportResponse = await put('/mockserver/pact?consumer=frontend&amp;provider=users-service');
+const pactJson = exportResponse.body;</code></pre>
+    <p><strong>Step 2 — Provider: verify the contract</strong></p>
+    <pre class="prettyprint lang-javascript code"><code class="code">// 202 = all interactions verified; 406 = one or more failed
+const verifyResponse = await put('/mockserver/pact/verify', pactJson);
+console.log('verified:', verifyResponse.statusCode === 202);</code></pre>
+    <p><strong>Alternative — Provider: import a contract and stub from it</strong></p>
+    <pre class="prettyprint lang-javascript code"><code class="code">const importResponse = await put('/mockserver/pact/import', pactJson);
+console.log('Created expectations:', importResponse.body);</code></pre>
+  </div>
+  <button class="accordion inner">Python</button>
+  <div class="panel">
+    <p>Create the expectation with the typed client, then drive the Pact endpoints (which have no typed helper) with raw <span class="inline_code">urllib</span> requests:</p>
+    <p><strong>Step 1 — Consumer: create expectations and export the contract</strong></p>
+    <pre class="prettyprint lang-python code"><code class="code">import urllib.parse
+import urllib.request
+
+from mockserver.client import MockServerClient
+from mockserver.models import HttpRequest, HttpResponse
+
+client = MockServerClient("localhost", 1080)
+
+# Create an expectation with the typed client
+client.when(
+    HttpRequest.request("/api/users").with_method("GET")
+).respond(
+    HttpResponse(
+        status_code=200,
+        headers={"content-type": ["application/json"]},
+        body='{"users":[{"id":1,"name":"Alice"}]}'
+    )
+)
+
+# Export active expectations as a Pact v3 contract
+query = urllib.parse.urlencode({"consumer": "frontend", "provider": "users-service"})
+export_req = urllib.request.Request(
+    "http://localhost:1080/mockserver/pact?" + query, method="PUT"
+)
+with urllib.request.urlopen(export_req) as response:
+    pact_json = response.read().decode("utf-8")</code></pre>
+    <p><strong>Step 2 — Provider: verify the contract</strong></p>
+    <pre class="prettyprint lang-python code"><code class="code"># 202 = all interactions verified; 406 = one or more failed
+verify_req = urllib.request.Request(
+    "http://localhost:1080/mockserver/pact/verify",
+    data=pact_json.encode("utf-8"),
+    method="PUT",
+    headers={"Content-Type": "application/json"}
+)
+try:
+    with urllib.request.urlopen(verify_req) as response:
+        print("verified:", response.status == 202)
+except urllib.error.HTTPError as e:
+    print("verified:", False, e.read().decode("utf-8"))</code></pre>
+    <p><strong>Alternative — Provider: import a contract and stub from it</strong></p>
+    <pre class="prettyprint lang-python code"><code class="code">import_req = urllib.request.Request(
+    "http://localhost:1080/mockserver/pact/import",
+    data=pact_json.encode("utf-8"),
+    method="PUT",
+    headers={"Content-Type": "application/json"}
+)
+with urllib.request.urlopen(import_req) as response:
+    print("Created expectations:", response.read().decode("utf-8"))</code></pre>
+  </div>
+  <button class="accordion inner">Ruby</button>
+  <div class="panel">
+    <p>Create the expectation with the typed client, then drive the Pact endpoints (which have no typed helper) with raw <span class="inline_code">Net::HTTP</span> requests:</p>
+    <p><strong>Step 1 — Consumer: create expectations and export the contract</strong></p>
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+require 'net/http'
+require 'uri'
+
+client = MockServer::Client.new('localhost', 1080)
+
+# Create an expectation with the typed client
+client.when(
+    MockServer::HttpRequest.new(method: 'GET', path: '/api/users')
+).respond(
+    MockServer::HttpResponse.new(
+        status_code: 200,
+        headers: {'content-type' =&gt; ['application/json']},
+        body: '{"users":[{"id":1,"name":"Alice"}]}'
+    )
+)
+
+# Export active expectations as a Pact v3 contract
+export_uri = URI('http://localhost:1080/mockserver/pact')
+export_uri.query = URI.encode_www_form(consumer: 'frontend', provider: 'users-service')
+export_response = Net::HTTP.start(export_uri.host, export_uri.port) do |http|
+    http.request(Net::HTTP::Put.new(export_uri))
+end
+pact_json = export_response.body</code></pre>
+    <p><strong>Step 2 — Provider: verify the contract</strong></p>
+    <pre class="prettyprint lang-ruby code"><code class="code"># 202 = all interactions verified; 406 = one or more failed
+verify_uri = URI('http://localhost:1080/mockserver/pact/verify')
+verify_req = Net::HTTP::Put.new(verify_uri)
+verify_req['Content-Type'] = 'application/json'
+verify_req.body = pact_json
+verify_response = Net::HTTP.start(verify_uri.host, verify_uri.port) do |http|
+    http.request(verify_req)
+end
+puts "verified: #{verify_response.code == '202'}"</code></pre>
+    <p><strong>Alternative — Provider: import a contract and stub from it</strong></p>
+    <pre class="prettyprint lang-ruby code"><code class="code">import_uri = URI('http://localhost:1080/mockserver/pact/import')
+import_req = Net::HTTP::Put.new(import_uri)
+import_req['Content-Type'] = 'application/json'
+import_req.body = pact_json
+import_response = Net::HTTP.start(import_uri.host, import_uri.port) do |http|
+    http.request(import_req)
+end
+puts "Created expectations: #{import_response.body}"</code></pre>
+  </div>
+  <button class="accordion inner">Go</button>
+  <div class="panel">
+    <p>Create the expectation with the typed client, then drive the Pact endpoints (which have no typed helper) with raw <span class="inline_code">net/http</span> requests:</p>
+    <p><strong>Step 1 — Consumer: create expectations and export the contract</strong></p>
+    <pre class="prettyprint lang-go code"><code class="code">import (
+    "io"
+    "net/http"
+
+    mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+)
+
+client := mockserver.New("localhost", 1080)
+
+// Create an expectation with the typed client
+client.When(
+    mockserver.Request().Method("GET").Path("/api/users"),
+).Respond(
+    mockserver.Response().
+        StatusCode(200).
+        Header("content-type", "application/json").
+        Body(`{"users":[{"id":1,"name":"Alice"}]}`),
+)
+
+// Export active expectations as a Pact v3 contract
+exportReq, _ := http.NewRequest("PUT",
+    "http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service",
+    nil)
+exportResp, _ := http.DefaultClient.Do(exportReq)
+defer exportResp.Body.Close()
+pactJson, _ := io.ReadAll(exportResp.Body)</code></pre>
+    <p><strong>Step 2 — Provider: verify the contract</strong></p>
+    <pre class="prettyprint lang-go code"><code class="code">// 202 = all interactions verified; 406 = one or more failed
+verifyReq, _ := http.NewRequest("PUT",
+    "http://localhost:1080/mockserver/pact/verify",
+    bytes.NewReader(pactJson))
+verifyReq.Header.Set("Content-Type", "application/json")
+verifyResp, _ := http.DefaultClient.Do(verifyReq)
+defer verifyResp.Body.Close()
+fmt.Println("verified:", verifyResp.StatusCode == 202)</code></pre>
+    <p><strong>Alternative — Provider: import a contract and stub from it</strong></p>
+    <pre class="prettyprint lang-go code"><code class="code">importReq, _ := http.NewRequest("PUT",
+    "http://localhost:1080/mockserver/pact/import",
+    bytes.NewReader(pactJson))
+importReq.Header.Set("Content-Type", "application/json")
+importResp, _ := http.DefaultClient.Do(importReq)
+defer importResp.Body.Close()
+created, _ := io.ReadAll(importResp.Body)
+fmt.Println("Created expectations:", string(created))</code></pre>
+  </div>
+  <button class="accordion inner">.NET</button>
+  <div class="panel">
+    <p>Create the expectation with the typed client, then drive the Pact endpoints (which have no typed helper) with raw <span class="inline_code">HttpClient</span> requests:</p>
+    <p><strong>Step 1 — Consumer: create expectations and export the contract</strong></p>
+    <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+
+// Create an expectation with the typed client
+client.When(
+    HttpRequest.Request().WithMethod("GET").WithPath("/api/users")
+).Respond(
+    HttpResponse.Response()
+        .WithStatusCode(200)
+        .WithHeader("content-type", "application/json")
+        .WithBody("{\"users\":[{\"id\":1,\"name\":\"Alice\"}]}")
+);
+
+// Export active expectations as a Pact v3 contract
+using var httpClient = new HttpClient();
+var exportResponse = await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service",
+    null
+);
+var pactJson = await exportResponse.Content.ReadAsStringAsync();</code></pre>
+    <p><strong>Step 2 — Provider: verify the contract</strong></p>
+    <pre class="prettyprint lang-csharp code"><code class="code">// 202 = all interactions verified; 406 = one or more failed
+var verifyResponse = await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/pact/verify",
+    new StringContent(pactJson, Encoding.UTF8, "application/json")
+);
+Console.WriteLine("verified: " + ((int)verifyResponse.StatusCode == 202));</code></pre>
+    <p><strong>Alternative — Provider: import a contract and stub from it</strong></p>
+    <pre class="prettyprint lang-csharp code"><code class="code">var importResponse = await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/pact/import",
+    new StringContent(pactJson, Encoding.UTF8, "application/json")
+);
+Console.WriteLine("Created expectations: " + await importResponse.Content.ReadAsStringAsync());</code></pre>
+  </div>
+  <button class="accordion inner">Rust</button>
+  <div class="panel">
+    <p>Create the expectation with the typed client, then drive the Pact endpoints (which have no typed helper) with raw <span class="inline_code">reqwest</span> requests:</p>
+    <p><strong>Step 1 — Consumer: create expectations and export the contract</strong></p>
+    <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpResponse};
+use reqwest::blocking::Client;
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+
+// Create an expectation with the typed client
+client.when(HttpRequest::new().method("GET").path("/api/users"))
+    .respond(
+        HttpResponse::new()
+            .status_code(200)
+            .header("content-type", "application/json")
+            .body(r#"{"users":[{"id":1,"name":"Alice"}]}"#)
+    )
+    .unwrap();
+
+// Export active expectations as a Pact v3 contract
+let http = Client::new();
+let pact_json = http
+    .put("http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service")
+    .send()
+    .unwrap()
+    .text()
+    .unwrap();</code></pre>
+    <p><strong>Step 2 — Provider: verify the contract</strong></p>
+    <pre class="prettyprint lang-rust code"><code class="code">// 202 = all interactions verified; 406 = one or more failed
+let verify_status = http
+    .put("http://localhost:1080/mockserver/pact/verify")
+    .header("Content-Type", "application/json")
+    .body(pact_json.clone())
+    .send()
+    .unwrap()
+    .status();
+println!("verified: {}", verify_status.as_u16() == 202);</code></pre>
+    <p><strong>Alternative — Provider: import a contract and stub from it</strong></p>
+    <pre class="prettyprint lang-rust code"><code class="code">let created = http
+    .put("http://localhost:1080/mockserver/pact/import")
+    .header("Content-Type", "application/json")
+    .body(pact_json)
+    .send()
+    .unwrap()
+    .text()
+    .unwrap();
+println!("Created expectations: {}", created);</code></pre>
+  </div>
+  <button class="accordion inner">PHP</button>
+  <div class="panel">
+    <p>Create the expectation with the typed client, then drive the Pact endpoints (which have no typed helper) with raw <span class="inline_code">curl</span> requests:</p>
+    <p><strong>Step 1 — Consumer: create expectations and export the contract</strong></p>
+    <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+use MockServer\HttpRequest;
+use MockServer\HttpResponse;
+
+$client = new MockServerClient('localhost', 1080);
+
+// Create an expectation with the typed client
+$client-&gt;when(
+    HttpRequest::request()
+        -&gt;method('GET')
+        -&gt;path('/api/users')
+)-&gt;respond(
+    HttpResponse::response()
+        -&gt;statusCode(200)
+        -&gt;header('content-type', 'application/json')
+        -&gt;body('{"users":[{"id":1,"name":"Alice"}]}')
+);
+
+// Export active expectations as a Pact v3 contract
+$ch = curl_init('http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+$pactJson = curl_exec($ch);
+curl_close($ch);</code></pre>
+    <p><strong>Step 2 — Provider: verify the contract</strong></p>
+    <pre class="prettyprint lang-php code"><code class="code">// 202 = all interactions verified; 406 = one or more failed
+$ch = curl_init('http://localhost:1080/mockserver/pact/verify');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $pactJson,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+$status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+curl_close($ch);
+echo 'verified: ' . ($status === 202 ? 'true' : 'false') . "\n";</code></pre>
+    <p><strong>Alternative — Provider: import a contract and stub from it</strong></p>
+    <pre class="prettyprint lang-php code"><code class="code">$ch = curl_init('http://localhost:1080/mockserver/pact/import');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $pactJson,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+echo 'Created expectations: ' . curl_exec($ch) . "\n";
+curl_close($ch);</code></pre>
   </div>
   <button class="accordion inner">REST API</button>
   <div class="panel">

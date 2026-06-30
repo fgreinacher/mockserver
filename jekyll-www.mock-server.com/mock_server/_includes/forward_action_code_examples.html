@@ -4426,6 +4426,54 @@ curl_close($ch);</code></pre>
 <div class="panel">
     <p>A <strong>response template</strong> allows you to transform the response returned from the upstream server using a template that has access to both the original <strong>request</strong> and the upstream <strong>response</strong>. This is useful when you need to dynamically modify responses based on request context — for example, injecting request headers into the response body or conditionally changing the status code.</p>
     <p>The template receives two objects: <span class="inline_code">request</span> (the original request) and <span class="inline_code">response</span> (the upstream response). The template must return a valid HTTP response JSON object.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/some/path")
+    )
+    .forward(
+        forwardOverriddenRequest(
+            request()
+                .withHeader("Host", "target.host.com")
+        )
+        .withResponseTemplate(
+            template(
+                HttpTemplate.TemplateType.JAVASCRIPT,
+                "return { 'statusCode': response.statusCode, 'headers': response.headers, 'body': JSON.stringify({ 'originalBody': response.body, 'requestPath': request.path }) };"
+            )
+        )
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpOverrideForwardedRequest": {
+        "requestOverride": {
+            "headers": {
+                "Host": ["target.host.com"]
+            }
+        },
+        "responseTemplate": {
+            "templateType": "JAVASCRIPT",
+            "template": "return { 'statusCode': response.statusCode, 'headers': response.headers, 'body': JSON.stringify({ 'originalBody': response.body, 'requestPath': request.path }) };"
+        }
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
         <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
@@ -4613,6 +4661,50 @@ curl_close($ch);</code></pre>
 <button id="button_response_override_template_forward" class="accordion">templated forward with response override</button>
 <div class="panel">
     <p>When using a <strong>templated forward</strong> (JavaScript, Velocity, or Mustache), you can also specify a <span class="inline_code">responseOverride</span> and/or <span class="inline_code">responseModifier</span> to statically modify the response returned from the upstream server — without needing a separate response template.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/some/path")
+    )
+    .forward(
+        template(
+            HttpTemplate.TemplateType.JAVASCRIPT,
+            "return { 'path': '/target' + request.path, 'headers': { 'Host': ['target.host.com'] } };"
+        )
+        .withResponseOverride(
+            response()
+                .withHeader("x-proxy", "mockserver")
+        )
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpForwardTemplate": {
+        "templateType": "JAVASCRIPT",
+        "template": "return { 'path': '/target' + request.path, 'headers': { 'Host': ['target.host.com'] } };",
+        "responseOverride": {
+            "headers": {
+                "x-proxy": ["mockserver"]
+            }
+        }
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
     <button class="accordion inner">Python</button>
     <div class="panel">
         <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
@@ -4837,6 +4929,98 @@ mockServerClient("localhost", 1080).mockAnyResponse({
         console.log(error);
     }
 );</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation.from_dict({
+    "httpRequest" : {
+        "path" : "/some.*"
+    },
+    "httpForwardClassCallback" : {
+        "callbackClass" : "org.mockserver.examples.mockserver.CallbackActionExamples$TestExpectationForwardCallback"
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.upsert(MockServer::Expectation.from_hash({
+    "httpRequest" : {
+        "path" : "/some.*"
+    },
+    "httpForwardClassCallback" : {
+        "callbackClass" : "org.mockserver.examples.mockserver.CallbackActionExamples$TestExpectationForwardCallback"
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest" : {
+        "path" : "/some.*"
+    },
+    "httpForwardClassCallback" : {
+        "callbackClass" : "org.mockserver.examples.mockserver.CallbackActionExamples$TestExpectationForwardCallback"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"" : {
+        ""path"" : ""/some.*""
+    },
+    ""httpForwardClassCallback"" : {
+        ""callbackClass"" : ""org.mockserver.examples.mockserver.CallbackActionExamples$TestExpectationForwardCallback""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest" : {
+        "path" : "/some.*"
+    },
+    "httpForwardClassCallback" : {
+        "callbackClass" : "org.mockserver.examples.mockserver.CallbackActionExamples$TestExpectationForwardCallback"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
     </div>
     <button class="accordion inner">PHP</button>
     <div class="panel">

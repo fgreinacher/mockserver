@@ -77,8 +77,182 @@ sitemap:
 
 <p>The same redaction rules apply as for HAR and Postman imports: credential-bearing headers and common secret body fields are masked by default. Pass <span class="inline_code">?redactSensitiveData=false</span> to import values verbatim. See <a href="/mock_server/importing_expectations.html#import_redaction">Sensitive Data Redaction</a> for the full list of query parameters.</p>
 
+<p>The Java client has a typed <span class="inline_code">pactImport(String)</span> helper that wraps <span class="inline_code">PUT /mockserver/pact/import</span>; every other language sends the same raw HTTP request with the contract as the request body.</p>
+
 <button id="button_pact_import" class="accordion">import a Pact v3 contract as expectations</button>
 <div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
+
+MockServerClient client = new MockServerClient("localhost", 1080);
+String generatedExpectations = client.pactImport("{" +
+    "\"consumer\": {\"name\": \"frontend\"}," +
+    "\"provider\": {\"name\": \"users-service\"}," +
+    "\"interactions\": [{" +
+    "  \"description\": \"get users\"," +
+    "  \"request\": {\"method\": \"GET\", \"path\": \"/api/users\"}," +
+    "  \"response\": {\"status\": 200, \"headers\": {\"content-type\": [\"application/json\"]}, \"body\": {\"users\": []}}" +
+    "}]," +
+    "\"metadata\": {\"pactSpecification\": {\"version\": \"3.0.0\"}}" +
+    "}");
+// generatedExpectations holds the upserted expectations as a JSON array string</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const pact = {
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+        "description": "get users",
+        "request": {"method": "GET", "path": "/api/users"},
+        "response": {"status": 200, "headers": {"content-type": ["application/json"]}, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+};
+fetch("http://localhost:1080/mockserver/pact/import", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(pact)
+}).then(function (response) {
+    return response.json();
+}).then(function (expectations) {
+    console.log(expectations);
+});</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+pact = {
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+        "description": "get users",
+        "request": {"method": "GET", "path": "/api/users"},
+        "response": {"status": 200, "headers": {"content-type": ["application/json"]}, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+}
+response = requests.put("http://localhost:1080/mockserver/pact/import", json=pact)
+# response.status_code == 201, response.json() holds the generated expectations</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+require 'uri'
+
+pact = {
+    "consumer" => { "name" => "frontend" },
+    "provider" => { "name" => "users-service" },
+    "interactions" => [{
+        "description" => "get users",
+        "request" => { "method" => "GET", "path" => "/api/users" },
+        "response" => { "status" => 200, "headers" => { "content-type" => ["application/json"] }, "body" => { "users" => [] } }
+    }],
+    "metadata" => { "pactSpecification" => { "version" => "3.0.0" } }
+}
+
+uri = URI('http://localhost:1080/mockserver/pact/import')
+request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
+request.body = pact.to_json
+Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+      "description": "get users",
+      "request": {"method": "GET", "path": "/api/users"},
+      "response": {"status": 200, "headers": {"content-type": ["application/json"]}, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/pact/import",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""consumer"": {""name"": ""frontend""},
+    ""provider"": {""name"": ""users-service""},
+    ""interactions"": [{
+      ""description"": ""get users"",
+      ""request"": {""method"": ""GET"", ""path"": ""/api/users""},
+      ""response"": {""status"": 200, ""headers"": {""content-type"": [""application/json""]}, ""body"": {""users"": []}}
+    }],
+    ""metadata"": {""pactSpecification"": {""version"": ""3.0.0""}}
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/pact/import",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+      "description": "get users",
+      "request": {"method": "GET", "path": "/api/users"},
+      "response": {"status": 200, "headers": {"content-type": ["application/json"]}, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+}"#;
+client.put("http://localhost:1080/mockserver/pact/import")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+      "description": "get users",
+      "request": {"method": "GET", "path": "/api/users"},
+      "response": {"status": 200, "headers": {"content-type": ["application/json"]}, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/pact/import');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/pact/import" \
@@ -164,8 +338,101 @@ sitemap:
 
 <p>Given an active expectation that mocks <span class="inline_code">GET /api/users</span>, export a Pact contract for the <span class="inline_code">frontend</span> consumer and <span class="inline_code">users-service</span> provider:</p>
 
+<p>Export is a <span class="inline_code">PUT /mockserver/pact</span> with the consumer and provider names as query parameters and no request body. The Java client has a typed <span class="inline_code">pactExport(consumer, provider)</span> helper; every other language sends the same raw HTTP request and reads the contract from the response body.</p>
+
 <button id="button_pact_export" class="accordion">export Pact v3 consumer contract</button>
 <div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
+
+MockServerClient client = new MockServerClient("localhost", 1080);
+String pactContract = client.pactExport("frontend", "users-service");
+// pactContract holds the Pact v3 contract as JSON</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">fetch("http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service", {
+    method: "PUT"
+}).then(function (response) {
+    return response.json();
+}).then(function (pactContract) {
+    console.log(pactContract);
+});</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+response = requests.put(
+    "http://localhost:1080/mockserver/pact",
+    params={"consumer": "frontend", "provider": "users-service"}
+)
+pact_contract = response.json()  # the Pact v3 contract as JSON</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'uri'
+
+uri = URI('http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service')
+request = Net::HTTP::Put.new(uri)
+response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
+pact_contract = response.body  # the Pact v3 contract as JSON</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "io"
+    "net/http"
+)
+
+func main() {
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service",
+        nil)
+    resp, _ := http.DefaultClient.Do(req)
+    defer resp.Body.Close()
+    pactContract, _ := io.ReadAll(resp.Body) // the Pact v3 contract as JSON
+    _ = pactContract
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+
+using var httpClient = new HttpClient();
+var response = await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service",
+    null
+);
+var pactContract = await response.Content.ReadAsStringAsync(); // the Pact v3 contract as JSON</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let pact_contract = client
+    .put("http://localhost:1080/mockserver/pact")
+    .query(&[("consumer", "frontend"), ("provider", "users-service")])
+    .send()
+    .unwrap()
+    .text()
+    .unwrap(); // the Pact v3 contract as JSON</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$ch = curl_init('http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+$pactContract = curl_exec($ch); // the Pact v3 contract as JSON
+curl_close($ch);</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/pact?consumer=frontend&amp;provider=users-service"</code></pre>
@@ -284,8 +551,191 @@ sitemap:
     <li>For response sequences, verification compares against the <strong>first response</strong> in the sequence.</li>
 </ul>
 
+<p>Verify is a <span class="inline_code">PUT /mockserver/pact/verify</span> with the contract as the request body. The Java client has a typed <span class="inline_code">pactVerify(String)</span> helper that returns the verification report; every other language sends the same raw HTTP request. The server replies <span class="inline_code">202 Accepted</span> when every interaction verifies and <span class="inline_code">406 Not Acceptable</span> otherwise, with the report body in both cases.</p>
+
 <button id="button_pact_verify" class="accordion">verify a Pact v3 contract</button>
 <div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
+
+MockServerClient client = new MockServerClient("localhost", 1080);
+String verificationReport = client.pactVerify("{" +
+    "\"consumer\": {\"name\": \"frontend\"}," +
+    "\"provider\": {\"name\": \"users-service\"}," +
+    "\"interactions\": [{" +
+    "  \"description\": \"get users\"," +
+    "  \"request\": {\"method\": \"GET\", \"path\": \"/api/users\"}," +
+    "  \"response\": {\"status\": 200, \"body\": {\"users\": []}}" +
+    "}]," +
+    "\"metadata\": {\"pactSpecification\": {\"version\": \"3.0.0\"}}" +
+    "}");
+// verificationReport holds the per-interaction verification result as JSON</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const pact = {
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+        "description": "get users",
+        "request": {"method": "GET", "path": "/api/users"},
+        "response": {"status": 200, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+};
+fetch("http://localhost:1080/mockserver/pact/verify", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(pact)
+}).then(function (response) {
+    console.log("verified: " + (response.status === 202));
+    return response.json();
+}).then(function (report) {
+    console.log(report);
+});</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+pact = {
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+        "description": "get users",
+        "request": {"method": "GET", "path": "/api/users"},
+        "response": {"status": 200, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+}
+response = requests.put("http://localhost:1080/mockserver/pact/verify", json=pact)
+verified = response.status_code == 202
+report = response.json()</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+require 'uri'
+
+pact = {
+    "consumer" => { "name" => "frontend" },
+    "provider" => { "name" => "users-service" },
+    "interactions" => [{
+        "description" => "get users",
+        "request" => { "method" => "GET", "path" => "/api/users" },
+        "response" => { "status" => 200, "body" => { "users" => [] } }
+    }],
+    "metadata" => { "pactSpecification" => { "version" => "3.0.0" } }
+}
+
+uri = URI('http://localhost:1080/mockserver/pact/verify')
+request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
+request.body = pact.to_json
+response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
+verified = response.code == "202"</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+      "description": "get users",
+      "request": {"method": "GET", "path": "/api/users"},
+      "response": {"status": 200, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/pact/verify",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    resp, _ := http.DefaultClient.Do(req)
+    verified := resp.StatusCode == 202
+    _ = verified
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net;
+using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""consumer"": {""name"": ""frontend""},
+    ""provider"": {""name"": ""users-service""},
+    ""interactions"": [{
+      ""description"": ""get users"",
+      ""request"": {""method"": ""GET"", ""path"": ""/api/users""},
+      ""response"": {""status"": 200, ""body"": {""users"": []}}
+    }],
+    ""metadata"": {""pactSpecification"": {""version"": ""3.0.0""}}
+}";
+var response = await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/pact/verify",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);
+var verified = response.StatusCode == HttpStatusCode.Accepted;</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+      "description": "get users",
+      "request": {"method": "GET", "path": "/api/users"},
+      "response": {"status": 200, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+}"#;
+let response = client.put("http://localhost:1080/mockserver/pact/verify")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();
+let verified = response.status() == 202;</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "consumer": {"name": "frontend"},
+    "provider": {"name": "users-service"},
+    "interactions": [{
+      "description": "get users",
+      "request": {"method": "GET", "path": "/api/users"},
+      "response": {"status": 200, "body": {"users": []}}
+    }],
+    "metadata": {"pactSpecification": {"version": "3.0.0"}}
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/pact/verify');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+$report = curl_exec($ch);
+$verified = curl_getinfo($ch, CURLINFO_HTTP_CODE) === 202;
+curl_close($ch);</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/pact/verify" \
