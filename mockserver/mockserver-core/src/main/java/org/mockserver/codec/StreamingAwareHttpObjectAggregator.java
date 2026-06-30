@@ -1,5 +1,6 @@
 package org.mockserver.codec;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.http.*;
@@ -11,8 +12,10 @@ import org.mockserver.httpclient.HttpClientHandler;
 import org.mockserver.httpclient.StreamingResponseRelayHandler;
 import org.mockserver.logging.MockServerLogger;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 /**
  * An {@link HttpObjectAggregator} that can recognise streaming responses — specifically
@@ -110,13 +113,60 @@ public class StreamingAwareHttpObjectAggregator extends HttpObjectAggregator {
     private static final AttributeKey<Boolean> DISABLE_RESPONSE_STREAMING = AttributeKey.valueOf("DISABLE_RESPONSE_STREAMING");
 
     /**
-     * Channel attribute set by {@code NettyHttpClient} when the OUTGOING request asked for a
-     * streamed response (Accept: text/event-stream, or a JSON body with {@code "stream": true}).
+     * Channel attribute set by {@code NettyHttpClient} (forward leg) or
+     * {@code UpstreamProxyRelayHandler} (CONNECT-proxy loopback leg) when the OUTGOING request asked
+     * for a streamed response (Accept: text/event-stream, or a JSON body with {@code "stream": true}).
      * When set, the response is relayed as a stream even if it omits
      * {@code Content-Type: text/event-stream} — covering streaming backends that do not send it,
      * such as the OpenAI Codex backend used by the opencode CLI.
+     * <p>
+     * Set per-request and consumed when the matching response head arrives, so a keep-alive CONNECT
+     * tunnel carrying many requests applies the intent to the correct response only.
      */
-    private static final AttributeKey<Boolean> EXPECT_STREAMING_RESPONSE = AttributeKey.valueOf("EXPECT_STREAMING_RESPONSE");
+    public static final AttributeKey<Boolean> EXPECT_STREAMING_RESPONSE = AttributeKey.valueOf("EXPECT_STREAMING_RESPONSE");
+
+    /**
+     * A JSON request body that turns on streaming, e.g. {@code {"stream": true}} (OpenAI/Anthropic/Codex).
+     * Mirrors the detection in {@code NettyHttpClient} for the forward leg.
+     */
+    private static final Pattern STREAM_TRUE_IN_BODY = Pattern.compile("\"stream\"\\s*:\\s*true");
+
+    /**
+     * Whether the OUTGOING request asks for a streamed (Server-Sent Events style) response, so the
+     * response should be relayed incrementally even if the upstream omits
+     * {@code Content-Type: text/event-stream} (e.g. the OpenAI Codex backend used by the opencode CLI,
+     * whose SSE response carries no content-type at all). Detected from the client's own intent: an
+     * {@code Accept: text/event-stream} header, or a JSON request body containing {@code "stream": true}.
+     * <p>
+     * This is the netty-{@link HttpRequest} equivalent of {@code NettyHttpClient.requestExpectsStreamingResponse}
+     * and is used on the CONNECT-proxy loopback relay path, where the request is a netty {@link FullHttpRequest}
+     * rather than a MockServer {@code HttpRequest}. Reading the body via {@link ByteBuf#toString(java.nio.charset.Charset)}
+     * is non-destructive (it does not advance the reader index), so the relayed request body is unaffected.
+     *
+     * @param request the netty request head (and, for body inspection, the {@link FullHttpRequest})
+     * @return true when the response to this request should be relayed as a stream
+     */
+    public static boolean requestExpectsStreamingResponse(HttpRequest request) {
+        if (request == null) {
+            return false;
+        }
+        String accept = request.headers().get(HttpHeaderNames.ACCEPT);
+        if (accept != null && accept.toLowerCase(Locale.US).contains("text/event-stream")) {
+            return true;
+        }
+        String contentType = request.headers().get(HttpHeaderNames.CONTENT_TYPE);
+        if (contentType != null && contentType.toLowerCase(Locale.US).contains("json")
+            && request instanceof FullHttpRequest) {
+            ByteBuf content = ((FullHttpRequest) request).content();
+            if (content != null && content.isReadable()) {
+                String body = content.toString(StandardCharsets.UTF_8);
+                if (STREAM_TRUE_IN_BODY.matcher(body).find()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {

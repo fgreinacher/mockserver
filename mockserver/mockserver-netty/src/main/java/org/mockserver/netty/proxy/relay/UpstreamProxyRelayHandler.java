@@ -7,6 +7,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.ssl.SslHandler;
+import org.mockserver.codec.StreamingAwareHttpObjectAggregator;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.slf4j.event.Level;
@@ -46,6 +47,13 @@ public class UpstreamProxyRelayHandler extends SimpleChannelInboundHandler<FullH
         if (isSslEnabledDownstream(upstreamChannel) && downstreamChannel.pipeline().get(SslHandler.class) == null) {
             downstreamChannel.pipeline().addFirst(nettySslContextFactory(ctx.channel()).createClientSslContext(true, HTTP_2.equals(getALPNProtocol(mockServerLogger, ctx))).newHandler(ctx.alloc()));
         }
+        // Propagate the request's streaming intent onto the loopback channel so the relay-only
+        // StreamingAwareHttpObjectAggregator streams the matching response incrementally even when the
+        // upstream omits Content-Type: text/event-stream (e.g. the OpenAI Codex backend used by the
+        // opencode CLI). Set per-request (overwritten on every request, true OR cleared to null) so a
+        // keep-alive tunnel carrying many requests applies the intent only to the response it belongs to.
+        downstreamChannel.attr(StreamingAwareHttpObjectAggregator.EXPECT_STREAMING_RESPONSE)
+            .set(StreamingAwareHttpObjectAggregator.requestExpectsStreamingResponse(request) ? Boolean.TRUE : null);
         downstreamChannel.writeAndFlush(request).addListener((ChannelFutureListener) future -> {
             if (future.isSuccess()) {
                 ctx.channel().read();

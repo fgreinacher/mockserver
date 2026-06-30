@@ -252,6 +252,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applies the same upgrade: with `forwardProxyHttp2Upgrade` enabled, a secure request is forwarded upstream over
   HTTP/2 via ALPN (falling back to HTTP/1.1 if the upstream declines), so the backend streams the head
   immediately. Off by default; enable it for transparent-proxy streaming capture.
+- **The transparent (CONNECT) proxy now streams a no-`Content-Type` SSE response end-to-end to the client.** When
+  capturing a coding-assistant CLI through MockServer as an HTTPS proxy, the response relayed back to the client
+  switched to streaming only when the upstream sent `Content-Type: text/event-stream`. A backend that streams SSE
+  without that header — notably the OpenAI Codex endpoint used by `opencode` — was therefore buffered to
+  completion before being relayed to the client, even though the forward leg streamed it. The client's
+  streaming-intent (`Accept: text/event-stream` or a `"stream": true` request body) is now propagated to the
+  CONNECT loopback relay per request, so such a response is streamed incrementally to the client. Ordinary
+  buffered responses (including chunked-without-`Content-Length` servlet responses) are unaffected — only an
+  explicit client streaming-intent triggers it.
 - **A stalled upstream on a reused pooled keep-alive connection now times out instead of hanging.** With the
   opt-in forward connection pool (`forwardConnectionPoolKeepAlive`) enabled, a pooled keep-alive connection
   carries no read timeout while it sits idle in the pool (a blanket one would fire during legitimate idle
