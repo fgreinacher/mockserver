@@ -2653,6 +2653,9 @@ public class MockServerClient implements Stoppable {
                 .withBody(requestBody.toString(), StandardCharsets.UTF_8),
             false
         );
+        if (httpResponse != null && Integer.valueOf(404).equals(httpResponse.getStatusCode())) {
+            throw new ClientException("file not found: " + name);
+        }
         return httpResponse != null ? httpResponse.getBodyAsRawBytes() : null;
     }
 

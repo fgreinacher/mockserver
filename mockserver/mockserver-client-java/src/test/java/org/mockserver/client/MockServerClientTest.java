@@ -2499,6 +2499,16 @@ public class MockServerClientTest {
     }
 
     @Test
+    public void shouldThrowWhenRetrieveFileNotFound() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(404).withBody("file not found: missing.bin"));
+
+        // then
+        assertThrows(ClientException.class, () -> mockServerClient.retrieveFile("missing.bin"));
+    }
+
+    @Test
     public void shouldSendListFilesRequestAndParseNames() {
         // given
         when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
