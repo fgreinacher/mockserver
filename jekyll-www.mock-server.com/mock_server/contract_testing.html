@@ -164,28 +164,32 @@ System.out.println("Traffic valid: " + trafficReport.allPassed());</code></pre>
   </div>
   <button class="accordion inner">JavaScript</button>
   <div class="panel">
-    <pre class="prettyprint code"><code class="code">const mockServerClient = require('mockserver-client').mockServerClient;
+    <p>There is no typed contract-test helper, so send the raw <span class="inline_code">PUT /mockserver/contractTest</span> request:</p>
+    <pre class="prettyprint lang-javascript code"><code class="code">const http = require('http');
 
-mockServerClient('localhost', 1080)
-    .sendRequest({
-        method: 'PUT',
-        path: '/mockserver/contractTest',
-        headers: {'content-type': 'application/json'},
-        body: JSON.stringify({
-            spec: 'https://petstore3.swagger.io/api/v3/openapi.json',
-            baseUrl: 'https://petstore3.swagger.io'
-        })
-    })
-    .then(response => {
-        const report = JSON.parse(response.body);
-        console.log('All passed:', report.allPassed);
-        report.results.forEach(r => {
-            console.log(r.method, r.path, r.passed ? 'PASS' : 'FAIL');
-            if (r.validationErrors.length > 0) {
+const body = JSON.stringify({
+    spec: 'https://petstore3.swagger.io/api/v3/openapi.json',
+    baseUrl: 'https://petstore3.swagger.io'
+});
+
+const req = http.request(
+    {host: 'localhost', port: 1080, method: 'PUT', path: '/mockserver/contractTest',
+     headers: {'Content-Type': 'application/json'}},
+    res => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+            const report = JSON.parse(data);
+            console.log('All passed:', report.allPassed);
+            report.results.forEach(r => {
+                console.log(r.method, r.path, r.passed ? 'PASS' : 'FAIL');
                 r.validationErrors.forEach(e => console.log('  ', e));
-            }
+            });
         });
-    });</code></pre>
+    });
+req.on('error', console.error);
+req.write(body);
+req.end();</code></pre>
   </div>
   <button class="accordion inner">Python</button>
   <div class="panel">
