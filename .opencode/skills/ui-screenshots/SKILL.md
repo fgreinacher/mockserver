@@ -25,7 +25,7 @@ npx playwright install chromium   # first time only — fetches the browser bina
 npm run screenshots:all           # demo up → capture every tab → demo down
 ```
 
-`screenshots:all` writes 17 PNGs straight into
+`screenshots:all` writes 19 PNGs straight into
 `jekyll-www.mock-server.com/images/` (the live website paths). Review the diff,
 then commit the changed images.
 
@@ -37,7 +37,7 @@ screenshots want opposite things (see "Why two phases" below):
 ```mermaid
 flowchart TB
   subgraph P1["Phase 1 — content tabs"]
-    A1["demo --with-broker\n(NO load injection)"] --> A2["capture 15 content tabs\n(Traffic, Sessions, Mocks, Chaos, …)"]
+    A1["demo --with-broker\n(NO load injection)"] --> A2["capture 17 content tabs\n(Traffic, Sessions, Mocks, Chaos, …)"]
   end
   subgraph P2["Phase 2 — chart tabs"]
     B1["demo --with-broker --with-load-injection"] --> B2["warm up ~90s"] --> B3["capture Metrics + Performance"]
@@ -141,12 +141,17 @@ screenshots` (the bare capture) with `ONLY=` / `OUT_DIR=` as needed.
 
 ## Tab inventory
 
-The capture covers all 17 dashboard tabs in `NAV_TABS` order
-(`mockserver-ui/src/components/AppBar.tsx`). Navigation clicks the inline
-`[data-nav-tab]` toggle, falling back to the overflow / hamburger menu by
-`aria-label` when a tab is collapsed. Lazy-loaded tabs (Mocks/Composer,
-Performance, LLM Optimise, Metrics) wait for their "Loading…" placeholder to
-clear before the shot.
+The capture covers all 19 dashboard tabs in `NAV_TABS` order
+(`mockserver-ui/src/components/AppBar.tsx`). The AppBar nav is **grouped**: at the
+1920-wide capture width it shows one button per group (Mock / Observe / Verify /
+Resilience / AI / Inspect, `aria-label="<Group> views"`), each opening a dropdown
+of its views; below the `lg` breakpoint it collapses to a single "Open navigation
+menu" hamburger listing every view. In both layouts each view is a
+`[role="menuitem"]` whose accessible name is the view's `ariaLabel`, so `gotoTab`
+opens the right group button (or the hamburger) and clicks the item by aria-label
+(see `GROUP_OF` in `capture-dashboard-screenshots.mjs`). Lazy-loaded tabs
+(Mocks/Composer, Performance, LLM Optimise, MCP Health, Metrics) wait for their
+"Loading…" placeholder to clear before the shot.
 
 | Tab value | File |
 |-----------|------|
@@ -158,6 +163,7 @@ clear before the shot.
 | chaos | MockServerChaos.png |
 | performance | MockServerPerformance.png |
 | optimise | MockServerOptimise.png |
+| mcp-health | MockServerMcpHealth.png |
 | async | MockServerAsyncAPI.png |
 | grpc | MockServerGRPC.png |
 | sessions | MockServerSessions.png |
@@ -165,13 +171,15 @@ clear before the shot.
 | drift | MockServerDrift.png |
 | verification | MockServerVerification.png |
 | contract | MockServerContract.png |
+| slo | MockServerSLO.png |
 | cluster | MockServerCluster.png |
 | metrics | MockServerMetrics.png |
 
 > Tabs added since the existing website images (Performance, LLM Optimise, gRPC,
-> Contract, Cluster) produce **new** files. To surface them on the site, add an
-> `<img>` reference in `jekyll-www.mock-server.com/mock_server/mockserver_ui.html`
-> following the existing `<img class="ui_image" …>` pattern.
+> Contract, Cluster, SLO, MCP Health) produce **new** files. To surface them on
+> the site, add an `<img>` reference in
+> `jekyll-www.mock-server.com/mock_server/mockserver_ui.html` following the
+> existing `<img class="ui_image" …>` pattern.
 
 ## After capturing
 
