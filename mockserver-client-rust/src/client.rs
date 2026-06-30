@@ -1,5 +1,6 @@
 //! The MockServer client and its builder.
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use reqwest::blocking::Client;
 use serde::Serialize;
@@ -1630,6 +1631,458 @@ impl MockServerClient {
             400 => Err(Error::InvalidRequest(resp.text()?)),
             403 => Err(Error::FeatureDisabled(resp.text()?)),
             404 => Err(Error::NotFound(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Clock control
+    // ------------------------------------------------------------------
+
+    /// Freeze the simulated clock (`PUT /mockserver/clock`, `action=freeze`).
+    ///
+    /// Pass `Some(instant)` — an ISO-8601 instant string such as
+    /// `"2024-01-01T00:00:00Z"` — to freeze at a specific time, or `None` to
+    /// freeze at the current time. Returns the clock-status JSON the server
+    /// echoes back.
+    pub fn freeze_clock(&self, instant: Option<&str>) -> Result<String> {
+        let body = match instant {
+            Some(i) => serde_json::json!({ "action": "freeze", "instant": i }),
+            None => serde_json::json!({ "action": "freeze" }),
+        };
+        self.clock_put(&body)
+    }
+
+    /// Advance the simulated clock by `duration_millis` (`PUT /mockserver/clock`,
+    /// `action=advance`). The value must be positive — the server returns `400`
+    /// for `<= 0`. Returns the clock-status JSON the server echoes back.
+    pub fn advance_clock(&self, duration_millis: i64) -> Result<String> {
+        let body = serde_json::json!({ "action": "advance", "durationMillis": duration_millis });
+        self.clock_put(&body)
+    }
+
+    /// Reset the simulated clock back to the real system clock
+    /// (`PUT /mockserver/clock`, `action=reset`). Returns the clock-status JSON.
+    pub fn reset_clock(&self) -> Result<String> {
+        let body = serde_json::json!({ "action": "reset" });
+        self.clock_put(&body)
+    }
+
+    /// Read the current clock status (`GET /mockserver/clock`). Returns the JSON
+    /// body verbatim, e.g.
+    /// `{"currentInstant":"...","currentEpochMillis":...,"frozen":true}`.
+    pub fn clock_status(&self) -> Result<String> {
+        let resp = self.http.get(self.url("/mockserver/clock")).send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    fn clock_put(&self, body: &Value) -> Result<String> {
+        let resp = self
+            .http
+            .put(self.url("/mockserver/clock"))
+            .json(body)
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Metrics
+    // ------------------------------------------------------------------
+
+    /// Retrieve the JSON metrics counter snapshot
+    /// (`PUT /mockserver/retrieve?type=METRICS`). Returns a flat JSON object
+    /// mapping each metric name to its long value (`{}` when metrics are
+    /// disabled).
+    pub fn retrieve_metrics(&self) -> Result<String> {
+        let url = format!(
+            "{}?type=METRICS",
+            self.url("/mockserver/retrieve")
+        );
+        let resp = self
+            .http
+            .put(&url)
+            .header("Content-Type", "application/json")
+            .body("")
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    /// Scrape the Prometheus exposition metrics (`GET /mockserver/metrics`).
+    /// Returns the exposition text. When metrics are disabled the server replies
+    /// `404`, surfaced as [`Error::NotFound`].
+    pub fn scrape_metrics(&self) -> Result<String> {
+        let resp = self.http.get(self.url("/mockserver/metrics")).send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            404 => Err(Error::NotFound(resp.text().unwrap_or_default())),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Configuration
+    // ------------------------------------------------------------------
+
+    /// Read the effective live configuration (`GET /mockserver/configuration`).
+    /// Returns the serialized `Configuration` JSON.
+    pub fn retrieve_configuration(&self) -> Result<String> {
+        let resp = self
+            .http
+            .get(self.url("/mockserver/configuration"))
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    /// Update the live configuration (`PUT /mockserver/configuration`).
+    ///
+    /// `config_json` is a `ConfigurationDTO` JSON document — only the fields
+    /// present are applied (partial update). Returns the serialized *updated*
+    /// configuration JSON.
+    pub fn update_configuration(&self, config_json: &str) -> Result<String> {
+        let resp = self
+            .http
+            .put(self.url("/mockserver/configuration"))
+            .header("Content-Type", "application/json")
+            .body(config_json.to_string())
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Pact (import / export / verify)
+    // ------------------------------------------------------------------
+
+    /// Import a Pact v3 contract (`PUT /mockserver/pact/import`).
+    ///
+    /// Returns the JSON array of upserted expectations the server creates.
+    pub fn pact_import(&self, json: &str) -> Result<Vec<Expectation>> {
+        let resp = self
+            .http
+            .put(self.url("/mockserver/pact/import"))
+            .header("Content-Type", "application/json")
+            .body(json.to_string())
+            .send()?;
+        self.expectations_response(resp)
+    }
+
+    /// Export the active expectations as a Pact v3 contract
+    /// (`PUT /mockserver/pact?consumer=&provider=`).
+    ///
+    /// A query parameter is only added when the corresponding value is non-blank
+    /// (matching the Java client); blank values fall back to the server defaults.
+    /// Returns the generated Pact JSON.
+    pub fn pact_export(&self, consumer: &str, provider: &str) -> Result<String> {
+        let mut params: Vec<(&str, &str)> = Vec::new();
+        if !consumer.trim().is_empty() {
+            params.push(("consumer", consumer));
+        }
+        if !provider.trim().is_empty() {
+            params.push(("provider", provider));
+        }
+        let mut builder = self
+            .http
+            .put(self.url("/mockserver/pact"))
+            .header("Content-Type", "application/json")
+            .body("");
+        if !params.is_empty() {
+            builder = builder.query(&params);
+        }
+        let resp = builder.send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    /// Verify a Pact v3 contract against the active expectations
+    /// (`PUT /mockserver/pact/verify`).
+    ///
+    /// The verification *outcome* is returned in the [`Ok`] value rather than as
+    /// an error: `202 ACCEPTED` maps to [`PactVerification`] with `passed = true`
+    /// and `406 NOT_ACCEPTABLE` to `passed = false`. Both carry the server's
+    /// verification report. A `400` (bad input) is surfaced as
+    /// [`Error::InvalidRequest`].
+    pub fn pact_verify(&self, json: &str) -> Result<PactVerification> {
+        let resp = self
+            .http
+            .put(self.url("/mockserver/pact/verify"))
+            .header("Content-Type", "application/json")
+            .body(json.to_string())
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            202 => Ok(PactVerification {
+                passed: true,
+                report: resp.text()?,
+            }),
+            406 => Ok(PactVerification {
+                passed: false,
+                report: resp.text()?,
+            }),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // File store
+    // ------------------------------------------------------------------
+
+    /// Store a file in the in-memory file store (`PUT /mockserver/files/store`).
+    ///
+    /// `content` is sent base64-encoded (with `"base64": true`) so arbitrary
+    /// binary data round-trips intact. Returns the `{"name":..,"size":..}` JSON.
+    pub fn store_file(&self, name: &str, content: &[u8]) -> Result<String> {
+        let body = serde_json::json!({
+            "name": name,
+            "content": BASE64.encode(content),
+            "base64": true,
+        });
+        let resp = self
+            .http
+            .put(self.url("/mockserver/files/store"))
+            .json(&body)
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 | 201 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    /// Retrieve a file's raw bytes (`PUT /mockserver/files/retrieve`).
+    ///
+    /// Returns the raw `200` body bytes. An unknown file (`404`) is surfaced as
+    /// [`Error::NotFound`] (mirroring the crate's status-to-error mapping).
+    pub fn retrieve_file(&self, name: &str) -> Result<Vec<u8>> {
+        let body = serde_json::json!({ "name": name });
+        let resp = self
+            .http
+            .put(self.url("/mockserver/files/retrieve"))
+            .json(&body)
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.bytes()?.to_vec()),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            404 => Err(Error::NotFound(resp.text().unwrap_or_default())),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    /// List the names of all stored files (`PUT /mockserver/files/list`).
+    pub fn list_files(&self) -> Result<Vec<String>> {
+        let resp = self
+            .http
+            .put(self.url("/mockserver/files/list"))
+            .header("Content-Type", "application/json")
+            .body("")
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => {
+                let text = resp.text()?;
+                if text.trim().is_empty() {
+                    Ok(vec![])
+                } else {
+                    Ok(serde_json::from_str(&text)?)
+                }
+            }
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    /// Delete a stored file (`PUT /mockserver/files/delete`). An unknown file
+    /// (`404`) is surfaced as [`Error::NotFound`].
+    pub fn delete_file(&self, name: &str) -> Result<()> {
+        let body = serde_json::json!({ "name": name });
+        let resp = self
+            .http
+            .put(self.url("/mockserver/files/delete"))
+            .json(&body)
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(()),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            404 => Err(Error::NotFound(resp.text().unwrap_or_default())),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Import (HAR / Postman)
+    // ------------------------------------------------------------------
+
+    /// Import a HAR document (`PUT /mockserver/import?format=har`). Returns the
+    /// upserted expectations.
+    pub fn import_har(&self, har_json: &str) -> Result<Vec<Expectation>> {
+        self.import_document(har_json, "har")
+    }
+
+    /// Import a Postman collection
+    /// (`PUT /mockserver/import?format=postman`). Returns the upserted
+    /// expectations.
+    pub fn import_postman_collection(&self, collection_json: &str) -> Result<Vec<Expectation>> {
+        self.import_document(collection_json, "postman")
+    }
+
+    fn import_document(&self, json: &str, format: &str) -> Result<Vec<Expectation>> {
+        let url = format!("{}?format={format}", self.url("/mockserver/import"));
+        let resp = self
+            .http
+            .put(&url)
+            .header("Content-Type", "application/json")
+            .body(json.to_string())
+            .send()?;
+        self.expectations_response(resp)
+    }
+
+    // ------------------------------------------------------------------
+    // Operating mode
+    // ------------------------------------------------------------------
+
+    /// Set the high-level operating mode (`PUT /mockserver/mode?mode=<MODE>`).
+    /// Returns the `{"mode":..,"proxyUnmatchedRequests":..}` JSON.
+    pub fn set_mode(&self, mode: MockMode) -> Result<String> {
+        let url = format!("{}?mode={}", self.url("/mockserver/mode"), mode.as_str());
+        let resp = self
+            .http
+            .put(&url)
+            .header("Content-Type", "application/json")
+            .body("")
+            .send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    /// Read the current operating mode (`GET /mockserver/mode`). Returns the
+    /// `{"mode":..,"proxyUnmatchedRequests":..}` JSON.
+    pub fn retrieve_mode(&self) -> Result<String> {
+        let resp = self.http.get(self.url("/mockserver/mode")).send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // WSDL
+    // ------------------------------------------------------------------
+
+    /// Generate expectations from a WSDL document (`PUT /mockserver/wsdl`).
+    ///
+    /// The raw WSDL XML is sent as the request body (Content-Type `text/xml`).
+    /// Returns the generated (upserted) expectations.
+    pub fn wsdl_expectation(&self, wsdl: &str) -> Result<Vec<Expectation>> {
+        let resp = self
+            .http
+            .put(self.url("/mockserver/wsdl"))
+            .header("Content-Type", "text/xml")
+            .body(wsdl.to_string())
+            .send()?;
+        self.expectations_response(resp)
+    }
+
+    /// Map a `201`/`200` JSON-array-of-expectations response (used by import,
+    /// pact-import and WSDL) to `Vec<Expectation>`, applying the crate's status
+    /// conventions.
+    fn expectations_response(
+        &self,
+        resp: reqwest::blocking::Response,
+    ) -> Result<Vec<Expectation>> {
+        let status = resp.status().as_u16();
+        match status {
+            200 | 201 => {
+                let text = resp.text()?;
+                if text.trim().is_empty() {
+                    Ok(vec![])
+                } else {
+                    Ok(serde_json::from_str(&text)?)
+                }
+            }
+            400 => Err(Error::InvalidRequest(resp.text()?)),
             _ => Err(Error::UnexpectedStatus {
                 status,
                 body: resp.text().unwrap_or_default(),

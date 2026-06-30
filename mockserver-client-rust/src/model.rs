@@ -2039,6 +2039,91 @@ impl ClearType {
 }
 
 // ---------------------------------------------------------------------------
+// Pact verification result
+// ---------------------------------------------------------------------------
+
+/// Outcome of a Pact contract verification (`PUT /mockserver/pact/verify`).
+///
+/// The server replies `202 ACCEPTED` when every interaction in the contract
+/// matched an active expectation, or `406 NOT_ACCEPTABLE` when verification
+/// failed — in both cases the body is the same verification report JSON.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PactVerification {
+    /// `true` when verification passed (`202`), `false` when it failed (`406`).
+    pub passed: bool,
+    /// The verification report JSON returned by the server (verbatim).
+    pub report: String,
+}
+
+// ---------------------------------------------------------------------------
+// Operating mode
+// ---------------------------------------------------------------------------
+
+/// High-level operating mode for MockServer (set via `PUT /mockserver/mode`,
+/// read via `GET /mockserver/mode`).
+///
+/// Each mode packages the common record / replay / pass-through workflows into a
+/// single switch (a convenience over `attemptToProxyIfNoMatchingExpectation`):
+///
+/// * [`MockMode::Simulate`] — match expectations and return mocks; unmatched
+///   requests get a `404`. This is the default (proxy-on-no-match disabled).
+/// * [`MockMode::Spy`] — match expectations and return mocks, but forward
+///   unmatched requests to the real upstream so they are served live and recorded
+///   (proxy-on-no-match enabled).
+/// * [`MockMode::Capture`] — forward and record; with no expectations defined this
+///   captures all traffic. Backed by the same proxy flag as [`MockMode::Spy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MockMode {
+    /// Match expectations; unmatched requests get a `404` (default).
+    Simulate,
+    /// Match expectations; unmatched requests forwarded to the upstream and recorded.
+    Spy,
+    /// Forward and record all traffic.
+    Capture,
+}
+
+impl MockMode {
+    /// The wire value for this mode (the `mode` query parameter / JSON field).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MockMode::Simulate => "SIMULATE",
+            MockMode::Spy => "SPY",
+            MockMode::Capture => "CAPTURE",
+        }
+    }
+
+    /// Whether, in this mode, a request matching no expectation is proxied to its
+    /// upstream (and thereby recorded) rather than answered with a `404`.
+    pub fn proxy_unmatched_requests(&self) -> bool {
+        !matches!(self, MockMode::Simulate)
+    }
+}
+
+impl std::fmt::Display for MockMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for MockMode {
+    type Err = String;
+
+    /// Parse a mode name case-insensitively (matches the server's
+    /// `MockMode.parse`). Returns an error message for blank/unknown values.
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.trim().to_uppercase().as_str() {
+            "" => Err("mode is required (one of SIMULATE, SPY, CAPTURE)".to_string()),
+            "SIMULATE" => Ok(MockMode::Simulate),
+            "SPY" => Ok(MockMode::Spy),
+            "CAPTURE" => Ok(MockMode::Capture),
+            other => Err(format!(
+                "unknown mode '{other}' (expected one of SIMULATE, SPY, CAPTURE)"
+            )),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // gRPC descriptor management
 // ---------------------------------------------------------------------------
 
