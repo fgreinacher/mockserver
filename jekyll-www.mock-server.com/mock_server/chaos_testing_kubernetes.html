@@ -137,29 +137,273 @@ spec:
 
 <p>Create an expectation that matches requests to the payment service and forwards them to the real backend, injecting 503 errors on 30% of requests with 200ms of added latency:</p>
 
-<pre class="prettyprint lang-javascript code"><code class="code">PUT /mockserver/expectation
+<button id="button_k8s_chaos_reverse" class="accordion">forward expectation with chaos &mdash; code examples</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpForward.forward;
+import static org.mockserver.model.HttpChaosProfile.httpChaosProfile;
+import org.mockserver.model.Delay;
+import java.util.concurrent.TimeUnit;
 
-{
-  "httpRequest": {
-    "path": "/payments/.*"
-  },
-  "httpForward": {
-    "host": "payment-service.production.svc.cluster.local",
-    "port": 8080,
-    "scheme": "HTTP"
-  },
-  "chaos": {
-    "errorStatus": 503,
-    "errorProbability": 0.3,
-    "latency": {
-      "timeUnit": "MILLISECONDS",
-      "value": 200
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/payments/.*")
+    )
+    .withChaos(
+        httpChaosProfile()
+            .withErrorStatus(503)
+            .withErrorProbability(0.3)
+            .withLatency(new Delay(TimeUnit.MILLISECONDS, 200))
+    )
+    .forward(
+        forward()
+            .withHost("payment-service.production.svc.cluster.local")
+            .withPort(8080)
+            .withScheme(HttpForward.Scheme.HTTP)
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/payments/.*"
+    },
+    "httpForward": {
+        "host": "payment-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 0.3,
+        "latency": {
+            "timeUnit": "MILLISECONDS",
+            "value": 200
+        }
+    },
+    "times": {
+        "unlimited": true
     }
-  },
-  "times": {
-    "unlimited": true
-  }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation, HttpRequest, HttpForward, HttpChaosProfile, Delay, Times
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation(
+    http_request=HttpRequest(path="/payments/.*"),
+    http_forward=HttpForward(
+        host="payment-service.production.svc.cluster.local",
+        port=8080,
+        scheme="HTTP"
+    ),
+    chaos=HttpChaosProfile(
+        error_status=503,
+        error_probability=0.3,
+        latency=Delay(time_unit="MILLISECONDS", value=200)
+    ),
+    times=Times(unlimited=True)
+))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.new(path: '/payments/.*')
+).with_chaos(
+    MockServer::HttpChaosProfile.new(
+        error_status: 503,
+        error_probability: 0.3,
+        latency: MockServer::Delay.new(time_unit: 'MILLISECONDS', value: 200)
+    )
+).forward(
+    MockServer::HttpForward.new(
+        host: 'payment-service.production.svc.cluster.local',
+        port: 8080,
+        scheme: 'HTTP'
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/payments/.*"
+    },
+    "httpForward": {
+        "host": "payment-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 0.3,
+        "latency": {
+            "timeUnit": "MILLISECONDS",
+            "value": 200
+        }
+    },
+    "times": {
+        "unlimited": true
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/payments/.*""
+    },
+    ""httpForward"": {
+        ""host"": ""payment-service.production.svc.cluster.local"",
+        ""port"": 8080,
+        ""scheme"": ""HTTP""
+    },
+    ""chaos"": {
+        ""errorStatus"": 503,
+        ""errorProbability"": 0.3,
+        ""latency"": {
+            ""timeUnit"": ""MILLISECONDS"",
+            ""value"": 200
+        }
+    },
+    ""times"": {
+        ""unlimited"": true
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/payments/.*"
+    },
+    "httpForward": {
+        "host": "payment-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 0.3,
+        "latency": {
+            "timeUnit": "MILLISECONDS",
+            "value": 200
+        }
+    },
+    "times": {
+        "unlimited": true
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "path": "/payments/.*"
+    },
+    "httpForward": {
+        "host": "payment-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 0.3,
+        "latency": {
+            "timeUnit": "MILLISECONDS",
+            "value": 200
+        }
+    },
+    "times": {
+        "unlimited": true
+    }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/payments/.*"
+    },
+    "httpForward": {
+        "host": "payment-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 503,
+        "errorProbability": 0.3,
+        "latency": {
+            "timeUnit": "MILLISECONDS",
+            "value": 200
+        }
+    },
+    "times": {
+        "unlimited": true
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <p>Your application connects to <code class="inline code">payment-service-chaos:8080</code> instead of <code class="inline code">payment-service:8080</code>. MockServer forwards every request to the real <code class="inline code">payment-service.production.svc.cluster.local:8080</code> and injects errors and latency according to the chaos profile. When you are done testing, point your application back to the real service.</p>
 
@@ -204,28 +448,269 @@ spec:
 
 <p>Inject 429 rate-limit errors on 50% of requests to <code class="inline code">api.stripe.com</code>:</p>
 
-<pre class="prettyprint lang-javascript code"><code class="code">PUT /mockserver/expectation
+<button id="button_k8s_chaos_egress" class="accordion">forward expectation with chaos &mdash; code examples</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpForward.forward;
+import static org.mockserver.model.HttpChaosProfile.httpChaosProfile;
 
-{
-  "httpRequest": {
-    "headers": {
-      "Host": ["api.stripe.com"]
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withHeader("Host", "api.stripe.com")
+    )
+    .withChaos(
+        httpChaosProfile()
+            .withErrorStatus(429)
+            .withErrorProbability(0.5)
+            .withRetryAfter("30")
+    )
+    .forward(
+        forward()
+            .withHost("api.stripe.com")
+            .withPort(443)
+            .withScheme(HttpForward.Scheme.HTTPS)
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "headers": {
+            "Host": ["api.stripe.com"]
+        }
+    },
+    "httpForward": {
+        "host": "api.stripe.com",
+        "port": 443,
+        "scheme": "HTTPS"
+    },
+    "chaos": {
+        "errorStatus": 429,
+        "errorProbability": 0.5,
+        "retryAfter": "30"
+    },
+    "times": {
+        "unlimited": true
     }
-  },
-  "httpForward": {
-    "host": "api.stripe.com",
-    "port": 443,
-    "scheme": "HTTPS"
-  },
-  "chaos": {
-    "errorStatus": 429,
-    "errorProbability": 0.5,
-    "retryAfter": "30"
-  },
-  "times": {
-    "unlimited": true
-  }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation, HttpRequest, HttpForward, HttpChaosProfile, KeyToMultiValue, Times
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation(
+    http_request=HttpRequest(
+        headers=[KeyToMultiValue(name="Host", values=["api.stripe.com"])]
+    ),
+    http_forward=HttpForward(
+        host="api.stripe.com",
+        port=443,
+        scheme="HTTPS"
+    ),
+    chaos=HttpChaosProfile(
+        error_status=429,
+        error_probability=0.5,
+        retry_after="30"
+    ),
+    times=Times(unlimited=True)
+))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.new(
+        headers: [MockServer::KeyToMultiValue.new(name: 'Host', values: ['api.stripe.com'])]
+    )
+).with_chaos(
+    MockServer::HttpChaosProfile.new(
+        error_status: 429,
+        error_probability: 0.5,
+        retry_after: '30'
+    )
+).forward(
+    MockServer::HttpForward.new(
+        host: 'api.stripe.com',
+        port: 443,
+        scheme: 'HTTPS'
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "headers": {
+            "Host": ["api.stripe.com"]
+        }
+    },
+    "httpForward": {
+        "host": "api.stripe.com",
+        "port": 443,
+        "scheme": "HTTPS"
+    },
+    "chaos": {
+        "errorStatus": 429,
+        "errorProbability": 0.5,
+        "retryAfter": "30"
+    },
+    "times": {
+        "unlimited": true
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""headers"": {
+            ""Host"": [""api.stripe.com""]
+        }
+    },
+    ""httpForward"": {
+        ""host"": ""api.stripe.com"",
+        ""port"": 443,
+        ""scheme"": ""HTTPS""
+    },
+    ""chaos"": {
+        ""errorStatus"": 429,
+        ""errorProbability"": 0.5,
+        ""retryAfter"": ""30""
+    },
+    ""times"": {
+        ""unlimited"": true
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "headers": {
+            "Host": ["api.stripe.com"]
+        }
+    },
+    "httpForward": {
+        "host": "api.stripe.com",
+        "port": 443,
+        "scheme": "HTTPS"
+    },
+    "chaos": {
+        "errorStatus": 429,
+        "errorProbability": 0.5,
+        "retryAfter": "30"
+    },
+    "times": {
+        "unlimited": true
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "headers": {
+            "Host": ["api.stripe.com"]
+        }
+    },
+    "httpForward": {
+        "host": "api.stripe.com",
+        "port": 443,
+        "scheme": "HTTPS"
+    },
+    "chaos": {
+        "errorStatus": 429,
+        "errorProbability": 0.5,
+        "retryAfter": "30"
+    },
+    "times": {
+        "unlimited": true
+    }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "headers": {
+            "Host": ["api.stripe.com"]
+        }
+    },
+    "httpForward": {
+        "host": "api.stripe.com",
+        "port": 443,
+        "scheme": "HTTPS"
+    },
+    "chaos": {
+        "errorStatus": 429,
+        "errorProbability": 0.5,
+        "retryAfter": "30"
+    },
+    "times": {
+        "unlimited": true
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <p>Requests to other hosts pass through normally (the default <code class="inline code">attemptToProxyIfNoMatchingExpectation</code> is <code class="inline code">true</code>). Only requests matching the expectation receive chaos injection.</p>
 
@@ -272,27 +757,262 @@ spec:
 
 <p>With <code class="inline code">MOCKSERVER_PROXY_REMOTE_HOST</code> and <code class="inline code">MOCKSERVER_PROXY_REMOTE_PORT</code> set, MockServer forwards all unmatched requests to the real inventory service. Add expectations with chaos profiles for specific paths to inject faults:</p>
 
-<pre class="prettyprint lang-javascript code"><code class="code">PUT /mockserver/expectation
+<button id="button_k8s_chaos_sidecar" class="accordion">forward expectation with chaos &mdash; code examples</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpForward.forward;
+import static org.mockserver.model.HttpChaosProfile.httpChaosProfile;
 
-{
-  "httpRequest": {
-    "path": "/inventory/check"
-  },
-  "httpForward": {
-    "host": "inventory-service.production.svc.cluster.local",
-    "port": 8080,
-    "scheme": "HTTP"
-  },
-  "chaos": {
-    "errorStatus": 500,
-    "errorProbability": 1.0,
-    "succeedFirst": 3,
-    "failRequestCount": 5
-  },
-  "times": {
-    "unlimited": true
-  }
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/inventory/check")
+    )
+    .withChaos(
+        httpChaosProfile()
+            .withErrorStatus(500)
+            .withErrorProbability(1.0)
+            .withSucceedFirst(3)
+            .withFailRequestCount(5)
+    )
+    .forward(
+        forward()
+            .withHost("inventory-service.production.svc.cluster.local")
+            .withPort(8080)
+            .withScheme(HttpForward.Scheme.HTTP)
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/inventory/check"
+    },
+    "httpForward": {
+        "host": "inventory-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 500,
+        "errorProbability": 1.0,
+        "succeedFirst": 3,
+        "failRequestCount": 5
+    },
+    "times": {
+        "unlimited": true
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation, HttpRequest, HttpForward, HttpChaosProfile, Times
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation(
+    http_request=HttpRequest(path="/inventory/check"),
+    http_forward=HttpForward(
+        host="inventory-service.production.svc.cluster.local",
+        port=8080,
+        scheme="HTTP"
+    ),
+    chaos=HttpChaosProfile(
+        error_status=500,
+        error_probability=1.0,
+        succeed_first=3,
+        fail_request_count=5
+    ),
+    times=Times(unlimited=True)
+))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.new(path: '/inventory/check')
+).with_chaos(
+    MockServer::HttpChaosProfile.new(
+        error_status: 500,
+        error_probability: 1.0,
+        succeed_first: 3,
+        fail_request_count: 5
+    )
+).forward(
+    MockServer::HttpForward.new(
+        host: 'inventory-service.production.svc.cluster.local',
+        port: 8080,
+        scheme: 'HTTP'
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/inventory/check"
+    },
+    "httpForward": {
+        "host": "inventory-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 500,
+        "errorProbability": 1.0,
+        "succeedFirst": 3,
+        "failRequestCount": 5
+    },
+    "times": {
+        "unlimited": true
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/inventory/check""
+    },
+    ""httpForward"": {
+        ""host"": ""inventory-service.production.svc.cluster.local"",
+        ""port"": 8080,
+        ""scheme"": ""HTTP""
+    },
+    ""chaos"": {
+        ""errorStatus"": 500,
+        ""errorProbability"": 1.0,
+        ""succeedFirst"": 3,
+        ""failRequestCount"": 5
+    },
+    ""times"": {
+        ""unlimited"": true
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/inventory/check"
+    },
+    "httpForward": {
+        "host": "inventory-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 500,
+        "errorProbability": 1.0,
+        "succeedFirst": 3,
+        "failRequestCount": 5
+    },
+    "times": {
+        "unlimited": true
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "path": "/inventory/check"
+    },
+    "httpForward": {
+        "host": "inventory-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 500,
+        "errorProbability": 1.0,
+        "succeedFirst": 3,
+        "failRequestCount": 5
+    },
+    "times": {
+        "unlimited": true
+    }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/inventory/check"
+    },
+    "httpForward": {
+        "host": "inventory-service.production.svc.cluster.local",
+        "port": 8080,
+        "scheme": "HTTP"
+    },
+    "chaos": {
+        "errorStatus": 500,
+        "errorProbability": 1.0,
+        "succeedFirst": 3,
+        "failRequestCount": 5
+    },
+    "times": {
+        "unlimited": true
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <p>This example lets the first 3 requests to <code class="inline code">/inventory/check</code> succeed, then injects 500 errors on requests 4 through 8, and recovers to normal responses after that. This is useful for testing retry logic and circuit breakers. See <a href="/mock_server/chaos_testing.html#stateful_count_based_faults">Stateful / Count-Based Faults</a> for more on <code class="inline code">succeedFirst</code> and <code class="inline code">failRequestCount</code>.</p>
 
