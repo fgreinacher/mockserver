@@ -347,6 +347,35 @@ table td {
     border: 1px solid #ddd;
 }
 
+/*
+Inline code (`.inline` / `.inline_code`) defaults to `white-space: pre`, which
+never wraps. In a table cell a long JSON snippet or identifier then forces the
+whole table wider than the page (horizontal overflow). Inside table cells, let
+inline code wrap — preserving internal spaces — so prose-heavy columns (e.g. a
+"Behaviour"/"Description" column) reflow instead of stretching the table.
+*/
+table th .inline,
+table td .inline,
+table th .inline_code,
+table td .inline_code {
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+}
+
+/*
+Opt-in modifier for a genuinely wide data table — one with many columns or long
+unbreakable identifiers (e.g. fully-qualified property / environment-variable
+names) that cannot reflow to fit. Scroll it horizontally within its own box
+instead of pushing the whole page off screen. Add `table-scroll` alongside
+`table-standard` on such a table; tables that already fit need no change.
+*/
+table.table-scroll {
+    display: block;
+    width: auto;
+    max-width: 100%;
+    overflow-x: auto;
+}
+
 table thead th {
     background-color: #f5f5f5;
     font-weight: bold;
