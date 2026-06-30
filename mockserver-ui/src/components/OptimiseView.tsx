@@ -354,7 +354,13 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
   const recordedRequests = useDashboardStore((s) => s.recordedRequests);
   const liveTrafficCount = proxiedRequests.length + recordedRequests.length;
   const liveTrafficCountRef = useRef(liveTrafficCount);
-  liveTrafficCountRef.current = liveTrafficCount;
+  // Mirror the latest count into the ref via an effect rather than during render
+  // (mutating a ref in render is flagged by react-hooks/refs and is unsafe under
+  // concurrent rendering). The ref lets `load` read the current count without
+  // depending on it.
+  useEffect(() => {
+    liveTrafficCountRef.current = liveTrafficCount;
+  }, [liveTrafficCount]);
   // Traffic count captured into the currently-displayed report (null until loaded).
   const [loadedTrafficCount, setLoadedTrafficCount] = useState<number | null>(null);
   const [busyAction, setBusyAction] = useState<null | 'copy' | 'copyVerdict' | 'download'>(null);
