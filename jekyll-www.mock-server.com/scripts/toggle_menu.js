@@ -35,9 +35,14 @@
 }(this, this.document));
 
 var scrollActiveMenuItemIntoView = function() {
-    var activeMenuItem = document.querySelector("#menu li.active");
+    // Prefer the active link in its real (collapsible) section over the pinned
+    // "Popular" duplicate, so the nav scrolls to reveal the page's sibling /
+    // related links rather than stranding the user on the isolated Popular copy.
+    var activeMenuItem = document.querySelector("#menu .nav-collapsible li.active")
+        || document.querySelector("#menu li.active");
     if (activeMenuItem && !isInViewport(activeMenuItem)) {
-        activeMenuItem.scrollIntoView({inline: 'nearest', behaviour: 'auto'});
+        // Centre it so the sibling/related links above and below stay visible.
+        activeMenuItem.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'auto'});
     }
 };
 

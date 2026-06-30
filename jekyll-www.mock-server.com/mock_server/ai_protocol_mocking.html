@@ -22,7 +22,11 @@ schema_faq:
     answer: "They are completely separate features. MockServer's own MCP control plane (at /mockserver/mcp) lets AI coding assistants like Claude Code or Cursor control MockServer — creating expectations, verifying calls, and debugging traffic. The AI Protocol Mocking feature lets you stand up a fake third-party MCP server that your application under test connects to. One is about controlling MockServer; the other is about mocking an external service."
 ---
 
-<p style="width: 80%; margin: 1em auto;"><img src="../images/mockserver_ai_protocol_mocking.png" alt="AI protocol mocking flow: MockServer receives an MCP or A2A call, matches a request expectation, and streams a scripted SSE result." style="max-width:100%;"></p>
+<p>MockServer can mock AI protocol servers — including <strong>MCP (Model Context Protocol)</strong> servers and <strong>A2A (Agent-to-Agent Protocol)</strong> agents — enabling you to test AI clients against predictable mock services without running real AI infrastructure.</p>
+
+<p>This is distinct from MockServer's built-in <a href="/mock_server/ai_mcp_setup.html">MCP control plane</a> (which lets AI assistants <em>control</em> MockServer). These features let you <em>mock other people's</em> MCP and A2A servers. For mocking LLM API responses (OpenAI, Anthropic, Gemini, etc.) with provider-correct formatting and streaming, see <a href="/mock_server/llm_response_mocking.html">LLM Response Mocking</a>.</p>
+
+<p style="width: 60%; margin: 1em auto;"><img src="../images/mockserver_ai_protocol_mocking.png" alt="AI protocol mocking flow: MockServer receives an MCP or A2A call, matches a request expectation, and streams a scripted SSE result." style="max-width:100%;"></p>
 
 {% include_subpage _includes/ai_protocol_mocking.html %}
 

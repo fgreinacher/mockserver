@@ -149,10 +149,13 @@ Add that light border to separate items into groups.
 }
 
 /*
-Change color of the anchor links on hover/focus.
+Change color of the anchor links on hover and keyboard focus. Use
+`:focus-visible` (not `:focus`) so a mouse click on an external link
+(target="_blank") does not leave it looking "selected" alongside the real
+`.active` page — mouse focus is suppressed, keyboard focus still highlights.
 */
 #menu .pure-menu li a:hover,
-#menu .pure-menu li a:focus {
+#menu .pure-menu li a:focus-visible {
     background: #fff;
     color: #000;
 }
@@ -299,6 +302,7 @@ a.no_link {
 .build_tag {
     float: right;
     overflow: hidden;
+    margin-top: 0.75em;
 }
 
 pre {
