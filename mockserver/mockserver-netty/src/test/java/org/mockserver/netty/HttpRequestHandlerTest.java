@@ -83,7 +83,7 @@ public class HttpRequestHandlerTest {
         when(server.getScheduler()).thenReturn(mock(Scheduler.class));
         mockActionHandler = mock(HttpActionHandler.class);
 
-        httpStateHandler = new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class));
+        httpStateHandler = new HttpState(configuration(), new MockServerLogger(), synchronousScheduler());
         mockServerHandler = new HttpRequestHandler(configuration(), server, httpStateHandler, null);
 
         openMocks(this);
@@ -956,9 +956,25 @@ public class HttpRequestHandlerTest {
         org.mockserver.configuration.Configuration configuration = configuration()
             .controlPlaneAuthorizationEnabled(authorizationEnabled)
             .controlPlaneScopeMapping(mapping);
-        httpStateHandler = new HttpState(configuration, new MockServerLogger(), mock(Scheduler.class));
+        httpStateHandler = new HttpState(configuration, new MockServerLogger(), synchronousScheduler());
         mockServerHandler = new HttpRequestHandler(configuration, server, httpStateHandler, null);
         embeddedChannel = new EmbeddedChannel(mockServerHandler);
+    }
+
+    /**
+     * A mock {@link Scheduler} whose {@code submit(Runnable)} runs the task inline.
+     * The control-plane handler offloads the optimisation-report build off the event
+     * loop via {@code httpState.getScheduler().submit(...)}; in tests we must execute
+     * that runnable so the response is written and {@code readOutbound()} can observe
+     * it. All other scheduler methods remain no-op mocks.
+     */
+    private Scheduler synchronousScheduler() {
+        Scheduler scheduler = mock(Scheduler.class);
+        doAnswer(invocation -> {
+            invocation.getArgument(0, Runnable.class).run();
+            return null;
+        }).when(scheduler).submit(any(Runnable.class));
+        return scheduler;
     }
 
     private void authenticateWithScopes(String principal, java.util.Set<String> scopes) {
