@@ -1647,6 +1647,24 @@ class ResponseMode:
     SWITCH = "SWITCH"
 
 
+class MockMode:
+    """The high-level operating mode of MockServer. Mirrors the core
+    ``MockMode`` enum; use the string constants as the
+    :meth:`MockServerClient.set_mode` argument.
+
+    - ``SIMULATE`` — match expectations, unmatched requests return ``404``
+      (proxy-on-no-match disabled; the default).
+    - ``SPY`` — match expectations; unmatched requests are forwarded to the real
+      upstream and recorded.
+    - ``CAPTURE`` — forward and record (captures all traffic when no
+      expectations are defined).
+    """
+
+    SIMULATE = "SIMULATE"
+    SPY = "SPY"
+    CAPTURE = "CAPTURE"
+
+
 class CrossProtocolTrigger:
     """The protocol event that advances a cross-protocol scenario. Mirrors the
     core ``CrossProtocolTrigger`` enum; use the string constants as the

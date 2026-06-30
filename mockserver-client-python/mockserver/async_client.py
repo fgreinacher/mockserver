@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import socket
@@ -315,6 +316,305 @@ class AsyncMockServerClient:
                 f"Failed to get clock status (status={status}): {response_body}"
             )
         return json.loads(response_body) if response_body else {}
+
+    async def retrieve_metrics(self) -> dict:
+        """Retrieve the JSON metric-counter snapshot.
+
+        Issues ``PUT /mockserver/retrieve?type=METRICS`` and returns the flat
+        JSON object mapping each metric name to its long value. When metrics are
+        disabled the server returns an empty object (``{}``).
+        """
+        status, response_body = await self._request(
+            "PUT", "/mockserver/retrieve", "", {"type": "METRICS"}
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve metrics (status={status}): {response_body}"
+            )
+        return json.loads(response_body) if response_body else {}
+
+    async def scrape_metrics(self) -> str:
+        """Scrape the Prometheus metrics exposition text.
+
+        Issues ``GET /mockserver/metrics`` and returns the Prometheus/OpenMetrics
+        exposition text. Raises :class:`MockServerError` when metrics are disabled
+        (the server responds ``404``).
+        """
+        status, response_body = await self._request("GET", "/mockserver/metrics")
+        if status == 404:
+            raise MockServerError(
+                "Failed to scrape metrics: metrics are disabled "
+                f"(start MockServer with metricsEnabled to enable it) (status=404): {response_body}"
+            )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to scrape metrics (status={status}): {response_body}"
+            )
+        return response_body or ""
+
+    async def retrieve_configuration(self) -> str:
+        """Read the effective live configuration.
+
+        Issues ``GET /mockserver/configuration`` and returns the serialized
+        configuration JSON document as a string.
+        """
+        status, response_body = await self._request("GET", "/mockserver/configuration")
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve configuration (status={status}): {response_body}"
+            )
+        return response_body or ""
+
+    async def update_configuration(self, config_json: str) -> str:
+        """Update the live configuration (partial update).
+
+        Issues ``PUT /mockserver/configuration`` with *config_json* (a
+        ``ConfigurationDTO`` JSON document; only the present fields are applied)
+        and returns the serialized updated configuration JSON. A ``None`` body is
+        sent as an empty string.
+        """
+        body = config_json if config_json is not None else ""
+        status, response_body = await self._request(
+            "PUT", "/mockserver/configuration", body
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to update configuration (status={status}): {response_body}"
+            )
+        return response_body or ""
+
+    async def pact_import(self, pact_json: str) -> str:
+        """Import a Pact v3 contract as expectations.
+
+        Issues ``PUT /mockserver/pact/import`` with the contract JSON and returns
+        the server body (the JSON array of upserted expectations). Rejects a blank
+        contract before sending.
+        """
+        if not pact_json or not pact_json.strip():
+            raise ValueError("pact_import requires a non-empty Pact contract JSON")
+        status, response_body = await self._request(
+            "PUT", "/mockserver/pact/import", pact_json
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to import pact (status={status}): {response_body}"
+            )
+        return response_body or ""
+
+    async def pact_export(
+        self, consumer: str | None = None, provider: str | None = None
+    ) -> str:
+        """Export the active expectations as a Pact v3 contract.
+
+        Issues ``PUT /mockserver/pact`` with optional ``consumer`` and
+        ``provider`` query params (added only when non-blank) and returns the
+        generated Pact contract JSON.
+        """
+        query_params: dict[str, str] = {}
+        if consumer:
+            query_params["consumer"] = consumer
+        if provider:
+            query_params["provider"] = provider
+        status, response_body = await self._request(
+            "PUT", "/mockserver/pact", "", query_params or None
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to export pact (status={status}): {response_body}"
+            )
+        return response_body or ""
+
+    async def pact_verify(self, pact_json: str) -> str:
+        """Verify a Pact v3 contract against the active expectations.
+
+        Issues ``PUT /mockserver/pact/verify`` with the contract JSON. The server
+        returns ``202`` when every interaction matches (verification passed) and
+        ``406`` when verification fails. Both are expected outcomes: the
+        verification report body is returned for ``202`` (pass) and ``406`` (fail)
+        without raising, so the caller can inspect the report and decide. Only a
+        genuinely bad request (e.g. ``400`` malformed contract) raises
+        :class:`MockServerError`.
+        """
+        if not pact_json or not pact_json.strip():
+            raise ValueError("pact_verify requires a non-empty Pact contract JSON")
+        status, response_body = await self._request(
+            "PUT", "/mockserver/pact/verify", pact_json
+        )
+        if status not in (200, 202, 406):
+            raise MockServerError(
+                f"Failed to verify pact (status={status}): {response_body}"
+            )
+        return response_body or ""
+
+    async def store_file(self, name: str, content: str | bytes) -> dict:
+        """Store a file in the in-memory file store.
+
+        Issues ``PUT /mockserver/files/store`` with ``name`` and ``content``.
+        ``str`` content is sent verbatim (UTF-8); ``bytes`` content is base64
+        encoded and sent with ``base64: true``. Returns the
+        ``{"name", "size"}`` JSON acknowledgement.
+        """
+        payload: dict = {"name": name}
+        if isinstance(content, bytes):
+            payload["content"] = base64.b64encode(content).decode("ascii")
+            payload["base64"] = True
+        else:
+            payload["content"] = content
+        status, response_body = await self._request(
+            "PUT", "/mockserver/files/store", json.dumps(payload)
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to store file '{name}' (status={status}): {response_body}"
+            )
+        return json.loads(response_body) if response_body else {}
+
+    async def retrieve_file(self, name: str) -> str:
+        """Retrieve a file from the in-memory file store.
+
+        Issues ``PUT /mockserver/files/retrieve`` with ``{"name": name}`` and
+        returns the raw ``200`` response body. An unknown file responds ``404``
+        and raises :class:`MockServerError` with ``"file not found: <name>"``
+        (matching the Go/.NET/Ruby/Rust clients).
+        """
+        body = json.dumps({"name": name})
+        status, response_body = await self._request(
+            "PUT", "/mockserver/files/retrieve", body
+        )
+        if status == 404:
+            raise MockServerError(f"file not found: {name}")
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve file '{name}' (status={status}): {response_body}"
+            )
+        return response_body or ""
+
+    async def list_files(self) -> list[str]:
+        """List the names of the files held in the in-memory file store.
+
+        Issues ``PUT /mockserver/files/list`` and returns the JSON array of file
+        names.
+        """
+        status, response_body = await self._request(
+            "PUT", "/mockserver/files/list"
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to list files (status={status}): {response_body}"
+            )
+        if response_body:
+            parsed = json.loads(response_body)
+            if isinstance(parsed, list):
+                return parsed
+        return []
+
+    async def delete_file(self, name: str) -> None:
+        """Delete a file from the in-memory file store.
+
+        Issues ``PUT /mockserver/files/delete`` with ``{"name": name}``. An
+        unknown file responds ``404`` and raises :class:`MockServerError`.
+        """
+        body = json.dumps({"name": name})
+        status, response_body = await self._request(
+            "PUT", "/mockserver/files/delete", body
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to delete file '{name}' (status={status}): {response_body}"
+            )
+
+    async def import_har(self, har_json: str) -> list[Expectation]:
+        """Import a HAR document as expectations.
+
+        Issues ``PUT /mockserver/import?format=har`` with the HAR JSON and returns
+        the created/updated expectations.
+        """
+        return await self.import_document(har_json, "har")
+
+    async def import_postman_collection(self, collection_json: str) -> list[Expectation]:
+        """Import a Postman collection as expectations.
+
+        Issues ``PUT /mockserver/import?format=postman`` with the collection JSON
+        and returns the created/updated expectations.
+        """
+        return await self.import_document(collection_json, "postman")
+
+    async def import_document(
+        self, document_json: str, format: str | None = None
+    ) -> list[Expectation]:
+        """Import a HAR, Postman or Pact document as expectations.
+
+        Issues ``PUT /mockserver/import`` with the document JSON. *format* (one of
+        ``har``, ``postman``, ``pact``) selects the importer; when omitted the
+        server auto-detects the format from the JSON shape. Returns the
+        created/updated expectations.
+        """
+        if not document_json or not document_json.strip():
+            raise ValueError("import_document requires a non-empty document JSON")
+        query_params = {"format": format} if format else None
+        status, response_body = await self._request(
+            "PUT", "/mockserver/import", document_json, query_params
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to import document (status={status}): {response_body}"
+            )
+        if response_body:
+            parsed = json.loads(response_body)
+            if isinstance(parsed, list):
+                return [Expectation.from_dict(e) for e in parsed]
+        return []
+
+    async def set_mode(self, mode: str) -> dict:
+        """Set the high-level operating mode.
+
+        Issues ``PUT /mockserver/mode?mode=<MODE>`` (one of ``SIMULATE``,
+        ``SPY`` or ``CAPTURE``; see :class:`~mockserver.models.MockMode`). Returns
+        the ``{"mode", "proxyUnmatchedRequests"}`` JSON.
+        """
+        status, response_body = await self._request(
+            "PUT", "/mockserver/mode", "", {"mode": mode}
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to set mode '{mode}' (status={status}): {response_body}"
+            )
+        return json.loads(response_body) if response_body else {}
+
+    async def retrieve_mode(self) -> dict:
+        """Read the current operating mode.
+
+        Issues ``GET /mockserver/mode`` and returns the
+        ``{"mode", "proxyUnmatchedRequests"}`` JSON.
+        """
+        status, response_body = await self._request("GET", "/mockserver/mode")
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve mode (status={status}): {response_body}"
+            )
+        return json.loads(response_body) if response_body else {}
+
+    async def wsdl_expectation(self, wsdl: str) -> list[Expectation]:
+        """Generate expectations from a WSDL document.
+
+        Issues ``PUT /mockserver/wsdl`` with the raw WSDL XML body
+        (Content-Type ``text/xml``) and returns the generated (upserted)
+        expectations.
+        """
+        if not wsdl or not wsdl.strip():
+            raise ValueError("wsdl_expectation requires a non-empty WSDL document")
+        status, response_body = await self._request(
+            "PUT", "/mockserver/wsdl", wsdl, content_type="text/xml; charset=utf-8"
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to generate WSDL expectations (status={status}): {response_body}"
+            )
+        if response_body:
+            parsed = json.loads(response_body)
+            if isinstance(parsed, list):
+                return [Expectation.from_dict(e) for e in parsed]
+        return []
 
     async def upload_grpc_descriptor(self, descriptor_set_bytes: bytes) -> None:
         """Upload a compiled protobuf descriptor set so gRPC requests can be matched.

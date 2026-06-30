@@ -200,6 +200,129 @@ class MockServerClient:
         """Query the current clock status."""
         return self._run(self._async_client.clock_status())
 
+    def retrieve_metrics(self) -> dict:
+        """Retrieve the JSON metric-counter snapshot
+        (``PUT /mockserver/retrieve?type=METRICS``).
+        """
+        return self._run(self._async_client.retrieve_metrics())
+
+    def scrape_metrics(self) -> str:
+        """Scrape the Prometheus metrics exposition text
+        (``GET /mockserver/metrics``). Raises if metrics are disabled (``404``).
+        """
+        return self._run(self._async_client.scrape_metrics())
+
+    def retrieve_configuration(self) -> str:
+        """Read the effective live configuration JSON
+        (``GET /mockserver/configuration``).
+        """
+        return self._run(self._async_client.retrieve_configuration())
+
+    def update_configuration(self, config_json: str) -> str:
+        """Update the live configuration (partial update) and return the updated
+        configuration JSON (``PUT /mockserver/configuration``).
+        """
+        return self._run(self._async_client.update_configuration(config_json))
+
+    def pact_import(self, pact_json: str) -> str:
+        """Import a Pact v3 contract as expectations; returns the upserted
+        expectations JSON (``PUT /mockserver/pact/import``).
+        """
+        return self._run(self._async_client.pact_import(pact_json))
+
+    def pact_export(
+        self, consumer: str | None = None, provider: str | None = None
+    ) -> str:
+        """Export the active expectations as a Pact v3 contract
+        (``PUT /mockserver/pact``).
+        """
+        return self._run(self._async_client.pact_export(consumer, provider))
+
+    def pact_verify(self, pact_json: str) -> str:
+        """Verify a Pact v3 contract against the active expectations
+        (``PUT /mockserver/pact/verify``).
+
+        Returns the verification report body for both a pass (``202``) and a
+        fail (``406``) so the caller can inspect it; only a genuinely bad request
+        (e.g. ``400``) raises.
+        """
+        return self._run(self._async_client.pact_verify(pact_json))
+
+    def store_file(self, name: str, content: str | bytes) -> dict:
+        """Store a file in the in-memory file store
+        (``PUT /mockserver/files/store``).
+
+        ``str`` content is stored verbatim; ``bytes`` content is base64 encoded.
+        """
+        return self._run(self._async_client.store_file(name, content))
+
+    def retrieve_file(self, name: str) -> str:
+        """Retrieve a file's content from the in-memory file store
+        (``PUT /mockserver/files/retrieve``).
+
+        Returns the raw ``200`` body; an unknown file (``404``) raises
+        :class:`MockServerError` with ``"file not found: <name>"``.
+        """
+        return self._run(self._async_client.retrieve_file(name))
+
+    def list_files(self) -> list[str]:
+        """List the names of files in the in-memory file store
+        (``PUT /mockserver/files/list``).
+        """
+        return self._run(self._async_client.list_files())
+
+    def delete_file(self, name: str) -> None:
+        """Delete a file from the in-memory file store
+        (``PUT /mockserver/files/delete``).
+        """
+        return self._run(self._async_client.delete_file(name))
+
+    def import_har(self, har_json: str) -> list[Expectation]:
+        """Import a HAR document as expectations
+        (``PUT /mockserver/import?format=har``).
+        """
+        return self._run(self._async_client.import_har(har_json))
+
+    def import_postman_collection(self, collection_json: str) -> list[Expectation]:
+        """Import a Postman collection as expectations
+        (``PUT /mockserver/import?format=postman``).
+        """
+        return self._run(
+            self._async_client.import_postman_collection(collection_json)
+        )
+
+    def import_document(
+        self, document_json: str, format: str | None = None
+    ) -> list[Expectation]:
+        """Import a HAR, Postman or Pact document as expectations
+        (``PUT /mockserver/import``).
+
+        *format* selects the importer (``har``, ``postman``, ``pact``); omit it to
+        let the server auto-detect from the JSON shape.
+        """
+        return self._run(
+            self._async_client.import_document(document_json, format)
+        )
+
+    def set_mode(self, mode: str) -> dict:
+        """Set the high-level operating mode
+        (``PUT /mockserver/mode?mode=<MODE>``).
+
+        *mode* is one of :class:`~mockserver.models.MockMode` (``SIMULATE``,
+        ``SPY``, ``CAPTURE``).
+        """
+        return self._run(self._async_client.set_mode(mode))
+
+    def retrieve_mode(self) -> dict:
+        """Read the current operating mode (``GET /mockserver/mode``)."""
+        return self._run(self._async_client.retrieve_mode())
+
+    def wsdl_expectation(self, wsdl: str) -> list[Expectation]:
+        """Generate expectations from a WSDL document
+        (``PUT /mockserver/wsdl``, raw WSDL XML body).
+        """
+        return self._run(self._async_client.wsdl_expectation(wsdl))
+
     def upload_grpc_descriptor(self, descriptor_set_bytes: bytes) -> None:
         """Upload a compiled protobuf descriptor set so gRPC requests can be matched.
 
