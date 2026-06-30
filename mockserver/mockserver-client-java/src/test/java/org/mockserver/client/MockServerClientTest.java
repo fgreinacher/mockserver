@@ -2544,6 +2544,16 @@ public class MockServerClientTest {
     }
 
     @Test
+    public void shouldThrowWhenDeleteFileNotFound() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(404).withBody("file not found: missing.txt"));
+
+        // then
+        assertThrows(ClientException.class, () -> mockServerClient.deleteFile("missing.txt"));
+    }
+
+    @Test
     public void shouldRejectBlankFileNames() {
         assertThrows(IllegalArgumentException.class, () -> mockServerClient.storeFile(" ", "x"));
         assertThrows(IllegalArgumentException.class, () -> mockServerClient.storeFile(" ", new byte[0]));

@@ -2697,7 +2697,7 @@ public class MockServerClient implements Stoppable {
         }
         ObjectNode requestBody = OBJECT_MAPPER.createObjectNode();
         requestBody.put("name", name);
-        sendRequest(
+        HttpResponse httpResponse = sendRequest(
             request()
                 .withMethod("PUT")
                 .withContentType(APPLICATION_JSON_UTF_8)
@@ -2705,6 +2705,9 @@ public class MockServerClient implements Stoppable {
                 .withBody(requestBody.toString(), StandardCharsets.UTF_8),
             false
         );
+        if (httpResponse != null && Integer.valueOf(404).equals(httpResponse.getStatusCode())) {
+            throw new ClientException("file not found: " + name);
+        }
         return clientClass.cast(this);
     }
 
