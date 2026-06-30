@@ -126,14 +126,17 @@ It is registered (once) when `metricsEnabled`. Timing is captured per `NettyResp
 
 ### Per-Upstream Forward/Proxy Observability
 
-Two Prometheus metrics give per-upstream visibility into forwarded and proxied requests — which upstream a request hit and how it performed. Both are registered once when `metricsEnabled` is `true`.
+Three Prometheus metrics give per-upstream visibility into forwarded and proxied requests — which upstream a request hit, how it performed, and which protocol the forward leg negotiated. All are registered once when `metricsEnabled` is `true`.
 
 | Metric Name | Type | Labels | Description |
 |-------------|------|--------|-------------|
 | `mock_server_forward_request_duration_seconds` | Histogram (classic, 0.5 ms–10 s buckets) | `upstream_host` | Latency of forwarded/proxied requests, by upstream host |
 | `mock_server_forward_requests` | Counter | `upstream_host`, `status_class` | Count of forwarded/proxied requests, by upstream host and status class (`1xx`..`5xx`, or `unknown`) |
+| `mock_server_forward_upstream_protocol` | Counter | `upstream_host`, `protocol` | Count of forward/proxy upstream connections by upstream host and the protocol actually negotiated to the upstream (`http2` via ALPN, or `http1_1`) |
 
 Recording happens in `HttpActionHandler` on every forward/proxy completion: matched FORWARD actions, the unmatched proxy-pass path (streaming and non-streaming), and `proxyPassMappings` reverse-proxy routes. The latency is taken from the precise client-side `Timing` (`getTotalTimeInMillis()`) already computed by `NettyHttpClient` — it is *not* re-measured — falling back to a coarse wall-clock delta only when no `Timing` is attached.
+
+The protocol counter is incremented in `HttpClientInitializer` at the ALPN-resolution point of each forward client connection (`configureHttp1Pipeline` → `http1_1`, `configureHttp2Pipeline` → `http2`), with a matching DEBUG log (`forward upstream connection to {host} negotiated {protocol}`). It is the authoritative way to confirm whether `forwardProxyHttp2Upgrade` is taking effect, since the *recorded* request only carries the inbound protocol, not the upstream-negotiated one — a forward shown as `http1_1` to a backend that withholds its streaming SSE head over HTTP/1.1 explains a high forward time-to-first-byte.
 
 The `upstream_host` label is resolved from the matched forward action's host (the real upstream even behind an HTTP forward-proxy), falling back to the resolved socket address host; a null/blank host is recorded as `unknown`. **Cardinality is deliberately bounded to the host** (never the full URL or path) plus the five status classes, so the series count scales with the number of distinct upstreams, not with request volume or path variety. `Metrics.observeForwardRequest(host, statusCode, latencySeconds)` is a static no-op when metrics are disabled (the histogram/counter are `null`), so the forward hot path pays nothing when metrics are off.
 

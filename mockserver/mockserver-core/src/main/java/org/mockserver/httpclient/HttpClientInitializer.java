@@ -16,8 +16,10 @@ import org.mockserver.codec.MockServerBinaryClientCodec;
 import org.mockserver.codec.MockServerHttpClientCodec;
 import org.mockserver.codec.StreamingAwareHttpObjectAggregator;
 import org.mockserver.configuration.Configuration;
+import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.LoggingHandler;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.metrics.Metrics;
 import org.mockserver.model.Protocol;
 import org.mockserver.proxyconfiguration.ProxyConfiguration;
 import org.mockserver.socket.tls.NettySslContextFactory;
@@ -32,6 +34,7 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.mockserver.httpclient.NettyHttpClient.CONNECTION_POOL;
 import static org.mockserver.httpclient.NettyHttpClient.REMOTE_SOCKET;
 import static org.mockserver.httpclient.NettyHttpClient.SECURE;
+import static org.slf4j.event.Level.DEBUG;
 import static org.slf4j.event.Level.TRACE;
 
 @ChannelHandler.Sharable
@@ -147,7 +150,29 @@ public class HttpClientInitializer extends ChannelInitializer<SocketChannel> {
         }
         pipeline.addLast(new MockServerHttpClientCodec(mockServerLogger, proxyConfigurations));
         pipeline.addLast(httpClientHandler);
+        recordForwardUpstreamProtocol(pipeline, "http1_1");
         protocolFuture.complete(Protocol.HTTP_1_1);
+    }
+
+    /**
+     * Record (metric + DEBUG log) the protocol this forward/proxy client connection actually negotiated
+     * to the upstream, so operators can confirm whether {@code forwardProxyHttp2Upgrade} is taking effect.
+     * A forward shown as {@code http1_1} to a backend that withholds its streaming SSE head over HTTP/1.1
+     * (e.g. the OpenAI Codex endpoint) is the classic cause of a high forward time-to-first-byte.
+     */
+    private void recordForwardUpstreamProtocol(ChannelPipeline pipeline, String protocol) {
+        String upstreamHost = "unknown";
+        InetSocketAddress remote = pipeline.channel().attr(REMOTE_SOCKET).get();
+        if (remote != null) {
+            upstreamHost = remote.getHostString();
+        }
+        Metrics.incrementForwardUpstreamProtocol(upstreamHost, protocol);
+        if (mockServerLogger.isEnabledForInstance(DEBUG)) {
+            mockServerLogger.logEvent(new LogEntry()
+                .setLogLevel(DEBUG)
+                .setMessageFormat("forward upstream connection to {} negotiated {}")
+                .setArguments(upstreamHost, protocol));
+        }
     }
 
     /**
@@ -194,6 +219,7 @@ public class HttpClientInitializer extends ChannelInitializer<SocketChannel> {
         pipeline.addLast(new Http2ForwardRequestDispatchHandler(childInitializer));
 
         // ALPN already proved HTTP/2; the frame codec consumes SETTINGS, so complete immediately.
+        recordForwardUpstreamProtocol(pipeline, "http2");
         protocolFuture.complete(Protocol.HTTP_2);
     }
 

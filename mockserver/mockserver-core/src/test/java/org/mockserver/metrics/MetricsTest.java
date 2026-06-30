@@ -186,6 +186,26 @@ public class MetricsTest {
     }
 
     @Test
+    public void forwardUpstreamProtocolCounterLabelsByHostAndProtocol() {
+        new Metrics(configuration().metricsEnabled(true));
+        Metrics.incrementForwardUpstreamProtocol("chatgpt.com", "http2");
+        Metrics.incrementForwardUpstreamProtocol("chatgpt.com", "http2");
+        Metrics.incrementForwardUpstreamProtocol("api.anthropic.com", "http1_1");
+
+        assertThat(scrapeContains("mock_server_forward_upstream_protocol"), is(true));
+        assertThat(Metrics.forwardUpstreamProtocolCount("chatgpt.com", "http2"), is(2L));
+        assertThat(Metrics.forwardUpstreamProtocolCount("api.anthropic.com", "http1_1"), is(1L));
+        assertThat(Metrics.forwardUpstreamProtocolCount("chatgpt.com", "http1_1"), is(0L));
+    }
+
+    @Test
+    public void incrementForwardUpstreamProtocolDoesNotThrowWhenDisabled() {
+        // no-op when metrics are not enabled
+        Metrics.incrementForwardUpstreamProtocol("chatgpt.com", "http2");
+        assertThat(Metrics.forwardUpstreamProtocolCount("chatgpt.com", "http2"), is(0L));
+    }
+
+    @Test
     public void getForwardRequestCountReturnsPerHostStatusClassCount() {
         new Metrics(configuration().metricsEnabled(true));
         Metrics.observeForwardRequest("api.example.com", 200, 0.01);

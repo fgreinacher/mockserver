@@ -151,6 +151,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behaviour is unchanged.
 
 #### Clustering & observability
+- **New `mock_server_forward_upstream_protocol` metric.** A Prometheus counter labeled by `upstream_host` and
+  `protocol` records the protocol each forward/proxy connection actually negotiated to the upstream (`http2` via
+  ALPN, or `http1_1`), with a matching DEBUG log. This is the authoritative way to confirm whether
+  `forwardProxyHttp2Upgrade` is taking effect — the recorded request only carries the inbound protocol, not the
+  upstream-negotiated one, so a forward stuck on `http1_1` to a backend that withholds its streaming SSE head
+  over HTTP/1.1 (a cause of high forward time-to-first-byte) was previously invisible.
 - **Standard OTLP endpoint fallback.** When `mockserver.otelEndpoint` / `MOCKSERVER_OTEL_ENDPOINT` is unset,
   MockServer now falls back to the OpenTelemetry-standard `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable.
 - **Coding-assistant LLM-capture smoke harness + interactive launcher.** `scripts/llm-proxy-capture/` adds a

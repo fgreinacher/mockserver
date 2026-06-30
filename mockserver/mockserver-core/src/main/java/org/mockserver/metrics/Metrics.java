@@ -52,6 +52,11 @@ public class Metrics {
     // number of distinct upstream hosts forwarded to (NOT the full URL/path).
     private static volatile Histogram forwardRequestDurationSeconds;
     private static volatile Counter forwardRequestsTotal;
+    // Protocol actually negotiated to the upstream on each forward/proxy connection (http2 via ALPN vs
+    // http1_1), labeled by upstream host — lets operators confirm whether forwardProxyHttp2Upgrade is
+    // taking effect, since a forward stuck on http1_1 to a backend that withholds its streaming SSE head
+    // over HTTP/1.1 is the classic cause of a high forward time-to-first-byte.
+    private static volatile Counter forwardUpstreamProtocolTotal;
     // Counter for HTTP chaos faults injected (error or latency). Null until metrics are enabled.
     private static volatile Counter httpChaosInjectedTotal;
     /**
@@ -175,6 +180,11 @@ public class Metrics {
                         .name("mock_server_forward_requests")
                         .help("Total forwarded/proxied requests by upstream host and response status class")
                         .labelNames("upstream_host", "status_class")
+                        .register();
+                    forwardUpstreamProtocolTotal = Counter.builder()
+                        .name("mock_server_forward_upstream_protocol")
+                        .help("Total forward/proxy upstream connections by upstream host and the protocol actually negotiated to the upstream (http2 via ALPN, or http1_1)")
+                        .labelNames("upstream_host", "protocol")
                         .register();
                     httpChaosInjectedTotal = Counter.builder()
                         .name("mock_server_http_chaos_injected")
@@ -426,6 +436,7 @@ public class Metrics {
             droppedLogEventsTotal = null;
             forwardRequestDurationSeconds = null;
             forwardRequestsTotal = null;
+            forwardUpstreamProtocolTotal = null;
             httpChaosInjectedTotal = null;
             chaosAutoHaltTotal = null;
             mcpToolCallsTotal = null;
@@ -587,6 +598,34 @@ public class Metrics {
         if (counter != null) {
             counter.labelValues(hostLabel, statusClass(statusCode)).inc();
         }
+    }
+
+    /**
+     * Record the protocol a forward/proxy upstream connection actually negotiated to the upstream
+     * (e.g. {@code "http2"} via ALPN, or {@code "http1_1"}). Lets operators confirm whether
+     * {@code forwardProxyHttp2Upgrade} is taking effect — a forward shown as {@code http1_1} to an
+     * upstream that withholds its streaming SSE response head over HTTP/1.1 explains a high forward
+     * time-to-first-byte (e.g. the OpenAI Codex backend the opencode CLI uses). No-op when metrics are
+     * disabled.
+     */
+    public static void incrementForwardUpstreamProtocol(String upstreamHost, String protocol) {
+        Counter counter = forwardUpstreamProtocolTotal;
+        if (counter != null) {
+            String hostLabel = upstreamHost != null && !upstreamHost.isEmpty() ? upstreamHost : "unknown";
+            counter.labelValues(hostLabel, protocol).inc();
+        }
+    }
+
+    /**
+     * Return the current forward upstream-protocol count for the given host and negotiated protocol,
+     * or 0 if metrics are disabled.
+     */
+    public static long forwardUpstreamProtocolCount(String upstreamHost, String protocol) {
+        Counter counter = forwardUpstreamProtocolTotal;
+        if (counter == null) {
+            return 0;
+        }
+        return (long) counter.labelValues(upstreamHost, protocol).get();
     }
 
     /**
