@@ -52,17 +52,227 @@ keywords: mock oidc provider, mock identity provider, openid connect mock, oauth
     </tbody>
 </table>
 
-<a id="rest_api" class="anchor" href="#rest_api">&nbsp;</a>
+<a id="create_provider" class="anchor" href="#create_provider">&nbsp;</a>
 
-<h2>Create it with the REST API</h2>
+<h2>Create the provider</h2>
 
-<p>Use defaults (issuer <code>http://localhost:1080</code>, RS256 signing) with an empty body:</p>
+<p>A single control-plane call to <code>PUT /mockserver/oidc</code> generates the whole provider. Use defaults
+    (issuer <code>http://localhost:1080</code>, RS256 signing) with an empty body, or supply configuration. The
+    Java client exposes a typed one-call method; every other language sends the JSON body to the
+    <code>/mockserver/oidc</code> endpoint.</p>
 
-<pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/oidc" -d '{}'</code></pre>
+<button id="button_create_oidc_provider" class="accordion">create OIDC / OAuth2 provider</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">// defaults
+new MockServerClient("localhost", 1080).mockOpenIdProvider();
 
-<p>Or supply configuration:</p>
+// or with configuration
+new MockServerClient("localhost", 1080).mockOpenIdProvider(
+    new OidcProviderConfiguration()
+        .setIssuer("http://localhost:1080")
+        .setClientId("my-app")
+        .setAudience("my-api")
+        .setScopes(List.of("openid", "profile", "email"))
+        .setSigningAlgorithm("RS256")
+        .setTokenExpirySeconds(3600)
+        .setAdditionalClaims(Map.of(
+            "name", "Test User",
+            "email", "user@example.com",
+            "email_verified", true
+        ))
+);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const http = require('http');
 
-<pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/oidc" -d '{
+const body = JSON.stringify({
+    "issuer": "http://localhost:1080",
+    "clientId": "my-app",
+    "audience": "my-api",
+    "scopes": [ "openid", "profile", "email" ],
+    "signingAlgorithm": "RS256",
+    "tokenExpirySeconds": 3600,
+    "additionalClaims": {
+        "name": "Test User",
+        "email": "user@example.com",
+        "email_verified": true
+    }
+});
+const req = http.request({
+    host: 'localhost',
+    port: 1080,
+    method: 'PUT',
+    path: '/mockserver/oidc',
+    headers: { 'Content-Type': 'application/json' }
+});
+req.write(body);
+req.end();</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import json
+import urllib.request
+
+body = json.dumps({
+    "issuer": "http://localhost:1080",
+    "clientId": "my-app",
+    "audience": "my-api",
+    "scopes": ["openid", "profile", "email"],
+    "signingAlgorithm": "RS256",
+    "tokenExpirySeconds": 3600,
+    "additionalClaims": {
+        "name": "Test User",
+        "email": "user@example.com",
+        "email_verified": True
+    }
+}).encode("utf-8")
+req = urllib.request.Request(
+    "http://localhost:1080/mockserver/oidc",
+    data=body,
+    method="PUT",
+    headers={"Content-Type": "application/json"}
+)
+urllib.request.urlopen(req)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+require 'uri'
+
+uri = URI('http://localhost:1080/mockserver/oidc')
+req = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+req.body = {
+    issuer: 'http://localhost:1080',
+    clientId: 'my-app',
+    audience: 'my-api',
+    scopes: ['openid', 'profile', 'email'],
+    signingAlgorithm: 'RS256',
+    tokenExpirySeconds: 3600,
+    additionalClaims: {
+        name: 'Test User',
+        email: 'user@example.com',
+        email_verified: true
+    }
+}.to_json
+Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "issuer": "http://localhost:1080",
+    "clientId": "my-app",
+    "audience": "my-api",
+    "scopes": [ "openid", "profile", "email" ],
+    "signingAlgorithm": "RS256",
+    "tokenExpirySeconds": 3600,
+    "additionalClaims": {
+        "name": "Test User",
+        "email": "user@example.com",
+        "email_verified": true
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/oidc",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""issuer"": ""http://localhost:1080"",
+    ""clientId"": ""my-app"",
+    ""audience"": ""my-api"",
+    ""scopes"": [ ""openid"", ""profile"", ""email"" ],
+    ""signingAlgorithm"": ""RS256"",
+    ""tokenExpirySeconds"": 3600,
+    ""additionalClaims"": {
+        ""name"": ""Test User"",
+        ""email"": ""user@example.com"",
+        ""email_verified"": true
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/oidc",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "issuer": "http://localhost:1080",
+    "clientId": "my-app",
+    "audience": "my-api",
+    "scopes": [ "openid", "profile", "email" ],
+    "signingAlgorithm": "RS256",
+    "tokenExpirySeconds": 3600,
+    "additionalClaims": {
+        "name": "Test User",
+        "email": "user@example.com",
+        "email_verified": true
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/oidc")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "issuer": "http://localhost:1080",
+    "clientId": "my-app",
+    "audience": "my-api",
+    "scopes": [ "openid", "profile", "email" ],
+    "signingAlgorithm": "RS256",
+    "tokenExpirySeconds": 3600,
+    "additionalClaims": {
+        "name": "Test User",
+        "email": "user@example.com",
+        "email_verified": true
+    }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/oidc');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code"># defaults
+curl -v -X PUT "http://localhost:1080/mockserver/oidc" -d '{}'
+
+# or with configuration
+curl -v -X PUT "http://localhost:1080/mockserver/oidc" -d '{
     "issuer": "http://localhost:1080",
     "clientId": "my-app",
     "audience": "my-api",
@@ -75,24 +285,8 @@ keywords: mock oidc provider, mock identity provider, openid connect mock, oauth
         "email_verified": true
     }
 }'</code></pre>
-
-<a id="java_client" class="anchor" href="#java_client">&nbsp;</a>
-
-<h2>Create it with the Java client</h2>
-
-<p>The Java client exposes a typed one-call method:</p>
-
-<pre class="prettyprint code"><code class="code">// defaults
-new MockServerClient("localhost", 1080).mockOpenIdProvider();
-
-// or with configuration
-new MockServerClient("localhost", 1080).mockOpenIdProvider(
-    new OidcProviderConfiguration()
-        .setIssuer("http://localhost:1080")
-        .setClientId("my-app")
-        .setAudience("my-api")
-        .setSigningAlgorithm("RS256")
-);</code></pre>
+    </div>
+</div>
 
 <a id="tokens" class="anchor" href="#tokens">&nbsp;</a>
 
@@ -123,9 +317,224 @@ new MockServerClient("localhost", 1080).mockOpenIdProvider(
 <h2>Device authorization grant (RFC 8628)</h2>
 
 <p>The device flow lets input-constrained devices (TVs, CLIs) obtain tokens. Start it at the
-    <code>/device_authorization</code> endpoint, then poll <code>/token</code>:</p>
+    <code>/device_authorization</code> endpoint, then poll <code>/token</code> with the returned
+    <code>device_code</code>:</p>
 
-<pre class="prettyprint code"><code class="code"># 1. start the device flow
+<button id="button_device_flow" class="accordion">device authorization grant</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+HttpClient httpClient = HttpClient.newHttpClient();
+
+HttpResponse&lt;String&gt; post(String path, String form) throws Exception {
+    HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create("http://localhost:1080" + path))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .POST(HttpRequest.BodyPublishers.ofString(form))
+        .build();
+    return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+}
+
+// 1. start the device flow
+post("/device_authorization", "scope=openid profile");
+// => { "device_code": "...", "user_code": "BCDF-GHJK",
+//      "verification_uri": "http://localhost:1080/device",
+//      "expires_in": 300, "interval": 5 }
+
+// 2. poll the token endpoint with the device_code
+post("/token", "grant_type=urn:ietf:params:oauth:grant-type:device_code&amp;device_code=...");
+// => {"error":"authorization_pending"} (HTTP 400) for the first deviceCodePendingPolls polls
+// => { "access_token": "...", "id_token": "...", "refresh_token": "..." } once approved</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const http = require('http');
+
+function post(path, form) {
+    const body = new URLSearchParams(form).toString();
+    const req = http.request({
+        host: 'localhost', port: 1080, method: 'POST', path,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    req.write(body);
+    req.end();
+}
+
+// 1. start the device flow
+post('/device_authorization', { scope: 'openid profile' });
+// => { "device_code": "...", "user_code": "BCDF-GHJK",
+//      "verification_uri": "http://localhost:1080/device",
+//      "expires_in": 300, "interval": 5 }
+
+// 2. poll the token endpoint with the device_code
+post('/token', {
+    grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+    device_code: '...'
+});
+// => {"error":"authorization_pending"} (HTTP 400) for the first deviceCodePendingPolls polls
+// => { "access_token": "...", "id_token": "...", "refresh_token": "..." } once approved</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import urllib.parse
+import urllib.request
+
+def post(path, form):
+    data = urllib.parse.urlencode(form).encode("utf-8")
+    req = urllib.request.Request(
+        "http://localhost:1080" + path, data=data, method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    return urllib.request.urlopen(req)
+
+# 1. start the device flow
+post("/device_authorization", {"scope": "openid profile"})
+# => { "device_code": "...", "user_code": "BCDF-GHJK", "expires_in": 300, "interval": 5 }
+
+# 2. poll the token endpoint with the device_code
+post("/token", {
+    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    "device_code": "..."
+})
+# => {"error":"authorization_pending"} (HTTP 400) for the first deviceCodePendingPolls polls
+# => { "access_token": "...", "id_token": "...", "refresh_token": "..." } once approved</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'uri'
+
+def post(path, form)
+    uri = URI('http://localhost:1080' + path)
+    req = Net::HTTP::Post.new(uri)
+    req.set_form_data(form)
+    Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }
+end
+
+# 1. start the device flow
+post('/device_authorization', { 'scope' =&gt; 'openid profile' })
+# => { "device_code": "...", "user_code": "BCDF-GHJK", "expires_in": 300, "interval": 5 }
+
+# 2. poll the token endpoint with the device_code
+post('/token', {
+    'grant_type' =&gt; 'urn:ietf:params:oauth:grant-type:device_code',
+    'device_code' =&gt; '...'
+})
+# => {"error":"authorization_pending"} (HTTP 400) for the first deviceCodePendingPolls polls
+# => { "access_token": "...", "id_token": "...", "refresh_token": "..." } once approved</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "net/http"
+    "net/url"
+)
+
+func post(path string, form url.Values) {
+    http.PostForm("http://localhost:1080"+path, form)
+}
+
+func main() {
+    // 1. start the device flow
+    post("/device_authorization", url.Values{"scope": {"openid profile"}})
+    // => { "device_code": "...", "user_code": "BCDF-GHJK", "expires_in": 300, "interval": 5 }
+
+    // 2. poll the token endpoint with the device_code
+    post("/token", url.Values{
+        "grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+        "device_code": {"..."},
+    })
+    // => {"error":"authorization_pending"} (HTTP 400) for the first deviceCodePendingPolls polls
+    // => { "access_token": "...", "id_token": "...", "refresh_token": "..." } once approved
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Collections.Generic;
+using System.Net.Http;
+
+using var httpClient = new HttpClient();
+
+// 1. start the device flow
+await httpClient.PostAsync(
+    "http://localhost:1080/device_authorization",
+    new FormUrlEncodedContent(new Dictionary&lt;string, string&gt; {
+        { "scope", "openid profile" }
+    })
+);
+// => { "device_code": "...", "user_code": "BCDF-GHJK", "expires_in": 300, "interval": 5 }
+
+// 2. poll the token endpoint with the device_code
+await httpClient.PostAsync(
+    "http://localhost:1080/token",
+    new FormUrlEncodedContent(new Dictionary&lt;string, string&gt; {
+        { "grant_type", "urn:ietf:params:oauth:grant-type:device_code" },
+        { "device_code", "..." }
+    })
+);
+// => {"error":"authorization_pending"} (HTTP 400) for the first deviceCodePendingPolls polls
+// => { "access_token": "...", "id_token": "...", "refresh_token": "..." } once approved</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+
+// 1. start the device flow
+client.post("http://localhost:1080/device_authorization")
+    .form(&amp;[("scope", "openid profile")])
+    .send()
+    .unwrap();
+// => { "device_code": "...", "user_code": "BCDF-GHJK", "expires_in": 300, "interval": 5 }
+
+// 2. poll the token endpoint with the device_code
+client.post("http://localhost:1080/token")
+    .form(&amp;[
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ("device_code", "..."),
+    ])
+    .send()
+    .unwrap();
+// => {"error":"authorization_pending"} (HTTP 400) for the first deviceCodePendingPolls polls
+// => { "access_token": "...", "id_token": "...", "refresh_token": "..." } once approved</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">function post($path, $form) {
+    $ch = curl_init('http://localhost:1080' . $path);
+    curl_setopt_array($ch, [
+        CURLOPT_POST           =&gt; true,
+        CURLOPT_POSTFIELDS     =&gt; http_build_query($form),
+        CURLOPT_RETURNTRANSFER =&gt; true,
+    ]);
+    $body = curl_exec($ch);
+    curl_close($ch);
+    return $body;
+}
+
+// 1. start the device flow
+post('/device_authorization', ['scope' =&gt; 'openid profile']);
+// => { "device_code": "...", "user_code": "BCDF-GHJK", "expires_in": 300, "interval": 5 }
+
+// 2. poll the token endpoint with the device_code
+post('/token', [
+    'grant_type'  =&gt; 'urn:ietf:params:oauth:grant-type:device_code',
+    'device_code' =&gt; '...',
+]);
+// => {"error":"authorization_pending"} (HTTP 400) for the first deviceCodePendingPolls polls
+// => { "access_token": "...", "id_token": "...", "refresh_token": "..." } once approved</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code"># 1. start the device flow
 curl -s -X POST "http://localhost:1080/device_authorization" -d 'scope=openid profile'
 # => { "device_code": "...", "user_code": "BCDF-GHJK",
 #      "verification_uri": "http://localhost:1080/device",
@@ -137,6 +546,8 @@ curl -s -X POST "http://localhost:1080/token" \
   -d 'grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=...'
 # => {"error":"authorization_pending"}  (HTTP 400) for the first deviceCodePendingPolls polls
 # => { "access_token": "...", "id_token": "...", "refresh_token": "..." }  once approved</code></pre>
+    </div>
+</div>
 
 <p>The mock has no device login screen, so approval is simulated by the <code>deviceCodePendingPolls</code>
     setting: the first N polls return RFC 8628 <code>authorization_pending</code> (HTTP 400), then tokens are
@@ -161,6 +572,155 @@ curl -s -X POST "http://localhost:1080/token" \
     <code>401</code> and a <code>WWW-Authenticate: Basic</code> header. With the flag off (the default), no client
     authentication is performed.</p>
 
+<p>Create the provider with client authentication enforced:</p>
+
+<button id="button_enforce_client_auth" class="accordion">enforce client authentication</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080).mockOpenIdProvider(
+    new OidcProviderConfiguration()
+        .setClientId("my-app")
+        .setClientSecret("my-secret")
+        .setEnforceClientAuthentication(true)
+);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const http = require('http');
+
+const body = JSON.stringify({
+    "clientId": "my-app",
+    "clientSecret": "my-secret",
+    "enforceClientAuthentication": true
+});
+const req = http.request({
+    host: 'localhost',
+    port: 1080,
+    method: 'PUT',
+    path: '/mockserver/oidc',
+    headers: { 'Content-Type': 'application/json' }
+});
+req.write(body);
+req.end();</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import json
+import urllib.request
+
+body = json.dumps({
+    "clientId": "my-app",
+    "clientSecret": "my-secret",
+    "enforceClientAuthentication": True
+}).encode("utf-8")
+req = urllib.request.Request(
+    "http://localhost:1080/mockserver/oidc",
+    data=body,
+    method="PUT",
+    headers={"Content-Type": "application/json"}
+)
+urllib.request.urlopen(req)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+require 'uri'
+
+uri = URI('http://localhost:1080/mockserver/oidc')
+req = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+req.body = {
+    clientId: 'my-app',
+    clientSecret: 'my-secret',
+    enforceClientAuthentication: true
+}.to_json
+Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "clientId": "my-app",
+    "clientSecret": "my-secret",
+    "enforceClientAuthentication": true
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/oidc",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""clientId"": ""my-app"",
+    ""clientSecret"": ""my-secret"",
+    ""enforceClientAuthentication"": true
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/oidc",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "clientId": "my-app",
+    "clientSecret": "my-secret",
+    "enforceClientAuthentication": true
+}"#;
+client.put("http://localhost:1080/mockserver/oidc")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "clientId": "my-app",
+    "clientSecret": "my-secret",
+    "enforceClientAuthentication": true
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/oidc');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/oidc" -d '{
+    "clientId": "my-app",
+    "clientSecret": "my-secret",
+    "enforceClientAuthentication": true
+}'</code></pre>
+    </div>
+</div>
+
 <a id="opaque_tokens" class="anchor" href="#opaque_tokens">&nbsp;</a>
 
 <h2>Opaque access tokens</h2>
@@ -170,11 +730,244 @@ curl -s -X POST "http://localhost:1080/token" \
     mock this: the <code>access_token</code> becomes a random opaque string while the <code>id_token</code>
     stays a signed JWT that still verifies against the JWKS.</p>
 
+<p>Create the provider with opaque access tokens:</p>
+
+<button id="button_opaque_tokens" class="accordion">issue opaque access tokens</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080).mockOpenIdProvider(
+    new OidcProviderConfiguration()
+        .setOpaqueAccessToken(true)
+);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const http = require('http');
+
+const body = JSON.stringify({ "opaqueAccessToken": true });
+const req = http.request({
+    host: 'localhost',
+    port: 1080,
+    method: 'PUT',
+    path: '/mockserver/oidc',
+    headers: { 'Content-Type': 'application/json' }
+});
+req.write(body);
+req.end();</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import json
+import urllib.request
+
+body = json.dumps({"opaqueAccessToken": True}).encode("utf-8")
+req = urllib.request.Request(
+    "http://localhost:1080/mockserver/oidc",
+    data=body,
+    method="PUT",
+    headers={"Content-Type": "application/json"}
+)
+urllib.request.urlopen(req)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+require 'uri'
+
+uri = URI('http://localhost:1080/mockserver/oidc')
+req = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+req.body = { opaqueAccessToken: true }.to_json
+Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{ "opaqueAccessToken": true }`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/oidc",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{ ""opaqueAccessToken"": true }";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/oidc",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{ "opaqueAccessToken": true }"#;
+client.put("http://localhost:1080/mockserver/oidc")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = '{ "opaqueAccessToken": true }';
+
+$ch = curl_init('http://localhost:1080/mockserver/oidc');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/oidc" -d '{
+    "opaqueAccessToken": true
+}'</code></pre>
+    </div>
+</div>
+
 <p>Validate an opaque token by introspecting it (RFC 7662): a known, unexpired token returns
     <code>{"active":true, ...claims}</code> and an unknown or expired token returns <code>{"active":false}</code>.</p>
 
-<pre class="prettyprint code"><code class="code">curl -s -X POST "http://localhost:1080/introspect" -d 'token=&lt;opaque-access-token&gt;'
+<button id="button_introspect_token" class="accordion">introspect (validate) an opaque token</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+HttpClient httpClient = HttpClient.newHttpClient();
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create("http://localhost:1080/introspect"))
+    .header("Content-Type", "application/x-www-form-urlencoded")
+    .POST(HttpRequest.BodyPublishers.ofString("token=&lt;opaque-access-token&gt;"))
+    .build();
+httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+// => { "active": true, "sub": "mock-user", "scope": "openid profile email", ... }</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const http = require('http');
+
+const body = new URLSearchParams({ token: '&lt;opaque-access-token&gt;' }).toString();
+const req = http.request({
+    host: 'localhost',
+    port: 1080,
+    method: 'POST',
+    path: '/introspect',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+});
+req.write(body);
+req.end();
+// => { "active": true, "sub": "mock-user", "scope": "openid profile email", ... }</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import urllib.parse
+import urllib.request
+
+data = urllib.parse.urlencode({"token": "&lt;opaque-access-token&gt;"}).encode("utf-8")
+req = urllib.request.Request(
+    "http://localhost:1080/introspect",
+    data=data,
+    method="POST",
+    headers={"Content-Type": "application/x-www-form-urlencoded"}
+)
+urllib.request.urlopen(req)
 # => { "active": true, "sub": "mock-user", "scope": "openid profile email", ... }</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'uri'
+
+uri = URI('http://localhost:1080/introspect')
+req = Net::HTTP::Post.new(uri)
+req.set_form_data('token' =&gt; '&lt;opaque-access-token&gt;')
+Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }
+# => { "active": true, "sub": "mock-user", "scope": "openid profile email", ... }</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "net/http"
+    "net/url"
+)
+
+func main() {
+    http.PostForm(
+        "http://localhost:1080/introspect",
+        url.Values{"token": {"&lt;opaque-access-token&gt;"}},
+    )
+    // => { "active": true, "sub": "mock-user", "scope": "openid profile email", ... }
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Collections.Generic;
+using System.Net.Http;
+
+using var httpClient = new HttpClient();
+await httpClient.PostAsync(
+    "http://localhost:1080/introspect",
+    new FormUrlEncodedContent(new Dictionary&lt;string, string&gt; {
+        { "token", "&lt;opaque-access-token&gt;" }
+    })
+);
+// => { "active": true, "sub": "mock-user", "scope": "openid profile email", ... }</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+client.post("http://localhost:1080/introspect")
+    .form(&amp;[("token", "&lt;opaque-access-token&gt;")])
+    .send()
+    .unwrap();
+// => { "active": true, "sub": "mock-user", "scope": "openid profile email", ... }</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$ch = curl_init('http://localhost:1080/introspect');
+curl_setopt_array($ch, [
+    CURLOPT_POST           =&gt; true,
+    CURLOPT_POSTFIELDS     =&gt; http_build_query(['token' =&gt; '&lt;opaque-access-token&gt;']),
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);
+// => { "active": true, "sub": "mock-user", "scope": "openid profile email", ... }</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -s -X POST "http://localhost:1080/introspect" -d 'token=&lt;opaque-access-token&gt;'
+# => { "active": true, "sub": "mock-user", "scope": "openid profile email", ... }</code></pre>
+    </div>
+</div>
 
 <a id="configuration" class="anchor" href="#configuration">&nbsp;</a>
 

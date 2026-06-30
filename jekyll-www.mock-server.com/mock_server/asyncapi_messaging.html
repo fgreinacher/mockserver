@@ -90,35 +90,350 @@ sitemap:
 
 <h3>Load a spec: <span class="inline_code">PUT /mockserver/asyncapi</span></h3>
 
-<p>The request body can be either a plain AsyncAPI spec (JSON or YAML) or a JSON wrapper with broker configuration:</p>
+<p>The request body can be either a plain AsyncAPI spec (JSON or YAML) or a JSON wrapper with broker configuration. The Java client exposes a typed <span class="inline_code">loadAsyncApi(...)</span> helper; every other language sends the same JSON over raw HTTP to <span class="inline_code">PUT /mockserver/asyncapi</span>.</p>
 
-<pre class="prettyprint lang-json code"><code class="code">{
-  "spec": {
-    "asyncapi": "2.6.0",
-    "info": { "title": "Orders API", "version": "1.0.0" },
-    "channels": {
-      "orders": {
-        "publish": {
-          "message": {
-            "payload": {
-              "type": "object",
-              "properties": {
-                "orderId": { "type": "integer" },
-                "status": { "type": "string", "enum": ["pending", "shipped"] }
-              },
-              "required": ["orderId"]
+<button class="accordion inner">Java</button>
+<div class="panel">
+    <pre class="prettyprint lang-java code"><code class="code">MockServerClient client = new MockServerClient("localhost", 1080);
+
+String status = client.loadAsyncApi("{\n" +
+    "  \"spec\": {\n" +
+    "    \"asyncapi\": \"2.6.0\",\n" +
+    "    \"info\": { \"title\": \"Orders API\", \"version\": \"1.0.0\" },\n" +
+    "    \"channels\": {\n" +
+    "      \"orders\": {\n" +
+    "        \"publish\": {\n" +
+    "          \"message\": {\n" +
+    "            \"payload\": {\n" +
+    "              \"type\": \"object\",\n" +
+    "              \"properties\": {\n" +
+    "                \"orderId\": { \"type\": \"integer\" },\n" +
+    "                \"status\": { \"type\": \"string\", \"enum\": [\"pending\", \"shipped\"] }\n" +
+    "              },\n" +
+    "              \"required\": [\"orderId\"]\n" +
+    "            }\n" +
+    "          }\n" +
+    "        }\n" +
+    "      }\n" +
+    "    }\n" +
+    "  },\n" +
+    "  \"brokerConfig\": {\n" +
+    "    \"kafkaBootstrapServers\": \"localhost:9092\",\n" +
+    "    \"publishOnLoad\": true,\n" +
+    "    \"consume\": true\n" +
+    "  }\n" +
+    "}");</code></pre>
+</div>
+<button class="accordion inner">JavaScript</button>
+<div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">const body = {
+    "spec": {
+        "asyncapi": "2.6.0",
+        "info": { "title": "Orders API", "version": "1.0.0" },
+        "channels": {
+            "orders": {
+                "publish": {
+                    "message": {
+                        "payload": {
+                            "type": "object",
+                            "properties": {
+                                "orderId": { "type": "integer" },
+                                "status": { "type": "string", "enum": ["pending", "shipped"] }
+                            },
+                            "required": ["orderId"]
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "brokerConfig": {
+        "kafkaBootstrapServers": "localhost:9092",
+        "publishOnLoad": true,
+        "consume": true
+    }
+};
+
+await fetch("http://localhost:1080/mockserver/asyncapi", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+});</code></pre>
+</div>
+<button class="accordion inner">Python</button>
+<div class="panel">
+    <pre class="prettyprint lang-python code"><code class="code">import json
+import urllib.request
+
+body = {
+    "spec": {
+        "asyncapi": "2.6.0",
+        "info": {"title": "Orders API", "version": "1.0.0"},
+        "channels": {
+            "orders": {
+                "publish": {
+                    "message": {
+                        "payload": {
+                            "type": "object",
+                            "properties": {
+                                "orderId": {"type": "integer"},
+                                "status": {"type": "string", "enum": ["pending", "shipped"]}
+                            },
+                            "required": ["orderId"]
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "brokerConfig": {
+        "kafkaBootstrapServers": "localhost:9092",
+        "publishOnLoad": True,
+        "consume": True
+    }
+}
+
+req = urllib.request.Request(
+    "http://localhost:1080/mockserver/asyncapi",
+    data=json.dumps(body).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="PUT"
+)
+urllib.request.urlopen(req)</code></pre>
+</div>
+<button class="accordion inner">Ruby</button>
+<div class="panel">
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+require 'uri'
+
+body = {
+    "spec" => {
+        "asyncapi" => "2.6.0",
+        "info" => { "title" => "Orders API", "version" => "1.0.0" },
+        "channels" => {
+            "orders" => {
+                "publish" => {
+                    "message" => {
+                        "payload" => {
+                            "type" => "object",
+                            "properties" => {
+                                "orderId" => { "type" => "integer" },
+                                "status" => { "type" => "string", "enum" => ["pending", "shipped"] }
+                            },
+                            "required" => ["orderId"]
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "brokerConfig" => {
+        "kafkaBootstrapServers" => "localhost:9092",
+        "publishOnLoad" => true,
+        "consume" => true
+    }
+}
+
+uri = URI('http://localhost:1080/mockserver/asyncapi')
+request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
+request.body = body.to_json
+Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }</code></pre>
+</div>
+<button class="accordion inner">Go</button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "spec": {
+        "asyncapi": "2.6.0",
+        "info": { "title": "Orders API", "version": "1.0.0" },
+        "channels": {
+            "orders": {
+                "publish": {
+                    "message": {
+                        "payload": {
+                            "type": "object",
+                            "properties": {
+                                "orderId": { "type": "integer" },
+                                "status": { "type": "string", "enum": ["pending", "shipped"] }
+                            },
+                            "required": ["orderId"]
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "brokerConfig": {
+        "kafkaBootstrapServers": "localhost:9092",
+        "publishOnLoad": true,
+        "consume": true
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/asyncapi",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+</div>
+<button class="accordion inner">.NET</button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""spec"": {
+        ""asyncapi"": ""2.6.0"",
+        ""info"": { ""title"": ""Orders API"", ""version"": ""1.0.0"" },
+        ""channels"": {
+            ""orders"": {
+                ""publish"": {
+                    ""message"": {
+                        ""payload"": {
+                            ""type"": ""object"",
+                            ""properties"": {
+                                ""orderId"": { ""type"": ""integer"" },
+                                ""status"": { ""type"": ""string"", ""enum"": [""pending"", ""shipped""] }
+                            },
+                            ""required"": [""orderId""]
+                        }
+                    }
+                }
+            }
+        }
+    },
+    ""brokerConfig"": {
+        ""kafkaBootstrapServers"": ""localhost:9092"",
+        ""publishOnLoad"": true,
+        ""consume"": true
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/asyncapi",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+</div>
+<button class="accordion inner">Rust</button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "spec": {
+        "asyncapi": "2.6.0",
+        "info": { "title": "Orders API", "version": "1.0.0" },
+        "channels": {
+            "orders": {
+                "publish": {
+                    "message": {
+                        "payload": {
+                            "type": "object",
+                            "properties": {
+                                "orderId": { "type": "integer" },
+                                "status": { "type": "string", "enum": ["pending", "shipped"] }
+                            },
+                            "required": ["orderId"]
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "brokerConfig": {
+        "kafkaBootstrapServers": "localhost:9092",
+        "publishOnLoad": true,
+        "consume": true
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/asyncapi")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+</div>
+<button class="accordion inner">PHP</button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "spec": {
+        "asyncapi": "2.6.0",
+        "info": { "title": "Orders API", "version": "1.0.0" },
+        "channels": {
+            "orders": {
+                "publish": {
+                    "message": {
+                        "payload": {
+                            "type": "object",
+                            "properties": {
+                                "orderId": { "type": "integer" },
+                                "status": { "type": "string", "enum": ["pending", "shipped"] }
+                            },
+                            "required": ["orderId"]
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "brokerConfig": {
+        "kafkaBootstrapServers": "localhost:9092",
+        "publishOnLoad": true,
+        "consume": true
+    }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/asyncapi');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+</div>
+<button class="accordion inner">REST API</button>
+<div class="panel">
+    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/asyncapi" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "spec": {
+      "asyncapi": "2.6.0",
+      "info": { "title": "Orders API", "version": "1.0.0" },
+      "channels": {
+        "orders": {
+          "publish": {
+            "message": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "orderId": { "type": "integer" },
+                  "status": { "type": "string", "enum": ["pending", "shipped"] }
+                },
+                "required": ["orderId"]
+              }
             }
           }
         }
       }
+    },
+    "brokerConfig": {
+      "kafkaBootstrapServers": "localhost:9092",
+      "publishOnLoad": true,
+      "consume": true
     }
-  },
-  "brokerConfig": {
-    "kafkaBootstrapServers": "localhost:9092",
-    "publishOnLoad": true,
-    "consume": true
-  }
-}</code></pre>
+  }'</code></pre>
+</div>
 
 <h4>Broker configuration options</h4>
 
@@ -143,7 +458,88 @@ sitemap:
 
 <h3>Check status: <span class="inline_code">GET /mockserver/asyncapi</span></h3>
 
-<p>Returns the loaded spec info, active channels, publisher/subscriber counts, and recorded messages (including per-message schema validation).</p>
+<p>Returns the loaded spec info, active channels, publisher/subscriber counts, and recorded messages (including per-message schema validation). The Java client exposes a typed <span class="inline_code">asyncApiStatus()</span> helper; every other language issues a plain <span class="inline_code">GET /mockserver/asyncapi</span>.</p>
+
+<button class="accordion inner">Java</button>
+<div class="panel">
+    <pre class="prettyprint lang-java code"><code class="code">MockServerClient client = new MockServerClient("localhost", 1080);
+
+String currentStatus = client.asyncApiStatus();</code></pre>
+</div>
+<button class="accordion inner">JavaScript</button>
+<div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">const response = await fetch("http://localhost:1080/mockserver/asyncapi", {
+    method: "GET"
+});
+const currentStatus = await response.text();</code></pre>
+</div>
+<button class="accordion inner">Python</button>
+<div class="panel">
+    <pre class="prettyprint lang-python code"><code class="code">import urllib.request
+
+req = urllib.request.Request(
+    "http://localhost:1080/mockserver/asyncapi",
+    method="GET"
+)
+current_status = urllib.request.urlopen(req).read().decode("utf-8")</code></pre>
+</div>
+<button class="accordion inner">Ruby</button>
+<div class="panel">
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'uri'
+
+uri = URI('http://localhost:1080/mockserver/asyncapi')
+current_status = Net::HTTP.get(uri)</code></pre>
+</div>
+<button class="accordion inner">Go</button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "io"
+    "net/http"
+)
+
+func main() {
+    resp, _ := http.Get("http://localhost:1080/mockserver/asyncapi")
+    defer resp.Body.Close()
+    currentStatus, _ := io.ReadAll(resp.Body)
+    _ = currentStatus
+}</code></pre>
+</div>
+<button class="accordion inner">.NET</button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+
+using var httpClient = new HttpClient();
+var currentStatus = await httpClient.GetStringAsync(
+    "http://localhost:1080/mockserver/asyncapi"
+);</code></pre>
+</div>
+<button class="accordion inner">Rust</button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let current_status = client.get("http://localhost:1080/mockserver/asyncapi")
+    .send()
+    .unwrap()
+    .text()
+    .unwrap();</code></pre>
+</div>
+<button class="accordion inner">PHP</button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">$ch = curl_init('http://localhost:1080/mockserver/asyncapi');
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+$currentStatus = curl_exec($ch);
+curl_close($ch);</code></pre>
+</div>
+<button class="accordion inner">REST API</button>
+<div class="panel">
+    <pre class="prettyprint code"><code class="code">curl -v -X GET "http://localhost:1080/mockserver/asyncapi"</code></pre>
+</div>
 
 <h3>Verify recorded messages: <span class="inline_code">PUT /mockserver/asyncapi/verify</span></h3>
 
@@ -203,27 +599,317 @@ sitemap:
     </tbody>
 </table>
 
+<p>The Java client exposes a typed <span class="inline_code">verifyAsyncMessage(...)</span> helper that throws an <span class="inline_code">AssertionError</span> when verification fails; every other language sends the same JSON over raw HTTP to <span class="inline_code">PUT /mockserver/asyncapi/verify</span> and checks for a <span class="inline_code">202 Accepted</span> response.</p>
+
 <h4>Example: verify a message with a specific field value</h4>
 
-<pre class="prettyprint lang-json code"><code class="code">PUT /mockserver/asyncapi/verify HTTP/1.1
-Content-Type: application/json
+<button class="accordion inner">Java</button>
+<div class="panel">
+    <pre class="prettyprint lang-java code"><code class="code">MockServerClient client = new MockServerClient("localhost", 1080);
 
-{
-  "channel": "orders",
-  "payloadJsonPath": "user.name",
-  "expectedValue": "Alice",
-  "count": { "atLeast": 1 }
+// throws AssertionError if verification fails
+client.verifyAsyncMessage("{\"channel\":\"orders\", \"payloadJsonPath\":\"user.name\", \"expectedValue\":\"Alice\", \"count\":{\"atLeast\":1}}");</code></pre>
+</div>
+<button class="accordion inner">JavaScript</button>
+<div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">const body = {
+    "channel": "orders",
+    "payloadJsonPath": "user.name",
+    "expectedValue": "Alice",
+    "count": { "atLeast": 1 }
+};
+
+const response = await fetch("http://localhost:1080/mockserver/asyncapi/verify", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+});
+// 202 Accepted = verification passed
+console.log(response.status);</code></pre>
+</div>
+<button class="accordion inner">Python</button>
+<div class="panel">
+    <pre class="prettyprint lang-python code"><code class="code">import json
+import urllib.request
+
+body = {
+    "channel": "orders",
+    "payloadJsonPath": "user.name",
+    "expectedValue": "Alice",
+    "count": {"atLeast": 1}
+}
+
+req = urllib.request.Request(
+    "http://localhost:1080/mockserver/asyncapi/verify",
+    data=json.dumps(body).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="PUT"
+)
+# 202 Accepted = verification passed
+response = urllib.request.urlopen(req)
+print(response.status)</code></pre>
+</div>
+<button class="accordion inner">Ruby</button>
+<div class="panel">
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+require 'uri'
+
+body = {
+    "channel" => "orders",
+    "payloadJsonPath" => "user.name",
+    "expectedValue" => "Alice",
+    "count" => { "atLeast" => 1 }
+}
+
+uri = URI('http://localhost:1080/mockserver/asyncapi/verify')
+request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
+request.body = body.to_json
+response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
+# 202 Accepted = verification passed
+puts response.code</code></pre>
+</div>
+<button class="accordion inner">Go</button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "channel": "orders",
+    "payloadJsonPath": "user.name",
+    "expectedValue": "Alice",
+    "count": { "atLeast": 1 }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/asyncapi/verify",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    // 202 Accepted = verification passed
+    http.DefaultClient.Do(req)
 }</code></pre>
+</div>
+<button class="accordion inner">.NET</button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""channel"": ""orders"",
+    ""payloadJsonPath"": ""user.name"",
+    ""expectedValue"": ""Alice"",
+    ""count"": { ""atLeast"": 1 }
+}";
+// 202 Accepted = verification passed
+var response = await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/asyncapi/verify",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+</div>
+<button class="accordion inner">Rust</button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "channel": "orders",
+    "payloadJsonPath": "user.name",
+    "expectedValue": "Alice",
+    "count": { "atLeast": 1 }
+}"#;
+// 202 Accepted = verification passed
+client.put("http://localhost:1080/mockserver/asyncapi/verify")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+</div>
+<button class="accordion inner">PHP</button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "channel": "orders",
+    "payloadJsonPath": "user.name",
+    "expectedValue": "Alice",
+    "count": { "atLeast": 1 }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/asyncapi/verify');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+// 202 Accepted = verification passed
+curl_exec($ch);
+curl_close($ch);</code></pre>
+</div>
+<button class="accordion inner">REST API</button>
+<div class="panel">
+    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/asyncapi/verify" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel": "orders",
+    "payloadJsonPath": "user.name",
+    "expectedValue": "Alice",
+    "count": { "atLeast": 1 }
+}'
+# 202 Accepted = verification passed</code></pre>
+</div>
 
 <h4>Example: verify no error messages were published (negative assertion)</h4>
 
-<pre class="prettyprint lang-json code"><code class="code">PUT /mockserver/asyncapi/verify HTTP/1.1
-Content-Type: application/json
+<button class="accordion inner">Java</button>
+<div class="panel">
+    <pre class="prettyprint lang-java code"><code class="code">MockServerClient client = new MockServerClient("localhost", 1080);
 
-{
-  "channel": "errors",
-  "count": { "exactly": 0 }
+// throws AssertionError if any message was recorded on the "errors" channel
+client.verifyAsyncMessage("{\"channel\":\"errors\", \"count\":{\"exactly\":0}}");</code></pre>
+</div>
+<button class="accordion inner">JavaScript</button>
+<div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">const body = {
+    "channel": "errors",
+    "count": { "exactly": 0 }
+};
+
+const response = await fetch("http://localhost:1080/mockserver/asyncapi/verify", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+});
+// 202 Accepted = verification passed
+console.log(response.status);</code></pre>
+</div>
+<button class="accordion inner">Python</button>
+<div class="panel">
+    <pre class="prettyprint lang-python code"><code class="code">import json
+import urllib.request
+
+body = {
+    "channel": "errors",
+    "count": {"exactly": 0}
+}
+
+req = urllib.request.Request(
+    "http://localhost:1080/mockserver/asyncapi/verify",
+    data=json.dumps(body).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="PUT"
+)
+# 202 Accepted = verification passed
+response = urllib.request.urlopen(req)
+print(response.status)</code></pre>
+</div>
+<button class="accordion inner">Ruby</button>
+<div class="panel">
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+require 'uri'
+
+body = {
+    "channel" => "errors",
+    "count" => { "exactly" => 0 }
+}
+
+uri = URI('http://localhost:1080/mockserver/asyncapi/verify')
+request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
+request.body = body.to_json
+response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
+# 202 Accepted = verification passed
+puts response.code</code></pre>
+</div>
+<button class="accordion inner">Go</button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "channel": "errors",
+    "count": { "exactly": 0 }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/asyncapi/verify",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    // 202 Accepted = verification passed
+    http.DefaultClient.Do(req)
 }</code></pre>
+</div>
+<button class="accordion inner">.NET</button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""channel"": ""errors"",
+    ""count"": { ""exactly"": 0 }
+}";
+// 202 Accepted = verification passed
+var response = await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/asyncapi/verify",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+</div>
+<button class="accordion inner">Rust</button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "channel": "errors",
+    "count": { "exactly": 0 }
+}"#;
+// 202 Accepted = verification passed
+client.put("http://localhost:1080/mockserver/asyncapi/verify")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+</div>
+<button class="accordion inner">PHP</button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "channel": "errors",
+    "count": { "exactly": 0 }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/asyncapi/verify');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+// 202 Accepted = verification passed
+curl_exec($ch);
+curl_close($ch);</code></pre>
+</div>
+<button class="accordion inner">REST API</button>
+<div class="panel">
+    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/asyncapi/verify" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel": "errors",
+    "count": { "exactly": 0 }
+}'
+# 202 Accepted = verification passed</code></pre>
+</div>
 
 <h3>Reset</h3>
 
@@ -397,19 +1083,15 @@ subscriber.close();</code></pre>
 
 <h2>Java client helpers</h2>
 
-<p>The <span class="inline_code">MockServerClient</span> class provides three convenience methods for async messaging:</p>
+<p>The <span class="inline_code">MockServerClient</span> class provides three convenience methods that wrap the AsyncAPI control-plane endpoints:</p>
 
-<pre class="prettyprint lang-java code"><code class="code">MockServerClient client = new MockServerClient("localhost", 1080);
+<ul>
+    <li><span class="inline_code">loadAsyncApi(...)</span> &mdash; load an AsyncAPI spec and start mocking (<span class="inline_code">PUT /mockserver/asyncapi</span>)</li>
+    <li><span class="inline_code">asyncApiStatus()</span> &mdash; check the current async mocking status (<span class="inline_code">GET /mockserver/asyncapi</span>)</li>
+    <li><span class="inline_code">verifyAsyncMessage(...)</span> &mdash; verify recorded messages, throwing an <span class="inline_code">AssertionError</span> on failure (<span class="inline_code">PUT /mockserver/asyncapi/verify</span>)</li>
+</ul>
 
-// 1. Load an AsyncAPI spec and start mocking
-String status = client.loadAsyncApi("{\"spec\":{\"asyncapi\":\"2.6.0\", ...}, \"brokerConfig\":{\"kafkaBootstrapServers\":\"localhost:9092\", \"consume\":true}}");
-
-// 2. Check current async mocking status
-String currentStatus = client.asyncApiStatus();
-
-// 3. Verify recorded messages
-client.verifyAsyncMessage("{\"channel\":\"orders\", \"payloadJsonPath\":\"user.name\", \"expectedValue\":\"Alice\", \"count\":{\"atLeast\":1}}");
-// throws AssertionError if verification fails</code></pre>
+<p>See the per-language tabs under <a href="#asyncapi_rest_api">REST control-plane</a> above for the Java helper alongside the equivalent raw-HTTP call in JavaScript, Python, Ruby, Go, .NET, Rust, PHP, and curl.</p>
 
 <a id="asyncapi_deferred" class="anchor" href="#asyncapi_deferred">&nbsp;</a>
 

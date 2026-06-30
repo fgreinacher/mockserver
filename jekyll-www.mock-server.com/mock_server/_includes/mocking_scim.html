@@ -14,15 +14,39 @@
 
 <h3>Create a SCIM Provider</h3>
 
-<p>Send an empty <span class="inline_code">PUT /mockserver/scim</span> to create a provider with the default
-    base path <span class="inline_code">/scim/v2</span>:</p>
+<p>A single control-plane <span class="inline_code">PUT /mockserver/scim</span> creates the provider. Send an
+    empty body to create one with the default base path <span class="inline_code">/scim/v2</span>, or supply a
+    configuration body to customise the base path, seed initial data, choose the id strategy, or require a bearer
+    token. The example below seeds one user and one group and requires a bearer token:</p>
 
-<pre class="prettyprint lang-bash code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/scim"</code></pre>
+<button id="button_create_scim_provider" class="accordion">create a SCIM provider</button>
+<div class="panel">
+    <p>Send an empty body (or omit the configuration entirely) to create a provider with all defaults; the
+        configuration body below customises it.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">// default provider at /scim/v2
+mockServerClient.mockScimProvider();
 
-<p>Or supply a configuration body to customise the base path, seed initial data, choose the id strategy, or
-    require a bearer token:</p>
-
-<pre class="prettyprint lang-json code"><code class="code">{
+// or with configuration
+mockServerClient.mockScimProvider(
+    new ScimProviderConfiguration()
+        .setBasePath("/scim/v2")
+        .setIdStrategy(CrudExpectationsDefinition.IdStrategy.UUID)
+        .setEnforceFilter(true)
+        .setEnforcePatch(true)
+        .setRequireBearerToken(true)
+        .setExpectedBearerToken("my-test-token")
+);</code></pre>
+        <p>The typed helper exposes the scalar options directly. To seed
+            <span class="inline_code">initialUsers</span> / <span class="inline_code">initialGroups</span>, pass
+            a <span class="inline_code">List&lt;ObjectNode&gt;</span> of SCIM resource nodes to
+            <span class="inline_code">setInitialUsers(...)</span> / <span class="inline_code">setInitialGroups(...)</span>,
+            or send the raw JSON configuration body shown in the REST API tab.</p>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const config = {
     "basePath": "/scim/v2",
     "idStrategy": "UUID",
     "requireBearerToken": true,
@@ -35,7 +59,192 @@
     "initialGroups": [
         { "id": "g1", "displayName": "Admins", "members": [] }
     ]
+};
+fetch("http://localhost:1080/mockserver/scim", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config)
+}).then(function () {
+    console.log("SCIM provider created");
+});</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+config = {
+    "basePath": "/scim/v2",
+    "idStrategy": "UUID",
+    "requireBearerToken": True,
+    "expectedBearerToken": "my-test-token",
+    "enforceFilter": True,
+    "enforcePatch": True,
+    "initialUsers": [
+        {"id": "u1", "userName": "bjensen@example.com", "active": True}
+    ],
+    "initialGroups": [
+        {"id": "g1", "displayName": "Admins", "members": []}
+    ]
+}
+requests.put("http://localhost:1080/mockserver/scim", json=config)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+require 'uri'
+
+config = {
+    "basePath" => "/scim/v2",
+    "idStrategy" => "UUID",
+    "requireBearerToken" => true,
+    "expectedBearerToken" => "my-test-token",
+    "enforceFilter" => true,
+    "enforcePatch" => true,
+    "initialUsers" => [
+        { "id" => "u1", "userName" => "bjensen@example.com", "active" => true }
+    ],
+    "initialGroups" => [
+        { "id" => "g1", "displayName" => "Admins", "members" => [] }
+    ]
+}
+
+uri = URI('http://localhost:1080/mockserver/scim')
+request = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/json')
+request.body = config.to_json
+Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "basePath": "/scim/v2",
+    "idStrategy": "UUID",
+    "requireBearerToken": true,
+    "expectedBearerToken": "my-test-token",
+    "enforceFilter": true,
+    "enforcePatch": true,
+    "initialUsers": [
+        { "id": "u1", "userName": "bjensen@example.com", "active": true }
+    ],
+    "initialGroups": [
+        { "id": "g1", "displayName": "Admins", "members": [] }
+    ]
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/scim",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""basePath"": ""/scim/v2"",
+    ""idStrategy"": ""UUID"",
+    ""requireBearerToken"": true,
+    ""expectedBearerToken"": ""my-test-token"",
+    ""enforceFilter"": true,
+    ""enforcePatch"": true,
+    ""initialUsers"": [
+        { ""id"": ""u1"", ""userName"": ""bjensen@example.com"", ""active"": true }
+    ],
+    ""initialGroups"": [
+        { ""id"": ""g1"", ""displayName"": ""Admins"", ""members"": [] }
+    ]
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/scim",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "basePath": "/scim/v2",
+    "idStrategy": "UUID",
+    "requireBearerToken": true,
+    "expectedBearerToken": "my-test-token",
+    "enforceFilter": true,
+    "enforcePatch": true,
+    "initialUsers": [
+        { "id": "u1", "userName": "bjensen@example.com", "active": true }
+    ],
+    "initialGroups": [
+        { "id": "g1", "displayName": "Admins", "members": [] }
+    ]
+}"#;
+client.put("http://localhost:1080/mockserver/scim")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "basePath": "/scim/v2",
+    "idStrategy": "UUID",
+    "requireBearerToken": true,
+    "expectedBearerToken": "my-test-token",
+    "enforceFilter": true,
+    "enforcePatch": true,
+    "initialUsers": [
+        { "id": "u1", "userName": "bjensen@example.com", "active": true }
+    ],
+    "initialGroups": [
+        { "id": "g1", "displayName": "Admins", "members": [] }
+    ]
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/scim');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <p>Send an empty <span class="inline_code">PUT</span> for an all-defaults provider:</p>
+        <pre class="prettyprint lang-bash code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/scim"</code></pre>
+        <p>Or supply a configuration body:</p>
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/scim" -d '{
+    "basePath": "/scim/v2",
+    "idStrategy": "UUID",
+    "requireBearerToken": true,
+    "expectedBearerToken": "my-test-token",
+    "enforceFilter": true,
+    "enforcePatch": true,
+    "initialUsers": [
+        { "id": "u1", "userName": "bjensen@example.com", "active": true }
+    ],
+    "initialGroups": [
+        { "id": "g1", "displayName": "Admins", "members": [] }
+    ]
+}'</code></pre>
+    </div>
+</div>
 
 <h3>Configuration Options</h3>
 
@@ -74,19 +283,6 @@
         <tr><td><span class="inline_code">GET {basePath}/Schemas</span></td><td>Discovery — a ListResponse of the core User and Group schema definitions.</td></tr>
     </tbody>
 </table>
-
-<h3>Java Client</h3>
-
-<pre class="prettyprint lang-java code"><code class="code">// default provider at /scim/v2
-mockServerClient.mockScimProvider();
-
-// or with configuration
-mockServerClient.mockScimProvider(
-    new ScimProviderConfiguration()
-        .setBasePath("/scim/v2")
-        .setRequireBearerToken(true)
-        .setExpectedBearerToken("my-test-token")
-);</code></pre>
 
 <h3>ListResponse Envelope</h3>
 

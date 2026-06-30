@@ -25,8 +25,78 @@
 <div class="panel">
     <button class="accordion inner">Java</button>
     <div class="panel">
-        <pre class="prettyprint code"><code class="code">new MockServerClient("localhost", 1080)
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
     .mockSamlProvider();</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const http = require('http');
+
+const req = http.request({
+    host: 'localhost',
+    port: 1080,
+    path: '/mockserver/saml',
+    method: 'PUT'
+}, function (res) {
+    console.log("SAML IdP created, status " + res.statusCode);
+});
+req.end();</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+requests.put("http://localhost:1080/mockserver/saml")</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/saml')
+Net::HTTP.start(uri.host, uri.port) do |http|
+    http.request(Net::HTTP::Put.new(uri))
+end</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import "net/http"
+
+func main() {
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/saml", nil)
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+
+using var httpClient = new HttpClient();
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/saml",
+    null
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+client.put("http://localhost:1080/mockserver/saml")
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$ch = curl_init('http://localhost:1080/mockserver/saml');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
     </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
@@ -42,7 +112,7 @@
 <div class="panel">
     <button class="accordion inner">Java</button>
     <div class="panel">
-        <pre class="prettyprint code"><code class="code">new MockServerClient("localhost", 1080)
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
     .mockSamlProvider(
         new SamlProviderConfiguration()
             .setIdpEntityId("https://idp.example.com/saml/idp")
@@ -53,6 +123,174 @@
             .setAttributes(Map.of("email", "alice@example.com", "role", "admin"))
             .setSigningAlgorithm("ES256")
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const http = require('http');
+
+const body = JSON.stringify({
+    "idpEntityId": "https://idp.example.com/saml/idp",
+    "spEntityId": "https://sp.example.com/metadata",
+    "assertionConsumerServiceUrl": "https://sp.example.com/acs",
+    "spSingleLogoutServiceUrl": "https://sp.example.com/slo",
+    "subjectNameId": "alice@example.com",
+    "attributes": {
+        "email": "alice@example.com",
+        "role": "admin"
+    },
+    "signingAlgorithm": "ES256"
+});
+
+const req = http.request({
+    host: 'localhost',
+    port: 1080,
+    path: '/mockserver/saml',
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'}
+}, function (res) {
+    console.log("SAML IdP created, status " + res.statusCode);
+});
+req.write(body);
+req.end();</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+requests.put("http://localhost:1080/mockserver/saml", json={
+    "idpEntityId": "https://idp.example.com/saml/idp",
+    "spEntityId": "https://sp.example.com/metadata",
+    "assertionConsumerServiceUrl": "https://sp.example.com/acs",
+    "spSingleLogoutServiceUrl": "https://sp.example.com/slo",
+    "subjectNameId": "alice@example.com",
+    "attributes": {
+        "email": "alice@example.com",
+        "role": "admin"
+    },
+    "signingAlgorithm": "ES256"
+})</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+
+uri = URI('http://localhost:1080/mockserver/saml')
+Net::HTTP.start(uri.host, uri.port) do |http|
+    request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+    request.body = {
+        idpEntityId: 'https://idp.example.com/saml/idp',
+        spEntityId: 'https://sp.example.com/metadata',
+        assertionConsumerServiceUrl: 'https://sp.example.com/acs',
+        spSingleLogoutServiceUrl: 'https://sp.example.com/slo',
+        subjectNameId: 'alice@example.com',
+        attributes: { email: 'alice@example.com', role: 'admin' },
+        signingAlgorithm: 'ES256'
+    }.to_json
+    http.request(request)
+end</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "idpEntityId": "https://idp.example.com/saml/idp",
+    "spEntityId": "https://sp.example.com/metadata",
+    "assertionConsumerServiceUrl": "https://sp.example.com/acs",
+    "spSingleLogoutServiceUrl": "https://sp.example.com/slo",
+    "subjectNameId": "alice@example.com",
+    "attributes": {
+        "email": "alice@example.com",
+        "role": "admin"
+    },
+    "signingAlgorithm": "ES256"
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/saml",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""idpEntityId"": ""https://idp.example.com/saml/idp"",
+    ""spEntityId"": ""https://sp.example.com/metadata"",
+    ""assertionConsumerServiceUrl"": ""https://sp.example.com/acs"",
+    ""spSingleLogoutServiceUrl"": ""https://sp.example.com/slo"",
+    ""subjectNameId"": ""alice@example.com"",
+    ""attributes"": {
+        ""email"": ""alice@example.com"",
+        ""role"": ""admin""
+    },
+    ""signingAlgorithm"": ""ES256""
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/saml",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "idpEntityId": "https://idp.example.com/saml/idp",
+    "spEntityId": "https://sp.example.com/metadata",
+    "assertionConsumerServiceUrl": "https://sp.example.com/acs",
+    "spSingleLogoutServiceUrl": "https://sp.example.com/slo",
+    "subjectNameId": "alice@example.com",
+    "attributes": {
+        "email": "alice@example.com",
+        "role": "admin"
+    },
+    "signingAlgorithm": "ES256"
+}"#;
+client.put("http://localhost:1080/mockserver/saml")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "idpEntityId": "https://idp.example.com/saml/idp",
+    "spEntityId": "https://sp.example.com/metadata",
+    "assertionConsumerServiceUrl": "https://sp.example.com/acs",
+    "spSingleLogoutServiceUrl": "https://sp.example.com/slo",
+    "subjectNameId": "alice@example.com",
+    "attributes": {
+        "email": "alice@example.com",
+        "role": "admin"
+    },
+    "signingAlgorithm": "ES256"
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/saml');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
     </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
@@ -79,6 +317,138 @@
 
 <button id="button_saml_negative" class="accordion">mock an IdP that returns an expired, wrong-audience assertion</button>
 <div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .mockSamlProvider(
+        new SamlProviderConfiguration()
+            .setExpiredAssertion(true)
+            .setWrongAudience(true)
+            .setTamperedSignature(true)
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const http = require('http');
+
+const body = JSON.stringify({
+    "expiredAssertion": true,
+    "wrongAudience": true,
+    "tamperedSignature": true
+});
+
+const req = http.request({
+    host: 'localhost',
+    port: 1080,
+    path: '/mockserver/saml',
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'}
+}, function (res) {
+    console.log("SAML IdP created, status " + res.statusCode);
+});
+req.write(body);
+req.end();</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+requests.put("http://localhost:1080/mockserver/saml", json={
+    "expiredAssertion": True,
+    "wrongAudience": True,
+    "tamperedSignature": True
+})</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+
+uri = URI('http://localhost:1080/mockserver/saml')
+Net::HTTP.start(uri.host, uri.port) do |http|
+    request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+    request.body = {
+        expiredAssertion: true,
+        wrongAudience: true,
+        tamperedSignature: true
+    }.to_json
+    http.request(request)
+end</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "expiredAssertion": true,
+    "wrongAudience": true,
+    "tamperedSignature": true
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/saml",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""expiredAssertion"": true,
+    ""wrongAudience"": true,
+    ""tamperedSignature"": true
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/saml",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "expiredAssertion": true,
+    "wrongAudience": true,
+    "tamperedSignature": true
+}"#;
+client.put("http://localhost:1080/mockserver/saml")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "expiredAssertion": true,
+    "wrongAudience": true,
+    "tamperedSignature": true
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/saml');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/saml" -d '{
