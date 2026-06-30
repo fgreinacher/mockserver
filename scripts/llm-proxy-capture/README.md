@@ -7,8 +7,12 @@ Point a coding-assistant CLI at MockServer running as an HTTPS proxy and MockSer
 ## TL;DR
 
 ```bash
-# 1. start MockServer as a proxy (any port; 1080 used here)
-java -jar mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar \
+# 1. start MockServer as a proxy (any port; 1080 used here).
+#    forwardProxyHttp2Upgrade=true forwards the CLI's TLS traffic to the upstream over HTTP/2 so
+#    streaming SSE backends (notably the OpenAI Codex endpoint opencode uses) send the response head
+#    immediately instead of withholding it over HTTP/1.1 (which shows up as a streaming header timeout).
+java -Dmockserver.forwardProxyHttp2Upgrade=true \
+     -jar mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar \
      -serverPort 1080 -logLevel INFO
 
 # 2. run the smoke test — it drives whichever CLIs are installed + authed, then asserts capture
