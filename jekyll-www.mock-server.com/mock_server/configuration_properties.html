@@ -106,7 +106,7 @@ mockserver.enableCORSForAllResponses=false</code></pre>
             <td><span class="inline_code">maxSocketTimeout</span></td>
             <td><span class="inline_code">MOCKSERVER_MAX_SOCKET_TIMEOUT</span></td>
             <td><span class="this_value">20,000 ms</span></td>
-            <td>Increase when your system-under-test is slow; decrease to fail fast in unit tests</td>
+            <td>Maximum time to wait for the first response byte when forwarding/proxying. Increase when your system-under-test is slow to start responding — e.g. a reasoning LLM backend can take minutes to emit its first token, so a low value 502s a healthy call; decrease to fail fast in unit tests. Also accepted as <span class="inline_code">maxSocketTimeoutInMillis</span> / <span class="inline_code">MOCKSERVER_MAX_SOCKET_TIMEOUT_IN_MILLIS</span> (the same setting under the name used by the Java API and the configuration JSON)</td>
         </tr>
         <tr>
             <td><span class="inline_code">enableCORSForAPI</span></td>
@@ -538,7 +538,7 @@ mockserver.enableCORSForAllResponses=true</code></pre>
 
 <button id="button_configuration_max_socket_timeout" class="accordion title"><strong>Maximum Socket Timeout In Millis</strong></button>
 <div class="panel title">
-    <p>Maximum time in milliseconds allowed for a response from a socket</p>
+    <p>Maximum time in milliseconds to wait for the first response byte when forwarding/proxying</p>
     <p>Type: <span class="keyword">long</span> Default: <span class="this_value">20000</span></p>
     <p>Java Code:</p>
     <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.maxSocketTimeout(long milliseconds)</code></pre>
@@ -550,6 +550,7 @@ mockserver.enableCORSForAllResponses=true</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">mockserver.maxSocketTimeout=...</code></pre>
     <p>Example:</p>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxSocketTimeout="10000"</code></pre>
+    <p>Also accepted under the unit-bearing name <span class="inline_code">maxSocketTimeoutInMillis</span> / <span class="inline_code">MOCKSERVER_MAX_SOCKET_TIMEOUT_IN_MILLIS</span>, which matches the Java API and the value reported in the configuration JSON. The two names are the same setting; set whichever you prefer.</p>
 </div>
 
 <button id="button_configuration_socket_connection_timeout" class="accordion title"><strong>Maximum Socket Connection Timeout In Millis</strong></button>
@@ -566,6 +567,7 @@ mockserver.enableCORSForAllResponses=true</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">mockserver.socketConnectionTimeout=...</code></pre>
     <p>Example:</p>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.socketConnectionTimeout="10000"</code></pre>
+    <p>Also accepted under the unit-bearing name <span class="inline_code">socketConnectionTimeoutInMillis</span> / <span class="inline_code">MOCKSERVER_SOCKET_CONNECTION_TIMEOUT_IN_MILLIS</span>, which matches the Java API and the value reported in the configuration JSON. The two names are the same setting; set whichever you prefer.</p>
 </div>
 
 <button id="button_configuration_aways_close_socket_connection" class="accordion title"><strong>Always Close Socket Connection After Response</strong></button>

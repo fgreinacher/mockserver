@@ -237,6 +237,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### Correctness & reliability
+- **Millisecond timeouts are now settable under their unit-bearing `…InMillis` names, fixing silently-ignored overrides.**
+  The Java API (e.g. `Configuration.maxSocketTimeoutInMillis()`) and the `/mockserver/configuration` JSON expose these
+  settings under `…InMillis` names, but the system property / environment variable were only read under the unit-less
+  `mockserver.maxSocketTimeout` / `MOCKSERVER_MAX_SOCKET_TIMEOUT` form. Setting the natural
+  `-Dmockserver.maxSocketTimeoutInMillis=…` (the name shown everywhere else) was therefore silently dropped and the
+  20s default stood — long enough to 502 a healthy but slow first-byte response (e.g. a reasoning LLM backend that
+  takes longer than 20s to emit its first token when proxied/forwarded). MockServer now also accepts the unit-bearing
+  `mockserver.maxSocketTimeoutInMillis`, `mockserver.socketConnectionTimeoutInMillis` and
+  `mockserver.maxFutureTimeoutInMillis` names (and their `MOCKSERVER_*_IN_MILLIS` environment-variable forms) as exact
+  synonyms for the existing names — set whichever you prefer. The primary (unit-less) name is read first, so a value
+  applied at runtime via the programmatic setter is never silently overridden by a launch-time alias.
 - **Recorded streaming responses no longer pin the live streaming sink in memory.** Each captured streaming
   (SSE) forward/proxy exchange stored a log entry whose response still referenced the live streaming body — its
   in-memory capture buffer, the upstream event loop, and the per-chunk callbacks — for the entry's whole lifetime

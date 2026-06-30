@@ -10,9 +10,11 @@ Point a coding-assistant CLI at MockServer running as an HTTPS proxy and MockSer
 # 1. start MockServer as a proxy (any port; 1080 used here).
 #    forwardProxyHttp2Upgrade=true forwards the CLI's TLS traffic to the upstream over HTTP/2 so a
 #    streaming SSE backend that streams its head over HTTP/2 sends it immediately. maxSocketTimeoutInMillis
-#    raises the FIRST-byte wait from the 20s default to 300s: a reasoning model on a large prompt can take
-#    MINUTES to emit its first token (a 74KB/~73k-token Codex turn returned nothing within 120s and 502'd),
-#    and MockServer must wait at least as long as the CLI's own request timeout or it 502s a healthy call.
+#    raises the FIRST-byte wait from MockServer's 20s default to 300s: a reasoning model on a large prompt
+#    can take MINUTES to emit its first token (a 74KB/~73k-token Codex turn returned nothing within the 20s
+#    default and 502'd), and MockServer must wait at least as long as the CLI's own request timeout or it
+#    502s a healthy call. (`mockserver.maxSocketTimeoutInMillis` and the unit-less `mockserver.maxSocketTimeout`
+#    are synonyms for the same setting — set whichever you prefer; the `InMillis` name matches the API/JSON.)
 #    The redirect + heap-dump flags make any process death diagnosable: a real Java OOM leaves an
 #    OutOfMemoryError in mockserver.log AND a heap dump; if the process just vanishes with neither, it was
 #    killed externally (another tool/session, or the OS OOM-killer — check `dmesg` on Linux).

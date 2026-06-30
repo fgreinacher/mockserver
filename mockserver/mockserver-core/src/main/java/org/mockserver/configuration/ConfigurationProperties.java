@@ -121,6 +121,10 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_CLIENT_NIO_EVENT_LOOP_THREAD_COUNT = "mockserver.clientNioEventLoopThreadCount";
     private static final String MOCKSERVER_WEB_SOCKET_CLIENT_EVENT_LOOP_THREAD_COUNT = "mockserver.webSocketClientEventLoopThreadCount";
     private static final String MOCKSERVER_MAX_FUTURE_TIMEOUT = "mockserver.maxFutureTimeout";
+    // Unit-bearing alias matching Configuration.maxFutureTimeoutInMillis() and the /mockserver/configuration
+    // JSON key (same footgun and resolution as the socket-timeout aliases above): a synonym for the primary
+    // key, honoured rather than silently ignored, with the primary key read first.
+    private static final String MOCKSERVER_MAX_FUTURE_TIMEOUT_IN_MILLIS = "mockserver.maxFutureTimeoutInMillis";
     private static final String MOCKSERVER_MATCHERS_FAIL_FAST = "mockserver.matchersFailFast";
     private static final String MOCKSERVER_MATCH_EXACT_CASE = "mockserver.matchExactCase";
     private static final String MOCKSERVER_FORWARD_CONNECTION_POOL_ENABLED = "mockserver.forwardConnectionPoolEnabled";
@@ -144,7 +148,16 @@ public class ConfigurationProperties {
 
     // socket
     private static final String MOCKSERVER_MAX_SOCKET_TIMEOUT = "mockserver.maxSocketTimeout";
+    // `InMillis`-suffixed aliases that match Configuration.maxSocketTimeoutInMillis() /
+    // socketConnectionTimeoutInMillis() and the keys reported in the /mockserver/configuration JSON, so an
+    // operator who sets -Dmockserver.maxSocketTimeoutInMillis (the natural name to reach for) is honoured
+    // rather than silently ignored. These are synonyms for the primary keys; the primary key is read first
+    // (so a programmatic/runtime value can never be silently overridden by a launch-time alias) and the
+    // alias is used only when the primary is unset. Declared as MOCKSERVER_* constants so the reflective
+    // recognised-key registry accepts them too.
+    private static final String MOCKSERVER_MAX_SOCKET_TIMEOUT_IN_MILLIS = "mockserver.maxSocketTimeoutInMillis";
     private static final String MOCKSERVER_SOCKET_CONNECTION_TIMEOUT = "mockserver.socketConnectionTimeout";
+    private static final String MOCKSERVER_SOCKET_CONNECTION_TIMEOUT_IN_MILLIS = "mockserver.socketConnectionTimeoutInMillis";
     private static final String MOCKSERVER_CONNECTION_DELAY_MILLIS = "mockserver.connectionDelayMillis";
     private static final String MOCKSERVER_ALWAYS_CLOSE_SOCKET_CONNECTIONS = "mockserver.alwaysCloseSocketConnections";
     private static final String MOCKSERVER_LOCAL_BOUND_IP = "mockserver.localBoundIP";
@@ -1879,7 +1892,8 @@ public class ConfigurationProperties {
     }
 
     public static long maxFutureTimeout() {
-        return readLongProperty(MOCKSERVER_MAX_FUTURE_TIMEOUT, "MOCKSERVER_MAX_FUTURE_TIMEOUT", TimeUnit.SECONDS.toMillis(90));
+        return readLongPropertyWithMillisAlias(MOCKSERVER_MAX_FUTURE_TIMEOUT, "MOCKSERVER_MAX_FUTURE_TIMEOUT",
+            MOCKSERVER_MAX_FUTURE_TIMEOUT_IN_MILLIS, "MOCKSERVER_MAX_FUTURE_TIMEOUT_IN_MILLIS", TimeUnit.SECONDS.toMillis(90));
     }
 
     /**
@@ -2277,7 +2291,8 @@ public class ConfigurationProperties {
     // socket
 
     public static long maxSocketTimeout() {
-        return readLongProperty(MOCKSERVER_MAX_SOCKET_TIMEOUT, "MOCKSERVER_MAX_SOCKET_TIMEOUT", TimeUnit.SECONDS.toMillis(20));
+        return readLongPropertyWithMillisAlias(MOCKSERVER_MAX_SOCKET_TIMEOUT, "MOCKSERVER_MAX_SOCKET_TIMEOUT",
+            MOCKSERVER_MAX_SOCKET_TIMEOUT_IN_MILLIS, "MOCKSERVER_MAX_SOCKET_TIMEOUT_IN_MILLIS", TimeUnit.SECONDS.toMillis(20));
     }
 
     /**
@@ -2292,7 +2307,8 @@ public class ConfigurationProperties {
     }
 
     public static long socketConnectionTimeout() {
-        return readLongProperty(MOCKSERVER_SOCKET_CONNECTION_TIMEOUT, "MOCKSERVER_SOCKET_CONNECTION_TIMEOUT", TimeUnit.SECONDS.toMillis(20));
+        return readLongPropertyWithMillisAlias(MOCKSERVER_SOCKET_CONNECTION_TIMEOUT, "MOCKSERVER_SOCKET_CONNECTION_TIMEOUT",
+            MOCKSERVER_SOCKET_CONNECTION_TIMEOUT_IN_MILLIS, "MOCKSERVER_SOCKET_CONNECTION_TIMEOUT_IN_MILLIS", TimeUnit.SECONDS.toMillis(20));
     }
 
     /**
@@ -5212,6 +5228,28 @@ public class ConfigurationProperties {
             );
             return defaultValue;
         }
+    }
+
+    /**
+     * Reads a millisecond duration that may be configured under either the primary key (e.g.
+     * {@code mockserver.maxSocketTimeout} — the name the programmatic setters and the rest of the code
+     * use) or the unit-bearing {@code InMillis}-suffixed alias (e.g.
+     * {@code mockserver.maxSocketTimeoutInMillis}) that matches {@link Configuration#maxSocketTimeoutInMillis()}
+     * and the key reported in the {@code /mockserver/configuration} JSON. The two names are synonyms for
+     * the same setting, so an operator who reaches for the alias is honoured rather than silently ignored.
+     * <p>
+     * The primary key is read first, so a value applied at runtime via the programmatic setter (which
+     * writes the primary key) always takes effect — a launch-time alias can never silently override a
+     * later programmatic set. The alias is consulted only when the primary key is not set by any source.
+     * If both names are set at launch to different values (a contradictory configuration that cannot be
+     * ordered), the primary key wins.
+     */
+    private static Long readLongPropertyWithMillisAlias(String key, String environmentVariableKey, String aliasKey, String aliasEnvironmentVariableKey, long defaultValue) {
+        long primary = readLongProperty(key, environmentVariableKey, defaultValue);
+        if (primary != defaultValue) {
+            return primary;
+        }
+        return readLongProperty(aliasKey, aliasEnvironmentVariableKey, defaultValue);
     }
 
     private static double readDoubleProperty(String key, String environmentVariableKey, double defaultValue) {
