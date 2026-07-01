@@ -376,6 +376,39 @@ on server reset. A sample's error flag is set when the upstream status is `null`
 
 `MetricsHandler` serves the `/mockserver/metrics` endpoint. It uses `ExpositionFormats` to render all registered metrics from `PrometheusRegistry.defaultRegistry`, respecting the client's `Accept` header for content negotiation.
 
+## Prometheus Remote Write (push)
+
+As an alternative (or complement) to being scraped, MockServer can **push** its metrics to a Prometheus **Remote-Write** endpoint on an interval. This suits short-lived pods, agentless setups, and vendor endpoints that ingest remote write — Prometheus (`--web.enable-remote-write-receiver`), Grafana Cloud / Mimir, **New Relic**, VictoriaMetrics, and Thanos Receive. It is off by default and fail-soft: a push failure logs one line and never affects request handling.
+
+```mermaid
+flowchart LR
+    REG["PrometheusRegistry.defaultRegistry"] -->|scrape| RW["PrometheusRemoteWriteExporter"]
+    RW --> ENC["RemoteWriteV1Encoder\n(protobuf via CodedOutputStream)"]
+    ENC --> SNP["Snappy block compress"]
+    SNP --> HTTP["JDK HttpClient POST\nauth + custom headers"]
+    HTTP --> BE["Prometheus / New Relic / Mimir /\nVictoriaMetrics / Thanos"]
+```
+
+The exporter reuses the **same snapshot** the scrape endpoint serves — `PrometheusRegistry.defaultRegistry.scrape()` — so the pushed series are byte-for-byte the metrics at `/mockserver/metrics` (whole registry, no curated subset). Each snapshot data point becomes one Remote-Write `TimeSeries` (`__name__` + labels + a single sample at push time). Counter→`<name>_total`, gauge→`<name>`, classic histogram→cumulative `<name>_bucket{le}` (incl. `le="+Inf"`) plus `_count`/`_sum`, summary→quantile series plus `_count`/`_sum`; unknown/native-only snapshot types are skipped with a DEBUG log (never dropped silently for the supported types). The `WriteRequest` protobuf is hand-encoded with `com.google.protobuf.CodedOutputStream` (no protoc/codegen is added to the build — the v1 wire schema is frozen), then compressed with the raw **Snappy block** format Remote Write requires (`org.xerial.snappy.Snappy.compress`), and POSTed with the JDK `java.net.http.HttpClient`.
+
+Remote write is inherently **cumulative** (the Prometheus data model); the OTLP delta option (see [telemetry.md](telemetry.md)) does not apply here.
+
+### Configuration
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `prometheusRemoteWriteEnabled` | `false` | Enable periodic Remote-Write push |
+| `prometheusRemoteWriteUrl` | (empty) | Full endpoint URL, e.g. `http://prometheus:9090/api/v1/write`. Enabled-but-blank logs a warning and does nothing |
+| `prometheusRemoteWriteIntervalSeconds` | `60` | Push interval (clamped to ≥ 1) |
+| `prometheusRemoteWriteBearerToken` | (empty) | Sends `Authorization: Bearer <token>`; takes precedence over basic auth |
+| `prometheusRemoteWriteBasicAuthUsername` | (empty) | HTTP basic-auth username (used when no bearer token) |
+| `prometheusRemoteWriteBasicAuthPassword` | (empty) | HTTP basic-auth password |
+| `prometheusRemoteWriteHeaders` | (empty) | Extra headers as a `key=value,key2=value2` list (e.g. New Relic `Api-Key=...`, Mimir `X-Scope-OrgID=tenant`); applied after the resolved auth header |
+
+Auth resolution: a bearer token wins if set; otherwise basic auth (if a username is set); then the custom headers are applied last (so a user-supplied header can override). Token/password/header **values are never logged** (the startup line reports only whether auth is configured). Each POST carries `Content-Type: application/x-protobuf`, `Content-Encoding: snappy`, and `X-Prometheus-Remote-Write-Version: 0.1.0`.
+
+Lifecycle mirrors the OTLP exporter: `PrometheusRemoteWriteExporter.startIfEnabled()` is created by `LifeCycle` and stopped on shutdown; a single daemon scheduler pushes with a fixed **delay** (so a slow push cannot pile up).
+
 ## Memory Monitoring
 
 `MemoryMonitoring` provides CSV-based memory usage tracking, enabled via the `outputMemoryUsageCsv` configuration property.
@@ -422,6 +455,9 @@ on server reset. A sample's error flag is set when the upstream status is `null`
 | `LlmCostBudgetMonitor` | mockserver-core | `org.mockserver.mock.action.http.LlmCostBudgetMonitor` |
 | `MetricLabels` | mockserver-core | `org.mockserver.metrics.MetricLabels` (route templatizing for load metrics) |
 | `OtelMetricsExporter` | mockserver-core | `org.mockserver.metrics.OtelMetricsExporter` (OTLP mirror of load metrics) |
+| `PrometheusRemoteWriteExporter` | mockserver-core | `org.mockserver.metrics.PrometheusRemoteWriteExporter` (periodic Remote-Write push) |
+| `RemoteWriteV1Encoder` | mockserver-core | `org.mockserver.metrics.remotewrite.RemoteWriteV1Encoder` (MetricSnapshots → Remote-Write v1 protobuf) |
+| `SnappyBlock` | mockserver-core | `org.mockserver.metrics.remotewrite.SnappyBlock` (raw Snappy block compression) |
 | `LoadScenarioOrchestrator` | mockserver-core | `org.mockserver.mock.action.http.LoadScenarioOrchestrator` (records load metric samples) |
 | `SloSampleStore` | mockserver-core | `org.mockserver.slo.SloSampleStore` (see [slo-verdicts.md](slo-verdicts.md)) |
 | `MemoryMonitoring` | mockserver-core | `org.mockserver.memory.MemoryMonitoring` |
@@ -434,4 +470,6 @@ on server reset. A sample's error flag is set when the upstream status is `null`
 |---------|-----------|---------|---------|
 | `io.prometheus` | `prometheus-metrics-core` | 1.7.0 | Prometheus client library (Gauge, MultiCollector, PrometheusRegistry) |
 | `io.prometheus` | `prometheus-metrics-exposition-formats` | 1.7.0 | Prometheus exposition format writers |
-| `io.prometheus` | `prometheus-metrics-model` | 1.7.0 | Prometheus metric snapshots and labels |
+| `io.prometheus` | `prometheus-metrics-model` | 1.7.0 | Prometheus metric snapshots and labels (also the Remote-Write snapshot source) |
+| `com.google.protobuf` | `protobuf-java` | 4.35.1 | `CodedOutputStream` used to hand-encode the Remote-Write `WriteRequest` (already a core dep; no protoc/codegen added) |
+| `org.xerial.snappy` | `snappy-java` | 1.1.10.7 | Raw Snappy **block** compression for the Remote-Write body |

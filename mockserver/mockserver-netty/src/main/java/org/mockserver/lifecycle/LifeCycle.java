@@ -70,6 +70,8 @@ public abstract class LifeCycle implements Stoppable {
     // optional OTel exporters — null unless the corresponding config is enabled
     private final org.mockserver.metrics.OtelMetricsExporter otelMetricsExporter;
     private final org.mockserver.telemetry.GenAiSpanExporter genAiSpanExporter;
+    // optional Prometheus remote-write push exporter — null unless enabled
+    private final org.mockserver.metrics.PrometheusRemoteWriteExporter prometheusRemoteWriteExporter;
 
     protected LifeCycle(Configuration configuration) {
         this.configuration = configuration != null ? configuration : configuration();
@@ -87,6 +89,7 @@ public abstract class LifeCycle implements Stoppable {
         this.httpState = new HttpState(this.configuration, this.mockServerLogger, this.scheduler);
         this.otelMetricsExporter = org.mockserver.metrics.OtelMetricsExporter.startIfEnabled();
         this.genAiSpanExporter = org.mockserver.telemetry.GenAiSpanExporter.startIfEnabled();
+        this.prometheusRemoteWriteExporter = org.mockserver.metrics.PrometheusRemoteWriteExporter.startIfEnabled();
         installSemanticMatchingIfEnabled(this.workerGroup);
         installLlmCompletionServiceIfAvailable(this.workerGroup);
         installSemanticDriftIfEnabled(this.workerGroup);
@@ -370,6 +373,9 @@ public abstract class LifeCycle implements Stoppable {
                 }
                 if (genAiSpanExporter != null) {
                     genAiSpanExporter.stop();
+                }
+                if (prometheusRemoteWriteExporter != null) {
+                    prometheusRemoteWriteExporter.stop();
                 }
                 org.mockserver.llm.semantic.SemanticMatching.clear();
 

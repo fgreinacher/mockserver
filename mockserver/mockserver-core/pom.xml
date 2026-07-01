@@ -531,6 +531,14 @@
             <groupId>io.prometheus</groupId>
             <artifactId>prometheus-metrics-model</artifactId>
         </dependency>
+        <!-- snappy (raw block format) for the Prometheus Remote-Write v1 push exporter.
+             Compile scope so it is bundled into the shaded netty jar. NOT relocated by the
+             shade plugin — snappy self-extracts its native lib from org/xerial/snappy and a
+             relocation rule would break native loading. -->
+        <dependency>
+            <groupId>org.xerial.snappy</groupId>
+            <artifactId>snappy-java</artifactId>
+        </dependency>
 
         <!-- opentelemetry (optional metrics export; off by default).
              OTLP HTTP/protobuf via the JDK HttpClient sender — okhttp sender excluded
@@ -798,6 +806,8 @@
                         <exclude>**/HttpForwardActionResilienceTest.java</exclude>
                         <!-- Sets/clears the mockserver.otelEndpoint JVM system property and property cache -->
                         <exclude>**/OtelEndpointConfigurationTest.java</exclude>
+                        <!-- Mutates mockserver.prometheusRemoteWrite* global ConfigurationProperties -->
+                        <exclude>**/PrometheusRemoteWriteExporterTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -916,6 +926,7 @@
                                 <include>**/LlmOptimisationReportServiceTest.java</include>
                                 <include>**/HttpForwardActionResilienceTest.java</include>
                                 <include>**/OtelEndpointConfigurationTest.java</include>
+                                <include>**/PrometheusRemoteWriteExporterTest.java</include>
                             </includes>
                         </configuration>
                     </execution>

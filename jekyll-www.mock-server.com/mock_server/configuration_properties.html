@@ -2442,6 +2442,28 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.otelPropagateTraceContext="true" -Dmockserver.otelGenerateTraceId="true"</code></pre>
 </div>
 
+<button id="button_configuration_prometheus_remote_write" class="accordion title"><strong>Prometheus Remote Write (Push Metrics)</strong></button>
+<div class="panel title">
+    <p>Instead of (or as well as) being scraped at <span class="inline_code">/mockserver/metrics</span>, MockServer can <strong>push</strong> the very same metrics to a Prometheus <strong>Remote-Write</strong> endpoint on an interval. This suits short-lived pods and agentless setups, and works with Prometheus (started with <span class="inline_code">--web.enable-remote-write-receiver</span>), Grafana Cloud / Mimir, New Relic, VictoriaMetrics and Thanos Receive. It is <strong>off by default</strong> and <strong>fail-soft</strong> &mdash; a push failure logs one line and never affects request handling. The pushed series are exactly what the scrape endpoint serves (the whole registry); remote write is always cumulative (the Prometheus model).</p>
+    <p><strong>Enable</strong> &mdash; turn on the periodic push.</p>
+    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">false</span></p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.prometheusRemoteWriteEnabled(boolean enabled)</code></pre>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.prometheusRemoteWriteEnabled=... &nbsp; MOCKSERVER_PROMETHEUS_REMOTE_WRITE_ENABLED=...</code></pre>
+    <p><strong>Endpoint URL</strong> &mdash; the full remote-write URL to POST to (e.g. <span class="inline_code">http://prometheus:9090/api/v1/write</span>). Required when enabled; if left blank, a warning is logged and nothing is pushed.</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.prometheusRemoteWriteUrl(String url)</code></pre>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.prometheusRemoteWriteUrl=... &nbsp; MOCKSERVER_PROMETHEUS_REMOTE_WRITE_URL=...</code></pre>
+    <p><strong>Push interval</strong> (seconds), default <span class="this_value">60</span>, minimum <span class="this_value">1</span>:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.prometheusRemoteWriteIntervalSeconds=... &nbsp; MOCKSERVER_PROMETHEUS_REMOTE_WRITE_INTERVAL_SECONDS=...</code></pre>
+    <p><strong>Authentication</strong> &mdash; most hosted endpoints require it. A bearer token is used if set (it wins over basic auth); otherwise HTTP basic auth (username + password); then any custom headers are applied last (so a custom <span class="inline_code">Authorization</span> header can override). Credential values are never logged.</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.prometheusRemoteWriteBearerToken=... &nbsp; MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN=...
+-Dmockserver.prometheusRemoteWriteBasicAuthUsername=... &nbsp; MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_USERNAME=...
+-Dmockserver.prometheusRemoteWriteBasicAuthPassword=... &nbsp; MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_PASSWORD=...</code></pre>
+    <p><strong>Custom headers</strong> &mdash; extra HTTP headers as a comma-separated <span class="inline_code">key=value</span> list, for tenant/API-key headers such as New Relic's <span class="inline_code">Api-Key</span> or Grafana Mimir's <span class="inline_code">X-Scope-OrgID</span>:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.prometheusRemoteWriteHeaders="Api-Key=NRAK-xxxx,X-Scope-OrgID=tenant-a" &nbsp; MOCKSERVER_PROMETHEUS_REMOTE_WRITE_HEADERS=...</code></pre>
+    <p>Example (push to a local Prometheus every 15s):</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.metricsEnabled="true" -Dmockserver.prometheusRemoteWriteEnabled="true" -Dmockserver.prometheusRemoteWriteUrl="http://localhost:9090/api/v1/write" -Dmockserver.prometheusRemoteWriteIntervalSeconds="15"</code></pre>
+</div>
+
 <button id="button_configuration_stream_idle_timeout_seconds" class="accordion title"><strong>Streaming Response Idle Timeout</strong></button>
 <div class="panel title">
     <p>The maximum time in seconds a streaming response connection may be idle (no chunk received from the upstream server) before MockServer closes it and logs the captured portion as truncated. This replaces the fixed global socket timeout for streaming responses, which would otherwise terminate long-lived LLM completions. The timeout resets on every chunk received, so a slow-but-active stream is never cut off prematurely.</p>

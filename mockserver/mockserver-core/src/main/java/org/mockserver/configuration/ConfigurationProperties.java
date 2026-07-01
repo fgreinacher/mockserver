@@ -199,6 +199,13 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_OTEL_METRICS_TEMPORALITY = "mockserver.otelMetricsTemporality";
     private static final String MOCKSERVER_OTEL_PROPAGATE_TRACE_CONTEXT = "mockserver.otelPropagateTraceContext";
     private static final String MOCKSERVER_OTEL_GENERATE_TRACE_ID = "mockserver.otelGenerateTraceId";
+    private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_ENABLED = "mockserver.prometheusRemoteWriteEnabled";
+    private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_URL = "mockserver.prometheusRemoteWriteUrl";
+    private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_INTERVAL_SECONDS = "mockserver.prometheusRemoteWriteIntervalSeconds";
+    private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN = "mockserver.prometheusRemoteWriteBearerToken";
+    private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_USERNAME = "mockserver.prometheusRemoteWriteBasicAuthUsername";
+    private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_PASSWORD = "mockserver.prometheusRemoteWriteBasicAuthPassword";
+    private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_HEADERS = "mockserver.prometheusRemoteWriteHeaders";
     private static final String MOCKSERVER_LLM_SEMANTIC_MATCHING_ENABLED = "mockserver.llmSemanticMatchingEnabled";
     private static final String MOCKSERVER_LLM_INFER_USAGE_ENABLED = "mockserver.llmInferUsageEnabled";
     private static final String MOCKSERVER_LLM_METRICS_ENABLED = "mockserver.llmMetricsEnabled";
@@ -3036,6 +3043,96 @@ public class ConfigurationProperties {
 
     public static void otelMetricsTemporality(String temporality) {
         setProperty(MOCKSERVER_OTEL_METRICS_TEMPORALITY, temporality);
+    }
+
+    /**
+     * When true, MockServer periodically pushes the same Prometheus metrics served at
+     * {@code /mockserver/metrics} to a Prometheus Remote-Write v1 endpoint (Prometheus with
+     * {@code --web.enable-remote-write-receiver}, Grafana Mimir, New Relic, VictoriaMetrics,
+     * Thanos Receive). Off by default. Fail-soft — remote-write export never affects request
+     * handling. Remote write is inherently cumulative (the Prometheus model); there is no delta.
+     */
+    public static boolean prometheusRemoteWriteEnabled() {
+        return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_PROMETHEUS_REMOTE_WRITE_ENABLED, "MOCKSERVER_PROMETHEUS_REMOTE_WRITE_ENABLED", "" + false));
+    }
+
+    public static void prometheusRemoteWriteEnabled(boolean enabled) {
+        setProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_ENABLED, "" + enabled);
+    }
+
+    /**
+     * The Prometheus Remote-Write v1 endpoint URL to POST to (e.g.
+     * {@code http://localhost:9090/api/v1/write}). Empty by default; when remote-write is
+     * enabled but this is blank the exporter logs a warning and does nothing.
+     */
+    public static String prometheusRemoteWriteUrl() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_PROMETHEUS_REMOTE_WRITE_URL, "MOCKSERVER_PROMETHEUS_REMOTE_WRITE_URL", "");
+    }
+
+    public static void prometheusRemoteWriteUrl(String url) {
+        setProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_URL, url);
+    }
+
+    /**
+     * How often (seconds) metrics are pushed to the remote-write endpoint. Default 60. Clamped
+     * to a minimum of 1 second.
+     */
+    public static long prometheusRemoteWriteIntervalSeconds() {
+        return Math.max(1L, readLongProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_INTERVAL_SECONDS, "MOCKSERVER_PROMETHEUS_REMOTE_WRITE_INTERVAL_SECONDS", 60L));
+    }
+
+    public static void prometheusRemoteWriteIntervalSeconds(long seconds) {
+        setProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_INTERVAL_SECONDS, "" + seconds);
+    }
+
+    /**
+     * Optional bearer token for the remote-write endpoint. When set, the exporter sends an
+     * {@code Authorization: Bearer <token>} header. Takes precedence over basic auth.
+     */
+    public static String prometheusRemoteWriteBearerToken() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN, "MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN", "");
+    }
+
+    public static void prometheusRemoteWriteBearerToken(String token) {
+        setProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN, token);
+    }
+
+    /**
+     * Optional HTTP basic-auth username for the remote-write endpoint. Used only when no bearer
+     * token is set; combined with {@link #prometheusRemoteWriteBasicAuthPassword()}.
+     */
+    public static String prometheusRemoteWriteBasicAuthUsername() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_USERNAME, "MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_USERNAME", "");
+    }
+
+    public static void prometheusRemoteWriteBasicAuthUsername(String username) {
+        setProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_USERNAME, username);
+    }
+
+    /**
+     * Optional HTTP basic-auth password for the remote-write endpoint. Paired with
+     * {@link #prometheusRemoteWriteBasicAuthUsername()}.
+     */
+    public static String prometheusRemoteWriteBasicAuthPassword() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_PASSWORD, "MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_PASSWORD", "");
+    }
+
+    public static void prometheusRemoteWriteBasicAuthPassword(String password) {
+        setProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_PASSWORD, password);
+    }
+
+    /**
+     * Optional extra HTTP headers to add to each remote-write POST, as a comma-separated
+     * {@code key=value} list (e.g. {@code X-Scope-OrgID=tenant-a,X-Custom=abc}). Applied after
+     * the resolved auth header, so a user-supplied {@code Authorization} header may override it.
+     * The raw string is returned here; the exporter parses it.
+     */
+    public static String prometheusRemoteWriteHeaders() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_PROMETHEUS_REMOTE_WRITE_HEADERS, "MOCKSERVER_PROMETHEUS_REMOTE_WRITE_HEADERS", "");
+    }
+
+    public static void prometheusRemoteWriteHeaders(String headers) {
+        setProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_HEADERS, headers);
     }
 
     /**
