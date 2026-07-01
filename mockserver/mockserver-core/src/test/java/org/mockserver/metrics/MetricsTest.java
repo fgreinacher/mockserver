@@ -538,6 +538,82 @@ public class MetricsTest {
         assertThat(Metrics.getLlmEstimatedWasteUsd(), is(5.0));
     }
 
+    // --- T0.5: monotonic-count naming contract -------------------------------------------------
+
+    /**
+     * The genuinely monotonic core counts (requests received, matched / not-matched, forward
+     * matched, LLM chaos injected) remain Prometheus {@code Gauge}s exposed under their exact
+     * {@code *_count} names. They are deliberately NOT converted to {@code Counter}: the Prometheus
+     * 1.8.0 exposition writer appends a mandatory {@code _total} suffix to every counter's sample
+     * line (see {@link #prometheusClientForcesTotalSuffixOnCounters()}), which would rename e.g.
+     * {@code requests_received_count} -> {@code requests_received_count_total} and break the
+     * dashboard UI ({@code MetricsView} reads these by their {@code _count} names) and any Grafana
+     * dashboard. This test pins the name/type contract so an accidental future conversion is caught.
+     * See docs/code/metrics.md (Monotonic counters vs levels).
+     */
+    @Test
+    public void monotonicCountMetricsKeepExactCountNamesAndAreNotSilentlyRenamed() {
+        new Metrics(configuration().metricsEnabled(true));
+        String text = scrapeClassicText();
+
+        for (String name : new String[]{
+            "requests_received_count",
+            "expectations_not_matched_count",
+            "response_expectations_matched_count",
+            "forward_expectations_matched_count",
+            "llm_chaos_injected_count"
+        }) {
+            assertThat("monotonic metric " + name + " must be exposed under its exact _count name",
+                text.contains("# TYPE " + name + " gauge"), is(true));
+            assertThat("monotonic metric " + name + " must NOT be silently renamed to _count_total",
+                text.contains(name + "_total"), is(false));
+        }
+
+        // A genuine level metric (active registered expectations by type / live registry size)
+        // is correctly a Gauge and is likewise exposed under its exact name.
+        assertThat("level metric forward_actions_count must stay a gauge",
+            text.contains("# TYPE forward_actions_count gauge"), is(true));
+        assertThat("level metric websocket_callback_clients_count must stay a gauge",
+            text.contains("# TYPE websocket_callback_clients_count gauge"), is(true));
+    }
+
+    /**
+     * Documents WHY the monotonic {@code *_count} metrics above are NOT exposed as {@code Counter}:
+     * the Prometheus 1.8.0 exposition writer appends a mandatory {@code _total} suffix to every
+     * counter's sample line, so a counter named {@code requests_received_count} appears as
+     * {@code requests_received_count_total} — a rename that would break existing consumers. Guards
+     * the compat rationale recorded in docs/code/metrics.md.
+     */
+    @Test
+    public void prometheusClientForcesTotalSuffixOnCounters() {
+        PrometheusRegistry.defaultRegistry.clear();
+        io.prometheus.metrics.core.metrics.Counter.builder()
+            .name("requests_received_count").help("probe").register().inc();
+
+        String text = scrapeClassicText();
+        assertThat("counter sample line is suffixed with _total",
+            text.contains("requests_received_count_total"), is(true));
+        assertThat("counter TYPE line reflects the _total-suffixed series name",
+            text.contains("# TYPE requests_received_count_total counter"), is(true));
+
+        PrometheusRegistry.defaultRegistry.clear();
+    }
+
+    /** Render the classic Prometheus text exposition (0.0.4), the format dashboards/scrapers read. */
+    private static String scrapeClassicText() {
+        try {
+            io.prometheus.metrics.expositionformats.ExpositionFormats formats =
+                io.prometheus.metrics.expositionformats.ExpositionFormats.init();
+            io.prometheus.metrics.expositionformats.ExpositionFormatWriter writer =
+                formats.findWriter("text/plain");
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            writer.write(out, PrometheusRegistry.defaultRegistry.scrape());
+            return out.toString("UTF-8");
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     private static double scrapeGaugeValue(String name) {
         MetricSnapshots snapshots = PrometheusRegistry.defaultRegistry.scrape();
         for (MetricSnapshot snapshot : snapshots) {

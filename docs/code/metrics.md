@@ -30,7 +30,7 @@ When metrics are disabled, the scrape endpoint returns a `404 Not Found` respons
 
 ### Metric Names
 
-The `Metrics.Name` enum defines 24 request/action/websocket gauges (all Prometheus `Gauge` type); separate collectors add the build-info and JVM-runtime metrics described below:
+The `Metrics.Name` enum defines 24 request/action/websocket gauges (all Prometheus `Gauge` type); separate collectors add the build-info and JVM-runtime metrics described below. Five of these gauges are genuinely monotonic counts and nineteen are levels — see [Monotonic counters vs levels](#monotonic-counters-vs-levels) for why they remain gauges rather than Prometheus `Counter`s.
 
 #### Request & Expectation Matching
 
@@ -83,6 +83,26 @@ mock_server_expectation_matched_total == 0
 | `websocket_callback_clients_count` | Active WebSocket callback client connections |
 | `websocket_callback_response_handlers_count` | Registered response callback handlers |
 | `websocket_callback_forward_handlers_count` | Registered forward callback handlers |
+
+### Monotonic counters vs levels
+
+Despite every `Metrics.Name` value ending in `_count`, only five are genuinely **monotonic** (ever-increasing totals); the rest are **levels** that go up *and* down. This matters for PromQL: `rate()` / `increase()` are only meaningful on monotonic series.
+
+| Metric | Kind | Why |
+|--------|------|-----|
+| `requests_received_count` | Monotonic | Incremented once per request received; never decremented |
+| `expectations_not_matched_count` | Monotonic | Incremented once per unmatched request |
+| `response_expectations_matched_count` | Monotonic | Incremented once per matched response |
+| `forward_expectations_matched_count` | Monotonic | Incremented once per matched forward |
+| `llm_chaos_injected_count` | Monotonic | Incremented once per injected LLM chaos fault |
+| `*_actions_count` (16 series) | Level | Track the number of currently-registered expectations by action type — `increment` on add, `decrement` on remove (see `RequestMatchers`) |
+| `websocket_callback_*_count` (3 series) | Level | `set(...)` to the live registry size as callback clients/handlers connect and disconnect |
+
+**Why the monotonic five are still `Gauge`, not `Counter`.** The Prometheus Java client (1.8.0) **forces a mandatory `_total` suffix** onto every `Counter`'s exposition sample line — a counter registered as `requests_received_count` is scraped as `requests_received_count_total` (in both the classic `0.0.4` text format and OpenMetrics; the `# TYPE` line uses the `_total` name in the classic format). Converting these five gauges to counters would therefore **rename** them from `<name>_count` to `<name>_count_total`, silently breaking every consumer that reads them by name: the dashboard UI (`MetricsView` reads `requests_received_count`, `response_expectations_matched_count`, `expectations_not_matched_count`, `forward_expectations_matched_count`, and the `_actions_count` family by exact name, stripping the `_count` suffix for display) and any existing Grafana dashboard. Because the current names cannot be preserved under a `Counter`, the type is intentionally left as `Gauge` — a name-preserving conversion is not possible without a backward-compatibility decision (e.g. dual-publishing a new `_total` counter alongside the legacy `_count` gauge, or a coordinated dashboard/UI migration on a major version). The naming contract is pinned by `MetricsTest.monotonicCountMetricsKeepExactCountNamesAndAreNotSilentlyRenamed` and the `_total`-suffix constraint by `MetricsTest.prometheusClientForcesTotalSuffixOnCounters`.
+
+Contrast this with the *newer* metrics (`mock_server_slow_requests`, `mock_server_forward_requests`, `mock_server_http_chaos_injected`, …) which are registered as `Counter`s from the outset and are *designed* around the `_total` suffix — the UI and OTLP mirror reference them as `..._total`.
+
+**Reset semantics.** All 24 gauges (monotonic and level alike) are zeroed by `Metrics.clear()` on a server reset, and the request/expectation subset by `clearRequestAndExpectationMetrics()`. This is pre-existing behaviour: the live Prometheus scrape is the source of truth, and a reset zeroes the in-process value. Prometheus's own `rate()`/`increase()` treat such a drop to zero as a counter reset, so this does not corrupt rate calculations across a reset boundary.
 
 ### Build Info Metric
 
