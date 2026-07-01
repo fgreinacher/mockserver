@@ -207,11 +207,29 @@ bundle exec jekyll build
 
 1. Build: `bundle exec jekyll build`
 2. Resolve the live bucket + distribution with the command above.
-3. Upload `_site/` to that bucket (`aws s3 cp` for a targeted page deploy, or
-   `aws s3 sync --delete` for a full publish).
-4. Invalidate that distribution — `/*` for a full publish, or the specific changed
+3. Upload `_site/` to that bucket. For a manual deploy use `aws s3 sync` **without**
+   `--delete` (or `aws s3 cp` for a single targeted page). **Do not use `--delete`
+   from a local Jekyll build** — see the warning below.
+4. Invalidate that distribution — `/*` for a broad refresh, or the specific changed
    paths for a targeted deploy (CloudFront ignores query strings, so a `?cb=`
    cache-buster does **not** flush the edge; you must invalidate).
+
+> **NEVER run `aws s3 sync --delete` from a local `jekyll build` for a manual deploy —
+> it destroys release-managed content.** The live bucket holds files the Jekyll build
+> does **not** reproduce, all published by the release pipeline (`scripts/release/`),
+> not by `jekyll build`:
+> - `versions/**` — archived per-version documentation snapshots
+> - `apidocs/**` — generated Javadoc API docs
+> - `mockserver-*.tgz` + `index.yaml` — the Helm chart repository
+> - legacy root-level redirect pages (e.g. `/creating_expectations.html`)
+>
+> A `--delete` sync from a local `_site/` flags **all of these for deletion** (a real
+> deploy on 2026-07-01 showed 13,641 deletions vs 103 legitimate uploads). Always
+> dry-run first (`aws s3 sync _site s3://<bucket> --delete --dryrun`) and confirm the
+> deletions are only stale files you intend to remove. For a routine docs deploy, omit
+> `--delete` entirely: it uploads changed/new files and removes nothing. The full
+> `--delete` publish is reserved for the release pipeline, which syncs from a tree that
+> **includes** `versions/`, `apidocs/`, and the Helm repo.
 
 The `mockserver-website` profile authenticates directly into the website account
 (`014848309742`) as admin, so manual deploys do **not** need the cross-account
