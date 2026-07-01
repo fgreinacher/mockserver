@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed silent loss of expectations and log events on JVMs that report an undefined (`-1`) heap max via JMX
+  (for example GraalVM native images or unusual servlet-container setups): the heap-based defaults for
+  `maxExpectations` and `maxLogEntries` computed a negative capacity, so expectations were accepted with `201`
+  but never stored and log events were dropped from startup. The sizing now falls back to `Runtime.maxMemory()`
+  and floors both defaults at 1,000 when no usable heap ceiling is reported. (relates to #2385)
+
 ## [7.3.0] - 2026-07-01
 
 ### Added

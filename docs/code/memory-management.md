@@ -62,6 +62,8 @@ maxExpectations  = min(heapAvailableInKB / 10, 15000)
 | Component | File | Method |
 |-----------|------|--------|
 | Heap available probe | `ConfigurationProperties.java` | `heapAvailableInKB()` |
+| Undefined-max-robust heap calc | `ConfigurationProperties.java` | `computeHeapAvailableInKB(long, long, long, long)` |
+| Heap-based default with floor | `ConfigurationProperties.java` | `heapBasedDefaultOrFloor(long, long, int, int)` |
 | `maxLogEntries()` default | `ConfigurationProperties.java` | `maxLogEntries()` |
 | `maxExpectations()` default | `ConfigurationProperties.java` | `maxExpectations()` |
 | Ring buffer sizing | `Configuration.java` | `ringBufferSize()` (resolves field → property → `min(maxLogEntries, 16384)`) |
@@ -101,6 +103,18 @@ On small heaps (< 256 MB), if you have both a large number of expectations AND h
 ### Timing Sensitivity
 
 `heapAvailableInKB()` measures the *current* free heap at the moment the property is first read. During JVM startup, the heap may be more heavily used (class loading, initialisation) than during steady state. This means the computed default can be lower than what the JVM can actually sustain. After garbage collection runs and startup objects are freed, significantly more heap may be available.
+
+### Undefined Heap Max (JMX `getMax()` = -1)
+
+The JMX spec allows `MemoryUsage.getMax()` to return **-1 (undefined)**. In some environments the aggregated heap-pool max reports as `-1`/`0` — verified on a **GraalVM native image** of the shaded jar, and possible in exotic JVM/WAR setups. Left unguarded, `(max - used) / 1024 - 20480` would then be a large **negative** number, driving `maxExpectations`/`maxLogEntries` to `<= 0` — so the expectation store and log ring buffer silently drop everything (`PUT /mockserver/expectation` returns 201 but the expectation never matches; "Log event ring buffer full" at startup).
+
+`heapAvailableInKB()` is therefore robust to an undefined heap max (see `computeHeapAvailableInKB(...)`):
+
+1. When the aggregated JMX heap max is `<= 0`, it falls back to `Runtime.maxMemory()` for the ceiling and `totalMemory() - freeMemory()` for used. (`Runtime.maxMemory()` may be `Long.MAX_VALUE` when the heap is unbounded — the subtraction stays non-negative and the very large result is clamped by the `min(..., cap)` in the callers.)
+2. When neither JMX nor `Runtime` yields a usable ceiling, it returns `0`.
+3. The result is **floored at 0** — never negative.
+
+The getters then apply a lower bound so a `0` heap-derived value still yields a functional store (see `heapBasedDefaultOrFloor(...)`): when `min(heapAvailableInKB / perEntryKB, cap)` computes to `<= 0`, the default falls back to the **dev-mode default** (1,000) for that property rather than `0`. Explicitly setting `mockserver.maxExpectations` / `mockserver.maxLogEntries` always overrides this.
 
 ## Log Entry Memory Analysis
 

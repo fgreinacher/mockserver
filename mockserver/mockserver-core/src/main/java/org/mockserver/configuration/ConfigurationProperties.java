@@ -1646,17 +1646,81 @@ public class ConfigurationProperties {
 
     // memory usage
 
+    // Reserved for JVM internals, Netty buffers and thread stacks; subtracted from the free heap
+    // before deriving the maxLogEntries / maxExpectations defaults.
+    static final long BASE_MEMORY_IN_KB = 20 * 1024L;
+
     public static long heapAvailableInKB() {
         Summary heap = MemoryMonitoring.getJVMMemory(MemoryType.HEAP);
-        long baseMemory  = 20 * 1024L;
-        return ((heap.getNet().getMax() - heap.getNet().getUsed()) / 1024L) - baseMemory;
+        Runtime runtime = Runtime.getRuntime();
+        return computeHeapAvailableInKB(
+            heap.getNet().getMax(),
+            heap.getNet().getUsed(),
+            runtime.maxMemory(),
+            runtime.totalMemory() - runtime.freeMemory()
+        );
+    }
+
+    /**
+     * Compute the available heap (in KB) used to derive the {@code maxLogEntries} and
+     * {@code maxExpectations} defaults, robust to environments where the aggregated JMX heap-pool
+     * max is undefined.
+     * <p>
+     * The JMX spec allows {@link java.lang.management.MemoryUsage#getMax()} to return {@code -1}
+     * (undefined); some environments (verified: a GraalVM native image of the shaded jar; also
+     * possible in exotic JVM/WAR setups) report the heap pools' max as {@code -1}/{@code 0}. When
+     * that happens the JMX figures are unusable, so we fall back to {@link Runtime#maxMemory()} /
+     * {@code totalMemory() - freeMemory()}. {@code Runtime.maxMemory()} may return
+     * {@link Long#MAX_VALUE} when the heap is unbounded — the subtraction stays non-negative, and
+     * the (very large) result is clamped by the {@code Math.min(..., cap)} in the callers.
+     * <p>
+     * The result is floored at {@code 0} so it is never negative (a negative value would produce a
+     * non-functional {@code <= 0} store capacity downstream).
+     *
+     * @param heapMax     aggregated JMX heap-pool max in bytes ({@code <= 0} when undefined)
+     * @param heapUsed    aggregated JMX heap-pool used in bytes
+     * @param runtimeMax  {@link Runtime#maxMemory()} fallback ceiling in bytes
+     * @param runtimeUsed {@link Runtime#totalMemory()} minus {@link Runtime#freeMemory()} in bytes
+     * @return available heap in KB, never negative
+     */
+    static long computeHeapAvailableInKB(long heapMax, long heapUsed, long runtimeMax, long runtimeUsed) {
+        long max = heapMax;
+        long used = heapUsed;
+        if (max <= 0) {
+            // JMX heap-pool max undefined (-1); fall back to the Runtime view of the heap.
+            max = runtimeMax;
+            used = runtimeUsed;
+        }
+        if (max <= 0) {
+            // Still no usable ceiling (both JMX and Runtime undefined) — avoid a garbage result.
+            return 0L;
+        }
+        return Math.max(0L, ((max - used) / 1024L) - BASE_MEMORY_IN_KB);
     }
 
     public static int maxExpectations() {
         return readIntegerProperty(MOCKSERVER_MAX_EXPECTATIONS, "MOCKSERVER_MAX_EXPECTATIONS", devModeDefaultOrHeapBased(
             DEV_MODE_MAX_EXPECTATIONS, MOCKSERVER_MAX_EXPECTATIONS, "MOCKSERVER_MAX_EXPECTATIONS",
-            Math.min((int) (heapAvailableInKB() / 10), 15000)
+            heapBasedDefaultOrFloor(heapAvailableInKB(), 10, 15000, DEV_MODE_MAX_EXPECTATIONS)
         ));
+    }
+
+    /**
+     * Derive a heap-based store-size default, flooring at {@code floor} when the heap-derived value
+     * computes to {@code <= 0}. {@link #heapAvailableInKB()} can be {@code 0} when the JVM reports an
+     * undefined heap max ({@code -1}, e.g. a GraalVM native image); without a floor the resulting
+     * capacity would be {@code <= 0}, silently dropping every expectation / log entry. The floor keeps
+     * the store minimally functional in that case.
+     *
+     * @param heapAvailableInKB available heap in KB (never negative)
+     * @param perEntryKB        estimated KB per stored entry (heap divided by this)
+     * @param cap               upper bound regardless of heap
+     * @param floor             minimum functional default when the heap-derived value is {@code <= 0}
+     * @return the store-size default, at least {@code min(floor, cap)} and at most {@code cap}
+     */
+    static int heapBasedDefaultOrFloor(long heapAvailableInKB, long perEntryKB, int cap, int floor) {
+        int heapBased = (int) Math.min(heapAvailableInKB / perEntryKB, cap);
+        return heapBased > 0 ? heapBased : Math.min(floor, cap);
     }
 
     /**
@@ -1676,7 +1740,7 @@ public class ConfigurationProperties {
     public static int maxLogEntries() {
         return readIntegerProperty(MOCKSERVER_MAX_LOG_ENTRIES, "MOCKSERVER_MAX_LOG_ENTRIES", devModeDefaultOrHeapBased(
             DEV_MODE_MAX_LOG_ENTRIES, MOCKSERVER_MAX_LOG_ENTRIES, "MOCKSERVER_MAX_LOG_ENTRIES",
-            Math.min((int) (heapAvailableInKB() / 8), 100000)
+            heapBasedDefaultOrFloor(heapAvailableInKB(), 8, 100000, DEV_MODE_MAX_LOG_ENTRIES)
         ));
     }
 
