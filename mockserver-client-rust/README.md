@@ -8,7 +8,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-mockserver-client = "7.0"
+mockserver-client = "7.3"
 ```
 
 ## Quick Start

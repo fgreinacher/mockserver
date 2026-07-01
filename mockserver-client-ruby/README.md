@@ -7,7 +7,7 @@ Hand-written Ruby client for [MockServer](https://www.mock-server.com) with full
 Add to your Gemfile:
 
 ```ruby
-gem 'mockserver-client', '~> 5.16'
+gem 'mockserver-client', '~> 7.3'
 ```
 
 Or install directly:
