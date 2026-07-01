@@ -1,5 +1,5 @@
 <Project>
   <PropertyGroup>
-    <MockServerVersion>7.2.0</MockServerVersion>
+    <MockServerVersion>7.3.0</MockServerVersion>
   </PropertyGroup>
 </Project>
