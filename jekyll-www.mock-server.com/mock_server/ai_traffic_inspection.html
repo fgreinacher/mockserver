@@ -26,6 +26,10 @@ schema_faq:
 
 <p>Because MockServer performs TLS man-in-the-middle (MITM) interception, it can decrypt and log HTTPS traffic while forwarding it transparently. Streaming responses (Server-Sent Events used by LLM APIs) are relayed incrementally so the agent remains fully responsive — there is no buffering delay.</p>
 
+<div class="alert" style="background-color: #e7f3fe; border-left: 4px solid #2196F3; padding: 12px 16px; margin: 16px 0;">
+    <p><strong>Running unattended — in CI or on a remote build agent?</strong> Jump straight to <a href="#headless-scripted-capture">Headless &amp; Scripted Capture (CI / Remote Machine)</a> for a complete, copy-paste script that starts MockServer, runs your AI tool through the proxy in headless mode, retrieves the captured traffic, and shuts everything down — with no one at the keyboard. The walkthrough below explains each step interactively first.</p>
+</div>
+
 <h2>How It Works</h2>
 
 <ol>
@@ -331,7 +335,7 @@ curl -s -X PUT "http://localhost:1080/mockserver/retrieve?type=REQUEST_RESPONSES
 
 <a id="headless-scripted-capture" class="anchor" href="#headless-scripted-capture">&nbsp;</a>
 
-<h2>5. Headless &amp; Scripted Capture (CI / Remote Machine)</h2>
+<h2>Headless &amp; Scripted Capture (CI / Remote Machine)</h2>
 
 <p>The sections above cover capturing traffic interactively — a developer running an AI tool in their terminal with MockServer already running nearby. This section automates the same capture end-to-end for headless, unattended use: CI pipelines, remote build agents, and batch capture runs where no one is sitting at a keyboard.</p>
 
