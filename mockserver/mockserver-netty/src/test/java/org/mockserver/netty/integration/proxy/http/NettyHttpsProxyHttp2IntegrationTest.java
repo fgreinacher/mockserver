@@ -164,6 +164,54 @@ public class NettyHttpsProxyHttp2IntegrationTest {
     }
 
     @Test(timeout = 30000)
+    public void shouldForwardHttp2RequestViaConnectProxyToHttp2Upstream() throws Exception {
+        // given - a proxy MockServer whose forward leg PRESERVES HTTP/2 (forwardProxyHttp2Enabled), so
+        // BOTH legs are HTTP/2: the client -> proxy CONNECT tunnel AND the proxy -> upstream forward. The
+        // default proxy in the other forward tests leaves this flag off, so its forward leg drops to
+        // HTTP/1.1 and Netty's InboundHttp2ToHttpAdapter never injects the synthetic x-http2-stream-id
+        // extension header that this fix strips (see FullHttpResponseToMockServerHttpResponse and its unit
+        // tests, which are the airtight regression lock for the leak). This end-to-end case guards the
+        // both-legs-HTTP/2 CONNECT-proxy path in general.
+        //
+        // NOTE: this IT does NOT by itself reproduce the original hang. The hang requires the inbound
+        // client stream id to DIVERGE from the upstream forward-leg stream id (e.g. inbound stream 5 vs
+        // upstream stream 3). With NettyHttpClient each request opens a fresh connection, so both legs
+        // always land on the same first-stream id and the leaked id coincidentally matches; the mismatch
+        // (and PROTOCOL_ERROR / GOAWAY) only appears when several requests share one inbound HTTP/2
+        // connection against fresh forward legs, which this client does not do. The unit-level write-back
+        // test locks that root cause deterministically. The @Test(timeout) plus bounded .get(15, SECONDS)
+        // still make any regression fail fast rather than stall.
+        MockServer http2ForwardProxy = new MockServer(configuration().forwardProxyHttp2Enabled(true));
+        try {
+            // when - an HTTP/2 request is proxied (no expectation => transparent forward) to the secure
+            // h2-capable echo upstream
+            HttpResponse response = new NettyHttpClient(
+                configuration(),
+                new MockServerLogger(),
+                clientEventLoopGroup,
+                ImmutableList.of(proxyConfiguration(ProxyConfiguration.Type.HTTPS, "127.0.0.1:" + http2ForwardProxy.getLocalPort())),
+                false
+            ).sendRequest(
+                request()
+                    .withMethod("POST")
+                    .withPath("/forwarded_h2_both_legs")
+                    .withBody("an_example_h2_both_legs_body")
+                    .withSecure(true)
+                    .withProtocol(Protocol.HTTP_2)
+                    .withHeader(HOST.toString(), "127.0.0.1:" + secureEchoServer.getPort())
+            ).get(15, SECONDS);
+
+            // then - the HTTP/2 client received the real echoed 200 body within the timeout, i.e. the
+            // response was written back on the correct (inbound) stream and no leaked upstream stream id
+            // corrupted the client leg
+            assertThat(response.getStatusCode(), is(200));
+            assertThat(response.getBodyAsString(), is("an_example_h2_both_legs_body"));
+        } finally {
+            stopQuietly(http2ForwardProxy);
+        }
+    }
+
+    @Test(timeout = 30000)
     public void shouldForwardHttp1RequestViaConnectProxyToSecureTarget() throws Exception {
         // when - the same driver but forced to HTTP/1.1, to confirm the relay still works for h1
         HttpResponse response = sendViaConnectProxy(

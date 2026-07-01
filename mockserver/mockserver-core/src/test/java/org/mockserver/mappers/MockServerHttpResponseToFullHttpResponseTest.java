@@ -420,6 +420,52 @@ public class MockServerHttpResponseToFullHttpResponseTest {
         }
     }
 
+    @Test
+    public void shouldNotEmitLeakedStreamIdHeaderWhenNoStreamIdField() {
+        // given - a model response that somehow still carries x-http2-stream-id as an ordinary header
+        // (e.g. a forwarded HTTP/2 upstream response whose synthetic header leaked into the model). With
+        // no protocol-guarded stream-id field set, the leaked header must NOT be emitted to the wire -- a
+        // foreign stream id would make the server HTTP/2 codec write on the wrong stream (PROTOCOL_ERROR).
+        HttpResponse httpResponse = response()
+            .withStatusCode(200)
+            .withHeader("x-http2-stream-id", "3")
+            .withBody("body");
+
+        // when
+        List<DefaultHttpObject> result = mapper.mapMockServerResponseToNettyResponse(httpResponse);
+
+        // then
+        DefaultFullHttpResponse fullResponse = (DefaultFullHttpResponse) result.get(0);
+        try {
+            assertThat(fullResponse.headers().contains("x-http2-stream-id"), is(false));
+        } finally {
+            fullResponse.release();
+        }
+    }
+
+    @Test
+    public void shouldLetStreamIdFieldGovernOverLeakedStreamIdHeader() {
+        // given - both a leaked x-http2-stream-id header (foreign/upstream id 3) and the real
+        // protocol-guarded stream-id field (5). The field is the single source of truth: exactly one
+        // x-http2-stream-id must be emitted, and it must be the field value, never the leaked header.
+        HttpResponse httpResponse = response()
+            .withStatusCode(200)
+            .withHeader("x-http2-stream-id", "3")
+            .withBody("body")
+            .withStreamId(5);
+
+        // when
+        List<DefaultHttpObject> result = mapper.mapMockServerResponseToNettyResponse(httpResponse);
+
+        // then
+        DefaultFullHttpResponse fullResponse = (DefaultFullHttpResponse) result.get(0);
+        try {
+            assertThat(fullResponse.headers().getAll("x-http2-stream-id"), contains("5"));
+        } finally {
+            fullResponse.release();
+        }
+    }
+
     // --- trailers ---
 
     @Test

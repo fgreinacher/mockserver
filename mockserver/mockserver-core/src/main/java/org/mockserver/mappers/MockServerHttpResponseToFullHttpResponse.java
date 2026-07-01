@@ -268,6 +268,13 @@ public class MockServerHttpResponseToFullHttpResponse {
         }
 
         // HTTP2 extension headers
+        // Belt-and-braces: strip any x-http2-stream-id that may have leaked in as an ordinary model
+        // header (e.g. from a forwarded/proxied HTTP/2 response) BEFORE deriving the stream id from
+        // the protocol-guarded field. The field is the single source of truth for the outbound stream
+        // id; a leaked header carrying a foreign (upstream) stream id would otherwise make the server
+        // HTTP/2 codec write on the wrong stream, triggering a PROTOCOL_ERROR / GOAWAY that hangs an
+        // HTTP/2 client.
+        response.headers().remove(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text());
         Integer streamId = httpResponse.getStreamId();
         if (streamId != null) {
             response.headers().add(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text(), streamId);

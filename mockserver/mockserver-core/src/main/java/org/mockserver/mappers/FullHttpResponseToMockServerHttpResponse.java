@@ -4,12 +4,15 @@ import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.cookie.ClientCookieDecoder;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
+import io.netty.handler.codec.http2.HttpConversionUtil;
 import org.mockserver.codec.BodyDecoderEncoder;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.*;
 import org.slf4j.event.Level;
 
+import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
@@ -18,6 +21,29 @@ import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
  * @author jamesdbloom
  */
 public class FullHttpResponseToMockServerHttpResponse {
+
+    /**
+     * The Netty HTTP/2 -&gt; HTTP/1.1 extension header family (see
+     * {@link HttpConversionUtil.ExtensionHeaderNames}). When an upstream response is decoded from
+     * HTTP/2, {@code InboundHttp2ToHttpAdapter} injects synthetic {@code x-http2-*} headers -- most
+     * notably {@code x-http2-stream-id} carrying the UPSTREAM stream id. These are Netty-internal
+     * plumbing, not real response headers, so they must never enter the response model: if
+     * {@code x-http2-stream-id} leaks through it is re-emitted on write-back and makes the outbound
+     * response to an HTTP/2 client carry a foreign stream id, triggering a PROTOCOL_ERROR / GOAWAY
+     * and hanging the client. They are also noise in captured/logged responses.
+     */
+    private static final Set<String> HTTP2_EXTENSION_HEADER_NAMES = buildHttp2ExtensionHeaderNames();
+
+    private static Set<String> buildHttp2ExtensionHeaderNames() {
+        Set<String> names = new HashSet<>();
+        names.add(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text().toString().toLowerCase(Locale.ROOT));
+        names.add(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text().toString().toLowerCase(Locale.ROOT));
+        names.add(HttpConversionUtil.ExtensionHeaderNames.PATH.text().toString().toLowerCase(Locale.ROOT));
+        names.add(HttpConversionUtil.ExtensionHeaderNames.STREAM_DEPENDENCY_ID.text().toString().toLowerCase(Locale.ROOT));
+        names.add(HttpConversionUtil.ExtensionHeaderNames.STREAM_WEIGHT.text().toString().toLowerCase(Locale.ROOT));
+        names.add(HttpConversionUtil.ExtensionHeaderNames.STREAM_PROMISE_ID.text().toString().toLowerCase(Locale.ROOT));
+        return names;
+    }
 
     private final MockServerLogger mockServerLogger;
     private final BodyDecoderEncoder bodyDecoderEncoder;
@@ -67,6 +93,13 @@ public class FullHttpResponseToMockServerHttpResponse {
         if (!headerNames.isEmpty()) {
             Headers headers = new Headers();
             for (String headerName : headerNames) {
+                // Skip the Netty HTTP/2 extension-header family (x-http2-*). These are injected by
+                // InboundHttp2ToHttpAdapter when decoding an HTTP/2 response and are internal plumbing
+                // rather than real response headers; letting them into the model leaks the upstream
+                // stream id back onto the client leg (PROTOCOL_ERROR / GOAWAY hang) and pollutes logs.
+                if (HTTP2_EXTENSION_HEADER_NAMES.contains(headerName.toLowerCase(Locale.ROOT))) {
+                    continue;
+                }
                 headers.withEntry(headerName, fullHttpResponse.headers().getAll(headerName));
             }
             httpResponse.withHeaders(headers);

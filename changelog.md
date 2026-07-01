@@ -248,6 +248,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### Correctness & reliability
+- **HTTP/2 clients through the forward/CONNECT proxy no longer hang when the upstream is also HTTP/2.** When a client
+  connected to MockServer's HTTPS forward proxy over HTTP/2 and MockServer forwarded to an upstream that also served
+  HTTP/2, Netty's inbound HTTP/2→HTTP adapter tagged the decoded upstream response with a synthetic
+  `x-http2-stream-id` header carrying the *upstream* stream id. That internal header leaked through the response
+  mappers and was re-emitted to the client, so the response was written on the wrong (upstream) stream id — the
+  client's HTTP/2 codec rejected it with a `PROTOCOL_ERROR`/`GO_AWAY` and the request hung until timeout. The
+  response mappers now strip the Netty `x-http2-*` extension-header family so the outbound stream id is governed
+  solely by the inbound request's stream id. HTTP/1.1 clients and directly-mocked HTTP/2 responses were never
+  affected; captured/recorded responses also no longer carry the internal `x-http2-stream-id` header.
 - **Millisecond timeouts are now settable under their unit-bearing `…InMillis` names, fixing silently-ignored overrides.**
   The Java API (e.g. `Configuration.maxSocketTimeoutInMillis()`) and the `/mockserver/configuration` JSON expose these
   settings under `…InMillis` names, but the system property / environment variable were only read under the unit-less
