@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mock-drift detection master switch and sampling.** New `driftDetectionEnabled` (boolean, default `true`) turns
+  mock-drift analysis of forwarded responses on or off, and `driftSampleRate` (double `0.0`–`1.0`, default `1.0`)
+  analyses only a sampled fraction of forwarded responses. Both defaults preserve the previous always-on behaviour;
+  set `driftDetectionEnabled=false` (or lower `driftSampleRate`) to cut the per-forward overhead when proxying at
+  high volume.
+
 - **Runnable Kubernetes example: load-injection metrics visualised in Grafana over Prometheus *and* OpenTelemetry.**
   New `examples/kubernetes/load-injection-observability` stands up a local k3s cluster (via k3d) running MockServer,
   Prometheus, an OpenTelemetry Collector and Grafana with a provisioned dashboard that renders the full

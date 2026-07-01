@@ -156,6 +156,8 @@ public class Configuration {
     private Integer maxRequestBodySize;
     private Integer maxResponseBodySize;
     private Integer maxLlmConversationBodySize;
+    private Boolean driftDetectionEnabled;
+    private Double driftSampleRate;
     private Boolean driftSemanticAnalysisEnabled;
     private Long driftResponseTimeThresholdMs;
     private Boolean driftAlertWebhookEnabled;
@@ -2357,6 +2359,46 @@ public class Configuration {
      */
     public Configuration maxLlmConversationBodySize(Integer maxLlmConversationBodySize) {
         this.maxLlmConversationBodySize = maxLlmConversationBodySize;
+        return this;
+    }
+
+    public Boolean driftDetectionEnabled() {
+        if (driftDetectionEnabled == null) {
+            return ConfigurationProperties.driftDetectionEnabled();
+        }
+        return driftDetectionEnabled;
+    }
+
+    /**
+     * Master switch for mock-drift analysis on forwarded responses. When true (the
+     * default), every eligible forwarded upstream response is compared against
+     * matching response-type stub expectations to record drift. When false, drift
+     * analysis (and its extra per-forward expectation lookup) is skipped entirely.
+     *
+     * @param driftDetectionEnabled true to enable mock-drift analysis
+     */
+    public Configuration driftDetectionEnabled(Boolean driftDetectionEnabled) {
+        this.driftDetectionEnabled = driftDetectionEnabled;
+        return this;
+    }
+
+    public Double driftSampleRate() {
+        if (driftSampleRate == null) {
+            return ConfigurationProperties.driftSampleRate();
+        }
+        return driftSampleRate;
+    }
+
+    /**
+     * Fraction of eligible forwarded responses to analyse for drift, in [0.0, 1.0].
+     * Default 1.0 (analyse every eligible forward). A value below 1.0 analyses only
+     * that fraction of forwarded responses. Out-of-range values are treated safely by
+     * the sampler (&le; 0 never analyses, &ge; 1 always analyses).
+     *
+     * @param driftSampleRate fraction of forwarded responses to analyse, in [0.0, 1.0]
+     */
+    public Configuration driftSampleRate(Double driftSampleRate) {
+        this.driftSampleRate = driftSampleRate;
         return this;
     }
 

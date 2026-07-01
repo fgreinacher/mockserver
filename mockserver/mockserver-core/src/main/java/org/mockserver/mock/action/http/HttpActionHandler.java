@@ -2488,7 +2488,14 @@ public class HttpActionHandler {
                 // Drift detection: asynchronously compare the real upstream response against
                 // any response-type stub expectations matching this request.
                 // responseTimeMs already captured at line above via nanoTime delta.
-                analyseDrift(request, response, responseTimeMs);
+                // Gated by driftDetectionEnabled (master switch, default on) and sampled by
+                // driftSampleRate (default 1.0 = every eligible forward). ChaosProbability's
+                // draw is thread-safe (ThreadLocalRandom) and treats >=1.0 as always / <=0 as
+                // never, so out-of-range rates are handled safely without extra clamping here.
+                if (configuration.driftDetectionEnabled()
+                    && ChaosProbability.shouldInject(configuration.driftSampleRate(), null)) {
+                    analyseDrift(request, response, responseTimeMs);
+                }
 
                 // OpenTelemetry: emit a request-level span for the forwarded request
                 emitRequestSpan(request, effectiveResponse, action, ctx, responseTimeMs, responseFuture.getRemoteAddress());

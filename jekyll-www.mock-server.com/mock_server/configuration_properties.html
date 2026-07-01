@@ -1816,6 +1816,26 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
 <button id="button_configuration_drift" class="accordion title"><strong>Drift Detection</strong></button>
 <div class="panel title">
     <p>Controls for mock drift detection and semantic drift analysis. See <a href="/mock_server/drift_detection.html">Drift Detection</a> for full details.</p>
+    <p><strong>Drift detection enabled</strong> &mdash; the master switch for mock drift detection. When <code>true</code> (the default), MockServer compares each forwarded upstream response against any matching mock so it can detect when the real service has drifted away from your mocks. When <code>false</code>, this comparison is skipped entirely, which removes the small per-request overhead it adds &mdash; useful if you are proxying at high volume and do not need drift reporting.</p>
+    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">true</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.driftDetectionEnabled(boolean enabled)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.driftDetectionEnabled=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_DRIFT_DETECTION_ENABLED=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.driftDetectionEnabled="false"</code></pre>
+    <p><strong>Drift sample rate</strong> &mdash; the fraction of forwarded responses to analyse for drift, between <code>0.0</code> and <code>1.0</code>. The default <code>1.0</code> analyses every forwarded response. Lower it (for example <code>0.1</code> for 10%) to sample only a portion of traffic and reduce overhead when you are proxying at high volume but still want periodic drift signals. Values outside the range are clamped to the nearest bound. Has no effect when <code>driftDetectionEnabled</code> is <code>false</code>.</p>
+    <p>Type: <span class="keyword">double</span> Default: <span class="this_value">1.0</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.driftSampleRate(double rate)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.driftSampleRate=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_DRIFT_SAMPLE_RATE=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.driftSampleRate="0.1"</code></pre>
     <p><strong>Semantic drift analysis</strong> &mdash; when <code>true</code> and a runtime LLM backend is configured, each structural drift record is enriched with an LLM-classified severity (BREAKING, WARNING, or INFORMATIONAL) and a one-sentence explanation. Off by default (opt-in). Enrichment is best-effort: if the LLM is unavailable, drift records are stored with structural data only.</p>
     <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">false</span></p>
     <p>Java Code:</p>

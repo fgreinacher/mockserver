@@ -68,6 +68,15 @@ Drift analysis is triggered asynchronously in `HttpActionHandler.writeForwardAct
 
 The analysis runs on a scheduler thread and never blocks the response path.
 
+### Master Switch and Sampling
+
+The `analyseDrift()` call is gated so its cost can be controlled:
+
+- **`mockserver.driftDetectionEnabled`** (boolean, default `true`) — the master switch. When `true` (the default, preserving the historical always-on behaviour) every eligible forward is analysed. When `false`, `analyseDrift()` — including the extra `allMatchingExpectation()` lookup it performs per forward — is skipped entirely.
+- **`mockserver.driftSampleRate`** (double `0.0`–`1.0`, default `1.0`) — the fraction of eligible forwards to analyse. `1.0` (the default) analyses every eligible forward. A value below `1.0` analyses only that fraction, sampled with a thread-safe random draw (`ChaosProbability.shouldInject(...)`, backed by `ThreadLocalRandom`). Values outside the range are clamped to the nearest bound (`< 0` → `0`, `> 1` → `1`) with a WARN.
+
+The gate is `configuration.driftDetectionEnabled() && ChaosProbability.shouldInject(configuration.driftSampleRate(), null)`. Because `shouldInject` treats `>= 1.0` as always-inject and `<= 0.0` as never-inject, out-of-range per-instance rates are handled safely without additional clamping at the call site. Both defaults preserve the previous behaviour, so this is a non-breaking change.
+
 ### Reset Integration
 
 `DriftStore.getInstance().clear()` is called during `HttpState.reset()`, alongside all other registry resets.
@@ -232,6 +241,8 @@ When `mockserver.driftResponseTimeThresholdMs` is set to a positive value, MockS
 
 | Property | Default | Description |
 |----------|---------|-------------|
+| `mockserver.driftDetectionEnabled` | `true` | Master switch for mock-drift analysis on forwarded responses. `false` skips it (and its per-forward expectation lookup) entirely |
+| `mockserver.driftSampleRate` | `1.0` | Fraction of eligible forwards to analyse, in `[0.0, 1.0]`. `< 1.0` samples with a thread-safe draw; out-of-range values are clamped with a WARN |
 | `mockserver.driftSemanticAnalysisEnabled` | `false` | Enable LLM-powered semantic drift classification |
 | `mockserver.driftResponseTimeThresholdMs` | `0` (disabled) | p95 response time threshold for PERFORMANCE drift |
 | `mockserver.driftAlertWebhookEnabled` | `false` | Enable the fire-and-forget drift-alert webhook (see "Drift Alerting (Push)") |

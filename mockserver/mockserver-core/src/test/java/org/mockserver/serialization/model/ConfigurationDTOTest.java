@@ -609,6 +609,8 @@ public class ConfigurationDTOTest {
                 return 424242;          // validated 0..1000000
             case "maxWebSocketExpectations":
                 return 4243;            // validated 0..100000
+            case "driftSampleRate":
+                return 0.5d;            // valid drift sample rate in [0.0, 1.0], non-default (default 1.0)
             case "driftAlertSeverityThreshold":
                 return "WARNING";       // a valid severity name
             case "proxyPassMappings":

@@ -178,6 +178,8 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_LLM_BASE_URL = "mockserver.llmBaseUrl";
     private static final String MOCKSERVER_LLM_BACKENDS_CONFIG = "mockserver.llmBackendsConfig";
     private static final String MOCKSERVER_LLM_REQUEST_TIMEOUT_MILLIS = "mockserver.llmRequestTimeoutMillis";
+    private static final String MOCKSERVER_DRIFT_DETECTION_ENABLED = "mockserver.driftDetectionEnabled";
+    private static final String MOCKSERVER_DRIFT_SAMPLE_RATE = "mockserver.driftSampleRate";
     private static final String MOCKSERVER_DRIFT_SEMANTIC_ANALYSIS_ENABLED = "mockserver.driftSemanticAnalysisEnabled";
     private static final String MOCKSERVER_DRIFT_RESPONSE_TIME_THRESHOLD_MS = "mockserver.driftResponseTimeThresholdMs";
     private static final String MOCKSERVER_DRIFT_ALERT_WEBHOOK_ENABLED = "mockserver.driftAlertWebhookEnabled";
@@ -2717,6 +2719,67 @@ public class ConfigurationProperties {
 
     public static void llmRequestTimeoutMillis(long millis) {
         setProperty(MOCKSERVER_LLM_REQUEST_TIMEOUT_MILLIS, "" + millis);
+    }
+
+    /**
+     * Master switch for mock-drift analysis on forwarded responses. When {@code true}
+     * (the default), every eligible forwarded upstream response is compared — on a
+     * background scheduler thread — against any response-type stub expectations that
+     * match the same request, recording structural and performance drift. When
+     * {@code false}, the drift analysis (and the extra {@code allMatchingExpectation}
+     * lookup it performs per forward) is skipped entirely, removing its cost from the
+     * forward path. Default {@code true} to preserve the historical always-on behaviour.
+     */
+    public static boolean driftDetectionEnabled() {
+        return Boolean.parseBoolean(readPropertyHierarchically(
+            PROPERTIES, MOCKSERVER_DRIFT_DETECTION_ENABLED, "MOCKSERVER_DRIFT_DETECTION_ENABLED", "true"));
+    }
+
+    public static void driftDetectionEnabled(boolean enabled) {
+        setProperty(MOCKSERVER_DRIFT_DETECTION_ENABLED, "" + enabled);
+    }
+
+    /**
+     * Fraction of eligible forwarded responses to analyse for drift, in the range
+     * {@code [0.0, 1.0]}. Default {@code 1.0} (analyse every eligible forward,
+     * preserving the historical behaviour). A value below {@code 1.0} analyses only
+     * that fraction of forwarded responses (sampled with a thread-safe random draw),
+     * trading drift coverage for lower overhead under high forward volume. Values
+     * outside the range are clamped to the nearest bound ({@code < 0} → {@code 0},
+     * {@code > 1} → {@code 1}) with a WARN. Has no effect when
+     * {@code driftDetectionEnabled} is {@code false}.
+     */
+    public static double driftSampleRate() {
+        double value = readDoubleProperty(MOCKSERVER_DRIFT_SAMPLE_RATE, "MOCKSERVER_DRIFT_SAMPLE_RATE", 1.0d);
+        if (value < 0.0d) {
+            if (LoggerHolder.LOGGER != null) {
+                LoggerHolder.LOGGER.logEvent(
+                    new LogEntry()
+                        .setType(LogEntry.LogMessageType.SERVER_CONFIGURATION)
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("driftSampleRate value {} is below minimum, clamping to 0.0")
+                        .setArguments(value)
+                );
+            }
+            return 0.0d;
+        }
+        if (value > 1.0d) {
+            if (LoggerHolder.LOGGER != null) {
+                LoggerHolder.LOGGER.logEvent(
+                    new LogEntry()
+                        .setType(LogEntry.LogMessageType.SERVER_CONFIGURATION)
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("driftSampleRate value {} is above maximum, clamping to 1.0")
+                        .setArguments(value)
+                );
+            }
+            return 1.0d;
+        }
+        return value;
+    }
+
+    public static void driftSampleRate(double rate) {
+        setProperty(MOCKSERVER_DRIFT_SAMPLE_RATE, "" + rate);
     }
 
     /**

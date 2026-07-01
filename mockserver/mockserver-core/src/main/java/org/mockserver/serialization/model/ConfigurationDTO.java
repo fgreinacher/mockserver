@@ -234,6 +234,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Integer maxRequestBodySize;
     private Integer maxResponseBodySize;
     private Integer maxLlmConversationBodySize;
+    private Boolean driftDetectionEnabled;
+    private Double driftSampleRate;
     private Boolean driftSemanticAnalysisEnabled;
     private Long driftResponseTimeThresholdMs;
     private Boolean driftAlertWebhookEnabled;
@@ -527,6 +529,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.maxRequestBodySize = configuration.maxRequestBodySize();
             this.maxResponseBodySize = configuration.maxResponseBodySize();
             this.maxLlmConversationBodySize = configuration.maxLlmConversationBodySize();
+            this.driftDetectionEnabled = configuration.driftDetectionEnabled();
+            this.driftSampleRate = configuration.driftSampleRate();
             this.driftSemanticAnalysisEnabled = configuration.driftSemanticAnalysisEnabled();
             this.driftResponseTimeThresholdMs = configuration.driftResponseTimeThresholdMs();
             this.driftAlertWebhookEnabled = configuration.driftAlertWebhookEnabled();
@@ -867,6 +871,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.maxRequestBodySize(maxRequestBodySize);
         configuration.maxResponseBodySize(maxResponseBodySize);
         configuration.maxLlmConversationBodySize(maxLlmConversationBodySize);
+        configuration.driftDetectionEnabled(driftDetectionEnabled);
+        configuration.driftSampleRate(driftSampleRate);
         configuration.driftSemanticAnalysisEnabled(driftSemanticAnalysisEnabled);
         configuration.driftResponseTimeThresholdMs(driftResponseTimeThresholdMs);
         configuration.driftAlertWebhookEnabled(driftAlertWebhookEnabled);
@@ -1523,6 +1529,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (maxLlmConversationBodySize != null) {
             target.maxLlmConversationBodySize(maxLlmConversationBodySize);
+        }
+        if (driftDetectionEnabled != null) {
+            target.driftDetectionEnabled(driftDetectionEnabled);
+        }
+        if (driftSampleRate != null) {
+            target.driftSampleRate(driftSampleRate);
         }
         if (driftSemanticAnalysisEnabled != null) {
             target.driftSemanticAnalysisEnabled(driftSemanticAnalysisEnabled);
@@ -3486,6 +3498,24 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setMaxLlmConversationBodySize(Integer maxLlmConversationBodySize) {
         this.maxLlmConversationBodySize = maxLlmConversationBodySize;
+        return this;
+    }
+
+    public Boolean getDriftDetectionEnabled() {
+        return driftDetectionEnabled;
+    }
+
+    public ConfigurationDTO setDriftDetectionEnabled(Boolean driftDetectionEnabled) {
+        this.driftDetectionEnabled = driftDetectionEnabled;
+        return this;
+    }
+
+    public Double getDriftSampleRate() {
+        return driftSampleRate;
+    }
+
+    public ConfigurationDTO setDriftSampleRate(Double driftSampleRate) {
+        this.driftSampleRate = driftSampleRate;
         return this;
     }
 
