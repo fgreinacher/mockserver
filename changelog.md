@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runnable Kubernetes example: load-injection metrics visualised in Grafana over Prometheus *and* OpenTelemetry.**
+  New `examples/kubernetes/load-injection-observability` stands up a local k3s cluster (via k3d) running MockServer,
+  Prometheus, an OpenTelemetry Collector and Grafana with a provisioned dashboard that renders the full
+  `mock_server_load_*` family — active VUs, throughput, latency percentiles, failures, status codes, throttling and
+  data transfer — alongside JVM heap/GC/threads and real pod CPU/memory, driving the point that MockServer's
+  first-class load-injection metrics can be charted next to the system under test on one dashboard. The Load
+  Injection and Examples documentation pages now lead with this observability advantage and link the example.
+
 ### Changed
 
 ### Fixed

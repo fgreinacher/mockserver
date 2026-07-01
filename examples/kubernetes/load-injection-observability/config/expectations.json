@@ -1,0 +1,38 @@
+[
+  {
+    "httpRequest": {
+      "method": "GET",
+      "path": "/api/orders/.*"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "headers": { "Content-Type": [ "application/json" ] },
+      "body": "{\"orderId\":\"demo\",\"status\":\"CONFIRMED\"}",
+      "delay": { "timeUnit": "MILLISECONDS", "value": 8 }
+    }
+  },
+  {
+    "httpRequest": {
+      "method": "POST",
+      "path": "/api/checkout"
+    },
+    "httpResponse": {
+      "statusCode": 201,
+      "headers": { "Content-Type": [ "application/json" ] },
+      "body": "{\"checkoutId\":\"demo\",\"status\":\"CREATED\"}",
+      "delay": { "timeUnit": "MILLISECONDS", "value": 20 }
+    }
+  },
+  {
+    "httpRequest": {
+      "method": "GET",
+      "path": "/api/inventory"
+    },
+    "httpResponse": {
+      "statusCode": 503,
+      "headers": { "Content-Type": [ "application/json" ] },
+      "body": "{\"error\":\"inventory service unavailable\"}",
+      "delay": { "timeUnit": "MILLISECONDS", "value": 5 }
+    }
+  }
+]

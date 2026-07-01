@@ -1,0 +1,240 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["mockserver", "load-injection", "observability"],
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "Metrics source",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "description": "Which scrape path to read the load metrics from: the native Prometheus endpoint (mockserver) or the OpenTelemetry re-export (mockserver-otlp). Both carry the identical series — switching proves the OTLP channel matches. Keep it single-valued to avoid double-counting.",
+        "definition": "label_values(mock_server_load_requests_total, job)",
+        "query": { "query": "label_values(mock_server_load_requests_total, job)", "refId": "StandardVariableQuery" },
+        "includeAll": false,
+        "multi": false,
+        "current": { "text": "mockserver", "value": "mockserver" },
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "scenario",
+        "label": "Scenario",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "definition": "label_values(mock_server_load_requests_total{job=~\"$job\"}, scenario)",
+        "query": { "query": "label_values(mock_server_load_requests_total{job=~\"$job\"}, scenario)", "refId": "StandardVariableQuery" },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "MockServer — Load Injection & Observability",
+  "uid": "mockserver-load-injection",
+  "version": 1,
+  "panels": [
+    { "id": 1, "type": "row", "title": "Overview", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "id": 2, "type": "stat", "title": "Active VUs",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(mock_server_load_active_vus{job=~\"$job\", scenario=~\"$scenario\"})" } ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "In-flight requests",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(mock_server_load_inflight_requests{job=~\"$job\", scenario=~\"$scenario\"})" } ]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Request rate (req/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "reqps", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(mock_server_load_requests_total{job=~\"$job\", scenario=~\"$scenario\"}[1m]))" } ]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Error rate",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "percent", "min": 0, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 5 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 * sum(rate(mock_server_load_errors_total{job=~\"$job\", scenario=~\"$scenario\"}[1m])) / clamp_min(sum(rate(mock_server_load_requests_total{job=~\"$job\", scenario=~\"$scenario\"}[1m])), 1)" } ]
+    },
+    {
+      "id": 6, "type": "stat", "title": "p95 latency (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "ms", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 200 }, { "color": "red", "value": 500 } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "1000 * histogram_quantile(0.95, sum(rate(mock_server_load_request_duration_seconds_bucket{job=~\"$job\", scenario=~\"$scenario\"}[1m])) by (le))" } ]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Iterations completed",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(mock_server_load_iterations_total{job=~\"$job\", scenario=~\"$scenario\"})" } ]
+    },
+
+    { "id": 10, "type": "row", "title": "Virtual users & throughput", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 } },
+    {
+      "id": 11, "type": "timeseries", "title": "Active VUs by scenario",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (scenario) (mock_server_load_active_vus{job=~\"$job\", scenario=~\"$scenario\"})", "legendFormat": "{{scenario}}" } ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Request rate by status class (req/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (status_class) (rate(mock_server_load_requests_total{job=~\"$job\", scenario=~\"$scenario\"}[1m]))", "legendFormat": "{{status_class}}" } ]
+    },
+
+    { "id": 20, "type": "row", "title": "Latency & concurrency", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 } },
+    {
+      "id": 21, "type": "timeseries", "title": "Request duration percentiles (round-trip incl. connection)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 0, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "1000 * histogram_quantile(0.50, sum(rate(mock_server_load_request_duration_seconds_bucket{job=~\"$job\", scenario=~\"$scenario\"}[1m])) by (le))", "legendFormat": "p50" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "1000 * histogram_quantile(0.90, sum(rate(mock_server_load_request_duration_seconds_bucket{job=~\"$job\", scenario=~\"$scenario\"}[1m])) by (le))", "legendFormat": "p90" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "1000 * histogram_quantile(0.95, sum(rate(mock_server_load_request_duration_seconds_bucket{job=~\"$job\", scenario=~\"$scenario\"}[1m])) by (le))", "legendFormat": "p95" },
+        { "refId": "D", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "1000 * histogram_quantile(0.99, sum(rate(mock_server_load_request_duration_seconds_bucket{job=~\"$job\", scenario=~\"$scenario\"}[1m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 22, "type": "timeseries", "title": "In-flight requests",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (scenario) (mock_server_load_inflight_requests{job=~\"$job\", scenario=~\"$scenario\"})", "legendFormat": "{{scenario}}" } ]
+    },
+
+    { "id": 30, "type": "row", "title": "Failures & throttling", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 } },
+    {
+      "id": 31, "type": "timeseries", "title": "Errors by kind (err/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (kind) (rate(mock_server_load_errors_total{job=~\"$job\", scenario=~\"$scenario\"}[1m]))", "legendFormat": "{{kind}}" } ]
+    },
+    {
+      "id": 32, "type": "timeseries", "title": "Throttled by reason (drops/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 20, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (reason) (rate(mock_server_load_throttled_total{job=~\"$job\", scenario=~\"$scenario\"}[1m]))", "legendFormat": "{{reason}}" } ]
+    },
+    {
+      "id": 33, "type": "timeseries", "title": "Status codes (stacked, req/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "bars", "fillOpacity": 60, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (status_class) (rate(mock_server_load_requests_total{job=~\"$job\", scenario=~\"$scenario\"}[1m]))", "legendFormat": "{{status_class}}" } ]
+    },
+
+    { "id": 40, "type": "row", "title": "Traffic volume", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 } },
+    {
+      "id": 41, "type": "timeseries", "title": "Throughput by route (req/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (route) (rate(mock_server_load_requests_total{job=~\"$job\", scenario=~\"$scenario\"}[1m]))", "legendFormat": "{{route}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(mock_server_load_requests_total{job=~\"$job\", scenario=~\"$scenario\"}[1m]))", "legendFormat": "total" }
+      ]
+    },
+    {
+      "id": 42, "type": "timeseries", "title": "Data transfer (bytes/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(mock_server_load_request_bytes_total{job=~\"$job\", scenario=~\"$scenario\"}[1m]))", "legendFormat": "request bytes out" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(mock_server_load_response_bytes_total{job=~\"$job\", scenario=~\"$scenario\"}[1m]))", "legendFormat": "response bytes in" }
+      ]
+    },
+
+    { "id": 50, "type": "row", "title": "JVM runtime (heap, GC, threads)", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 } },
+    {
+      "id": 51, "type": "timeseries", "title": "Heap memory",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 42 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "jvm_memory_used_bytes{area=\"heap\", job=\"mockserver\"}", "legendFormat": "heap used" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "jvm_memory_committed_bytes{area=\"heap\", job=\"mockserver\"}", "legendFormat": "heap committed" }
+      ]
+    },
+    {
+      "id": 52, "type": "timeseries", "title": "GC time rate (s/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 42 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(jvm_gc_collection_seconds_sum{job=\"mockserver\"}[1m])", "legendFormat": "gc seconds/s" } ]
+    },
+    {
+      "id": 53, "type": "timeseries", "title": "Threads",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 42 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "jvm_threads_current{job=\"mockserver\"}", "legendFormat": "current" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "jvm_threads_daemon{job=\"mockserver\"}", "legendFormat": "daemon" }
+      ]
+    },
+
+    { "id": 60, "type": "row", "title": "Pod resources (cAdvisor: CPU & memory)", "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 } },
+    {
+      "id": 61, "type": "timeseries", "title": "MockServer pod CPU (cores)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 51 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"mockserver-demo\", pod=~\"mockserver-.*\", container!=\"\", container!=\"POD\"}[1m]))", "legendFormat": "cpu cores" } ]
+    },
+    {
+      "id": 62, "type": "timeseries", "title": "MockServer pod memory (working set)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 51 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(container_memory_working_set_bytes{namespace=\"mockserver-demo\", pod=~\"mockserver-.*\", container!=\"\", container!=\"POD\"})", "legendFormat": "working set" } ]
+    }
+  ]
+}

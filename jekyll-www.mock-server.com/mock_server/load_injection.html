@@ -24,6 +24,8 @@ schema_faq:
 
 <p itemprop="headline">Drive realistic API load from the same MockServer you already use for mocking — ramp virtual users or a fixed arrival rate, vary data per iteration, inject faults, and assert your SLOs over the generated traffic, all from one control plane with no second load tool. One instance injects tens of thousands of requests per second.</p>
 
+<p>The standout advantage: MockServer exposes a <strong>rich, first-class metrics stream for the load it drives</strong> — active VUs, throughput, latency percentiles, error and status-code breakdowns, throttling, and data transfer — over <strong>both Prometheus and OpenTelemetry (OTLP)</strong>. Point your existing observability stack at it and chart the injector's numbers <strong>side-by-side with your system under test on one dashboard</strong>, so a latency or error spike is instantly attributable to the right side. See the runnable <a href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/kubernetes/load-injection-observability" target="_blank" rel="noopener noreferrer">Kubernetes + Grafana example</a> for a one-command stack, and <a href="#observability">Observability &amp; Metrics</a> below for the full catalogue.</p>
+
 <table class="table-standard">
     <thead>
         <tr>
@@ -84,6 +86,11 @@ schema_faq:
             <td>Assert SLO verdicts from the same server</td>
             <td>Yes &mdash; thresholds + <code class="inline code">verifySLO</code> built in</td>
             <td>Requires custom scripting or an external integration</td>
+        </tr>
+        <tr>
+            <td>Chart the injector's metrics next to your system under test</td>
+            <td>Yes &mdash; <code class="inline code">mock_server_load_*</code> over <strong>Prometheus and OpenTelemetry</strong>, straight into Grafana/Datadog</td>
+            <td>Yes, but a separate metrics pipeline to wire up and correlate</td>
         </tr>
         <tr>
             <td>Dedicated distributed load tier</td>
@@ -3870,6 +3877,8 @@ curl -s -w "\n%{http_code}" -X PUT http://localhost:1080/mockserver/verifySLO \
 <h2>Observability &amp; Metrics</h2>
 
 <p>Every completed load-scenario dispatch is recorded into a dedicated <code class="inline code">mock_server_load_*</code> metric family that MockServer exposes through <strong>both</strong> of its observability channels — a <strong>Prometheus</strong> scrape endpoint and <strong>OpenTelemetry (OTLP)</strong> push. The same metrics drive the dashboard's live <a href="#dashboard_ui">throughput &amp; latency chart</a>. This lets you chart the injector's latency, throughput, and error rate alongside your system-under-test in Grafana, Datadog, or any OTEL-compatible backend — without a separate load tool.</p>
+
+<div class="alert" style="background-color: #eaf3fb; border-left: 4px solid #4a90d9; padding: 12px 16px; margin: 16px 0;"><strong>Runnable example — see it in Grafana in one command.</strong> The <a href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/kubernetes/load-injection-observability" target="_blank" rel="noopener noreferrer"><code class="inline code">examples/kubernetes/load-injection-observability</code></a> stack spins up MockServer, Prometheus, an OpenTelemetry Collector and Grafana on a local <a href="https://k3s.io" target="_blank" rel="noopener noreferrer">k3s</a> cluster (via <a href="https://k3d.io" target="_blank" rel="noopener noreferrer">k3d</a>), triggers a load run, and opens a <strong>provisioned dashboard</strong> that renders VUs, throughput, latency percentiles, failures, status codes, data transfer, and JVM plus pod CPU/memory — with the same metrics arriving over <strong>both</strong> Prometheus and OTLP. It's the fastest way to see this section's metrics live.</div>
 
 <a id="observability_exposure" class="anchor" href="#observability_exposure">&nbsp;</a>
 

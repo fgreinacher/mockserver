@@ -103,6 +103,10 @@ sitemap:
             <td>Deployment scenarios including mock-from-OpenAPI, record-replay proxy, validation proxy, chaos proxy, mTLS, persistence, and expectation initialiser</td>
         </tr>
         <tr>
+            <td><a href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/kubernetes" target="_blank" rel="noopener noreferrer">kubernetes/</a></td>
+            <td>Kubernetes deployments on local k3s (k3d) — incl. <a href="#examples_kubernetes">load-injection metrics visualised in Grafana</a> over Prometheus and OpenTelemetry</td>
+        </tr>
+        <tr>
             <td><a href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/chaos" target="_blank" rel="noopener noreferrer">chaos/</a></td>
             <td>Fault injection across HTTP, TCP, gRPC, and LLM layers via runnable <code>curl</code> scripts — MockServer's flagship differentiator</td>
         </tr>
@@ -372,6 +376,34 @@ sitemap:
     The <a href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/docker-compose" target="_blank" rel="noopener noreferrer">docker-compose/</a>
     directory also contains several <code>server_port_*</code> and forward / remote-host configuration permutations
     (port set by command, by short / long environment-variable name, from a custom or default properties file, and forward-with-override) — browse the folder for the full set.
+</p>
+
+<a id="examples_kubernetes" class="anchor" href="#examples_kubernetes">&nbsp;</a>
+
+<h2>Kubernetes — Load Injection Metrics in Grafana</h2>
+
+<p>
+    The <a href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/kubernetes" target="_blank" rel="noopener noreferrer">kubernetes/</a>
+    examples run on a local <a href="https://k3s.io" target="_blank" rel="noopener noreferrer">k3s</a> cluster (via <a href="https://k3d.io" target="_blank" rel="noopener noreferrer">k3d</a>), so they need only Docker — no cloud cluster.
+</p>
+
+<table class="comparison">
+    <thead>
+        <tr>
+            <th>Example</th>
+            <th>What it covers</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><a href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/kubernetes/load-injection-observability" target="_blank" rel="noopener noreferrer">load-injection-observability</a></td>
+            <td>A one-command stack — MockServer, Prometheus, an OpenTelemetry Collector, and Grafana — that drives a <a href="/mock_server/load_injection.html">load scenario</a> and renders every load-injection metric on a <strong>provisioned Grafana dashboard</strong>: active VUs, throughput and request rates, p50/p90/p95/p99 latency, failures and status codes, throttling, data transfer, plus JVM heap/GC/threads and real pod CPU &amp; memory. The same metrics are exposed over <strong>both Prometheus and OpenTelemetry (OTLP)</strong>, so you can chart the injector alongside your system under test on one dashboard.</td>
+        </tr>
+    </tbody>
+</table>
+
+<p>
+    This is the fastest way to see the <a href="/mock_server/load_injection.html#observability">Observability &amp; Metrics</a> section of the Load Injection guide in action — <code>./run.sh</code> creates the cluster, triggers the run, and opens Grafana on <code>localhost:3000</code>.
 </p>
 
 <a id="examples_next_steps" class="anchor" href="#examples_next_steps">&nbsp;</a>

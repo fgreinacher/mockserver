@@ -1,0 +1,106 @@
+# MockServer — the load injector AND the mock system-under-test in one.
+#
+# It generates load (mock_server_load_* metrics) against its own mocked
+# /api/* endpoints, and exposes every metric over BOTH channels:
+#   * Prometheus scrape at GET /mockserver/metrics   (scraped by Prometheus)
+#   * OpenTelemetry OTLP push to the collector        (otelEndpoint below)
+#
+# In a real test you would point the load-scenario steps (config/load-scenario.json)
+# at your actual service-under-test instead of 127.0.0.1, and chart MockServer's
+# injector metrics alongside your service's own metrics on the same Grafana.
+#
+# The mockserver-config ConfigMap (expectations.json + load-scenario.json) is
+# created by run.sh from ./config via `kubectl create configmap --from-file`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mockserver
+  namespace: mockserver-demo
+  labels:
+    app: mockserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mockserver
+  template:
+    metadata:
+      labels:
+        app: mockserver
+    spec:
+      # Kubernetes injects MOCKSERVER_PORT / MOCKSERVER_SERVICE_* env vars for the
+      # mockserver Service, which collide with MockServer's MOCKSERVER_ config
+      # namespace and log spurious "unrecognised configuration" warnings. Disable it.
+      enableServiceLinks: false
+      containers:
+        - name: mockserver
+          image: mockserver/mockserver:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 1080
+          env:
+            # --- metrics: both channels on ---
+            - name: MOCKSERVER_METRICS_ENABLED
+              value: "true"
+            - name: MOCKSERVER_OTEL_METRICS_ENABLED
+              value: "true"
+            - name: MOCKSERVER_OTEL_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: MOCKSERVER_OTEL_METRICS_EXPORT_INTERVAL_SECONDS
+              value: "15"
+            # --- load generation ---
+            - name: MOCKSERVER_LOAD_GENERATION_ENABLED
+              value: "true"
+            # custom scenario/step labels must be allow-listed for Prometheus (OTLP forwards all)
+            - name: MOCKSERVER_LOAD_GENERATION_METRIC_LABELS
+              value: "env,region"
+            # --- preload expectations (the mock SUT) and the load scenario ---
+            - name: MOCKSERVER_INITIALIZATION_JSON_PATH
+              value: "/config/expectations.json"
+            - name: MOCKSERVER_LOAD_SCENARIO_INITIALIZATION_JSON_PATH
+              value: "/config/load-scenario.json"
+            - name: MOCKSERVER_LOG_LEVEL
+              value: "WARN"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=75"
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: 1080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 1080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+      volumes:
+        - name: config
+          configMap:
+            name: mockserver-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mockserver
+  namespace: mockserver-demo
+  labels:
+    app: mockserver
+spec:
+  selector:
+    app: mockserver
+  ports:
+    - name: http
+      port: 1080
+      targetPort: 1080

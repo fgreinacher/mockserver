@@ -1,0 +1,47 @@
+[
+  {
+    "name": "storefront-load",
+    "templateType": "VELOCITY",
+    "stepSelection": "WEIGHTED",
+    "labels": { "env": "demo", "region": "local" },
+    "profile": {
+      "stages": [
+        { "type": "RATE", "startRate": 5, "endRate": 30, "durationMillis": 60000, "curve": "LINEAR", "maxVus": 40 },
+        { "type": "VU", "vus": 25, "durationMillis": 600000 },
+        { "type": "PAUSE", "durationMillis": 5000 }
+      ]
+    },
+    "steps": [
+      {
+        "name": "get-order",
+        "weight": 80,
+        "request": {
+          "method": "GET",
+          "path": "/api/orders/$!iteration.index",
+          "socketAddress": { "host": "127.0.0.1", "port": 1080, "scheme": "HTTP" }
+        },
+        "thinkTime": { "timeUnit": "MILLISECONDS", "value": 100 }
+      },
+      {
+        "name": "checkout",
+        "weight": 15,
+        "request": {
+          "method": "POST",
+          "path": "/api/checkout",
+          "headers": { "Content-Type": [ "application/json" ] },
+          "body": "{\"item\":\"$!iteration.index\",\"qty\":1}",
+          "socketAddress": { "host": "127.0.0.1", "port": 1080, "scheme": "HTTP" }
+        }
+      },
+      {
+        "name": "inventory",
+        "weight": 5,
+        "request": {
+          "method": "GET",
+          "path": "/api/inventory",
+          "socketAddress": { "host": "127.0.0.1", "port": 1080, "scheme": "HTTP" }
+        }
+      }
+    ]
+  }
+]

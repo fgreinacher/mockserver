@@ -21,6 +21,7 @@ topic** folders (`chaos/`, `wasm/`) that apply regardless of client:
 | [`curl/`](curl/) | Raw REST control-plane examples as runnable `curl` scripts (+ original reference markdown) |
 | [`json/`](json/) | Expectation & initializer JSON payloads (+ original reference markdown) |
 | [`docker-compose/`](docker-compose/) | Deployment scenarios: ports, env vars, mTLS, persistence, expectation initialiser |
+| [`kubernetes/`](kubernetes/) | Kubernetes deployments on local k3s (k3d) — incl. load-injection metrics in Grafana over Prometheus + OpenTelemetry |
 | [`wasm/`](wasm/) | Custom WASM body-matcher rules — [`rust/`](wasm/rust/) (prebuilt) and [`go/`](wasm/go/) |
 | [`chaos/`](chaos/) | Fault injection across HTTP, TCP, gRPC and LLM layers — MockServer's flagship differentiator |
 
