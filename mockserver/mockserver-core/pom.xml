@@ -808,6 +808,8 @@
                         <exclude>**/OtelEndpointConfigurationTest.java</exclude>
                         <!-- Mutates mockserver.prometheusRemoteWrite* global ConfigurationProperties -->
                         <exclude>**/PrometheusRemoteWriteExporterTest.java</exclude>
+                        <!-- Sets/clears the mockserver.prometheusRemoteWriteProtocolVersion JVM system property and property cache -->
+                        <exclude>**/PrometheusRemoteWriteProtocolVersionConfigurationTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -927,6 +929,7 @@
                                 <include>**/HttpForwardActionResilienceTest.java</include>
                                 <include>**/OtelEndpointConfigurationTest.java</include>
                                 <include>**/PrometheusRemoteWriteExporterTest.java</include>
+                                <include>**/PrometheusRemoteWriteProtocolVersionConfigurationTest.java</include>
                             </includes>
                         </configuration>
                     </execution>

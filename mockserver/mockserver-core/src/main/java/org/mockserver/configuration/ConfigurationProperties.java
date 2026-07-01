@@ -206,6 +206,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_USERNAME = "mockserver.prometheusRemoteWriteBasicAuthUsername";
     private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_BASIC_AUTH_PASSWORD = "mockserver.prometheusRemoteWriteBasicAuthPassword";
     private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_HEADERS = "mockserver.prometheusRemoteWriteHeaders";
+    private static final String MOCKSERVER_PROMETHEUS_REMOTE_WRITE_PROTOCOL_VERSION = "mockserver.prometheusRemoteWriteProtocolVersion";
     private static final String MOCKSERVER_LLM_SEMANTIC_MATCHING_ENABLED = "mockserver.llmSemanticMatchingEnabled";
     private static final String MOCKSERVER_LLM_INFER_USAGE_ENABLED = "mockserver.llmInferUsageEnabled";
     private static final String MOCKSERVER_LLM_METRICS_ENABLED = "mockserver.llmMetricsEnabled";
@@ -3133,6 +3134,20 @@ public class ConfigurationProperties {
 
     public static void prometheusRemoteWriteHeaders(String headers) {
         setProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_HEADERS, headers);
+    }
+
+    /**
+     * The Prometheus remote-write protocol version to encode and push: {@code v1} (the original
+     * {@code prometheus.WriteRequest}, the default) or {@code v2} (the newer, symbol-interned
+     * {@code io.prometheus.write.v2.Request}). Any unrecognised or blank value falls back to
+     * {@code v1}. Choose {@code v2} only when the receiver advertises Remote-Write 2.0 support.
+     */
+    public static String prometheusRemoteWriteProtocolVersion() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_PROMETHEUS_REMOTE_WRITE_PROTOCOL_VERSION, "MOCKSERVER_PROMETHEUS_REMOTE_WRITE_PROTOCOL_VERSION", "v1");
+    }
+
+    public static void prometheusRemoteWriteProtocolVersion(String version) {
+        setProperty(MOCKSERVER_PROMETHEUS_REMOTE_WRITE_PROTOCOL_VERSION, version);
     }
 
     /**

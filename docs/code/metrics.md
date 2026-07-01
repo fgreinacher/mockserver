@@ -391,6 +391,8 @@ flowchart LR
 
 The exporter reuses the **same snapshot** the scrape endpoint serves — `PrometheusRegistry.defaultRegistry.scrape()` — so the pushed series are byte-for-byte the metrics at `/mockserver/metrics` (whole registry, no curated subset). Each snapshot data point becomes one Remote-Write `TimeSeries` (`__name__` + labels + a single sample at push time). Counter→`<name>_total`, gauge→`<name>`, classic histogram→cumulative `<name>_bucket{le}` (incl. `le="+Inf"`) plus `_count`/`_sum`, summary→quantile series plus `_count`/`_sum`; unknown/native-only snapshot types are skipped with a DEBUG log (never dropped silently for the supported types). The `WriteRequest` protobuf is hand-encoded with `com.google.protobuf.CodedOutputStream` (no protoc/codegen is added to the build — the v1 wire schema is frozen), then compressed with the raw **Snappy block** format Remote Write requires (`org.xerial.snappy.Snappy.compress`), and POSTed with the JDK `java.net.http.HttpClient`.
 
+Both Remote-Write **v1** (default, universally supported) and **v2** are selectable via `prometheusRemoteWriteProtocolVersion`. v2 (`RemoteWriteV2Encoder`) interns all label names/values into a per-request `symbols` string table (index 0 is the empty string) referenced by `labels_refs`, and carries per-series `Metadata` (type + help/unit refs); it sends `Content-Type: application/x-protobuf;proto=io.prometheus.write.v2.Request` and `X-Prometheus-Remote-Write-Version: 2.0.0`. Both encoders sort each series' full label set lexicographically by name (required by the spec, or strict receivers reject the series). The encoder is chosen by `PrometheusRemoteWriteExporter.selectEncoder(...)`, which fails safe to v1 on any unknown/blank value.
+
 Remote write is inherently **cumulative** (the Prometheus data model); the OTLP delta option (see [telemetry.md](telemetry.md)) does not apply here.
 
 ### Configuration
@@ -399,6 +401,7 @@ Remote write is inherently **cumulative** (the Prometheus data model); the OTLP 
 |----------|---------|-------------|
 | `prometheusRemoteWriteEnabled` | `false` | Enable periodic Remote-Write push |
 | `prometheusRemoteWriteUrl` | (empty) | Full endpoint URL, e.g. `http://prometheus:9090/api/v1/write`. Enabled-but-blank logs a warning and does nothing |
+| `prometheusRemoteWriteProtocolVersion` | `v1` | Remote-Write protocol version: `v1` (universal) or `v2` (symbol-interned, carries metadata). Unknown/blank falls back to `v1` |
 | `prometheusRemoteWriteIntervalSeconds` | `60` | Push interval (clamped to ≥ 1) |
 | `prometheusRemoteWriteBearerToken` | (empty) | Sends `Authorization: Bearer <token>`; takes precedence over basic auth |
 | `prometheusRemoteWriteBasicAuthUsername` | (empty) | HTTP basic-auth username (used when no bearer token) |
@@ -457,6 +460,7 @@ Lifecycle mirrors the OTLP exporter: `PrometheusRemoteWriteExporter.startIfEnabl
 | `OtelMetricsExporter` | mockserver-core | `org.mockserver.metrics.OtelMetricsExporter` (OTLP mirror of load metrics) |
 | `PrometheusRemoteWriteExporter` | mockserver-core | `org.mockserver.metrics.PrometheusRemoteWriteExporter` (periodic Remote-Write push) |
 | `RemoteWriteV1Encoder` | mockserver-core | `org.mockserver.metrics.remotewrite.RemoteWriteV1Encoder` (MetricSnapshots → Remote-Write v1 protobuf) |
+| `RemoteWriteV2Encoder` | mockserver-core | `org.mockserver.metrics.remotewrite.RemoteWriteV2Encoder` (Remote-Write v2 protobuf with symbol table + metadata) |
 | `SnappyBlock` | mockserver-core | `org.mockserver.metrics.remotewrite.SnappyBlock` (raw Snappy block compression) |
 | `LoadScenarioOrchestrator` | mockserver-core | `org.mockserver.mock.action.http.LoadScenarioOrchestrator` (records load metric samples) |
 | `SloSampleStore` | mockserver-core | `org.mockserver.slo.SloSampleStore` (see [slo-verdicts.md](slo-verdicts.md)) |

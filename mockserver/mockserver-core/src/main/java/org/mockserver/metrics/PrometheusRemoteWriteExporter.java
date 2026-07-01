@@ -5,6 +5,7 @@ import io.prometheus.metrics.model.snapshots.MetricSnapshots;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.metrics.remotewrite.RemoteWriteEncoder;
 import org.mockserver.metrics.remotewrite.RemoteWriteV1Encoder;
+import org.mockserver.metrics.remotewrite.RemoteWriteV2Encoder;
 import org.mockserver.metrics.remotewrite.SnappyBlock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,10 +28,12 @@ import java.util.function.Supplier;
 /**
  * Optional push exporter that, on a fixed interval, snapshots the same
  * Prometheus metrics served at {@code /mockserver/metrics}, encodes them as a
- * Prometheus Remote-Write v1 {@code WriteRequest} protobuf, snappy-compresses
- * it (raw block format), and HTTP POSTs it to a configured remote-write
- * endpoint (Prometheus {@code --web.enable-remote-write-receiver}, Grafana
- * Mimir, New Relic, VictoriaMetrics, Thanos Receive).
+ * Prometheus Remote-Write {@code WriteRequest} protobuf — v1 or v2 per
+ * {@code mockserver.prometheusRemoteWriteProtocolVersion} (see
+ * {@link #selectEncoder(String)}) — snappy-compresses it (raw block format),
+ * and HTTP POSTs it to a configured remote-write endpoint (Prometheus
+ * {@code --web.enable-remote-write-receiver}, Grafana Mimir, New Relic,
+ * VictoriaMetrics, Thanos Receive).
  * <p>
  * Off unless {@code mockserver.prometheusRemoteWriteEnabled} is set. Mirrors the
  * {@link OtelMetricsExporter} lifecycle and is fail-soft throughout: telemetry
@@ -86,6 +89,7 @@ public class PrometheusRemoteWriteExporter {
                 return null;
             }
             long intervalSeconds = ConfigurationProperties.prometheusRemoteWriteIntervalSeconds();
+            RemoteWriteEncoder selectedEncoder = selectEncoder(ConfigurationProperties.prometheusRemoteWriteProtocolVersion());
             Map<String, String> resolvedHeaders = resolveHeaders(
                 ConfigurationProperties.prometheusRemoteWriteBearerToken(),
                 ConfigurationProperties.prometheusRemoteWriteBasicAuthUsername(),
@@ -96,7 +100,7 @@ public class PrometheusRemoteWriteExporter {
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
             PrometheusRemoteWriteExporter exporter = new PrometheusRemoteWriteExporter(
-                URI.create(rawUrl.trim()), httpClient, new RemoteWriteV1Encoder(), resolvedHeaders,
+                URI.create(rawUrl.trim()), httpClient, selectedEncoder, resolvedHeaders,
                 () -> PrometheusRegistry.defaultRegistry.scrape());
             exporter.scheduler.scheduleWithFixedDelay(exporter::pushOnce, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
             LOGGER.info("Prometheus remote-write export enabled (url {}, interval {}s, version {}, auth {})",
@@ -107,6 +111,19 @@ public class PrometheusRemoteWriteExporter {
             LOGGER.warn("failed to start Prometheus remote-write export ({}); continuing without it", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Select the remote-write encoder for the configured protocol version:
+     * {@code "v2"} (case-insensitive, trimmed) selects the Remote-Write 2.0
+     * encoder; any other/blank/null value fails safe to the v1 encoder.
+     * Package-private for testing.
+     */
+    static RemoteWriteEncoder selectEncoder(String version) {
+        if (version != null && "v2".equalsIgnoreCase(version.trim())) {
+            return new RemoteWriteV2Encoder();
+        }
+        return new RemoteWriteV1Encoder();
     }
 
     /**

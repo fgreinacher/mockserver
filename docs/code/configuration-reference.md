@@ -77,7 +77,7 @@ The first three feed into the **static** `ConfigurationProperties`. The fourth u
 | HTTP/3 (QUIC) | `http3Port`, `http3AltSvcMaxAge`, `http3AdvertiseAltSvc`, `http3ConnectUdpEnabled`, `http3MaxIdleTimeout`, `http3InitialMaxData`, `http3InitialMaxStreamDataBidirectional`, `http3InitialMaxStreamsBidirectional`, `http3QpackMaxTableCapacity` |
 | Service mesh / transparent proxy | `transparentProxyEnabled`, `transparentProxyTproxy`, `transparentProxyEbpf`, `transparentProxyEbpfMapPath` |
 | OpenTelemetry | `otelMetricsEnabled`, `otelTracesEnabled`, `otelEndpoint`, `otelMetricsExportIntervalSeconds`, `otelMetricsTemporality`, `otelPropagateTraceContext`, `otelGenerateTraceId` |
-| Prometheus Remote Write | `prometheusRemoteWriteEnabled`, `prometheusRemoteWriteUrl`, `prometheusRemoteWriteIntervalSeconds`, `prometheusRemoteWriteBearerToken`, `prometheusRemoteWriteBasicAuthUsername`, `prometheusRemoteWriteBasicAuthPassword`, `prometheusRemoteWriteHeaders` |
+| Prometheus Remote Write | `prometheusRemoteWriteEnabled`, `prometheusRemoteWriteUrl`, `prometheusRemoteWriteProtocolVersion`, `prometheusRemoteWriteIntervalSeconds`, `prometheusRemoteWriteBearerToken`, `prometheusRemoteWriteBasicAuthUsername`, `prometheusRemoteWriteBasicAuthPassword`, `prometheusRemoteWriteHeaders` |
 | Chaos auto-halt | `chaosAutoHaltEnabled`, `chaosAutoHaltErrorThreshold`, `chaosAutoHaltWindowMillis` |
 | Rate limiting | `rateLimitMaxNamedQuotas` |
 | SLO verdicts | `sloTrackingEnabled`, `sloWindowRetentionMillis`, `sloWindowMaxSamples` |

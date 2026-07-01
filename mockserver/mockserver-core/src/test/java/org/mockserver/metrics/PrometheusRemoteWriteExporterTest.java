@@ -8,7 +8,9 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockserver.configuration.ConfigurationProperties;
+import org.mockserver.metrics.remotewrite.RemoteWriteEncoder;
 import org.mockserver.metrics.remotewrite.RemoteWriteV1Encoder;
+import org.mockserver.metrics.remotewrite.RemoteWriteV2Encoder;
 import org.xerial.snappy.Snappy;
 
 import java.io.ByteArrayOutputStream;
@@ -111,6 +113,63 @@ public class PrometheusRemoteWriteExporterTest {
                 exporter.stop();
             }
             server.stop(0);
+        }
+    }
+
+    @Test
+    public void pushOnceWithV2EncoderSendsV2ContentTypeAndVersionHeaders() throws Exception {
+        AtomicReference<Map<String, String>> headers = new AtomicReference<>();
+
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/v1/write", exchange -> {
+            Map<String, String> captured = new HashMap<>();
+            exchange.getRequestHeaders().forEach((k, v) -> captured.put(k, String.join(",", v)));
+            headers.set(captured);
+            readAll(exchange.getRequestBody());
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+        });
+        server.start();
+        PrometheusRemoteWriteExporter exporter = null;
+        try {
+            int port = server.getAddress().getPort();
+            URI url = URI.create("http://127.0.0.1:" + port + "/api/v1/write");
+
+            PrometheusRegistry registry = new PrometheusRegistry();
+            Counter.builder().name("test_push_v2").help("h").register(registry).inc(2);
+
+            exporter = new PrometheusRemoteWriteExporter(
+                url, HttpClient.newHttpClient(), new RemoteWriteV2Encoder(),
+                Collections.emptyMap(), registry::scrape);
+
+            exporter.pushOnce();
+
+            Map<String, String> h = headers.get();
+            assertThat(header(h, "Content-Encoding"), is("snappy"));
+            assertThat(header(h, "Content-Type"), is("application/x-protobuf;proto=io.prometheus.write.v2.Request"));
+            assertThat(header(h, "X-Prometheus-Remote-Write-Version"), is("2.0.0"));
+        } finally {
+            if (exporter != null) {
+                exporter.stop();
+            }
+            server.stop(0);
+        }
+    }
+
+    @Test
+    public void v2EncoderReportsV2ContentTypeAndVersion() {
+        RemoteWriteV2Encoder encoder = new RemoteWriteV2Encoder();
+        assertThat(encoder.contentType(), is("application/x-protobuf;proto=io.prometheus.write.v2.Request"));
+        assertThat(encoder.protocolVersionHeader(), is("2.0.0"));
+    }
+
+    @Test
+    public void selectEncoderChoosesV2OnlyForV2AndFailsSafeToV1Otherwise() {
+        assertThat(PrometheusRemoteWriteExporter.selectEncoder("v2") instanceof RemoteWriteV2Encoder, is(true));
+        assertThat(PrometheusRemoteWriteExporter.selectEncoder(" V2 ") instanceof RemoteWriteV2Encoder, is(true));
+        for (String version : new String[]{"v1", "V1", "", "  ", "nonsense", null}) {
+            RemoteWriteEncoder encoder = PrometheusRemoteWriteExporter.selectEncoder(version);
+            assertThat("version=" + version, encoder instanceof RemoteWriteV1Encoder, is(true));
         }
     }
 
