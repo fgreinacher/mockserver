@@ -810,6 +810,8 @@
                         <exclude>**/PrometheusRemoteWriteExporterTest.java</exclude>
                         <!-- Sets/clears the mockserver.prometheusRemoteWriteProtocolVersion JVM system property and property cache -->
                         <exclude>**/PrometheusRemoteWriteProtocolVersionConfigurationTest.java</exclude>
+                        <!-- Mutates mockserver.driftDetectionEnabled/driftSampleRate global ConfigurationProperties -->
+                        <exclude>**/DriftDetectionConfigTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -930,6 +932,7 @@
                                 <include>**/OtelEndpointConfigurationTest.java</include>
                                 <include>**/PrometheusRemoteWriteExporterTest.java</include>
                                 <include>**/PrometheusRemoteWriteProtocolVersionConfigurationTest.java</include>
+                                <include>**/DriftDetectionConfigTest.java</include>
                             </includes>
                         </configuration>
                     </execution>
