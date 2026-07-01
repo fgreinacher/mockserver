@@ -196,6 +196,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_OTEL_TRACES_ENABLED = "mockserver.otelTracesEnabled";
     private static final String MOCKSERVER_OTEL_ENDPOINT = "mockserver.otelEndpoint";
     private static final String MOCKSERVER_OTEL_METRICS_EXPORT_INTERVAL_SECONDS = "mockserver.otelMetricsExportIntervalSeconds";
+    private static final String MOCKSERVER_OTEL_METRICS_TEMPORALITY = "mockserver.otelMetricsTemporality";
     private static final String MOCKSERVER_OTEL_PROPAGATE_TRACE_CONTEXT = "mockserver.otelPropagateTraceContext";
     private static final String MOCKSERVER_OTEL_GENERATE_TRACE_ID = "mockserver.otelGenerateTraceId";
     private static final String MOCKSERVER_LLM_SEMANTIC_MATCHING_ENABLED = "mockserver.llmSemanticMatchingEnabled";
@@ -3021,6 +3022,20 @@ public class ConfigurationProperties {
 
     public static void otelMetricsExportIntervalSeconds(long seconds) {
         setProperty(MOCKSERVER_OTEL_METRICS_EXPORT_INTERVAL_SECONDS, "" + seconds);
+    }
+
+    /**
+     * OTLP aggregation temporality for counter/histogram instruments: {@code cumulative} (default,
+     * exactly the previous behaviour) or {@code delta}. Backends such as New Relic prefer delta.
+     * Kept as a plain string here; the exporter parses it and fails safe to cumulative on any
+     * unknown/blank value. OTLP-only — Prometheus scrape/remote-write are inherently cumulative.
+     */
+    public static String otelMetricsTemporality() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_OTEL_METRICS_TEMPORALITY, "MOCKSERVER_OTEL_METRICS_TEMPORALITY", "cumulative");
+    }
+
+    public static void otelMetricsTemporality(String temporality) {
+        setProperty(MOCKSERVER_OTEL_METRICS_TEMPORALITY, temporality);
     }
 
     /**

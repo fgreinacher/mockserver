@@ -18,6 +18,21 @@ import static org.mockserver.configuration.Configuration.configuration;
 public class OtelMetricsExporterTest {
 
     @Test
+    public void resolvesDeltaTemporalityTrimmedAndCaseInsensitiveElseCumulative() {
+        // delta opts in regardless of surrounding whitespace or case
+        assertThat(OtelMetricsExporter.isDeltaTemporality("delta"), is(true));
+        assertThat(OtelMetricsExporter.isDeltaTemporality("  delta  "), is(true));
+        assertThat(OtelMetricsExporter.isDeltaTemporality("DELTA"), is(true));
+        assertThat(OtelMetricsExporter.isDeltaTemporality(" Delta "), is(true));
+        // everything else (default, unknown, blank, null) stays cumulative — fail-safe
+        assertThat(OtelMetricsExporter.isDeltaTemporality("cumulative"), is(false));
+        assertThat(OtelMetricsExporter.isDeltaTemporality("deltas"), is(false));
+        assertThat(OtelMetricsExporter.isDeltaTemporality(""), is(false));
+        assertThat(OtelMetricsExporter.isDeltaTemporality("   "), is(false));
+        assertThat(OtelMetricsExporter.isDeltaTemporality(null), is(false));
+    }
+
+    @Test
     public void exportsExplicitMockServerMetricsAsObservableGauges() {
         // given — a known value in an explicitly-defined MockServer metric
         Metrics.clear(Metrics.Name.REQUESTS_RECEIVED_COUNT);
@@ -144,8 +159,11 @@ public class OtelMetricsExporterTest {
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("mock_server_http_chaos_injected_total not exported"));
 
+            // it is now an observable (monotonic) Sum, not a Gauge, so delta temporality can apply
+            assertThat(chaosMetric.getType(), is(io.opentelemetry.sdk.metrics.data.MetricDataType.LONG_SUM));
+
             // verify error count = 2
-            long errorCount = chaosMetric.getLongGaugeData().getPoints().stream()
+            long errorCount = chaosMetric.getLongSumData().getPoints().stream()
                 .filter(p -> "error".equals(p.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("fault_type"))))
                 .mapToLong(io.opentelemetry.sdk.metrics.data.LongPointData::getValue)
                 .findFirst()
@@ -153,7 +171,7 @@ public class OtelMetricsExporterTest {
             assertThat(errorCount, is(2L));
 
             // verify latency count = 1
-            long latencyCount = chaosMetric.getLongGaugeData().getPoints().stream()
+            long latencyCount = chaosMetric.getLongSumData().getPoints().stream()
                 .filter(p -> "latency".equals(p.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("fault_type"))))
                 .mapToLong(io.opentelemetry.sdk.metrics.data.LongPointData::getValue)
                 .findFirst()
@@ -240,6 +258,70 @@ public class OtelMetricsExporterTest {
 
         // after stop, observing should not throw (OTel histogram is null)
         Metrics.observeRequestDurationSeconds(0.1);
+    }
+
+    @Test
+    public void counterMirrorsSurfaceAsMonotonicSumsNotGauges() {
+        // the two _total mirrors were reclassified from observable gauges to observable counters
+        // so OTLP delta temporality can apply; a default (cumulative) reader must see them as Sums
+        InMemoryMetricReader reader = InMemoryMetricReader.create();
+        OtelMetricsExporter exporter = OtelMetricsExporter.startWithReader(reader);
+        try {
+            Collection<MetricData> collected = reader.collectAllMetrics();
+
+            MetricData slow = metricByName(collected, "mock_server_slow_requests_total");
+            assertThat(slow.getType(), is(io.opentelemetry.sdk.metrics.data.MetricDataType.LONG_SUM));
+            assertThat(slow.getLongSumData().isMonotonic(), is(true));
+            assertThat(slow.getLongSumData().getAggregationTemporality(),
+                is(io.opentelemetry.sdk.metrics.data.AggregationTemporality.CUMULATIVE));
+
+            MetricData chaos = metricByName(collected, "mock_server_http_chaos_injected_total");
+            assertThat(chaos.getType(), is(io.opentelemetry.sdk.metrics.data.MetricDataType.LONG_SUM));
+            assertThat(chaos.getLongSumData().isMonotonic(), is(true));
+
+            // a genuine gauge is still a Gauge (not reclassified)
+            MetricData activeChaos = metricByName(collected, "mock_server_active_service_chaos");
+            assertThat(activeChaos.getType(), is(io.opentelemetry.sdk.metrics.data.MetricDataType.LONG_GAUGE));
+        } finally {
+            exporter.stop();
+        }
+    }
+
+    @Test
+    public void deltaReaderReportsDeltaTemporalityForCountersAndHistogramButGaugesStayGauges() {
+        // a delta in-memory reader mirrors what deltaPreferred() on the OTLP exporter produces:
+        // counters/histograms become delta, gauges are unaffected
+        InMemoryMetricReader reader = InMemoryMetricReader.createDelta();
+        OtelMetricsExporter exporter = OtelMetricsExporter.startWithReader(reader);
+        try {
+            Metrics.observeRequestDurationSeconds(0.1);
+            Collection<MetricData> collected = reader.collectAllMetrics();
+
+            MetricData slow = metricByName(collected, "mock_server_slow_requests_total");
+            assertThat(slow.getLongSumData().getAggregationTemporality(),
+                is(io.opentelemetry.sdk.metrics.data.AggregationTemporality.DELTA));
+
+            MetricData chaos = metricByName(collected, "mock_server_http_chaos_injected_total");
+            assertThat(chaos.getLongSumData().getAggregationTemporality(),
+                is(io.opentelemetry.sdk.metrics.data.AggregationTemporality.DELTA));
+
+            MetricData histogram = metricByName(collected, "mock_server_request_duration_seconds");
+            assertThat(histogram.getHistogramData().getAggregationTemporality(),
+                is(io.opentelemetry.sdk.metrics.data.AggregationTemporality.DELTA));
+
+            // a genuine gauge is still a Gauge regardless of the delta reader
+            MetricData activeChaos = metricByName(collected, "mock_server_active_service_chaos");
+            assertThat(activeChaos.getType(), is(io.opentelemetry.sdk.metrics.data.MetricDataType.LONG_GAUGE));
+        } finally {
+            exporter.stop();
+        }
+    }
+
+    private static MetricData metricByName(Collection<MetricData> collected, String name) {
+        return collected.stream()
+            .filter(m -> m.getName().equals(name))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(name + " not exported"));
     }
 
     @Test

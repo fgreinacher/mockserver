@@ -58,6 +58,14 @@ Custom labels from scenario/step `labels` maps are passed as OTEL `Attributes` o
 
 **Exemplars on the load histogram:** `mock_server_load_request_duration_seconds` attaches a `trace_id` exemplar to each histogram observation when the upstream response carries a W3C `traceparent` header. This allows a latency spike in an OTEL-connected backend (e.g. Grafana Tempo) to be pivoted directly to the trace that produced it.
 
+#### Aggregation Temporality (`cumulative` vs `delta`)
+
+`mockserver.otelMetricsTemporality` selects the OTLP aggregation temporality for the exporter's **counter and histogram** instruments. Default `cumulative` reproduces the prior behaviour exactly. Setting `delta` chains `AggregationTemporalitySelector.deltaPreferred()` onto the `OtlpHttpMetricExporter` builder in `OtelMetricsExporter.startIfEnabled()`, so counters/histograms report per-interval deltas while gauges stay cumulative (a gauge has no temporality). Resolution is fail-safe: only the literal `delta` (trimmed, case-insensitive) opts in; any unknown/blank value keeps `cumulative`, and a bad value never throws.
+
+Delta is what backends such as **New Relic** prefer: a delta counter carries the change within the interval, so the backend does not need to track a monotonic cumulative series per producing pod/instance, which collapses time-series cardinality. This is an OTLP-only concept — the Prometheus scrape endpoint and Prometheus remote write are inherently cumulative.
+
+To make delta meaningful for the two counter *mirror* series, `mock_server_slow_requests_total` and `mock_server_http_chaos_injected_total` are registered as OTLP observable **counters** (monotonic sums), not gauges — they carry the `_total` suffix and are genuinely monotonic, so under cumulative they export as monotonic sums and under delta the SDK converts them to per-interval deltas. Genuinely non-monotonic series (JVM, `mock_server_active_service_chaos`, load VUs/inflight, LLM-optimisation gauges) remain gauges.
+
 ### OTLP Endpoint Resolution (`OtelEndpoints`)
 
 Resolves per-signal OTLP HTTP endpoints (`/v1/metrics`, `/v1/traces`) from the single configured base URL (`mockserver.otelEndpoint`). Shared by both the metrics and trace exporters. When the MockServer-specific property/env is unset, `ConfigurationProperties.otelEndpoint()` falls back to the OpenTelemetry-standard `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable before defaulting to empty, so existing OTel deployments work without extra configuration; the MockServer-specific value always takes precedence.
@@ -101,6 +109,7 @@ The handler is `@Sharable` (no per-channel mutable state; state lives in the cha
 | `mockserver.otelTracesEnabled` | boolean | false | Export GenAI spans via OTLP |
 | `mockserver.otelEndpoint` | string | (empty) | OTLP collector base URL; falls back to the standard `OTEL_EXPORTER_OTLP_ENDPOINT` env var when unset |
 | `mockserver.otelMetricsExportIntervalSeconds` | long | 60 | Metrics push interval |
+| `mockserver.otelMetricsTemporality` | string | `cumulative` | OTLP aggregation temporality for counters/histograms: `cumulative` or `delta`. Any unknown/blank value falls back to `cumulative` |
 | `mockserver.otelPropagateTraceContext` | boolean | false | Copy W3C trace headers to responses |
 | `mockserver.otelGenerateTraceId` | boolean | false | Generate trace IDs for requests without `traceparent` |
 

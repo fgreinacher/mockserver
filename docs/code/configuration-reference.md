@@ -76,7 +76,7 @@ The first three feed into the **static** `ConfigurationProperties`. The fourth u
 | DNS | `dnsEnabled`, `dnsPort` |
 | HTTP/3 (QUIC) | `http3Port`, `http3AltSvcMaxAge`, `http3AdvertiseAltSvc`, `http3ConnectUdpEnabled`, `http3MaxIdleTimeout`, `http3InitialMaxData`, `http3InitialMaxStreamDataBidirectional`, `http3InitialMaxStreamsBidirectional`, `http3QpackMaxTableCapacity` |
 | Service mesh / transparent proxy | `transparentProxyEnabled`, `transparentProxyTproxy`, `transparentProxyEbpf`, `transparentProxyEbpfMapPath` |
-| OpenTelemetry | `otelMetricsEnabled`, `otelTracesEnabled`, `otelEndpoint`, `otelMetricsExportIntervalSeconds`, `otelPropagateTraceContext`, `otelGenerateTraceId` |
+| OpenTelemetry | `otelMetricsEnabled`, `otelTracesEnabled`, `otelEndpoint`, `otelMetricsExportIntervalSeconds`, `otelMetricsTemporality`, `otelPropagateTraceContext`, `otelGenerateTraceId` |
 | Chaos auto-halt | `chaosAutoHaltEnabled`, `chaosAutoHaltErrorThreshold`, `chaosAutoHaltWindowMillis` |
 | Rate limiting | `rateLimitMaxNamedQuotas` |
 | SLO verdicts | `sloTrackingEnabled`, `sloWindowRetentionMillis`, `sloWindowMaxSamples` |

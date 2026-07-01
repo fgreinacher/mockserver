@@ -4,6 +4,7 @@ import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.Meter;
 import io.opentelemetry.exporter.otlp.http.metrics.OtlpHttpMetricExporter;
+import io.opentelemetry.exporter.otlp.http.metrics.OtlpHttpMetricExporterBuilder;
 import io.opentelemetry.sdk.metrics.SdkMeterProvider;
 import io.opentelemetry.sdk.metrics.export.MetricReader;
 import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader;
@@ -52,21 +53,39 @@ public class OtelMetricsExporter {
         }
         try {
             String endpoint = org.mockserver.telemetry.OtelEndpoints.metrics(ConfigurationProperties.otelEndpoint());
-            OtlpHttpMetricExporter otlpExporter = endpoint != null
-                ? OtlpHttpMetricExporter.builder().setEndpoint(endpoint).build()
-                : OtlpHttpMetricExporter.builder().build();
+            // Resolve aggregation temporality — fail-safe: only the explicit "delta" opts in, any
+            // unknown/blank value keeps the previous cumulative behaviour. deltaPreferred() yields
+            // delta for counters/histograms and keeps gauges cumulative (OTLP-only concept).
+            boolean delta = isDeltaTemporality(ConfigurationProperties.otelMetricsTemporality());
+            OtlpHttpMetricExporterBuilder builder = endpoint != null
+                ? OtlpHttpMetricExporter.builder().setEndpoint(endpoint)
+                : OtlpHttpMetricExporter.builder();
+            if (delta) {
+                builder.setAggregationTemporalitySelector(io.opentelemetry.sdk.metrics.export.AggregationTemporalitySelector.deltaPreferred());
+            }
+            OtlpHttpMetricExporter otlpExporter = builder.build();
             MetricReader reader = PeriodicMetricReader.builder(otlpExporter)
                 .setInterval(Duration.ofSeconds(ConfigurationProperties.otelMetricsExportIntervalSeconds()))
                 .build();
             OtelMetricsExporter exporter = startWithReader(reader);
-            LOGGER.info("OpenTelemetry metrics export enabled (endpoint {}, interval {}s)",
+            LOGGER.info("OpenTelemetry metrics export enabled (endpoint {}, interval {}s, temporality {})",
                 endpoint == null || endpoint.isEmpty() ? "default" : endpoint,
-                ConfigurationProperties.otelMetricsExportIntervalSeconds());
+                ConfigurationProperties.otelMetricsExportIntervalSeconds(),
+                delta ? "delta" : "cumulative");
             return exporter;
         } catch (Exception e) {
             LOGGER.warn("failed to start OpenTelemetry metrics export ({}); continuing without it", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Resolve whether the configured temporality value selects delta. Fail-safe: only the literal
+     * {@code delta} (trimmed, case-insensitive, locale-independent) opts in; {@code null}, blank,
+     * {@code cumulative}, and any unknown value keep cumulative. Package-private for unit testing.
+     */
+    static boolean isDeltaTemporality(String value) {
+        return value != null && "delta".equals(value.trim().toLowerCase(java.util.Locale.ROOT));
     }
 
     /**
@@ -181,16 +200,16 @@ public class OtelMetricsExporter {
     }
 
     private static void registerSlowRequestCounter(Meter meter) {
-        meter.gaugeBuilder("mock_server_slow_requests_total")
+        // Observable *counter* (not gauge): it mirrors a monotonic _total, so delta temporality applies.
+        meter.counterBuilder("mock_server_slow_requests_total")
             .setDescription("Total forwarded requests that exceeded the slow-request threshold (mirrors Prometheus counter)")
-            .ofLongs()
             .buildWithCallback(m -> m.record(Metrics.getSlowRequestCount()));
     }
 
     private static void registerChaosCounter(Meter meter) {
-        meter.gaugeBuilder("mock_server_http_chaos_injected_total")
+        // Observable *counter* (not gauge): it mirrors a monotonic _total, so delta temporality applies.
+        meter.counterBuilder("mock_server_http_chaos_injected_total")
             .setDescription("Total HTTP chaos faults injected by type (mirrors Prometheus counter)")
-            .ofLongs()
             .buildWithCallback(m -> {
                 // Mirror the full documented fault-type set (the single source of truth on Metrics),
                 // not a hardcoded subset, so no fault type is silently dropped from OTLP export.

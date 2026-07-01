@@ -21,6 +21,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 public class OtelEndpointConfigurationTest {
 
     private static final String KEY = "mockserver.otelEndpoint";
+    private static final String TEMPORALITY_KEY = "mockserver.otelMetricsTemporality";
 
     @Before
     @After
@@ -31,6 +32,9 @@ public class OtelEndpointConfigurationTest {
         System.clearProperty(KEY);
         clearCacheEntry(KEY);
         clearProgrammaticallySetKey(KEY);
+        System.clearProperty(TEMPORALITY_KEY);
+        clearCacheEntry(TEMPORALITY_KEY);
+        clearProgrammaticallySetKey(TEMPORALITY_KEY);
     }
 
     @Test
@@ -65,6 +69,27 @@ public class OtelEndpointConfigurationTest {
 
         // when / then the resolved endpoint is the standard env (if set) or empty
         assertThat(ConfigurationProperties.otelEndpoint(), is(expected));
+    }
+
+    @Test
+    public void otelMetricsTemporalityDefaultsToCumulative() {
+        // unset (reset in @Before) → default is the previous behaviour, cumulative
+        assertThat(ConfigurationProperties.otelMetricsTemporality(), is("cumulative"));
+    }
+
+    @Test
+    public void otelMetricsTemporalityHonoursSystemPropertyOverride() throws Exception {
+        System.setProperty(TEMPORALITY_KEY, "delta");
+        clearCacheEntry(TEMPORALITY_KEY);
+
+        assertThat(ConfigurationProperties.otelMetricsTemporality(), is("delta"));
+    }
+
+    @Test
+    public void otelMetricsTemporalityRoundTripsViaSetter() {
+        ConfigurationProperties.otelMetricsTemporality("delta");
+
+        assertThat(ConfigurationProperties.otelMetricsTemporality(), is("delta"));
     }
 
     @SuppressWarnings("unchecked")
