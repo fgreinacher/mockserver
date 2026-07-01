@@ -90,7 +90,7 @@ mock_server_expectation_matched_total == 0
 
 | Label | Description |
 |-------|-------------|
-| `version` | Full version (e.g. `7.2.0`) |
+| `version` | Full version (e.g. `7.3.0`) |
 | `major_minor_version` | Major.minor version (e.g. `6.1`) |
 | `group_id` | Maven group ID (`org.mock-server`) |
 | `artifact_id` | Maven artifact ID (`mockserver-netty`) |

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [7.3.0] - 2026-07-01
+
+### Added
+
 - **Typed client methods for control-plane operations that previously needed a hand-written REST call.** The
   client libraries gain first-class methods for clock control (freeze / advance / reset / status), metrics
   (the JSON counter snapshot and the Prometheus scrape), configuration read/update, Pact import / export / verify,

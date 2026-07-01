@@ -316,7 +316,7 @@ launcher_path = MockServer::BinaryLauncher.ensure_launcher
 ### Specify a version
 
 ```ruby
-handle = MockServer::BinaryLauncher.start(port: 1080, version: '7.2.0')
+handle = MockServer::BinaryLauncher.start(port: 1080, version: '7.3.0')
 ```
 
 ### API reference

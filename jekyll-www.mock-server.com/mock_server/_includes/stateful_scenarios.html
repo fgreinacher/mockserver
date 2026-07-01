@@ -363,7 +363,7 @@ $client-&gt;upsertExpectation(
     <li><strong>Mustache</strong> &mdash; <span class="inline_code">{% raw %}{{#scenario.get}}orderId{{/scenario.get}}{% endraw %}</span> (a <em>section</em>, with the state name as the section body &mdash; Mustache cannot pass a method argument inline the way Velocity and JavaScript can)</li>
 </ul>
 
-<p><span class="inline_code">capture</span> rules require <strong>MockServer 7.2.0 or later</strong>; reading scenario state from a <strong>Mustache</strong> template is supported in <strong>recent versions</strong> (Velocity and JavaScript work from 7.2.0). On earlier versions, write the value into scenario state from a Velocity/JavaScript template on the first request with <span class="inline_code">scenario.set('name', ...)</span> and read it back with <span class="inline_code">scenario.get('name')</span> on the later request.</p>
+<p><span class="inline_code">capture</span> rules require <strong>MockServer 7.3.0 or later</strong>; reading scenario state from a <strong>Mustache</strong> template is supported in <strong>recent versions</strong> (Velocity and JavaScript work from 7.3.0). On earlier versions, write the value into scenario state from a Velocity/JavaScript template on the first request with <span class="inline_code">scenario.set('name', ...)</span> and read it back with <span class="inline_code">scenario.get('name')</span> on the later request.</p>
 
 <button class="accordion title"><strong>Three-Step Order Flow</strong> &mdash; capture the order id in step 1, then return it in the response body of step 3</button>
 <div class="panel title">
@@ -406,7 +406,7 @@ $client-&gt;upsertExpectation(
 
     <button class="accordion"><strong>Step 3 &mdash; Mustache template</strong></button>
     <div class="panel">
-        <p>Read the captured value with the section form <span class="inline_code">{% raw %}{{#scenario.get}}orderId{{/scenario.get}}{% endraw %}</span> &mdash; the state name is the section body. Reading scenario state from a Mustache template is supported in recent MockServer versions (Velocity and JavaScript work from 7.2.0).</p>
+        <p>Read the captured value with the section form <span class="inline_code">{% raw %}{{#scenario.get}}orderId{{/scenario.get}}{% endraw %}</span> &mdash; the state name is the section body. Reading scenario state from a Mustache template is supported in recent MockServer versions (Velocity and JavaScript work from 7.3.0).</p>
         <pre class="prettyprint lang-java code"><code class="code">{
   "httpRequest": { "method": "POST", "path": "/order/step3" },
   "httpResponseTemplate": {

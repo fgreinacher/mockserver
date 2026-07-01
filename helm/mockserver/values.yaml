@@ -301,7 +301,7 @@ webhook:
 #   clustering:
 #     enabled: true
 #   image:
-#     repositoryNameAndTag: "mockserver/mockserver:clustered-7.2.0"
+#     repositoryNameAndTag: "mockserver/mockserver:clustered-7.3.0"
 clustering:
   enabled: false
   # -- Cluster name for JGroups. All pods that should share state must use

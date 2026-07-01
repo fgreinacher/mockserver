@@ -7,7 +7,7 @@ branding:
 
 inputs:
   version:
-    description: 'MockServer Docker image tag (e.g. "latest" or a release tag like "mockserver-7.2.0").'
+    description: 'MockServer Docker image tag (e.g. "latest" or a release tag like "mockserver-7.3.0").'
     required: false
     default: 'latest'
   port:
