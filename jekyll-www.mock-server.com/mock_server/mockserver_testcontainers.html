@@ -472,4 +472,80 @@ func Example() {
 
 </div>
 
+<a id="fast-tests" class="anchor" href="#fast-tests">&nbsp;</a>
+
+<h2>Fast Tests: Startup Time, Memory and Reuse</h2>
+
+<h3>Startup is fast</h3>
+
+<p>The <span class="inline_code">mockserver/mockserver</span> container image starts quickly — it reaches ready in under a second on a typical developer machine (measured ~0.8 s on 7.3.0). If startup appears to take several seconds, check that the image version being pulled matches the client library on the classpath and that the wait strategy in use polls for readiness rather than sleeping for a fixed interval.</p>
+
+<h3>One container per suite, reset between tests</h3>
+
+<p>The most effective way to keep tests fast is to start a single MockServer container once for the whole test class (or suite) and call <span class="inline_code">client.reset()</span> between tests. <span class="inline_code">reset()</span> clears all expectations and recorded requests in milliseconds, giving the same isolation as a fresh container without paying the startup cost on every test.</p>
+
+<pre class="prettyprint lang-java code"><code class="code">import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.mockserver.client.MockServerClient;
+import org.mockserver.testcontainers.MockServerContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpResponse.response;
+
+@Testcontainers
+class SuiteReuseExampleTest {
+
+    @Container
+    static MockServerContainer mockServer = new MockServerContainer();
+
+    static MockServerClient client;
+
+    @BeforeAll
+    static void startClient() {
+        client = mockServer.getClient();
+    }
+
+    @AfterEach
+    void resetBetweenTests() {
+        client.reset(); // clears expectations and recorded requests in milliseconds
+    }
+
+    @Test
+    void shouldMockFirstEndpoint() {
+        client
+            .when(request().withPath("/first"))
+            .respond(response().withBody("one"));
+        // point the system under test at mockServer.getEndpoint()
+    }
+
+    @Test
+    void shouldMockSecondEndpoint() {
+        client
+            .when(request().withPath("/second"))
+            .respond(response().withBody("two"));
+        // point the system under test at mockServer.getEndpoint()
+    }
+}</code></pre>
+
+<p>Testcontainers' <a href="https://java.testcontainers.org/features/reuse/">reuse feature</a> (<span class="inline_code">withReuse(true)</span> on the container, plus <span class="inline_code">testcontainers.reuse.enable=true</span> in <span class="inline_code">~/.testcontainers.properties</span>) keeps the container alive across test runs. Combined with <span class="inline_code">client.reset()</span> between tests, this eliminates startup cost entirely for local development iterations. When using <span class="inline_code">withReuse(true)</span>, also call <span class="inline_code">client.reset()</span> at the start of the suite (for example in <span class="inline_code">@BeforeAll</span>) so any state left behind by an aborted previous run is cleared before the first test executes.</p>
+
+<h3>Bounding memory</h3>
+
+<p>The image caps the JVM heap at 75% of the container memory limit (<span class="inline_code">-XX:MaxRAMPercentage=75.0</span>). Setting a container memory limit is the supported way to control MockServer's footprint in your test environment. Without a limit, idle footprint is roughly 200 MiB (measured at idle with no active requests and no explicit memory limit).</p>
+
+<pre class="prettyprint lang-java code"><code class="code">// Limit MockServer to 256 MiB of container memory (heap capped at ~192 MiB)
+MockServerContainer mockServer = new MockServerContainer()
+    .withCreateContainerCmdModifier(cmd ->
+        cmd.getHostConfig().withMemory(256 * 1024 * 1024L));</code></pre>
+
+<p>To override the percentage entirely, set an explicit heap size via <span class="inline_code">JAVA_TOOL_OPTIONS</span>:</p>
+
+<pre class="prettyprint lang-java code"><code class="code">MockServerContainer mockServer = new MockServerContainer()
+    .withEnv("JAVA_TOOL_OPTIONS", "-Xmx128m");</code></pre>
+
+<p>Note: setting a different <span class="inline_code">-XX:MaxRAMPercentage</span> via <span class="inline_code">JAVA_TOOL_OPTIONS</span> has no effect — the image applies its own value after <span class="inline_code">JAVA_TOOL_OPTIONS</span>, so it always wins. Use an explicit <span class="inline_code">-Xmx</span> instead, which takes precedence over the percentage cap.</p>
+
 <p>For more information see <a href="/mock_server/running_mock_server.html#running_via_testcontainers">Running MockServer via Testcontainers</a> and the available <a href="/mock_server/mockserver_clients.html">MockServer clients</a>.</p>
