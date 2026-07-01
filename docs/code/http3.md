@@ -354,9 +354,12 @@ declarations are needed -- they resolve automatically.
   enabled (or a `tlsMutualAuthenticationCertificateChain` is configured), the QUIC
   SSL context requests client certificates under the same conditions as the TCP
   path. Peer certificates are extracted from the `QuicChannel` `SSLEngine` session
-  and plumbed into the `HttpRequest` via `withClientCertificateChain`, enabling
-  cert-based expectation matching and verification over HTTP/3. When no client cert
-  is presented, the request proceeds without a cert chain (no error).
+  and plumbed into the `HttpRequest` via `withClientCertificateChain`. The chain is
+  captured and serialized, so it is available for retrieval over HTTP/3 (the
+  serialized recorded request includes it); neither expectation matching nor
+  verification consider the certificate chain, because both route through
+  `HttpRequestPropertiesMatcher`, which does not reference `clientCertificateChain`.
+  When no client cert is presented, the request proceeds without a cert chain (no error).
 - **MCP (Model Context Protocol) over HTTP/3**: the MCP Streamable HTTP transport
   (`/mockserver/mcp`) works over HTTP/3 with the same behaviour as TCP, including
   JSON-RPC request/response, session management, tool calls, resource reads, batch

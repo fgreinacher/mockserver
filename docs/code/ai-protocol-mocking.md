@@ -665,9 +665,9 @@ All overrides are cleared on `HttpState.reset()`. An empty `service` string sets
 ### Limitations
 
 - **gRPC forwarding/proxy** is deferred — requires HTTP/2 + gRPC-framing client changes to `NettyHttpClient`
-- **True client streaming and bidirectional streaming** require migration from `InboundHttp2ToHttpAdapter` (which aggregates full messages) to `Http2MultiplexHandler` with per-stream child channels
+- **True client streaming and bidirectional streaming** are supported via the `Http2MultiplexHandler` multiplex pipeline (per-stream child channels), opt-in behind `grpcBidiStreamingEnabled`; when disabled the default `InboundHttp2ToHttpAdapter` path aggregates full messages and bidi actions return 501
 - **WAR deployment** returns 501 for `GRPC_STREAM_RESPONSE` actions (no `ChannelHandlerContext` available)
-- **Proto reflection** is not yet supported — descriptors must be provided via files or API upload
+- **Proto reflection** is supported — a `GrpcServerReflectionHandler` (core, with a `GrpcBidiReflectionHandler` on the multiplex path) answers v1 and v1alpha `ServerReflection` requests without a generated stub; descriptors may still be provided via files or API upload
 
 ## Module Boundaries
 
@@ -830,7 +830,7 @@ flowchart LR
 | Class | Module | Purpose |
 |-------|--------|---------|
 | `FixtureRedactor` | core | Redacts sensitive headers (Authorization, api-key, Cookie, etc.) from expectations before writing to fixture files; operates on copies, never mutates live entries |
-| `SseBodyParser` | core | Parses raw `text/event-stream` bytes into `SseEvent` objects; applies a fixed inter-event delay (50ms default) since per-chunk timestamps are not captured |
+| `SseBodyParser` | core | Parses raw `text/event-stream` bytes into `SseEvent` objects; replays captured per-chunk delays when available, falling back to a fixed inter-event delay (50ms default) |
 | `SseAwareExpectationConverter` | core | Detects SSE-streamed responses (via `x-mockserver-streamed` header or `text/event-stream` content type) and converts them to `HttpSseResponse` actions; falls back to static response with warning for truncated captures |
 
 ### MCP Tools
@@ -842,7 +842,7 @@ flowchart LR
 
 ### SSE Timing
 
-Per-chunk timestamps are not captured by the streaming relay (`StreamingBody` captures bytes in a bounded buffer without timing metadata). On replay, SSE events are sent with a fixed 50ms inter-event delay. This is noted as a future enhancement: adding per-chunk timestamps to `StreamingBody` would enable faithful timing reproduction.
+When the capture records per-chunk timing, the delays are carried on the `x-mockserver-chunk-delays-ms` header (a comma-separated list of millisecond gaps). `SseAwareExpectationConverter` parses that header and replays each SSE event with its captured delay, reproducing the original stream timing. When the header is absent, empty, or malformed, replay falls back to a fixed inter-event delay (50ms default).
 
 ### Secret Redaction
 

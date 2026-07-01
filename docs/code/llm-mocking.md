@@ -41,7 +41,7 @@ Currently registered codecs:
 | OPENAI | `OpenAiChatCompletionsCodec` | Complete (chat + embeddings) |
 | OPENAI_RESPONSES | `OpenAiResponsesCodec` | Complete (no embeddings endpoint) |
 | GEMINI | `GeminiCodec` | Complete (chat + embeddings) |
-| BEDROCK | `BedrockCodec` | Complete (delegates chat to `AnthropicCodec`; streaming uses `application/vnd.amazon.eventstream` binary framing via `BedrockEventStreamEncoder`; SigV4 signing is a follow-up; embeddings = Titan default / Cohere by model) |
+| BEDROCK | `BedrockCodec` | Complete (delegates chat to `AnthropicCodec`; streaming uses `application/vnd.amazon.eventstream` binary framing via `BedrockEventStreamEncoder`; automatic AWS SigV4 request signing implemented via `AwsSigV4Signer` on the client path; embeddings = Titan default / Cohere by model) |
 | AZURE_OPENAI | `AzureOpenAiCodec` | Complete (delegates to `OpenAiChatCompletionsCodec`) |
 | OLLAMA | `OllamaCodec` | Complete (chat + embeddings; see security audit for NDJSON wire-format limitation) |
 | COHERE | `CohereCodec` | Rerank only (`/v1/rerank`) |
@@ -461,7 +461,7 @@ flowchart TD
     F -- "timeout / error / non-2xx" --> C
 ```
 
-Adding a provider = implement `LlmClient` + one `register(...)` line — the same one-line story as codecs. **Ollama** is the reference backend (no auth, local, free) used to prove the path. **Bedrock** builds the Anthropic-on-Bedrock body and parses the Anthropic-shaped response, but automatic AWS SigV4 signing is not yet implemented — callers supply auth via the `headers` escape hatch or a signing proxy (tracked in `llm-security-audit.md`).
+Adding a provider = implement `LlmClient` + one `register(...)` line — the same one-line story as codecs. **Ollama** is the reference backend (no auth, local, free) used to prove the path. **Bedrock** builds the Anthropic-on-Bedrock body and parses the Anthropic-shaped response, and performs automatic AWS SigV4 request signing via `AwsSigV4Signer`: when `LlmBackend#apiKey()` carries credentials (`akid:secret[:token]`), `BedrockLlmClient` signs the request and the SigV4 headers take precedence over any `Authorization` supplied via the `headers` escape hatch; the escape hatch (or a signing proxy) remains supported for pre-signed setups.
 
 This SPI is never on the deterministic assertion/matching path. The features that consume it (drift detection, semantic matching) are opt-in and documented in this file above.
 

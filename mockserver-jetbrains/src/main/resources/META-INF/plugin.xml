@@ -53,7 +53,7 @@
     ]]></description>
 
     <change-notes><![CDATA[
-    <p><b>Unreleased</b> — LLM authoring, contract testing, and stream-frame debugging (VS Code parity):</p>
+    <p><b>7.3.0</b> — LLM authoring, contract testing, and stream-frame debugging (VS Code parity):</p>
     <ul>
       <li><b>LLM tool window</b> — build an <em>httpLlmResponse</em> expectation from a form (provider/model/path/completion/usage/stream) and open it in an editor or load it into the running server; completion for <em>httpLlmResponse</em> fields, provider and model names inside <em>*.mockserver.json</em>; and an agent-run call graph rendered as Mermaid in the embedded Chromium (JCEF)</li>
       <li><b>Run Contract Test</b> — run an OpenAPI contract test of a live service against the active spec (Tools menu and editor/project-view context menus) and open a per-operation pass/fail report</li>
