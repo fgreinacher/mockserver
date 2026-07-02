@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Go client: `jwt`/`allOf` matchers, a `/v7` module path, and a bundled Testcontainers client.** The Go
+  client (`mockserver-client-go`) gains typed `jwt` request-matcher and `allOf` body-matcher builders (matching
+  the other client libraries). Its module path now carries the required Semantic Import Versioning suffix —
+  `github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7` — so it is properly `go get`-able as a
+  dependency (a future v8 becomes `/v8`); update imports to add `/v7`. With that fixed, the Go Testcontainers
+  module now bundles the client and exposes `container.Client(ctx)` returning a ready-to-use client pointed at
+  the container's mapped host and port, instead of only documenting manual construction.
+
 - **Typed client-library support for the `jwt` request matcher and `allOf` body matcher.** The two new
   matchers are now first-class in the client libraries as well as the server: the OpenAPI spec, the generated
   Node/TypeScript types (`jwt`, `Jwt`, and the `ALL_OF` / `bodyAllOf` body variant), and the Java model

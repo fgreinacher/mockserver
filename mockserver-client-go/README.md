@@ -7,7 +7,7 @@ Zero third-party dependencies — uses only the Go standard library (`net/http` 
 ## Installation
 
 ```bash
-go get github.com/mock-server/mockserver-monorepo/mockserver-client-go
+go get github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7
 ```
 
 ## Quick Start
@@ -18,7 +18,7 @@ package main
 import (
     "log"
 
-    mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+    mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 )
 
 func main() {
@@ -99,6 +99,49 @@ client.When(
     mockserver.Request().Path("/stable"),
 ).WithID("my-stable-exp").Respond(
     mockserver.Response().StatusCode(200),
+)
+```
+
+### Request Matchers
+
+#### JWT matcher
+
+Match a decoded bearer-token JWT by its claims, issuer, audience, and algorithm.
+Claim and string values follow MockServer's string-matcher semantics: an exact
+value, a regular expression, or a `!`-prefixed negated match.
+
+```go
+client.When(
+    mockserver.Request().Method("GET").Path("/secure").
+        Jwt(mockserver.NewJwt().
+            Claim("role", "^admin.*$").      // regex claim
+            Claim("scope", "!internal").     // negated claim
+            WithIssuer("https://issuer.example.com").
+            WithAudience("api").
+            WithAlgorithm("RS256")),
+).Respond(
+    mockserver.Response().StatusCode(200),
+)
+```
+
+By default the token is read from the `Authorization` header with the `Bearer`
+scheme; override with `WithHeader(...)` / `WithScheme(...)`.
+
+#### allOf body matcher
+
+Require every nested body matcher to match with `AllOfBody(...)` (or the standalone
+`AllOf(...)` constructor). Elements may be any body matcher — `JSONPathBody`,
+`RegexBody`, a `*TypedBody`, or a plain string.
+
+```go
+client.When(
+    mockserver.Request().Method("POST").Path("/orders").
+        AllOfBody(
+            mockserver.JSONPathBody("$.items[?(@.qty > 0)]"),
+            mockserver.RegexBody(`.*"currency":"GBP".*`),
+        ),
+).Respond(
+    mockserver.Response().StatusCode(201),
 )
 ```
 
@@ -324,7 +367,7 @@ import (
     "fmt"
     "log"
 
-    mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+    mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 )
 
 func main() {

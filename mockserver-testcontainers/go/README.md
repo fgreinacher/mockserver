@@ -83,20 +83,30 @@ Returns the mapped host port for the MockServer container port 1080.
   dependency version in the build info (`mockserver/mockserver:mockserver-<version>`),
   falling back to `:latest` when the version cannot be resolved.
 
-### Obtaining a client
+### `MockServerContainer.Client(ctx) (*mockserverclient.Client, error)`
 
-Construct a `mockserver-client-go` client from the container's mapped host and port:
+Returns a [`mockserver-client-go`](https://pkg.go.dev/github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7)
+control-plane client already pointed at the container's mapped host and port — the Go
+equivalent of the Java module's `getClient()` helper:
 
 ```go
-host, _ := ctr.Host(ctx)
-port, _ := ctr.ServerPort(ctx)
-client := mockserver.New(host, port)
+import mockserverclient "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client, err := ctr.Client(ctx)
+if err != nil {
+	log.Fatal(err)
+}
+
+_, err = client.When(
+	mockserverclient.Request().Method("GET").Path("/hello"),
+).Respond(
+	mockserverclient.Response().StatusCode(200).Body("world"),
+)
 ```
 
-A bundled `Client()` helper is intentionally not provided: `mockserver-client-go` is published
-at v7.x without a `/v7` module-path suffix, so it can only be consumed via a local `replace`
-directive — depending on it here would make this module itself unresolvable for downstream
-`go get`.
+The client is bundled via the `mockserver-client-go/v7` module. The `/v7` Semantic Import
+Versioning suffix on that module's path is what lets this module depend on it as a normal
+`require`, so downstream `go get` of this module resolves the published client cleanly.
 
 ## Build and Test
 

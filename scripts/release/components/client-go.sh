@@ -55,7 +55,7 @@ log_info "Triggering Go module proxy indexing in $GO_IMAGE"
 if ! retry 3 5 -- in_docker "$GO_IMAGE" \
      -e GOPROXY=https://proxy.golang.org -e GO111MODULE=on \
      -w /build/mockserver-client-go -- \
-     go list -m "github.com/mock-server/mockserver-monorepo/mockserver-client-go@v${RELEASE_VERSION}"; then
+     go list -m "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7@v${RELEASE_VERSION}"; then
   log_info ":warning: proxy indexing nudge failed after retries — non-fatal (tag pushed; pkg.go.dev indexes on first fetch)"
 fi
 

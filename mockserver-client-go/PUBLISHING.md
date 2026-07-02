@@ -7,14 +7,32 @@ pkg.go.dev indexes a module automatically the first time anyone fetches it after
 
 ## Module Path
 
-Current (monorepo): `github.com/mock-server/mockserver-monorepo/mockserver-client-go`
+Current (monorepo): `github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7`
 
-Eventual split target: `github.com/mock-server/mockserver-client-go`
+Eventual split target: `github.com/mock-server/mockserver-client-go/v7`
+
+### Semantic Import Versioning (the `/vN` suffix)
+
+The module path carries a **major-version suffix** (`/v7`) as required by Go's
+[Semantic Import Versioning](https://go.dev/ref/mod#major-version-suffixes) rule:
+any module at major version 2 or higher must end its path in `/vN`. The client is
+currently at major **v7**, so the path ends in `/v7`. When the next **major** is
+released, bump the suffix to match — v8 becomes `.../mockserver-client-go/v8`,
+v9 becomes `/v9`, and so on. Minor and patch releases (v7.x.y) do **not** change
+the suffix.
+
+The suffix lives only in the `module` line of `go.mod` (and therefore in every
+import path); the module still lives in the `mockserver-client-go/` directory on
+disk (there is no `v7/` subdirectory), and the release **tag** is unchanged
+(`mockserver-client-go/v${VERSION}` — see below). Carrying the `/vN` suffix is
+what lets other in-repo Go modules (e.g. `mockserver-testcontainers/go`) depend
+on the published client via a normal `require`.
 
 ## Publish Command (non-interactive)
 
 Go modules are published by pushing a git tag. For a subdirectory module in a monorepo, the tag
-format is `<subdir>/v<VERSION>`.
+format is `<subdir>/v<VERSION>` (unaffected by the `/v7` module-path suffix — it stays
+`mockserver-client-go/v${VERSION}`).
 
 ```bash
 # Example for version 7.0.1:
@@ -28,7 +46,7 @@ immediate indexing by fetching the module:
 
 ```bash
 GOPROXY=https://proxy.golang.org GO111MODULE=on \
-  go get "github.com/mock-server/mockserver-monorepo/mockserver-client-go@v${VERSION}"
+  go get "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7@v${VERSION}"
 ```
 
 ## Secret
@@ -40,7 +58,7 @@ None required. The Go module proxy indexes public repositories automatically.
 Check that the module page exists:
 
 ```bash
-curl -sf "https://pkg.go.dev/github.com/mock-server/mockserver-monorepo/mockserver-client-go@v${VERSION}" \
+curl -sf "https://pkg.go.dev/github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7@v${VERSION}" \
   | grep -q "mockserver-client-go" && echo "OK" || echo "NOT FOUND"
 ```
 

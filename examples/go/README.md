@@ -11,7 +11,7 @@ Runnable examples demonstrating the [MockServer Go client](../../mockserver-clie
   the published module:
 
   ```bash
-  go get github.com/mock-server/mockserver-monorepo/mockserver-client-go
+  go get github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7
   ```
 
 ## Examples

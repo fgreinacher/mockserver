@@ -191,7 +191,7 @@ publish_ruby() {
 # ---------------------------------------------------------------------------
 note_go_php() {
   echo "--- :go: :php: Go & PHP snapshots are available from version control (no publish):"
-  note "Go : go get github.com/mock-server/mockserver-monorepo/mockserver-client-go@master"
+  note "Go : go get github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7@master"
   note 'PHP: composer require mock-server/mockserver-client:dev-master  (once registered on Packagist)'
   record "Go       N/A  (use @master pseudo-version)"
   record "PHP      N/A  (use dev-master)"

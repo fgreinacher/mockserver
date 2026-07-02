@@ -4,8 +4,15 @@ go 1.25.0
 
 require (
 	github.com/docker/go-connections v0.6.0
+	github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7 v7.0.0
 	github.com/testcontainers/testcontainers-go v0.42.0
 )
+
+// For in-repo builds, resolve the client from the local working tree. Downstream
+// consumers (published testcontainers-go) resolve the published /v7 client module
+// instead, which is possible because the client carries the Semantic Import
+// Versioning suffix.
+replace github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7 => ../../mockserver-client-go
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
@@ -27,6 +34,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect

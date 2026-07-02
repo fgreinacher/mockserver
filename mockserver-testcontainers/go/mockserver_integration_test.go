@@ -3,10 +3,13 @@ package mockserver
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	mockserverclient "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 )
 
 func isDockerAvailable() bool {
@@ -155,5 +158,72 @@ func TestIntegration_CreateExpectationAndVerify(t *testing.T) {
 	verifyResp.Body.Close()
 	if verifyResp.StatusCode != http.StatusAccepted {
 		t.Errorf("PUT /mockserver/verify returned %d, want 202", verifyResp.StatusCode)
+	}
+}
+
+// TestIntegration_Client exercises the bundled Client() helper end-to-end: it
+// creates an expectation via the mockserver-client-go client, calls the mocked
+// endpoint over HTTP, and verifies the request was received — all through the
+// container's mapped host/port.
+func TestIntegration_Client(t *testing.T) {
+	if !isDockerAvailable() {
+		t.Skip("Docker not available, skipping integration test")
+	}
+
+	ctx := context.Background()
+	ctr, err := Run(ctx, DefaultImage)
+	if err != nil {
+		t.Fatalf("Run() failed: %v", err)
+	}
+	defer func() {
+		if err := ctr.Terminate(ctx); err != nil {
+			t.Logf("failed to terminate container: %v", err)
+		}
+	}()
+
+	// Obtain a configured client pointing at the container.
+	client, err := ctr.Client(ctx)
+	if err != nil {
+		t.Fatalf("Client() failed: %v", err)
+	}
+
+	// Create an expectation using the client's fluent API.
+	if _, err := client.When(
+		mockserverclient.Request().Method("GET").Path("/tc-client"),
+	).Respond(
+		mockserverclient.Response().StatusCode(200).Body("client-ok"),
+	); err != nil {
+		t.Fatalf("When/Respond failed: %v", err)
+	}
+
+	// Call the mocked endpoint over HTTP.
+	url, err := ctr.URL(ctx)
+	if err != nil {
+		t.Fatalf("URL() failed: %v", err)
+	}
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/tc-client", nil)
+	if err != nil {
+		t.Fatalf("failed to create GET request: %v", err)
+	}
+	getResp, err := httpClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET /tc-client failed: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Errorf("GET /tc-client returned %d, want 200", getResp.StatusCode)
+	}
+	body, _ := io.ReadAll(getResp.Body)
+	if string(body) != "client-ok" {
+		t.Errorf("GET /tc-client body = %q, want %q", string(body), "client-ok")
+	}
+
+	// Verify the request was received at least once, again via the client.
+	if err := client.Verify(
+		mockserverclient.Request().Path("/tc-client"),
+		mockserverclient.AtLeast(1),
+	); err != nil {
+		t.Errorf("Verify failed: %v", err)
 	}
 }

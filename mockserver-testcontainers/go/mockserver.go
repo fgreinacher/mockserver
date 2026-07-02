@@ -23,6 +23,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	mockserverclient "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -108,17 +109,34 @@ func (c *MockServerContainer) URL(ctx context.Context) (string, error) {
 	return fmt.Sprintf("http://%s:%s", host, port.Port()), nil
 }
 
-// To obtain a MockServer Go client, construct one from the container's mapped
-// host and port using the mockserver-client-go package:
+// Client returns a MockServer control-plane client configured for the running
+// container's mapped host and port. It is the Go equivalent of the Java module's
+// getClient() helper.
 //
-//	host, _ := ctr.Host(ctx)
-//	port, _ := ctr.ServerPort(ctx)
-//	client := mockserver.New(host, port)
+//	client, err := ctr.Client(ctx)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	_, err = client.When(
+//	    mockserverclient.Request().Method("GET").Path("/hello"),
+//	).Respond(
+//	    mockserverclient.Response().StatusCode(200).Body("world"),
+//	)
 //
-// A bundled Client() helper is intentionally not provided: mockserver-client-go
-// is published at v7.x without a "/v7" module-path suffix, so it can only be
-// consumed via a local replace directive — depending on it here would make this
-// module itself unresolvable for downstream `go get`.
+// The client is bundled via the mockserver-client-go/v7 module. The "/v7"
+// Semantic Import Versioning suffix on that module's path is what makes it
+// resolvable as a normal dependency of this module for downstream `go get`.
+func (c *MockServerContainer) Client(ctx context.Context) (*mockserverclient.Client, error) {
+	host, err := c.Host(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mockserver: failed to get host: %w", err)
+	}
+	port, err := c.ServerPort(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return mockserverclient.New(host, port), nil
+}
 
 // ServerPort returns the mapped host port for the MockServer container port 1080.
 func (c *MockServerContainer) ServerPort(ctx context.Context) (int, error) {

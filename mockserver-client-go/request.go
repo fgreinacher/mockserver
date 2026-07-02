@@ -12,6 +12,7 @@ type HttpRequest struct {
 	KeepAlive          *bool               `json:"keepAlive,omitempty"`
 	SocketAddress      *SocketAddress      `json:"socketAddress,omitempty"`
 	PathParametersList map[string][]string `json:"pathParameters,omitempty"`
+	JWT                *Jwt                `json:"jwt,omitempty"`
 }
 
 // SocketAddress represents a socket address constraint.
@@ -82,6 +83,21 @@ func (b *RequestBuilder) JSONBody(json string) *RequestBuilder {
 	return b
 }
 
+// AllOfBody sets the request body matcher to a composite ALL_OF matcher that
+// matches only when every supplied body matcher matches. Each element may be any
+// body matcher value (a *TypedBody, a plain string, or a nested *AllOfBody).
+func (b *RequestBuilder) AllOfBody(bodies ...interface{}) *RequestBuilder {
+	b.request.Body = AllOf(bodies...)
+	return b
+}
+
+// Jwt sets a JWT (JSON Web Token) request matcher. MockServer decodes the bearer
+// token and matches the supplied claims/issuer/audience/algorithm.
+func (b *RequestBuilder) Jwt(jwt *Jwt) *RequestBuilder {
+	b.request.JWT = jwt
+	return b
+}
+
 // PathParameter adds a path parameter matcher.
 func (b *RequestBuilder) PathParameter(name string, values ...string) *RequestBuilder {
 	if b.request.PathParametersList == nil {
@@ -116,9 +132,97 @@ func (b *RequestBuilder) BuildPtr() *HttpRequest {
 	return &req
 }
 
-// TypedBody represents a typed body matcher (e.g., JSON, XML).
+// TypedBody represents a typed body matcher (e.g., JSON, XML, JSON_PATH, REGEX).
 type TypedBody struct {
-	Type string `json:"type"`
-	JSON string `json:"json,omitempty"`
-	XML  string `json:"xml,omitempty"`
+	Type     string `json:"type"`
+	JSON     string `json:"json,omitempty"`
+	XML      string `json:"xml,omitempty"`
+	JSONPath string `json:"jsonPath,omitempty"`
+	Regex    string `json:"regex,omitempty"`
+}
+
+// JSONPathBody builds a JSON_PATH body matcher that matches when the given
+// JSONPath expression selects a value in the request body.
+func JSONPathBody(jsonPath string) *TypedBody {
+	return &TypedBody{Type: "JSON_PATH", JSONPath: jsonPath}
+}
+
+// RegexBody builds a REGEX body matcher that matches when the request body
+// matches the given regular expression.
+func RegexBody(regex string) *TypedBody {
+	return &TypedBody{Type: "REGEX", Regex: regex}
+}
+
+// AllOfBody is a composite body matcher (wire type "ALL_OF") that matches only
+// when every nested body matcher matches.
+type AllOfBody struct {
+	Type      string        `json:"type"`
+	BodyAllOf []interface{} `json:"bodyAllOf"`
+}
+
+// AllOf builds a composite body matcher that matches only when every supplied
+// body matcher matches. Each element may be any body matcher value (a *TypedBody,
+// a plain string, or a nested *AllOfBody).
+func AllOf(bodies ...interface{}) *AllOfBody {
+	return &AllOfBody{Type: "ALL_OF", BodyAllOf: bodies}
+}
+
+// Jwt is a JWT (JSON Web Token) request matcher. MockServer decodes the bearer
+// token and matches the supplied claims, issuer, audience, and algorithm. Claim
+// and string values follow MockServer's string-matcher semantics: an exact
+// value, a regular expression, or a "!"-prefixed negated match. Header and
+// Scheme select where the token is read from (defaulting to the Authorization
+// header with the "Bearer" scheme).
+type Jwt struct {
+	Claims    map[string]string `json:"claims,omitempty"`
+	Issuer    string            `json:"issuer,omitempty"`
+	Audience  string            `json:"audience,omitempty"`
+	Algorithm string            `json:"algorithm,omitempty"`
+	Header    string            `json:"header,omitempty"`
+	Scheme    string            `json:"scheme,omitempty"`
+}
+
+// NewJwt creates an empty JWT matcher to be populated via its fluent methods.
+func NewJwt() *Jwt { return &Jwt{} }
+
+// Claim adds a claim matcher. The value matches exactly, as a regular
+// expression, or — when prefixed with "!" — as a negated match.
+func (j *Jwt) Claim(name, value string) *Jwt {
+	if j.Claims == nil {
+		j.Claims = make(map[string]string)
+	}
+	j.Claims[name] = value
+	return j
+}
+
+// WithIssuer sets the "iss" (issuer) claim matcher.
+func (j *Jwt) WithIssuer(issuer string) *Jwt {
+	j.Issuer = issuer
+	return j
+}
+
+// WithAudience sets the "aud" (audience) claim matcher.
+func (j *Jwt) WithAudience(audience string) *Jwt {
+	j.Audience = audience
+	return j
+}
+
+// WithAlgorithm sets the JWT signing algorithm matcher (e.g. "HS256", "RS256").
+func (j *Jwt) WithAlgorithm(algorithm string) *Jwt {
+	j.Algorithm = algorithm
+	return j
+}
+
+// WithHeader sets the request header the token is read from (defaults to
+// "Authorization").
+func (j *Jwt) WithHeader(header string) *Jwt {
+	j.Header = header
+	return j
+}
+
+// WithScheme sets the authorization scheme prefix stripped from the header value
+// before decoding the token (defaults to "Bearer").
+func (j *Jwt) WithScheme(scheme string) *Jwt {
+	j.Scheme = scheme
+	return j
 }

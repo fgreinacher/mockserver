@@ -1,4 +1,4 @@
-module github.com/mock-server/mockserver-monorepo/mockserver-client-go
+module github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7
 
 go 1.21
 
