@@ -2,8 +2,12 @@ package org.mockserver.netty.mcp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockserver.configuration.ConfigurationProperties;
+import org.mockserver.fixture.FixtureRedactor;
 import org.mockserver.lifecycle.LifeCycle;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
@@ -46,6 +50,11 @@ public class ExportOptimisationReportIntegrationTest {
         httpState = new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class));
         toolRegistry = new McpToolRegistry(httpState, server);
         objectMapper = ObjectMapperFactory.buildObjectMapperWithoutRemovingEmptyValues();
+    }
+
+    @After
+    public void resetConfig() {
+        ConfigurationProperties.fixtureBodyRedactFields("");
     }
 
     private void seedOpenAiForward(String userText, int inTok, int outTok) {
@@ -155,5 +164,38 @@ public class ExportOptimisationReportIntegrationTest {
     @Test
     public void toolIsRegistered() {
         assertThat(toolRegistry.getTools().containsKey("export_optimisation_report"), is(true));
+        assertThat(toolRegistry.getTools().containsKey("diff_agent_runs"), is(true));
+    }
+
+    @Test
+    public void diffAgentRunsRedactsConfiguredBodyFieldInRunPrompts() throws Exception {
+        // Regression guard for the redaction-bypass the review flagged: the diff caller
+        // (diffRunSide) must redact each request through FixtureRedactor BEFORE the diff
+        // decodes and surfaces prompt text, so a configured body field (fixtureBodyRedactFields)
+        // holding NON-credential PII/secret text is masked in beforeText/afterText — not just
+        // credential-shaped tokens caught by maskSecrets.
+        ConfigurationProperties.fixtureBodyRedactFields("content");
+        seedOpenAiForward("super secret non credential prompt", 100, 10);
+        seedOpenAiForward("super secret non credential prompt", 120, 12);
+        pollUntilTrue(this::recordedPairsVisible);
+
+        ObjectNode params = objectMapper.createObjectNode();
+        params.putObject("before").put("host", "api.openai.com");
+        params.putObject("after").put("host", "api.openai.com");
+
+        JsonNode result = toolRegistry.callTool("diff_agent_runs", params);
+
+        // the raw configured-field value must never appear anywhere in the diff output
+        assertThat(result.toString(), not(containsString("super secret non credential prompt")));
+        // and the placeholder IS surfaced in the message diffs (proving the field was masked,
+        // not merely absent because decoding failed)
+        boolean masked = false;
+        for (JsonNode md : result.path("messageDiffs")) {
+            if (md.path("beforeText").asText().contains(FixtureRedactor.REDACTED_PLACEHOLDER)
+                || md.path("afterText").asText().contains(FixtureRedactor.REDACTED_PLACEHOLDER)) {
+                masked = true;
+            }
+        }
+        assertThat("configured body field must be masked to the placeholder in the diff output", masked, is(true));
     }
 }

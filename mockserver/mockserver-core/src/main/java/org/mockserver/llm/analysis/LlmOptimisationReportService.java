@@ -188,7 +188,14 @@ public class LlmOptimisationReportService {
         return new LlmDatasetExporter().export(result.getIncludedExchanges(), format, redactor());
     }
 
-    private FixtureRedactor redactor() {
+    /**
+     * The redactor used for the brief appendix, dataset exports and the agent-run
+     * diff — default sensitive headers/query params plus any configured
+     * {@code mockserver.fixtureBodyRedactFields}. Public so the diff callers
+     * (REST {@code PUT /llm/diffRuns}, MCP {@code diff_agent_runs}) redact each
+     * request the SAME way the export path does before surfacing decoded prompts.
+     */
+    public FixtureRedactor redactor() {
         List<String> bodyFields = bodyFields();
         return bodyFields.isEmpty()
             ? new FixtureRedactor()

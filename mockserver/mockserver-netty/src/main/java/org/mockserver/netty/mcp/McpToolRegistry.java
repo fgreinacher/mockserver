@@ -4009,8 +4009,13 @@ public class McpToolRegistry {
             org.mockserver.llm.analysis.LlmOptimisationReportService.Result beforeResult = service.build(pairs, beforeFilter);
             org.mockserver.llm.analysis.LlmOptimisationReportService.Result afterResult = service.build(pairs, afterFilter);
 
+            // Redact each run's requests via the report service's FixtureRedactor (default
+            // sensitive headers/query params + configured fixtureBodyRedactFields) BEFORE the
+            // diff decodes and surfaces prompt text, so a configured body field is masked in
+            // the diff output — the same guarantee the export path gives.
+            FixtureRedactor redactor = service.redactor();
             org.mockserver.llm.analysis.AgentRunDiff.RunDiffResult diff = new org.mockserver.llm.analysis.AgentRunDiff()
-                .diff(diffRunSide(beforeResult), diffRunSide(afterResult), options);
+                .diff(diffRunSide(beforeResult, redactor), diffRunSide(afterResult, redactor), options);
 
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("promptChanged", diff.isPromptChanged());
@@ -4058,17 +4063,19 @@ public class McpToolRegistry {
     }
 
     private static org.mockserver.llm.analysis.AgentRunDiff.RunSide diffRunSide(
-        org.mockserver.llm.analysis.LlmOptimisationReportService.Result result) {
+        org.mockserver.llm.analysis.LlmOptimisationReportService.Result result, FixtureRedactor redactor) {
         List<HttpRequest> requests = new ArrayList<>();
         Provider provider = null;
         for (org.mockserver.llm.analysis.LlmOptimisationReportBuilder.CapturedExchange exchange : result.getIncludedExchanges()) {
             if (exchange.getRequest() == null) {
                 continue;
             }
-            requests.add(exchange.getRequest());
+            // Detect on the RAW exchange, decode the REDACTED request (mirrors the export path).
             if (provider == null) {
                 provider = LlmProviderSniffer.detectForAnalysis(exchange.getRequest(), exchange.getResponse()).orElse(null);
             }
+            RequestDefinition redacted = redactor.redactRequestDefinition(exchange.getRequest());
+            requests.add(redacted instanceof HttpRequest ? (HttpRequest) redacted : exchange.getRequest());
         }
         org.mockserver.llm.analysis.LlmOptimisationReport.Totals totals = result.getReport().getTotals();
         return new org.mockserver.llm.analysis.AgentRunDiff.RunSide(

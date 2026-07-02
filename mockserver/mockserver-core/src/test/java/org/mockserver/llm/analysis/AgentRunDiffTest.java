@@ -1,9 +1,11 @@
 package org.mockserver.llm.analysis;
 
 import org.junit.Test;
+import org.mockserver.fixture.FixtureRedactor;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.NormalizationOptions;
 import org.mockserver.model.Provider;
+import org.mockserver.model.RequestDefinition;
 
 import java.util.Collections;
 import java.util.List;
@@ -121,6 +123,35 @@ public class AgentRunDiffTest {
 
         AgentRunDiff.RunDiffResult result = diff.diff(before, after, NormalizationOptions.normalizationOptions());
         assertFalse("whitespace-only difference must be normalised away", result.isPromptChanged());
+    }
+
+    @Test
+    public void masksConfiguredBodyFieldInDiffOutputWhenRequestPreRedacted() {
+        // Mirrors what the REST (PUT /llm/diffRuns) and MCP (diff_agent_runs) callers now do:
+        // redact each request through FixtureRedactor (fixtureBodyRedactFields=content) BEFORE
+        // building the RunSide, so a configured NON-credential field value is masked to the
+        // redaction placeholder in beforeText/afterText — never surfaced raw in the diff.
+        FixtureRedactor redactor = new FixtureRedactor(
+            FixtureRedactor.defaultSensitiveHeaders(), Collections.singletonList("content"));
+        HttpRequest raw = chat("[{\"role\":\"user\",\"content\":\"super secret prompt\"}]");
+        RequestDefinition redacted = redactor.redactRequestDefinition(raw);
+        AgentRunDiff.RunSide side = new AgentRunDiff.RunSide(
+            Collections.singletonList((HttpRequest) redacted), Provider.OPENAI);
+
+        AgentRunDiff.RunDiffResult result = diff.diff(side, side, null);
+
+        boolean placeholderSurfaced = false;
+        for (AgentRunDiff.MessageDiff md : result.getMessageDiffs()) {
+            assertFalse("raw configured-field value must never appear in the diff",
+                String.valueOf(md.getBeforeText()).contains("super secret prompt"));
+            assertFalse("raw configured-field value must never appear in the diff",
+                String.valueOf(md.getAfterText()).contains("super secret prompt"));
+            if (String.valueOf(md.getBeforeText()).contains(FixtureRedactor.REDACTED_PLACEHOLDER)
+                || String.valueOf(md.getAfterText()).contains(FixtureRedactor.REDACTED_PLACEHOLDER)) {
+                placeholderSurfaced = true;
+            }
+        }
+        assertTrue("configured field must be masked to the placeholder in the diff output", placeholderSurfaced);
     }
 
     @Test

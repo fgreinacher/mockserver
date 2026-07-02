@@ -621,8 +621,14 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                 org.mockserver.llm.analysis.LlmOptimisationReportService.Result beforeResult = service.build(pairs, beforeFilter);
                 org.mockserver.llm.analysis.LlmOptimisationReportService.Result afterResult = service.build(pairs, afterFilter);
 
-                org.mockserver.llm.analysis.AgentRunDiff.RunSide before = runSide(beforeResult);
-                org.mockserver.llm.analysis.AgentRunDiff.RunSide after = runSide(afterResult);
+                // Redact each run's requests via the SAME FixtureRedactor the export path uses
+                // (default sensitive headers/query params + configured fixtureBodyRedactFields)
+                // BEFORE the diff decodes and surfaces their prompt text, so a configured body
+                // field (e.g. non-credential PII) is masked in beforeText/afterText. AgentRunDiff's
+                // maskSecrets stays on top as credential-shape defence-in-depth.
+                org.mockserver.fixture.FixtureRedactor redactor = service.redactor();
+                org.mockserver.llm.analysis.AgentRunDiff.RunSide before = runSide(beforeResult, redactor);
+                org.mockserver.llm.analysis.AgentRunDiff.RunSide after = runSide(afterResult, redactor);
 
                 org.mockserver.llm.analysis.AgentRunDiff.RunDiffResult diff =
                     new org.mockserver.llm.analysis.AgentRunDiff().diff(before, after, options);
@@ -646,30 +652,42 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
         if (node == null || node.isMissingNode() || node.isNull()) {
             return new org.mockserver.llm.analysis.LlmOptimisationReportService.Filter(null, null, null);
         }
+        // emptyToNull for parity with the MCP diff_agent_runs path (Filter also blank-to-nulls,
+        // but normalising here keeps the two callers byte-identical).
         return new org.mockserver.llm.analysis.LlmOptimisationReportService.Filter(
-            node.path("session").asText(null),
-            node.path("host").asText(null),
-            node.path("provider").asText(null));
+            emptyToNull(node.path("session").asText(null)),
+            emptyToNull(node.path("host").asText(null)),
+            emptyToNull(node.path("provider").asText(null)));
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.trim().isEmpty() ? null : value;
     }
 
     /**
      * Build a diff {@link org.mockserver.llm.analysis.AgentRunDiff.RunSide} from a
-     * report result: the included exchanges' requests, the provider detected from
-     * the first LLM exchange, and the token / cost totals from the report.
+     * report result: the included exchanges' requests (redacted via
+     * {@code redactor} before their prompt text is surfaced), the provider detected
+     * from the first LLM exchange, and the token / cost totals from the report.
      */
     private static org.mockserver.llm.analysis.AgentRunDiff.RunSide runSide(
-        org.mockserver.llm.analysis.LlmOptimisationReportService.Result result) {
+        org.mockserver.llm.analysis.LlmOptimisationReportService.Result result,
+        org.mockserver.fixture.FixtureRedactor redactor) {
         List<HttpRequest> requests = new java.util.ArrayList<>();
         org.mockserver.model.Provider provider = null;
         for (org.mockserver.llm.analysis.LlmOptimisationReportBuilder.CapturedExchange exchange : result.getIncludedExchanges()) {
             if (exchange.getRequest() == null) {
                 continue;
             }
-            requests.add(exchange.getRequest());
+            // Detect on the RAW exchange (path/host/body-shape) then decode the REDACTED request,
+            // mirroring the export path's toSample: redaction masks header/query/body-field VALUES
+            // but preserves the JSON structure detection and the codec rely on.
             if (provider == null) {
                 provider = org.mockserver.llm.client.LlmProviderSniffer
                     .detectForAnalysis(exchange.getRequest(), exchange.getResponse()).orElse(null);
             }
+            org.mockserver.model.RequestDefinition redacted = redactor.redactRequestDefinition(exchange.getRequest());
+            requests.add(redacted instanceof HttpRequest ? (HttpRequest) redacted : exchange.getRequest());
         }
         org.mockserver.llm.analysis.LlmOptimisationReport.Totals totals = result.getReport().getTotals();
         return new org.mockserver.llm.analysis.AgentRunDiff.RunSide(
