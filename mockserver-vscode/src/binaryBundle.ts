@@ -107,9 +107,42 @@ export function checksumUrl(version: string, target: BundleTarget): string {
     return downloadUrl(version, target) + ".sha256";
 }
 
-/** Launcher path relative to the unpacked bundle root: `bin/mockserver` (`bin\mockserver.bat` on windows). */
-export function launcherRelativePath(os: BundleOs): string {
-    return os === "windows" ? path.join("bin", "mockserver.bat") : path.join("bin", "mockserver");
+/**
+ * Path to the bundled Java executable relative to the unpacked bundle root:
+ * `runtime/bin/java` (`runtime\bin\java.exe` on windows). MockServer is launched
+ * by running this Java executable directly (`java -jar mockserver.jar …`) rather
+ * than the `bin/mockserver[.bat]` wrapper — that keeps every path out of any
+ * shell interpreter (no `cmd.exe /c`), removing the command-injection surface.
+ */
+export function javaExecutableRelativePath(os: BundleOs): string {
+    return os === "windows"
+        ? path.join("runtime", "bin", "java.exe")
+        : path.join("runtime", "bin", "java");
+}
+
+/** App-jar path relative to the unpacked bundle root: `lib/mockserver.jar`. */
+export function jarRelativePath(): string {
+    return path.join("lib", "mockserver.jar");
+}
+
+/** The bundled Java executable + app jar resolved from a bundle root directory. */
+export interface BundleJava {
+    /** Absolute path to the bundled Java executable (`…/runtime/bin/java[.exe]`). */
+    javaExecutable: string;
+    /** Absolute path to the shaded MockServer jar (`…/lib/mockserver.jar`). */
+    jarPath: string;
+}
+
+/**
+ * Resolve the bundled Java executable and app jar from an unpacked bundle ROOT
+ * directory. The launch spawns `javaExecutable` directly with
+ * `["-jar", jarPath, …serverArgs]` — no launcher script, no shell.
+ */
+export function bundleJavaAndJar(bundleRootDir: string, os: BundleOs): BundleJava {
+    return {
+        javaExecutable: path.join(bundleRootDir, javaExecutableRelativePath(os)),
+        jarPath: path.join(bundleRootDir, jarRelativePath()),
+    };
 }
 
 /**
@@ -139,23 +172,37 @@ export function cachedBundleDir(globalStorageDir: string, version: string, targe
     return path.join(globalStorageDir, "bundles", bundleBaseName(version, target));
 }
 
-/** Full path to the launcher inside the cached, unpacked bundle. */
-export function cachedLauncherPath(globalStorageDir: string, version: string, target: BundleTarget): string {
-    return path.join(cachedBundleDir(globalStorageDir, version, target), launcherRelativePath(target.os));
+/**
+ * Resolve a user-supplied `mockserver.binaryPath` to the unpacked bundle ROOT
+ * directory. The setting may point either at the unpacked bundle root directory
+ * itself, or at the launcher executable inside it (`bin/mockserver[.bat]`), in
+ * which case the root is the launcher's grandparent (`…/bin/mockserver` → `…`).
+ * The caller derives the Java executable + jar from this root via
+ * `bundleJavaAndJar`. `isDirectory` is passed in so this stays pure/testable;
+ * the caller stats the path.
+ */
+export function resolveConfiguredBundleRoot(binaryPath: string, isDirectory: boolean): string {
+    const trimmed = binaryPath.trim();
+    if (isDirectory) {
+        return trimmed;
+    }
+    // A launcher FILE (…/bin/mockserver[.bat]): the bundle root is its grandparent.
+    return path.dirname(path.dirname(trimmed));
 }
 
 /**
- * Resolve a user-supplied `mockserver.binaryPath` to the actual launcher. The
- * setting may point either at the launcher executable directly or at an unpacked
- * bundle root directory (in which case `bin/mockserver[.bat]` is appended).
- * `isDirectory` is passed in so this stays pure/testable; the caller stats the path.
+ * Split a `MOCKSERVER_JAVA_OPTS` value into individual JVM arguments, matching
+ * the bundle launcher's unquoted `${MOCKSERVER_JAVA_OPTS:-}` / `%MOCKSERVER_JAVA_OPTS%`
+ * shell expansion — i.e. whitespace word-splitting with no quote handling.
+ * Returns `[]` when the variable is unset or blank. This preserves the launcher's
+ * documented "override JVM options via MOCKSERVER_JAVA_OPTS" behaviour now that we
+ * spawn `java` directly instead of the script (java itself does not read that var).
  */
-export function resolveConfiguredLauncher(binaryPath: string, os: BundleOs, isDirectory: boolean): string {
-    const trimmed = binaryPath.trim();
-    if (isDirectory) {
-        return path.join(trimmed, launcherRelativePath(os));
+export function parseJavaOpts(javaOpts: string | undefined): string[] {
+    if (!javaOpts) {
+        return [];
     }
-    return trimmed;
+    return javaOpts.trim().split(/\s+/).filter((s) => s.length > 0);
 }
 
 /**

@@ -19,6 +19,7 @@ interface FakeContext {
     subscriptions: Disposable[];
     extension: { packageJSON: { version: string } };
     extensionUri: { toString(): string };
+    globalStorageUri: { fsPath: string };
 }
 
 const registeredCommands: Map<string, Function> = new Map();
@@ -206,10 +207,15 @@ async function runTests(): Promise<void> {
 
     // Setup: activate the extension
     registeredCommands.clear();
+    const globalStorageDir = require("path").join(
+        require("os").tmpdir(),
+        `ms-globalstorage-${Date.now()}`
+    );
     const fakeContext: FakeContext = {
         subscriptions: [],
         extension: { packageJSON: { version: "9.9.9" } },
         extensionUri: { toString: () => "file:///ext" },
+        globalStorageUri: { fsPath: globalStorageDir },
     };
     extension.activate(fakeContext);
 
@@ -278,11 +284,27 @@ async function runTests(): Promise<void> {
         assert.strictEqual(binary.checksumUrl("7.3.0", t), binary.downloadUrl("7.3.0", t) + ".sha256");
     });
 
-    await test("launcherRelativePath is bin/mockserver (.bat on windows)", () => {
+    await test("javaExecutableRelativePath is runtime/bin/java (java.exe on windows)", () => {
         const path = require("path");
-        assert.strictEqual(binary.launcherRelativePath("linux"), path.join("bin", "mockserver"));
-        assert.strictEqual(binary.launcherRelativePath("darwin"), path.join("bin", "mockserver"));
-        assert.strictEqual(binary.launcherRelativePath("windows"), path.join("bin", "mockserver.bat"));
+        assert.strictEqual(binary.javaExecutableRelativePath("linux"), path.join("runtime", "bin", "java"));
+        assert.strictEqual(binary.javaExecutableRelativePath("darwin"), path.join("runtime", "bin", "java"));
+        assert.strictEqual(binary.javaExecutableRelativePath("windows"), path.join("runtime", "bin", "java.exe"));
+    });
+
+    await test("jarRelativePath is lib/mockserver.jar", () => {
+        const path = require("path");
+        assert.strictEqual(binary.jarRelativePath(), path.join("lib", "mockserver.jar"));
+    });
+
+    await test("bundleJavaAndJar resolves the java executable + jar from a bundle root (no launcher/shell)", () => {
+        const path = require("path");
+        const posix = binary.bundleJavaAndJar("/opt/ms", "linux");
+        assert.strictEqual(posix.javaExecutable, path.join("/opt/ms", "runtime", "bin", "java"));
+        assert.strictEqual(posix.jarPath, path.join("/opt/ms", "lib", "mockserver.jar"));
+        // Windows resolves java.exe (still spawned directly — never via cmd.exe).
+        const win = binary.bundleJavaAndJar("C:\\ms", "windows");
+        assert.strictEqual(win.javaExecutable, path.join("C:\\ms", "runtime", "bin", "java.exe"));
+        assert.strictEqual(win.jarPath, path.join("C:\\ms", "lib", "mockserver.jar"));
     });
 
     await test("serverArgs uses the backward-compatible -serverPort flag", () => {
@@ -298,25 +320,38 @@ async function runTests(): Promise<void> {
         assert.throws(() => binary.parseSha256("not a checksum"), /SHA-256/);
     });
 
-    await test("resolveConfiguredLauncher appends bin/mockserver only for a directory", () => {
+    await test("resolveConfiguredBundleRoot: directory is the root; a launcher file's root is its grandparent", () => {
         const path = require("path");
+        // A directory is the bundle root as-is.
+        assert.strictEqual(binary.resolveConfiguredBundleRoot("/opt/ms", true), "/opt/ms");
+        // A launcher FILE (…/bin/mockserver) → root is the grandparent (…/opt/ms).
         assert.strictEqual(
-            binary.resolveConfiguredLauncher("/opt/ms", "linux", true),
-            path.join("/opt/ms", "bin", "mockserver")
+            binary.resolveConfiguredBundleRoot(path.join("/opt/ms", "bin", "mockserver"), false),
+            "/opt/ms"
         );
-        // A file path is used verbatim.
         assert.strictEqual(
-            binary.resolveConfiguredLauncher("/opt/ms/bin/mockserver", "linux", false),
-            "/opt/ms/bin/mockserver"
+            binary.resolveConfiguredBundleRoot(path.join("/opt/ms", "bin", "mockserver.bat"), false),
+            "/opt/ms"
         );
     });
 
-    await test("cachedLauncherPath nests under bundles/<base>/bin in global storage", () => {
+    await test("cachedBundleDir nests under bundles/<base> in global storage", () => {
         const path = require("path");
         const t = { os: "darwin", arch: "aarch64" };
         assert.strictEqual(
-            binary.cachedLauncherPath("/store", "7.3.0", t),
-            path.join("/store", "bundles", "mockserver-7.3.0-darwin-aarch64", "bin", "mockserver")
+            binary.cachedBundleDir("/store", "7.3.0", t),
+            path.join("/store", "bundles", "mockserver-7.3.0-darwin-aarch64")
+        );
+    });
+
+    await test("parseJavaOpts splits on whitespace like the launcher's unquoted expansion", () => {
+        assert.deepStrictEqual(binary.parseJavaOpts(undefined), []);
+        assert.deepStrictEqual(binary.parseJavaOpts(""), []);
+        assert.deepStrictEqual(binary.parseJavaOpts("   "), []);
+        assert.deepStrictEqual(binary.parseJavaOpts("-Xmx512m"), ["-Xmx512m"]);
+        assert.deepStrictEqual(
+            binary.parseJavaOpts("  -Xmx512m   -Dfoo=bar\t-Dbaz=qux "),
+            ["-Xmx512m", "-Dfoo=bar", "-Dbaz=qux"]
         );
     });
 
@@ -372,6 +407,131 @@ async function runTests(): Promise<void> {
             fs.rmSync(tmp, { force: true });
         }
     });
+
+    // --- Binary launch spawns the bundled java DIRECTLY (no cmd.exe / no shell) ---
+    // These drive the real mockserver.startBinary handler with child_process.spawn
+    // patched, and assert the resolved command is the bundled java executable with
+    // `-jar <jar>` + server args — and crucially that cmd.exe is NEVER spawned. This
+    // is the behaviour that clears CodeQL js/shell-command-constructed-from-input:
+    // a bundle path is never handed to a shell.
+    {
+        const fs = require("fs");
+        const os = require("os");
+        const path = require("path");
+        const child_process = require("child_process");
+        const target = binary.resolveTarget(process.platform, process.arch);
+
+        // Lay out a minimal bundle tree (java executable + jar) under `root`.
+        function layoutBundle(root: string): { java: string; jar: string } {
+            const j = binary.bundleJavaAndJar(root, target.os);
+            fs.mkdirSync(path.dirname(j.javaExecutable), { recursive: true });
+            fs.mkdirSync(path.dirname(j.jarPath), { recursive: true });
+            fs.writeFileSync(j.javaExecutable, "");
+            fs.writeFileSync(j.jarPath, "");
+            return { java: j.javaExecutable, jar: j.jarPath };
+        }
+
+        // Run startBinary with spawn captured; returns the single spawn call.
+        async function runStartBinaryCapturingSpawn(): Promise<{ cmd: string; args: string[]; opts: any }> {
+            const originalSpawn = child_process.spawn;
+            const calls: Array<{ cmd: string; args: string[]; opts: any }> = [];
+            child_process.spawn = (cmd: string, args: string[], opts: any) => {
+                calls.push({ cmd, args, opts });
+                return {
+                    stdout: { on() {} },
+                    stderr: { on() {} },
+                    on() {},
+                    kill() {},
+                    pid: 4242,
+                };
+            };
+            try {
+                await registeredCommands.get("mockserver.startBinary")!();
+            } finally {
+                child_process.spawn = originalSpawn;
+            }
+            // Reset the tracked process so the next call isn't blocked by "already running".
+            extension.deactivate();
+            assert.strictEqual(calls.length, 1, `expected exactly one spawn, got ${calls.length}`);
+            return calls[0];
+        }
+
+        await test("startBinary (configured directory) spawns bundled java directly with -jar, never cmd.exe", async () => {
+            const root = path.join(os.tmpdir(), `ms-bundle-dir-${Date.now()}`);
+            const { java, jar } = layoutBundle(root);
+            configValues["binaryPath"] = root;
+            configValues["port"] = 3080;
+            let call: any;
+            try {
+                call = await runStartBinaryCapturingSpawn();
+            } finally {
+                delete configValues["binaryPath"];
+                delete configValues["port"];
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+            assert.notStrictEqual(call.cmd, "cmd.exe", "must NOT spawn cmd.exe");
+            assert.ok(!/cmd(\.exe)?$/i.test(call.cmd), `command must be java, not a shell: ${call.cmd}`);
+            assert.strictEqual(call.cmd, java, "command should be the bundled java executable");
+            assert.deepStrictEqual(call.args, ["-jar", jar, "-serverPort", "3080"]);
+        });
+
+        await test("startBinary (configured launcher FILE) resolves the bundle root and spawns java, not the .bat/shell", async () => {
+            const root = path.join(os.tmpdir(), `ms-bundle-file-${Date.now()}`);
+            const { java, jar } = layoutBundle(root);
+            // Point binaryPath at the launcher file (…/bin/mockserver[.bat]) — a FILE, not a dir.
+            const launcherFile = path.join(root, "bin", target.os === "windows" ? "mockserver.bat" : "mockserver");
+            fs.mkdirSync(path.dirname(launcherFile), { recursive: true });
+            fs.writeFileSync(launcherFile, "");
+            configValues["binaryPath"] = launcherFile;
+            let call: any;
+            try {
+                call = await runStartBinaryCapturingSpawn();
+            } finally {
+                delete configValues["binaryPath"];
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+            assert.notStrictEqual(call.cmd, "cmd.exe", "must NOT spawn cmd.exe");
+            assert.strictEqual(call.cmd, java, "command should be the bundled java executable, not the launcher");
+            assert.strictEqual(call.args[0], "-jar");
+            assert.strictEqual(call.args[1], jar);
+        });
+
+        await test("startBinary (cached bundle) spawns bundled java directly, never cmd.exe", async () => {
+            const cachedRoot = binary.cachedBundleDir(globalStorageDir, "9.9.9", target);
+            const { java, jar } = layoutBundle(cachedRoot);
+            let call: any;
+            try {
+                call = await runStartBinaryCapturingSpawn();
+            } finally {
+                fs.rmSync(globalStorageDir, { recursive: true, force: true });
+            }
+            assert.notStrictEqual(call.cmd, "cmd.exe", "must NOT spawn cmd.exe");
+            assert.strictEqual(call.cmd, java, "command should be the cached bundle's java executable");
+            assert.deepStrictEqual(call.args, ["-jar", jar, "-serverPort", "1080"]);
+        });
+
+        await test("startBinary threads MOCKSERVER_JAVA_OPTS into the java args (before -jar)", async () => {
+            const root = path.join(os.tmpdir(), `ms-bundle-opts-${Date.now()}`);
+            const { java, jar } = layoutBundle(root);
+            configValues["binaryPath"] = root;
+            const prev = process.env.MOCKSERVER_JAVA_OPTS;
+            process.env.MOCKSERVER_JAVA_OPTS = "-Xmx256m -Dx=y";
+            let call: any;
+            try {
+                call = await runStartBinaryCapturingSpawn();
+            } finally {
+                delete configValues["binaryPath"];
+                if (prev === undefined) {
+                    delete process.env.MOCKSERVER_JAVA_OPTS;
+                } else {
+                    process.env.MOCKSERVER_JAVA_OPTS = prev;
+                }
+                fs.rmSync(root, { recursive: true, force: true });
+            }
+            assert.strictEqual(call.cmd, java);
+            assert.deepStrictEqual(call.args, ["-Xmx256m", "-Dx=y", "-jar", jar, "-serverPort", "1080"]);
+        });
+    }
 
     await test("activate registers mockserver.openDashboard command", () => {
         assert.ok(

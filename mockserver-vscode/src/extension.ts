@@ -412,23 +412,25 @@ async function startMockServerBinary(): Promise<void> {
         return;
     }
 
-    let launcher: string | undefined;
+    let launch: bundle.BundleJava | undefined;
     try {
-        launcher = await resolveBinaryLauncher(cfg, target);
+        launch = await resolveBinaryLaunch(cfg, target);
     } catch (e) {
         const msg = (e as Error).message;
         outputChannel.appendLine(`Error: ${msg}`);
         vscode.window.showErrorMessage(`MockServer binary launch failed: ${msg}`);
         return;
     }
-    if (!launcher) {
+    if (!launch) {
         return; // user declined the download
     }
 
     const args = bundle.serverArgs(cfg.port);
-    outputChannel.appendLine(`Starting MockServer (binary) on port ${cfg.port}: ${launcher} ${args.join(" ")}`);
+    outputChannel.appendLine(
+        `Starting MockServer (binary) on port ${cfg.port}: ${launch.javaExecutable} -jar ${launch.jarPath} ${args.join(" ")}`
+    );
 
-    const proc = spawnLauncher(launcher, args, target.os);
+    const proc = spawnBundleJava(launch, args, target.os);
     binaryProcess = proc;
     proc.stdout?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
     proc.stderr?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
@@ -462,23 +464,44 @@ async function stopMockServerBinary(): Promise<void> {
     vscode.window.showInformationMessage("MockServer (binary) stopped.");
 }
 
-/** Spawn the bundle launcher; on Windows the `.bat` must run under `cmd`. */
-function spawnLauncher(launcher: string, args: string[], os: bundle.BundleOs): ChildProcess {
-    if (os === "windows") {
-        // Args are fixed flags plus a numeric port (no user text), so /c is safe here.
-        return spawn("cmd.exe", ["/c", launcher, ...args], { windowsHide: true });
-    }
-    return spawn(launcher, args, {});
+/**
+ * Spawn the bundled Java runtime directly, replicating what the bundle launcher
+ * script does (`java -jar mockserver.jar …`) WITHOUT going through a shell. On no
+ * OS is any path handed to a shell interpreter: `spawn` here runs `java` via the
+ * OS exec (no `cmd.exe /c`, no `shell: true`), so a bundle path can never be
+ * shell-interpreted — this is what removes the command-injection surface that the
+ * former `cmd.exe /c <launcher>` Windows branch created (CodeQL
+ * js/shell-command-constructed-from-input).
+ *
+ * `MOCKSERVER_JAVA_OPTS` is honoured exactly as the launcher did (whitespace
+ * word-splitting, no quote handling) since java itself does not read that env var.
+ *
+ * NOTE: the release launcher also bakes in dashboard-analytics `-D` system
+ * properties at build time (see scripts/build-binary-bundle.sh). Those values are
+ * not available to the extension, so an editor-launched instance omits them — an
+ * acceptable trade-off for a locally-launched dev server. We do set
+ * MOCKSERVER_LAUNCHER (which the launcher script also exports) so the CLI
+ * usage/help banner still reads "mockserver ..." rather than "java -jar ...".
+ */
+function spawnBundleJava(launch: bundle.BundleJava, args: string[], os: bundle.BundleOs): ChildProcess {
+    const javaArgs = [
+        ...bundle.parseJavaOpts(process.env.MOCKSERVER_JAVA_OPTS),
+        "-jar",
+        launch.jarPath,
+        ...args,
+    ];
+    const env = { ...process.env, MOCKSERVER_LAUNCHER: "mockserver" };
+    return spawn(launch.javaExecutable, javaArgs, os === "windows" ? { windowsHide: true, env } : { env });
 }
 
-/** Terminate the tracked bundle process (and, on Windows, its java.exe child). */
+/** Terminate the tracked bundle process (java, spawned directly — no shell wrapper). */
 function killBinaryProcess(proc: ChildProcess): void {
     if (proc.pid === undefined) {
         return;
     }
     if (process.platform === "win32") {
-        // The .bat runs java.exe as a child of cmd; a plain kill of cmd would orphan
-        // java, so kill the whole tree.
+        // The tracked pid is java.exe itself (spawned directly, no cmd wrapper);
+        // taskkill /T /F still cleanly terminates it and any grandchildren.
         try {
             execFileSync("taskkill", ["/PID", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
         } catch {
@@ -496,15 +519,16 @@ function killBinaryProcess(proc: ChildProcess): void {
 }
 
 /**
- * Resolve the launcher to run: an explicit `mockserver.binaryPath`, else the
- * cached download, else (with the user's consent) a fresh download. Returns
- * `undefined` when the user declines the download; throws with a clear message
- * when a configured path or download is broken.
+ * Resolve the bundled Java executable + app jar to run: from an explicit
+ * `mockserver.binaryPath`, else the cached download, else (with the user's
+ * consent) a fresh download. Returns `undefined` when the user declines the
+ * download; throws with a clear message when a configured path or download is
+ * broken. The launch spawns `java` directly (no launcher script, no shell).
  */
-async function resolveBinaryLauncher(
+async function resolveBinaryLaunch(
     cfg: MockServerConfig,
     target: bundle.BundleTarget
-): Promise<string | undefined> {
+): Promise<bundle.BundleJava | undefined> {
     // Reject an unsafe version before it is interpolated into any URL or path.
     if (!bundle.isValidVersion(cfg.binaryVersion)) {
         throw new Error(
@@ -521,21 +545,24 @@ async function resolveBinaryLauncher(
         } catch {
             // path may not exist — fall through to the existence check below
         }
-        const launcher = bundle.resolveConfiguredLauncher(cfg.binaryPath, target.os, isDir);
-        if (!fs.existsSync(launcher)) {
+        const root = bundle.resolveConfiguredBundleRoot(cfg.binaryPath, isDir);
+        const java = bundle.bundleJavaAndJar(root, target.os);
+        if (!fs.existsSync(java.javaExecutable) || !fs.existsSync(java.jarPath)) {
             throw new Error(
-                `mockserver.binaryPath is set but no launcher was found at ${launcher}. ` +
-                    `Point it at the bundle's bin/mockserver launcher or the unpacked bundle directory.`
+                `mockserver.binaryPath is set but no MockServer bundle was found under ${root} ` +
+                    `(expected ${java.javaExecutable} and ${java.jarPath}). ` +
+                    `Point it at the unpacked bundle directory or its bin/mockserver launcher.`
             );
         }
-        return launcher;
+        return java;
     }
 
     // 2. Previously-downloaded bundle in the global-storage cache.
     const storageDir = extensionContext.globalStorageUri.fsPath;
-    const cachedLauncher = bundle.cachedLauncherPath(storageDir, cfg.binaryVersion, target);
-    if (fs.existsSync(cachedLauncher)) {
-        return cachedLauncher;
+    const cachedRoot = bundle.cachedBundleDir(storageDir, cfg.binaryVersion, target);
+    const cachedJava = bundle.bundleJavaAndJar(cachedRoot, target.os);
+    if (fs.existsSync(cachedJava.javaExecutable) && fs.existsSync(cachedJava.jarPath)) {
+        return cachedJava;
     }
 
     // 3. Offer to download the matching bundle from the GitHub release.
@@ -550,10 +577,10 @@ async function resolveBinaryLauncher(
         return undefined;
     }
     await downloadAndExtractBundle(cfg.binaryVersion, target, storageDir);
-    if (!fs.existsSync(cachedLauncher)) {
-        throw new Error(`Bundle downloaded but launcher not found at ${cachedLauncher}.`);
+    if (!fs.existsSync(cachedJava.javaExecutable) || !fs.existsSync(cachedJava.jarPath)) {
+        throw new Error(`Bundle downloaded but the Java runtime was not found under ${cachedRoot}.`);
     }
-    return cachedLauncher;
+    return cachedJava;
 }
 
 /**
@@ -635,9 +662,10 @@ async function downloadAndExtractBundle(
             await extractArchive(archivePath, bundlesDir, target.os);
             fs.rmSync(archivePath, { force: true });
             if (target.os !== "windows") {
-                // tar preserves the exec bit, but re-assert it defensively.
+                // We launch the bundled `java` directly, so re-assert ITS exec bit
+                // defensively (tar preserves it, but be safe).
                 try {
-                    fs.chmodSync(bundle.cachedLauncherPath(storageDir, version, target), 0o755);
+                    fs.chmodSync(bundle.bundleJavaAndJar(destBundleDir, target.os).javaExecutable, 0o755);
                 } catch {
                     // ignore
                 }
