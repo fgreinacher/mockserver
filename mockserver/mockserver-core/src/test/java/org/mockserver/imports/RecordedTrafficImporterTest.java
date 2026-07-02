@@ -40,11 +40,13 @@ public class RecordedTrafficImporterTest {
         String ndjson = forwarded + "\n" + mocked + "\n";
 
         // when — redaction disabled so values round-trip verbatim
-        List<HttpRequestAndHttpResponse> pairs =
+        RecordedTrafficImporter.Result result =
             new RecordedTrafficImporter(logger).importRecordedTraffic(ndjson, ImportRedaction.Options.disabled());
 
         // then
+        List<HttpRequestAndHttpResponse> pairs = result.getPairs();
         assertThat(pairs.size(), is(2));
+        assertThat(result.getSkippedLineCount(), is(0));
         assertThat(pairs.get(0).getHttpRequest().getPath().getValue(), is("/api/forwarded"));
         assertThat(pairs.get(0).getHttpResponse().getBodyAsString(), is("forwarded-body"));
         assertThat(pairs.get(1).getHttpRequest().getPath().getValue(), is("/api/mocked"));
@@ -59,11 +61,13 @@ public class RecordedTrafficImporterTest {
             .withHttpResponse(response().withStatusCode(200)));
         String ndjson = "\n\n   \n" + line + "\n\n";
 
-        List<HttpRequestAndHttpResponse> pairs =
+        RecordedTrafficImporter.Result result =
             new RecordedTrafficImporter(logger).importRecordedTraffic(ndjson, ImportRedaction.Options.disabled());
 
-        assertThat(pairs.size(), is(1));
-        assertThat(pairs.get(0).getHttpRequest().getPath().getValue(), is("/only"));
+        // blank lines are not counted as skipped — only unparseable non-blank lines are
+        assertThat(result.getPairs().size(), is(1));
+        assertThat(result.getSkippedLineCount(), is(0));
+        assertThat(result.getPairs().get(0).getHttpRequest().getPath().getValue(), is("/only"));
     }
 
     @Test
@@ -77,10 +81,11 @@ public class RecordedTrafficImporterTest {
             .withHttpResponse(response().withStatusCode(200).withBody("ok")));
 
         // when — default (redaction enabled)
-        List<HttpRequestAndHttpResponse> pairs =
+        RecordedTrafficImporter.Result result =
             new RecordedTrafficImporter(logger).importRecordedTraffic(line);
 
         // then — the secret is masked, the non-sensitive header is untouched
+        List<HttpRequestAndHttpResponse> pairs = result.getPairs();
         assertThat(pairs.size(), is(1));
         String authValue = pairs.get(0).getHttpRequest().getFirstHeader("Authorization");
         assertThat(authValue, is(FixtureRedactor.REDACTED_PLACEHOLDER));
@@ -88,22 +93,64 @@ public class RecordedTrafficImporterTest {
     }
 
     @Test
-    public void shouldThrowForBlankArchive() {
+    public void shouldReturnEmptyForBlankArchive() {
+        // blank / whitespace-only input is not an error — an enabled-but-never-written archive
+        // legitimately holds zero exchanges
         RecordedTrafficImporter importer = new RecordedTrafficImporter(logger);
-        assertThrows(IllegalArgumentException.class, () -> importer.importRecordedTraffic("   "));
-        assertThrows(IllegalArgumentException.class, () -> importer.importRecordedTraffic(null));
+        assertThat(importer.importRecordedTraffic("   ").getPairs().size(), is(0));
+        assertThat(importer.importRecordedTraffic("   ").getSkippedLineCount(), is(0));
+        assertThat(importer.importRecordedTraffic((String) null).getPairs().size(), is(0));
     }
 
     @Test
-    public void shouldThrowWithLineNumberForInvalidJson() {
-        String valid = ndjsonLine(new HttpRequestAndHttpResponse()
-            .withHttpRequest(request("/ok").withMethod("GET"))
-            .withHttpResponse(response().withStatusCode(200)));
-        String ndjson = valid + "\n" + "{not valid json}";
+    public void shouldSkipTruncatedTrailingLineAndImportTheRest() {
+        // given — the real crash artefact: N intact lines then a final line truncated mid-JSON
+        // (the write path flushes line + "\n" per exchange, so a hard kill leaves a half-written last line)
+        String first = ndjsonLine(new HttpRequestAndHttpResponse()
+            .withHttpRequest(request("/api/first").withMethod("GET"))
+            .withHttpResponse(response().withStatusCode(200).withBody("first")));
+        String second = ndjsonLine(new HttpRequestAndHttpResponse()
+            .withHttpRequest(request("/api/second").withMethod("GET"))
+            .withHttpResponse(response().withStatusCode(200).withBody("second")));
+        String truncated = second.substring(0, second.length() / 2); // half a JSON object, no trailing newline
+        String ndjson = first + "\n" + second + "\n" + truncated;
 
+        // when
+        RecordedTrafficImporter.Result result =
+            new RecordedTrafficImporter(logger).importRecordedTraffic(ndjson, ImportRedaction.Options.disabled());
+
+        // then — both intact exchanges import, the truncated line is skipped and counted (not fatal)
+        assertThat(result.getPairs().size(), is(2));
+        assertThat(result.getSkippedLineCount(), is(1));
+        assertThat(result.getPairs().get(0).getHttpRequest().getPath().getValue(), is("/api/first"));
+        assertThat(result.getPairs().get(1).getHttpRequest().getPath().getValue(), is("/api/second"));
+    }
+
+    @Test
+    public void shouldSkipMalformedLineInTheMiddleAndImportTheRest() {
+        String first = ndjsonLine(new HttpRequestAndHttpResponse()
+            .withHttpRequest(request("/api/good1").withMethod("GET"))
+            .withHttpResponse(response().withStatusCode(200)));
+        String second = ndjsonLine(new HttpRequestAndHttpResponse()
+            .withHttpRequest(request("/api/good2").withMethod("GET"))
+            .withHttpResponse(response().withStatusCode(200)));
+        String ndjson = first + "\n" + "{not valid json}" + "\n" + second;
+
+        RecordedTrafficImporter.Result result =
+            new RecordedTrafficImporter(logger).importRecordedTraffic(ndjson, ImportRedaction.Options.disabled());
+
+        assertThat(result.getPairs().size(), is(2));
+        assertThat(result.getSkippedLineCount(), is(1));
+    }
+
+    @Test
+    public void shouldThrowWhenNoLineParses() {
+        // a body that is not a recorded-traffic archive at all (e.g. garbage or a HAR sent with
+        // ?format=recording): every non-blank line fails, so fail loudly rather than import nothing silently
+        RecordedTrafficImporter importer = new RecordedTrafficImporter(logger);
         IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-            () -> new RecordedTrafficImporter(logger).importRecordedTraffic(ndjson, ImportRedaction.Options.disabled()));
-        assertThat(ex.getMessage(), containsString("line 2"));
+            () -> importer.importRecordedTraffic("{not valid}\n[also not valid]", ImportRedaction.Options.disabled()));
+        assertThat(ex.getMessage(), containsString("not a recorded-traffic NDJSON archive"));
     }
 
     @Test
@@ -115,10 +162,11 @@ public class RecordedTrafficImporterTest {
         String line = ndjsonLine(original);
 
         // when
-        List<HttpRequestAndHttpResponse> pairs =
+        RecordedTrafficImporter.Result result =
             new RecordedTrafficImporter(logger).importRecordedTraffic(line, ImportRedaction.Options.disabled());
 
         // then — a single record with the embedded newlines preserved
+        List<HttpRequestAndHttpResponse> pairs = result.getPairs();
         assertThat(pairs.size(), is(1));
         assertThat(pairs.get(0), notNullValue());
         assertThat(pairs.get(0).getHttpRequest().getBodyAsString(), is("body\nwith\nnewlines"));

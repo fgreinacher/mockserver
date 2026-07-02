@@ -92,6 +92,10 @@ curl -v -X PUT "http://localhost:1080/mockserver/import?format=recording" \
 
 <p>Reload is idempotent — reloaded exchanges are not written back to the archive, so reloading the same file never grows it. Sensitive-data redaction (below) applies to <span class="inline_code">recording</span> imports too.</p>
 
+<p><strong>Crash recovery.</strong> The archive is written one line at a time, so a hard crash can leave a partially-written final line. Reload skips any malformed or truncated line (reporting how many in the <span class="inline_code">x-mockserver-recorded-requests-skipped</span> response header) and still loads every intact exchange, so <span class="inline_code">source=disk</span> reliably recovers a session after a crash. An empty archive simply reloads nothing (<span class="inline_code">201</span> with an empty list).</p>
+
+<p><strong>Note:</strong> reloaded exchanges are recorded as <em>forwarded</em> requests, so an originally-mocked exchange counts as forwarded if you later verify by disposition (forwarded vs mocked). This is an accepted limitation of the initial version.</p>
+
 <p><strong>Insomnia is not a supported import format</strong> &mdash; the only recognised formats are <span class="inline_code">har</span>, <span class="inline_code">postman</span>, and <span class="inline_code">pact</span>. Export from Insomnia as HAR, or convert to a Postman collection, then import that instead.</p>
 
 <a id="import_redaction" class="anchor" href="#import_redaction">&nbsp;</a>

@@ -2060,14 +2060,21 @@ public class HttpState {
                                 }
                                 ndjson = new String(java.nio.file.Files.readAllBytes(archivePath), java.nio.charset.StandardCharsets.UTF_8);
                             }
-                            List<org.mockserver.model.HttpRequestAndHttpResponse> pairs =
+                            org.mockserver.imports.RecordedTrafficImporter.Result recordingResult =
                                 new org.mockserver.imports.RecordedTrafficImporter(mockServerLogger).importRecordedTraffic(ndjson, redactionOptions);
+                            List<org.mockserver.model.HttpRequestAndHttpResponse> pairs = recordingResult.getPairs();
                             for (org.mockserver.model.HttpRequestAndHttpResponse pair : pairs) {
                                 mockServerLog.importRecordedRequestResponse(pair.getHttpRequest(), pair.getHttpResponse());
                             }
-                            responseWriter.writeResponse(request, response()
+                            HttpResponse recordingResponse = response()
                                 .withStatusCode(CREATED.code())
-                                .withBody(new org.mockserver.serialization.HttpRequestAndHttpResponseSerializer(mockServerLogger).serialize(pairs), MediaType.JSON_UTF_8), true);
+                                .withBody(new org.mockserver.serialization.HttpRequestAndHttpResponseSerializer(mockServerLogger).serialize(pairs), MediaType.JSON_UTF_8);
+                            // surface how many crash-truncated / malformed lines were skipped so a
+                            // recovery import is not silently lossy (the intact exchanges still import)
+                            if (recordingResult.getSkippedLineCount() > 0) {
+                                recordingResponse.withHeader("x-mockserver-recorded-requests-skipped", String.valueOf(recordingResult.getSkippedLineCount()));
+                            }
+                            responseWriter.writeResponse(request, recordingResponse, true);
                         } else {
                             String requestBody = request.getBodyAsJsonOrXmlString();
                             if (requestBody == null || requestBody.trim().isEmpty()) {

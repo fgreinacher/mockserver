@@ -211,4 +211,67 @@ public class RecordedTrafficReimportHttpStateTest {
         assertThat(importWriter.response.getStatusCode(), is(400));
         assertThat(importWriter.response.getBodyAsString(), containsString("no persisted recorded requests archive"));
     }
+
+    @Test
+    public void shouldReturnEmptyForEmptyDiskArchive() throws Exception {
+        // given — an archive file that exists but is empty (persistence enabled but nothing recorded yet)
+        File archiveFile = File.createTempFile("emptyArchive", ".ndjson");
+        archiveFile.deleteOnExit();
+        Files.write(archiveFile.toPath(), new byte[0]);
+        configuration.persistedRecordedRequestsPath(archiveFile.getAbsolutePath());
+
+        // when — re-import from disk
+        FakeResponseWriter importWriter = new FakeResponseWriter();
+        httpState.handle(request("/mockserver/import")
+            .withMethod("PUT")
+            .withQueryStringParameter("format", "recording")
+            .withQueryStringParameter("source", "disk"), importWriter, false);
+        importWriter.await();
+
+        // then — 0 imported (201 with an empty array), NOT a 400 body-required error
+        assertThat(importWriter.response.getStatusCode(), is(201));
+        assertThat(importWriter.response.getBodyAsString().replaceAll("\\s", ""), is("[]"));
+    }
+
+    @Test
+    public void shouldRecoverIntactExchangesFromTruncatedDiskArchive() throws Exception {
+        // given — a durable archive with two intact lines then a crash-truncated final line
+        File archiveFile = File.createTempFile("truncatedArchive", ".ndjson");
+        archiveFile.deleteOnExit();
+        String first = ndjsonLine(new HttpRequestAndHttpResponse()
+            .withHttpRequest(request("/api/recovered1").withMethod("GET").withHeader("host", "example.com"))
+            .withHttpResponse(response().withStatusCode(200).withBody("body1")));
+        String second = ndjsonLine(new HttpRequestAndHttpResponse()
+            .withHttpRequest(request("/api/recovered2").withMethod("GET").withHeader("host", "example.com"))
+            .withHttpResponse(response().withStatusCode(200).withBody("body2")));
+        String truncated = second.substring(0, second.length() / 2);
+        Files.write(archiveFile.toPath(), (first + "\n" + second + "\n" + truncated).getBytes(StandardCharsets.UTF_8));
+        configuration.persistedRecordedRequestsPath(archiveFile.getAbsolutePath());
+
+        // when — recover via source=disk
+        FakeResponseWriter importWriter = new FakeResponseWriter();
+        httpState.handle(request("/mockserver/import")
+            .withMethod("PUT")
+            .withQueryStringParameter("format", "recording")
+            .withQueryStringParameter("source", "disk")
+            .withQueryStringParameter("redactSensitiveData", "false"), importWriter, false);
+        importWriter.await();
+
+        // then — both intact exchanges import (crash-recovery guarantee holds), the skipped line is reported
+        assertThat(importWriter.response.getStatusCode(), is(201));
+        assertThat(importWriter.response.getBodyAsString(), containsString("/api/recovered1"));
+        assertThat(importWriter.response.getBodyAsString(), containsString("/api/recovered2"));
+        assertThat(importWriter.response.getFirstHeader("x-mockserver-recorded-requests-skipped"), is("1"));
+
+        // and — both are retrievable like in-memory recordings
+        FakeResponseWriter retrieveWriter = new FakeResponseWriter();
+        httpState.handle(request("/mockserver/retrieve")
+            .withMethod("PUT")
+            .withQueryStringParameter("type", REQUEST_RESPONSES.name())
+            .withQueryStringParameter("format", "JSON")
+            .withBody(""), retrieveWriter, false);
+        retrieveWriter.await();
+        assertThat(retrieveWriter.response.getBodyAsString(), containsString("/api/recovered1"));
+        assertThat(retrieveWriter.response.getBodyAsString(), containsString("/api/recovered2"));
+    }
 }
