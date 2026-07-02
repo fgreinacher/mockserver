@@ -2849,6 +2849,34 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">mockserver.clusterSharedTimesEnabled=false</code></pre>
 </div>
 
+<button id="button_configuration_cluster_verify_fan_in" class="accordion title"><strong>Cluster Verify Fan-In</strong></button>
+<div class="panel title">
+    <p>Controls whether <span class="inline_code">verify</span> and <span class="inline_code">retrieve</span> of recorded requests aggregate across all cluster nodes. MockServer replicates expectations and scenario state across a cluster, but each node keeps its OWN record of the requests it received. Behind a load balancer that means a <span class="inline_code">verify</span> or a retrieve of recorded requests sees only the traffic that happened to reach the node handling that call — so a verification can pass even though the whole cluster served more (or fewer) matching requests than expected. When <span class="keyword">true</span>, MockServer asks every other node (listed in <span class="inline_code">clusterVerifyFanInPeers</span>) for its local records, merges them, and evaluates the verification against the cluster-wide total. Default is <span class="keyword">false</span> (each node reports only its own traffic — unchanged behaviour). If a peer cannot be reached the verify/retrieve fails rather than returning a partial result. Only relevant in a clustered deployment.</p>
+    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">false</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.clusterVerifyFanIn(boolean enabled)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.clusterVerifyFanIn=true</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_CLUSTER_VERIFY_FAN_IN=true</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.clusterVerifyFanIn=true</code></pre>
+</div>
+
+<button id="button_configuration_cluster_verify_fan_in_peers" class="accordion title"><strong>Cluster Verify Fan-In Peers</strong></button>
+<div class="panel title">
+    <p>The comma-separated list of the OTHER cluster nodes' base URLs (for example <span class="inline_code">http://mockserver-1:1080,http://mockserver-2:1080</span>) that <span class="inline_code">clusterVerifyFanIn</span> queries when aggregating verify/retrieve across the cluster. List every node except the one being configured. Has no effect unless <span class="inline_code">clusterVerifyFanIn</span> is enabled; when enabled with an empty list, fan-in is a no-op.</p>
+    <p>Type: <span class="keyword">string</span> Default: <span class="this_value">""</span> (empty)</p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.clusterVerifyFanInPeers(String peers)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.clusterVerifyFanInPeers="http://mockserver-1:1080,http://mockserver-2:1080"</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_CLUSTER_VERIFY_FAN_IN_PEERS=http://mockserver-1:1080,http://mockserver-2:1080</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.clusterVerifyFanInPeers=http://mockserver-1:1080,http://mockserver-2:1080</code></pre>
+</div>
+
 <h2>Cloud Blob Store Configuration:</h2>
 
 <p>These properties configure cloud-backed blob storage for durable persistence of expectations, cassettes, and fixture files. Each cloud backend requires its own optional module on the classpath. Set <span class="inline_code">blobStoreType</span> to <span class="inline_code">s3</span>, <span class="inline_code">gcs</span>, or <span class="inline_code">azure</span> and configure the backend-specific properties below.</p>

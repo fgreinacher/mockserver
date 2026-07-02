@@ -826,6 +826,21 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     }
 
     public void verify(Verification verification, Consumer<String> resultConsumer) {
+        verify(verification, 0, resultConsumer);
+    }
+
+    /**
+     * Evaluate a request-count verification, adding {@code additionalRemoteMatchCount} to this
+     * node's local match count before comparing against the {@link org.mockserver.verify.VerificationTimes}.
+     * <p>
+     * Used by the T1.9 cluster verify fan-in: {@code HttpState} sums the match count reported by
+     * every cluster peer's LOCAL log and passes the total remote count here, so a count-based
+     * verification behind a load balancer is evaluated against the fleet-wide total rather than
+     * only the traffic that reached this node. {@code additionalRemoteMatchCount} is {@code 0} on
+     * the ordinary single-node / non-fan-in path (identical behaviour to before). Only applies to
+     * request verification; response-aware verification always receives {@code 0}.
+     */
+    public void verify(Verification verification, int additionalRemoteMatchCount, Consumer<String> resultConsumer) {
         drainDisruptor();
         final String logCorrelationId = UUIDService.getUUID();
         if (verification != null) {
@@ -848,10 +863,11 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
             final SingleVerificationEvaluation singleEvaluation = (logResult, consumer) -> {
                 if (verification.getHttpResponse() != null) {
                     // response-aware verification: count recorded request-response pairs
+                    // (cluster fan-in of response-aware verify is a deferred boundary — always local)
                     verifyResponse(verification, logCorrelationId, logResult, consumer);
                 } else {
-                    // original request-only verification
-                    verifyRequest(verification, logCorrelationId, logResult, consumer);
+                    // original request-only verification (plus any cluster-peer remote match count)
+                    verifyRequest(verification, additionalRemoteMatchCount, logCorrelationId, logResult, consumer);
                 }
             };
             eventuallyVerify(verification.getTimeout(), singleEvaluation, resultConsumer);
@@ -860,11 +876,12 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         }
     }
 
-    private void verifyRequest(Verification verification, String logCorrelationId, boolean logResult, Consumer<String> resultConsumer) {
+    private void verifyRequest(Verification verification, int additionalRemoteMatchCount, String logCorrelationId, boolean logResult, Consumer<String> resultConsumer) {
         retrieveRequests(verification, logCorrelationId, httpRequests -> {
             try {
-                if (!verification.getTimes().matches(httpRequests.size())) {
-                    final int matchedCount = httpRequests.size();
+                final int totalMatchedCount = httpRequests.size() + additionalRemoteMatchCount;
+                if (!verification.getTimes().matches(totalMatchedCount)) {
+                    final int matchedCount = totalMatchedCount;
                     boolean matchByExpectationId = verification.getExpectationId() != null;
                     retrieveAllRequests(matchByExpectationId, allRequests -> {
                         String failureMessage;

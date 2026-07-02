@@ -254,6 +254,8 @@ public class Configuration {
     private String clusterName;
     private String clusterTransportConfig;
     private Boolean clusterSharedTimesEnabled;
+    private Boolean clusterVerifyFanIn;
+    private String clusterVerifyFanInPeers;
 
     // verification
     private Integer maximumNumberOfRequestToReturnInVerificationFailure;
@@ -3693,6 +3695,67 @@ public class Configuration {
      */
     public Configuration clusterSharedTimesEnabled(boolean clusterSharedTimesEnabled) {
         this.clusterSharedTimesEnabled = clusterSharedTimesEnabled;
+        return this;
+    }
+
+    /**
+     * Returns whether {@code verify}/{@code verifySequence} and
+     * {@code retrieve} of {@code REQUESTS}/{@code REQUEST_RESPONSES} aggregate
+     * (scatter-gather) across cluster members. Default is {@code false}
+     * (per-node behaviour — each node sees only the traffic that hit it).
+     * <p>
+     * Only meaningful in a clustered deployment behind a load balancer, where
+     * the event log is per-node. When {@code true}, a verify/retrieve on any
+     * node queries every configured peer's LOCAL log (see
+     * {@link #clusterVerifyFanInPeers()}), merges the results, and evaluates
+     * the verification against the fleet-wide total. Count-based request
+     * verification ({@code exactly}/{@code atLeast}/{@code atMost}/
+     * {@code between}) and {@code REQUESTS}/{@code REQUEST_RESPONSES} retrieve
+     * are aggregated; cross-node {@code verifySequence} ordering is a
+     * documented boundary and stays node-local. See
+     * {@code org.mockserver.cluster.ClusterFanIn}.
+     */
+    public boolean clusterVerifyFanIn() {
+        if (clusterVerifyFanIn == null) {
+            return ConfigurationProperties.clusterVerifyFanIn();
+        }
+        return clusterVerifyFanIn;
+    }
+
+    /**
+     * Enables or disables cluster verify/retrieve fan-in.
+     *
+     * @param clusterVerifyFanIn {@code true} to aggregate verify/retrieve
+     *                           across cluster peers; {@code false} (default)
+     *                           for per-node behaviour
+     */
+    public Configuration clusterVerifyFanIn(boolean clusterVerifyFanIn) {
+        this.clusterVerifyFanIn = clusterVerifyFanIn;
+        return this;
+    }
+
+    /**
+     * Returns the comma-separated list of peer control-plane base URLs (e.g.
+     * {@code http://node-b:1080,http://node-c:1080}) queried when
+     * {@link #clusterVerifyFanIn()} is enabled. Should list the OTHER nodes in
+     * the fleet (excluding this node). Default is empty (no peers — fan-in is
+     * a no-op even when enabled).
+     */
+    public String clusterVerifyFanInPeers() {
+        if (clusterVerifyFanInPeers == null) {
+            return ConfigurationProperties.clusterVerifyFanInPeers();
+        }
+        return clusterVerifyFanInPeers;
+    }
+
+    /**
+     * Sets the comma-separated list of peer control-plane base URLs for
+     * verify/retrieve fan-in.
+     *
+     * @param clusterVerifyFanInPeers comma-separated peer base URLs
+     */
+    public Configuration clusterVerifyFanInPeers(String clusterVerifyFanInPeers) {
+        this.clusterVerifyFanInPeers = clusterVerifyFanInPeers;
         return this;
     }
 

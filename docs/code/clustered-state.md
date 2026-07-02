@@ -281,6 +281,8 @@ Add the module to the classpath and configure the blob store type plus backend-s
 | `mockserver.clusterName` | `MOCKSERVER_CLUSTER_NAME` | `mockserver-cluster` | JGroups cluster identifier; all nodes that should share state must use the same value |
 | `mockserver.clusterTransportConfig` | `MOCKSERVER_CLUSTER_TRANSPORT_CONFIG` | _(built-in loopback stack)_ | Path to a custom JGroups XML transport configuration; leave empty to use the built-in loopback stack (suitable for embedded tests; use a UDP or TCP stack for production) |
 | `mockserver.clusterSharedTimesEnabled` | `MOCKSERVER_CLUSTER_SHARED_TIMES_ENABLED` | `true` | Enforce per-expectation `Times` limits cluster-wide via shared backend CAS (exactly-N across the fleet). Set `false` to fall back to node-local `Times` (no synchronous replicated write on the request worker thread; fleet-wide N becomes approximate). Only relevant when `clusterEnabled=true`. See "Clustered Times Counters". |
+| `mockserver.clusterVerifyFanIn` | `MOCKSERVER_CLUSTER_VERIFY_FAN_IN` | `false` | Aggregate `verify`/`retrieve` (REQUESTS/REQUEST_RESPONSES) across cluster members so a verify/retrieve behind a load balancer reflects fleet-wide traffic rather than only the node it hit. Only meaningful in a clustered deployment. See "Clustered Verify/Retrieve Fan-In". |
+| `mockserver.clusterVerifyFanInPeers` | `MOCKSERVER_CLUSTER_VERIFY_FAN_IN_PEERS` | _(empty)_ | Comma-separated list of the OTHER nodes' control-plane base URLs (e.g. `http://node-b:1080,http://node-c:1080`) queried during fan-in. Required for fan-in to do anything. |
 
 ## Enabling Infinispan
 
@@ -426,6 +428,58 @@ This is gated narrowly — only when the backend is clustered **and** the expect
 
 (or `Configuration.clusterSharedTimesEnabled(false)`, env `MOCKSERVER_CLUSTER_SHARED_TIMES_ENABLED=false`). With shared-Times **disabled**, limited-`Times` matching reverts to the **node-local** fast path: each node enforces `Times` independently with no backend round-trip on the worker. The trade-off is that fleet-wide exactly-N becomes **approximate** — a `Times.exactly(3)` expectation may serve up to 3 times *per node* (like the chaos/quota counters below). The property defaults to `true`, preserving the exactly-N guarantee for everyone who does not opt out.
 
+## Clustered Verify/Retrieve Fan-In
+
+**The event log is per-node.** The `StateBackend` replicates expectations, scenario
+state, CRUD entities, and blobs across the fleet, but NOT request/response log entries —
+each node records only the traffic that reached it. Behind a load balancer, a `verify()`
+or `retrieve(REQUESTS/REQUEST_RESPONSES)` therefore sees only one node's slice of the
+traffic. This is a silent correctness trap for the HA feature: `verify(exactly(3))` can
+pass on every node while the fleet actually served 9 requests.
+
+The **opt-in cluster fan-in** (`clusterVerifyFanIn=true`) closes this gap by aggregating
+across cluster members. It is **off by default** — the single-node/per-node behaviour is
+unchanged and non-breaking.
+
+```mermaid
+sequenceDiagram
+    participant C as Client (verify/retrieve)
+    participant A as Node A (coordinator)
+    participant B as Node B (peer)
+    participant D as Node C (peer)
+
+    C->>A: PUT /mockserver/verify (or /retrieve)
+    A->>A: count local matches
+    A->>B: PUT /mockserver/retrieve?fanInLocalOnly=true
+    A->>D: PUT /mockserver/retrieve?fanInLocalOnly=true
+    B-->>A: local matches (no further fan-out)
+    D-->>A: local matches (no further fan-out)
+    A->>A: total = local + sum(remote)
+    A-->>C: evaluate VerificationTimes(total) / merged retrieve
+```
+
+| Aspect | Behaviour |
+|--------|-----------|
+| **Enable** | `clusterVerifyFanIn=true` **and** a non-empty `clusterVerifyFanInPeers` list (the OTHER nodes' control-plane base URLs). Enabled with no peers = safe no-op. |
+| **Peer query** | Each peer is queried via `PUT /mockserver/retrieve?type=…&format=JSON&fanInLocalOnly=true` using the JDK `HttpClient` (`HttpClusterPeerAccessor`). |
+| **Non-recursion** | The `fanInLocalOnly=true` marker makes the peer serve ONLY its local log — it never fans out again, so there is no recursion. |
+| **Retrieve merge** | `REQUESTS`/`REQUEST_RESPONSES` results are concatenated (local first, then each peer). Applies to all serialization formats since the merge is at the list level. |
+| **Verify merge** | Count-based request verification (`exactly`/`atLeast`/`atMost`/`between`) sums each peer's LOCAL match count with the local count, then evaluates `VerificationTimes` against the fleet-wide total (`MockServerEventLog.verify(verification, additionalRemoteMatchCount, …)`). |
+| **Unreachable peer** | **Fail-closed** (the safer default): a verify returns a failure naming the unreachable peer(s); a retrieve returns HTTP 502. A partial aggregate is never returned, because silently missing a peer's traffic could turn a real `atMost`/`exactly` violation into a false pass. |
+| **Auth boundary** | The v1 accessor sends no control-plane credentials, so it assumes peers do not require control-plane auth (same trust domain / network). Authenticated cross-node fan-in is a follow-up. |
+
+**Deferred boundaries (documented, not implemented in v1):**
+
+- **`verifySequence` ordering** — verifying an ordered sequence of requests across nodes
+  requires a global order over per-node logs (no shared clock), so `verifySequence` stays
+  node-local rather than being done wrong.
+- **Response-aware verify** (`verify` with an `httpResponse` matcher) and
+  **expectationId-based verify** — stay node-local.
+- **Dashboard/log-view fan-in** and **rate-limit / chaos-quota counter** clustering — separate follow-ups.
+
+Source: `org.mockserver.cluster.ClusterFanIn`, `org.mockserver.cluster.HttpClusterPeerAccessor`,
+`org.mockserver.cluster.ClusterFanInException` (all in `mockserver-core`).
+
 ## Limitations and Known Follow-Ups
 
 | Limitation | Detail |
@@ -437,6 +491,7 @@ This is gated narrowly — only when the backend is clustered **and** the expect
 | Chaos match counters | Per-service gRPC match counters (`incrementMatchCount`) and per-host quota counters remain node-local. A quota limit of 100 on a two-node cluster allows up to 200 total requests. |
 | Rate-limit counters (`rateLimit` clause) | v1 of the declarative `rateLimit` expectation clause (`RateLimitRegistry`, `org.mockserver.ratelimit`) is **node-local** — like the chaos quota and gRPC match counters above. A `limit` of 100 on a two-node cluster allows up to 200 total requests. A future clustered mode would enforce the limit fleet-wide via a per-request shared-backend `compareAndSet` (the same mechanism as the clustered `Times` counters — see "Clustered Times Counters"), trading a synchronous replicated write on the request-worker thread for exactly-N across the fleet. Not implemented in v1. |
 | Shared-Times CAS on the worker thread | When `clusterSharedTimesEnabled=true` (default), limited-`Times` matching performs up to 10 synchronous replicated CAS writes on the Netty request-worker thread (worst case, under same-expectation cross-node contention). Disable via `clusterSharedTimesEnabled=false` to use node-local `Times` (no worker-thread round-trip, but exactly-N becomes approximate — up to N *per node*). See "Clustered Times Counters". |
+| Per-node event log (verify/retrieve) | Request/response log entries are NOT replicated by the `StateBackend`, so `verify`/`retrieve` are per-node by default. The opt-in `clusterVerifyFanIn` closes this for count-based request verification and `REQUESTS`/`REQUEST_RESPONSES` retrieve (see "Clustered Verify/Retrieve Fan-In"). Deferred: `verifySequence` cross-node ordering, response-aware/expectationId verify, dashboard log-view, and authenticated cross-node fan-in — these remain node-local. |
 
 ## Source Locations
 

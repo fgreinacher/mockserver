@@ -324,6 +324,8 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_CLUSTER_NAME = "mockserver.clusterName";
     private static final String MOCKSERVER_CLUSTER_TRANSPORT_CONFIG = "mockserver.clusterTransportConfig";
     private static final String MOCKSERVER_CLUSTER_SHARED_TIMES_ENABLED = "mockserver.clusterSharedTimesEnabled";
+    private static final String MOCKSERVER_CLUSTER_VERIFY_FAN_IN = "mockserver.clusterVerifyFanIn";
+    private static final String MOCKSERVER_CLUSTER_VERIFY_FAN_IN_PEERS = "mockserver.clusterVerifyFanInPeers";
 
     // verification
     private static final String MOCKSERVER_MAXIMUM_NUMBER_OF_REQUESTS_TO_RETURN_IN_VERIFICATION_FAILURE = "mockserver.maximumNumberOfRequestToReturnInVerificationFailure";
@@ -4215,6 +4217,44 @@ public class ConfigurationProperties {
      */
     public static void clusterSharedTimesEnabled(boolean clusterSharedTimesEnabled) {
         setProperty(MOCKSERVER_CLUSTER_SHARED_TIMES_ENABLED, String.valueOf(clusterSharedTimesEnabled));
+    }
+
+    /**
+     * Returns whether {@code verify}/{@code retrieve} aggregate across cluster
+     * members (scatter-gather fan-in). Default is {@code false} (per-node
+     * behaviour). Only meaningful in a clustered deployment behind a load
+     * balancer. See {@code org.mockserver.cluster.ClusterFanIn}.
+     */
+    public static boolean clusterVerifyFanIn() {
+        return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_CLUSTER_VERIFY_FAN_IN, "MOCKSERVER_CLUSTER_VERIFY_FAN_IN", "false"));
+    }
+
+    /**
+     * Enables or disables cluster verify/retrieve fan-in.
+     *
+     * @param clusterVerifyFanIn {@code true} to aggregate verify/retrieve
+     *                           across cluster peers
+     */
+    public static void clusterVerifyFanIn(boolean clusterVerifyFanIn) {
+        setProperty(MOCKSERVER_CLUSTER_VERIFY_FAN_IN, String.valueOf(clusterVerifyFanIn));
+    }
+
+    /**
+     * Returns the comma-separated list of peer control-plane base URLs queried
+     * during verify/retrieve fan-in. Default is empty (no peers).
+     */
+    public static String clusterVerifyFanInPeers() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_CLUSTER_VERIFY_FAN_IN_PEERS, "MOCKSERVER_CLUSTER_VERIFY_FAN_IN_PEERS", "");
+    }
+
+    /**
+     * Sets the comma-separated list of peer control-plane base URLs for
+     * verify/retrieve fan-in.
+     *
+     * @param clusterVerifyFanInPeers comma-separated peer base URLs
+     */
+    public static void clusterVerifyFanInPeers(String clusterVerifyFanInPeers) {
+        setProperty(MOCKSERVER_CLUSTER_VERIFY_FAN_IN_PEERS, clusterVerifyFanInPeers != null ? clusterVerifyFanInPeers : "");
     }
 
     // verification

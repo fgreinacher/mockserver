@@ -39,6 +39,9 @@ import org.mockserver.serialization.ObjectMapperFactory;
 import org.mockserver.serialization.java.ExpectationToJavaSerializer;
 import org.mockserver.serialization.YamlToJsonConverter;
 import org.mockserver.server.initialize.ExpectationInitializerLoader;
+import org.mockserver.cluster.ClusterFanIn;
+import org.mockserver.cluster.ClusterFanInException;
+import org.mockserver.cluster.HttpClusterPeerAccessor;
 import org.mockserver.state.InvalidationListener;
 import org.mockserver.state.StateBackend;
 import org.mockserver.state.StateBackendFactory;
@@ -98,6 +101,8 @@ public class HttpState {
     // ADV3: persisted, named library of reusable chaos experiment profiles
     private final org.mockserver.mock.action.http.ChaosProfileLibrary chaosProfileLibrary;
     private final org.mockserver.mock.action.http.LoadScenarioRegistry loadScenarioRegistry;
+    // T1.9: opt-in cluster verify/retrieve fan-in coordinator (default OFF = per-node)
+    private ClusterFanIn clusterFanIn;
     private final Configuration configuration;
     // Adds CORS headers to dashboard-facing control-plane responses (e.g. service
     // chaos) so the dashboard works when served from another origin (a dev server),
@@ -299,6 +304,12 @@ public class HttpState {
             });
         }
         CrossProtocolEventBus.getInstance().setScenarioManager(requestMatchers.getScenarioManager());
+        // T1.9: opt-in cluster verify/retrieve fan-in. The per-node event log means a
+        // verify/retrieve behind a load balancer sees only local traffic; when enabled
+        // (clusterVerifyFanIn=true + clusterVerifyFanInPeers set) this aggregates across
+        // peers. Default OFF = unchanged per-node behaviour. Injectable for tests.
+        this.clusterFanIn = new ClusterFanIn(configuration, this.mockServerLogger,
+            new HttpClusterPeerAccessor(configuration, this.mockServerLogger));
         // Preload load scenario definitions from a JSON file into the registry (LOADED state, staged but
         // not running). Mirrors the expectation initialization-from-file mechanism.
         preloadLoadScenarios();
@@ -1009,6 +1020,16 @@ public class HttpState {
                 // tenant's expectations plus global (no-namespace) expectations.
                 final String namespaceFilter = resolveNamespaceFilter(request);
 
+                // T1.9 cluster verify/retrieve fan-in. When ?fanInLocalOnly=true the caller is a peer
+                // fan-in query — serve ONLY this node's log (infinite-recursion guard). Otherwise, when
+                // fan-in is enabled and configured, REQUESTS/REQUEST_RESPONSES retrieval aggregates each
+                // peer's LOCAL log with this node's before formatting.
+                final boolean fanInLocalOnly = Boolean.parseBoolean(request.getFirstQueryStringParameter("fanInLocalOnly"));
+                final boolean applyFanIn = !fanInLocalOnly
+                    && clusterFanIn != null
+                    && clusterFanIn.enabled()
+                    && (type == RetrieveType.REQUESTS || type == RetrieveType.REQUEST_RESPONSES);
+
                 // Record-and-forward one-command round-trip (Unit R): when ?forwardUnmatchedTo=<upstream>
                 // is supplied, enable record-and-forward of unmatched requests to that upstream for the
                 // session. Subsequent traffic that matches no expectation is forwarded to the upstream and
@@ -1094,10 +1115,7 @@ public class HttpState {
                             .setArguments(requestDefinition);
                         switch (format) {
                             case JAVA: {
-                                List<RequestDefinition> requests = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequests(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<RequestDefinition> requests = retrieveRequestsPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response.withBody(
                                     getRequestDefinitionSerializer().serialize(requests),
                                     MediaType.create("application", "java").withCharset(UTF_8)
@@ -1107,10 +1125,7 @@ public class HttpState {
                                 break;
                             }
                             case JSON: {
-                                List<RequestDefinition> requests = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequests(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<RequestDefinition> requests = retrieveRequestsPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response.withBody(
                                     getRequestDefinitionSerializer().serializeRecordedRequests(true, requests),
                                     MediaType.JSON_UTF_8
@@ -1133,10 +1148,7 @@ public class HttpState {
                                 break;
                             }
                             case OPENAPI: {
-                                List<RequestDefinition> requests = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequests(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<RequestDefinition> requests = retrieveRequestsPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response.withBody(
                                     getExpectationExportSerializer().serializeRequestsAsOpenApi(requests),
                                     MediaType.JSON_UTF_8
@@ -1146,10 +1158,7 @@ public class HttpState {
                                 break;
                             }
                             case POSTMAN: {
-                                List<RequestDefinition> requests = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequests(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<RequestDefinition> requests = retrieveRequestsPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response.withBody(
                                     getExpectationExportSerializer().serializeRequestsAsPostman(requests),
                                     MediaType.JSON_UTF_8
@@ -1159,10 +1168,7 @@ public class HttpState {
                                 break;
                             }
                             case BRUNO: {
-                                List<RequestDefinition> requests = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequests(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<RequestDefinition> requests = retrieveRequestsPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response
                                     .withBody(getExpectationExportSerializer().serializeRequestsAsBruno(requests))
                                     .withHeader(io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE.toString(), "application/zip")
@@ -1172,10 +1178,7 @@ public class HttpState {
                                 break;
                             }
                             case HAR: {
-                                List<RequestDefinition> requests = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequests(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<RequestDefinition> requests = retrieveRequestsPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 java.util.List<org.mockserver.model.LogEventRequestAndResponse> pairs = new java.util.ArrayList<>(requests.size());
                                 for (org.mockserver.model.RequestDefinition r : requests) {
                                     if (r instanceof org.mockserver.model.HttpRequest) {
@@ -1189,10 +1192,7 @@ public class HttpState {
                                 break;
                             }
                             case CURL: {
-                                List<RequestDefinition> requests = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequests(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<RequestDefinition> requests = retrieveRequestsPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 List<HttpRequest> httpRequests = new java.util.ArrayList<>(requests.size());
                                 for (RequestDefinition r : requests) {
                                     if (r instanceof HttpRequest) {
@@ -1244,10 +1244,7 @@ public class HttpState {
                                 // serialize on THIS caller thread — serializing potentially many large captured
                                 // bodies inside the single log-consumer callback raced the retrieve future timeout
                                 // and stalled all further logging (#3).
-                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<LogEventRequestAndResponse> pairs = retrieveRequestResponsesPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response.withBody(
                                     getHttpRequestResponseSerializer().serialize(pairs),
                                     MediaType.JSON_UTF_8
@@ -1270,10 +1267,7 @@ public class HttpState {
                                 break;
                             }
                             case HAR: {
-                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<LogEventRequestAndResponse> pairs = retrieveRequestResponsesPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response.withBody(
                                     getHarConverter().serialize(pairs),
                                     MediaType.JSON_UTF_8
@@ -1283,10 +1277,7 @@ public class HttpState {
                                 break;
                             }
                             case OPENAPI: {
-                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<LogEventRequestAndResponse> pairs = retrieveRequestResponsesPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response.withBody(
                                     getExpectationExportSerializer().serializeRequestResponsesAsOpenApi(pairs),
                                     MediaType.JSON_UTF_8
@@ -1296,10 +1287,7 @@ public class HttpState {
                                 break;
                             }
                             case POSTMAN: {
-                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<LogEventRequestAndResponse> pairs = retrieveRequestResponsesPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response.withBody(
                                     getExpectationExportSerializer().serializeRequestResponsesAsPostman(pairs),
                                     MediaType.JSON_UTF_8
@@ -1309,10 +1297,7 @@ public class HttpState {
                                 break;
                             }
                             case BRUNO: {
-                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<LogEventRequestAndResponse> pairs = retrieveRequestResponsesPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 response
                                     .withBody(getExpectationExportSerializer().serializeRequestResponsesAsBruno(pairs))
                                     .withHeader(io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE.toString(), "application/zip")
@@ -1322,10 +1307,7 @@ public class HttpState {
                                 break;
                             }
                             case CURL: {
-                                List<LogEventRequestAndResponse> pairs = awaitRetrieve(
-                                    consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
-                                    logCorrelationId, request
-                                );
+                                List<LogEventRequestAndResponse> pairs = retrieveRequestResponsesPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
                                 List<HttpRequest> httpRequests = new java.util.ArrayList<>(pairs.size());
                                 for (LogEventRequestAndResponse pair : pairs) {
                                     if (pair.getHttpRequest() instanceof HttpRequest) {
@@ -1664,6 +1646,19 @@ public class HttpState {
                     );
                     throw new RuntimeException("Exception retrieving state for " + request, ex);
                 }
+            } catch (ClusterFanInException cfe) {
+                // fail-closed: a retrieve that cannot reach all cluster peers returns an error
+                // (502) rather than a partial result that would silently under-report traffic.
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.ERROR)
+                        .setCorrelationId(logCorrelationId)
+                        .setMessageFormat("cluster retrieve fan-in failed:{}")
+                        .setArguments(cfe.getMessage())
+                );
+                return response()
+                    .withStatusCode(BAD_GATEWAY.code())
+                    .withBody("{\"error\":\"" + cfe.getMessage().replace("\"", "'") + "\"}", MediaType.JSON_UTF_8);
             } catch (IllegalArgumentException iae) {
                 mockServerLogger.logEvent(
                     new LogEntry()
@@ -1715,6 +1710,58 @@ public class HttpState {
         }
     }
 
+    /**
+     * T1.9 test seam: inject a {@link ClusterFanIn} coordinator (with a mocked
+     * {@link ClusterFanIn.PeerAccessor}) so fan-in merge logic can be unit-tested
+     * without a real multi-node cluster.
+     */
+    public void setClusterFanIn(ClusterFanIn clusterFanIn) {
+        this.clusterFanIn = clusterFanIn;
+    }
+
+    /**
+     * Retrieve this node's local matching requests and, when fan-in applies, concatenate every
+     * peer's LOCAL matching requests. Fail-closed: an unreachable peer throws
+     * {@link ClusterFanInException} (surfaced as a 502 by {@link #retrieve(HttpRequest)}).
+     */
+    private List<RequestDefinition> retrieveRequestsPossiblyFanIn(RequestDefinition requestDefinition, String logCorrelationId, HttpRequest request, boolean applyFanIn) {
+        List<RequestDefinition> local = awaitRetrieve(
+            consumer -> mockServerLog.retrieveRequests(requestDefinition, consumer),
+            logCorrelationId, request
+        );
+        if (!applyFanIn) {
+            return local;
+        }
+        ClusterFanIn.FanInResult<List<RequestDefinition>> remote = clusterFanIn.fanInRequests(requestDefinition);
+        if (remote.hasUnreachablePeers()) {
+            throw new ClusterFanInException(remote.unreachablePeers());
+        }
+        List<RequestDefinition> merged = new ArrayList<>(local);
+        merged.addAll(remote.merged());
+        return merged;
+    }
+
+    /**
+     * Retrieve this node's local matching request-response pairs and, when fan-in applies,
+     * concatenate every peer's LOCAL pairs. Fail-closed like {@link #retrieveRequestsPossiblyFanIn}.
+     */
+    private List<LogEventRequestAndResponse> retrieveRequestResponsesPossiblyFanIn(RequestDefinition requestDefinition, String logCorrelationId, HttpRequest request, boolean applyFanIn) {
+        List<LogEventRequestAndResponse> local = awaitRetrieve(
+            consumer -> mockServerLog.retrieveRequestResponses(requestDefinition, consumer),
+            logCorrelationId, request
+        );
+        if (!applyFanIn) {
+            return local;
+        }
+        ClusterFanIn.FanInResult<List<LogEventRequestAndResponse>> remote = clusterFanIn.fanInRequestResponses(requestDefinition);
+        if (remote.hasUnreachablePeers()) {
+            throw new ClusterFanInException(remote.unreachablePeers());
+        }
+        List<LogEventRequestAndResponse> merged = new ArrayList<>(local);
+        merged.addAll(remote.merged());
+        return merged;
+    }
+
     public Future<String> verify(Verification verification) {
         CompletableFuture<String> result = new CompletableFuture<>();
         verify(verification, result::complete);
@@ -1725,6 +1772,24 @@ public class HttpState {
         if (verification.getExpectationId() != null) {
             // check valid expectation id and populate for error message
             verification.withRequest(resolveExpectationId(verification.getExpectationId()));
+        }
+        // T1.9 count-based verify fan-in. When enabled, aggregate each peer's LOCAL match
+        // count with this node's before evaluating VerificationTimes, so a verify behind a
+        // load balancer reflects fleet-wide traffic rather than only the node it hit.
+        // Scoped to request-only verification (no httpResponse, no expectationId): response-aware
+        // verify and expectationId-based verify aggregation are documented deferred boundaries and
+        // stay node-local. Fail-closed: an unreachable peer yields a verification failure rather
+        // than a partial (potentially wrong) result.
+        if (clusterFanIn != null && clusterFanIn.enabled()
+            && verification.getHttpResponse() == null
+            && verification.getExpectationId() == null) {
+            ClusterFanIn.FanInResult<List<RequestDefinition>> remote = clusterFanIn.fanInRequests(verification.getHttpRequest());
+            if (remote.hasUnreachablePeers()) {
+                resultConsumer.accept("Verification could not be evaluated cluster-wide: unreachable peer(s) " + remote.unreachablePeers());
+                return;
+            }
+            mockServerLog.verify(verification, remote.merged().size(), resultConsumer);
+            return;
         }
         mockServerLog.verify(verification, resultConsumer);
     }

@@ -272,6 +272,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private String clusterName;
     private String clusterTransportConfig;
     private Boolean clusterSharedTimesEnabled;
+    private Boolean clusterVerifyFanIn;
+    private String clusterVerifyFanInPeers;
     private Boolean controlPlaneOidcAuthenticationRequired;
     private String controlPlaneOidcIssuer;
     private String controlPlaneOidcJwksUri;
@@ -568,6 +570,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.clusterName = configuration.clusterName();
             this.clusterTransportConfig = configuration.clusterTransportConfig();
             this.clusterSharedTimesEnabled = configuration.clusterSharedTimesEnabled();
+            this.clusterVerifyFanIn = configuration.clusterVerifyFanIn();
+            this.clusterVerifyFanInPeers = configuration.clusterVerifyFanInPeers();
             this.controlPlaneOidcAuthenticationRequired = configuration.controlPlaneOidcAuthenticationRequired();
             this.controlPlaneOidcIssuer = configuration.controlPlaneOidcIssuer();
             this.controlPlaneOidcJwksUri = configuration.controlPlaneOidcJwksUri();
@@ -915,6 +919,10 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (clusterSharedTimesEnabled != null) {
             configuration.clusterSharedTimesEnabled(clusterSharedTimesEnabled);
         }
+        if (clusterVerifyFanIn != null) {
+            configuration.clusterVerifyFanIn(clusterVerifyFanIn);
+        }
+        configuration.clusterVerifyFanInPeers(clusterVerifyFanInPeers);
         configuration.controlPlaneOidcAuthenticationRequired(controlPlaneOidcAuthenticationRequired);
         configuration.controlPlaneOidcIssuer(controlPlaneOidcIssuer);
         configuration.controlPlaneOidcJwksUri(controlPlaneOidcJwksUri);
@@ -1646,6 +1654,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (clusterSharedTimesEnabled != null) {
             target.clusterSharedTimesEnabled(clusterSharedTimesEnabled);
+        }
+        if (clusterVerifyFanIn != null) {
+            target.clusterVerifyFanIn(clusterVerifyFanIn);
+        }
+        if (clusterVerifyFanInPeers != null) {
+            target.clusterVerifyFanInPeers(clusterVerifyFanInPeers);
         }
         if (controlPlaneOidcAuthenticationRequired != null) {
             target.controlPlaneOidcAuthenticationRequired(controlPlaneOidcAuthenticationRequired);
@@ -3843,6 +3857,24 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setClusterTransportConfig(String clusterTransportConfig) {
         this.clusterTransportConfig = clusterTransportConfig;
+        return this;
+    }
+
+    public Boolean getClusterVerifyFanIn() {
+        return clusterVerifyFanIn;
+    }
+
+    public ConfigurationDTO setClusterVerifyFanIn(Boolean clusterVerifyFanIn) {
+        this.clusterVerifyFanIn = clusterVerifyFanIn;
+        return this;
+    }
+
+    public String getClusterVerifyFanInPeers() {
+        return clusterVerifyFanInPeers;
+    }
+
+    public ConfigurationDTO setClusterVerifyFanInPeers(String clusterVerifyFanInPeers) {
+        this.clusterVerifyFanInPeers = clusterVerifyFanInPeers;
         return this;
     }
 

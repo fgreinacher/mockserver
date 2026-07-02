@@ -146,12 +146,20 @@ app:
 <ul>
     <li>
         <strong>The event log and request verification ring buffer.</strong>
-        A <code class="inline code">verify()</code> call (or <code class="inline code">MockServerClient.verify()</code>)
+        By default a <code class="inline code">verify()</code> call (or <code class="inline code">MockServerClient.verify()</code>)
         checks only the node that received that call. In a load-balanced cluster, requests
         may be spread across nodes, so verification must be sent to the specific node that received the
         request being verified &mdash; or verification must be performed per-node and the results combined
         in your test logic.
         <strong>This is the most significant operational constraint of the clustered model.</strong>
+        You can instead enable <strong>cluster verify fan-in</strong> (<code class="inline code">clusterVerifyFanIn=true</code>
+        plus <code class="inline code">clusterVerifyFanInPeers</code> listing the other nodes' base URLs): the node
+        that receives the call then queries its peers for their local records, merges them, and evaluates the
+        verification against the cluster-wide total. This covers count-based request verifications
+        (<code class="inline code">exactly</code>/<code class="inline code">atLeast</code>/<code class="inline code">atMost</code>/<code class="inline code">between</code>)
+        and retrieval of recorded requests; ordered <code class="inline code">verify</code> sequences, response-aware
+        verification, and the dashboard log view remain node-local. If a peer cannot be reached the call fails
+        rather than returning a partial result.
     </li>
 </ul>
 
@@ -359,7 +367,7 @@ app:
         </tr>
         <tr>
             <td>Verification</td>
-            <td><strong>The event log is node-local.</strong> <code class="inline code">verify()</code> checks only the node it is sent to. When a load balancer distributes requests, a request handled by Node A is not visible in Node B's log. Either pin verification calls to specific nodes, run verification against all nodes, or use a single-node deployment when cross-node assertion is required.</td>
+            <td><strong>The event log is node-local by default.</strong> <code class="inline code">verify()</code> checks only the node it is sent to. When a load balancer distributes requests, a request handled by Node A is not visible in Node B's log. Either enable cluster verify fan-in (<code class="inline code">clusterVerifyFanIn=true</code> with <code class="inline code">clusterVerifyFanInPeers</code>) to aggregate count-based verify/retrieve across the fleet, pin verification calls to specific nodes, run verification against all nodes, or use a single-node deployment when cross-node assertion is required.</td>
         </tr>
         <tr>
             <td>Eviction</td>
@@ -652,7 +660,7 @@ app:
         <tr>
             <td>verify() works across all nodes</td>
             <td>Yes (one node)</td>
-            <td>No — node-local log</td>
+            <td>Optional (node-local by default; enable clusterVerifyFanIn)</td>
             <td>Yes (one node)</td>
         </tr>
         <tr>
