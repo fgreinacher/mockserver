@@ -122,7 +122,7 @@ export function humanizeError(e: unknown): HumanError {
     return humanizeServerError(status, body);
   }
 
-  if (isNetworkError(e, message)) {
+  if (isNetworkError(message)) {
     return {
       message: 'Couldn’t reach the MockServer — is it still running?',
       details: message || undefined,
@@ -132,19 +132,26 @@ export function humanizeError(e: unknown): HumanError {
   return { message: message || 'An unexpected error occurred.' };
 }
 
-/** Heuristic detection of fetch network / connection failures across browsers. */
-function isNetworkError(e: unknown, message: string): boolean {
+/**
+ * Heuristic detection of fetch network / connection failures across browsers.
+ *
+ * Matches on the error *message* rather than on the type. Browsers throw a
+ * `TypeError` for a fetch network failure, but they also throw `TypeError` for
+ * ordinary programming bugs (e.g. reading a property of `undefined`) inside a
+ * fetch `.then` chain — so classifying *any* `TypeError` as a network error
+ * masked real bugs behind "Couldn't reach the MockServer". We therefore require
+ * a known fetch/connection-failure message shape:
+ *   - Chrome:  "Failed to fetch"
+ *   - Safari:  "Load failed"
+ *   - Firefox: "NetworkError when attempting to fetch resource"
+ *   - node/undici and connection refusals: "ECONNREFUSED" / "connection refused"
+ */
+function isNetworkError(message: string): boolean {
   const lower = message.toLowerCase();
-  if (e instanceof TypeError) {
-    // Browsers throw TypeError for fetch network failures with varied wording.
-    return true;
-  }
   return (
-    lower.includes('failed to fetch') ||
-    lower.includes('networkerror') ||
+    /failed to fetch|load failed|networkerror/i.test(message) ||
     lower.includes('network error') ||
     lower.includes('econnrefused') ||
-    lower.includes('connection refused') ||
-    lower.includes('load failed')
+    lower.includes('connection refused')
   );
 }

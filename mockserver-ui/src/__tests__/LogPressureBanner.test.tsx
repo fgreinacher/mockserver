@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '@mui/material/styles';
 import { buildTheme } from '../theme';
@@ -81,5 +81,47 @@ describe('LogPressureBanner', () => {
     await screen.findByTestId('log-pressure-banner');
     await user.click(screen.getByRole('button', { name: /close/i }));
     expect(screen.queryByTestId('log-pressure-banner')).not.toBeInTheDocument();
+  });
+
+  it('re-shows after a server restart resets the counter below the dismissed value', async () => {
+    // First poll reports 128 drops; after a server restart the counter resets
+    // and the next poll reports only 3 — fewer than the dismissed total.
+    vi.useFakeTimers();
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        call += 1;
+        const value = call === 1 ? 128 : 3;
+        return {
+          status: 200,
+          ok: true,
+          text: async () => `mock_server_dropped_log_events_total ${value}.0`,
+        };
+      }),
+    );
+    renderBanner();
+
+    // First poll → 128 drops; dismiss the banner. (fireEvent is synchronous —
+    // userEvent's internal delays deadlock under fake timers.)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId('log-pressure-banner')).toHaveTextContent('128');
+    fireEvent.click(screen.getByRole('button', { name: /close/i }));
+    expect(screen.queryByTestId('log-pressure-banner')).not.toBeInTheDocument();
+
+    // Next poll (after the 15s interval) returns 3 — a regression below the
+    // dismissed total of 128, i.e. a restarted server with fresh drops.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+
+    // The banner must reappear for the fresh drops rather than staying hidden
+    // until the counter climbs back past 128.
+    const reappeared = screen.getByTestId('log-pressure-banner');
+    expect(reappeared).toHaveTextContent('3');
+
+    vi.useRealTimers();
   });
 });

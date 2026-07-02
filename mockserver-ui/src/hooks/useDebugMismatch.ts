@@ -20,9 +20,30 @@ export function useDebugMismatch(params: ConnectionParams) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(request),
         });
-        const data = (await response.json()) as DebugMismatchResult & { error?: string };
+        // Read the body as text first: a non-2xx response (e.g. 404/500) may
+        // carry an empty or HTML body, and calling response.json() on that
+        // throws — which would otherwise be caught below and misreported as a
+        // connection failure even though the server clearly responded.
+        const text = await response.text();
+        let data: (DebugMismatchResult & { error?: string }) | null = null;
+        if (text) {
+          try {
+            data = JSON.parse(text) as DebugMismatchResult & { error?: string };
+          } catch {
+            data = null;
+          }
+        }
         if (!response.ok) {
-          setError(data.error ?? `Request failed: ${response.status}`);
+          const reason = data?.error?.trim() || text.trim();
+          setError(
+            reason
+              ? `Request failed (${response.status}): ${reason}`
+              : `Request failed: ${response.status}`,
+          );
+          return;
+        }
+        if (!data) {
+          setError('Received an unexpected response from MockServer');
           return;
         }
         // Attach the original request so the dialog can offer "Create Expectation"

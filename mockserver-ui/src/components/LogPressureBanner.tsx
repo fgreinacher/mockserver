@@ -33,8 +33,21 @@ export default function LogPressureBanner({ connectionParams }: LogPressureBanne
   // never dismissed). Only drops beyond this re-show the warning.
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
 
+  // A server restart resets the dropped-events counter to 0, so the current
+  // count can regress below the value the user dismissed at. When that happens
+  // the acknowledged total no longer applies — clear it so fresh drops re-show
+  // the banner instead of staying hidden until they exceed the pre-restart
+  // total. (React's "adjust state while rendering" pattern — see
+  // useDroppedLogEvents.) `effectiveDismissedAt` reflects the reset in this
+  // same render so the banner appears immediately.
+  let effectiveDismissedAt = dismissedAt;
+  if (dismissedAt != null && dropped != null && dropped < dismissedAt) {
+    effectiveDismissedAt = null;
+    setDismissedAt(null);
+  }
+
   if (dropped == null || dropped <= 0) return null;
-  if (dismissedAt != null && dropped <= dismissedAt) return null;
+  if (effectiveDismissedAt != null && dropped <= effectiveDismissedAt) return null;
 
   return (
     <Alert

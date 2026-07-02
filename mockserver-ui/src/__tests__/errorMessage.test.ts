@@ -109,6 +109,29 @@ describe('humanizeError', () => {
     expect(r.message).toBe('Couldn’t reach the MockServer — is it still running?');
   });
 
+  it("detects Safari's 'Load failed' TypeError as a network error", () => {
+    const r = humanizeError(new TypeError('Load failed'));
+    expect(r.message).toBe('Couldn’t reach the MockServer — is it still running?');
+  });
+
+  it("detects Firefox's 'NetworkError when attempting to fetch resource' as a network error", () => {
+    const r = humanizeError(
+      new TypeError('NetworkError when attempting to fetch resource.'),
+    );
+    expect(r.message).toBe('Couldn’t reach the MockServer — is it still running?');
+  });
+
+  it('does NOT treat a genuine programming TypeError as a network error', () => {
+    // A real bug thrown inside a fetch .then chain must surface, not be masked
+    // as "couldn't reach the server".
+    const r = humanizeError(
+      new TypeError("Cannot read properties of undefined (reading 'body')"),
+    );
+    expect(r.message).toBe("Cannot read properties of undefined (reading 'body')");
+    expect(r.message).not.toBe('Couldn’t reach the MockServer — is it still running?');
+    expect(r.details).toBeUndefined();
+  });
+
   it('passes through an unrelated error message', () => {
     const r = humanizeError(new Error('something specific broke'));
     expect(r.message).toBe('something specific broke');
