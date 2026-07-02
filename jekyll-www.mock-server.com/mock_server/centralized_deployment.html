@@ -159,7 +159,10 @@ app:
         (<code class="inline code">exactly</code>/<code class="inline code">atLeast</code>/<code class="inline code">atMost</code>/<code class="inline code">between</code>)
         and retrieval of recorded requests; ordered <code class="inline code">verify</code> sequences, response-aware
         verification, and the dashboard log view remain node-local. If a peer cannot be reached the call fails
-        rather than returning a partial result.
+        rather than returning a partial result. If your control plane is authenticated (bearer token, JWT, or
+        OIDC), also set <code class="inline code">clusterFanInPeerAuthToken</code> to the credential each node should
+        present to its peers (the same value on every node, for example <code class="inline code">Bearer &lt;jwt&gt;</code>) &mdash;
+        otherwise the cross-node queries are rejected and the verify/retrieve fails.
     </li>
 </ul>
 

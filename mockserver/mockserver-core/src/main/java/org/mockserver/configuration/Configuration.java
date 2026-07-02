@@ -257,6 +257,7 @@ public class Configuration {
     private Boolean clusterSharedTimesEnabled;
     private Boolean clusterVerifyFanIn;
     private String clusterVerifyFanInPeers;
+    private String clusterFanInPeerAuthToken;
 
     // verification
     private Integer maximumNumberOfRequestToReturnInVerificationFailure;
@@ -3778,6 +3779,33 @@ public class Configuration {
      */
     public Configuration clusterVerifyFanInPeers(String clusterVerifyFanInPeers) {
         this.clusterVerifyFanInPeers = clusterVerifyFanInPeers;
+        return this;
+    }
+
+    /**
+     * Returns the credential the verify/retrieve fan-in peer accessor presents on
+     * cross-node queries. It is sent verbatim as the control-plane
+     * {@code Authorization} header (e.g. {@code Bearer <jwt>}), so an authenticated
+     * cluster (control-plane bearer/JWT/OIDC) accepts the fan-in query rather than
+     * rejecting it with 401/403. Default is empty (no credential — unchanged
+     * behaviour). All nodes must share the same token / trust.
+     */
+    public String clusterFanInPeerAuthToken() {
+        if (clusterFanInPeerAuthToken == null) {
+            return ConfigurationProperties.clusterFanInPeerAuthToken();
+        }
+        return clusterFanInPeerAuthToken;
+    }
+
+    /**
+     * Sets the credential the verify/retrieve fan-in peer accessor presents on
+     * cross-node queries (sent verbatim as the control-plane {@code Authorization}
+     * header, so include the scheme, e.g. {@code Bearer <jwt>}).
+     *
+     * @param clusterFanInPeerAuthToken the control-plane Authorization header value
+     */
+    public Configuration clusterFanInPeerAuthToken(String clusterFanInPeerAuthToken) {
+        this.clusterFanInPeerAuthToken = clusterFanInPeerAuthToken;
         return this;
     }
 

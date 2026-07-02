@@ -25,10 +25,13 @@ import java.util.List;
  * with the same serializers the control plane uses, so the merged objects are identical
  * in shape to the local ones.
  * <p>
- * <b>Auth boundary:</b> this v1 accessor sends no control-plane credentials. In a
- * deployment with {@code controlPlaneRequestAuthenticated} (or OIDC) enabled, peers
- * would reject the fan-in query — that authenticated cross-node case is a documented
- * follow-up (see {@code docs/code/clustered-state.md}).
+ * <b>Authenticated clusters:</b> when {@code clusterFanInPeerAuthToken} is set, every
+ * peer query carries it verbatim as the control-plane {@code Authorization} header
+ * (e.g. {@code Bearer <jwt>}), so a cluster with control-plane authentication
+ * (bearer/JWT/OIDC) accepts the fan-in query instead of rejecting it with 401/403.
+ * All nodes must share the same token / trust. With no token configured (the default)
+ * no credential is sent — unchanged behaviour. mTLS client-certificate presentation
+ * for peer queries remains a documented boundary (see {@code docs/code/clustered-state.md}).
  */
 public class HttpClusterPeerAccessor implements ClusterFanIn.PeerAccessor {
 
@@ -36,12 +39,15 @@ public class HttpClusterPeerAccessor implements ClusterFanIn.PeerAccessor {
     private final LogEventRequestAndResponseSerializer logEventRequestAndResponseSerializer;
     private final HttpClient httpClient;
     private final Duration requestTimeout;
+    private final String peerAuthToken;
 
     public HttpClusterPeerAccessor(Configuration configuration, MockServerLogger mockServerLogger) {
         this.requestDefinitionSerializer = new RequestDefinitionSerializer(mockServerLogger);
         this.logEventRequestAndResponseSerializer = new LogEventRequestAndResponseSerializer(mockServerLogger);
         Long timeoutMillis = configuration.maxSocketTimeoutInMillis();
         this.requestTimeout = Duration.ofMillis(timeoutMillis != null && timeoutMillis > 0 ? timeoutMillis : 20_000L);
+        String token = configuration.clusterFanInPeerAuthToken();
+        this.peerAuthToken = token != null ? token.trim() : "";
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(this.requestTimeout)
             .build();
@@ -84,10 +90,16 @@ public class HttpClusterPeerAccessor implements ClusterFanIn.PeerAccessor {
         String base = peerBaseUrl.endsWith("/") ? peerBaseUrl.substring(0, peerBaseUrl.length() - 1) : peerBaseUrl;
         URI uri = URI.create(base + "/mockserver/retrieve?type=" + type + "&format=JSON&fanInLocalOnly=true");
         String requestBody = filter != null ? requestDefinitionSerializer.serialize(filter) : "";
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
             .uri(uri)
             .timeout(requestTimeout)
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        // Present the shared control-plane credential so an authenticated cluster accepts the
+        // cross-node fan-in query (sent verbatim, so the operator includes the scheme e.g. "Bearer <jwt>").
+        if (!peerAuthToken.isEmpty()) {
+            builder.header("authorization", peerAuthToken);
+        }
+        HttpRequest request = builder
             .method("PUT", HttpRequest.BodyPublishers.ofString(requestBody))
             .build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());

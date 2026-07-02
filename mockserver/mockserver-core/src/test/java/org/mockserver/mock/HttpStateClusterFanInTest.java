@@ -136,6 +136,30 @@ public class HttpStateClusterFanInTest {
     }
 
     @Test
+    public void retrieveRequestResponsesConcatenatesRemoteForDashboardTrafficView() {
+        // The dashboard/export traffic views are backed by retrieve REQUEST_RESPONSES; when fan-in is
+        // enabled that retrieve aggregates every peer's LOCAL request/response pairs so a programmatic
+        // dashboard/export retrieve shows fleet-wide traffic (the live WebSocket push stream stays
+        // node-local — see docs/code/clustered-state.md).
+        httpState.log(new LogEntry()
+            .setHttpRequest(request("/api"))
+            .setHttpResponse(org.mockserver.model.HttpResponse.response("local"))
+            .setType(LogEntry.LogMessageType.FORWARDED_REQUEST)); // 1 local request/response pair
+        enableFanIn(2, false); // + 2 remote pairs = 3 fleet-wide
+
+        FakeResponseWriter writer = new FakeResponseWriter();
+        httpState.handle(request("/mockserver/retrieve").withMethod("PUT")
+            .withQueryStringParameter("type", "REQUEST_RESPONSES")
+            .withBody(requestDefinitionSerializer.serialize(request("/api"))), writer, false);
+
+        assertThat(writer.statusCode, is(200));
+        org.mockserver.model.LogEventRequestAndResponse[] returned =
+            new org.mockserver.serialization.LogEventRequestAndResponseSerializer(new MockServerLogger())
+                .deserializeArray(writer.body);
+        assertThat("dashboard/export REQUEST_RESPONSES retrieve must aggregate remote peer traffic", returned.length, is(3));
+    }
+
+    @Test
     public void fanInLocalOnlyRetrieveDoesNotRecurse() {
         logLocalRequest("/api");
         FixedPeerAccessor accessor = enableFanIn(5, false);

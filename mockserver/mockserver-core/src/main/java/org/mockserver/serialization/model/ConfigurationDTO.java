@@ -275,6 +275,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Boolean clusterSharedTimesEnabled;
     private Boolean clusterVerifyFanIn;
     private String clusterVerifyFanInPeers;
+    private String clusterFanInPeerAuthToken;
     private Boolean controlPlaneOidcAuthenticationRequired;
     private String controlPlaneOidcIssuer;
     private String controlPlaneOidcJwksUri;
@@ -574,6 +575,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.clusterSharedTimesEnabled = configuration.clusterSharedTimesEnabled();
             this.clusterVerifyFanIn = configuration.clusterVerifyFanIn();
             this.clusterVerifyFanInPeers = configuration.clusterVerifyFanInPeers();
+            this.clusterFanInPeerAuthToken = configuration.clusterFanInPeerAuthToken();
             this.controlPlaneOidcAuthenticationRequired = configuration.controlPlaneOidcAuthenticationRequired();
             this.controlPlaneOidcIssuer = configuration.controlPlaneOidcIssuer();
             this.controlPlaneOidcJwksUri = configuration.controlPlaneOidcJwksUri();
@@ -926,6 +928,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             configuration.clusterVerifyFanIn(clusterVerifyFanIn);
         }
         configuration.clusterVerifyFanInPeers(clusterVerifyFanInPeers);
+        configuration.clusterFanInPeerAuthToken(clusterFanInPeerAuthToken);
         configuration.controlPlaneOidcAuthenticationRequired(controlPlaneOidcAuthenticationRequired);
         configuration.controlPlaneOidcIssuer(controlPlaneOidcIssuer);
         configuration.controlPlaneOidcJwksUri(controlPlaneOidcJwksUri);
@@ -1666,6 +1669,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (clusterVerifyFanInPeers != null) {
             target.clusterVerifyFanInPeers(clusterVerifyFanInPeers);
+        }
+        if (clusterFanInPeerAuthToken != null) {
+            target.clusterFanInPeerAuthToken(clusterFanInPeerAuthToken);
         }
         if (controlPlaneOidcAuthenticationRequired != null) {
             target.controlPlaneOidcAuthenticationRequired(controlPlaneOidcAuthenticationRequired);
@@ -3890,6 +3896,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setClusterVerifyFanInPeers(String clusterVerifyFanInPeers) {
         this.clusterVerifyFanInPeers = clusterVerifyFanInPeers;
+        return this;
+    }
+
+    public String getClusterFanInPeerAuthToken() {
+        return clusterFanInPeerAuthToken;
+    }
+
+    public ConfigurationDTO setClusterFanInPeerAuthToken(String clusterFanInPeerAuthToken) {
+        this.clusterFanInPeerAuthToken = clusterFanInPeerAuthToken;
         return this;
     }
 

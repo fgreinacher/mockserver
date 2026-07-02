@@ -327,6 +327,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_CLUSTER_SHARED_TIMES_ENABLED = "mockserver.clusterSharedTimesEnabled";
     private static final String MOCKSERVER_CLUSTER_VERIFY_FAN_IN = "mockserver.clusterVerifyFanIn";
     private static final String MOCKSERVER_CLUSTER_VERIFY_FAN_IN_PEERS = "mockserver.clusterVerifyFanInPeers";
+    private static final String MOCKSERVER_CLUSTER_FAN_IN_PEER_AUTH_TOKEN = "mockserver.clusterFanInPeerAuthToken";
 
     // verification
     private static final String MOCKSERVER_MAXIMUM_NUMBER_OF_REQUESTS_TO_RETURN_IN_VERIFICATION_FAILURE = "mockserver.maximumNumberOfRequestToReturnInVerificationFailure";
@@ -4273,6 +4274,27 @@ public class ConfigurationProperties {
      */
     public static void clusterVerifyFanInPeers(String clusterVerifyFanInPeers) {
         setProperty(MOCKSERVER_CLUSTER_VERIFY_FAN_IN_PEERS, clusterVerifyFanInPeers != null ? clusterVerifyFanInPeers : "");
+    }
+
+    /**
+     * Returns the credential the verify/retrieve fan-in peer accessor presents on
+     * cross-node queries, sent verbatim as the control-plane {@code Authorization}
+     * header (e.g. {@code Bearer <jwt>}). Default is empty (no credential — current
+     * behaviour). Set this on every node so an authenticated cluster can fan in.
+     */
+    public static String clusterFanInPeerAuthToken() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_CLUSTER_FAN_IN_PEER_AUTH_TOKEN, "MOCKSERVER_CLUSTER_FAN_IN_PEER_AUTH_TOKEN", "");
+    }
+
+    /**
+     * Sets the credential the verify/retrieve fan-in peer accessor presents on
+     * cross-node queries (sent verbatim as the control-plane {@code Authorization}
+     * header, so include the scheme, e.g. {@code Bearer <jwt>}).
+     *
+     * @param clusterFanInPeerAuthToken the control-plane Authorization header value
+     */
+    public static void clusterFanInPeerAuthToken(String clusterFanInPeerAuthToken) {
+        setProperty(MOCKSERVER_CLUSTER_FAN_IN_PEER_AUTH_TOKEN, clusterFanInPeerAuthToken != null ? clusterFanInPeerAuthToken : "");
     }
 
     // verification

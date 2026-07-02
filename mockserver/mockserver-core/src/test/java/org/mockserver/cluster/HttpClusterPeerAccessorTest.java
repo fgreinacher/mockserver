@@ -34,8 +34,11 @@ public class HttpClusterPeerAccessorTest {
     private String baseUrl;
     private final AtomicReference<String> lastUri = new AtomicReference<>();
     private final AtomicReference<String> lastMethod = new AtomicReference<>();
+    private final AtomicReference<String> lastAuthorization = new AtomicReference<>();
     private volatile int statusToReturn = 200;
     private volatile String bodyToReturn = "[]";
+    /** When set, the "peer" rejects any query whose Authorization header does not match (simulates an authed cluster). */
+    private volatile String requiredAuthorization = null;
 
     @Before
     public void startServer() throws IOException {
@@ -55,7 +58,17 @@ public class HttpClusterPeerAccessorTest {
     private void handle(HttpExchange exchange) throws IOException {
         lastUri.set(exchange.getRequestURI().toString());
         lastMethod.set(exchange.getRequestMethod());
+        lastAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
         exchange.getRequestBody().readAllBytes();
+        // Simulate an authenticated cluster: reject queries lacking the required control-plane credential.
+        if (requiredAuthorization != null && !requiredAuthorization.equals(lastAuthorization.get())) {
+            byte[] denied = "unauthorized".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(401, denied.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(denied);
+            }
+            return;
+        }
         byte[] payload = bodyToReturn.getBytes(StandardCharsets.UTF_8);
         exchange.sendResponseHeaders(statusToReturn, payload.length);
         try (OutputStream os = exchange.getResponseBody()) {
@@ -65,6 +78,10 @@ public class HttpClusterPeerAccessorTest {
 
     private HttpClusterPeerAccessor accessor() {
         return new HttpClusterPeerAccessor(configuration(), new MockServerLogger());
+    }
+
+    private HttpClusterPeerAccessor accessorWithToken(String token) {
+        return new HttpClusterPeerAccessor(configuration().clusterFanInPeerAuthToken(token), new MockServerLogger());
     }
 
     @Test
@@ -101,6 +118,42 @@ public class HttpClusterPeerAccessorTest {
             fail("expected an exception on a non-2xx peer response (fail-closed)");
         } catch (Exception expected) {
             assertThat(expected.getMessage(), containsString("500"));
+        }
+    }
+
+    @Test
+    public void noAuthTokenSendsNoAuthorizationHeaderPreservingLegacyBehaviour() throws Exception {
+        accessor().retrieveRequests(baseUrl, request("/api"));
+        assertThat("default accessor must not present a credential", lastAuthorization.get(), is((String) null));
+    }
+
+    @Test
+    public void authTokenIsPresentedVerbatimAsControlPlaneAuthorizationHeader() throws Exception {
+        accessorWithToken("Bearer eyJraff").retrieveRequests(baseUrl, request("/api"));
+        assertThat("peer query MUST carry the configured control-plane credential verbatim",
+            lastAuthorization.get(), is("Bearer eyJraff"));
+    }
+
+    @Test
+    public void authenticatedPeerAcceptsQueryWhenTokenPresented() throws Exception {
+        // the "peer" requires a bearer credential (an authed cluster)
+        requiredAuthorization = "Bearer shared-cluster-jwt";
+        bodyToReturn = "[]";
+        // accessor presenting the matching token succeeds (no fail-closed)
+        List<RequestDefinition> result = accessorWithToken("Bearer shared-cluster-jwt").retrieveRequests(baseUrl, request("/api"));
+        assertThat(result.isEmpty(), is(true));
+        assertThat(lastAuthorization.get(), is("Bearer shared-cluster-jwt"));
+    }
+
+    @Test
+    public void authenticatedPeerRejectsUnauthenticatedQueryFailingClosed() {
+        // the "peer" requires a bearer credential, but the accessor sends none (no token configured)
+        requiredAuthorization = "Bearer shared-cluster-jwt";
+        try {
+            accessor().retrieveRequests(baseUrl, request("/api"));
+            fail("expected a fail-closed exception when the authed peer returns 401");
+        } catch (Exception expected) {
+            assertThat("401 from an authed peer must propagate (fail-closed)", expected.getMessage(), containsString("401"));
         }
     }
 

@@ -283,6 +283,7 @@ Add the module to the classpath and configure the blob store type plus backend-s
 | `mockserver.clusterSharedTimesEnabled` | `MOCKSERVER_CLUSTER_SHARED_TIMES_ENABLED` | `true` | Enforce per-expectation `Times` limits cluster-wide via shared backend CAS (exactly-N across the fleet). Set `false` to fall back to node-local `Times` (no synchronous replicated write on the request worker thread; fleet-wide N becomes approximate). Only relevant when `clusterEnabled=true`. See "Clustered Times Counters". |
 | `mockserver.clusterVerifyFanIn` | `MOCKSERVER_CLUSTER_VERIFY_FAN_IN` | `false` | Aggregate `verify`/`retrieve` (REQUESTS/REQUEST_RESPONSES) across cluster members so a verify/retrieve behind a load balancer reflects fleet-wide traffic rather than only the node it hit. Only meaningful in a clustered deployment. See "Clustered Verify/Retrieve Fan-In". |
 | `mockserver.clusterVerifyFanInPeers` | `MOCKSERVER_CLUSTER_VERIFY_FAN_IN_PEERS` | _(empty)_ | Comma-separated list of the OTHER nodes' control-plane base URLs (e.g. `http://node-b:1080,http://node-c:1080`) queried during fan-in. Required for fan-in to do anything. |
+| `mockserver.clusterFanInPeerAuthToken` | `MOCKSERVER_CLUSTER_FAN_IN_PEER_AUTH_TOKEN` | _(empty)_ | Credential the fan-in peer accessor presents on cross-node queries, sent verbatim as the control-plane `Authorization` header (include the scheme, e.g. `Bearer <jwt>`). Set on every node so an authenticated cluster (control-plane bearer/JWT/OIDC) accepts fan-in queries instead of returning 401/403. Empty (default) = no credential sent (unchanged). All nodes must share the token. See "Clustered Verify/Retrieve Fan-In". |
 
 ## Enabling Infinispan
 
@@ -466,16 +467,35 @@ sequenceDiagram
 | **Retrieve merge** | `REQUESTS`/`REQUEST_RESPONSES` results are concatenated (local first, then each peer). Applies to all serialization formats since the merge is at the list level. |
 | **Verify merge** | Count-based request verification (`exactly`/`atLeast`/`atMost`/`between`) sums each peer's LOCAL match count with the local count, then evaluates `VerificationTimes` against the fleet-wide total (`MockServerEventLog.verify(verification, additionalRemoteMatchCount, …)`). |
 | **Unreachable peer** | **Fail-closed** (the safer default): a verify returns a failure naming the unreachable peer(s); a retrieve returns HTTP 502. A partial aggregate is never returned, because silently missing a peer's traffic could turn a real `atMost`/`exactly` violation into a false pass. |
-| **Auth boundary** | The v1 accessor sends no control-plane credentials, so it assumes peers do not require control-plane auth (same trust domain / network). Authenticated cross-node fan-in is a follow-up. |
+| **Authenticated clusters** | When `clusterFanInPeerAuthToken` is set, each peer query carries it **verbatim** as the control-plane `Authorization` header (e.g. `Bearer <jwt>`), so a cluster with control-plane authentication (bearer / JWT / OIDC) accepts the fan-in query instead of rejecting it with 401/403. All nodes must share the same token / trust. With no token (the default) no credential is sent — unchanged behaviour. Applied in `HttpClusterPeerAccessor` (`configuration.clusterFanInPeerAuthToken()`). |
 
-**Deferred boundaries (documented, not implemented in v1):**
+**Authenticated cross-node fan-in.** On a cluster with control-plane auth enabled, an
+unauthenticated peer query would be rejected (401/403) and — because fan-in is fail-closed
+— every verify/retrieve would fail. Setting `clusterFanInPeerAuthToken` on every node lets
+the peer accessor present a shared control-plane credential so fan-in works on an authed
+cluster. The token is sent verbatim, so include the scheme (`Bearer <jwt>`). Because it is
+sent on **every** peer query, treat it as a shared cluster secret and prefer TLS between
+nodes. **mTLS client-certificate presentation** for peer queries is *not* wired: the JDK
+`HttpClient` uses the JVM default trust store for standard TLS to `https://` peers, but a
+cluster that requires control-plane **client certificates** (`controlPlaneTLSMutualAuthenticationRequired`)
+on peer queries remains a documented boundary — use a bearer/JWT credential instead.
+
+**Deferred boundaries (documented, not implemented):**
 
 - **`verifySequence` ordering** — verifying an ordered sequence of requests across nodes
-  requires a global order over per-node logs (no shared clock), so `verifySequence` stays
-  node-local rather than being done wrong.
+  requires a global order over per-node logs (**no shared clock across nodes**), so merging
+  per-node orderings would be unsound; `verifySequence` stays node-local rather than being
+  done wrong.
 - **Response-aware verify** (`verify` with an `httpResponse` matcher) and
   **expectationId-based verify** — stay node-local.
-- **Dashboard/log-view fan-in** and **rate-limit / chaos-quota counter** clustering — separate follow-ups.
+- **Live dashboard / log-view fan-in** — the dashboard's traffic views are a **live
+  WebSocket push stream** driven directly by each node's local `MockServerEventLog`
+  (`DashboardWebSocketHandler` → `retrieveLogEntriesInReverseForUI`), so they show only the
+  local node's traffic. Merging a fleet-wide **live** stream hits the same no-shared-clock
+  ordering problem as `verifySequence`, so it stays node-local. The **programmatic**
+  `retrieve(REQUESTS/REQUEST_RESPONSES)` path that backs dashboard export / one-shot traffic
+  queries **does** fan in when enabled (it goes through `HttpState.retrieve`).
+- **Rate-limit / chaos-quota counter** clustering — remain node-local (separate follow-ups).
 
 Source: `org.mockserver.cluster.ClusterFanIn`, `org.mockserver.cluster.HttpClusterPeerAccessor`,
 `org.mockserver.cluster.ClusterFanInException` (all in `mockserver-core`).
@@ -491,7 +511,7 @@ Source: `org.mockserver.cluster.ClusterFanIn`, `org.mockserver.cluster.HttpClust
 | Chaos match counters | Per-service gRPC match counters (`incrementMatchCount`) and per-host quota counters remain node-local. A quota limit of 100 on a two-node cluster allows up to 200 total requests. |
 | Rate-limit counters (`rateLimit` clause) | v1 of the declarative `rateLimit` expectation clause (`RateLimitRegistry`, `org.mockserver.ratelimit`) is **node-local** — like the chaos quota and gRPC match counters above. A `limit` of 100 on a two-node cluster allows up to 200 total requests. A future clustered mode would enforce the limit fleet-wide via a per-request shared-backend `compareAndSet` (the same mechanism as the clustered `Times` counters — see "Clustered Times Counters"), trading a synchronous replicated write on the request-worker thread for exactly-N across the fleet. Not implemented in v1. |
 | Shared-Times CAS on the worker thread | When `clusterSharedTimesEnabled=true` (default), limited-`Times` matching performs up to 10 synchronous replicated CAS writes on the Netty request-worker thread (worst case, under same-expectation cross-node contention). Disable via `clusterSharedTimesEnabled=false` to use node-local `Times` (no worker-thread round-trip, but exactly-N becomes approximate — up to N *per node*). See "Clustered Times Counters". |
-| Per-node event log (verify/retrieve) | Request/response log entries are NOT replicated by the `StateBackend`, so `verify`/`retrieve` are per-node by default. The opt-in `clusterVerifyFanIn` closes this for count-based request verification and `REQUESTS`/`REQUEST_RESPONSES` retrieve (see "Clustered Verify/Retrieve Fan-In"). Deferred: `verifySequence` cross-node ordering, response-aware/expectationId verify, dashboard log-view, and authenticated cross-node fan-in — these remain node-local. |
+| Per-node event log (verify/retrieve) | Request/response log entries are NOT replicated by the `StateBackend`, so `verify`/`retrieve` are per-node by default. The opt-in `clusterVerifyFanIn` closes this for count-based request verification and `REQUESTS`/`REQUEST_RESPONSES` retrieve — including on **authenticated** clusters via `clusterFanInPeerAuthToken` (see "Clustered Verify/Retrieve Fan-In"). Still deferred (node-local): `verifySequence` cross-node ordering (no shared clock), response-aware/expectationId verify, the **live** dashboard log-view stream, and mTLS-client-cert peer auth. |
 
 ## Source Locations
 
