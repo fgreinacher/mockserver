@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { exportPact, verifyPact } from '../lib/pactExport';
+import { exportPact, verifyPact, importPact } from '../lib/pactExport';
 
 const params = { host: '127.0.0.1', port: '1080', secure: false };
 
@@ -71,5 +71,29 @@ describe('verifyPact', () => {
   it('throws the text body on other errors', async () => {
     stubFetch(400, 'Pact contract JSON must not be empty');
     await expect(verifyPact(params, '')).rejects.toThrow('Pact contract JSON must not be empty');
+  });
+});
+
+describe('importPact', () => {
+  it('PUTs the contract to /pact/import and returns the created expectations', async () => {
+    const created = [{ id: 'pact-1' }, { id: 'pact-2' }];
+    const calls = stubFetch(201, created);
+    const result = await importPact(params, '{"interactions":[]}');
+    expect(calls[0]?.url).toBe('http://127.0.0.1:1080/mockserver/pact/import');
+    expect(calls[0]?.init?.method).toBe('PUT');
+    expect(calls[0]?.init?.body).toBe('{"interactions":[]}');
+    expect(result).toEqual(created);
+  });
+
+  it('normalises a non-array 2xx body to an empty array', async () => {
+    stubFetch(201, { not: 'an array' });
+    expect(await importPact(params, '{}')).toEqual([]);
+  });
+
+  it('throws in the MockServer-returned shape so the error envelope surfaces', async () => {
+    stubFetch(400, 'Pact import request body is required — must be a Pact v3 contract JSON document');
+    await expect(importPact(params, '')).rejects.toThrow(
+      'MockServer returned 400: Pact import request body is required — must be a Pact v3 contract JSON document',
+    );
   });
 });

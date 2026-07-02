@@ -12,7 +12,7 @@ import Alert from '@mui/material/Alert';
 import Typography from '@mui/material/Typography';
 import Divider from '@mui/material/Divider';
 import Box from '@mui/material/Box';
-import { exportPact, verifyPact } from '../lib/pactExport';
+import { exportPact, verifyPact, importPact } from '../lib/pactExport';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
 import { monospaceFontFamily } from '../theme';
@@ -43,6 +43,26 @@ export default function PactExportDialog({ open, onClose, connectionParams }: Pa
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [verifyError, setVerifyError] = useState<HumanError | null>(null);
   const [verifyResult, setVerifyResult] = useState<{ verified: boolean; result: unknown } | null>(null);
+
+  // Import section
+  const [importText, setImportText] = useState('');
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState<HumanError | null>(null);
+  const [importResult, setImportResult] = useState<unknown[] | null>(null);
+
+  const handleImport = async () => {
+    if (!importText.trim()) return;
+    setImportBusy(true);
+    setImportError(null);
+    setImportResult(null);
+    try {
+      setImportResult(await importPact(connectionParams, importText));
+    } catch (e) {
+      setImportError(humanizeError(e));
+    } finally {
+      setImportBusy(false);
+    }
+  };
 
   const handleVerify = async () => {
     if (!verifyText.trim()) return;
@@ -95,6 +115,8 @@ export default function PactExportDialog({ open, onClose, connectionParams }: Pa
     setPactText(null);
     setVerifyError(null);
     setVerifyResult(null);
+    setImportError(null);
+    setImportResult(null);
     onClose();
   };
 
@@ -165,6 +187,42 @@ export default function PactExportDialog({ open, onClose, connectionParams }: Pa
         <Box sx={{ mt: 1 }}>
           <Button variant="outlined" size="small" onClick={() => void handleVerify()} disabled={verifyBusy || !verifyText.trim()}>
             {verifyBusy ? 'Verifying…' : 'Verify contract'}
+          </Button>
+        </Box>
+
+        <Divider sx={{ my: 2 }} />
+
+        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>Import a Contract</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          Paste a Pact contract to register its interactions as expectations.
+        </Typography>
+        <TextField
+          value={importText}
+          onChange={(e) => setImportText(e.target.value)}
+          label="Pact contract to import (JSON)"
+          placeholder={'{\n  "consumer": { "name": "..." },\n  "provider": { "name": "..." },\n  "interactions": [ ... ]\n}'}
+          multiline
+          minRows={6}
+          maxRows={16}
+          fullWidth
+          slotProps={{ input: { sx: { typography: 'body2', fontFamily: monospaceFontFamily } } }}
+        />
+        {importError !== null && <HumanErrorAlert error={importError} sx={{ mt: 1 }} />}
+        {importResult !== null && (
+          <Alert severity="success" sx={{ mt: 1 }}>
+            {importResult.length > 0
+              ? `Imported ${importResult.length} expectation${importResult.length === 1 ? '' : 's'}.`
+              : 'Import succeeded.'}
+            {importResult.length > 0 && (
+              <Box component="pre" sx={{ whiteSpace: 'pre-wrap', typography: 'caption', fontFamily: monospaceFontFamily, m: 0, mt: 0.5, maxHeight: 220, overflow: 'auto' }}>
+                {JSON.stringify(importResult, null, 2)}
+              </Box>
+            )}
+          </Alert>
+        )}
+        <Box sx={{ mt: 1 }}>
+          <Button variant="outlined" size="small" onClick={() => void handleImport()} disabled={importBusy || !importText.trim()}>
+            {importBusy ? 'Importing…' : 'Import contract'}
           </Button>
         </Box>
       </DialogContent>

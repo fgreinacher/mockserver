@@ -2,6 +2,7 @@
  * Client for MockServer's Pact endpoints:
  *   PUT /mockserver/pact        — export active response expectations as a Pact v3 contract.
  *   PUT /mockserver/pact/verify — verify a Pact contract against the registered expectations.
+ *   PUT /mockserver/pact/import — import a Pact v3 contract as expectations.
  */
 import { buildBaseUrl } from './mcpClient';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
@@ -27,6 +28,29 @@ export async function verifyPact(params: ConnectionParams, contractJson: string)
     return { verified: res.status === 202, result: await res.json().catch(() => ({})) };
   }
   throw new Error((await res.text()) || `HTTP ${res.status} ${res.statusText}`);
+}
+
+/**
+ * Import a Pact v3 contract as expectations.
+ *
+ * The server registers each interaction as an expectation and returns the created
+ * expectations (201). Throws in the `MockServer returned <status>: <body>` shape on any
+ * non-2xx so {@code humanizeError} can surface the server's message.
+ *
+ * @param contractJson the Pact v3 contract JSON document
+ * @returns the array of created / upserted expectations
+ */
+export async function importPact(params: ConnectionParams, contractJson: string): Promise<unknown[]> {
+  const res = await fetch(`${buildBaseUrl(params)}/mockserver/pact/import`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: contractJson,
+  });
+  if (!res.ok) {
+    throw new Error(`MockServer returned ${res.status}: ${await res.text().catch(() => '')}`);
+  }
+  const body = (await res.json().catch(() => [])) as unknown;
+  return Array.isArray(body) ? body : [];
 }
 
 /**

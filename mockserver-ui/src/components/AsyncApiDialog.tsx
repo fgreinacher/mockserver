@@ -11,8 +11,10 @@ import TextField from '@mui/material/TextField';
 import Button from '@mui/material/Button';
 import Alert from '@mui/material/Alert';
 import Divider from '@mui/material/Divider';
+import Checkbox from '@mui/material/Checkbox';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
-import { loadAsyncApi, getAsyncApiStatus, verifyAsyncApi, AsyncApiUnavailableError } from '../lib/asyncApi';
+import { loadAsyncApi, generateHttpExpectations, getAsyncApiStatus, verifyAsyncApi, AsyncApiUnavailableError } from '../lib/asyncApi';
 import { humanizeError } from '../lib/errorMessage';
 import { monospaceFontFamily } from '../theme';
 
@@ -32,6 +34,8 @@ export default function AsyncApiDialog({
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [httpMode, setHttpMode] = useState(false);
+  const [httpResult, setHttpResult] = useState<unknown[] | null>(null);
   const [status, setStatus] = useState<Record<string, unknown> | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [verifyBody, setVerifyBody] = useState('');
@@ -60,16 +64,21 @@ export default function AsyncApiDialog({
     setBusy(true);
     setError(null);
     setResult(null);
+    setHttpResult(null);
     try {
-      setResult(await loadAsyncApi(connectionParams, spec));
-      setRefreshTick((t) => t + 1);
+      if (httpMode) {
+        setHttpResult(await generateHttpExpectations(connectionParams, spec));
+      } else {
+        setResult(await loadAsyncApi(connectionParams, spec));
+        setRefreshTick((t) => t + 1);
+      }
     } catch (e) {
       if (e instanceof AsyncApiUnavailableError) { setUnavailable(true); setError(e.message); }
       else setError(humanizeError(e).message);
     } finally {
       setBusy(false);
     }
-  }, [connectionParams, spec]);
+  }, [connectionParams, spec, httpMode]);
 
   const verify = useCallback(async () => {
     if (!verifyBody.trim()) { setError('Paste a verification request (JSON).'); return; }
@@ -90,6 +99,7 @@ export default function AsyncApiDialog({
     setSpec('');
     setVerifyBody('');
     setResult(null);
+    setHttpResult(null);
     setVerifyResult(null);
     setError(null);
     onClose();
@@ -101,7 +111,9 @@ export default function AsyncApiDialog({
       <DialogContent>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Register an AsyncAPI spec to mock a message broker — paste the spec (JSON or YAML), or a
-          {' '}<code>{'{ spec, brokerConfig }'}</code> JSON object.
+          {' '}<code>{'{ spec, brokerConfig }'}</code> JSON object. Tick
+          {' '}<strong>Generate HTTP expectations</strong> to instead register HTTP expectations
+          derived from the spec's channels.
         </Typography>
         {unavailable && (
           <Alert severity="warning" sx={{ mb: 1.5 }}>
@@ -115,6 +127,16 @@ export default function AsyncApiDialog({
             AsyncAPI spec loaded.
             <Box component="pre" sx={{ whiteSpace: 'pre-wrap', typography: 'caption', fontFamily: monospaceFontFamily, m: 0, mt: 0.5 }}>
               {JSON.stringify(result, null, 2)}
+            </Box>
+          </Alert>
+        )}
+        {httpResult && (
+          <Alert severity="success" sx={{ mb: 1.5 }}>
+            {httpResult.length > 0
+              ? `Generated ${httpResult.length} HTTP expectation${httpResult.length === 1 ? '' : 's'}.`
+              : 'Generated HTTP expectations.'}
+            <Box component="pre" sx={{ whiteSpace: 'pre-wrap', typography: 'caption', fontFamily: monospaceFontFamily, m: 0, mt: 0.5, maxHeight: 220, overflow: 'auto' }}>
+              {JSON.stringify(httpResult, null, 2)}
             </Box>
           </Alert>
         )}
@@ -157,9 +179,25 @@ export default function AsyncApiDialog({
           </Button>
         </Box>
       </DialogContent>
-      <DialogActions>
-        <Button onClick={handleClose}>Close</Button>
-        <Button variant="contained" disabled={busy || unavailable} onClick={() => void submit()}>Load spec</Button>
+      <DialogActions sx={{ justifyContent: 'space-between' }}>
+        <FormControlLabel
+          sx={{ ml: 1 }}
+          control={
+            <Checkbox
+              size="small"
+              checked={httpMode}
+              disabled={unavailable}
+              onChange={(e) => setHttpMode(e.target.checked)}
+            />
+          }
+          label={<Typography variant="body2">Generate HTTP expectations</Typography>}
+        />
+        <Box>
+          <Button onClick={handleClose}>Close</Button>
+          <Button variant="contained" disabled={busy || unavailable} onClick={() => void submit()}>
+            {httpMode ? 'Generate expectations' : 'Load spec'}
+          </Button>
+        </Box>
       </DialogActions>
     </Dialog>
   );

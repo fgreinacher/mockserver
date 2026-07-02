@@ -513,3 +513,70 @@ describe('LibraryView export download', () => {
     vi.restoreAllMocks();
   });
 });
+
+describe('LibraryView WASM Modules tab — test a module', () => {
+  /** Route fetch by URL: the module-list poll returns one module; /wasm/test returns the decision. */
+  function stubWasmFetch(testStatus: number, testBody: unknown) {
+    fetchCalls = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, init });
+        const isTest = url.endsWith('/mockserver/wasm/test');
+        const status = isTest ? testStatus : 200;
+        const body = isTest ? testBody : ['my-rule'];
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          statusText: 'stub',
+          json: async () => body,
+          text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
+        };
+      }),
+    );
+  }
+
+  async function switchToWasm(user: ReturnType<typeof userEvent.setup>) {
+    const tabs = screen.getAllByRole('tab');
+    await user.click(tabs[3]!); // WASM Modules tab
+  }
+
+  it('POSTs the module name and prefilled sample request, then renders the matched decision', async () => {
+    stubWasmFetch(200, { matched: true });
+    const user = userEvent.setup();
+    render(<LibraryView connectionParams={connectionParams} />);
+    await switchToWasm(user);
+
+    const testButton = await screen.findByRole('button', { name: 'Test WASM module my-rule' });
+    await user.click(testButton);
+
+    const runButton = await screen.findByRole('button', { name: /Run test/ });
+    await user.click(runButton);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Matched — the module accepted this request/)).toBeInTheDocument();
+    });
+
+    const testCall = fetchCalls.find((c) => c.url.endsWith('/mockserver/wasm/test'));
+    expect(testCall).toBeDefined();
+    expect(testCall?.init?.method).toBe('POST');
+    expect(JSON.parse(testCall?.init?.body as string)).toEqual({
+      moduleName: 'my-rule',
+      request: { method: 'GET', path: '/' },
+    });
+  });
+
+  it('surfaces the server error envelope when the test call fails', async () => {
+    stubWasmFetch(400, { error: "'module' must be base64-encoded WASM bytes" });
+    const user = userEvent.setup();
+    render(<LibraryView connectionParams={connectionParams} />);
+    await switchToWasm(user);
+
+    await user.click(await screen.findByRole('button', { name: 'Test WASM module my-rule' }));
+    await user.click(await screen.findByRole('button', { name: /Run test/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/rejected as invalid/i)).toBeInTheDocument();
+    });
+  });
+});

@@ -1,8 +1,9 @@
 /**
  * Client for MockServer's AsyncAPI broker-mocking control plane:
- *   PUT /mockserver/asyncapi  — load an AsyncAPI spec (JSON/YAML) or { spec, brokerConfig }.
- *   GET /mockserver/asyncapi  — current status (loaded channels / operations).
- * Both return 501 when the optional mockserver-async module is not on the server classpath.
+ *   PUT /mockserver/asyncapi       — load an AsyncAPI spec (JSON/YAML) or { spec, brokerConfig }.
+ *   PUT /mockserver/asyncapi/http  — generate HTTP expectations from an AsyncAPI spec.
+ *   GET /mockserver/asyncapi       — current status (loaded channels / operations).
+ * All return 501 when the optional mockserver-async module is not on the server classpath.
  */
 import { buildBaseUrl } from './mcpClient';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
@@ -31,6 +32,27 @@ export async function loadAsyncApi(params: ConnectionParams, specBody: string): 
     body: specBody,
   });
   return jsonOrError(res);
+}
+
+/**
+ * Generate HTTP expectations from an AsyncAPI spec (sibling of {@link loadAsyncApi}). The server
+ * translates the spec's channels/operations into HTTP expectations, registers them, and returns
+ * the created expectations as a JSON array (201). Throws {@link AsyncApiUnavailableError} when the
+ * module is absent (501), or an Error carrying the server's `{error}` message on a 4xx.
+ */
+export async function generateHttpExpectations(params: ConnectionParams, specBody: string): Promise<unknown[]> {
+  const res = await fetch(`${buildBaseUrl(params)}/mockserver/asyncapi/http`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: specBody,
+  });
+  if (res.status === 501) throw new AsyncApiUnavailableError();
+  const body = (await res.json().catch(() => null)) as unknown;
+  if (!res.ok) {
+    const err = body && typeof body === 'object' ? (body as Record<string, unknown>).error : undefined;
+    throw new Error(typeof err === 'string' ? err : `HTTP ${res.status} ${res.statusText}`);
+  }
+  return Array.isArray(body) ? body : [];
 }
 
 /** Current AsyncAPI broker-mock status. Returns null when the module is unavailable (501). */

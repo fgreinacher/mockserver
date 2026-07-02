@@ -13,6 +13,10 @@ import TableRow from '@mui/material/TableRow';
 import Typography from '@mui/material/Typography';
 import Button from '@mui/material/Button';
 import Alert from '@mui/material/Alert';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
 import MenuItem from '@mui/material/MenuItem';
 import TextField from '@mui/material/TextField';
 import FormControl from '@mui/material/FormControl';
@@ -22,6 +26,7 @@ import FormControlLabel from '@mui/material/FormControlLabel';
 import Radio from '@mui/material/Radio';
 import Tooltip from '@mui/material/Tooltip';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
+import ScienceOutlinedIcon from '@mui/icons-material/ScienceOutlined';
 import DownloadIcon from '@mui/icons-material/FileDownloadOutlined';
 import ContentCopyIcon from '@mui/icons-material/ContentCopyOutlined';
 import RefreshIcon from '@mui/icons-material/RefreshOutlined';
@@ -36,6 +41,9 @@ import {
   listWasmModules,
   uploadWasmModule,
   deleteWasmModule,
+  testWasmModule,
+  type WasmSampleRequest,
+  type WasmTestResult,
 } from '../lib/wasm';
 import { buildBaseUrl } from '../lib/mcpClient';
 import { uploadDescriptorSet, listGrpcServices, clearGrpcDescriptors, type GrpcService } from '../lib/grpcDescriptors';
@@ -533,6 +541,90 @@ function ExportTab({ connectionParams }: { connectionParams: ConnectionParams })
 
 const WASM_POLL_INTERVAL_MS = 8000;
 
+const DEFAULT_WASM_SAMPLE_REQUEST = '{\n  "method": "GET",\n  "path": "/"\n}';
+
+/**
+ * Dialog to dry-run a loaded WASM module against a sample request via POST /mockserver/wasm/test,
+ * showing the module's match decision (and any shaped response) without a live expectation.
+ */
+function WasmTestDialog({
+  connectionParams,
+  moduleName,
+  onClose,
+}: {
+  connectionParams: ConnectionParams;
+  moduleName: string | null;
+  onClose: () => void;
+}) {
+  // Fresh editor + outcome per module: the render site remounts this via `key={moduleName}`.
+  const [requestText, setRequestText] = useState(DEFAULT_WASM_SAMPLE_REQUEST);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ReturnType<typeof humanizeError> | null>(null);
+  const [result, setResult] = useState<WasmTestResult | null>(null);
+
+  const handleRun = useCallback(async () => {
+    if (moduleName === null) return;
+    let parsed: WasmSampleRequest;
+    try {
+      parsed = JSON.parse(requestText) as WasmSampleRequest;
+    } catch {
+      setError({ message: 'Sample request must be valid JSON.' });
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      setResult(await testWasmModule(connectionParams, moduleName, parsed));
+    } catch (e) {
+      setError(humanizeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [connectionParams, moduleName, requestText]);
+
+  return (
+    <Dialog open={moduleName !== null} onClose={onClose} maxWidth="sm" fullWidth aria-labelledby="wasm-test-dialog-title">
+      <DialogTitle id="wasm-test-dialog-title">Test WASM Module “{moduleName}”</DialogTitle>
+      <DialogContent>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          Dry-run the module against a sample request. The module's match decision (and any shaped
+          response) is shown below — nothing is registered.
+        </Typography>
+        <TextField
+          label="Sample request (JSON)"
+          multiline
+          minRows={6}
+          maxRows={16}
+          fullWidth
+          value={requestText}
+          onChange={(e: ChangeEvent<HTMLInputElement>) => setRequestText(e.target.value)}
+          slotProps={{ input: { sx: { typography: 'body2', fontFamily: monospaceFontFamily } } }}
+        />
+        {error && <HumanErrorAlert error={error} sx={{ mt: 1 }} />}
+        {result && (
+          <Alert severity={result.matched ? 'success' : 'info'} sx={{ mt: 1 }}>
+            {result.matched
+              ? 'Matched — the module accepted this request.'
+              : 'Not matched — the module rejected this request.'}
+            {result.shaped !== undefined && result.shaped !== null && (
+              <Box component="pre" sx={{ whiteSpace: 'pre-wrap', typography: 'caption', fontFamily: monospaceFontFamily, m: 0, mt: 0.5, maxHeight: 220, overflow: 'auto' }}>
+                {JSON.stringify(result.shaped, null, 2)}
+              </Box>
+            )}
+          </Alert>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+        <Button variant="contained" onClick={() => void handleRun()} disabled={busy || !requestText.trim()}>
+          {busy ? 'Testing…' : 'Run test'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 function WasmModulesTab({ connectionParams }: { connectionParams: ConnectionParams }) {
   const [modules, setModules] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -543,6 +635,7 @@ function WasmModulesTab({ connectionParams }: { connectionParams: ConnectionPara
   const [refreshTick, setRefreshTick] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [testTarget, setTestTarget] = useState<string | null>(null);
 
   // Poll modules list
   useEffect(() => {
@@ -690,6 +783,18 @@ function WasmModulesTab({ connectionParams }: { connectionParams: ConnectionPara
                     <Typography variant="caption" sx={{ fontFamily: monospaceFontFamily }}>{name}</Typography>
                   </TableCell>
                   <TableCell align="right">
+                    <Tooltip title="Test module against a sample request">
+                      <span>
+                        <IconButton
+                          size="small"
+                          aria-label={`Test WASM module ${name}`}
+                          disabled={busy}
+                          onClick={() => setTestTarget(name)}
+                        >
+                          <ScienceOutlinedIcon fontSize="small" />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
                     <Tooltip title="Delete module">
                       <span>
                         <IconButton
@@ -717,6 +822,13 @@ function WasmModulesTab({ connectionParams }: { connectionParams: ConnectionPara
         confirmLabel="Delete module"
         onConfirm={() => { if (deleteTarget) void handleDelete(deleteTarget); }}
         onClose={() => setDeleteTarget(null)}
+      />
+
+      <WasmTestDialog
+        key={testTarget ?? 'closed'}
+        connectionParams={connectionParams}
+        moduleName={testTarget}
+        onClose={() => setTestTarget(null)}
       />
     </Box>
   );

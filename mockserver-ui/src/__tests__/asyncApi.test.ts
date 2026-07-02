@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { loadAsyncApi, getAsyncApiStatus, verifyAsyncApi, AsyncApiUnavailableError } from '../lib/asyncApi';
+import { loadAsyncApi, generateHttpExpectations, getAsyncApiStatus, verifyAsyncApi, AsyncApiUnavailableError } from '../lib/asyncApi';
 
 const params = { host: '127.0.0.1', port: '1080', secure: false };
 afterEach(() => { vi.restoreAllMocks(); });
@@ -51,5 +51,26 @@ describe('asyncApi client', () => {
   it('verifyAsyncApi throws AsyncApiUnavailableError on 501', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 501 }));
     await expect(verifyAsyncApi(params, '{}')).rejects.toBeInstanceOf(AsyncApiUnavailableError);
+  });
+
+  it('generateHttpExpectations PUTs the spec to /asyncapi/http and returns the created expectations', async () => {
+    const created = [{ id: 'http-1' }, { id: 'http-2' }];
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 201, json: async () => created });
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await generateHttpExpectations(params, 'asyncapi: 3.0.0')).toEqual(created);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://127.0.0.1:1080/mockserver/asyncapi/http');
+    expect((init as RequestInit).method).toBe('PUT');
+    expect((init as RequestInit).body).toBe('asyncapi: 3.0.0');
+  });
+
+  it('generateHttpExpectations throws AsyncApiUnavailableError on 501', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 501 }));
+    await expect(generateHttpExpectations(params, 'x')).rejects.toBeInstanceOf(AsyncApiUnavailableError);
+  });
+
+  it('generateHttpExpectations surfaces the server error envelope on a 400', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 400, statusText: 'Bad Request', json: async () => ({ error: 'no channels in spec' }) }));
+    await expect(generateHttpExpectations(params, 'bad')).rejects.toThrow('no channels in spec');
   });
 });
