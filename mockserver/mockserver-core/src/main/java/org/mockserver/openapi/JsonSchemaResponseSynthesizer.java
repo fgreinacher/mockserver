@@ -71,7 +71,7 @@ public class JsonSchemaResponseSynthesizer {
                 return null;
             }
             Schema<?> rootSchema = schemas.get(ROOT_SCHEMA_NAME);
-            Example example = ExampleBuilder.fromSchema(rootSchema, schemas);
+            Example example = ExampleBuilder.fromSchema(rootSchema, schemas, null, ExampleBuilder.Direction.RESPONSE);
             if (example == null) {
                 return null;
             }

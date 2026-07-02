@@ -258,8 +258,8 @@ public class OpenAPIRequestValidatorTest {
 
     @Test
     public void shouldNotFailForArrayQueryParameterSerialisedInNonJsonStyle() {
-        // status is an array parameter; supplied comma-delimited (OpenAPI default form/explode style)
-        // the value is not JSON-shaped, so the schema check is skipped rather than false-positiving
+        // status is an array parameter; supplied comma-delimited; decoded per style/explode rules and
+        // validated (passes because the item schema is an unconstrained string)
         List<String> errors = OpenAPIRequestValidator.validate(PARAMS,
             request("/search")
                 .withMethod("GET")
@@ -304,6 +304,96 @@ public class OpenAPIRequestValidatorTest {
             logger
         );
         assertThat(errors, hasItem(allOf(containsString("required header parameter"), containsString("X-Request-ID"), containsString("missing"))));
+    }
+
+    // ---- style/explode-serialised array/object parameter validation ----
+
+    private static final String STYLED = "org/mockserver/openapi/openapi_styled_parameters_example.yaml";
+
+    @Test
+    public void shouldPassForValidFormArrayQueryParameter() {
+        List<String> errors = OpenAPIRequestValidator.validate(STYLED,
+            request("/arr").withMethod("GET").withQueryStringParameter("ids", "1,2,3"),
+            logger
+        );
+        assertThat(errors, is(empty()));
+    }
+
+    @Test
+    public void shouldFailForFormArrayQueryParameterWithNonIntegerElement() {
+        // form array explode:false is now split and each element validated against items:integer
+        List<String> errors = OpenAPIRequestValidator.validate(STYLED,
+            request("/arr").withMethod("GET").withQueryStringParameter("ids", "1,not-a-number,3"),
+            logger
+        );
+        assertThat(errors, hasItem(allOf(containsString("query parameter"), containsString("ids"), containsString("validation error"))));
+    }
+
+    @Test
+    public void shouldStillEnforceRequiredPresenceForStyledArray() {
+        List<String> errors = OpenAPIRequestValidator.validate(STYLED,
+            request("/arr").withMethod("GET"),
+            logger
+        );
+        assertThat(errors, hasItem(allOf(containsString("required query parameter"), containsString("ids"), containsString("missing"))));
+    }
+
+    @Test
+    public void shouldPassForValidSimplePathArrayParameter() {
+        List<String> errors = OpenAPIRequestValidator.validate(STYLED,
+            request("/pathArr/1,2,3").withMethod("GET"),
+            logger
+        );
+        assertThat(errors, is(empty()));
+    }
+
+    @Test
+    public void shouldFailForSimplePathArrayWithNonIntegerElement() {
+        List<String> errors = OpenAPIRequestValidator.validate(STYLED,
+            request("/pathArr/1,foo,3").withMethod("GET"),
+            logger
+        );
+        assertThat(errors, hasItem(allOf(containsString("path parameter"), containsString("ids"), containsString("validation error"))));
+    }
+
+    @Test
+    public void shouldFailForSimpleHeaderArrayWithNonIntegerElement() {
+        List<String> errors = OpenAPIRequestValidator.validate(STYLED,
+            request("/headerArr").withMethod("GET").withHeader("X-Ids", "1,bad,3"),
+            logger
+        );
+        assertThat(errors, hasItem(allOf(containsString("header parameter"), containsString("X-Ids"), containsString("validation error"))));
+    }
+
+    @Test
+    public void shouldPassForValidDeepObjectQueryParameter() {
+        List<String> errors = OpenAPIRequestValidator.validate(STYLED,
+            request("/obj").withMethod("GET")
+                .withQueryStringParameter("filter[min]", "1")
+                .withQueryStringParameter("filter[max]", "5"),
+            logger
+        );
+        assertThat(errors, is(empty()));
+    }
+
+    @Test
+    public void shouldFailForDeepObjectQueryParameterWithNonIntegerProperty() {
+        List<String> errors = OpenAPIRequestValidator.validate(STYLED,
+            request("/obj").withMethod("GET")
+                .withQueryStringParameter("filter[min]", "not-a-number")
+                .withQueryStringParameter("filter[max]", "5"),
+            logger
+        );
+        assertThat(errors, hasItem(allOf(containsString("query parameter"), containsString("filter"), containsString("validation error"))));
+    }
+
+    @Test
+    public void shouldFailForMissingRequiredDeepObjectParameter() {
+        List<String> errors = OpenAPIRequestValidator.validate(STYLED,
+            request("/obj").withMethod("GET"),
+            logger
+        );
+        assertThat(errors, hasItem(allOf(containsString("required query parameter"), containsString("filter"), containsString("missing"))));
     }
 
     @Test

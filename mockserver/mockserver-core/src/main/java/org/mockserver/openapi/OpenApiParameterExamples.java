@@ -77,7 +77,8 @@ public final class OpenApiParameterExamples {
             Example generatedExample = ExampleBuilder.fromSchema(
                 schema,
                 openAPI != null && openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null,
-                generationOptions
+                generationOptions,
+                ExampleBuilder.Direction.REQUEST
             );
             if (generatedExample instanceof StringExample) {
                 return ((StringExample) generatedExample).getValue();

@@ -1,0 +1,73 @@
+openapi: "3.0.0"
+info:
+  version: "1.0.0"
+  title: "Styled Parameter Validation Example"
+paths:
+  "/arr":
+    get:
+      summary: "form array, explode:false, integer items"
+      operationId: "formArray"
+      parameters:
+        - name: "ids"
+          in: "query"
+          required: true
+          style: "form"
+          explode: false
+          schema:
+            type: "array"
+            items:
+              type: "integer"
+      responses:
+        "200":
+          description: "ok"
+  "/pathArr/{ids}":
+    get:
+      summary: "simple path array, integer items"
+      operationId: "pathArray"
+      parameters:
+        - name: "ids"
+          in: "path"
+          required: true
+          style: "simple"
+          schema:
+            type: "array"
+            items:
+              type: "integer"
+      responses:
+        "200":
+          description: "ok"
+  "/headerArr":
+    get:
+      summary: "simple header array, integer items"
+      operationId: "headerArray"
+      parameters:
+        - name: "X-Ids"
+          in: "header"
+          required: true
+          schema:
+            type: "array"
+            items:
+              type: "integer"
+      responses:
+        "200":
+          description: "ok"
+  "/obj":
+    get:
+      summary: "deepObject query object with integer properties"
+      operationId: "deepObject"
+      parameters:
+        - name: "filter"
+          in: "query"
+          required: true
+          style: "deepObject"
+          explode: true
+          schema:
+            type: "object"
+            properties:
+              min:
+                type: "integer"
+              max:
+                type: "integer"
+      responses:
+        "200":
+          description: "ok"

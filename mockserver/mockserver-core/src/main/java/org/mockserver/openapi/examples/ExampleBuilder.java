@@ -58,17 +58,35 @@ public class ExampleBuilder {
     public static final String SAMPLE_DATETIME_PROPERTY_VALUE = SAMPLE_DATE_PROPERTY_VALUE + "T" + SAMPLE_TIME_PROPERTY_VALUE;
     public static final double SAMPLE_DECIMAL_PROPERTY_VALUE = 1.5;
 
+    /**
+     * The direction an example is generated for. Controls {@code readOnly}/{@code writeOnly} filtering:
+     * {@code readOnly} properties are excluded from {@link #REQUEST} examples and {@code writeOnly}
+     * properties are excluded from {@link #RESPONSE} examples, per the OpenAPI specification. When the
+     * direction is {@link #UNSPECIFIED} no filtering is applied (the historic behaviour).
+     */
+    public enum Direction {
+        REQUEST,
+        RESPONSE,
+        UNSPECIFIED
+    }
+
     public static Example fromSchema(Schema<?> property, Map<String, Schema> definitions) {
-        return fromSchema(property, definitions, null);
+        return fromSchema(property, definitions, null, Direction.UNSPECIFIED);
+    }
+
+    public static Example fromSchema(Schema<?> property, Map<String, Schema> definitions, GenerationOptions generationOptions) {
+        return fromSchema(property, definitions, generationOptions, Direction.UNSPECIFIED);
     }
 
     /**
      * Builds an example from a schema, optionally honouring per-run {@link GenerationOptions}
-     * (a caller-chosen seed for reproducible realistic values and per-field value overrides).
+     * (a caller-chosen seed for reproducible realistic values and per-field value overrides) and a
+     * {@link Direction} that drives {@code readOnly}/{@code writeOnly} property filtering.
      * When {@code generationOptions} is {@code null} behaviour is identical to the historic
-     * two-arg overload (fixed seed 42, no overrides).
+     * two-arg overload (fixed seed 42, no overrides); when {@code direction} is {@link Direction#UNSPECIFIED}
+     * no {@code readOnly}/{@code writeOnly} filtering is applied.
      */
-    public static Example fromSchema(Schema<?> property, Map<String, Schema> definitions, GenerationOptions generationOptions) {
+    public static Example fromSchema(Schema<?> property, Map<String, Schema> definitions, GenerationOptions generationOptions, Direction direction) {
         // An explicit per-run choice on the options wins; otherwise defer to the global configuration
         // default. Reading the global only as a fallback (rather than unconditionally here) lets callers
         // and tests drive realistic generation deterministically without mutating shared process state.
@@ -81,18 +99,18 @@ public class ExampleBuilder {
                 ? new SampleDataGenerator(generationOptions.getSeed())
                 : new SampleDataGenerator();
         }
-        return fromProperty(null, property, definitions, new ConcurrentHashMap<>(), new ConcurrentSkipListSet<>(), new StringBuilder(), generator, generationOptions);
+        return fromProperty(null, property, definitions, new ConcurrentHashMap<>(), new ConcurrentSkipListSet<>(), new StringBuilder(), generator, generationOptions, direction);
     }
 
     public static Example fromProperty(String name, Schema<?> property, Map<String, Schema> definitions, Map<String, Example> processedModels, Set<String> modelsStartedProcessing, StringBuilder location) {
-        return fromProperty(name, property, definitions, processedModels, modelsStartedProcessing, location, null, null);
+        return fromProperty(name, property, definitions, processedModels, modelsStartedProcessing, location, null, null, Direction.UNSPECIFIED);
     }
 
     private static Example fromProperty(String name, Schema<?> property, Map<String, Schema> definitions, Map<String, Example> processedModels, Set<String> modelsStartedProcessing, StringBuilder location, SampleDataGenerator generator) {
-        return fromProperty(name, property, definitions, processedModels, modelsStartedProcessing, location, generator, null);
+        return fromProperty(name, property, definitions, processedModels, modelsStartedProcessing, location, generator, null, Direction.UNSPECIFIED);
     }
 
-    private static Example fromProperty(String name, Schema<?> property, Map<String, Schema> definitions, Map<String, Example> processedModels, Set<String> modelsStartedProcessing, StringBuilder location, SampleDataGenerator generator, GenerationOptions generationOptions) {
+    private static Example fromProperty(String name, Schema<?> property, Map<String, Schema> definitions, Map<String, Example> processedModels, Set<String> modelsStartedProcessing, StringBuilder location, SampleDataGenerator generator, GenerationOptions generationOptions, Direction direction) {
         location = new StringBuilder(location);
         if (isNotBlank(name)) {
             location.append(name).append(".");
@@ -157,7 +175,7 @@ public class ExampleBuilder {
                     // $ref that the parser could not inline (e.g. Tree{children:[$ref Tree]}) to render
                     // <Tree>/<Node> elements instead of the property name <children>/<next>. The $ref cache
                     // is keyed by the ref STRING below, so this does not affect cycle detection.
-                    output = fromProperty(name, model, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                    output = fromProperty(name, model, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
                     processedModels.put(ref, output);
                 }
             }
@@ -396,7 +414,10 @@ public class ExampleBuilder {
                 if (objectSchema.getProperties() != null) {
                     for (String propertyname : objectSchema.getProperties().keySet()) {
                         Schema<?> inner = objectSchema.getProperties().get(propertyname);
-                        Example innerExample = fromProperty(propertyname, inner, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                        if (excludedByDirection(inner, direction)) {
+                            continue;
+                        }
+                        Example innerExample = fromProperty(propertyname, inner, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
                         outputExample.put(propertyname, innerExample);
                     }
                     output = outputExample;
@@ -429,7 +450,7 @@ public class ExampleBuilder {
                         // is its own xml.name when set, otherwise the array property's name, which the XML
                         // serializer applies as a fallback only when the item name is null. Baking "array" in here
                         // produced <array> item elements instead of e.g. <photoUrls>.
-                        Example innerExample = fromProperty(null, inner, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                        Example innerExample = fromProperty(null, inner, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
                         if (innerExample != null) {
                             an.add(innerExample);
                             built = true;
@@ -447,7 +468,7 @@ public class ExampleBuilder {
                 List<Example> innerExamples = new ArrayList<>();
                 if (models != null) {
                     for (Schema im : models) {
-                        Example innerExample = fromProperty(im.getType(), im, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                        Example innerExample = fromProperty(im.getType(), im, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
                         if (innerExample != null) {
                             innerExamples.add(innerExample);
                         }
@@ -465,7 +486,10 @@ public class ExampleBuilder {
                     if (composedSchema.getProperties() != null) {
                         Map<String, Schema> ownProperties = composedSchema.getProperties();
                         for (Map.Entry<String, Schema> entry : ownProperties.entrySet()) {
-                            Example propExample = fromProperty(entry.getKey(), entry.getValue(), definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                            if (excludedByDirection(entry.getValue(), direction)) {
+                                continue;
+                            }
+                            Example propExample = fromProperty(entry.getKey(), entry.getValue(), definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
                             if (propExample != null) {
                                 ex.put(entry.getKey(), propExample);
                             }
@@ -478,11 +502,16 @@ public class ExampleBuilder {
             if (composedSchema.getAnyOf() != null) {
                 List<Schema> models = composedSchema.getAnyOf();
                 if (models != null) {
-                    for (Schema im : models) {
-                        Example innerExample = fromProperty(property.getType(), im, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
-                        if (innerExample != null) {
-                            output = innerExample;
-                            break;
+                    Example discriminated = discriminatedExample(composedSchema, models, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
+                    if (discriminated != null) {
+                        output = discriminated;
+                    } else {
+                        for (Schema im : models) {
+                            Example innerExample = fromProperty(property.getType(), im, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
+                            if (innerExample != null) {
+                                output = innerExample;
+                                break;
+                            }
                         }
                     }
                 }
@@ -490,11 +519,16 @@ public class ExampleBuilder {
             if (composedSchema.getOneOf() != null) {
                 List<Schema> models = composedSchema.getOneOf();
                 if (models != null) {
-                    for (Schema im : models) {
-                        Example innerExample = fromProperty(property.getType(), im, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
-                        if (innerExample != null) {
-                            output = innerExample;
-                            break;
+                    Example discriminated = discriminatedExample(composedSchema, models, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
+                    if (discriminated != null) {
+                        output = discriminated;
+                    } else {
+                        for (Schema im : models) {
+                            Example innerExample = fromProperty(property.getType(), im, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
+                            if (innerExample != null) {
+                                output = innerExample;
+                                break;
+                            }
                         }
                     }
                 }
@@ -503,7 +537,7 @@ public class ExampleBuilder {
             // OpenAPI 3.1 type arrays (e.g. type: [string, "null"]) — pick the first non-null type
             String primaryType = resolveOas31PrimaryType(property.getTypes());
             if (primaryType != null) {
-                output = generateExampleForType(primaryType, property, example, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                output = generateExampleForType(primaryType, property, example, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
             }
         } else if (property.getProperties() != null) {
             if (example != null) {
@@ -524,7 +558,10 @@ public class ExampleBuilder {
                     Map<String, Schema> properties = property.getProperties();
                     for (String propertyKey : properties.keySet()) {
                         Schema inner = properties.get(propertyKey);
-                        Example propExample = fromProperty(propertyKey, inner, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                        if (excludedByDirection(inner, direction)) {
+                            continue;
+                        }
+                        Example propExample = fromProperty(propertyKey, inner, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
                         ex.put(propertyKey, propExample);
                     }
                 }
@@ -547,7 +584,7 @@ public class ExampleBuilder {
                     }
                 }
                 for (int i = 1; i <= additionalCount; i++) {
-                    Example innerExample = fromProperty(inner.getType(), inner, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                    Example innerExample = fromProperty(inner.getType(), inner, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
                     if (innerExample != null) {
                         if (output == null) {
                             output = new ObjectExample();
@@ -657,6 +694,67 @@ public class ExampleBuilder {
             type = resolveOas31PrimaryType(schema.getTypes());
         }
         return "string".equals(type) || "integer".equals(type) || "number".equals(type) || "boolean".equals(type);
+    }
+
+    /**
+     * Whether a property must be omitted from the example given the generation {@link Direction}:
+     * {@code readOnly} properties are excluded from {@link Direction#REQUEST} examples and
+     * {@code writeOnly} properties from {@link Direction#RESPONSE} examples (per the OpenAPI spec).
+     * {@link Direction#UNSPECIFIED} (and a {@code null} direction) never excludes, preserving the
+     * historic behaviour where direction is unknown.
+     */
+    static boolean excludedByDirection(Schema<?> propertySchema, Direction direction) {
+        if (propertySchema == null || direction == null || direction == Direction.UNSPECIFIED) {
+            return false;
+        }
+        if (direction == Direction.REQUEST) {
+            return Boolean.TRUE.equals(propertySchema.getReadOnly());
+        }
+        return Boolean.TRUE.equals(propertySchema.getWriteOnly());
+    }
+
+    /**
+     * Builds an example for a {@code oneOf}/{@code anyOf} schema that declares a {@code discriminator}:
+     * a concrete subschema is selected and the discriminator property is set to the matching value.
+     * When an explicit {@code mapping} is present its first entry is used ({@code value -> schema ref});
+     * otherwise the first subschema is used and, if it is a {@code $ref}, the referenced schema's short
+     * name is the discriminator value. Returns {@code null} when the schema declares no usable
+     * discriminator, so the caller falls back to its default first-non-null selection.
+     */
+    @SuppressWarnings("unchecked")
+    private static Example discriminatedExample(ComposedSchema composedSchema, List<Schema> members, Map<String, Schema> definitions, Map<String, Example> processedModels, Set<String> modelsStartedProcessing, StringBuilder location, SampleDataGenerator generator, GenerationOptions generationOptions, Direction direction) {
+        Discriminator discriminator = composedSchema.getDiscriminator();
+        if (discriminator == null || discriminator.getPropertyName() == null || members == null || members.isEmpty()) {
+            return null;
+        }
+        String propertyName = discriminator.getPropertyName();
+        Map<String, String> mapping = discriminator.getMapping();
+        Schema<?> chosenSchema;
+        String discriminatorValue;
+        if (mapping != null && !mapping.isEmpty()) {
+            Map.Entry<String, String> first = mapping.entrySet().iterator().next();
+            discriminatorValue = first.getKey();
+            // the mapping value may be a bare schema name or a full $ref; fromProperty resolves both by
+            // taking the segment after the last '/', so a bare name looks up directly in definitions
+            Schema<Object> ref = new Schema<>();
+            ref.set$ref(first.getValue());
+            chosenSchema = ref;
+        } else {
+            chosenSchema = members.get(0);
+            discriminatorValue = refShortName(chosenSchema.get$ref());
+        }
+        Example inner = fromProperty(null, chosenSchema, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
+        if (inner instanceof ObjectExample objectExample && discriminatorValue != null) {
+            objectExample.put(propertyName, new StringExample(discriminatorValue));
+        }
+        return inner;
+    }
+
+    private static String refShortName(String ref) {
+        if (ref == null) {
+            return null;
+        }
+        return ref.substring(ref.lastIndexOf('/') + 1);
     }
 
     /**
@@ -896,7 +994,8 @@ public class ExampleBuilder {
         Set<String> modelsStartedProcessing,
         StringBuilder location,
         SampleDataGenerator generator,
-        GenerationOptions generationOptions
+        GenerationOptions generationOptions,
+        Direction direction
     ) {
         return switch (type) {
             case "string" -> {
@@ -1011,7 +1110,10 @@ public class ExampleBuilder {
                 objectEx.setName(property.getName());
                 if (property.getProperties() != null) {
                     for (Map.Entry<String, Schema> entry : ((Map<String, Schema>) property.getProperties()).entrySet()) {
-                        Example innerExample = fromProperty(entry.getKey(), entry.getValue(), definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                        if (excludedByDirection(entry.getValue(), direction)) {
+                            continue;
+                        }
+                        Example innerExample = fromProperty(entry.getKey(), entry.getValue(), definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
                         objectEx.put(entry.getKey(), innerExample);
                     }
                 }
@@ -1040,7 +1142,7 @@ public class ExampleBuilder {
                     for (int i = 0; i < itemCount; i++) {
                         // null item name (not the array "type"): the array property name is the item element-name
                         // fallback in the XML serializer; see the ArraySchema branch above.
-                        Example innerExample = fromProperty(null, items, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions);
+                        Example innerExample = fromProperty(null, items, definitions, processedModels, modelsStartedProcessing, location, generator, generationOptions, direction);
                         if (innerExample != null) {
                             arrayEx.add(innerExample);
                             built = true;

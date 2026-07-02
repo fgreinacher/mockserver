@@ -140,6 +140,38 @@ public class OpenAPIRequestValidator {
             String name = parameter.getName();
             String in = parameter.getIn();
             boolean required = "path".equals(in) || Boolean.TRUE.equals(parameter.getRequired());
+            Schema schema = parameter.getSchema();
+            String primaryType = OpenApiStyleParameterDeserializer.primaryType(schema);
+
+            // array/object parameters are style/explode-serialised — decode them into a JSON literal so
+            // they can be schema-validated, instead of being skipped. The decoder is fail-open: when the
+            // value cannot be soundly reconstructed it returns json == null and the schema check is skipped
+            // (preserving the historic "don't false-positive a valid request" behaviour), while still
+            // reporting presence so required parameters are enforced.
+            if (schema != null && ("array".equals(primaryType) || "object".equals(primaryType))) {
+                OpenApiStyleParameterDeserializer.Result result =
+                    OpenApiStyleParameterDeserializer.deserialize(parameter, in, name, schema, primaryType, request, pathValues);
+                boolean present = result.present || parameterValue(in, name, request, pathValues) != null;
+                if (!present) {
+                    if (required) {
+                        errors.add("required " + in + " parameter '" + name + "' is missing");
+                    }
+                    continue;
+                }
+                if (result.json != null) {
+                    try {
+                        String schemaJson = OBJECT_MAPPER.writeValueAsString(schema);
+                        JsonSchemaValidator validator = JsonSchemaValidator.cachedJsonSchemaValidator(logger, schemaJson);
+                        String validationResult = validator.isValid(result.json, false);
+                        if (isNotBlank(validationResult)) {
+                            errors.add(in + " parameter '" + name + "' validation error: " + validationResult);
+                        }
+                    } catch (Throwable throwable) {
+                        errors.add(OpenAPIValidationErrors.unexpectedError("validating " + in + " parameter '" + name + "' against schema", throwable, logger));
+                    }
+                }
+                continue;
+            }
 
             String value = parameterValue(in, name, request, pathValues);
             boolean present = value != null;
@@ -151,15 +183,13 @@ public class OpenAPIRequestValidator {
                 continue;
             }
 
-            Schema schema = parameter.getSchema();
             if (schema == null) {
                 continue;
             }
             try {
                 String coercedValue = coerceParameterValue(schema, value);
                 // coercedValue == null means the value cannot be soundly validated against this schema
-                // (an array/object parameter serialised in a non-JSON style such as the OpenAPI default
-                // form/explode or simple style) — skip the schema check rather than false-positive a
+                // (an untyped/composite schema) — skip the schema check rather than false-positive a
                 // valid request. Required-presence has already been enforced above.
                 if (coercedValue != null) {
                     String schemaJson = OBJECT_MAPPER.writeValueAsString(schema);
@@ -251,18 +281,15 @@ public class OpenAPIRequestValidator {
     }
 
     /**
-     * Converts a parameter's string value into the JSON literal the schema validator expects for the
-     * parameter's type, or {@code null} when the value cannot be soundly validated and the schema check
-     * should be skipped.
+     * Converts a primitive parameter's string value into the JSON literal the schema validator expects
+     * for the parameter's type, or {@code null} when the value cannot be soundly validated and the schema
+     * check should be skipped. {@code array}/{@code object} parameters are handled ahead of this method by
+     * {@link OpenApiStyleParameterDeserializer} (style/explode decoding), so only primitive and
+     * untyped/composite schemas reach here.
      * <p>
      * Numeric/boolean schemas validate the raw token when it parses as that type, so a mismatched value
      * (e.g. {@code "abc"} for an integer) is wrapped as a JSON string and correctly fails type
-     * validation. For {@code array}/{@code object} schemas the value is validated verbatim only when it
-     * is already JSON-shaped (starts with {@code [}/{@code {}); when it is serialised in a non-JSON
-     * style (the OpenAPI default {@code form}/{@code explode}, or {@code simple} — e.g.
-     * {@code available,pending}) this returns {@code null} so the schema check is skipped rather than
-     * false-positiving a valid request. Full {@code style}/{@code explode} splitting is a deferred
-     * follow-up. Every other type validates as a JSON string.
+     * validation. Every other type validates as a JSON string.
      */
     @SuppressWarnings("rawtypes")
     private static String coerceParameterValue(Schema schema, String value) throws Exception {
@@ -275,15 +302,6 @@ public class OpenAPIRequestValidator {
             if ("true".equals(value) || "false".equals(value)) {
                 return value;
             }
-        } else if ("array".equals(type) || "object".equals(type)) {
-            // only validate when the value is already JSON-shaped; a style-serialised array/object value
-            // cannot be soundly checked here, so skip the schema check (null) rather than wrapping it as
-            // a JSON string and failing "array/object expected" on a valid request
-            String trimmed = value.trim();
-            if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-                return value;
-            }
-            return null;
         } else if (type == null) {
             // composite/untyped schema (OAS 3.1 anyOf/allOf/$ref with no top-level type): the raw string
             // value cannot be soundly validated here, so skip the schema check rather than wrapping it as a

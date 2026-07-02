@@ -122,7 +122,8 @@ public class OpenAPIConverter {
                 org.mockserver.openapi.examples.models.Example example = ExampleBuilder.fromSchema(
                     mediaType.getSchema(),
                     openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null,
-                    generationOptions
+                    generationOptions,
+                    ExampleBuilder.Direction.REQUEST
                 );
                 if (example != null) {
                     httpRequest.withBody(serialise(example));
@@ -261,7 +262,8 @@ public class OpenAPIConverter {
                                     org.mockserver.openapi.examples.models.Example example = ExampleBuilder.fromSchema(
                                         mediaType.getSchema(),
                                         openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null,
-                                        generationOptions
+                                        generationOptions,
+                                        ExampleBuilder.Direction.REQUEST
                                     );
                                     if (example != null) {
                                         callbackRequest.withBody(serialise(example));
@@ -314,7 +316,7 @@ public class OpenAPIConverter {
                             if (headerExample != null) {
                                 response.withHeader(entry.getKey(), String.valueOf(headerExample));
                             } else if (value.getSchema() != null) {
-                                org.mockserver.openapi.examples.models.Example generatedExample = ExampleBuilder.fromSchema(value.getSchema(), openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null, generationOptions);
+                                org.mockserver.openapi.examples.models.Example generatedExample = ExampleBuilder.fromSchema(value.getSchema(), openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null, generationOptions, ExampleBuilder.Direction.RESPONSE);
                                 if (generatedExample instanceof StringExample stringExample) {
                                     response.withHeader(entry.getKey(), stringExample.getValue());
                                 } else {
@@ -351,7 +353,7 @@ public class OpenAPIConverter {
                                             response.withBody(serialise(schemaExample));
                                         }
                                     } else {
-                                        org.mockserver.openapi.examples.models.Example generatedExample = ExampleBuilder.fromSchema(mediaType.getSchema(), openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null, generationOptions);
+                                        org.mockserver.openapi.examples.models.Example generatedExample = ExampleBuilder.fromSchema(mediaType.getSchema(), openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null, generationOptions, ExampleBuilder.Direction.RESPONSE);
                                         if (generatedExample instanceof StringExample stringExample) {
                                             if (isJsonContentType(contentType.getKey())) {
                                                 response.withBody(json(serialise(stringExample.getValue())));

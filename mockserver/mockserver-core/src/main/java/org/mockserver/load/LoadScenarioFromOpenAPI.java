@@ -206,7 +206,7 @@ public class LoadScenarioFromOpenAPI {
             if (mediaType == null || mediaType.getSchema() == null) {
                 return;
             }
-            Example example = org.mockserver.openapi.examples.ExampleBuilder.fromSchema(mediaType.getSchema(), componentSchemas);
+            Example example = org.mockserver.openapi.examples.ExampleBuilder.fromSchema(mediaType.getSchema(), componentSchemas, null, org.mockserver.openapi.examples.ExampleBuilder.Direction.REQUEST);
             if (example instanceof StringExample) {
                 httpRequest.withBody(((StringExample) example).getValue());
             } else if (example != null) {

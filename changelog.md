@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAPI request validation now checks `style`/`explode`-serialised array and object parameters.** When you
+  validate traffic against an OpenAPI spec (contract/traffic validation, the `verify_traffic` MCP tool, or an
+  OpenAPI-backed expectation returning `400` on non-conforming requests), `array`/`object` query, path and header
+  parameters were previously skipped unless the value already looked like JSON — so a malformed list or object slipped
+  through. MockServer now decodes each parameter from its `style`/`explode` serialisation before schema validation:
+  query `form`/`spaceDelimited`/`pipeDelimited`/`deepObject`, path `simple`/`label`/`matrix`, and header `simple`,
+  for both `explode` values, with the OpenAPI defaults applied when the spec omits them. Decoding is **type-aware**
+  (each element/property is coerced to the JSON type its item/property schema declares) so a request that was valid
+  before stays valid — only values the spec genuinely rejects (e.g. a non-integer element in an `items: integer`
+  array, or a non-integer property in a `deepObject`) now fail. It is **fail-open**: any value that cannot be soundly
+  reconstructed (a non-primitive item/property, or an unsupported style combination) skips the schema check exactly
+  as before, while `required`-presence is still enforced. Note this is a (spec-conformant) behaviour change for
+  traffic validation: non-conforming style serialisations that previously slipped through unchecked can now return
+  `400` — e.g. a comma-delimited list sent where the spec declares the default `form`/`explode: true` (which expects
+  repeated parameters) is decoded as a single element and validated as such. One known edge: an empty value for a
+  non-explode `form` array decodes as a single empty-string element rather than an empty array.
+- **OpenAPI example generation honours `discriminator`, `readOnly` and `writeOnly`.** Generated examples (OpenAPI
+  import to expectations, `run_contract_test`/`run_resiliency_test`, load scenarios) are now more faithful: for a
+  `oneOf`/`anyOf` schema with a `discriminator`, a concrete subschema is chosen and the discriminator property is set
+  to the matching mapping key (or the referenced schema name when no explicit `mapping` is given), instead of blindly
+  taking the first subschema; and `readOnly` properties are omitted from **request** examples while `writeOnly`
+  properties are omitted from **response** examples, per the OpenAPI spec. Existing callers that do not specify a
+  direction are unchanged (no `readOnly`/`writeOnly` filtering).
+
 - **gRPC forward proxy + record/replay — bring the record-then-mock workflow to gRPC.** Until now gRPC
   support was mock-only: MockServer could decode inbound gRPC to JSON and serve mocked responses, but could
   not forward a gRPC call to a real upstream gRPC server. Now, when a gRPC request (HTTP/2 +

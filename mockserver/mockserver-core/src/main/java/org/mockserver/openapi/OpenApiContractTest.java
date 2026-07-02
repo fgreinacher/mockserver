@@ -167,7 +167,7 @@ public class OpenApiContractTest {
             }
             // Generate from ExampleBuilder
             Map<String, Schema> definitions = openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null;
-            Example generatedExample = ExampleBuilder.fromSchema(schema, definitions);
+            Example generatedExample = ExampleBuilder.fromSchema(schema, definitions, null, ExampleBuilder.Direction.REQUEST);
             if (generatedExample != null) {
                 return serialise(generatedExample);
             }
