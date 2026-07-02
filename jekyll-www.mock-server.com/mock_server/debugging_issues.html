@@ -37,6 +37,67 @@ lastmod: 2019-11-10T08:00:00+01:00
     <li>Clear failure messages when verifying requests (that support "show difference" in IntelliJ)</li>
 </ul>
 
+<a id="retrieval_quick_reference" class="anchor" href="#retrieval_quick_reference">&nbsp;</a>
+
+<h2>Retrieval Methods Quick Reference</h2>
+
+<p>Most retrieval endpoints use <span class="inline_code">PUT /mockserver/retrieve</span> with a <span class="inline_code">type</span> query parameter; metrics and configuration are separate <span class="inline_code">GET</span> endpoints (see table). Java client methods take an optional request matcher (pass <span class="inline_code">null</span> to retrieve everything). Click the row to jump to full code examples.</p>
+
+<table class="table-scroll">
+    <thead>
+        <tr>
+            <th>What you retrieve</th>
+            <th>REST path</th>
+            <th>Java client method</th>
+            <th>Returns</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><a href="#retrieving_active_expectations">Active expectations</a></td>
+            <td><span class="inline_code">PUT /mockserver/retrieve?type=ACTIVE_EXPECTATIONS</span></td>
+            <td><span class="inline_code">retrieveActiveExpectations()</span></td>
+            <td>Expectation array</td>
+        </tr>
+        <tr>
+            <td><a href="#retrieving_recorded_expectations">Recorded expectations</a></td>
+            <td><span class="inline_code">PUT /mockserver/retrieve?type=RECORDED_EXPECTATIONS</span></td>
+            <td><span class="inline_code">retrieveRecordedExpectations()</span></td>
+            <td>Expectation array</td>
+        </tr>
+        <tr>
+            <td><a href="#retrieving_recorded_requests">Recorded requests</a></td>
+            <td><span class="inline_code">PUT /mockserver/retrieve?type=REQUESTS</span></td>
+            <td><span class="inline_code">retrieveRecordedRequests()</span></td>
+            <td>HttpRequest array</td>
+        </tr>
+        <tr>
+            <td><a href="#retrieving_recorded_request_responses">Recorded requests &amp; responses</a></td>
+            <td><span class="inline_code">PUT /mockserver/retrieve?type=REQUEST_RESPONSES</span></td>
+            <td><span class="inline_code">retrieveRecordedRequestsAndResponses()</span></td>
+            <td>LogEventRequestAndResponse array</td>
+        </tr>
+        <tr>
+            <td><a href="#retrieving_recorded_logs">Logs</a></td>
+            <td><span class="inline_code">PUT /mockserver/retrieve?type=LOGS</span></td>
+            <td><span class="inline_code">retrieveLogMessagesArray()</span></td>
+            <td>String array</td>
+        </tr>
+        <tr>
+            <td><a href="#retrieving_metrics">Metrics</a></td>
+            <td><span class="inline_code">GET /mockserver/metrics</span></td>
+            <td><span class="inline_code">retrieveMetrics()</span> (JSON counter snapshot via <span class="inline_code">PUT /mockserver/retrieve?type=METRICS</span>; the Prometheus text endpoint itself has no client accessor)</td>
+            <td>Prometheus text format</td>
+        </tr>
+        <tr>
+            <td><a href="#retrieving_configuration">Configuration</a></td>
+            <td><span class="inline_code">GET /mockserver/configuration</span></td>
+            <td><span class="inline_code">retrieveConfiguration()</span></td>
+            <td>JSON</td>
+        </tr>
+    </tbody>
+</table>
+
 <h2 style="color: #9c0000;"><strong>The simplest way to debug MockServer is to use the <a href="/mock_server/mockserver_ui.html">UI</a> to view logs, requests and expectations</strong></h2>
 
 <a id="retrieving_active_expectations" class="anchor" href="#retrieving_active_expectations">&nbsp;</a>

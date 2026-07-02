@@ -141,6 +141,263 @@ mockserver.enableCORSForAllResponses=false</code></pre>
     </tbody>
 </table>
 
+<a id="property_index" class="anchor" href="#property_index">&nbsp;</a>
+
+<h2>Property Index</h2>
+
+<p>Filter the full list of configuration properties. Click a property name to jump to its detail — the accordion expands automatically.</p>
+
+<input type="text" id="configPropertyFilter" placeholder="Filter properties&#8230;" aria-label="Filter configuration properties" style="width:100%;max-width:420px;padding:6px 10px;font-size:0.9em;border:1px solid #ccc;border-radius:3px;margin-bottom:10px;">
+
+<table id="configPropertyIndex" class="table-scroll">
+    <thead>
+        <tr>
+            <th>Property</th>
+            <th>Section</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr><td><a href="#button_configuration_log_level">Log Level</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_disable_system_out">Disable Logging To System Out</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_disable_logging">Disable All Logging</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_compact_log_format">Compact Log Format</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_log_level_overrides">Log Level Overrides (Per-Category)</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_detailed_match_failures">Detailed Match Failures</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_detailed_verification_failures">Detailed Verification Failures</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_launch_ui__debug">Launch UI When Log Level DEBUG</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_enabled_metrics">Enable Metrics</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_log_event_listener">Custom Log Event Listener</a></td><td><a href="#logging_configuration">Logging &amp; Metrics</a></td></tr>
+        <tr><td><a href="#button_configuration_dev_mode">Dev Mode</a></td><td><a href="#dev_mode_configuration">Developer Mode</a></td></tr>
+        <tr><td><a href="#button_configuration_max_expectations">Maximum Expectations To Hold In Memory</a></td><td><a href="#memory_configuration">Memory Usage</a></td></tr>
+        <tr><td><a href="#button_configuration_request_log_size">Maximum Log Entries To Hold In Memory</a></td><td><a href="#memory_configuration">Memory Usage</a></td></tr>
+        <tr><td><a href="#button_configuration_ring_buffer_size">Log Event Ring Buffer Size</a></td><td><a href="#memory_configuration">Memory Usage</a></td></tr>
+        <tr><td><a href="#button_configuration_max_event_log_size_in_bytes">Maximum Event Log Size In Bytes</a></td><td><a href="#memory_configuration">Memory Usage</a></td></tr>
+        <tr><td><a href="#button_configuration_max_logged_body_bytes">Maximum Logged Body Bytes Per Entry</a></td><td><a href="#memory_configuration">Memory Usage</a></td></tr>
+        <tr><td><a href="#button_configuration_max_web_socket_expectations">Maximum WebSockets For Object Callback Expectations</a></td><td><a href="#memory_configuration">Memory Usage</a></td></tr>
+        <tr><td><a href="#button_configuration_log_memory_statistics">Output JVM Memory Usage</a></td><td><a href="#memory_configuration">Memory Usage</a></td></tr>
+        <tr><td><a href="#button_configuration_memory_statistics_directory">Directory For Outputting JVM Memory Usage</a></td><td><a href="#memory_configuration">Memory Usage</a></td></tr>
+        <tr><td><a href="#button_configuration_connection_delay_millis">Connection Delay</a></td><td><a href="#memory_configuration">Performance</a></td></tr>
+        <tr><td><a href="#button_configuration_use_native_transport">Use Native Transport (Epoll)</a></td><td><a href="#memory_configuration">Performance</a></td></tr>
+        <tr><td><a href="#button_configuration_nio_event_loop_thread_count">Number of Event Loop Threads</a></td><td><a href="#memory_configuration">Performance</a></td></tr>
+        <tr><td><a href="#button_configuration_action_handler_thread_count">Number of Action Handler Threads</a></td><td><a href="#memory_configuration">Performance</a></td></tr>
+        <tr><td><a href="#button_configuration_client_nio_event_loop_thread_count">Number of Client Event Loop Threads</a></td><td><a href="#memory_configuration">Performance</a></td></tr>
+        <tr><td><a href="#button_configuration_web_socket_event_loop_thread_count">Number of Client Web Socket Event Loop Threads</a></td><td><a href="#memory_configuration">Performance</a></td></tr>
+        <tr><td><a href="#button_configuration_matchers_fail_fast">Request Matchers Fail Fast</a></td><td><a href="#memory_configuration">Performance</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_port">HTTP/3 (QUIC) Port</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_max_idle_timeout">HTTP/3 Max Idle Timeout</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_initial_max_data">HTTP/3 Initial Max Data</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_initial_max_stream_data_bidirectional">HTTP/3 Initial Max Stream Data (Bidirectional)</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_initial_max_streams_bidirectional">HTTP/3 Initial Max Streams (Bidirectional)</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_qpack_max_table_capacity">HTTP/3 QPACK Max Table Capacity</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_alt_svc_max_age">HTTP/3 Alt-Svc Max Age</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_advertise_alt_svc">HTTP/3 Advertise Alt-Svc</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_connect_udp_enabled">HTTP/3 CONNECT-UDP (MASQUE) Enabled</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_http3_connect_udp_allowed_targets">HTTP/3 CONNECT-UDP (MASQUE) Allowed Targets</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_max_socket_timeout">Maximum Socket Timeout</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_socket_connection_timeout">Maximum Socket Connection Timeout</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_aways_close_socket_connection">Always Close Socket Connection After Response</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_local_bound_ip">Local Bound IP For Accepting Socket Connection</a></td><td><a href="#socket_configuration">Socket</a></td></tr>
+        <tr><td><a href="#button_configuration_match_exact_case">Match Exact Case</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_max_initial_line_length">Maximum HTTP Request Initial Line Length</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_max_header_size">Maximum HTTP Request Header Size</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_max_chunk_size">Maximum HTTP Request Chunk Size</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_max_request_body_size">Maximum Inbound Request Body Size</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_max_response_body_size">Maximum Upstream Response Body Size</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_regex_matching_timeout_millis">Regex Matching Timeout</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_xpath_matching_timeout_millis">XPath Matching Timeout</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_custom_json_unit_matchers_class">Custom JSON Body Matchers</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_json_schema_allow_remote_refs">JSON Schema Remote $ref Resolution</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_attach_mismatch_diagnostic_to_response">Attach Mismatch Diagnostic To Unmatched Response</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_closest_match_hint_enabled">Closest Match Hint On Unmatched Response</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_block_private_networks">Block Forwarding To Private Networks (SSRF Protection)</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_tls_allow_insecure_protocols">Allow Insecure TLS Protocols</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_treat_semicolon_as_query_parameter_separator">Treat Semicolon As Query Parameter Separator</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_startup_warmup">Startup Warmup</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_assume_all_requests_are_http">Assume All Requests Are HTTP</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_http2_enabled">HTTP/2 Enabled</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_grpc_bidi_streaming_enabled">gRPC Bidi-Streaming Enabled</a></td><td><a href="#http_request_size_configuration">HTTP Request Parsing</a></td></tr>
+        <tr><td><a href="#button_configuration_enable_cors_for_api">Enable CORS For MockServer REST API</a></td><td><a href="#http_request_size_configuration">CORS</a></td></tr>
+        <tr><td><a href="#button_configuration_enable_cors_for_all_responses">Enable CORS For All Responses</a></td><td><a href="#http_request_size_configuration">CORS</a></td></tr>
+        <tr><td><a href="#button_configuration_cors_allow_origin">CORS Allow Origin Value</a></td><td><a href="#http_request_size_configuration">CORS</a></td></tr>
+        <tr><td><a href="#button_configuration_cors_allow_methods">CORS Allow Methods Value</a></td><td><a href="#http_request_size_configuration">CORS</a></td></tr>
+        <tr><td><a href="#button_configuration_cors_allow_headers">CORS Allow Headers Value</a></td><td><a href="#http_request_size_configuration">CORS</a></td></tr>
+        <tr><td><a href="#button_configuration_cors_allow_credentials">CORS Allow Credentials Value</a></td><td><a href="#http_request_size_configuration">CORS</a></td></tr>
+        <tr><td><a href="#button_configuration_cors_max_age">CORS Max Age Value</a></td><td><a href="#http_request_size_configuration">CORS</a></td></tr>
+        <tr><td><a href="#button_configuration_default_response_headers">Default Response Headers</a></td><td><a href="#default_response_headers_configuration">Default Response Headers</a></td></tr>
+        <tr><td><a href="#button_configuration_disable_classes_in_javascript_templates">Disable Classes In JavaScript Templates</a></td><td><a href="#default_response_headers_configuration">Template Restrictions</a></td></tr>
+        <tr><td><a href="#button_configuration_restrict_content_allowed_in_javascript_templates">Restrict Content In JavaScript Templates</a></td><td><a href="#default_response_headers_configuration">Template Restrictions</a></td></tr>
+        <tr><td><a href="#button_configuration_javascript_template_execution_timeout">JavaScript Template Execution Timeout</a></td><td><a href="#default_response_headers_configuration">Template Restrictions</a></td></tr>
+        <tr><td><a href="#button_configuration_disable_class_loading_in_velocity_templates">Disable Class Loading In Velocity Templates</a></td><td><a href="#default_response_headers_configuration">Template Restrictions</a></td></tr>
+        <tr><td><a href="#button_configuration_restrict_content_allowed_in_velocity_templates">Restrict Content In Velocity Templates</a></td><td><a href="#default_response_headers_configuration">Template Restrictions</a></td></tr>
+        <tr><td><a href="#button_configuration_restrict_content_allowed_in_mustache_templates">Restrict Content In Mustache Templates</a></td><td><a href="#default_response_headers_configuration">Template Restrictions</a></td></tr>
+        <tr><td><a href="#button_configuration_initialization_class">Expectation Initialization Class</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_initialization_json_path">Expectation Initialization JSON File Path</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_initialization_openapi_path">Expectation Initialization OpenAPI File Path</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_watch_initialization_json">Watch Expectation Initialization Files</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_fail_on_initialization_error">Fail On Initialization Error</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_persist_expectations_as_json">Persist Expectations As JSON</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_persisted_expectations_file_path">Persisted Expectations File Path</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_persist_recorded_expectations">Persist Recorded Expectations As JSON</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_persisted_recorded_expectations_file_path">Persisted Recorded Expectations File Path</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_persist_recorded_requests_to_disk">Persist Recorded Requests To Disk (NDJSON)</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_persisted_recorded_requests_path">Persisted Recorded Requests File Path</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_maximum_number_of_requests_to_return_in_verification_failure">Maximum Requests In Verification Failure</a></td><td><a href="#proxy_configuration">Initializer &amp; Persistence</a></td></tr>
+        <tr><td><a href="#button_configuration_proxy_setup">Proxy Setup — Generate Unique Secure CA</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_proxy_setup_logging">Proxy Setup Logging</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_attempt_to_proxy_if_no_matching_expectation">Attempt To Proxy If No Matching Expectation</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_binary_requests_without_waiting_for_response">Forward Binary Requests Without Waiting For Response</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_connection_pool_enabled">Reuse Upstream Connections (Connection Pooling)</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_connection_pool_max_idle_per_key">Maximum Idle Pooled Connections Per Upstream</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_connection_pool_idle_timeout_millis">Idle Pooled Connection Timeout</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_connection_pool_keep_alive">Keep Pooled Connections Warm Under Sustained Load</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_connection_pool_max_total_per_key">Maximum Warm Pooled Connections Per Upstream</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_socket_keep_alive">Forward Upstream TCP Keepalive</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_socket_keep_alive_idle_seconds">Forward Upstream TCP Keepalive Idle Seconds</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_socket_keep_alive_interval_seconds">Forward Upstream TCP Keepalive Interval Seconds</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_socket_keep_alive_count">Forward Upstream TCP Keepalive Probe Count</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_http2_enabled">Forward Upstream Requests Using HTTP/2</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_http2_upgrade">Upgrade Forwarded Requests To HTTP/2</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_retry_count">Retry Forwarded Requests On Transient Failure</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_retry_backoff_millis">Retry Back-Off</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_circuit_breaker_enabled">Upstream Circuit Breaker</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_circuit_breaker_failure_threshold">Circuit Breaker Failure Threshold</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_circuit_breaker_window_millis">Circuit Breaker Open Window</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_http_proxy">HTTP Proxy For Forwarded Requests</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_https_proxy">HTTPS Proxy For Forwarded Requests</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_socks_proxy">SOCKS Proxy For Forwarded Requests</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_authentication_username">Proxy Authentication Username For Forwarded Requests</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_authentication_password">Proxy Authentication Password For Forwarded Requests</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_proxy_authentication_realm">Realm For Proxy Authentication to MockServer</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_proxy_authentication_username">Required Username For Proxy Authentication to MockServer</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_proxy_authentication_password">Required Password For Proxy Authentication to MockServer</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_proxy_pass">ProxyPass Mappings</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_no_proxy_hosts">Hosts That Bypass Proxy</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_adjust_host_header">Auto-Adjust Host Header When Forwarding</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_default_host_header">Default Host Header for Forwarded Requests</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_proxy_remote_host">Proxy Remote Host</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_proxy_remote_port">Proxy Remote Port</a></td><td><a href="#proxy_configuration">Proxying</a></td></tr>
+        <tr><td><a href="#button_configuration_data_plane_authentication_required">Require Authentication On Mocked Endpoints</a></td><td><a href="#data_plane_authentication_configuration">Data Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_data_plane_basic_authentication_username">Data Plane Basic Authentication Username</a></td><td><a href="#data_plane_authentication_configuration">Data Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_data_plane_basic_authentication_password">Data Plane Basic Authentication Password</a></td><td><a href="#data_plane_authentication_configuration">Data Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_data_plane_basic_authentication_realm">Data Plane Basic Authentication Realm</a></td><td><a href="#data_plane_authentication_configuration">Data Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_data_plane_bearer_authentication_token">Data Plane Bearer Authentication Token</a></td><td><a href="#data_plane_authentication_configuration">Data Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_data_plane_api_key_authentication_header">Data Plane API Key Header Name</a></td><td><a href="#data_plane_authentication_configuration">Data Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_data_plane_api_key_authentication_value">Data Plane API Key Value</a></td><td><a href="#data_plane_authentication_configuration">Data Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_streaming_responses_enabled">Streaming Responses Enabled</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_max_streaming_capture_bytes">Maximum Streaming Response Body Capture</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_max_llm_conversation_body_size">Maximum LLM Conversation Body Size</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_llm_backend">Runtime LLM Backend (optional)</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_llm_vcr">LLM Fixture (VCR) Recording &amp; Replay</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_drift">Drift Detection</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_control_plane_audit">Control-Plane Audit Log</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_control_plane_oidc">Control-Plane OIDC Authentication</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_control_plane_authorization">Control-Plane Authorization</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_breakpoints">Interactive Breakpoints</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_chaos_auto_halt">Chaos Auto-Halt Circuit-Breaker</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_rate_limit_max_named_quotas">Rate Limit Max Named Quotas</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_connection_lifecycle_chaos">Connection-Lifecycle Faults &amp; Preemption Simulation</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_slo_verdicts">SLO Verdicts</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_load_generation">Load Generation</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_llm_metrics">LLM Token &amp; Cost Metrics</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_per_expectation_metrics">Per-Expectation Match Counters</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_slow_request_threshold_millis">Slow Request Threshold</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_metrics_request_duration_route_labels">Metrics Request Duration Route Labels</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_redact_secrets_in_recorded_expectations">Redact Secrets In Recorded Expectations</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_templatize_recorded_values">Templatize Recorded Values</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_redact_secrets_in_log">Redact Secrets In Event Log &amp; Dashboard</a></td><td><a href="#streaming_proxy_configuration">Streaming Proxy</a></td></tr>
+        <tr><td><a href="#button_configuration_dashboard_analytics_enabled">Dashboard Analytics Enabled</a></td><td><a href="#dashboard_analytics_configuration">Dashboard Analytics</a></td></tr>
+        <tr><td><a href="#button_configuration_dashboard_analytics_endpoint">Dashboard Analytics Endpoint</a></td><td><a href="#dashboard_analytics_configuration">Dashboard Analytics</a></td></tr>
+        <tr><td><a href="#button_configuration_dashboard_analytics_key">Dashboard Analytics Key</a></td><td><a href="#dashboard_analytics_configuration">Dashboard Analytics</a></td></tr>
+        <tr><td><a href="#button_configuration_dashboard_analytics_distribution">Dashboard Analytics Distribution</a></td><td><a href="#dashboard_analytics_configuration">Dashboard Analytics</a></td></tr>
+        <tr><td><a href="#button_configuration_otel">OpenTelemetry (Metrics, GenAI Spans &amp; Trace Context)</a></td><td><a href="#dashboard_analytics_configuration">Dashboard Analytics</a></td></tr>
+        <tr><td><a href="#button_configuration_prometheus_remote_write">Prometheus Remote Write (Push Metrics)</a></td><td><a href="#dashboard_analytics_configuration">Dashboard Analytics</a></td></tr>
+        <tr><td><a href="#button_configuration_stream_idle_timeout_seconds">Streaming Response Idle Timeout</a></td><td><a href="#dashboard_analytics_configuration">Dashboard Analytics</a></td></tr>
+        <tr><td><a href="#button_configuration_global_response_delay_millis">Global Response Delay</a></td><td><a href="#dashboard_analytics_configuration">Dashboard Analytics</a></td></tr>
+        <tr><td><a href="#button_configuration_stop_drain_millis">Graceful Shutdown Connection Drain</a></td><td><a href="#dashboard_analytics_configuration">Dashboard Analytics</a></td></tr>
+        <tr><td><a href="#button_configuration_liveness_get_path">Path for HTTP GET Liveness / Healthcheck Probes</a></td><td><a href="#liveness_configuration">Liveness</a></td></tr>
+        <tr><td><a href="#button_configuration_match_namespace_header">Request Header That Scopes Matching To A Namespace</a></td><td><a href="#multi_tenancy_configuration">Multi-Tenancy</a></td></tr>
+        <tr><td><a href="#button_configuration_openapi_context_path_prefix">OpenAPI Context Path Prefix</a></td><td><a href="#openapi_configuration">OpenAPI</a></td></tr>
+        <tr><td><a href="#button_configuration_openapi_response_validation">OpenAPI Response Validation</a></td><td><a href="#openapi_configuration">OpenAPI</a></td></tr>
+        <tr><td><a href="#button_configuration_enforce_response_validation_for_mocks">Enforce Response Validation For Mocks</a></td><td><a href="#openapi_configuration">OpenAPI</a></td></tr>
+        <tr><td><a href="#button_configuration_validate_requests_against_openapi_spec">Validate Requests Against OpenAPI Spec</a></td><td><a href="#openapi_configuration">OpenAPI</a></td></tr>
+        <tr><td><a href="#button_configuration_validate_proxy_openapi_spec">Validation Proxy OpenAPI Spec</a></td><td><a href="#openapi_configuration">OpenAPI</a></td></tr>
+        <tr><td><a href="#button_configuration_validate_proxy_enforce">Validation Proxy Enforce</a></td><td><a href="#openapi_configuration">OpenAPI</a></td></tr>
+        <tr><td><a href="#button_configuration_generate_realistic_example_values">Generate Realistic Example Values</a></td><td><a href="#openapi_configuration">OpenAPI</a></td></tr>
+        <tr><td><a href="#button_configuration_async_kafka_bootstrap_servers">Default Kafka Bootstrap Servers</a></td><td><a href="#async_messaging_configuration">Async Messaging</a></td></tr>
+        <tr><td><a href="#button_configuration_async_mqtt_broker_url">Default MQTT Broker URL</a></td><td><a href="#async_messaging_configuration">Async Messaging</a></td></tr>
+        <tr><td><a href="#button_configuration_async_amqp_uri">Default AMQP (RabbitMQ) URI</a></td><td><a href="#async_messaging_configuration">Async Messaging</a></td></tr>
+        <tr><td><a href="#button_configuration_async_recorded_message_max_entries">Maximum Recorded Messages Per Channel</a></td><td><a href="#async_messaging_configuration">Async Messaging</a></td></tr>
+        <tr><td><a href="#button_configuration_mcp_enabled">Enable MCP Endpoint</a></td><td><a href="#mcp_configuration">MCP</a></td></tr>
+        <tr><td><a href="#button_configuration_wasm_enabled">Enable WASM Body Matching</a></td><td><a href="#wasm_configuration">WASM</a></td></tr>
+        <tr><td><a href="#button_configuration_wasm_max_memory_pages">WASM Maximum Memory Pages</a></td><td><a href="#wasm_configuration">WASM</a></td></tr>
+        <tr><td><a href="#button_configuration_grpc_enabled">Enable gRPC Support</a></td><td><a href="#grpc_configuration">gRPC</a></td></tr>
+        <tr><td><a href="#button_configuration_grpc_descriptor_directory">gRPC Descriptor Directory</a></td><td><a href="#grpc_configuration">gRPC</a></td></tr>
+        <tr><td><a href="#button_configuration_grpc_proto_directory">gRPC Proto Source Directory</a></td><td><a href="#grpc_configuration">gRPC</a></td></tr>
+        <tr><td><a href="#button_configuration_grpc_protoc_path">gRPC Protoc Path</a></td><td><a href="#grpc_configuration">gRPC</a></td></tr>
+        <tr><td><a href="#button_configuration_dns_enabled">Enable DNS Mocking</a></td><td><a href="#dns_configuration">DNS</a></td></tr>
+        <tr><td><a href="#button_configuration_dns_port">DNS Port</a></td><td><a href="#dns_configuration">DNS</a></td></tr>
+        <tr><td><a href="#button_configuration_transparent_proxy_enabled">Transparent Proxy Enabled</a></td><td><a href="#service_mesh_configuration">Service Mesh</a></td></tr>
+        <tr><td><a href="#button_configuration_transparent_proxy_tproxy">Transparent Proxy TPROXY Mode</a></td><td><a href="#service_mesh_configuration">Service Mesh</a></td></tr>
+        <tr><td><a href="#button_configuration_transparent_proxy_ebpf">Transparent Proxy eBPF Original Destination Resolution</a></td><td><a href="#service_mesh_configuration">Service Mesh</a></td></tr>
+        <tr><td><a href="#button_configuration_transparent_proxy_ebpf_map_path">Transparent Proxy eBPF Map Path</a></td><td><a href="#service_mesh_configuration">Service Mesh</a></td></tr>
+        <tr><td><a href="#button_configuration_state_backend">State Backend</a></td><td><a href="#clustering_configuration">Clustering</a></td></tr>
+        <tr><td><a href="#button_configuration_cluster_enabled">Cluster Enabled</a></td><td><a href="#clustering_configuration">Clustering</a></td></tr>
+        <tr><td><a href="#button_configuration_cluster_name">Cluster Name</a></td><td><a href="#clustering_configuration">Clustering</a></td></tr>
+        <tr><td><a href="#button_configuration_cluster_transport_config">Cluster Transport Config</a></td><td><a href="#clustering_configuration">Clustering</a></td></tr>
+        <tr><td><a href="#button_configuration_cluster_shared_times_enabled">Cluster Shared Times Enabled</a></td><td><a href="#clustering_configuration">Clustering</a></td></tr>
+        <tr><td><a href="#button_configuration_cluster_verify_fan_in">Cluster Verify Fan-In</a></td><td><a href="#clustering_configuration">Clustering</a></td></tr>
+        <tr><td><a href="#button_configuration_cluster_verify_fan_in_peers">Cluster Verify Fan-In Peers</a></td><td><a href="#clustering_configuration">Clustering</a></td></tr>
+        <tr><td><a href="#button_configuration_cluster_fan_in_peer_auth_token">Cluster Fan-In Peer Auth Token</a></td><td><a href="#clustering_configuration">Clustering</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_type">Blob Store Type</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_bucket">Blob Store Bucket (S3 / GCS)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_region">Blob Store Region (S3)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_endpoint">Blob Store Endpoint Override</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_key_prefix">Blob Store Key Prefix</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_container">Blob Store Container (Azure)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_connection_string">Blob Store Connection String (Azure)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_access_key_id">Blob Store Access Key ID (S3)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_secret_access_key">Blob Store Secret Access Key (S3)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_project_id">Blob Store Project ID (GCS)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_control_plane_mtls_authentication_required">Enabled Control Plane mTLS Authentication</a></td><td><a href="#control_plane_authentication_configuration">Control Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_control_plane_mtls_authentication_ca_chain">Control Plane mTLS Authentication CA Chain</a></td><td><a href="#control_plane_authentication_configuration">Control Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_control_plane_mtls_authentication_private_key_path">Control Plane mTLS Authentication Client Private Key</a></td><td><a href="#control_plane_authentication_configuration">Control Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_control_plane_mtls_authentication_certificate_path">Control Plane mTLS Authentication Client Certificate</a></td><td><a href="#control_plane_authentication_configuration">Control Plane Authentication</a></td></tr>
+        <tr><td><a href="#button_configuration_dynamically_create_ca_certificate">Dynamically Create Inbound Certificate Authority X.509</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_directory_to_save_dynamic_ssl_certificates">Directory To Save Dynamic CA X.509 and Private Key</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_proactively_initialise_tls">Proactively Initialise TLS During Start Up</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_tls_protocols">TLS Protocol Versions</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_prevent_dynamic_tls_update">Prevent Dynamic Inbound X.509 Update</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_ssl_certificate_domain_name">Inbound X.509 Domain Name</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_ssl_subject_alternative_name_domains">Inbound X.509 Subject Alternative Name Domains</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_ssl_subject_alternative_name_ips">Inbound X.509 Subject Alternative Name IPs</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_tls_certificate_authority_private_key">Fixed Inbound Certificate Authority Private Key</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_tls_certificate_authority_certificate">Fixed Inbound Certificate Authority X.509 Certificate Chain</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_tls_private_key">Fixed Inbound Private Key</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_tls_X509_certificate">Fixed Inbound X.509 Certificate Chain</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_require_mtls_for_all_tls_connections">Require Inbound mTLS Client Authentication</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_mtls_certificate_chain">Fixed Inbound mTLS Client Authentication X.509 Certificate Chain</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_trusted_tls_certs_group_for_proxied_reqs">Outbound Trusted Certificates Group</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_custom_trusted_tls_certs_for_proxied_reqs">Fixed Outbound X.509 Certificate Trust Chain</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_private_key">Fixed Outbound Client Private Key</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_forward_proxy_certificate_chain">Fixed Outbound Client X.509 Certificate Chain</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_mtls_mockserver_client_certificate_chain">MockServerClient Trust X.509 Certificate Chain</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+    </tbody>
+</table>
+
+<script>
+(function () {
+    var input = document.getElementById('configPropertyFilter');
+    var rows = document.querySelectorAll('#configPropertyIndex tbody tr');
+    if (!input) { return; }
+    input.addEventListener('input', function () {
+        var q = this.value.toLowerCase();
+        rows.forEach(function (row) {
+            row.style.display = (!q || row.textContent.toLowerCase().indexOf(q) !== -1) ? '' : 'none';
+        });
+    });
+}());
+</script>
+
 <h2>Settings Properties</h2>
 
 <p><strong>Note:</strong> configuration properties loaded from property files and environment variables are read once at startup and cached. Changes to property files or environment variables after MockServer has started will not take effect. To change configuration at runtime, use the REST API (<span class="inline_code">PUT /mockserver/configuration</span>) or programmatic <span class="inline_code">ConfigurationProperties</span> method calls. System property changes via <span class="inline_code">ConfigurationProperties</span> static methods are read dynamically for properties that support runtime changes (e.g., <span class="inline_code">logLevel</span>).</p>
@@ -2790,6 +3047,8 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
 
 {% include_subpage _includes/service_mesh_configuration.html %}
 
+<a id="clustering_configuration" class="anchor" href="#clustering_configuration">&nbsp;</a>
+
 <h2>Clustering Configuration:</h2>
 
 <p>These properties configure multi-node clustering. When enabled, MockServer instances sharing the same cluster name replicate expectation state via an embedded Infinispan data grid with JGroups transport. Requires the <span class="inline_code">mockserver-state-infinispan</span> module on the classpath and <span class="inline_code">stateBackend=infinispan</span>.</p>
@@ -2908,6 +3167,8 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
     <p>Property File:</p>
     <pre class="code" style="padding: 2px;"><code class="code">mockserver.clusterFanInPeerAuthToken=Bearer eyJ...</code></pre>
 </div>
+
+<a id="cloud_blob_store_configuration" class="anchor" href="#cloud_blob_store_configuration">&nbsp;</a>
 
 <h2>Cloud Blob Store Configuration:</h2>
 

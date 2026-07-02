@@ -39,6 +39,42 @@ sitemap:
     </li>
 </ul>
 
+<a id="proxy_type_toc" class="anchor" href="#proxy_type_toc">&nbsp;</a>
+
+<h2>Proxy types on this page</h2>
+
+<table>
+    <thead>
+        <tr>
+            <th>Proxy type</th>
+            <th>Code changes in client?</th>
+            <th>Proxies multiple hosts?</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><a href="#port_forwarding">Port Forwarding</a></td>
+            <td>No — change the destination host/port or add an <span class="inline_code">/etc/hosts</span> entry</td>
+            <td>No — one remote host per instance</td>
+        </tr>
+        <tr>
+            <td><a href="#web_secure_web_proxy">Web Proxy (HTTP)</a></td>
+            <td>Yes — configure the HTTP proxy in your HTTP client or OS</td>
+            <td>Yes</td>
+        </tr>
+        <tr>
+            <td><a href="#web_secure_web_proxy">Secure Web Proxy (HTTPS)</a></td>
+            <td>Yes — configure the HTTPS proxy in your HTTP client</td>
+            <td>Yes</td>
+        </tr>
+        <tr>
+            <td><a href="#socks_proxy">SOCKS Proxy</a></td>
+            <td>No — configure at the OS or JVM level</td>
+            <td>Yes</td>
+        </tr>
+    </tbody>
+</table>
+
 <p>The port forwarding and the SOCKS proxy are the most transparent and typically don't require any code changes.  However the Web Proxy and Secure Web Proxy ensure only configured clients are proxied and that multiple services can be simultaneously proxied.</p>
 
 <a id="port_forwarding" class="anchor" href="#port_forwarding">&nbsp;</a>

@@ -35,6 +35,54 @@ keywords: OpenAPI, Swagger, OpenAPI v3, WSDL, SOAP, generate mock expectations, 
   <li><strong><a href="#contract_testing">Contract testing against a live service</a></strong> &mdash; use the OpenAPI spec as a request matcher to verify that real requests (or a real upstream's responses) conform to the contract, not just that they were sent.</li>
 </ul>
 
+<a id="capability_overview" class="anchor" href="#capability_overview">&nbsp;</a>
+
+<h2>Capability Overview</h2>
+
+<p>The table below shows which operations are available for each specification format. OpenAPI supports the full feature set; WSDL is limited to generating mock expectations.</p>
+
+<table>
+    <thead>
+        <tr>
+            <th>Capability</th>
+            <th>OpenAPI v3</th>
+            <th>WSDL 1.1 (SOAP)</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>Generate mock expectations</td>
+            <td><a href="#generate_expectation_from_openapi">Yes</a></td>
+            <td><a href="#generate_expectations_from_wsdl">Yes</a></td>
+        </tr>
+        <tr>
+            <td>Use as a request matcher</td>
+            <td><a href="/mock_server/getting_started.html#request_openapi_matchers">Yes</a></td>
+            <td>No</td>
+        </tr>
+        <tr>
+            <td>Verify received requests</td>
+            <td><a href="/mock_server/verification.html">Yes</a></td>
+            <td>No</td>
+        </tr>
+        <tr>
+            <td>Clear / filter the request log</td>
+            <td><a href="/mock_server/clearing_and_resetting.html">Yes</a></td>
+            <td>No</td>
+        </tr>
+        <tr>
+            <td>Contract testing against a live service</td>
+            <td><a href="#contract_testing">Yes</a></td>
+            <td>No</td>
+        </tr>
+        <tr>
+            <td>Idempotent incremental re-import</td>
+            <td><a href="#openapi_incremental_sync">Yes</a></td>
+            <td>No</td>
+        </tr>
+    </tbody>
+</table>
+
 <a id="generate_response_from_json_schema" class="anchor" href="#generate_response_from_json_schema">&nbsp;</a>
 
 <h2>Generate A Response Body From An Inline JSON Schema</h2>

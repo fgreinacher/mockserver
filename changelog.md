@@ -324,6 +324,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   link-local, cloud-metadata ranges) is also honoured on the QUIC relay path. Both default to the previous
   open behaviour unless a restriction is opted into.
 
+### Documentation
+
+- **Consumer doc navigation improvements on four pages.** `configuration_properties.html` gains a searchable property index (filter input + full table of all ~150 properties with section links, client-side JS, links open the accordion automatically) and anchors for the Clustering and Cloud Blob Store sections. `using_openapi.html` gains a capability overview table (generate expectations / use as request matcher / verify / clear / contract test — per spec format). `debugging_issues.html` gains a retrieval methods quick-reference table (REST path + Java client method + return type for each retrieve type). `proxy/configuring_sut.html` gains a proxy-type comparison TOC table (code changes required, multi-host support per proxy type).
+
 ## [7.3.0] - 2026-07-01
 
 ### Added
