@@ -82,6 +82,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first-class load-injection metrics can be charted next to the system under test on one dashboard. The Load
   Injection and Examples documentation pages now lead with this observability advantage and link the example.
 
+- **Recorded expectations can be consolidated, parameterised, and promoted to active mocks in one REST call.**
+  `GET /mockserver/retrieve?type=RECORDED_EXPECTATIONS&consolidate=true&parameterize=true` now post-processes
+  captured recordings: `RecordedExpectationPostProcessor.consolidate()` groups exchanges by request shape into a
+  single `Times.unlimited()` expectation, infers `{id}` path-parameter slots from varying URL segments, strips
+  volatile headers, and sequences differing responses as a `SEQUENTIAL httpResponses` list. A new
+  `PUT /mockserver/recordings/promote` REST endpoint filters, redacts, consolidates/parameterises and activates
+  recorded traffic in one step — the REST equivalent of the MCP `create_expectations_from_recorded_traffic`
+  tool. `PUT /mockserver/import?format=har` now also accepts `?consolidate` / `?parameterize` to collapse
+  repetitive HAR captures. Default (non-`?consolidate`) retrieval is unchanged and non-breaking.
+
+- **SSE, WebSocket, and gRPC stream messages can now be rendered as Velocity, Mustache, or JavaScript templates.**
+  An optional `templateType` field (`VELOCITY` | `MUSTACHE` | `JAVASCRIPT`) on `httpSseResponse` /
+  `httpWebSocketResponse` / `grpcStreamResponse` makes each event or message payload a response template rendered
+  against the triggering request — using the same engines, context (request fields, `jsonPath`, built-in helpers,
+  faker, scenario state), and lazy-caching as `HttpResponseTemplateActionHandler`. SSE renders a per-event copy so
+  the stored event is never mutated; WebSocket renders text frames before breakpoint interception; binary frames are
+  never templated. JavaScript streaming payloads require GraalJS and fail loudly with the same actionable error the
+  response-template path uses when GraalJS is absent. Opt-in and non-breaking: without a `templateType` every
+  payload is emitted byte-for-byte unchanged.
+
+- **Load scenario steps can assert response correctness and abort when a check-failure threshold is exceeded.**
+  Each `LoadStep` now accepts an optional `checks` list — each check tests the response `status` code,
+  a `header` value, or a `jsonPath` expression — and a `checkFailureRate` threshold (0.0–1.0). When the
+  observed failure rate for a step's checks breaches the threshold, MockServer can abort the scenario or record
+  a threshold violation, so a load run generating incorrect responses (e.g. the upstream returning `500`s that
+  the test was silently ignoring) fails the scenario rather than producing meaningless throughput numbers.
+
+- **Expectations can now match on the client certificate presented in a mutual-TLS handshake.** A new
+  `clientCertificate` request matcher selects expectations by the leaf certificate of the client's mTLS chain:
+  `subject` (Common Name, full Distinguished Name, or any Subject Alternative Name — DNS / IP / email / URI),
+  `issuer` (CN or full DN), or `fingerprintSha256` (SHA-256 of the DER encoding, colon/whitespace and case
+  normalised). Each criterion is a `NottableString` (exact, regex, or `!`-negated); negation uses De Morgan
+  semantics across candidate forms so `!X` only matches when no candidate equals `X`. Non-breaking: an
+  expectation without a `clientCertificate` matcher behaves exactly as before, and a request that presents no
+  chain never matches a non-blank criterion. Matching only — mTLS authentication (`MTLSAuthenticationHandler`)
+  is unchanged.
+
+- **Recorded traffic can now be persisted to disk and re-imported on demand (opt-in).** With
+  `persistRecordedRequestsToDisk` enabled (default off), the append-only NDJSON archive captures both forwarded
+  (`FORWARDED_REQUEST`) and mocked (`EXPECTATION_RESPONSE`) request/response pairs, flushed one JSON object per
+  line, so the complete session survives ring-buffer eviction and server restarts; `redactSecretsInLog` redaction
+  still masks credentials on write. New `PUT /mockserver/import?format=recording` reloads the archive
+  (from the request body, or from `persistedRecordedRequestsPath` via `?source=disk`) via
+  `RecordedTrafficImporter`, re-injecting each pair into the event log exactly as an in-memory recording —
+  idempotent, since reloaded entries never grow the disk archive. The importer skips and counts malformed or
+  crash-truncated lines (exposed in `x-mockserver-recorded-requests-skipped`) and only rejects a body where
+  every non-blank line is unparseable; an empty archive imports 0 entries (`201`) rather than `400`.
+  Re-imported `EXPECTATION_RESPONSE` exchanges are recorded as forwarded under disposition-based verification
+  — a known limitation, documented. Both defaults preserve existing behaviour.
+
+- **`verify()` and `retrieve()` can scatter-gather across all cluster members (opt-in).** The request/response
+  event log is per-node, so behind a load balancer `verify()` and `retrieve(REQUESTS/REQUEST_RESPONSES)`
+  previously saw only the traffic that hit the queried node — a silent correctness trap. Two new properties
+  (`clusterVerifyFanIn`, `clusterVerifyFanInPeers`) enable scatter-gather: `ClusterFanIn` queries each peer's
+  local log with a `fanInLocalOnly=true` recursion guard, merges results, and applies `VerificationTimes` to the
+  combined count. Fail-closed: an unreachable peer yields a `502` verify failure rather than a partial result.
+  Off by default (non-breaking). `verifySequence` cross-node ordering, response-aware verify, and dashboard log
+  fan-in are deferred.
+
 ### Changed
 
 ### Fixed
@@ -101,6 +160,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `maxExpectations` and `maxLogEntries` computed a negative capacity, so expectations were accepted with `201`
   but never stored and log events were dropped from startup. The sizing now falls back to `Runtime.maxMemory()`
   and floors both defaults at 1,000 when no usable heap ceiling is reported. (relates to #2385)
+
+- **Header-only `FORWARD_REPLACE` modifications no longer collapse streaming responses, and content-type-less
+  streams are relayed incrementally on all forward paths.** Any response override on a
+  `forwardOverriddenRequest` previously forced full body aggregation (`disableStreaming=true`), so adding a
+  single CORS or trace header to an SSE or LLM streaming upstream silently buffered the entire response and
+  could cause the client to time out waiting for response headers. A header-only modification (status / headers
+  / cookies, no body change) is now applied to the streamed response head while body chunks are relayed
+  untouched; only a body-affecting override (body/schema replacement, JSON patch/merge-patch, or a response
+  template) still disables streaming. Additionally, content-type-less streaming (SSE without
+  `Content-Type: text/event-stream`) is now relayed incrementally on the transparent CONNECT relay and the
+  HTTP/2 upstream forward path as well as the HTTP/1.1 path.
+
+### Security
+
+- **The dashboard and UI WebSocket now require control-plane authentication when it is enabled.** With
+  mTLS/JWT/OIDC control-plane auth configured, `GET /mockserver/dashboard*` and the
+  `/_mockserver_ui_websocket` upgrade were previously served without credentials, so any network-reachable
+  client could receive a live push of all captured traffic — including request and response bodies. Both are
+  now gated by the same `HttpState.controlPlaneRequestAuthenticated` check as `PUT /mockserver/configuration`;
+  the WebSocket upgrade returns a raw `401`/`403` handshake rejection when credentials are absent or
+  insufficient. The dashboard is treated as a read, so a read-only control-plane role may view it. When no
+  control-plane auth is configured (the default) the dashboard and WebSocket remain open, and `/status` /
+  `/ready` are always credential-free. The SPA's `useWebSocket` hook now shows an actionable auth-required
+  message on `401`/`403`.
+
+- **Experimental HTTP/3: QUIC tokens now bind the client source address, and CONNECT-UDP relay targets can be
+  restricted.** Two defence-in-depth fixes apply when `http3Port` is non-zero (off by default). (1)
+  Source-address-validating retry tokens: `InsecureQuicTokenHandler` (plaintext, trivially forgeable) is
+  replaced by `SourceAddressQuicTokenHandler` (HMAC-SHA256, per-server random key, client IP bound), so a
+  forged-source Initial packet cannot obtain a valid token — mitigating QUIC address-spoofing and traffic
+  amplification across IPv4 and IPv6. (2) CONNECT-UDP relay restriction: new `http3ConnectUdpAllowedTargets`
+  (comma-separated host / `host:port` allowlist, default empty) limits MASQUE relay targets; non-listed
+  targets are refused with `403`. The existing `forwardProxyBlockPrivateNetworks` policy (private, loopback,
+  link-local, cloud-metadata ranges) is also honoured on the QUIC relay path. Both default to the previous
+  open behaviour unless a restriction is opted into.
 
 ## [7.3.0] - 2026-07-01
 
