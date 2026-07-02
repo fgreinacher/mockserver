@@ -546,10 +546,18 @@ public class LlmAgentLoopE2eTest {
         assertThat(rawResponse, containsString("event: content_block_delta"));
         assertThat(rawResponse, containsString("event: message_stop"));
 
-        // Verify we can reconstruct the text from the delta events
-        assertThat(rawResponse, containsString("Hello"));
-        assertThat(rawResponse, containsString("streaming"));
-        assertThat(rawResponse, containsString("world"));
+        // The streamed text arrives as (subword-sized by default) text_delta fragments,
+        // so it is not present as contiguous substrings on the raw SSE stream. Reconstruct
+        // it from the delta events before asserting on the content.
+        StringBuilder reconstructed = new StringBuilder();
+        java.util.regex.Matcher deltaText =
+            java.util.regex.Pattern.compile("\"text\":\"([^\"]*)\"").matcher(rawResponse);
+        while (deltaText.find()) {
+            reconstructed.append(deltaText.group(1));
+        }
+        assertThat(reconstructed.toString(), containsString("Hello"));
+        assertThat(reconstructed.toString(), containsString("streaming"));
+        assertThat(reconstructed.toString(), containsString("world"));
     }
 
     @Test
