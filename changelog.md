@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Authenticated cross-node cluster verify/retrieve fan-in.** The opt-in cluster fan-in
+  (`clusterVerifyFanIn`) now works on a cluster with control-plane authentication enabled. A new
+  `clusterFanInPeerAuthToken` property (env `MOCKSERVER_CLUSTER_FAN_IN_PEER_AUTH_TOKEN`, default empty)
+  gives the peer accessor (`HttpClusterPeerAccessor`) a credential to present on every cross-node query:
+  when set, it is sent **verbatim** as the control-plane `Authorization` header (include the scheme, e.g.
+  `Bearer <jwt>`), so peers accept the fan-in query instead of rejecting it with 401/403. All nodes must
+  share the same token. With no token (the default) no credential is sent — unchanged, non-breaking
+  behaviour; fan-in remains off by default. The property is wired through the config trio
+  (`ConfigurationProperties`/`Configuration`/`ConfigurationDTO`) and is covered by the reflective DTO
+  round-trip drift guard. The programmatic `retrieve(REQUESTS/REQUEST_RESPONSES)` path that backs
+  dashboard export / one-shot traffic queries already fans in when enabled (verified with a test). Still
+  node-local by design (documented, no shared clock across nodes): `verifySequence` cross-node ordering,
+  the **live** dashboard WebSocket log-view stream, rate-limit / chaos-quota counters, and mTLS
+  client-certificate peer authentication. See `docs/code/clustered-state.md`.
+
 - **Startup warm-up removes first-request latency — new `startupWarmup` property (default on).** The very
   first request handled by a freshly started MockServer was a few hundred milliseconds slower than every
   request after it because the request-handling path (Netty HTTP codec, JSON serialisation, response writers)
