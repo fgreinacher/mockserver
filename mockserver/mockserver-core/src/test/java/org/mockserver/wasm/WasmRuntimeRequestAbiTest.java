@@ -114,4 +114,41 @@ public class WasmRuntimeRequestAbiTest {
         String envelope = WasmRuntime.buildEnvelope(req);
         assertThat(envelope, containsString("\"X-Multi\":[\"a\",\"b\"]"));
     }
+
+    @Test
+    public void shouldDeclareEnvelopeVersionTwo() {
+        String envelope = WasmRuntime.buildEnvelope(WasmRequest.ofBody("hi"));
+        assertThat(envelope, containsString("\"version\":2"));
+    }
+
+    @Test
+    public void shouldBuildEnvelopeWithQueryStringParameters() {
+        WasmRequest req = new WasmRequest("GET", "/orders", null, null, null, null)
+            .withQueryStringParameter("tenant", "acme")
+            .withQueryStringParameter("id", "1")
+            .withQueryStringParameter("id", "2");
+        String envelope = WasmRuntime.buildEnvelope(req);
+        assertThat(envelope, containsString("\"queryStringParameters\":{"));
+        assertThat(envelope, containsString("\"tenant\":[\"acme\"]"));
+        assertThat(envelope, containsString("\"id\":[\"1\",\"2\"]"));
+    }
+
+    @Test
+    public void shouldBuildEnvelopeWithCookies() {
+        WasmRequest req = new WasmRequest("GET", "/", null, null, null, null)
+            .withCookie("session", "abc123")
+            .withCookie("empty", null);
+        String envelope = WasmRuntime.buildEnvelope(req);
+        assertThat(envelope, containsString("\"cookies\":{"));
+        assertThat(envelope, containsString("\"session\":\"abc123\""));
+        assertThat(envelope, containsString("\"empty\":null"));
+    }
+
+    @Test
+    public void shouldBuildEnvelopeWithEmptyQueryAndCookiesByDefault() {
+        // back-compat construction (4-arg / ofBody) still yields the v2 shape with empty objects
+        String envelope = WasmRuntime.buildEnvelope(WasmRequest.ofBody("hi"));
+        assertThat(envelope, containsString("\"queryStringParameters\":{}"));
+        assertThat(envelope, containsString("\"cookies\":{}"));
+    }
 }

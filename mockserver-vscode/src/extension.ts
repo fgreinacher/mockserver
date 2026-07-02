@@ -148,6 +148,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const resetCmd = vscode.commands.registerCommand("mockserver.reset", resetServer);
     const uploadWasmCmd = vscode.commands.registerCommand("mockserver.uploadWasm", uploadWasm);
     const listWasmCmd = vscode.commands.registerCommand("mockserver.listWasm", listWasm);
+    const testWasmCmd = vscode.commands.registerCommand("mockserver.testWasm", testWasm);
     const statusBarMenuCmd = vscode.commands.registerCommand(
         "mockserver.statusBarMenu",
         showStatusBarMenu
@@ -248,6 +249,7 @@ export function activate(context: vscode.ExtensionContext): void {
         resetCmd,
         uploadWasmCmd,
         listWasmCmd,
+        testWasmCmd,
         statusBarMenuCmd,
         openDebuggerCmd,
         addBreakpointCmd,
@@ -920,6 +922,66 @@ async function listWasm(): Promise<void> {
         await vscode.window.showTextDocument(doc);
     } catch (e) {
         vscode.window.showErrorMessage(`MockServer: failed to list WASM modules — ${(e as Error).message}`);
+    }
+}
+
+// Test a compiled .wasm custom-rule module against a sample request without uploading it
+// or creating an expectation. Prompts for the .wasm file and a sample method + path, then
+// POSTs to /mockserver/wasm/test and reports whether the module matched. Handy for quick
+// local iteration on a rule. The server's "WASM support is disabled" 403 surfaces verbatim.
+async function testWasm(): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        filters: { WebAssembly: ["wasm"] },
+        openLabel: "Test WASM Rule",
+    });
+    if (!picked || picked.length === 0) {
+        return; // user cancelled
+    }
+    const fileUri = picked[0];
+    const method = await vscode.window.showInputBox({
+        prompt: "Sample request method to test the WASM rule against",
+        value: "POST",
+    });
+    if (method === undefined) {
+        return; // user cancelled
+    }
+    const requestPath = await vscode.window.showInputBox({
+        prompt: "Sample request path to test the WASM rule against",
+        value: "/",
+    });
+    if (requestPath === undefined) {
+        return; // user cancelled
+    }
+    const sampleBody = await vscode.window.showInputBox({
+        prompt: "Sample request body (optional)",
+        value: "",
+    });
+    if (sampleBody === undefined) {
+        return; // user cancelled
+    }
+    const { port } = getConfig();
+    try {
+        const bytes = await vscode.workspace.fs.readFile(fileUri);
+        const request: client.WasmTestRequest = {
+            method: method.trim(),
+            path: requestPath.trim(),
+        };
+        if (sampleBody.length > 0) {
+            request.body = sampleBody;
+        }
+        const matched = await client.testWasmModule(client.buildBaseUrl(port), bytes, request, httpFetch);
+        if (matched) {
+            vscode.window.showInformationMessage(
+                `WASM rule matched ${request.method} ${request.path}.`
+            );
+        } else {
+            vscode.window.showWarningMessage(
+                `WASM rule did not match ${request.method} ${request.path}.`
+            );
+        }
+    } catch (e) {
+        vscode.window.showErrorMessage(`MockServer: failed to test WASM module — ${(e as Error).message}`);
     }
 }
 

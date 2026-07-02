@@ -3641,6 +3641,67 @@ public class HttpStateTest {
         }
     }
 
+    private static String matchRequestV2ModuleBase64() throws java.io.IOException {
+        try (java.io.InputStream in = HttpStateTest.class.getResourceAsStream("/org/mockserver/wasm/match-request-v2.wasm")) {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+            return java.util.Base64.getEncoder().encodeToString(out.toByteArray());
+        }
+    }
+
+    @Test
+    public void shouldTestWasmV2ModuleWithQueryParametersAndCookies() throws java.io.IOException {
+        // given — the v2 module matches POST /orders with query tenant=acme and cookie session=abc123
+        boolean original = configuration.wasmEnabled();
+        try {
+            configuration.wasmEnabled(true);
+            String body = "{\"module\":\"" + matchRequestV2ModuleBase64() + "\","
+                + "\"request\":{\"method\":\"POST\",\"path\":\"/orders\","
+                + "\"queryStringParameters\":{\"tenant\":[\"acme\"]},"
+                + "\"cookies\":{\"session\":\"abc123\"},\"body\":\"{}\"}}";
+            HttpRequest testRequest = request("/mockserver/wasm/test").withMethod("POST").withBody(body);
+            FakeResponseWriter responseWriter = new FakeResponseWriter();
+
+            // when
+            boolean handle = httpState.handle(testRequest, responseWriter, false);
+
+            // then
+            assertThat(handle, is(true));
+            assertThat(responseWriter.response.getStatusCode(), is(200));
+            assertThat(responseWriter.response.getBodyAsString(), is("{\"matched\":true}"));
+        } finally {
+            configuration.wasmEnabled(original);
+        }
+    }
+
+    @Test
+    public void shouldNotMatchWasmV2ModuleWhenCookieMissingFromSampleRequest() throws java.io.IOException {
+        // given — same module, but the sample request omits the required cookie
+        boolean original = configuration.wasmEnabled();
+        try {
+            configuration.wasmEnabled(true);
+            String body = "{\"module\":\"" + matchRequestV2ModuleBase64() + "\","
+                + "\"request\":{\"method\":\"POST\",\"path\":\"/orders\","
+                + "\"queryStringParameters\":{\"tenant\":[\"acme\"]},\"body\":\"{}\"}}";
+            HttpRequest testRequest = request("/mockserver/wasm/test").withMethod("POST").withBody(body);
+            FakeResponseWriter responseWriter = new FakeResponseWriter();
+
+            // when
+            boolean handle = httpState.handle(testRequest, responseWriter, false);
+
+            // then
+            assertThat(handle, is(true));
+            assertThat(responseWriter.response.getStatusCode(), is(200));
+            assertThat(responseWriter.response.getBodyAsString(), is("{\"matched\":false}"));
+        } finally {
+            configuration.wasmEnabled(original);
+        }
+    }
+
     @Test
     public void shouldReturnMatchedFalseForInvalidWasmModule() {
         // given

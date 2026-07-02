@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **WASM matcher envelope v2 — query parameters and cookies in `match_request`.** The richer WASM ABI now
+  exposes the request's **query-string parameters** and **cookies** to a module, so a rule can route on
+  `?tenant=acme` or a `session` cookie, not just method/path/headers/body. The JSON envelope passed to
+  `match_request` gained a top-level `version` field (currently `2`) plus `queryStringParameters` (name to
+  array of values) and `cookies` (name to single value). The change is **additive and backward compatible**:
+  every envelope version is a strict superset of the previous one, so existing version-1 modules (which read
+  only method/path/headers/body and ignore unknown fields) keep working unchanged — guarded by a
+  `WasmRuntimeRequestV2AbiTest` that runs the version-1 example module against a version-2 envelope. The
+  `mockserver-wasm-sdk` Rust authoring crate gains `req.query_param(...)`, `req.cookie(...)` and
+  `req.version()` accessors (returning `None` against an older envelope), and a new
+  `examples/wasm/rust-request-v2/` sample module (with prebuilt `.wasm`) demonstrates query-parameter and
+  cookie routing. The `POST /mockserver/wasm/test` endpoint accepts `queryStringParameters` and `cookies` in
+  the sample request. See `docs/code/wasm-rules.md`.
+
+- **Test a WASM rule from the editor extensions.** The VS Code and JetBrains MockServer extensions can now
+  call `POST /mockserver/wasm/test` to check what a WASM module does against a sample request without
+  uploading it or creating an expectation, complementing the existing WASM module upload/list wiring.
+
 - **Deterministic embeddings are now semantically plausible, so offline RAG-retrieval tests can rank.** A mocked
   embeddings response with `deterministicFromInput: true` previously produced a hash-seeded uniform-random unit
   vector, so cosine similarity between related texts was meaningless — you could not test vector-search / RAG

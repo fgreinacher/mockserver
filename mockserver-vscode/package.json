@@ -134,6 +134,10 @@
         "title": "MockServer: List WASM Modules"
       },
       {
+        "command": "mockserver.testWasm",
+        "title": "MockServer: Test WASM Rule"
+      },
+      {
         "command": "mockserver.openDebugger",
         "title": "MockServer: Open Debugger (Breakpoints)",
         "icon": "$(debug-alt)"

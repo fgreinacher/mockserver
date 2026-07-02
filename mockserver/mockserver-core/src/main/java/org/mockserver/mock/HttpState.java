@@ -3265,20 +3265,16 @@ public class HttpState {
                 method = requestNode.has("method") && !requestNode.get("method").isNull() ? requestNode.get("method").asText() : "";
                 path = requestNode.has("path") && !requestNode.get("path").isNull() ? requestNode.get("path").asText() : "";
                 sampleBody = requestNode.has("body") && !requestNode.get("body").isNull() ? requestNode.get("body").asText() : null;
-                wasmRequest = new org.mockserver.wasm.WasmRequest(method, path, null, sampleBody);
-                com.fasterxml.jackson.databind.JsonNode headersNode = requestNode.get("headers");
-                if (headersNode != null && headersNode.isObject()) {
-                    java.util.Iterator<String> names = headersNode.fieldNames();
-                    while (names.hasNext()) {
-                        String name = names.next();
-                        com.fasterxml.jackson.databind.JsonNode valuesNode = headersNode.get(name);
-                        if (valuesNode != null && valuesNode.isArray()) {
-                            for (com.fasterxml.jackson.databind.JsonNode v : valuesNode) {
-                                wasmRequest.withHeader(name, v.isNull() ? null : v.asText());
-                            }
-                        } else if (valuesNode != null) {
-                            wasmRequest.withHeader(name, valuesNode.isNull() ? null : valuesNode.asText());
-                        }
+                wasmRequest = new org.mockserver.wasm.WasmRequest(method, path, null, null, null, sampleBody);
+                addWasmMultiValued(requestNode.get("headers"), wasmRequest::withHeader);
+                addWasmMultiValued(requestNode.get("queryStringParameters"), wasmRequest::withQueryStringParameter);
+                com.fasterxml.jackson.databind.JsonNode cookiesNode = requestNode.get("cookies");
+                if (cookiesNode != null && cookiesNode.isObject()) {
+                    java.util.Iterator<String> cookieNames = cookiesNode.fieldNames();
+                    while (cookieNames.hasNext()) {
+                        String name = cookieNames.next();
+                        com.fasterxml.jackson.databind.JsonNode valueNode = cookiesNode.get(name);
+                        wasmRequest.withCookie(name, valueNode == null || valueNode.isNull() ? null : valueNode.asText());
                     }
                 }
             } else {
@@ -3293,6 +3289,29 @@ public class HttpState {
             return response()
                 .withStatusCode(BAD_REQUEST.code())
                 .withBody(objectMapper.createObjectNode().put("error", "failed to test WASM module: " + e.getMessage()).toString(), MediaType.JSON_UTF_8);
+        }
+    }
+
+    /**
+     * Add a {@code name -> [values]} (or {@code name -> value}) JSON object from the sample
+     * request into the {@link org.mockserver.wasm.WasmRequest} envelope, used for both the
+     * {@code headers} and {@code queryStringParameters} fields of the {@code /wasm/test} payload.
+     */
+    private static void addWasmMultiValued(com.fasterxml.jackson.databind.JsonNode node, java.util.function.BiConsumer<String, String> add) {
+        if (node == null || !node.isObject()) {
+            return;
+        }
+        java.util.Iterator<String> names = node.fieldNames();
+        while (names.hasNext()) {
+            String name = names.next();
+            com.fasterxml.jackson.databind.JsonNode valuesNode = node.get(name);
+            if (valuesNode != null && valuesNode.isArray()) {
+                for (com.fasterxml.jackson.databind.JsonNode v : valuesNode) {
+                    add.accept(name, v.isNull() ? null : v.asText());
+                }
+            } else if (valuesNode != null) {
+                add.accept(name, valuesNode.isNull() ? null : valuesNode.asText());
+            }
         }
     }
 

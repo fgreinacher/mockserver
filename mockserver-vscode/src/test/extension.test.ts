@@ -406,6 +406,10 @@ async function runTests(): Promise<void> {
         assert.ok(registeredCommands.has("mockserver.listWasm"), "listWasm command not registered");
     });
 
+    await test("activate registers the mockserver.testWasm command", () => {
+        assert.ok(registeredCommands.has("mockserver.testWasm"), "testWasm command not registered");
+    });
+
     await test("activate registers the mockserver.refreshView command", () => {
         assert.ok(
             registeredCommands.has("mockserver.refreshView"),
@@ -1256,6 +1260,57 @@ async function runTests(): Promise<void> {
         await assert.rejects(
             () => client.retrieveWasmModules("http://localhost:1080", fakeFetch),
             /403: WASM support is disabled/
+        );
+    });
+
+    await test("testWasmModule POSTs base64 module + sample request and returns matched", async () => {
+        let captured: any = {};
+        const fakeFetch = (url: string, init: any) => {
+            captured = { url, init };
+            return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"matched":true}') });
+        };
+        const bytes = new Uint8Array([0, 97, 115, 109, 1, 2, 3]);
+        const matched = await client.testWasmModule(
+            "http://localhost:1080",
+            bytes,
+            { method: "POST", path: "/orders", queryStringParameters: { tenant: ["acme"] }, cookies: { session: "abc123" } },
+            fakeFetch
+        );
+        assert.strictEqual(matched, true, "should return the server's matched result");
+        assert.ok(captured.url.endsWith("/mockserver/wasm/test"), `url=${captured.url}`);
+        assert.strictEqual(captured.init.method, "POST");
+        assert.strictEqual(captured.init.headers["Content-Type"], "application/json");
+        const sent = JSON.parse(captured.init.body);
+        assert.strictEqual(
+            sent.module,
+            Buffer.from(bytes).toString("base64"),
+            "module should be base64-encoded"
+        );
+        assert.strictEqual(sent.request.method, "POST");
+        assert.strictEqual(sent.request.path, "/orders");
+        assert.deepStrictEqual(sent.request.queryStringParameters, { tenant: ["acme"] });
+        assert.deepStrictEqual(sent.request.cookies, { session: "abc123" });
+    });
+
+    await test("testWasmModule returns false when the server reports no match", async () => {
+        const fakeFetch = () =>
+            Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"matched":false}') });
+        const matched = await client.testWasmModule(
+            "http://localhost:1080",
+            new Uint8Array([0]),
+            { method: "GET", path: "/" },
+            fakeFetch
+        );
+        assert.strictEqual(matched, false);
+    });
+
+    await test("testWasmModule surfaces the 403 wasm-disabled message verbatim on a non-ok response", async () => {
+        const disabled = "WASM support is disabled; set wasmEnabled=true to enable";
+        const fakeFetch = () =>
+            Promise.resolve({ ok: false, status: 403, text: () => Promise.resolve(disabled) });
+        await assert.rejects(
+            () => client.testWasmModule("http://localhost:1080", new Uint8Array([0]), {}, fakeFetch),
+            new RegExp(`403: ${disabled}`)
         );
     });
 

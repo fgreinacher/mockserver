@@ -158,6 +158,11 @@
                     text="List WASM Modules"
                     description="Lists the WASM custom-rule modules registered on the running MockServer (GET /mockserver/wasm/modules)"
                     icon="AllIcons.Actions.ListFiles"/>
+            <action id="MockServer.TestWasm"
+                    class="com.mockserver.jetbrains.TestWasmModuleAction"
+                    text="Test WASM Rule"
+                    description="Tests a compiled .wasm custom-rule module against a sample request without uploading it (POST /mockserver/wasm/test)"
+                    icon="AllIcons.Actions.RunAll"/>
             <action id="MockServer.ContractTest"
                     class="com.mockserver.jetbrains.ContractTestAction"
                     text="Run Contract Test"

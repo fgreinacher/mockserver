@@ -47,29 +47,54 @@ The request body is written into the module's linear memory at offset 0 as UTF-8
 
 When a module exports `match_request`, the runtime writes a **JSON envelope** into
 linear memory at offset 0 and calls `match_request(0, len)`. This lets a module inspect
-the request method, path and headers in addition to the body. The envelope shape:
+the request method, path, query-string parameters, headers and cookies in addition to
+the body. The envelope shape (**version 2**):
 
 ```json
 {
+  "version": 2,
   "method": "POST",
   "path": "/orders",
+  "queryStringParameters": { "tenant": ["acme"] },
   "headers": { "X-Tenant": ["acme"], "Accept": ["application/json"] },
+  "cookies": { "session": "abc123" },
   "body": "..."
 }
 ```
 
-`headers` maps each header name to an array of values (preserving multi-valued headers).
-`body` is the request body string, or JSON `null` when absent. The fields are additive —
-a module that only reads `body` from the envelope behaves like a body-only matcher.
+- `version` — the envelope version the runtime emitted (`WasmRuntime.ENVELOPE_VERSION`).
+  Present since version 2; absent in the original (version 1) envelope, so a module can
+  treat a missing `version` as `1`.
+- `queryStringParameters` — each parameter name mapped to an **array** of values
+  (preserving repeated parameters, e.g. `?id=1&id=2`). Added in version 2.
+- `headers` — each header name mapped to an **array** of values (preserving multi-valued
+  headers).
+- `cookies` — each cookie name mapped to its **single** string value. Added in version 2.
+- `body` — the request body string, or JSON `null` when absent.
+
+**Envelope versioning is additive and backward compatible.** Each version is a strict
+superset of the previous one — new top-level fields are only ever added, never removed or
+renamed — so a module built against version 1 (which reads only `method`/`path`/`headers`/`body`
+and ignores unknown fields) keeps working unchanged against a version-2 envelope. A module
+that only reads `body` behaves like a body-only matcher. The `mockserver-core`
+`WasmRuntimeRequestV2AbiTest` guards this: it asserts the version-1 example module still
+matches when driven with a version-2 envelope.
 
 ### Authoring SDK
 
 `examples/wasm/sdk-rust/` is a minimal, dependency-free Rust crate
 (`mockserver-wasm-sdk`) that gives module authors typed accessors over the envelope
-(`Request::method/path/header/body`) and an `export_match_request!` macro that wires up
-the ABI. `examples/wasm/rust-request/` is a sample module built on the SDK that matches
-on method + path + header. Both ship a prebuilt `match-request.wasm`
-(`mockserver-core` uses it as an ABI-guard test resource).
+(`Request::method/path/query_param/header/cookie/body`, plus `Request::version`) and an
+`export_match_request!` macro that wires up the ABI. `query_param`/`cookie` require envelope
+version 2; against an older (version-1) envelope they return `None`, so a rule stays backward
+compatible. Two sample modules build on the SDK:
+
+- `examples/wasm/rust-request/` matches on method + path + header (envelope v1 fields) and
+  ships a prebuilt `match-request.wasm`.
+- `examples/wasm/rust-request-v2/` matches on method + path + query parameter + cookie
+  (envelope v2 fields) and ships a prebuilt `match-request-v2.wasm`.
+
+`mockserver-core` uses both prebuilt binaries as ABI-guard test resources.
 
 ### Memory requirements
 
@@ -87,7 +112,7 @@ The module must declare at least one page of linear memory. The maximum memory i
 
 ### WasmRequest
 
-`org.mockserver.wasm.WasmRequest` -- immutable view of the request parts a module can inspect (`method`, `path`, `headers`, `body`). `WasmBodyMatcher` builds one from the `MatchDifference` request context; the `wasm/test` endpoint builds one from the supplied sample request.
+`org.mockserver.wasm.WasmRequest` -- immutable view of the request parts a module can inspect (`method`, `path`, `queryStringParameters`, `headers`, `cookies`, `body`). `WasmBodyMatcher` builds one from the `MatchDifference` request context (populating query parameters and cookies from the matched `HttpRequest`); the `wasm/test` endpoint builds one from the supplied sample request. The fluent `withQueryStringParameter`/`withHeader`/`withCookie` builders add values.
 
 ### WasmBody
 
@@ -123,7 +148,9 @@ expectation. Request body:
   "request": {
     "method": "POST",
     "path": "/orders",
+    "queryStringParameters": { "tenant": ["acme"] },
     "headers": { "X-Tenant": ["acme"] },
+    "cookies": { "session": "abc123" },
     "body": "{}"
   }
 }
@@ -131,8 +158,10 @@ expectation. Request body:
 
 Either `module` (base64 WASM bytes) **or** `moduleName` (a module already loaded via
 `PUT /wasm/modules`) is required; `request` is optional (defaults to an empty body-only
-request). The response is `{ "matched": true|false }`. The runtime fails closed, so an
-invalid module reports `matched: false` rather than an error.
+request). Within `request`, `queryStringParameters`/`headers` accept either an array of
+values or a single scalar per name; `cookies` maps each name to a single value. The response
+is `{ "matched": true|false }`. The runtime fails closed, so an invalid module reports
+`matched: false` rather than an error.
 
 ## Configuration
 

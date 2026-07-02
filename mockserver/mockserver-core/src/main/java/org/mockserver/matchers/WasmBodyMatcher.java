@@ -45,9 +45,9 @@ public class WasmBodyMatcher extends BodyMatcher<String> {
 
     /**
      * Build the {@link WasmRequest} envelope from the matched body plus, when available,
-     * the method/path/headers carried on the {@link MatchDifference} context. Falls back
-     * to a body-only request when no request context is present (keeps the matcher usable
-     * outside the request-matching path).
+     * the method/path/query-parameters/headers/cookies carried on the {@link MatchDifference}
+     * context. Falls back to a body-only request when no request context is present (keeps the
+     * matcher usable outside the request-matching path).
      */
     private WasmRequest buildWasmRequest(MatchDifference context, String body) {
         RequestDefinition requestDefinition = context == null ? null : context.getHttpRequest();
@@ -57,6 +57,8 @@ public class WasmBodyMatcher extends BodyMatcher<String> {
                 request.getMethod() == null ? "" : request.getMethod().getValue(),
                 request.getPath() == null ? "" : request.getPath().getValue(),
                 null,
+                null,
+                null,
                 body
             );
             for (Header header : request.getHeaderList()) {
@@ -65,6 +67,21 @@ public class WasmBodyMatcher extends BodyMatcher<String> {
                         wasmRequest.withHeader(header.getName().getValue(), value == null ? null : value.getValue());
                     }
                 }
+            }
+            if (request.getQueryStringParameters() != null) {
+                for (org.mockserver.model.Parameter parameter : request.getQueryStringParameters().getEntries()) {
+                    if (parameter.getValues() != null) {
+                        for (org.mockserver.model.NottableString value : parameter.getValues()) {
+                            wasmRequest.withQueryStringParameter(parameter.getName().getValue(), value == null ? null : value.getValue());
+                        }
+                    }
+                }
+            }
+            for (org.mockserver.model.Cookie cookie : request.getCookieList()) {
+                wasmRequest.withCookie(
+                    cookie.getName().getValue(),
+                    cookie.getValue() == null ? null : cookie.getValue().getValue()
+                );
             }
             return wasmRequest;
         }

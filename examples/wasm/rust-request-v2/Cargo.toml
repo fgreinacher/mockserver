@@ -1,0 +1,17 @@
+[package]
+name = "mockserver-wasm-request-v2-example"
+version = "0.1.0"
+edition = "2021"
+description = "Example MockServer WASM matcher using envelope v2 (query parameters + cookies), built on mockserver-wasm-sdk"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+mockserver-wasm-sdk = { path = "../sdk-rust" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true

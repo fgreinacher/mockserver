@@ -949,6 +949,53 @@ export async function retrieveWasmModules(baseUrl: string, fetchFn: FetchLike): 
     }
 }
 
+/** A sample request to test a WASM module against (all fields optional). */
+export interface WasmTestRequest {
+    method?: string;
+    path?: string;
+    queryStringParameters?: Record<string, string[]>;
+    headers?: Record<string, string[]>;
+    cookies?: Record<string, string>;
+    body?: string;
+}
+
+/**
+ * Test a compiled `.wasm` custom-rule module against a sample request via
+ * `POST /mockserver/wasm/test`, without uploading it or creating an expectation.
+ * The module bytes are base64-encoded into the `module` field; the sample
+ * `request` (method / path / queryStringParameters / headers / cookies / body,
+ * all optional) is sent as envelope-v2 JSON. Returns `true`/`false` from the
+ * server's `{ "matched": <bool> }` response. Throws (with status + body) on a
+ * non-ok response — so the server's "WASM support is disabled" 403 surfaces
+ * verbatim. Matching itself is fail-closed server-side: an invalid module
+ * reports `matched: false` rather than an error.
+ */
+export async function testWasmModule(
+    baseUrl: string,
+    bytes: Uint8Array,
+    request: WasmTestRequest,
+    fetchFn: FetchLike
+): Promise<boolean> {
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    const base64 =
+        typeof btoa === "function"
+            ? btoa(binary)
+            : Buffer.from(bytes).toString("base64");
+    const res = await fetchFn(`${baseUrl}/mockserver/wasm/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ module: base64, request }),
+    });
+    if (!res.ok) {
+        throw new Error(`MockServer returned ${res.status}: ${await res.text()}`);
+    }
+    const parsed = JSON.parse(await res.text()) as { matched?: boolean };
+    return parsed.matched === true;
+}
+
 /**
  * Map drift records to {@link DriftDiagnostic}s anchored to the matching
  * expectation lines in `docText`. For each record, the line is found by scanning

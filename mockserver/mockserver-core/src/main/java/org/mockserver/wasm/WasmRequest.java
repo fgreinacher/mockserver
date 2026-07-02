@@ -7,33 +7,61 @@ import java.util.Map;
 
 /**
  * Immutable view of the parts of an HTTP request that a WASM matcher module can
- * inspect: the {@code method}, {@code path}, {@code headers}, and {@code body}.
+ * inspect: the {@code method}, {@code path}, {@code queryStringParameters},
+ * {@code headers}, {@code cookies}, and {@code body}.
  * <p>
  * This is the input to the <strong>richer WASM ABI</strong>. Modules that export
  * {@code match_request(i32 ptr, i32 len)} receive a JSON envelope built from this
  * object; modules that export only the legacy {@code match(i32 ptr, i32 len)}
  * receive just the {@link #getBody() body} bytes (back-compat).
+ * <p>
+ * <strong>Envelope version 2</strong> added {@code queryStringParameters} and
+ * {@code cookies} to the envelope. Because both are additive JSON fields, modules
+ * built against version 1 (which only read method/path/headers/body) keep working
+ * unchanged — see {@link WasmRuntime#ENVELOPE_VERSION}.
  */
 public class WasmRequest {
 
     private final String method;
     private final String path;
+    private final Map<String, List<String>> queryStringParameters;
     private final Map<String, List<String>> headers;
+    private final Map<String, String> cookies;
     private final String body;
 
-    public WasmRequest(String method, String path, Map<String, List<String>> headers, String body) {
+    /**
+     * Full constructor exposing every request part a module can inspect. Any {@code null}
+     * map argument is replaced with an empty, mutable map so the fluent {@code withX}
+     * builders can always add to it.
+     */
+    public WasmRequest(String method,
+                       String path,
+                       Map<String, List<String>> queryStringParameters,
+                       Map<String, List<String>> headers,
+                       Map<String, String> cookies,
+                       String body) {
         this.method = method == null ? "" : method;
         this.path = path == null ? "" : path;
+        this.queryStringParameters = queryStringParameters == null ? new LinkedHashMap<>() : queryStringParameters;
         this.headers = headers == null ? new LinkedHashMap<>() : headers;
+        this.cookies = cookies == null ? new LinkedHashMap<>() : cookies;
         this.body = body;
     }
 
     /**
+     * Back-compat constructor without query parameters or cookies. Retained so existing
+     * callers keep compiling; equivalent to the full constructor with empty query/cookie maps.
+     */
+    public WasmRequest(String method, String path, Map<String, List<String>> headers, String body) {
+        this(method, path, new LinkedHashMap<>(), headers, new LinkedHashMap<>(), body);
+    }
+
+    /**
      * Convenience factory for a body-only request (legacy behaviour). The method
-     * and path are empty and there are no headers.
+     * and path are empty and there are no query parameters, headers or cookies.
      */
     public static WasmRequest ofBody(String body) {
-        return new WasmRequest("", "", new LinkedHashMap<>(), body);
+        return new WasmRequest("", "", new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), body);
     }
 
     public String getMethod() {
@@ -44,8 +72,16 @@ public class WasmRequest {
         return path;
     }
 
+    public Map<String, List<String>> getQueryStringParameters() {
+        return queryStringParameters;
+    }
+
     public Map<String, List<String>> getHeaders() {
         return headers;
+    }
+
+    public Map<String, String> getCookies() {
+        return cookies;
     }
 
     /**
@@ -75,6 +111,28 @@ public class WasmRequest {
     public WasmRequest withHeader(String name, String value) {
         if (name != null) {
             headers.computeIfAbsent(name, k -> new ArrayList<>()).add(value);
+        }
+        return this;
+    }
+
+    /**
+     * Adds a query-string parameter value, preserving insertion order and allowing
+     * multiple values per name (e.g. {@code ?id=1&id=2}). Returns {@code this} for chaining.
+     */
+    public WasmRequest withQueryStringParameter(String name, String value) {
+        if (name != null) {
+            queryStringParameters.computeIfAbsent(name, k -> new ArrayList<>()).add(value);
+        }
+        return this;
+    }
+
+    /**
+     * Adds a cookie (name to single value). A repeated name overwrites the prior value,
+     * matching HTTP cookie semantics. Returns {@code this} for chaining.
+     */
+    public WasmRequest withCookie(String name, String value) {
+        if (name != null) {
+            cookies.put(name, value);
         }
         return this;
     }

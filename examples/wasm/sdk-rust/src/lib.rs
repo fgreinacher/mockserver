@@ -4,17 +4,27 @@
 //!
 //! MockServer's richer WASM ABI calls an exported function
 //! `match_request(ptr: i32, len: i32) -> i32` with a JSON envelope written into
-//! linear memory at offset 0:
+//! linear memory at offset 0 (envelope **version 2**):
 //!
 //! ```json
-//! { "method": "POST", "path": "/orders", "headers": { "X-Tenant": ["acme"] }, "body": "..." }
+//! {
+//!   "version": 2,
+//!   "method": "POST",
+//!   "path": "/orders",
+//!   "queryStringParameters": { "tenant": ["acme"] },
+//!   "headers": { "X-Tenant": ["acme"] },
+//!   "cookies": { "session": "abc123" },
+//!   "body": "..."
+//! }
 //! ```
 //!
 //! Writing a parser by hand for every rule is tedious and error-prone, so this SDK
 //! exposes typed accessors over that envelope: [`Request::method`], [`Request::path`],
-//! [`Request::header`] and [`Request::body`]. It is `no_std`, allocation-free, and
-//! pulls in **no dependencies** (no `serde`), so a rule built against it stays tiny
-//! and freestanding on `wasm32-unknown-unknown`.
+//! [`Request::query_param`], [`Request::header`], [`Request::cookie`] and
+//! [`Request::body`]. It is `no_std`, allocation-free, and pulls in **no dependencies**
+//! (no `serde`), so a rule built against it stays tiny and freestanding on
+//! `wasm32-unknown-unknown`. `query_param`/`cookie` require envelope version 2; against an
+//! older envelope they return `None`, so a rule stays backward compatible.
 //!
 //! ## Usage
 //!
@@ -74,7 +84,33 @@ impl<'a> Request<'a> {
 
     /// First value of the named header (case-insensitive), or `None` if absent.
     pub fn header(&self, name: &str) -> Option<&'a str> {
-        first_header_value(self.json, name)
+        first_array_value(self.json, "headers", name, true)
+    }
+
+    /// First value of the named query-string parameter (case-sensitive), or `None` if absent.
+    ///
+    /// Requires envelope [`version`](Request::version) 2 or newer; against a version-1 envelope
+    /// (no `queryStringParameters` field) this always returns `None`.
+    pub fn query_param(&self, name: &str) -> Option<&'a str> {
+        first_array_value(self.json, "queryStringParameters", name, false)
+    }
+
+    /// Value of the named cookie (case-sensitive), or `None` if absent.
+    ///
+    /// Requires envelope [`version`](Request::version) 2 or newer; against a version-1 envelope
+    /// (no `cookies` field) this always returns `None`.
+    pub fn cookie(&self, name: &str) -> Option<&'a str> {
+        nested_string_value(self.json, "cookies", name)
+    }
+
+    /// The envelope version MockServer declared (its top-level `version` field), or `1` when the
+    /// field is absent (a version-1 envelope predates the `version` field). Modules can feature-detect
+    /// newer fields with this, though reading a missing field simply returns `None` regardless.
+    pub fn version(&self) -> u32 {
+        match int_field(self.json, "version") {
+            Some(v) => v,
+            None => 1,
+        }
     }
 }
 
@@ -136,10 +172,12 @@ fn string_field<'a>(json: &'a str, name: &str) -> Option<&'a str> {
     read_string(json, val_start)
 }
 
-/// First value of `"headers": { "Name": ["v1", ...] }` for `name` (case-insensitive).
-fn first_header_value<'a>(json: &'a str, name: &str) -> Option<&'a str> {
+/// First value of a multi-valued object `"<object_key>": { "Name": ["v1", ...] }` for `name`.
+/// Used for both `headers` (case-insensitive names) and `queryStringParameters`
+/// (case-sensitive names); `case_insensitive` selects which.
+fn first_array_value<'a>(json: &'a str, object_key: &str, name: &str, case_insensitive: bool) -> Option<&'a str> {
     let bytes = json.as_bytes();
-    let headers_key = find_key(json, "headers", 0)?;
+    let headers_key = find_key(json, object_key, 0)?;
     let colon = skip_ws(bytes, headers_key);
     if colon >= bytes.len() || bytes[colon] != b':' {
         return None;
@@ -169,7 +207,12 @@ fn first_header_value<'a>(json: &'a str, name: &str) -> Option<&'a str> {
                 };
                 let after_ws = skip_ws(bytes, after);
                 if after_ws < bytes.len() && bytes[after_ws] == b':' {
-                    if eq_ignore_ascii_case(key, name) {
+                    let name_matches = if case_insensitive {
+                        eq_ignore_ascii_case(key, name)
+                    } else {
+                        key == name
+                    };
+                    if name_matches {
                         // value is an array of strings: take the first
                         let arr = skip_ws(bytes, after_ws + 1);
                         if arr < bytes.len() && bytes[arr] == b'[' {
@@ -192,6 +235,76 @@ fn first_header_value<'a>(json: &'a str, name: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+/// Value of `"<object_key>": { "Name": "value", ... }` for `name` (case-sensitive). Used for
+/// the `cookies` object, whose values are plain strings rather than arrays. Returns `None` if the
+/// object or the named entry is absent, or the entry's value is `null`.
+fn nested_string_value<'a>(json: &'a str, object_key: &str, name: &str) -> Option<&'a str> {
+    let bytes = json.as_bytes();
+    let obj_key = find_key(json, object_key, 0)?;
+    let colon = skip_ws(bytes, obj_key);
+    if colon >= bytes.len() || bytes[colon] != b':' {
+        return None;
+    }
+    let obj_start = skip_ws(bytes, colon + 1);
+    if obj_start >= bytes.len() || bytes[obj_start] != b'{' {
+        return None;
+    }
+    let mut i = obj_start + 1;
+    let mut depth = 1usize;
+    while i < bytes.len() && depth > 0 {
+        match bytes[i] {
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                i += 1;
+            }
+            b'"' if depth == 1 => {
+                let (key, after) = read_string_span(json, i)?;
+                let after_ws = skip_ws(bytes, after);
+                if after_ws < bytes.len() && bytes[after_ws] == b':' {
+                    if key == name {
+                        let val = skip_ws(bytes, after_ws + 1);
+                        if val < bytes.len() && bytes[val] == b'"' {
+                            return read_string(json, val);
+                        }
+                        return None;
+                    }
+                    // step over this entry's value
+                    i = skip_value(bytes, after_ws + 1);
+                } else {
+                    i = after_ws;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Read a top-level non-negative integer field `"name": <number>`, or `None` if absent/non-numeric.
+fn int_field(json: &str, name: &str) -> Option<u32> {
+    let bytes = json.as_bytes();
+    let key = find_key(json, name, 0)?;
+    let colon = skip_ws(bytes, key);
+    if colon >= bytes.len() || bytes[colon] != b':' {
+        return None;
+    }
+    let mut i = skip_ws(bytes, colon + 1);
+    let start = i;
+    let mut value: u32 = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        value = value.wrapping_mul(10).wrapping_add((bytes[i] - b'0') as u32);
+        i += 1;
+    }
+    if i == start {
+        return None;
+    }
+    Some(value)
 }
 
 /// Locate the **top-level** object key `"name"` starting from `from`, returning the byte
@@ -366,6 +479,46 @@ mod tests {
     use super::*;
 
     const ENVELOPE: &str = r#"{"method":"POST","path":"/orders","headers":{"X-Tenant":["acme"],"Accept":["application/json"]},"body":"{\"amount\":5000}"}"#;
+
+    const ENVELOPE_V2: &str = r#"{"version":2,"method":"POST","path":"/orders","queryStringParameters":{"tenant":["acme"],"id":["1","2"]},"headers":{"X-Tenant":["acme"]},"cookies":{"session":"abc123","empty":null},"body":"{}"}"#;
+
+    #[test]
+    fn reads_query_parameters_case_sensitively() {
+        let req = Request::new(ENVELOPE_V2.as_bytes());
+        assert_eq!(req.query_param("tenant"), Some("acme"));
+        // first value of a multi-valued parameter
+        assert_eq!(req.query_param("id"), Some("1"));
+        // case-sensitive: wrong case does not match
+        assert_eq!(req.query_param("Tenant"), None);
+        assert_eq!(req.query_param("missing"), None);
+    }
+
+    #[test]
+    fn reads_cookies() {
+        let req = Request::new(ENVELOPE_V2.as_bytes());
+        assert_eq!(req.cookie("session"), Some("abc123"));
+        assert_eq!(req.cookie("empty"), None);
+        assert_eq!(req.cookie("missing"), None);
+    }
+
+    #[test]
+    fn reads_version() {
+        assert_eq!(Request::new(ENVELOPE_V2.as_bytes()).version(), 2);
+        // a version-1 envelope (no version field) reports 1
+        assert_eq!(Request::new(ENVELOPE.as_bytes()).version(), 1);
+    }
+
+    #[test]
+    fn v1_envelope_has_no_query_or_cookies() {
+        // back-compat: reading v2-only fields from a v1 envelope yields None, never a wrong value
+        let req = Request::new(ENVELOPE.as_bytes());
+        assert_eq!(req.query_param("tenant"), None);
+        assert_eq!(req.cookie("session"), None);
+        // v1 fields still read correctly from a v2 envelope
+        let v2 = Request::new(ENVELOPE_V2.as_bytes());
+        assert_eq!(v2.method(), "POST");
+        assert_eq!(v2.header("X-Tenant"), Some("acme"));
+    }
 
     #[test]
     fn reads_method_and_path() {

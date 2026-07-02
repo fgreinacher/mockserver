@@ -35,9 +35,10 @@ import java.util.Map;
  *       The request body is written into linear memory at offset 0 and the function
  *       is called with {@code (0, bodyLength)}.</li>
  *   <li><strong>Richer request envelope</strong> — {@code match_request(i32 ptr, i32 len) -> i32}.
- *       A JSON envelope {@code {"method","path","headers","body"}} is written into
- *       linear memory at offset 0 and the function is called with {@code (0, jsonLength)}.
- *       This lets a module read the method, path and headers in addition to the body.</li>
+ *       A JSON envelope {@code {"version","method","path","queryStringParameters","headers","cookies","body"}}
+ *       is written into linear memory at offset 0 and the function is called with {@code (0, jsonLength)}.
+ *       This lets a module read the method, path, query parameters, headers and cookies in addition to
+ *       the body. See {@link #ENVELOPE_VERSION} for how the envelope stays backward compatible.</li>
  * </ul>
  * If the module exports {@code match_request} it is preferred; otherwise the runtime
  * falls back to {@code match} with the body only, so existing body-only modules keep
@@ -51,6 +52,18 @@ public class WasmRuntime {
     static final String MATCH = "match";
     /** Richer request-envelope export name. */
     static final String MATCH_REQUEST = "match_request";
+
+    /**
+     * Version of the JSON envelope passed to {@link #MATCH_REQUEST}. Declared as the
+     * envelope's {@code version} field so modules can feature-detect newer fields.
+     * <ul>
+     *   <li><strong>1</strong> — {@code method}, {@code path}, {@code headers}, {@code body}.</li>
+     *   <li><strong>2</strong> — additionally {@code queryStringParameters} and {@code cookies}.</li>
+     * </ul>
+     * Every version is a strict superset of the previous one: new fields are additive, so a
+     * module written against an older version (which simply ignores unknown fields) keeps working.
+     */
+    static final int ENVELOPE_VERSION = 2;
 
     private static final ObjectMapper OBJECT_MAPPER = ObjectMapperFactory.createObjectMapper();
 
@@ -182,19 +195,26 @@ public class WasmRuntime {
 
     /**
      * Serialise the request parts into the JSON envelope passed to {@code match_request}.
-     * Shape: {@code {"method":string,"path":string,"headers":{name:[values]},"body":string|null}}.
+     * Shape (envelope {@link #ENVELOPE_VERSION version} 2):
+     * {@code {"version":2,"method":string,"path":string,"queryStringParameters":{name:[values]},
+     * "headers":{name:[values]},"cookies":{name:value},"body":string|null}}.
+     * <p>
+     * The {@code version}, {@code queryStringParameters} and {@code cookies} fields are additive
+     * over version 1, so modules that only read method/path/headers/body are unaffected.
      */
     static String buildEnvelope(WasmRequest request) {
         ObjectNode root = OBJECT_MAPPER.createObjectNode();
+        root.put("version", ENVELOPE_VERSION);
         root.put("method", request.getMethod());
         root.put("path", request.getPath());
-        ObjectNode headers = root.putObject("headers");
-        for (Map.Entry<String, List<String>> entry : request.getHeaders().entrySet()) {
-            ArrayNode values = headers.putArray(entry.getKey());
-            if (entry.getValue() != null) {
-                for (String value : entry.getValue()) {
-                    values.add(value);
-                }
+        putMultiValued(root.putObject("queryStringParameters"), request.getQueryStringParameters());
+        putMultiValued(root.putObject("headers"), request.getHeaders());
+        ObjectNode cookies = root.putObject("cookies");
+        for (Map.Entry<String, String> entry : request.getCookies().entrySet()) {
+            if (entry.getValue() == null) {
+                cookies.putNull(entry.getKey());
+            } else {
+                cookies.put(entry.getKey(), entry.getValue());
             }
         }
         if (request.getBody() == null) {
@@ -203,6 +223,21 @@ public class WasmRuntime {
             root.put("body", request.getBody());
         }
         return root.toString();
+    }
+
+    /**
+     * Write a {@code name -> [values]} multi-valued map (headers or query parameters) into the
+     * given JSON object, preserving multiple values and insertion order.
+     */
+    private static void putMultiValued(ObjectNode target, Map<String, List<String>> source) {
+        for (Map.Entry<String, List<String>> entry : source.entrySet()) {
+            ArrayNode values = target.putArray(entry.getKey());
+            if (entry.getValue() != null) {
+                for (String value : entry.getValue()) {
+                    values.add(value);
+                }
+            }
+        }
     }
 
     /**

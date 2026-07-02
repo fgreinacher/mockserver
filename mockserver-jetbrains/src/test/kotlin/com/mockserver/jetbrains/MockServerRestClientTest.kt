@@ -128,6 +128,55 @@ class MockServerRestClientTest {
         assertEquals("application/json", req.headers().firstValue("Accept").orElse(""))
     }
 
+    @Test
+    fun `wasm test POSTs base64 module and envelope-v2 sample request to the test endpoint`() {
+        val bytes = byteArrayOf(0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00)
+        val spec = MockServerRestClient.WasmTestSpec(
+            method = "POST",
+            path = "/orders",
+            queryStringParameters = mapOf("tenant" to listOf("acme")),
+            headers = mapOf("X-Tenant" to listOf("acme")),
+            cookies = mapOf("session" to "abc123"),
+            body = "{}"
+        )
+        val req = MockServerRestClient.buildWasmTestRequest("http://localhost:1080", bytes, spec)
+        assertEquals("POST", req.method())
+        assertEquals("http://localhost:1080/mockserver/wasm/test", req.uri().toString())
+        assertEquals("application/json", req.headers().firstValue("Content-Type").orElse(""))
+
+        val payload = JsonParser.parseString(bodyOf(req)).asJsonObject
+        assertEquals(
+            java.util.Base64.getEncoder().encodeToString(bytes),
+            payload.get("module").asString
+        )
+        val request = payload.getAsJsonObject("request")
+        assertEquals("POST", request.get("method").asString)
+        assertEquals("/orders", request.get("path").asString)
+        assertEquals("acme", request.getAsJsonObject("queryStringParameters").getAsJsonArray("tenant")[0].asString)
+        assertEquals("acme", request.getAsJsonObject("headers").getAsJsonArray("X-Tenant")[0].asString)
+        assertEquals("abc123", request.getAsJsonObject("cookies").get("session").asString)
+        assertEquals("{}", request.get("body").asString)
+    }
+
+    @Test
+    fun `wasm test omits the body field for a body-less spec`() {
+        val req = MockServerRestClient.buildWasmTestRequest(
+            "http://localhost:1080",
+            byteArrayOf(1, 2, 3),
+            MockServerRestClient.WasmTestSpec(method = "GET", path = "/")
+        )
+        val request = JsonParser.parseString(bodyOf(req)).asJsonObject.getAsJsonObject("request")
+        assertFalse(request.has("body"), "body should be omitted when the spec has no body")
+    }
+
+    @Test
+    fun `parseWasmTestMatched reads the matched flag and fails closed on junk`() {
+        assertTrue(MockServerRestClient.parseWasmTestMatched("{\"matched\":true}"))
+        assertFalse(MockServerRestClient.parseWasmTestMatched("{\"matched\":false}"))
+        assertFalse(MockServerRestClient.parseWasmTestMatched("not json"))
+        assertFalse(MockServerRestClient.parseWasmTestMatched("{}"))
+    }
+
     // --- formatDriftReport ----------------------------------------------
 
     @Test

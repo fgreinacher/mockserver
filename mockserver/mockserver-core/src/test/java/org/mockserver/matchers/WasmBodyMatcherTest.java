@@ -124,8 +124,53 @@ public class WasmBodyMatcherTest {
         assertThat(matcher.matches(new MatchDifference(false, wrongMethod), "{}"), is(false));
     }
 
+    @Test
+    public void shouldExposeQueryParametersAndCookiesFromContextToV2Module() throws IOException {
+        ConfigurationProperties.wasmEnabled(true);
+        WasmStore.getInstance().put("ordersV2", matchModule("/org/mockserver/wasm/match-request-v2.wasm"));
+        WasmBodyMatcher matcher = new WasmBodyMatcher("ordersV2");
+
+        // module matches POST /orders with query tenant=acme and cookie session=abc123
+        HttpRequest matching = HttpRequest.request()
+            .withMethod("POST")
+            .withPath("/orders")
+            .withQueryStringParameter("tenant", "acme")
+            .withCookie("session", "abc123");
+        assertThat(matcher.matches(new MatchDifference(false, matching), "{}"), is(true));
+    }
+
+    @Test
+    public void shouldNotMatchV2ModuleWhenCookieMissingInContext() throws IOException {
+        ConfigurationProperties.wasmEnabled(true);
+        WasmStore.getInstance().put("ordersV2", matchModule("/org/mockserver/wasm/match-request-v2.wasm"));
+        WasmBodyMatcher matcher = new WasmBodyMatcher("ordersV2");
+
+        HttpRequest noCookie = HttpRequest.request()
+            .withMethod("POST")
+            .withPath("/orders")
+            .withQueryStringParameter("tenant", "acme");
+        assertThat(matcher.matches(new MatchDifference(false, noCookie), "{}"), is(false));
+    }
+
+    @Test
+    public void shouldNotMatchV2ModuleWhenQueryParameterMissingInContext() throws IOException {
+        ConfigurationProperties.wasmEnabled(true);
+        WasmStore.getInstance().put("ordersV2", matchModule("/org/mockserver/wasm/match-request-v2.wasm"));
+        WasmBodyMatcher matcher = new WasmBodyMatcher("ordersV2");
+
+        HttpRequest noQuery = HttpRequest.request()
+            .withMethod("POST")
+            .withPath("/orders")
+            .withCookie("session", "abc123");
+        assertThat(matcher.matches(new MatchDifference(false, noQuery), "{}"), is(false));
+    }
+
     private static byte[] matchRequestModule() throws IOException {
-        try (InputStream in = WasmBodyMatcherTest.class.getResourceAsStream("/org/mockserver/wasm/match-request.wasm")) {
+        return matchModule("/org/mockserver/wasm/match-request.wasm");
+    }
+
+    private static byte[] matchModule(String resource) throws IOException {
+        try (InputStream in = WasmBodyMatcherTest.class.getResourceAsStream(resource)) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buffer = new byte[4096];
             int read;

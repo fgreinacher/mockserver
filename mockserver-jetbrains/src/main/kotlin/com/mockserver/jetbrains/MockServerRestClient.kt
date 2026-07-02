@@ -12,6 +12,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.Base64
 
 /**
  * Minimal REST client for talking to a running MockServer instance from the IDE.
@@ -195,6 +196,73 @@ object MockServerRestClient {
             .header("Accept", "application/json")
             .GET()
             .build()
+
+    /**
+     * A sample request to test a WASM module against via [buildWasmTestRequest]. All parts are
+     * optional (an empty spec tests a body-only request). [queryStringParameters]/[headers] map
+     * each name to its list of values; [cookies] maps each name to a single value — mirroring the
+     * envelope-v2 shape MockServer exposes to a `match_request` module.
+     */
+    data class WasmTestSpec(
+        val method: String = "",
+        val path: String = "",
+        val queryStringParameters: Map<String, List<String>> = emptyMap(),
+        val headers: Map<String, List<String>> = emptyMap(),
+        val cookies: Map<String, String> = emptyMap(),
+        val body: String? = null,
+    )
+
+    /**
+     * `POST /mockserver/wasm/test` — test a compiled WASM module against a sample request without
+     * uploading it or creating an expectation. The module [bytes] are Base64-encoded into the
+     * `module` field and [spec] is serialised as the `request` (envelope-v2 shape:
+     * method / path / queryStringParameters / headers / cookies / body). The server responds with
+     * `{ "matched": <bool> }` (parse with [parseWasmTestMatched]); a 403 means WASM support is
+     * disabled. Matching is fail-closed server-side — an invalid module reports `matched: false`.
+     */
+    fun buildWasmTestRequest(baseUrl: String, bytes: ByteArray, spec: WasmTestSpec): HttpRequest {
+        val request = JsonObject().apply {
+            addProperty("method", spec.method)
+            addProperty("path", spec.path)
+            add("queryStringParameters", JsonObject().apply {
+                spec.queryStringParameters.forEach { (name, values) ->
+                    add(name, JsonArray().apply { values.forEach { add(it) } })
+                }
+            })
+            add("headers", JsonObject().apply {
+                spec.headers.forEach { (name, values) ->
+                    add(name, JsonArray().apply { values.forEach { add(it) } })
+                }
+            })
+            add("cookies", JsonObject().apply {
+                spec.cookies.forEach { (name, value) -> addProperty(name, value) }
+            })
+            if (spec.body != null) {
+                addProperty("body", spec.body)
+            }
+        }
+        val payload = JsonObject().apply {
+            addProperty("module", Base64.getEncoder().encodeToString(bytes))
+            add("request", request)
+        }
+        return HttpRequest.newBuilder()
+            .uri(URI.create("$baseUrl/mockserver/wasm/test"))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(COMPACT.toJson(payload)))
+            .build()
+    }
+
+    /**
+     * Parse the `{ "matched": <bool> }` body returned by `POST /mockserver/wasm/test`, returning
+     * `false` for anything that is not an object with a truthy `matched` field (fail-closed).
+     */
+    fun parseWasmTestMatched(body: String): Boolean =
+        try {
+            val node = JsonParser.parseString(body)
+            node.isJsonObject && node.asJsonObject.has("matched") && node.asJsonObject.get("matched").asBoolean
+        } catch (ex: Exception) {
+            false
+        }
 
     /**
      * `PUT /mockserver/debugMismatch` — ask the server whether [requestDefinitionJson]
