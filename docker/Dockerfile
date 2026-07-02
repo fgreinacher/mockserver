@@ -80,8 +80,44 @@ RUN unzip netty-tcnative-boringssl-static.jar
 
 FROM ${source} as intermediate
 
-# runtime image https://console.cloud.google.com/gcr/images/distroless/global/java17
-FROM gcr.io/distroless/java17:nonroot@sha256:81d09cac6ec47f6a13c61a941557f95079213320f3ddbf9d353de9317669aab5
+# AppCDS build stage — jlink-trimmed JDK 17 runtime + training run producing the AppCDS archive.
+# Mirrors docker/local/Dockerfile (the release/snapshot artifact); this Dockerfile is the public
+# download-mode reference and additionally ships netty-tcnative (see the runtime stage below).
+FROM eclipse-temurin:17-jdk-noble as appcds-build
+
+COPY --from=intermediate mockserver-netty-jar-with-dependencies.jar /mockserver-netty-jar-with-dependencies.jar
+
+# Same module set validated end-to-end for the jlink binary bundle (scripts/build-binary-bundle.sh,
+# docs/code/cli.md). JDK 17 jlink uses the numeric --compress form (2 = ZIP); the zip-<level>
+# spelling is JDK 21+ only. A jlink image does not carry the JDK's default CDS base archive, so
+# -Xshare:dump regenerates it from the bundled lib/classlist — the dynamic AppCDS archive below is
+# layered on that base, and the base is carried into the runtime image with /runtime.
+RUN "$JAVA_HOME/bin/jlink" \
+      --add-modules java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs \
+      --strip-debug --no-man-pages --no-header-files --compress=2 \
+      --output /runtime \
+ && /runtime/bin/java -Xshare:dump
+
+# Training run (dynamic AppCDS, JEP 350): start the server with -XX:ArchiveClassesAtExit, wait until
+# the status endpoint answers via the bundled HealthCheck (which also drives the post-bind warmup),
+# then stop cleanly so the JVM writes the archive at exit. The `ls` fails the build if the archive
+# was not produced. tcnative is not on the training classpath (it is added only at runtime), so the
+# archive covers the JDK-provider path; tcnative classes simply load normally at runtime.
+RUN /runtime/bin/java -XX:ArchiveClassesAtExit=/mockserver.jsa \
+      -jar /mockserver-netty-jar-with-dependencies.jar -p 1080 & \
+    SERVER_PID=$!; \
+    for i in $(seq 1 240); do \
+      /runtime/bin/java -cp /mockserver-netty-jar-with-dependencies.jar org.mockserver.cli.HealthCheck && break; \
+      sleep 0.5; \
+    done; \
+    kill -TERM "$SERVER_PID" && wait "$SERVER_PID" || true; \
+    ls -l /mockserver.jsa
+
+# runtime image — distroless base + trimmed JDK 17 runtime + jar + AppCDS archive + tcnative .so
+# (digest-pinned per repo convention; update the digest together with the Temurin 17 build, since
+# the baked AppCDS archive is specific to the JDK build it was trained with — same base+digest as
+# docker/aot/Dockerfile)
+FROM gcr.io/distroless/java-base-debian12:nonroot@sha256:a9930cad62d02853d7f3dede7281c4b916cbf74493c2d8d38564121aad92bf6c
 
 # maintainer details
 MAINTAINER James Bloom "jamesdbloom@gmail.com"
@@ -95,8 +131,10 @@ LABEL io.modelcontextprotocol.server.name="com.mock-server/mockserver"
 # expose ports.
 EXPOSE 1080
 
-# copy in jar
-COPY --from=intermediate mockserver-netty-jar-with-dependencies.jar /
+# copy in trimmed runtime, jar, AppCDS archive, and (unlike docker/local) the netty-tcnative .so
+COPY --from=appcds-build /runtime /usr/lib/jvm/temurin17-trimmed
+COPY --from=appcds-build /mockserver-netty-jar-with-dependencies.jar /
+COPY --from=appcds-build /mockserver.jsa /
 COPY --from=intermediate META-INF/native/libnetty_tcnative_linux_*.so /usr/lib/
 
 # don't run MockServer as root
@@ -108,11 +146,14 @@ USER nonroot
 # JAVA_TOOL_OPTIONS or -Xmx) — that disables MaxRAMPercentage. Setting a different MaxRAMPercentage
 # via JAVA_TOOL_OPTIONS does NOT take effect: JAVA_TOOL_OPTIONS is prepended before these args, so
 # this entrypoint flag is applied last and wins.
-ENTRYPOINT ["java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
+# -XX:SharedArchiveFile loads the baked AppCDS archive. -Xshare:auto (the JVM default) means a
+# missing or unusable archive (e.g. bind-mounted away, corrupt, or an arch mismatch) logs a warning
+# and starts normally rather than failing.
+ENTRYPOINT ["/usr/lib/jvm/temurin17-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-XX:SharedArchiveFile=/mockserver.jsa", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT 1080
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
-  CMD ["java", "-cp", "/mockserver-netty-jar-with-dependencies.jar", "org.mockserver.cli.HealthCheck"]
+  CMD ["/usr/lib/jvm/temurin17-trimmed/bin/java", "-cp", "/mockserver-netty-jar-with-dependencies.jar", "org.mockserver.cli.HealthCheck"]
 
 CMD []
