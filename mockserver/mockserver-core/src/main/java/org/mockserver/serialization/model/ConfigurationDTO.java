@@ -98,6 +98,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Boolean persistExpectations;
     private String persistedExpectationsPath;
 
+    private String auditLogFile;
+
     private Boolean persistRecordedExpectations;
     private String persistedRecordedExpectationsPath;
 
@@ -386,6 +388,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
             this.persistExpectations = configuration.persistExpectations();
             this.persistedExpectationsPath = configuration.persistedExpectationsPath();
+
+            this.auditLogFile = configuration.auditLogFile();
 
             this.persistRecordedExpectations = configuration.persistRecordedExpectations();
             this.persistedRecordedExpectationsPath = configuration.persistedRecordedExpectationsPath();
@@ -731,6 +735,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
         configuration.persistExpectations(persistExpectations);
         configuration.persistedExpectationsPath(persistedExpectationsPath);
+
+        configuration.auditLogFile(auditLogFile);
 
         configuration.persistRecordedExpectations(persistRecordedExpectations);
         configuration.persistedRecordedExpectationsPath(persistedRecordedExpectationsPath);
@@ -1168,6 +1174,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (persistedExpectationsPath != null) {
             target.persistedExpectationsPath(persistedExpectationsPath);
+        }
+        if (auditLogFile != null) {
+            target.auditLogFile(auditLogFile);
         }
         if (persistRecordedExpectations != null) {
             target.persistRecordedExpectations(persistRecordedExpectations);
@@ -2382,6 +2391,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setPersistedExpectationsPath(String persistedExpectationsPath) {
         this.persistedExpectationsPath = persistedExpectationsPath;
+        return this;
+    }
+
+    public String getAuditLogFile() {
+        return auditLogFile;
+    }
+
+    public ConfigurationDTO setAuditLogFile(String auditLogFile) {
+        this.auditLogFile = auditLogFile;
         return this;
     }
 

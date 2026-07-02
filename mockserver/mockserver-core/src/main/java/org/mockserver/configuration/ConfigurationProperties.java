@@ -189,6 +189,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_CONTROL_PLANE_AUDIT_ENABLED = "mockserver.controlPlaneAuditEnabled";
     private static final String MOCKSERVER_CONTROL_PLANE_AUDIT_MAX_ENTRIES = "mockserver.controlPlaneAuditMaxEntries";
     private static final String MOCKSERVER_CONTROL_PLANE_AUDIT_READS = "mockserver.controlPlaneAuditReads";
+    private static final String MOCKSERVER_AUDIT_LOG_FILE = "mockserver.auditLogFile";
     private static final String MOCKSERVER_FIXTURE_BODY_REDACT_FIELDS = "mockserver.fixtureBodyRedactFields";
     private static final String MOCKSERVER_LLM_VCR_STRICT = "mockserver.llmVcrStrict";
     private static final String MOCKSERVER_LLM_OPTIMISATION_MAX_CALLS = "mockserver.llmOptimisationMaxCalls";
@@ -2876,6 +2877,24 @@ public class ConfigurationProperties {
 
     public static void controlPlaneAuditReads(boolean enabled) {
         setProperty(MOCKSERVER_CONTROL_PLANE_AUDIT_READS, "" + enabled);
+    }
+
+    /**
+     * Optional path to a durable control-plane audit log file. When set (and
+     * {@code controlPlaneAuditEnabled} is true), every recorded {@link org.mockserver.mock.audit.AuditEntry}
+     * is additionally appended as one JSON object per line ("NDJSON") to this file,
+     * giving a restart-surviving audit trail that outlives the bounded in-memory
+     * ring buffer (which is wiped by the very {@code reset} it records). Empty
+     * default = off (behaviour unchanged). The path is resolved once on the first
+     * entry written; parent directories are created if missing. The file grows
+     * append-only — rotation is out of scope, use external log rotation if needed.
+     */
+    public static String auditLogFile() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_AUDIT_LOG_FILE, "MOCKSERVER_AUDIT_LOG_FILE", "");
+    }
+
+    public static void auditLogFile(String path) {
+        setProperty(MOCKSERVER_AUDIT_LOG_FILE, path == null ? "" : path);
     }
 
     /**

@@ -168,6 +168,7 @@ public class Configuration {
     private Boolean controlPlaneAuditEnabled;
     private Integer controlPlaneAuditMaxEntries;
     private Boolean controlPlaneAuditReads;
+    private String auditLogFile;
     private Boolean useSemicolonAsQueryParameterSeparator;
     private Boolean startupWarmup;
     private Boolean assumeAllRequestsAreHttp;
@@ -2502,6 +2503,28 @@ public class Configuration {
      */
     public Configuration controlPlaneAuditReads(Boolean controlPlaneAuditReads) {
         this.controlPlaneAuditReads = controlPlaneAuditReads;
+        return this;
+    }
+
+    public String auditLogFile() {
+        if (auditLogFile == null) {
+            return ConfigurationProperties.auditLogFile();
+        }
+        return auditLogFile;
+    }
+
+    /**
+     * Optional path to a durable control-plane audit log file. When set (and
+     * {@code controlPlaneAuditEnabled} is true), each recorded audit entry is
+     * additionally appended as one JSON object per line ("NDJSON") to this file — a
+     * restart-surviving trail that outlives the bounded in-memory ring buffer.
+     * Empty/null (the default) disables the file sink; behaviour is unchanged.
+     * The path is resolved once, on the first entry written.
+     *
+     * @param auditLogFile path to append NDJSON audit entries to, or null/empty to disable
+     */
+    public Configuration auditLogFile(String auditLogFile) {
+        this.auditLogFile = auditLogFile;
         return this;
     }
 

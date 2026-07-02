@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Observability quick-win bundle — Grafana dashboard, Helm ServiceMonitor, and a durable audit file sink.** Three
+  independent additions that make MockServer easier to monitor in production:
+  - **Standalone Grafana dashboard for the server metric family.** `examples/grafana/mockserver-server.json` (with a
+    README) is an importable dashboard charting request throughput and match outcomes (via the new `_total`
+    counters), request-latency percentiles, registered expectations/actions, per-upstream forward/proxy health,
+    dropped-log-events and chaos counters, and the JVM runtime gauges — every panel references a metric documented in
+    `docs/code/metrics.md`. It exposes a `datasource` variable so it imports against any Prometheus data source, and
+    is kept separate from the existing k6 load-injection dashboard.
+  - **Optional Prometheus Operator `ServiceMonitor` in the Helm chart.** `serviceMonitor.enabled=true` (disabled by
+    default) renders a `monitoring.coreos.com/v1` ServiceMonitor scraping `/mockserver/metrics`, with
+    `namespace`/`interval`/`scrapeTimeout`/`path`/`scheme`/`honorLabels`/`labels`/`namespaceSelector`/relabelings
+    values. User-supplied `labels` are merged over the chart labels (user wins) so a `release` label for the
+    Prometheus `serviceMonitorSelector` overrides cleanly. Requires the Prometheus Operator CRDs and
+    `mockserver.metricsEnabled=true`.
+  - **Durable NDJSON control-plane audit file sink.** New `auditLogFile` property (empty default = off): when set,
+    each recorded audit entry is *also* appended as one JSON object per line to the file, giving a restart- and
+    `reset`-surviving trail that outlives the bounded in-memory ring. Implemented as a separate `AuditFileSink`
+    writer that only observes the same entries — the in-memory ring is untouched (honouring the "never a sink"
+    contract). Path resolved once on first write, parent dirs created, append-only (rotation out of scope), and
+    fail-soft (a single WARN then self-disable on IO error, never crashing request handling).
+
 - **OpenAPI request validation now checks `style`/`explode`-serialised array and object parameters.** When you
   validate traffic against an OpenAPI spec (contract/traffic validation, the `verify_traffic` MCP tool, or an
   OpenAPI-backed expectation returning `400` on non-conforming requests), `array`/`object` query, path and header

@@ -1,0 +1,53 @@
+{{- if .Values.serviceMonitor.enabled }}
+# Prometheus Operator ServiceMonitor for MockServer's /mockserver/metrics scrape
+# endpoint. Disabled by default. REQUIRES the Prometheus Operator CRDs
+# (monitoring.coreos.com/v1) to be installed in the cluster, and MockServer to be
+# started with mockserver.metricsEnabled=true (otherwise the endpoint returns 404).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ template "release.name" . }}
+{{- if .Values.serviceMonitor.namespace }}
+  namespace: {{ .Values.serviceMonitor.namespace }}
+{{- end }}
+  labels:
+    {{- /* Merge chart labels with user labels (user wins) so a user-supplied
+           `release` label — commonly needed to match the Prometheus Operator's
+           serviceMonitorSelector — overrides the chart default instead of
+           producing a duplicate YAML key. */}}
+    {{- $labels := dict "app" (include "chart.name" .) "release" .Release.Name "chart" (include "chart.name_version" .) }}
+    {{- range $key, $value := .Values.serviceMonitor.labels }}
+    {{- $_ := set $labels $key $value }}
+    {{- end }}
+{{ toYaml $labels | indent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ template "chart.name" . }}
+      release: {{ .Release.Name }}
+{{- if .Values.serviceMonitor.namespaceSelector }}
+  namespaceSelector:
+{{ toYaml .Values.serviceMonitor.namespaceSelector | indent 4 }}
+{{- end }}
+  endpoints:
+    - port: serviceport
+      path: {{ .Values.serviceMonitor.path | default "/mockserver/metrics" | quote }}
+      scheme: {{ .Values.serviceMonitor.scheme | default "http" | quote }}
+{{- if .Values.serviceMonitor.interval }}
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}
+{{- if .Values.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+{{- end }}
+{{- if .Values.serviceMonitor.honorLabels }}
+      honorLabels: true
+{{- end }}
+{{- with .Values.serviceMonitor.relabelings }}
+      relabelings:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- end }}

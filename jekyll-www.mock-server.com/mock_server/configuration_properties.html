@@ -2223,6 +2223,16 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_CONTROL_PLANE_AUDIT_READS=...</code></pre>
     <p>Example:</p>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.controlPlaneAuditReads="true"</code></pre>
+    <p><strong>Audit log file</strong> &mdash; an optional path to a durable audit log file. When set (and the audit log is enabled), every recorded entry is <em>also</em> appended as one JSON object per line (newline-delimited JSON) to this file, giving a restart-surviving trail that outlives the in-memory log &mdash; which is bounded and is wiped by the very <code>reset</code> it records. Empty by default (the file sink is off and behaviour is unchanged). The path is resolved once, on the first entry written, and missing parent directories are created. The file grows append-only; use external log rotation (for example <code>logrotate</code>) if it needs to be capped. If the file cannot be opened or written, a single warning is logged and the file sink is disabled &mdash; request handling and the in-memory log are never affected.</p>
+    <p>Type: <span class="keyword">string</span> Default: <span class="this_value">"" (off)</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.auditLogFile(String path)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.auditLogFile=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_AUDIT_LOG_FILE=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.auditLogFile="/var/log/mockserver/audit.ndjson"</code></pre>
 </div>
 
 <button id="button_configuration_control_plane_oidc" class="accordion title"><strong>Control-Plane OIDC Authentication</strong></button>

@@ -414,6 +414,26 @@ The scrape endpoint is deliberately **not** routed through `HttpState.controlPla
 
 Because the endpoint is open, its labels can leak operational metadata to anyone with network reach: the forward/proxy series carry an `upstream_host` label (host only), and the LLM counters (`mock_server_llm_input_tokens`, `mock_server_llm_output_tokens`, `mock_server_llm_cost_usd`) are labelled by `provider`/`model`. To secure it: (a) leave it disabled with `metricsEnabled=false` (the default) — when disabled, `MetricsHandler.renderMetrics` short-circuits to a `404 Not Found` and exposes nothing (pinned by `MetricsHandlerTest.shouldReflectOriginOnDisabledNotFound`); (b) restrict access at the network layer (loopback bind / firewall / Kubernetes `NetworkPolicy`); or (c) prefer PUSH-based export — OTLP metrics (`OtelMetricsExporter`) or Prometheus Remote-Write (`PrometheusRemoteWriteExporter`, both below) — which expose **no** scrape endpoint at all. See the consumer-facing [API Security → Securing the metrics scrape endpoint](../../jekyll-www.mock-server.com/mock_server/control_plane_authorisation.html) note and [tls-and-security.md](tls-and-security.md).
 
+### Grafana Dashboard & Kubernetes Scraping
+
+A standalone, importable Grafana dashboard for the server metric family ships at
+[`examples/grafana/mockserver-server.json`](../../examples/grafana/mockserver-server.json)
+(see its [README](../../examples/grafana/README.md)). It charts request
+throughput and match outcomes (via the `_total` counters), request-latency
+percentiles, the `_actions_count` expectation levels, per-upstream forward/proxy
+health, dropped-log-events, HTTP/LLM chaos counters, and the JVM runtime gauges —
+every panel references a metric documented on this page. It exposes a `datasource`
+template variable, so it imports against any Prometheus data source. (This is
+distinct from the k6 load-injection dashboard under
+`examples/kubernetes/load-injection-observability`, which mixes in load-generator
+series.)
+
+In Kubernetes, the MockServer Helm chart can create a **Prometheus Operator
+`ServiceMonitor`** for the scrape endpoint — set `serviceMonitor.enabled=true`
+(disabled by default; requires the `monitoring.coreos.com/v1` CRDs and
+`metricsEnabled=true`). See [helm.md](../infrastructure/helm.md) and
+`helm/mockserver/values.yaml`.
+
 ## Prometheus Remote Write (push)
 
 As an alternative (or complement) to being scraped, MockServer can **push** its metrics to a Prometheus **Remote-Write** endpoint on an interval. This suits short-lived pods, agentless setups, and vendor endpoints that ingest remote write — Prometheus (`--web.enable-remote-write-receiver`), Grafana Cloud / Mimir, **New Relic**, VictoriaMetrics, and Thanos Receive. It is off by default and fail-soft: a push failure logs one line and never affects request handling.

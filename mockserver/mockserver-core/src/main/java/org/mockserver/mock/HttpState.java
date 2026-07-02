@@ -6057,6 +6057,10 @@ public class HttpState {
                 null
             );
             org.mockserver.mock.audit.AuditStore.getInstance().add(entry);
+            // Optional durable NDJSON file sink — observes the same entry the in-memory
+            // ring holds, appending one JSON line per record. No-op unless auditLogFile is
+            // set; never crashes request handling (it self-disables on IO error).
+            org.mockserver.mock.audit.AuditFileSink.getInstance().write(entry, configuration.auditLogFile());
             if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(Level.INFO)) {
                 mockServerLogger.logEvent(
                     new LogEntry()

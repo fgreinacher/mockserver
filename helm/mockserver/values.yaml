@@ -145,6 +145,48 @@ service:
   test:
     image: curlimages/curl:8.20.0
 
+# Prometheus Operator ServiceMonitor for scraping MockServer's Prometheus metrics.
+#
+# Disabled by default. Two things are required for metrics to actually flow:
+#   1. The Prometheus Operator CRDs (monitoring.coreos.com/v1) must be installed —
+#      e.g. via kube-prometheus-stack. Without them this template is skipped.
+#   2. MockServer must be started with mockserver.metricsEnabled=true (set it in
+#      app.config.properties), otherwise /mockserver/metrics returns 404.
+#
+# Set `labels` so your Prometheus Operator's serviceMonitorSelector picks this up
+# (commonly the Helm release name of your kube-prometheus-stack, e.g.
+# `release: kube-prometheus-stack`).
+#
+# Example:
+#   serviceMonitor:
+#     enabled: true
+#     interval: 30s
+#     labels:
+#       release: kube-prometheus-stack
+serviceMonitor:
+  # -- Create a Prometheus Operator ServiceMonitor for the metrics endpoint.
+  enabled: false
+  # -- Namespace to create the ServiceMonitor in. Defaults to the release namespace.
+  namespace: ""
+  # -- Additional labels for the ServiceMonitor (match your Prometheus serviceMonitorSelector).
+  labels: {}
+  # -- Scrape interval. If empty, Prometheus' global default is used.
+  interval: 30s
+  # -- Per-scrape timeout. If empty, Prometheus' default is used.
+  scrapeTimeout: ""
+  # -- Metrics path. MockServer serves Prometheus metrics at /mockserver/metrics.
+  path: /mockserver/metrics
+  # -- Scrape scheme (http or https).
+  scheme: http
+  # -- Keep target labels on collision instead of relabelling them.
+  honorLabels: false
+  # -- namespaceSelector for the ServiceMonitor (which namespaces to search for the Service).
+  namespaceSelector: {}
+  # -- relabel_configs applied to the scrape target labels before ingestion.
+  relabelings: []
+  # -- metric_relabel_configs applied to scraped samples before ingestion.
+  metricRelabelings: []
+
 ingress:
   enabled: false
   className: ""
