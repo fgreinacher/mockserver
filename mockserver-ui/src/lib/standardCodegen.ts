@@ -483,6 +483,27 @@ export interface StandardActionPayload {
   /** Capture rules — extract request values into scenario state. Omitted from
    *  the payload when empty (backward compatible). */
   capture?: StandardCaptureRule[];
+  /**
+   * When editing an EXISTING expectation, the original expectation JSON exactly
+   * as it lives on the server. The form models only a subset of an expectation's
+   * fields; without this, re-registering would silently drop every unmodeled
+   * field (scenario bindings, response sequences, cross-protocol scenarios,
+   * request-matcher extras like keepAlive/socketAddress/protocol, …).
+   *
+   * When present, `buildExpectationJson` deep-merges the form output ONTO this
+   * original via {@link mergeUnmodeledFields}, so the form is authoritative for
+   * the fields it models and everything else passes through unchanged. Absent
+   * on the new-compose flow, which is therefore completely unaffected.
+   */
+  editOriginal?: Record<string, unknown>;
+  /**
+   * True when the form loaded (and therefore owns) the original's action slot,
+   * so the form's action replaces the original's. False when the original
+   * carries an action the form cannot represent (e.g. a `httpResponses`
+   * sequence): the original action is then preserved rather than clobbered by
+   * the form's default. Only meaningful alongside {@link editOriginal}.
+   */
+  editActionModeled?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -959,7 +980,174 @@ export function buildExpectationJson(
     out['timeToLive'] = { timeUnit: 'SECONDS', timeToLive: matcher.ttlSeconds, unlimited: false };
   }
 
+  // Editing an existing expectation: overlay the form output onto the retained
+  // original so fields the form does not model are preserved (not silently
+  // dropped) while the form stays authoritative for what it does model. The
+  // new-compose flow sets no `editOriginal`, so this is a no-op there and both
+  // the preview (StandardReview → buildExpectationJson) and the wire payload
+  // (registerExpectation → buildExpectationJson) show the identical merged JSON.
+  if (action.editOriginal) {
+    return mergeUnmodeledFields(action.editOriginal, out, { actionModeled: action.editActionModeled });
+  }
+
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Edit-overlay merge — preserve fields the Composer form does not model
+// ---------------------------------------------------------------------------
+
+/**
+ * Top-level expectation keys the Composer form fully models (apart from the
+ * request matcher, handled by a nested merge, and the action family, handled as
+ * a mutually-exclusive group below). For each of these keys the form output is
+ * authoritative: present ⇒ taken from the form; absent from the form output ⇒
+ * removed from the merged result (so a removal the form can express is honoured).
+ */
+export const FORM_MODELED_TOP_LEVEL_KEYS: readonly string[] = [
+  'chaos', 'beforeActions', 'afterActions', 'steps', 'capture',
+  'id', 'priority', 'times', 'timeToLive',
+];
+
+/**
+ * The mutually-exclusive action / response slot. When the form recognised (and
+ * therefore loaded) the original action, the whole group is replaced by the
+ * form's action — so switching action type, or clearing sub-fields, works. When
+ * the form did NOT model the original action (e.g. a `httpResponses` sequence),
+ * the group is preserved so an unrelated edit (a status-code or matcher tweak)
+ * cannot silently delete it. Includes fields the form cannot model but that
+ * occupy the same slot, so they never coexist with a form-emitted action.
+ */
+export const ACTION_FAMILY_KEYS: readonly string[] = [
+  'httpResponse', 'httpForward', 'httpOverrideForwardedRequest',
+  'httpResponseClassCallback', 'httpResponseTemplate', 'httpError',
+  'httpForwardWithFallback', 'httpWebSocketResponse', 'httpSseResponse',
+  'binaryResponse', 'dnsResponse', 'httpForwardTemplate',
+  'httpForwardClassCallback', 'grpcStreamResponse',
+  // Same slot, not modeled by the form (must be listed so the mutual-exclusion
+  // slot-clear holds structurally against every action Expectation.java accepts):
+  'httpResponseObjectCallback', 'httpForwardObjectCallback',
+  'httpForwardValidateAction', 'httpLlmResponse',
+  'httpResponses', 'responseMode', 'responseWeights', 'switchAfter',
+  'grpcBidiResponse',
+];
+
+/**
+ * `httpRequest` sub-fields the matcher form models. Everything else on the
+ * original request (keepAlive, socketAddress, protocol, clientCertificate, jwt,
+ * clientCertificateChain, …) is passed through unchanged so editing a modeled
+ * field does not drop an unmodeled one.
+ */
+export const FORM_MODELED_REQUEST_KEYS: readonly string[] = [
+  'method', 'path', 'headers', 'queryStringParameters', 'cookies',
+  'pathParameters', 'body', 'secure', 'dnsName', 'dnsType', 'dnsClass',
+];
+
+export interface MergeUnmodeledOptions {
+  /**
+   * True (default) when the form owns the original's action slot, so the form's
+   * action replaces the original's. Pass false when the original carries an
+   * action the form could not load, to preserve that action instead.
+   */
+  actionModeled?: boolean;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Deep-merge the form-generated expectation JSON (`formJson`) onto the retained
+ * `original`, so that:
+ *  - fields the form models are authoritative from the form (including removals
+ *    the form can express — a modeled key absent from `formJson` is deleted);
+ *  - top-level and request-matcher fields the form does NOT model pass through
+ *    unchanged.
+ *
+ * The action/response slot is treated as one mutually-exclusive group (see
+ * {@link ACTION_FAMILY_KEYS}); when `actionModeled` is false the original action
+ * is preserved rather than replaced by the form's default.
+ *
+ * Pure and side-effect free: `original` and `formJson` are not mutated.
+ */
+export function mergeUnmodeledFields(
+  original: Record<string, unknown>,
+  formJson: Record<string, unknown>,
+  opts: MergeUnmodeledOptions = {},
+): Record<string, unknown> {
+  const actionModeled = opts.actionModeled !== false;
+  const result: Record<string, unknown> = structuredClone(original);
+
+  // Request matcher — nested merge: modeled sub-fields authoritative, the rest
+  // (keepAlive / socketAddress / protocol / clientCertificate / jwt / …) pass
+  // through. buildExpectationJson always emits an httpRequest.
+  if (isPlainObject(formJson['httpRequest'])) {
+    const formReq = formJson['httpRequest'];
+    const mergedReq: Record<string, unknown> = isPlainObject(result['httpRequest'])
+      ? structuredClone(result['httpRequest'])
+      : {};
+    for (const k of FORM_MODELED_REQUEST_KEYS) {
+      if (k in formReq) mergedReq[k] = formReq[k];
+      else delete mergedReq[k];
+    }
+    result['httpRequest'] = mergedReq;
+  }
+
+  // Simple form-modeled top-level keys — set when the form emits them, delete
+  // when it omits them.
+  for (const k of FORM_MODELED_TOP_LEVEL_KEYS) {
+    if (k in formJson) result[k] = formJson[k];
+    else delete result[k];
+  }
+
+  // Action / response family. `steps` (handled above) is also an action slot,
+  // so the form "provides an action" when it emits either an action-family key
+  // or a steps pipeline.
+  const formProvidesAction =
+    ACTION_FAMILY_KEYS.some((k) => k in formJson) || 'steps' in formJson;
+  if (actionModeled && formProvidesAction) {
+    for (const k of ACTION_FAMILY_KEYS) delete result[k];
+    for (const k of ACTION_FAMILY_KEYS) if (k in formJson) result[k] = formJson[k];
+  }
+  // else: leave the original action family untouched (preserve unmodeled action).
+
+  return result;
+}
+
+/**
+ * Names of the fields that {@link mergeUnmodeledFields} would preserve from
+ * `original` because the Composer form does not model them — used to show the
+ * "Preserving N fields not shown in this form: …" indicator in the editor.
+ * Nested request-matcher extras are reported as `httpRequest.<field>`.
+ */
+export function unmodeledFieldNames(
+  original: Record<string, unknown>,
+  opts: MergeUnmodeledOptions = {},
+): string[] {
+  const actionModeled = opts.actionModeled !== false;
+  const modeledTop = new Set<string>([...FORM_MODELED_TOP_LEVEL_KEYS, 'httpRequest']);
+  const actionFamily = new Set<string>(ACTION_FAMILY_KEYS);
+  const names: string[] = [];
+  for (const key of Object.keys(original)) {
+    if (key === 'httpRequest') {
+      const req = original['httpRequest'];
+      if (isPlainObject(req)) {
+        for (const sub of Object.keys(req)) {
+          if (!FORM_MODELED_REQUEST_KEYS.includes(sub)) names.push(`httpRequest.${sub}`);
+        }
+      }
+      continue;
+    }
+    if (actionFamily.has(key)) {
+      // Replaced by the form when it owns the slot; preserved (and hence
+      // reported) only when the original action is unmodeled.
+      if (!actionModeled) names.push(key);
+      continue;
+    }
+    if (modeledTop.has(key)) continue;
+    names.push(key);
+  }
+  return names;
 }
 
 /**

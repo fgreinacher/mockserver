@@ -42,6 +42,8 @@ import HumanErrorAlert from './HumanErrorAlert';
 import StandardReview from './StandardReview';
 import {
   buildExpectationJson,
+  unmodeledFieldNames,
+  ACTION_FAMILY_KEYS,
   chaosFromExpectation,
   captureFromExpectation,
   sideEffectsFromExpectation,
@@ -3417,6 +3419,9 @@ interface QuickMockFormProps {
   setStaticState: (s: StaticState) => void;
   registering: boolean;
   editingExisting: boolean;
+  /** Fields the retained original carries that this form does not model; kept on
+   *  Update rather than dropped. Drives the "Preserving N fields …" indicator. */
+  preservedFields: string[];
   onRegister: () => void;
   onSwitchToAdvanced: () => void;
 }
@@ -3428,6 +3433,7 @@ function QuickMockForm({
   setStaticState,
   registering,
   editingExisting,
+  preservedFields,
   onRegister,
   onSwitchToAdvanced,
 }: QuickMockFormProps) {
@@ -3509,6 +3515,22 @@ function QuickMockForm({
           />
         )}
       </Box>
+
+      {preservedFields.length > 0 && (
+        <Alert
+          severity="info"
+          variant="outlined"
+          icon={<InfoOutlinedIcon fontSize="small" />}
+          data-testid="quick-preserved-fields-info"
+          sx={{ py: 0, '& .MuiAlert-message': { py: 0.75 } }}
+        >
+          Preserving {preservedFields.length}{' '}
+          {preservedFields.length === 1 ? 'field' : 'fields'} not shown in this form:{' '}
+          <Box component="span" sx={{ fontFamily: monospaceFontFamily }}>
+            {preservedFields.join(', ')}
+          </Box>
+        </Alert>
+      )}
 
       <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
         <Tooltip title={!registering && disabledReason ? disabledReason : ''}>
@@ -3690,6 +3712,17 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
   const [captureEnabled, setCaptureEnabled] = useState(false);
   const [captureRules, setCaptureRules] = useState<StandardCaptureRule[]>([]);
 
+  // Edit overlay — when an existing expectation is loaded for editing (or
+  // duplicating), its original JSON is retained here so Register/preview can
+  // deep-merge the form output onto it, preserving every field the form does
+  // not model (scenario bindings, response sequences, cross-protocol scenarios,
+  // request-matcher extras, …) instead of silently dropping them. Null on the
+  // new-compose flow, which is therefore unaffected. `editActionModeled` records
+  // whether the form loaded the original's action (so it may replace it) or not
+  // (so the original action is preserved).
+  const [editOriginal, setEditOriginal] = useState<Record<string, unknown> | null>(null);
+  const [editActionModeled, setEditActionModeled] = useState(true);
+
   const [registering, setRegistering] = useState(false);
   // Humanised register error (short message + raw details behind an expander).
   const [error, setError] = useState<HumanError | null>(null);
@@ -3768,29 +3801,39 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
       if (!item) return;
       setMatcher(matcherFromExpectation(item));
 
+      // Retain the original expectation JSON so Register/preview overlays the
+      // form output onto it, preserving unmodeled fields. `editActionModeled`
+      // records whether the form recognised the action (may replace it) or not
+      // (preserve the original action). Steps are recognised via a separate
+      // reader, so they count as "modeled" too.
+      const existingStepsForFlag = stepsFromExpectation(item.value);
+      setEditOriginal(item.value);
+
       // Detect the action shape and prefill the matching panel + switch the radio.
       const prefill = actionFromExpectation(item);
-      if (!prefill) return;
-      // Infer the correct kind from the action type and switch to it. MCP is a
-      // view over standard HTTP response expectations, so loading one from the
-      // MCP list must NOT switch the user away from the MCP kind.
-      const inferredKind = kindForActionType(prefill.type);
-      setKind((prevKind) => (prevKind === 'mcp' && inferredKind === 'standard') ? 'mcp' : inferredKind);
-      setActionType(prefill.type);
-      if (prefill.staticState) setStaticState(prefill.staticState);
-      if (prefill.forwardState) setForwardState(prefill.forwardState);
-      if (prefill.forwardOverrideState) setForwardOverrideState(prefill.forwardOverrideState);
-      if (prefill.forwardFallbackState) setForwardFallbackState(prefill.forwardFallbackState);
-      if (prefill.callbackState) setCallbackState(prefill.callbackState);
-      if (prefill.templateState) setTemplateState(prefill.templateState);
-      if (prefill.errorState) setErrorState(prefill.errorState);
-      if (prefill.websocketState) setWebsocketState(prefill.websocketState);
-      if (prefill.sseState) setSseState(prefill.sseState);
-      if (prefill.binaryResponseState) setBinaryResponseState(prefill.binaryResponseState);
-      if (prefill.dnsResponseState) setDnsResponseState(prefill.dnsResponseState);
-      if (prefill.forwardTemplateState) setForwardTemplateState(prefill.forwardTemplateState);
-      if (prefill.forwardClassCallbackState) setForwardClassCallbackState(prefill.forwardClassCallbackState);
-      if (prefill.grpcStreamState) setGrpcStreamState(prefill.grpcStreamState);
+      setEditActionModeled(!!prefill || !!existingStepsForFlag);
+      if (prefill) {
+        // Infer the correct kind from the action type and switch to it. MCP is a
+        // view over standard HTTP response expectations, so loading one from the
+        // MCP list must NOT switch the user away from the MCP kind.
+        const inferredKind = kindForActionType(prefill.type);
+        setKind((prevKind) => (prevKind === 'mcp' && inferredKind === 'standard') ? 'mcp' : inferredKind);
+        setActionType(prefill.type);
+        if (prefill.staticState) setStaticState(prefill.staticState);
+        if (prefill.forwardState) setForwardState(prefill.forwardState);
+        if (prefill.forwardOverrideState) setForwardOverrideState(prefill.forwardOverrideState);
+        if (prefill.forwardFallbackState) setForwardFallbackState(prefill.forwardFallbackState);
+        if (prefill.callbackState) setCallbackState(prefill.callbackState);
+        if (prefill.templateState) setTemplateState(prefill.templateState);
+        if (prefill.errorState) setErrorState(prefill.errorState);
+        if (prefill.websocketState) setWebsocketState(prefill.websocketState);
+        if (prefill.sseState) setSseState(prefill.sseState);
+        if (prefill.binaryResponseState) setBinaryResponseState(prefill.binaryResponseState);
+        if (prefill.dnsResponseState) setDnsResponseState(prefill.dnsResponseState);
+        if (prefill.forwardTemplateState) setForwardTemplateState(prefill.forwardTemplateState);
+        if (prefill.forwardClassCallbackState) setForwardClassCallbackState(prefill.forwardClassCallbackState);
+        if (prefill.grpcStreamState) setGrpcStreamState(prefill.grpcStreamState);
+      }
 
       // Populate the DNS matcher fields from the httpRequest if this is a
       // DNS expectation (the server serialises dnsName / dnsType / dnsClass
@@ -3870,6 +3913,10 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     setStepsState([]);
     setCaptureEnabled(false);
     setCaptureRules([]);
+    // Drop the edit overlay so a fresh compose does not merge onto a stale
+    // original (and cannot resurrect an old expectation's unmodeled fields).
+    setEditOriginal(null);
+    setEditActionModeled(true);
     setError(null);
     setRegisteredLabel(null);
   }, []);
@@ -3908,7 +3955,11 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     } else {
       const item: JsonListItem = { key, value };
       setMatcher(matcherFromExpectation(item));
+      // Retain the original so Register/preview preserves unmodeled fields.
+      const existingStepsForFlag = stepsFromExpectation(value);
+      setEditOriginal(value);
       const prefill = actionFromExpectation(item);
+      setEditActionModeled(!!prefill || !!existingStepsForFlag);
       if (prefill) {
         const inferredKind = kindForActionType(prefill.type);
         setKind(inferredKind);
@@ -4041,18 +4092,42 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
           </ToggleButtonGroup>
         </Box>
 
-        {mode === 'quick' && (
-          <QuickMockForm
-            matcher={matcher}
-            setMatcher={setMatcher}
-            staticState={staticState}
-            setStaticState={setStaticState}
-            registering={registering}
-            editingExisting={matcher.id.trim().length > 0}
-            onRegister={() => void handleRegister({ type: 'static', static: staticState }, matcher)}
-            onSwitchToAdvanced={() => setMode('advanced')}
-          />
-        )}
+        {mode === 'quick' && (() => {
+          // Quick mode only ever authors a plain static httpResponse, so it may
+          // own the action slot ONLY when the original action is itself a plain
+          // httpResponse. Reusing the shared `editActionModeled` (true for all 14
+          // recognised action types) would let a Quick "Update mock" on e.g. an
+          // httpForward original silently overwrite it with a 200 response. When
+          // the original is a non-static recognised action (forward, template,
+          // error, …) we preserve it and warn — Advanced remains the path for an
+          // explicit conversion.
+          const quickActionModeled =
+            !!editOriginal &&
+            'httpResponse' in editOriginal &&
+            !ACTION_FAMILY_KEYS.some((k) => k !== 'httpResponse' && k in editOriginal);
+          return (
+            <QuickMockForm
+              matcher={matcher}
+              setMatcher={setMatcher}
+              staticState={staticState}
+              setStaticState={setStaticState}
+              registering={registering}
+              editingExisting={matcher.id.trim().length > 0}
+              preservedFields={editOriginal ? unmodeledFieldNames(editOriginal, { actionModeled: quickActionModeled }) : []}
+              // Thread the edit overlay through the Quick path too, so a Quick
+              // "Update mock" preserves every field this form does not model
+              // instead of PUTting form-only JSON under the same id. `editOriginal`
+              // is set only when editing/duplicating; new-compose stays unaffected.
+              onRegister={() => void handleRegister(
+                editOriginal
+                  ? { type: 'static', static: staticState, editOriginal, editActionModeled: quickActionModeled }
+                  : { type: 'static', static: staticState },
+                matcher,
+              )}
+              onSwitchToAdvanced={() => setMode('advanced')}
+            />
+          );
+        })()}
 
         {/* Top-level kind selector — each kind has a different form path.
             Hidden in Quick mode (Quick is always an HTTP static mock). */}
@@ -4549,6 +4624,22 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
               if (captureEnabled && captureRules.length > 0) {
                 currentAction.capture = captureRules;
               }
+              // Edit overlay — when editing/duplicating, carry the retained
+              // original so buildExpectationJson merges the form output onto it
+              // (preserving unmodeled fields). Threaded through the SAME
+              // buildExpectationJson path for both the preview (StandardReview)
+              // and the wire payload (registerExpectation), so they cannot drift.
+              if (editOriginal) {
+                currentAction.editOriginal = editOriginal;
+                currentAction.editActionModeled = editActionModeled;
+              }
+
+              // Fields being preserved through the edit that this form does not
+              // model — surfaced as a subtle indicator so the user knows they are
+              // kept (not silently dropped) on Update.
+              const preservedFields = editOriginal
+                ? unmodeledFieldNames(editOriginal, { actionModeled: editActionModeled })
+                : [];
 
               // Build the effective matcher: for DNS kind, attach the DNS
               // matcher fields so buildExpectationJson emits { dnsName, ... }
@@ -4667,6 +4758,21 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
                     4 · Review &amp; register
                   </Typography>
                   <Divider sx={{ mb: 1 }} />
+                  {preservedFields.length > 0 && (
+                    <Alert
+                      severity="info"
+                      variant="outlined"
+                      icon={<InfoOutlinedIcon fontSize="small" />}
+                      data-testid="preserved-fields-info"
+                      sx={{ mb: 1, py: 0, '& .MuiAlert-message': { py: 0.75 } }}
+                    >
+                      Preserving {preservedFields.length}{' '}
+                      {preservedFields.length === 1 ? 'field' : 'fields'} not shown in this form:{' '}
+                      <Box component="span" sx={{ fontFamily: monospaceFontFamily }}>
+                        {preservedFields.join(', ')}
+                      </Box>
+                    </Alert>
+                  )}
                   <StandardReview
                     matcher={effectiveMatcher}
                     action={currentAction}
