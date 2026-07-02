@@ -28,6 +28,10 @@ class MockServerSettings : PersistentStateComponent<MockServerSettings.State> {
         // http://localhost:16686/trace/{traceId}. Blank disables the View Trace action's
         // browser hop (it then just surfaces the trace id).
         @JvmField var traceUrlTemplate: String = ""
+        // Path to a locally-installed binary bundle for the Start (binary) action:
+        // either the bin/mockserver launcher itself or the unpacked bundle directory.
+        // Blank ⇒ download and cache the bundle matching the plugin version on first use.
+        @JvmField var binaryPath: String = ""
     }
 
     private var myState = State()
@@ -52,6 +56,15 @@ class MockServerSettings : PersistentStateComponent<MockServerSettings.State> {
 
     /** The configured trace-backend URL template (trimmed), or blank when unset. */
     fun traceUrlTemplate(): String = myState.traceUrlTemplate.trim()
+
+    /** The configured local binary-bundle path (trimmed), or blank to download on demand. */
+    fun effectiveBinaryPath(): String = myState.binaryPath.trim()
+
+    /**
+     * Version of the binary bundle to download/use — the plugin's own version, so
+     * the bundle stays in lockstep with the release (matching [effectiveImage]).
+     */
+    fun effectiveBinaryVersion(): String = pluginVersion()
 
     companion object {
         const val DEFAULT_CONTAINER_NAME = "mockserver-ide"

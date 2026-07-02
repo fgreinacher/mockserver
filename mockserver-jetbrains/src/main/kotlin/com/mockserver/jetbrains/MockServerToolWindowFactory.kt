@@ -70,6 +70,8 @@ class MockServerToolWindowFactory : ToolWindowFactory {
                 com.intellij.ide.BrowserUtil.browse(MockServerSettings.getInstance().dashboardUrl())
             })
             add(actionButton("Start (Docker)", "MockServer.StartDocker", project, AllIcons.Actions.Execute))
+            add(actionButton("Start (binary)", "MockServer.StartBinary", project, AllIcons.Actions.Execute))
+            add(actionButton("Stop (binary)", "MockServer.StopBinary", project, AllIcons.Actions.Suspend))
             add(actionButton("Reset", "MockServer.Reset", project, AllIcons.Actions.GC))
         })
 

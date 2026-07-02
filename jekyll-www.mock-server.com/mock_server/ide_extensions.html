@@ -73,7 +73,7 @@ sitemap:
 
 <ul>
     <li>VS Code 1.80+</li>
-    <li>Docker Desktop — required only for the <strong>Start (Docker)</strong> command; all other commands work against any already-running MockServer instance</li>
+    <li>Docker Desktop — required only for the <strong>Start (Docker)</strong> command. No Docker? Use <strong>Start (binary, no Docker)</strong> instead, or point the extension at any already-running MockServer instance</li>
 </ul>
 
 <h3>Commands</h3>
@@ -93,8 +93,16 @@ sitemap:
         <td>Pulls and starts <span class="inline_code">mockserver/mockserver:{{ site.mockserver_version }}</span> on the configured port (default 1080). Requires Docker.</td>
     </tr>
     <tr>
+        <td><strong>MockServer: Start (binary, no Docker)</strong></td>
+        <td>Starts MockServer from a self-contained binary bundle (a bundled Java runtime + jar — no Docker or separate JDK needed). Uses the bundle at <span class="inline_code">mockserver.binaryPath</span> if set, otherwise (after confirmation) downloads the bundle matching the extension version for your OS/architecture and caches it. The download is checksum-verified <em>fail-closed</em> — if the <span class="inline_code">.sha256</span> can't be fetched (e.g. behind a TLS-inspection proxy) you're asked to confirm before installing unverified. The server is stopped automatically when you close the editor window. Ideal for corporate machines without Docker.</td>
+    </tr>
+    <tr>
         <td><strong>MockServer: Stop</strong></td>
         <td>Stops the running MockServer Docker container</td>
+    </tr>
+    <tr>
+        <td><strong>MockServer: Stop (binary)</strong></td>
+        <td>Stops the MockServer process started by <strong>Start (binary, no Docker)</strong></td>
     </tr>
     <tr>
         <td><strong>MockServer: Open Dashboard in Browser</strong></td>
@@ -192,6 +200,8 @@ sitemap:
     <li><strong>Docker image</strong> — override the Docker image used by Start (Docker); defaults to <span class="inline_code">mockserver/mockserver:{{ site.mockserver_version }}</span></li>
     <li><strong>Container name</strong> — name for the started Docker container</li>
     <li><strong>Port</strong> — port MockServer listens on; defaults to 1080</li>
+    <li><strong>Binary path</strong> (<span class="inline_code">mockserver.binaryPath</span>) — path to a locally-installed binary bundle for <strong>Start (binary, no Docker)</strong>: either the <span class="inline_code">bin/mockserver</span> launcher or the unpacked bundle directory. Leave empty to download and cache the bundle on first use</li>
+    <li><strong>Binary version</strong> (<span class="inline_code">mockserver.binaryVersion</span>) — bundle version to download; defaults to the extension's own version</li>
 </ul>
 
 <h3>Quick Start</h3>
@@ -226,7 +236,7 @@ sitemap:
 
 <ul>
     <li>IntelliJ IDEA 2024.3+ (build 243+) or any JetBrains IDE on IntelliJ Platform 2024.3+</li>
-    <li>Docker — required only for the <strong>Start (Docker)</strong> action; all other actions work against any already-running MockServer instance</li>
+    <li>Docker — required only for the <strong>Start (Docker)</strong> action. No Docker? Use <strong>Start (binary, no Docker)</strong> instead, or point the plugin at any already-running MockServer instance</li>
 </ul>
 
 <h3>Tool Window and Tools Menu</h3>
@@ -251,9 +261,17 @@ sitemap:
     </thead>
     <tbody>
     <tr>
-        <td rowspan="2"><strong>Server</strong></td>
+        <td rowspan="4"><strong>Server</strong></td>
         <td><strong>Start (Docker)</strong></td>
         <td>Runs <span class="inline_code">docker run -d --rm -p 1080:1080 mockserver/mockserver:{{ site.mockserver_version }}</span> (or the image configured in Settings). Requires Docker.</td>
+    </tr>
+    <tr>
+        <td><strong>Start (binary, no Docker)</strong></td>
+        <td>Starts MockServer from a self-contained binary bundle (a bundled Java runtime + jar — no Docker or separate JDK). Uses the configured <strong>Binary bundle path</strong> if set, otherwise (after confirmation) downloads the bundle matching the plugin version for your OS/architecture and caches it. The download is checksum-verified <em>fail-closed</em> — if the <span class="inline_code">.sha256</span> can't be fetched you're asked to confirm before installing unverified. The server is stopped automatically when the IDE closes. Ideal for corporate machines without Docker.</td>
+    </tr>
+    <tr>
+        <td><strong>Stop (binary)</strong></td>
+        <td>Stops the MockServer process started by <strong>Start (binary, no Docker)</strong></td>
     </tr>
     <tr>
         <td><strong>Reset</strong></td>
@@ -328,6 +346,7 @@ sitemap:
     <li><strong>Docker image</strong> — override the image used by Start (Docker); defaults to <span class="inline_code">mockserver/mockserver:{{ site.mockserver_version }}</span></li>
     <li><strong>Container name</strong> — name for the started Docker container</li>
     <li><strong>Port</strong> — port MockServer listens on; defaults to 1080 (also editable directly in the tool window)</li>
+    <li><strong>Binary bundle path (no Docker)</strong> — path to a locally-installed binary bundle for <strong>Start (binary, no Docker)</strong>: either the <span class="inline_code">bin/mockserver</span> launcher or the unpacked bundle directory. Leave empty to download and cache the bundle matching the plugin version on first use</li>
 </ul>
 
 <h3>Quick Start</h3>

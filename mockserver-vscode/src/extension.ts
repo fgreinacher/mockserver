@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { execFileSync, execFile } from "child_process";
+import * as fs from "fs";
+import { execFileSync, execFile, spawn, ChildProcess } from "child_process";
+import * as bundle from "./binaryBundle";
 import {
     ExpectationCodeLensProvider,
     EXPECTATION_FILE_SELECTOR,
@@ -21,6 +23,15 @@ import { fetchAgentCallGraph, toMermaid, FetchWithHeaders } from "./callGraph";
 
 let outputChannel: vscode.OutputChannel;
 let extensionVersion = "latest";
+
+// The extension context, captured in activate(). Needed by the binary-bundle
+// launch commands to resolve the global-storage cache directory.
+let extensionContext: vscode.ExtensionContext;
+
+// The MockServer process started from a binary bundle (no Docker), tracked so the
+// Stop command can terminate it and Start can detect an already-running instance.
+// undefined when no bundle process is running in this window.
+let binaryProcess: ChildProcess | undefined;
 
 // Collection backing the inline drift diagnostics shown on expectation files.
 // Created in activate() so it shares the extension lifecycle.
@@ -71,6 +82,13 @@ interface MockServerConfig {
     containerName: string;
     port: number;
     traceUrlTemplate: string;
+    // Absolute path to a locally-installed binary bundle: either the launcher
+    // executable itself or the unpacked bundle root directory. Blank means "use
+    // the cached download under global storage" (see the binary launch commands).
+    binaryPath: string;
+    // Version of the binary bundle to download/use. Blank ⇒ this extension's own
+    // version, so the bundle stays in lockstep with the release.
+    binaryVersion: string;
 }
 
 // Reads settings fresh on each use so changes apply without reloading the window.
@@ -87,6 +105,8 @@ function getConfig(): MockServerConfig {
         containerName: cfg.get<string>("containerName") || "mockserver-vscode",
         port: validPort ? configuredPort : 1080,
         traceUrlTemplate: (cfg.get<string>("traceUrlTemplate") ?? "").trim(),
+        binaryPath: (cfg.get<string>("binaryPath") ?? "").trim(),
+        binaryVersion: (cfg.get<string>("binaryVersion") ?? "").trim() || extensionVersion,
     };
 }
 
@@ -108,7 +128,9 @@ async function showStatusBarMenu(): Promise<void> {
         { label: "$(dashboard) Open Dashboard", command: "mockserver.openDashboardInEditor" },
         { label: "$(globe) Open Dashboard in Browser", command: "mockserver.openDashboard" },
         { label: "$(play) Start (Docker)", command: "mockserver.start" },
+        { label: "$(rocket) Start (binary, no Docker)", command: "mockserver.startBinary" },
         { label: "$(debug-stop) Stop", command: "mockserver.stop" },
+        { label: "$(debug-stop) Stop (binary)", command: "mockserver.stopBinary" },
         { label: "$(list-unordered) View Request Log", command: "mockserver.viewRequestLog" },
     ];
     const pick = await vscode.window.showQuickPick(actions, {
@@ -121,10 +143,13 @@ async function showStatusBarMenu(): Promise<void> {
 
 export function activate(context: vscode.ExtensionContext): void {
     outputChannel = vscode.window.createOutputChannel("MockServer");
+    extensionContext = context;
     extensionVersion = (context.extension.packageJSON as { version?: string }).version ?? "latest";
 
     const startCmd = vscode.commands.registerCommand("mockserver.start", startMockServer);
     const stopCmd = vscode.commands.registerCommand("mockserver.stop", stopMockServer);
+    const startBinaryCmd = vscode.commands.registerCommand("mockserver.startBinary", startMockServerBinary);
+    const stopBinaryCmd = vscode.commands.registerCommand("mockserver.stopBinary", stopMockServerBinary);
     const dashboardCmd = vscode.commands.registerCommand("mockserver.openDashboard", openDashboard);
     const dashboardInEditorCmd = vscode.commands.registerCommand(
         "mockserver.openDashboardInEditor",
@@ -232,6 +257,8 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         startCmd,
         stopCmd,
+        startBinaryCmd,
+        stopBinaryCmd,
         dashboardCmd,
         dashboardInEditorCmd,
         loadCmd,
@@ -276,7 +303,11 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-    // Nothing to clean up
+    // Terminate a bundle-launched MockServer so it doesn't outlive the window.
+    if (binaryProcess) {
+        killBinaryProcess(binaryProcess);
+        binaryProcess = undefined;
+    }
 }
 
 async function startMockServer(): Promise<void> {
@@ -347,6 +378,317 @@ async function stopMockServer(): Promise<void> {
         }
         outputChannel.appendLine("MockServer stopped.");
         vscode.window.showInformationMessage("MockServer stopped.");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Binary-bundle (no-Docker) launch
+//
+// For corporate machines without Docker, MockServer can be run from a
+// self-contained binary bundle (a bundled Java runtime + jar + launcher). The
+// bundle is either supplied locally via `mockserver.binaryPath` or downloaded
+// once from the GitHub release matching the extension version and cached under
+// the extension's global storage. The launched process is tracked in
+// `binaryProcess` for Stop and window-close cleanup. Pure resolution logic lives
+// in binaryBundle.ts; this section handles the UI, download, and process I/O.
+// ---------------------------------------------------------------------------
+
+async function startMockServerBinary(): Promise<void> {
+    const cfg = getConfig();
+    outputChannel.show(true);
+
+    if (binaryProcess) {
+        vscode.window.showInformationMessage(
+            `MockServer (binary) is already running on port ${cfg.port}. Stop it first to restart.`
+        );
+        return;
+    }
+
+    let target: bundle.BundleTarget;
+    try {
+        target = bundle.resolveTarget(process.platform, process.arch);
+    } catch (e) {
+        vscode.window.showErrorMessage((e as Error).message);
+        return;
+    }
+
+    let launcher: string | undefined;
+    try {
+        launcher = await resolveBinaryLauncher(cfg, target);
+    } catch (e) {
+        const msg = (e as Error).message;
+        outputChannel.appendLine(`Error: ${msg}`);
+        vscode.window.showErrorMessage(`MockServer binary launch failed: ${msg}`);
+        return;
+    }
+    if (!launcher) {
+        return; // user declined the download
+    }
+
+    const args = bundle.serverArgs(cfg.port);
+    outputChannel.appendLine(`Starting MockServer (binary) on port ${cfg.port}: ${launcher} ${args.join(" ")}`);
+
+    const proc = spawnLauncher(launcher, args, target.os);
+    binaryProcess = proc;
+    proc.stdout?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
+    proc.stderr?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
+    proc.on("error", (err) => {
+        outputChannel.appendLine(`Failed to launch: ${err.message}`);
+        vscode.window.showErrorMessage(`Failed to start MockServer binary: ${err.message}`);
+        if (binaryProcess === proc) {
+            binaryProcess = undefined;
+        }
+    });
+    proc.on("exit", (code, signal) => {
+        outputChannel.appendLine(
+            `MockServer (binary) exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`
+        );
+        if (binaryProcess === proc) {
+            binaryProcess = undefined;
+        }
+    });
+    vscode.window.showInformationMessage(`MockServer (binary) starting on http://localhost:${cfg.port}`);
+}
+
+async function stopMockServerBinary(): Promise<void> {
+    outputChannel.show(true);
+    if (!binaryProcess) {
+        vscode.window.showWarningMessage("No MockServer binary process is running in this window.");
+        return;
+    }
+    outputChannel.appendLine("Stopping MockServer (binary)...");
+    killBinaryProcess(binaryProcess);
+    binaryProcess = undefined;
+    vscode.window.showInformationMessage("MockServer (binary) stopped.");
+}
+
+/** Spawn the bundle launcher; on Windows the `.bat` must run under `cmd`. */
+function spawnLauncher(launcher: string, args: string[], os: bundle.BundleOs): ChildProcess {
+    if (os === "windows") {
+        // Args are fixed flags plus a numeric port (no user text), so /c is safe here.
+        return spawn("cmd.exe", ["/c", launcher, ...args], { windowsHide: true });
+    }
+    return spawn(launcher, args, {});
+}
+
+/** Terminate the tracked bundle process (and, on Windows, its java.exe child). */
+function killBinaryProcess(proc: ChildProcess): void {
+    if (proc.pid === undefined) {
+        return;
+    }
+    if (process.platform === "win32") {
+        // The .bat runs java.exe as a child of cmd; a plain kill of cmd would orphan
+        // java, so kill the whole tree.
+        try {
+            execFileSync("taskkill", ["/PID", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+        } catch {
+            // already gone
+        }
+    } else {
+        // The POSIX launcher `exec`s java in place, so the tracked pid IS the JVM and
+        // SIGTERM reaches it directly for a clean shutdown.
+        try {
+            proc.kill("SIGTERM");
+        } catch {
+            // already gone
+        }
+    }
+}
+
+/**
+ * Resolve the launcher to run: an explicit `mockserver.binaryPath`, else the
+ * cached download, else (with the user's consent) a fresh download. Returns
+ * `undefined` when the user declines the download; throws with a clear message
+ * when a configured path or download is broken.
+ */
+async function resolveBinaryLauncher(
+    cfg: MockServerConfig,
+    target: bundle.BundleTarget
+): Promise<string | undefined> {
+    // Reject an unsafe version before it is interpolated into any URL or path.
+    if (!bundle.isValidVersion(cfg.binaryVersion)) {
+        throw new Error(
+            `Invalid mockserver.binaryVersion '${cfg.binaryVersion}'. ` +
+                `Allowed characters: letters, digits, '.', '_', '-'.`
+        );
+    }
+
+    // 1. Explicit local bundle path (launcher file or unpacked bundle directory).
+    if (cfg.binaryPath) {
+        let isDir = false;
+        try {
+            isDir = fs.statSync(cfg.binaryPath).isDirectory();
+        } catch {
+            // path may not exist — fall through to the existence check below
+        }
+        const launcher = bundle.resolveConfiguredLauncher(cfg.binaryPath, target.os, isDir);
+        if (!fs.existsSync(launcher)) {
+            throw new Error(
+                `mockserver.binaryPath is set but no launcher was found at ${launcher}. ` +
+                    `Point it at the bundle's bin/mockserver launcher or the unpacked bundle directory.`
+            );
+        }
+        return launcher;
+    }
+
+    // 2. Previously-downloaded bundle in the global-storage cache.
+    const storageDir = extensionContext.globalStorageUri.fsPath;
+    const cachedLauncher = bundle.cachedLauncherPath(storageDir, cfg.binaryVersion, target);
+    if (fs.existsSync(cachedLauncher)) {
+        return cachedLauncher;
+    }
+
+    // 3. Offer to download the matching bundle from the GitHub release.
+    const archiveName = bundle.archiveFileName(cfg.binaryVersion, target);
+    const choice = await vscode.window.showInformationMessage(
+        `No MockServer binary bundle found for ${target.os}/${target.arch}. ` +
+            `Download ${archiveName} from GitHub (no Docker required)?`,
+        { modal: true },
+        "Download"
+    );
+    if (choice !== "Download") {
+        return undefined;
+    }
+    await downloadAndExtractBundle(cfg.binaryVersion, target, storageDir);
+    if (!fs.existsSync(cachedLauncher)) {
+        throw new Error(`Bundle downloaded but launcher not found at ${cachedLauncher}.`);
+    }
+    return cachedLauncher;
+}
+
+/**
+ * Download the bundle archive from the GitHub release, verify its published
+ * SHA-256 sidecar, and unpack it into the global-storage cache. Uses VS Code's
+ * global `fetch`, which honours the editor's `http.proxy` / system-proxy settings,
+ * so it works behind a corporate proxy without extra configuration.
+ *
+ * Checksum verification is FAIL-CLOSED: a digest mismatch always aborts, and a
+ * sidecar that cannot be fetched aborts too UNLESS the user explicitly confirms
+ * installing without verification (the second-consent prompt). This matters behind
+ * a TLS-inspection proxy, where the small `.sha256` fetch can fail while the large
+ * archive succeeds — silently skipping the check there would defeat the point.
+ */
+async function downloadAndExtractBundle(
+    version: string,
+    target: bundle.BundleTarget,
+    storageDir: string
+): Promise<void> {
+    const bundlesDir = path.join(storageDir, "bundles");
+    fs.mkdirSync(bundlesDir, { recursive: true });
+    const archiveName = bundle.archiveFileName(version, target);
+    const archivePath = path.join(bundlesDir, archiveName);
+    const url = bundle.downloadUrl(version, target);
+    const sumUrl = bundle.checksumUrl(version, target);
+
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: `MockServer: ${archiveName}`,
+            cancellable: false,
+        },
+        async (progress) => {
+            progress.report({ message: "downloading..." });
+            outputChannel.appendLine(`Downloading ${url}`);
+            const res = await fetch(url);
+            if (!res.ok) {
+                throw new Error(`Download failed: HTTP ${res.status} for ${url}`);
+            }
+            fs.writeFileSync(archivePath, Buffer.from(await res.arrayBuffer()));
+
+            // Fetch the published checksum sidecar.
+            progress.report({ message: "verifying checksum..." });
+            let expected: string | undefined;
+            try {
+                const sumRes = await fetch(sumUrl);
+                if (sumRes.ok) {
+                    expected = bundle.parseSha256(await sumRes.text());
+                }
+            } catch {
+                // treated below as "sidecar unavailable" → fail-closed unless consented
+            }
+            const actual = expected !== undefined ? await bundle.sha256File(archivePath) : undefined;
+
+            // When the sidecar could not be fetched, require a second, explicit consent
+            // before installing unverified — otherwise abort.
+            let consentWithoutChecksum = false;
+            if (expected === undefined) {
+                const answer = await vscode.window.showWarningMessage(
+                    `Could not verify the checksum of ${archiveName}: the .sha256 sidecar could not be ` +
+                        `fetched (common behind a TLS-inspection proxy). Install without checksum verification?`,
+                    { modal: true },
+                    "Install anyway"
+                );
+                consentWithoutChecksum = answer === "Install anyway";
+            }
+            const abortReason = bundle.checksumAbortReason(expected, actual, consentWithoutChecksum);
+            if (abortReason) {
+                fs.rmSync(archivePath, { force: true });
+                throw new Error(`${archiveName}: ${abortReason}`);
+            }
+            outputChannel.appendLine(
+                expected !== undefined ? "Checksum verified." : "Installing without checksum verification (user-confirmed)."
+            );
+
+            progress.report({ message: "extracting..." });
+            const destBundleDir = bundle.cachedBundleDir(storageDir, version, target);
+            fs.rmSync(destBundleDir, { recursive: true, force: true }); // clear any stale partial
+            await extractArchive(archivePath, bundlesDir, target.os);
+            fs.rmSync(archivePath, { force: true });
+            if (target.os !== "windows") {
+                // tar preserves the exec bit, but re-assert it defensively.
+                try {
+                    fs.chmodSync(bundle.cachedLauncherPath(storageDir, version, target), 0o755);
+                } catch {
+                    // ignore
+                }
+            }
+            outputChannel.appendLine("Bundle ready.");
+        }
+    );
+}
+
+
+/**
+ * Unpack the downloaded archive into `destDir`. The download OS always matches
+ * the current machine, so `.tar.gz` uses `tar` (present on macOS/Linux) and the
+ * Windows `.zip` uses PowerShell's Expand-Archive.
+ */
+function extractArchive(archivePath: string, destDir: string, os: bundle.BundleOs): Promise<void> {
+    return new Promise((resolve, reject) => {
+        let cmd: string;
+        let args: string[];
+        if (os === "windows") {
+            cmd = "powershell.exe";
+            args = [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${destDir}' -Force`,
+            ];
+        } else {
+            // Guard against tar-slip before extracting: list the entries and reject any
+            // absolute or `..`-escaping path. (The archive is our own checksum-verified
+            // GitHub release, so this is defence in depth.)
+            try {
+                const listing = execFileSync("tar", ["-tzf", archivePath], { encoding: "utf-8" });
+                const unsafe = bundle.firstUnsafeArchiveEntry(listing.split("\n"));
+                if (unsafe) {
+                    throw new Error(`Refusing to extract archive with unsafe path entry: ${unsafe}`);
+                }
+            } catch (e) {
+                reject(e instanceof Error ? e : new Error(String(e)));
+                return;
+            }
+            cmd = "tar";
+            args = ["-xzf", archivePath, "-C", destDir];
+        }
+        execFile(cmd, args, (error, _stdout, stderr) => {
+            if (error) {
+                reject(new Error(`Failed to extract bundle: ${stderr || error.message}`));
+                return;
+            }
+            resolve();
+        });
     });
 }
 

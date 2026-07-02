@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Editor extensions can start MockServer without Docker.** Both the VS Code extension and the JetBrains/IntelliJ
+  plugin gain a **Start (binary, no Docker)** command/action that launches MockServer from the self-contained binary
+  bundle (a jlink-trimmed Java runtime + the shaded jar + launcher — see `scripts/build-binary-bundle.sh`), so
+  corporate machines without a Docker daemon can run a local server straight from the editor. The bundle is taken
+  from a configured local path (`mockserver.binaryPath` in VS Code, *Binary bundle path* in JetBrains settings) —
+  either the `bin/mockserver` launcher or the unpacked bundle directory — or, when unset, downloaded on demand
+  (after an explicit confirmation) for the current OS/architecture from the GitHub release matching the
+  extension/plugin version and cached (under the extension's global storage / IDE system cache). Checksum
+  verification against the published `.sha256` sidecar is **fail-closed**: a digest mismatch always aborts, and a
+  sidecar that cannot be fetched (common behind a TLS-inspection proxy, where the small sidecar fetch fails while
+  the large archive succeeds) aborts too unless the user explicitly confirms installing unverified. The launched
+  process is tracked for a matching **Stop (binary)** and terminated on editor/IDE shutdown so it never outlives
+  the editor holding the port: VS Code streams its output to the MockServer output channel and its download honours
+  the editor's `http.proxy` / system-proxy settings; JetBrains runs it as a tracked background process registered
+  for IDE-shutdown cleanup. Docker-based **Start (Docker)** is unchanged. See the
+  [IDE Extensions](https://www.mock-server.com/mock_server/ide_extensions.html) page.
+
 - **Match requests by the claims inside a JWT (`jwt` request matcher).** An expectation can now route on a
   JSON Web Token carried in a request header — `withJwt(jwt().withClaim("sub", "user-1").withClaim("scope",
   ".*admin.*"))` matches only requests whose bearer token carries those claims (each claim value is an exact

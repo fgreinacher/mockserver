@@ -23,6 +23,7 @@
     <p><b>Server</b></p>
     <ul>
       <li><b>Start MockServer (Docker)</b> — launch the configured <em>mockserver/mockserver</em> container on the configured port with one click (the image tracks the plugin version by default).</li>
+      <li><b>Start MockServer (binary, no Docker)</b> — for machines without Docker, launch MockServer from a self-contained binary bundle (a bundled Java runtime + jar, no Docker or separate JDK). Uses the configured bundle path, or downloads the checksum-verified bundle matching the plugin version for your OS/architecture and caches it; <b>Stop (binary)</b> terminates it.</li>
       <li><b>Open MockServer Dashboard in IDE</b> — embed the live dashboard in a right-hand tool window using the bundled JCEF (Chromium) engine, with Reload and Open-in-Browser buttons; falls back to your browser when JCEF is unavailable.</li>
       <li><b>Open MockServer Dashboard</b> — open the live dashboard in your default browser.</li>
       <li><b>Reset MockServer</b> — clear all expectations and recorded logs on the running server (confirms first).</li>
@@ -44,15 +45,19 @@
       <li><b>Upload WASM Module</b> — pick a compiled <em>.wasm</em> custom-rule module and upload it, then reference it by name as a WASM body matcher.</li>
       <li><b>List WASM Modules</b> — show the WASM custom-rule modules registered on the running server.</li>
       <li><b>MockServer tool window</b> — a dockable panel that surfaces every action as a one-click button, grouped into Server, Editor, and WASM rows.</li>
-      <li><b>Settings</b> — configure the Docker image, container name, and port under <b>Settings | Tools | MockServer</b>.</li>
+      <li><b>Settings</b> — configure the Docker image, container name, port, and the no-Docker binary bundle path under <b>Settings | Tools | MockServer</b>.</li>
     </ul>
 
-    <p><b>Requirements</b> — a running MockServer instance at the configured port (Docker is optional, and only needed for the Start action). WASM actions require <em>wasmEnabled=true</em> on the server.</p>
+    <p><b>Requirements</b> — a running MockServer instance at the configured port. Docker is optional: it is only needed for <b>Start (Docker)</b>, and machines without Docker can use <b>Start (binary, no Docker)</b> instead. WASM actions require <em>wasmEnabled=true</em> on the server.</p>
 
     <p><b>Links</b> — <a href="https://www.mock-server.com">mock-server.com</a> for full documentation and client libraries, and the <a href="https://github.com/mock-server/mockserver">GitHub repository</a> for source and issues.</p>
     ]]></description>
 
     <change-notes><![CDATA[
+    <p><b>Unreleased</b></p>
+    <ul>
+      <li><b>Start MockServer (binary, no Docker)</b> — launch MockServer from a self-contained binary bundle (bundled Java runtime + jar) for machines without Docker; the bundle is taken from the configured path or downloaded (checksum-verified) and cached. Adds a Binary bundle path setting and a Stop (binary) action</li>
+    </ul>
     <p><b>7.3.0</b> — LLM authoring, contract testing, and stream-frame debugging (VS Code parity):</p>
     <ul>
       <li><b>LLM tool window</b> — build an <em>httpLlmResponse</em> expectation from a form (provider/model/path/completion/usage/stream) and open it in an editor or load it into the running server; completion for <em>httpLlmResponse</em> fields, provider and model names inside <em>*.mockserver.json</em>; and an agent-run call graph rendered as Mermaid in the embedded Chromium (JCEF)</li>
@@ -96,6 +101,16 @@
                     text="Start MockServer (Docker)"
                     description="Starts a MockServer container via Docker"
                     icon="AllIcons.Actions.Execute"/>
+            <action id="MockServer.StartBinary"
+                    class="com.mockserver.jetbrains.StartBinaryAction"
+                    text="Start MockServer (binary, no Docker)"
+                    description="Starts MockServer from a self-contained binary bundle (bundled Java runtime, no Docker) — downloaded on demand or taken from the configured bundle path"
+                    icon="AllIcons.Actions.Execute"/>
+            <action id="MockServer.StopBinary"
+                    class="com.mockserver.jetbrains.StopBinaryAction"
+                    text="Stop MockServer (binary)"
+                    description="Stops the MockServer process started from a binary bundle"
+                    icon="AllIcons.Actions.Suspend"/>
             <action id="MockServer.Reset"
                     class="com.mockserver.jetbrains.ResetAction"
                     text="Reset MockServer"

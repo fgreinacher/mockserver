@@ -227,6 +227,152 @@ async function runTests(): Promise<void> {
         );
     });
 
+    await test("activate registers mockserver.startBinary command", () => {
+        assert.ok(
+            registeredCommands.has("mockserver.startBinary"),
+            "mockserver.startBinary command not registered"
+        );
+    });
+
+    await test("activate registers mockserver.stopBinary command", () => {
+        assert.ok(
+            registeredCommands.has("mockserver.stopBinary"),
+            "mockserver.stopBinary command not registered"
+        );
+    });
+
+    // --- Binary-bundle (no-Docker) launch: pure resolution logic ---
+    const binary = require("../binaryBundle");
+
+    await test("resolveTarget maps Node platform/arch to published bundle os/arch", () => {
+        assert.deepStrictEqual(binary.resolveTarget("darwin", "arm64"), { os: "darwin", arch: "aarch64" });
+        assert.deepStrictEqual(binary.resolveTarget("darwin", "x64"), { os: "darwin", arch: "x86_64" });
+        assert.deepStrictEqual(binary.resolveTarget("linux", "x64"), { os: "linux", arch: "x86_64" });
+        assert.deepStrictEqual(binary.resolveTarget("linux", "arm64"), { os: "linux", arch: "aarch64" });
+        assert.deepStrictEqual(binary.resolveTarget("win32", "x64"), { os: "windows", arch: "x86_64" });
+    });
+
+    await test("resolveTarget rejects unsupported platform/arch and windows/aarch64", () => {
+        assert.throws(() => binary.resolveTarget("aix", "x64"), /No MockServer binary bundle/);
+        assert.throws(() => binary.resolveTarget("linux", "ppc64"), /No MockServer binary bundle/);
+        // No windows/aarch64 bundle is published.
+        assert.throws(() => binary.resolveTarget("win32", "arm64"), /windows\/aarch64/);
+    });
+
+    await test("archive file name and extension follow the published asset naming", () => {
+        const mac = { os: "darwin", arch: "aarch64" };
+        const win = { os: "windows", arch: "x86_64" };
+        assert.strictEqual(binary.archiveExtension("darwin"), ".tar.gz");
+        assert.strictEqual(binary.archiveExtension("windows"), ".zip");
+        assert.strictEqual(binary.bundleBaseName("7.3.0", mac), "mockserver-7.3.0-darwin-aarch64");
+        assert.strictEqual(binary.archiveFileName("7.3.0", mac), "mockserver-7.3.0-darwin-aarch64.tar.gz");
+        assert.strictEqual(binary.archiveFileName("7.3.0", win), "mockserver-7.3.0-windows-x86_64.zip");
+    });
+
+    await test("downloadUrl and checksumUrl point at the GitHub release asset", () => {
+        const t = { os: "linux", arch: "x86_64" };
+        assert.strictEqual(
+            binary.downloadUrl("7.3.0", t),
+            "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-7.3.0/mockserver-7.3.0-linux-x86_64.tar.gz"
+        );
+        assert.strictEqual(binary.checksumUrl("7.3.0", t), binary.downloadUrl("7.3.0", t) + ".sha256");
+    });
+
+    await test("launcherRelativePath is bin/mockserver (.bat on windows)", () => {
+        const path = require("path");
+        assert.strictEqual(binary.launcherRelativePath("linux"), path.join("bin", "mockserver"));
+        assert.strictEqual(binary.launcherRelativePath("darwin"), path.join("bin", "mockserver"));
+        assert.strictEqual(binary.launcherRelativePath("windows"), path.join("bin", "mockserver.bat"));
+    });
+
+    await test("serverArgs uses the backward-compatible -serverPort flag", () => {
+        assert.deepStrictEqual(binary.serverArgs(2080), ["-serverPort", "2080"]);
+    });
+
+    await test("parseSha256 extracts the digest from a sha256sum sidecar", () => {
+        const line = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  mockserver-7.3.0-linux-x86_64.tar.gz\n";
+        assert.strictEqual(
+            binary.parseSha256(line),
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        );
+        assert.throws(() => binary.parseSha256("not a checksum"), /SHA-256/);
+    });
+
+    await test("resolveConfiguredLauncher appends bin/mockserver only for a directory", () => {
+        const path = require("path");
+        assert.strictEqual(
+            binary.resolveConfiguredLauncher("/opt/ms", "linux", true),
+            path.join("/opt/ms", "bin", "mockserver")
+        );
+        // A file path is used verbatim.
+        assert.strictEqual(
+            binary.resolveConfiguredLauncher("/opt/ms/bin/mockserver", "linux", false),
+            "/opt/ms/bin/mockserver"
+        );
+    });
+
+    await test("cachedLauncherPath nests under bundles/<base>/bin in global storage", () => {
+        const path = require("path");
+        const t = { os: "darwin", arch: "aarch64" };
+        assert.strictEqual(
+            binary.cachedLauncherPath("/store", "7.3.0", t),
+            path.join("/store", "bundles", "mockserver-7.3.0-darwin-aarch64", "bin", "mockserver")
+        );
+    });
+
+    await test("isValidVersion accepts release-shaped versions and rejects injection", () => {
+        assert.strictEqual(binary.isValidVersion("7.3.0"), true);
+        assert.strictEqual(binary.isValidVersion("7.3.0-SNAPSHOT_1"), true);
+        assert.strictEqual(binary.isValidVersion("7.3.0/../etc"), false);
+        assert.strictEqual(binary.isValidVersion("7 3"), false);
+        assert.strictEqual(binary.isValidVersion(""), false);
+        assert.strictEqual(binary.isValidVersion("../../evil"), false);
+    });
+
+    await test("checksumAbortReason is fail-closed: verified, mismatch, and missing-sidecar cases", () => {
+        const digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        // sidecar present + digests match → proceed
+        assert.strictEqual(binary.checksumAbortReason(digest, digest, false), undefined);
+        // digests match is case-insensitive
+        assert.strictEqual(binary.checksumAbortReason(digest.toUpperCase(), digest, false), undefined);
+        // sidecar present + mismatch → abort (even with consent flag set)
+        assert.ok(binary.checksumAbortReason(digest, "deadbeef", true), "mismatch must abort");
+        // sidecar absent + NO consent → abort (fail-closed)
+        const noSidecar = binary.checksumAbortReason(undefined, undefined, false);
+        assert.ok(noSidecar && /could not be verified/i.test(noSidecar), "missing sidecar without consent must abort");
+        // sidecar absent + explicit consent → proceed
+        assert.strictEqual(binary.checksumAbortReason(undefined, undefined, true), undefined);
+    });
+
+    await test("firstUnsafeArchiveEntry flags absolute and path-traversal entries", () => {
+        assert.strictEqual(
+            binary.firstUnsafeArchiveEntry(["mockserver-7.3.0-linux-x86_64/bin/mockserver", "runtime/lib/x.so"]),
+            undefined
+        );
+        assert.strictEqual(binary.firstUnsafeArchiveEntry(["/etc/passwd"]), "/etc/passwd");
+        assert.strictEqual(binary.firstUnsafeArchiveEntry(["../../etc/passwd"]), "../../etc/passwd");
+        assert.strictEqual(binary.firstUnsafeArchiveEntry(["ok/../../evil"]), "ok/../../evil");
+        assert.strictEqual(binary.firstUnsafeArchiveEntry(["C:\\Windows\\system32"]), "C:\\Windows\\system32");
+        assert.strictEqual(binary.firstUnsafeArchiveEntry(["", "  ", "safe/dir/file"]), undefined);
+    });
+
+    await test("sha256File computes the digest of a real file", async () => {
+        const fs = require("fs");
+        const os = require("os");
+        const path = require("path");
+        const tmp = path.join(os.tmpdir(), `ms-sha-${Date.now()}.bin`);
+        fs.writeFileSync(tmp, "");
+        try {
+            // SHA-256 of the empty string.
+            assert.strictEqual(
+                await binary.sha256File(tmp),
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            );
+        } finally {
+            fs.rmSync(tmp, { force: true });
+        }
+    });
+
     await test("activate registers mockserver.openDashboard command", () => {
         assert.ok(
             registeredCommands.has("mockserver.openDashboard"),

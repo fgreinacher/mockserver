@@ -62,9 +62,9 @@ from your code tabs). Prefer your browser? **Open Dashboard in Browser** opens t
 ## 30-second quick start
 
 1. Create `login.mockserver.json` — the editor validates the schema as you type.
-2. **Start a server:** run **MockServer: Start (Docker)** for a local container, or point the
-   extension at an already-running server by setting `mockserver.port` (and `mockserver.dockerImage`
-   / `mockserver.containerName` if relevant).
+2. **Start a server:** run **MockServer: Start (Docker)** for a local container, **MockServer: Start
+   (binary, no Docker)** if you don't have Docker, or point the extension at an already-running server by
+   setting `mockserver.port` (and `mockserver.dockerImage` / `mockserver.containerName` if relevant).
 3. **Load it:** click the **Load into running MockServer** CodeLens at the top of the file (also in the
    editor title bar and right-click menu) to push your expectation(s) to the server.
 4. **Watch it:** run **MockServer: Open Dashboard** (or click the status item in the MockServer side panel)
@@ -77,8 +77,9 @@ most common actions (Open Dashboard, Start, Stop, View Request Log).
 ### Prerequisites
 
 - VS Code 1.80+
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — only for **Start / Stop**; every
-  other command works against any running MockServer instance.
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — only for **Start (Docker) / Stop**.
+  No Docker? Use **Start (binary, no Docker)** instead, which runs a self-contained bundle (no Docker or JDK
+  needed). Every other command works against any running MockServer instance.
 
 ### Installation
 
@@ -206,12 +207,16 @@ Once uploaded, reference a module in an expectation body matcher:
 
 If WASM support is disabled on the server, the server's own error message is surfaced verbatim.
 
-### Docker lifecycle
+### Server lifecycle
 
 | Command | What it does |
 |---------|-------------|
 | **Start (Docker)** | Runs `docker run -d --rm --name <containerName> -p <port>:1080 <image>`. Checks that Docker is running and that the container is not already active. |
 | **Stop** | Stops the named container with `docker stop <containerName>`. |
+| **Start (binary, no Docker)** | Starts MockServer from a self-contained binary bundle (a bundled Java runtime + jar — no Docker or separate JDK required). Uses the bundle at `mockserver.binaryPath` if set, otherwise (after a confirmation prompt) downloads the bundle matching the extension version for your OS/architecture and caches it under the extension's global storage. Output streams to the **MockServer** output channel. The process is stopped automatically on window close. Ideal for corporate machines without Docker. |
+| **Stop (binary)** | Terminates the process started by **Start (binary, no Docker)**. |
+
+The download uses VS Code's built-in `fetch`, so it honours the editor's `http.proxy` / system-proxy settings and works behind a corporate proxy without extra configuration. Checksum verification against the published `.sha256` sidecar is **fail-closed**: a mismatch always aborts, and if the sidecar can't be fetched (common behind a TLS-inspection proxy) you must explicitly confirm before the bundle installs unverified.
 
 ---
 
@@ -223,6 +228,8 @@ All commands are available from the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift
 |---------|-----------------|
 | `mockserver.start` | MockServer: Start (Docker) |
 | `mockserver.stop` | MockServer: Stop |
+| `mockserver.startBinary` | MockServer: Start (binary, no Docker) |
+| `mockserver.stopBinary` | MockServer: Stop (binary) |
 | `mockserver.openDashboard` | MockServer: Open Dashboard in Browser |
 | `mockserver.openDashboardInEditor` | MockServer: Open Dashboard |
 | `mockserver.loadExpectations` | MockServer: Load Expectations Into Running Server |
@@ -254,6 +261,8 @@ All commands are available from the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift
 | `mockserver.containerName` | `mockserver-vscode` | Name of the container started and stopped by the extension. |
 | `mockserver.port` | `1080` | Host port mapped to the container's port 1080. Used for the dashboard URL and all API commands. |
 | `mockserver.traceUrlTemplate` | _(empty)_ | URL template for **View Trace in Backend**. The `{traceId}` placeholder is replaced with the W3C trace id, e.g. `http://localhost:16686/trace/{traceId}` (Jaeger) or `https://grafana.example.com/explore?...&traceId={traceId}` (Tempo/Grafana). Empty just surfaces the trace id. |
+| `mockserver.binaryPath` | _(empty)_ | Path to a locally-installed binary bundle for **Start (binary, no Docker)** — either the `bin/mockserver` launcher or the unpacked bundle directory. Empty downloads and caches the bundle on first use. |
+| `mockserver.binaryVersion` | _(empty)_ | Version of the binary bundle to download for **Start (binary, no Docker)**. Empty uses the extension's own version, keeping the bundle in lockstep with the release. |
 
 ## File conventions
 

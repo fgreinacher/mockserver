@@ -59,6 +59,15 @@
         "title": "MockServer: Stop"
       },
       {
+        "command": "mockserver.startBinary",
+        "title": "MockServer: Start (binary, no Docker)",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "mockserver.stopBinary",
+        "title": "MockServer: Stop (binary)"
+      },
+      {
         "command": "mockserver.openDashboard",
         "title": "MockServer: Open Dashboard in Browser"
       },
@@ -347,6 +356,16 @@
           "type": "string",
           "default": "",
           "markdownDescription": "URL template for opening an OpenTelemetry trace in your trace backend (Jaeger, Tempo, Grafana). The `{traceId}` placeholder is replaced with the W3C trace id, e.g. `http://localhost:16686/trace/{traceId}`. Leave empty to just surface the trace id. Used by the **View Trace in Backend** command."
+        },
+        "mockserver.binaryPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to a locally-installed MockServer binary bundle for the **Start (binary, no Docker)** command — either the `bin/mockserver` launcher itself or the unpacked bundle directory. Leave empty to download and cache the bundle matching this extension's version on first use. Useful on corporate machines without Docker."
+        },
+        "mockserver.binaryVersion": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Version of the MockServer binary bundle to download for the **Start (binary, no Docker)** command. Leave empty to use this extension's own version, which keeps the bundle in lockstep with the release."
         }
       }
     }
