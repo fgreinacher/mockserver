@@ -50,6 +50,7 @@ Comprehensive internal documentation is maintained in `docs/`. **Always consult 
 | [docs/code/telemetry.md](docs/code/telemetry.md) | Before modifying OpenTelemetry integration, OTLP export, GenAI spans, or W3C trace context propagation |
 | [docs/code/async-messaging.md](docs/code/async-messaging.md) | Before modifying the AsyncAPI broker mocking module, AsyncApiParser, MessagePublisher adapters, or AsyncApiMockOrchestrator |
 | [docs/code/http3.md](docs/code/http3.md) | Before modifying experimental HTTP/3 (QUIC) support, Http3Server, or QUIC native dependencies |
+| [docs/code/startup-performance.md](docs/code/startup-performance.md) | Before modifying the startup path, Docker image bases, CDS/AOT archives, `startupWarmup`, or lazy initialization of startup subsystems (BouncyCastle provider, forward client event-loop group) |
 | [docs/code/clustered-state.md](docs/code/clustered-state.md) | Before modifying the StateBackend SPI, InMemoryStateBackend, InfinispanStateBackend, cross-node invalidation, or cluster configuration properties |
 | [docs/code/llm-mocking.md](docs/code/llm-mocking.md) | Before modifying the LLM response builder, provider codecs, streaming physics, conversation matchers, isolation, MCP tools, or LLM dashboard |
 | [docs/code/ai-protocol-mocking.md](docs/code/ai-protocol-mocking.md) | Before modifying MCP/A2A server mocking, SSE/WebSocket/JSON-RPC mock responses, or AI protocol handlers |
