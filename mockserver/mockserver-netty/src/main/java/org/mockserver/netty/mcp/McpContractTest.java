@@ -26,10 +26,12 @@ public class McpContractTest {
 
     /**
      * Default MCP protocol version advertised by the client when the caller supplies none.
-     * Corresponds to the 2025-03-26 MCP specification; callers can override it via the
-     * {@code protocolVersion} argument to test a server against a newer or older revision.
+     * Corresponds to the 2025-06-18 MCP specification (the latest this project targets); callers
+     * can override it via the {@code protocolVersion} argument to test a server against an older
+     * revision (e.g. {@code 2025-03-26}). A conformant server may negotiate a different revision
+     * back — the report captures whichever version the server actually echoes.
      */
-    public static final String DEFAULT_PROTOCOL_VERSION = "2025-03-26";
+    public static final String DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 
     private static final String JSON_RPC_VERSION = "2.0";
     private static final int METHOD_NOT_FOUND = -32601;
@@ -323,11 +325,24 @@ public class McpContractTest {
                         callCheck.validationErrors.add("result.content is not an array");
                     } else {
                         for (JsonNode item : result.get("content")) {
-                            if (textOrNull(item, "type") == null) {
+                            String type = textOrNull(item, "type");
+                            if (type == null) {
                                 callCheck.validationErrors.add("a content item is missing 'type'");
                                 break;
                             }
+                            // Resource links (MCP 2025-06-18) are an optional content type; when a
+                            // server returns one it must carry a 'uri'. Only validated when present,
+                            // so servers on older revisions are unaffected.
+                            if ("resource_link".equals(type) && textOrNull(item, "uri") == null) {
+                                callCheck.validationErrors.add("a resource_link content item is missing 'uri'");
+                                break;
+                            }
                         }
+                    }
+                    // Structured tool output (MCP 2025-06-18) is optional; when present the
+                    // 'structuredContent' field must be a JSON object.
+                    if (result.has("structuredContent") && !result.path("structuredContent").isObject()) {
+                        callCheck.validationErrors.add("result.structuredContent is present but not a JSON object");
                     }
                     // isError is optional in the MCP spec (absent means false); only flag a wrong type
                     if (result.has("isError") && !result.path("isError").isBoolean()) {

@@ -1628,7 +1628,7 @@ keywords: "mcp tools, mockserver mcp tools, create_expectation, verify_request, 
     </thead>
     <tbody>
         <tr><td><code>targetUrl</code></td><td>string</td><td>Yes</td><td>Full URL of the target MCP server's Streamable HTTP endpoint (e.g. <code>http://localhost:1080/mockserver/mcp</code>)</td></tr>
-        <tr><td><code>protocolVersion</code></td><td>string</td><td>No</td><td>MCP protocol version to advertise during <code>initialize</code> (default <code>2025-03-26</code>)</td></tr>
+        <tr><td><code>protocolVersion</code></td><td>string</td><td>No</td><td>MCP protocol version to advertise during <code>initialize</code> (default <code>2025-06-18</code>; use e.g. <code>2025-03-26</code> to test an older revision)</td></tr>
         <tr><td><code>toolName</code></td><td>string</td><td>No</td><td>Optional tool to exercise via a <code>tools/call</code> shape check; omit to skip (a <code>tools/call</code> may have side effects on the target)</td></tr>
     </tbody>
 </table>
@@ -1654,7 +1654,7 @@ keywords: "mcp tools, mockserver mcp tools, create_expectation, verify_request, 
     "content": [
       {
         "type": "text",
-        "text": "{\"status\":\"all_passed\",\"protocolVersion\":\"2025-03-26\",\"serverInfo\":{\"name\":\"MockServer\"},\"totalChecks\":5,\"passed\":5,\"failed\":0,\"results\":[{\"check\":\"initialize\",\"passed\":true,\"statusCode\":200,\"detail\":\"session established\"},{\"check\":\"notifications/initialized\",\"passed\":true,\"statusCode\":202},{\"check\":\"ping\",\"passed\":true,\"statusCode\":200},{\"check\":\"tools/list\",\"passed\":true,\"statusCode\":200,\"detail\":\"36 tools advertised\"},{\"check\":\"rejects unknown method\",\"passed\":true,\"statusCode\":200,\"detail\":\"responded with code -32601\"}]}"
+        "text": "{\"status\":\"all_passed\",\"protocolVersion\":\"2025-06-18\",\"serverInfo\":{\"name\":\"MockServer\"},\"totalChecks\":5,\"passed\":5,\"failed\":0,\"results\":[{\"check\":\"initialize\",\"passed\":true,\"statusCode\":200,\"detail\":\"session established\"},{\"check\":\"notifications/initialized\",\"passed\":true,\"statusCode\":202},{\"check\":\"ping\",\"passed\":true,\"statusCode\":200},{\"check\":\"tools/list\",\"passed\":true,\"statusCode\":200,\"detail\":\"36 tools advertised\"},{\"check\":\"rejects unknown method\",\"passed\":true,\"statusCode\":200,\"detail\":\"responded with code -32601\"}]}"
       }
     ],
     "isError": false

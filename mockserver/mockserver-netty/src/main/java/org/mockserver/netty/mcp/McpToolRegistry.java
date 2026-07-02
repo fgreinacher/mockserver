@@ -2235,7 +2235,7 @@ public class McpToolRegistry {
         schema.put("type", "object");
         ObjectNode properties = schema.putObject("properties");
         properties.putObject("targetUrl").put("type", "string").put("description", "Full URL of the target MCP server's Streamable HTTP endpoint (e.g. http://localhost:1080/mockserver/mcp)");
-        properties.putObject("protocolVersion").put("type", "string").put("description", "MCP protocol version to advertise during initialize (default 2025-03-26)");
+        properties.putObject("protocolVersion").put("type", "string").put("description", "MCP protocol version to advertise during initialize (default 2025-06-18; use e.g. 2025-03-26 to test an older revision)");
         properties.putObject("toolName").put("type", "string").put("description", "Optional tool to exercise via a tools/call shape check; omit to skip (a tools/call may have side effects on the target)");
         ArrayNode required = schema.putArray("required");
         required.add("targetUrl");

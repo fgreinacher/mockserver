@@ -306,6 +306,75 @@ public class McpMockBuilderTest {
     }
 
     @Test
+    public void shouldDefaultToLatest2025_06_18ProtocolVersion() {
+        Expectation[] expectations = mcpMock().build();
+
+        Expectation initExp = expectations[0];
+        String template = initExp.getHttpResponseTemplate().getTemplate();
+        assertThat(template, containsString("2025-06-18"));
+    }
+
+    @Test
+    public void shouldAdvertiseOutputSchemaInToolsList() {
+        Expectation[] expectations = mcpMock()
+            .withTool("get_weather")
+                .withDescription("Get weather")
+                .withOutputSchema("{\"type\": \"object\", \"properties\": {\"tempF\": {\"type\": \"number\"}}}")
+                .respondingWithStructured("72F and sunny", "{\"tempF\": 72}")
+                .and()
+            .build();
+
+        Expectation toolsListExp = expectations[3];
+        String listTemplate = toolsListExp.getHttpResponseTemplate().getTemplate();
+        assertThat(listTemplate, containsString("outputSchema"));
+        assertThat(listTemplate, containsString("tempF"));
+    }
+
+    @Test
+    public void shouldEmitStructuredContentInToolCallResult() {
+        Expectation[] expectations = mcpMock()
+            .withTool("get_weather")
+                .respondingWithStructured("72F and sunny", "{\"tempF\": 72, \"conditions\": \"sunny\"}")
+                .and()
+            .build();
+
+        Expectation toolCallExp = expectations[expectations.length - 1];
+        String template = toolCallExp.getHttpResponseTemplate().getTemplate();
+        assertThat(template, containsString("structuredContent"));
+        assertThat(template, containsString("\"tempF\":72"));
+        // the human-readable text block is preserved alongside the structured output
+        assertThat(template, containsString("72F and sunny"));
+    }
+
+    @Test
+    public void shouldEmitResourceLinkInToolCallResult() {
+        Expectation[] expectations = mcpMock()
+            .withTool("generate_report")
+                .respondingWith("Report generated")
+                .respondingWithResourceLink("file:///reports/q3.pdf", "Q3 Report", "Quarterly report", "application/pdf")
+                .and()
+            .build();
+
+        Expectation toolCallExp = expectations[expectations.length - 1];
+        String template = toolCallExp.getHttpResponseTemplate().getTemplate();
+        assertThat(template, containsString("resource_link"));
+        assertThat(template, containsString("file:///reports/q3.pdf"));
+        assertThat(template, containsString("Q3 Report"));
+        assertThat(template, containsString("application/pdf"));
+        // text block still present
+        assertThat(template, containsString("Report generated"));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectInvalidStructuredContentJson() {
+        mcpMock()
+            .withTool("bad")
+                .respondingWithStructured("text", "not valid json {{{")
+                .and()
+            .build();
+    }
+
+    @Test
     public void shouldEscapeSpecialJsonCharactersInContent() {
         Expectation[] expectations = mcpMock()
             .withTool("test_tool")

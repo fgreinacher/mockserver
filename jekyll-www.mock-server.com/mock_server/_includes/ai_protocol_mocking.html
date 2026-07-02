@@ -1993,7 +1993,7 @@ McpMockBuilder::mcpMock('/mcp')
 mcpMock("/mcp")
     .withServerName("FullMCPServer")
     .withServerVersion("2.0.0")
-    .withProtocolVersion("2025-03-26")
+    .withProtocolVersion("2025-06-18")
     .withTool("calculator")
         .withDescription("Basic arithmetic calculator")
         .withInputSchema("{\"type\": \"object\", \"properties\": {\"expression\": {\"type\": \"string\"}}, \"required\": [\"expression\"]}")
@@ -2022,7 +2022,7 @@ var client = mockServerClient("localhost", 1080);
 client.mcpMock("/mcp")
     .withServerName("FullMCPServer")
     .withServerVersion("2.0.0")
-    .withProtocolVersion("2025-03-26")
+    .withProtocolVersion("2025-06-18")
     .withTool("calculator")
         .withDescription("Basic arithmetic calculator")
         .withInputSchema('{"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}')
@@ -2052,7 +2052,7 @@ client = MockServerClient("localhost", 1080)
 mcp_mock("/mcp") \
     .with_server_name("FullMCPServer") \
     .with_server_version("2.0.0") \
-    .with_protocol_version("2025-03-26") \
+    .with_protocol_version("2025-06-18") \
     .with_tool("calculator") \
         .with_description("Basic arithmetic calculator") \
         .with_input_schema('{"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}') \
@@ -2081,7 +2081,7 @@ client = MockServer::Client.new('localhost', 1080)
 MockServer::MCP.mcp_mock('/mcp')
   .with_server_name('FullMCPServer')
   .with_server_version('2.0.0')
-  .with_protocol_version('2025-03-26')
+  .with_protocol_version('2025-06-18')
   .with_tool('calculator')
     .with_description('Basic arithmetic calculator')
     .with_input_schema('{"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}')
@@ -2110,7 +2110,7 @@ client := mockserver.New("localhost", 1080)
 mockserver.McpMock("/mcp").
     WithServerName("FullMCPServer").
     WithServerVersion("2.0.0").
-    WithProtocolVersion("2025-03-26").
+    WithProtocolVersion("2025-06-18").
     WithTool("calculator", func(t *mockserver.McpToolBuilder) {
         t.WithDescription("Basic arithmetic calculator").
             WithInputSchema(`{"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}`).
@@ -2140,7 +2140,7 @@ var client = new MockServerClient("localhost", 1080);
 McpMockBuilder.McpMock("/mcp")
     .WithServerName("FullMCPServer")
     .WithServerVersion("2.0.0")
-    .WithProtocolVersion("2025-03-26")
+    .WithProtocolVersion("2025-06-18")
     .WithTool("calculator")
         .WithDescription("Basic arithmetic calculator")
         .WithInputSchema("{\"type\": \"object\", \"properties\": {\"expression\": {\"type\": \"string\"}}, \"required\": [\"expression\"]}")
@@ -2170,7 +2170,7 @@ let client = MockServerClient::new("localhost", 1080);
 mcp_mock("/mcp")
     .with_server_name("FullMCPServer")
     .with_server_version("2.0.0")
-    .with_protocol_version("2025-03-26")
+    .with_protocol_version("2025-06-18")
     .with_tool("calculator")
         .with_description("Basic arithmetic calculator")
         .with_input_schema(r#"{"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}"#)
@@ -2200,7 +2200,7 @@ $client = new MockServerClient('localhost', 1080);
 McpMockBuilder::mcpMock('/mcp')
     -&gt;withServerName('FullMCPServer')
     -&gt;withServerVersion('2.0.0')
-    -&gt;withProtocolVersion('2025-03-26')
+    -&gt;withProtocolVersion('2025-06-18')
     -&gt;withTool('calculator')
         -&gt;withDescription('Basic arithmetic calculator')
         -&gt;withInputSchema('{"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}')

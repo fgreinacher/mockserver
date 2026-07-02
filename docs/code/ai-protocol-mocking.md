@@ -201,7 +201,25 @@ mockServerClient.when(
 | `path` | `/mcp` |
 | `serverName` | `MockMCPServer` |
 | `serverVersion` | `1.0.0` |
-| `protocolVersion` | `2025-03-26` |
+| `protocolVersion` | `2025-06-18` |
+
+### Protocol Version Negotiation (server)
+
+MockServer's own MCP server (`McpRequestProcessor`) advertises and negotiates the **2025-06-18** MCP spec revision, while remaining backward compatible with older clients:
+
+- The client sends its preferred `protocolVersion` in `initialize`. When it is one the server supports (`2025-06-18`, `2025-03-26`, `2024-11-05`) the server **echoes it back**; otherwise (or when omitted) the server replies with its latest, `2025-06-18` (`negotiateProtocolVersion`).
+- The negotiated version is stored on the `McpSession` and governs whether version-specific response fields are emitted for that session.
+- `Mcp-Session-Id` is emitted on the `initialize` response and required (and echoed) on subsequent requests — already handled by `McpStreamableHttpHandler`.
+
+### 2025-06-18 Capabilities
+
+| Capability | Server (`McpRequestProcessor`) | Mock builder (`McpMockBuilder`) |
+|---|---|---|
+| Structured tool output (`structuredContent`) | `tools/call` results include `structuredContent` (the raw tool-result object) when the session negotiated 2025-06-18+ | `respondingWithStructured(text, structuredJson)` + `withOutputSchema(schema)` (advertised in `tools/list`) |
+| Resource links (`type: resource_link`) | — | `respondingWithResourceLink(uri, name, description, mimeType)` on a `tools/call` result |
+| `Mcp-Session-Id` | Emitted on `initialize`, required on subsequent requests | Session handling is the client's responsibility against the mock |
+
+**Deferred (require a server→client push channel):** `elicitation/create` (server-initiated) and the GET SSE server-push stream are not mocked — MockServer's request/response expectation model has no channel to initiate requests to the client. `sampling/createMessage` remains a deterministic mocked completion on the server. JSON-RPC batching (removed in 2025-06-18) is still accepted for back-compat with older clients.
 
 ### Generated Expectations
 

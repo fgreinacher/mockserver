@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP spec 2025-06-18 negotiation with structured tool output and resource links.** MockServer's MCP
+  server (`McpRequestProcessor`) now advertises and negotiates the **2025-06-18** MCP revision while staying
+  backward compatible: a client that requests `2025-06-18` gets it, clients still on `2025-03-26`/`2024-11-05`
+  keep getting their requested revision (echoed back), and an unknown/omitted version falls back to the latest
+  `2025-06-18` (`negotiateProtocolVersion`, stored per-`McpSession`). For sessions that negotiated 2025-06-18+,
+  `tools/call` results additionally carry **`structuredContent`** (the machine-readable tool-result object)
+  alongside the existing text block; older sessions are unchanged. The Java `McpMockBuilder` gains
+  `withOutputSchema(...)` (advertised in `tools/list`), `respondingWithStructured(text, structuredJson)`
+  (emits `structuredContent`), and `respondingWithResourceLink(uri, name, description, mimeType)` (emits a
+  `resource_link` content item), and now defaults `protocolVersion` to `2025-06-18`. The `McpContractTest`
+  conformance tester defaults to `2025-06-18`, records the server's negotiated version, and validates the new
+  `structuredContent`/`resource_link` shapes when present (optional — older servers still pass). `Mcp-Session-Id`
+  emission/handling was already in place. Elicitation (`elicitation/create`) and the GET SSE server-push stream
+  are not mocked (they require a server→client channel MockServer's request/response model does not have); JSON-RPC
+  batching remains accepted for back-compat. No MCP tools were added or reclassified.
+
 - **Expectation-authoring and record/replay control tools on the MCP server.** An AI coding agent
   (Claude Code, Cursor, etc.) can now stand up and drive mocks entirely through the MCP server at
   `/mockserver/mcp`, closing the "AI agents can only read, not author" gap. Three new tools are added,

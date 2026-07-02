@@ -17,7 +17,7 @@ public class McpMockBuilder {
     private String path = "/mcp";
     private String serverName = "MockMCPServer";
     private String serverVersion = "1.0.0";
-    private String protocolVersion = "2025-03-26";
+    private String protocolVersion = "2025-06-18";
     private boolean toolsCapability = false;
     private boolean resourcesCapability = false;
     private boolean promptsCapability = false;
@@ -176,6 +176,11 @@ public class McpMockBuilder {
             if (tool.inputSchema != null) {
                 toolsJson.append(", \"inputSchema\": ").append(escapeVelocity(validateAndSerializeJson(tool.inputSchema)));
             }
+            // Structured tool output (MCP 2025-06-18): advertise the JSON Schema the tool's
+            // structuredContent conforms to, so clients can validate it.
+            if (tool.outputSchema != null) {
+                toolsJson.append(", \"outputSchema\": ").append(escapeVelocity(validateAndSerializeJson(tool.outputSchema)));
+            }
             toolsJson.append("}");
         }
         toolsJson.append("]");
@@ -187,13 +192,49 @@ public class McpMockBuilder {
 
     private Expectation buildToolsCallExpectation(McpToolDefinition tool) {
         String jsonPathBody = "$[?(@.method == 'tools/call' && @.params.name == '" + escapeJsonPath(tool.name) + "')]";
-        String content = tool.responseContent != null ? escapeVelocity(escapeJson(tool.responseContent)) : "";
+
+        StringBuilder contentJson = new StringBuilder("[");
+        boolean firstItem = true;
+        // Emit a text content block when the tool has a text response, or when it has nothing else
+        // to say (preserving the historical shape where a tool always returned at least an empty text block).
+        if (tool.responseContent != null || tool.resourceLinks.isEmpty()) {
+            String content = tool.responseContent != null ? escapeVelocity(escapeJson(tool.responseContent)) : "";
+            contentJson.append("{\"type\": \"text\", \"text\": \"").append(content).append("\"}");
+            firstItem = false;
+        }
+        // Resource links (MCP 2025-06-18): reference a resource the client can subsequently read,
+        // instead of (or alongside) inlining its content.
+        for (McpResourceLink link : tool.resourceLinks) {
+            if (!firstItem) {
+                contentJson.append(", ");
+            }
+            contentJson.append("{\"type\": \"resource_link\", \"uri\": \"").append(escapeVelocity(escapeJson(link.uri))).append("\"");
+            if (link.name != null) {
+                contentJson.append(", \"name\": \"").append(escapeVelocity(escapeJson(link.name))).append("\"");
+            }
+            if (link.description != null) {
+                contentJson.append(", \"description\": \"").append(escapeVelocity(escapeJson(link.description))).append("\"");
+            }
+            if (link.mimeType != null) {
+                contentJson.append(", \"mimeType\": \"").append(escapeVelocity(escapeJson(link.mimeType))).append("\"");
+            }
+            contentJson.append("}");
+            firstItem = false;
+        }
+        contentJson.append("]");
+
         String isError = tool.responseIsError ? "true" : "false";
-        String resultJson = "{\"content\": [{\"type\": \"text\", \"text\": \"" + content + "\"}], \"isError\": " + isError + "}";
+        StringBuilder resultJson = new StringBuilder("{\"content\": ").append(contentJson).append(", \"isError\": ").append(isError);
+        // Structured tool output (MCP 2025-06-18): the machine-readable result object, validated against
+        // the tool's outputSchema by clients that requested it.
+        if (tool.responseStructuredContent != null) {
+            resultJson.append(", \"structuredContent\": ").append(escapeVelocity(validateAndSerializeJson(tool.responseStructuredContent)));
+        }
+        resultJson.append("}");
 
         return Expectation.when(
             request().withMethod("POST").withPath(path).withBody(new JsonPathBody(jsonPathBody))
-        ).thenRespond(template(VELOCITY, velocityJsonRpcResponse(resultJson)));
+        ).thenRespond(template(VELOCITY, velocityJsonRpcResponse(resultJson.toString())));
     }
 
     private Expectation buildResourcesListExpectation() {
@@ -339,11 +380,25 @@ public class McpMockBuilder {
         final String name;
         String description;
         String inputSchema;
+        String outputSchema;
         String responseContent;
+        String responseStructuredContent;
         boolean responseIsError = false;
+        final List<McpResourceLink> resourceLinks = new ArrayList<>();
 
         McpToolDefinition(String name) {
             this.name = name;
+        }
+    }
+
+    static class McpResourceLink {
+        final String uri;
+        String name;
+        String description;
+        String mimeType;
+
+        McpResourceLink(String uri) {
+            this.uri = uri;
         }
     }
 
@@ -411,6 +466,15 @@ public class McpMockBuilder {
             return this;
         }
 
+        /**
+         * Advertise a JSON Schema (MCP 2025-06-18 structured tool output) that the tool's
+         * {@code structuredContent} conforms to. Emitted as {@code outputSchema} in {@code tools/list}.
+         */
+        public McpToolBuilder withOutputSchema(String jsonSchema) {
+            tool.outputSchema = jsonSchema;
+            return this;
+        }
+
         public McpToolBuilder respondingWith(String textContent) {
             tool.responseContent = textContent;
             return this;
@@ -419,6 +483,37 @@ public class McpMockBuilder {
         public McpToolBuilder respondingWith(String textContent, boolean isError) {
             tool.responseContent = textContent;
             tool.responseIsError = isError;
+            return this;
+        }
+
+        /**
+         * Return structured tool output (MCP 2025-06-18): a machine-readable JSON object emitted as
+         * {@code structuredContent} in the {@code tools/call} result, alongside the text content block.
+         *
+         * @param textContent           the human-readable text block (may be null to omit it)
+         * @param structuredContentJson the structured result as a JSON object string
+         */
+        public McpToolBuilder respondingWithStructured(String textContent, String structuredContentJson) {
+            tool.responseContent = textContent;
+            tool.responseStructuredContent = structuredContentJson;
+            return this;
+        }
+
+        /**
+         * Add a resource link (MCP 2025-06-18) to the {@code tools/call} result content, referencing a
+         * resource the client can read rather than inlining it.
+         *
+         * @param uri         the resource URI (required)
+         * @param name        a human-readable name (may be null)
+         * @param description a description (may be null)
+         * @param mimeType    the resource MIME type (may be null)
+         */
+        public McpToolBuilder respondingWithResourceLink(String uri, String name, String description, String mimeType) {
+            McpResourceLink link = new McpResourceLink(uri);
+            link.name = name;
+            link.description = description;
+            link.mimeType = mimeType;
+            tool.resourceLinks.add(link);
             return this;
         }
 

@@ -176,6 +176,120 @@ public class McpStreamableHttpHandlerTest {
     }
 
     @Test
+    public void shouldNegotiateLatestProtocolVersionWhenClientRequestsIt() throws Exception {
+        // A client that requests 2025-06-18 gets 2025-06-18 back.
+        String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"clientInfo\":{\"name\":\"test\"}}}";
+        FullHttpResponse response = sendPost(requestBody);
+
+        assertThat(response.status(), is(HttpResponseStatus.OK));
+        assertThat(response.headers().get("Mcp-Session-Id"), notNullValue());
+        JsonNode json = parseResponse(response);
+        assertThat(json.path("result").path("protocolVersion").asText(), is("2025-06-18"));
+
+        response.release();
+    }
+
+    @Test
+    public void shouldNegotiateOlderProtocolVersionForBackwardCompatibleClient() throws Exception {
+        // A client still on 2025-03-26 keeps getting 2025-03-26 (back-compat).
+        String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"clientInfo\":{\"name\":\"test\"}}}";
+        FullHttpResponse response = sendPost(requestBody);
+
+        JsonNode json = parseResponse(response);
+        assertThat(json.path("result").path("protocolVersion").asText(), is("2025-03-26"));
+
+        response.release();
+    }
+
+    @Test
+    public void shouldFallBackToLatestProtocolVersionForUnsupportedRequest() throws Exception {
+        // An unsupported/future revision falls back to the server's latest supported revision.
+        String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\",\"clientInfo\":{\"name\":\"test\"}}}";
+        FullHttpResponse response = sendPost(requestBody);
+
+        JsonNode json = parseResponse(response);
+        assertThat(json.path("result").path("protocolVersion").asText(), is("2025-06-18"));
+
+        response.release();
+    }
+
+    @Test
+    public void shouldDefaultToLatestProtocolVersionWhenClientOmitsIt() throws Exception {
+        String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
+        FullHttpResponse response = sendPost(requestBody);
+
+        JsonNode json = parseResponse(response);
+        assertThat(json.path("result").path("protocolVersion").asText(), is("2025-06-18"));
+
+        response.release();
+    }
+
+    @Test
+    public void shouldEmitStructuredContentForToolsCallWhen2025_06_18Negotiated() throws Exception {
+        // Initialize negotiating 2025-06-18, then call a tool that returns a JSON object.
+        String initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}";
+        FullHttpResponse initResponse = sendPost(initBody);
+        String sessionId = initResponse.headers().get("Mcp-Session-Id");
+        initResponse.release();
+        sendPost("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", sessionId).release();
+
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("name", "create_expectation");
+        ObjectNode args = params.putObject("arguments");
+        args.put("method", "GET");
+        args.put("path", "/structured");
+        args.put("statusCode", 200);
+        ObjectNode rpcRequest = objectMapper.createObjectNode();
+        rpcRequest.put("jsonrpc", "2.0");
+        rpcRequest.put("id", 3);
+        rpcRequest.put("method", "tools/call");
+        rpcRequest.set("params", params);
+
+        FullHttpResponse response = sendPost(objectMapper.writeValueAsString(rpcRequest), sessionId);
+        JsonNode result = parseResponse(response).path("result");
+
+        // The text content block is still present (back-compat)...
+        JsonNode structured = result.path("structuredContent");
+        assertThat(structured.isObject(), is(true));
+        assertThat(structured.path("status").asText(), is("created"));
+        // ...and structuredContent mirrors the parsed text content block.
+        JsonNode fromText = objectMapper.readTree(result.path("content").get(0).path("text").asText());
+        assertThat(structured.path("status").asText(), is(fromText.path("status").asText()));
+
+        response.release();
+    }
+
+    @Test
+    public void shouldNotEmitStructuredContentForToolsCallWhen2025_03_26Negotiated() throws Exception {
+        // A 2025-03-26 session must not receive the 2025-06-18-only structuredContent field.
+        String initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}";
+        FullHttpResponse initResponse = sendPost(initBody);
+        String sessionId = initResponse.headers().get("Mcp-Session-Id");
+        initResponse.release();
+        sendPost("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}", sessionId).release();
+
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("name", "create_expectation");
+        ObjectNode args = params.putObject("arguments");
+        args.put("method", "GET");
+        args.put("path", "/legacy");
+        args.put("statusCode", 200);
+        ObjectNode rpcRequest = objectMapper.createObjectNode();
+        rpcRequest.put("jsonrpc", "2.0");
+        rpcRequest.put("id", 3);
+        rpcRequest.put("method", "tools/call");
+        rpcRequest.set("params", params);
+
+        FullHttpResponse response = sendPost(objectMapper.writeValueAsString(rpcRequest), sessionId);
+        JsonNode result = parseResponse(response).path("result");
+
+        assertThat(result.has("structuredContent"), is(false));
+        assertThat(result.path("content").isArray(), is(true));
+
+        response.release();
+    }
+
+    @Test
     public void shouldRequireSessionIdForNonInitializeMethods() throws Exception {
         String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
         FullHttpResponse response = sendPost(requestBody);

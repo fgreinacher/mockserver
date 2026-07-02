@@ -250,6 +250,83 @@ public class McpContractTestTest {
         assertThat(call.getDetail(), is("isError=false"));
     }
 
+    @Test
+    public void reportsNegotiated2025_06_18VersionAndValidatesNewCapabilityShapes() {
+        // A conformant 2025-06-18 server: echoes the version and returns structuredContent plus a
+        // resource_link content item on tools/call.
+        McpContractTest.JsonRpcExchange server2025_06_18 = (message, sessionId) -> {
+            String method = message.path("method").asText();
+            JsonNode id = message.get("id");
+            switch (method) {
+                case "initialize": {
+                    ObjectNode body = envelope(id);
+                    ObjectNode result = body.putObject("result");
+                    result.put("protocolVersion", "2025-06-18");
+                    result.putObject("capabilities");
+                    result.putObject("serverInfo").put("name", "StubServer").put("version", "9.9");
+                    return new McpContractTest.ExchangeResult(200, "session-1", body, null);
+                }
+                case "tools/call": {
+                    ObjectNode body = envelope(id);
+                    ObjectNode result = body.putObject("result");
+                    ArrayNode content = result.putArray("content");
+                    content.addObject().put("type", "text").put("text", "done");
+                    content.addObject().put("type", "resource_link").put("uri", "file:///out.txt").put("name", "out");
+                    result.putObject("structuredContent").put("ok", true);
+                    result.put("isError", false);
+                    return new McpContractTest.ExchangeResult(200, null, body, null);
+                }
+                default:
+                    return conformant.send(message, sessionId);
+            }
+        };
+
+        McpContractTest.Report report = contractTest.run("2025-06-18", "do_thing", server2025_06_18);
+
+        assertThat(report.getProtocolVersion(), is("2025-06-18"));
+        McpContractTest.CheckResult call = check(report, "tools/call");
+        assertThat(call.getValidationErrors().toString(), call.isPassed(), is(true));
+    }
+
+    @Test
+    public void resourceLinkMissingUriFails() {
+        McpContractTest.JsonRpcExchange badLink = (message, sessionId) -> {
+            if (message.path("method").asText().equals("tools/call")) {
+                ObjectNode body = envelope(message.get("id"));
+                ObjectNode result = body.putObject("result");
+                result.putArray("content").addObject().put("type", "resource_link"); // no uri
+                return new McpContractTest.ExchangeResult(200, null, body, null);
+            }
+            return conformant.send(message, sessionId);
+        };
+
+        McpContractTest.Report report = contractTest.run("2025-06-18", "do_thing", badLink);
+
+        McpContractTest.CheckResult call = check(report, "tools/call");
+        assertThat(call.isPassed(), is(false));
+        assertThat(call.getValidationErrors(), hasItem(containsString("resource_link content item is missing 'uri'")));
+    }
+
+    @Test
+    public void nonObjectStructuredContentFails() {
+        McpContractTest.JsonRpcExchange badStructured = (message, sessionId) -> {
+            if (message.path("method").asText().equals("tools/call")) {
+                ObjectNode body = envelope(message.get("id"));
+                ObjectNode result = body.putObject("result");
+                result.putArray("content").addObject().put("type", "text").put("text", "hi");
+                result.put("structuredContent", "not-an-object");
+                return new McpContractTest.ExchangeResult(200, null, body, null);
+            }
+            return conformant.send(message, sessionId);
+        };
+
+        McpContractTest.Report report = contractTest.run("2025-06-18", "do_thing", badStructured);
+
+        McpContractTest.CheckResult call = check(report, "tools/call");
+        assertThat(call.isPassed(), is(false));
+        assertThat(call.getValidationErrors(), hasItem(containsString("structuredContent is present but not a JSON object")));
+    }
+
     private boolean isKnownMethod(String method) {
         return method.equals("initialize")
             || method.equals("notifications/initialized")

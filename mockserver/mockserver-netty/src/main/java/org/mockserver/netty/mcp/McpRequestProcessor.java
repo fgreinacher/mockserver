@@ -26,7 +26,28 @@ import java.nio.charset.StandardCharsets;
 public class McpRequestProcessor {
 
     static final String MCP_PATH = "/mockserver/mcp";
-    private static final String PROTOCOL_VERSION = "2025-03-26";
+
+    /**
+     * Latest MCP spec revision this server advertises. Used as the default when a client
+     * omits {@code protocolVersion} or requests a revision this server does not support.
+     */
+    static final String LATEST_PROTOCOL_VERSION = "2025-06-18";
+
+    /**
+     * First MCP spec revision that introduced structured tool output ({@code structuredContent}
+     * / {@code outputSchema}) and resource links in tool results. Sessions that negotiate this
+     * revision (or later) receive those fields; older sessions do not.
+     */
+    static final String STRUCTURED_OUTPUT_MIN_VERSION = "2025-06-18";
+
+    /**
+     * MCP spec revisions this server can negotiate. The client sends its preferred revision in
+     * {@code initialize}; the server echoes it when supported (back-compat for 2025-03-26 and
+     * 2024-11-05 clients), otherwise replies with {@link #LATEST_PROTOCOL_VERSION}.
+     */
+    private static final java.util.Set<String> SUPPORTED_PROTOCOL_VERSIONS =
+        java.util.Set.of("2025-06-18", "2025-03-26", "2024-11-05");
+
     private static final String SERVER_NAME = "MockServer";
     private static final String SERVER_VERSION = Version.getVersion();
 
@@ -284,7 +305,7 @@ public class McpRequestProcessor {
                             "Missing or invalid Mcp-Session-Id header. Call 'initialize' first.")));
                     continue;
                 }
-                JsonRpcMessage.JsonRpcResponse response = processRequest(rpcRequest, scopes);
+                JsonRpcMessage.JsonRpcResponse response = processRequest(rpcRequest, mcpSessionId, scopes);
                 responses.add(objectMapper.valueToTree(response));
             }
         }
@@ -331,7 +352,7 @@ public class McpRequestProcessor {
                     "Missing or invalid Mcp-Session-Id header. Call 'initialize' first."), null);
         }
 
-        JsonRpcMessage.JsonRpcResponse response = processRequest(rpcRequest, scopes);
+        JsonRpcMessage.JsonRpcResponse response = processRequest(rpcRequest, mcpSessionId, scopes);
         return jsonResponse(200, response, null);
     }
 
@@ -369,7 +390,7 @@ public class McpRequestProcessor {
         }
     }
 
-    private JsonRpcMessage.JsonRpcResponse processRequest(JsonRpcMessage.JsonRpcRequest rpcRequest, java.util.Set<String> scopes) {
+    private JsonRpcMessage.JsonRpcResponse processRequest(JsonRpcMessage.JsonRpcRequest rpcRequest, String mcpSessionId, java.util.Set<String> scopes) {
         String method = rpcRequest.getMethod();
         if (method == null) {
             return JsonRpcMessage.JsonRpcResponse.error(rpcRequest.getId(), JsonRpcMessage.INVALID_REQUEST, "Missing method");
@@ -381,7 +402,7 @@ public class McpRequestProcessor {
             case "tools/list":
                 return handleToolsList(rpcRequest);
             case "tools/call":
-                return handleToolsCall(rpcRequest, scopes);
+                return handleToolsCall(rpcRequest, mcpSessionId, scopes);
             case "resources/list":
                 return handleResourcesList(rpcRequest);
             case "resources/read":
@@ -410,12 +431,35 @@ public class McpRequestProcessor {
         }
     }
 
+    /**
+     * Negotiate the MCP protocol version for a session. Per the MCP lifecycle the client sends its
+     * preferred revision in {@code initialize}; the server echoes it when supported, otherwise
+     * replies with its own latest supported revision and lets the client decide whether to proceed.
+     *
+     * @param requestedVersion the client's requested {@code protocolVersion} (may be null/blank)
+     * @return the version to advertise back to the client
+     */
+    static String negotiateProtocolVersion(String requestedVersion) {
+        if (requestedVersion != null && SUPPORTED_PROTOCOL_VERSIONS.contains(requestedVersion)) {
+            return requestedVersion;
+        }
+        return LATEST_PROTOCOL_VERSION;
+    }
+
     private InitializeResult handleInitialize(JsonRpcMessage.JsonRpcRequest rpcRequest) {
         McpSession session = sessionManager.createSession();
         String sessionId = session.getSessionId();
 
+        String requestedVersion = null;
+        JsonNode initParams = rpcRequest.getParams();
+        if (initParams != null) {
+            requestedVersion = initParams.path("protocolVersion").asText(null);
+        }
+        String negotiatedVersion = negotiateProtocolVersion(requestedVersion);
+        session.setProtocolVersion(negotiatedVersion);
+
         ObjectNode result = objectMapper.createObjectNode();
-        result.put("protocolVersion", PROTOCOL_VERSION);
+        result.put("protocolVersion", negotiatedVersion);
 
         ObjectNode capabilities = result.putObject("capabilities");
         ObjectNode toolsCap = capabilities.putObject("tools");
@@ -451,7 +495,7 @@ public class McpRequestProcessor {
         return JsonRpcMessage.JsonRpcResponse.success(rpcRequest.getId(), result);
     }
 
-    private JsonRpcMessage.JsonRpcResponse handleToolsCall(JsonRpcMessage.JsonRpcRequest rpcRequest, java.util.Set<String> scopes) {
+    private JsonRpcMessage.JsonRpcResponse handleToolsCall(JsonRpcMessage.JsonRpcRequest rpcRequest, String mcpSessionId, java.util.Set<String> scopes) {
         JsonNode params = rpcRequest.getParams();
         if (params == null) {
             return JsonRpcMessage.JsonRpcResponse.error(rpcRequest.getId(), JsonRpcMessage.INVALID_PARAMS, "Missing params");
@@ -493,10 +537,31 @@ public class McpRequestProcessor {
         }
         content.add(textContent);
 
+        // Structured tool output (MCP 2025-06-18): when the tool returns a JSON object and the
+        // session negotiated 2025-06-18 (or later), also surface the object as machine-readable
+        // 'structuredContent' alongside the human-readable text block. Sessions on older revisions
+        // (2025-03-26 / 2024-11-05) do not receive this field, keeping their responses unchanged.
+        if (structuredOutputNegotiated(mcpSessionId) && toolResult != null && toolResult.isObject()) {
+            result.set("structuredContent", toolResult);
+        }
+
         boolean isError = toolResult != null && toolResult.has("error") && toolResult.path("error").asBoolean(false);
         result.put("isError", isError);
 
         return JsonRpcMessage.JsonRpcResponse.success(rpcRequest.getId(), result);
+    }
+
+    /**
+     * Whether the given session negotiated an MCP revision that supports structured tool output
+     * (2025-06-18 or later). Revisions are ISO-8601 dates, so lexical comparison is a valid ordering.
+     */
+    private boolean structuredOutputNegotiated(String mcpSessionId) {
+        if (mcpSessionId == null) {
+            return false;
+        }
+        McpSession session = sessionManager.getSession(mcpSessionId);
+        String version = session == null ? null : session.getProtocolVersion();
+        return version != null && version.compareTo(STRUCTURED_OUTPUT_MIN_VERSION) >= 0;
     }
 
     private JsonRpcMessage.JsonRpcResponse handleResourcesList(JsonRpcMessage.JsonRpcRequest rpcRequest) {
