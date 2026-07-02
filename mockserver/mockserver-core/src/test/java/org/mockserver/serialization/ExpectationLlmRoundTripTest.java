@@ -60,6 +60,38 @@ public class ExpectationLlmRoundTripTest {
     }
 
     @Test
+    public void shouldRoundTripStreamingPhysicsSubwordStreaming() {
+        // given — a streaming completion opting into subword-sized deltas
+        Expectation original = when(request().withPath("/v1/chat/completions"))
+            .thenRespondWithLlm(
+                llmResponse()
+                    .withProvider(Provider.OPENAI)
+                    .withModel("gpt-4o")
+                    .withCompletion(
+                        completion()
+                            .withText("Hello, world!")
+                            .withStreaming(true)
+                            .withStreamingPhysics(
+                                StreamingPhysics.streamingPhysics()
+                                    .withTokensPerSecond(50)
+                                    .withSubwordStreaming(true))
+                    )
+            );
+
+        // when
+        String json = serializer.serialize(original);
+        Expectation[] deserialized = serializer.deserializeArray(json, false);
+
+        // then — subwordStreaming survives the schema-validated JSON round-trip
+        assertThat(deserialized, is(notNullValue()));
+        assertThat(deserialized.length, is(1));
+        StreamingPhysics physics = deserialized[0].getHttpLlmResponse().getCompletion().getStreamingPhysics();
+        assertThat(physics, is(notNullValue()));
+        assertThat(physics.getSubwordStreaming(), is(Boolean.TRUE));
+        assertThat(physics.getTokensPerSecond(), is(50));
+    }
+
+    @Test
     public void shouldRoundTripCompletionWithOutputSchema() {
         // given — a completion carrying a declared structured-output schema
         String schema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}";

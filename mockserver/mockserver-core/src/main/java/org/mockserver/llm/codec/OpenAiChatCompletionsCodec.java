@@ -9,6 +9,7 @@ import org.mockserver.llm.ParsedConversation;
 import org.mockserver.llm.ParsedMessage;
 import org.mockserver.llm.ProviderCodec;
 import org.mockserver.llm.StreamingPhysicsExpander;
+import org.mockserver.llm.TokenCounter;
 import org.mockserver.model.*;
 
 import java.util.ArrayList;
@@ -130,7 +131,7 @@ public class OpenAiChatCompletionsCodec implements ProviderCodec {
         // 2. Text content chunks
         String text = completion.getText();
         if (text != null && !text.isEmpty()) {
-            String[] tokens = text.split("(?<=\\s)|(?=\\s)");
+            List<String> tokens = TokenCounter.streamingTextTokens(text, physics);
             for (String token : tokens) {
                 if (!token.isEmpty()) {
                     events.add(sseEvent().withData(buildChunk(id, created, modelName,

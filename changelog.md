@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SCIM list endpoints now support sorting.** The mock SCIM 2.0 provider's `GET {basePath}/Users|Groups`
+  listing accepts the standard `sortBy` and `sortOrder` query parameters (RFC 7644). `sortBy` is an
+  attribute name or nested dotted path (e.g. `name.familyName`); `sortOrder` is `ascending` (default) or
+  `descending`. Comparison is case-insensitive and resources with no value for the sort attribute are
+  always ordered last. Sorting is applied after any `filter` and before `startIndex`/`count` pagination; a
+  malformed `sortBy` path or an invalid `sortOrder` returns a `400` error envelope (matching how an invalid
+  filter is rejected), and the `ServiceProviderConfig` now advertises `sort` as supported.
+- **More realistic LLM token estimates and optional subword streaming.** The approximate `TokenCounter`
+  behind inferred `usage` counts and token-based quotas now approximates GPT-style subword (BPE)
+  segmentation instead of a plain characters÷4 blend, landing within roughly ±15% of a real tokenizer for
+  ordinary English prose (validated against GPT-4 `cl100k_base` reference counts). Streaming LLM responses
+  can also opt into finer, subword-sized deltas via the new `streamingPhysics.subwordStreaming` flag — off
+  by default, so existing streamed output is unchanged; when enabled, deltas stream closer to a real
+  provider's per-token cadence while all streaming-physics timing semantics are preserved.
+
 - **Editor extensions can start MockServer without Docker.** Both the VS Code extension and the JetBrains/IntelliJ
   plugin gain a **Start (binary, no Docker)** command/action that launches MockServer from the self-contained binary
   bundle (a jlink-trimmed Java runtime + the shaded jar + launcher — see `scripts/build-binary-bundle.sh`), so

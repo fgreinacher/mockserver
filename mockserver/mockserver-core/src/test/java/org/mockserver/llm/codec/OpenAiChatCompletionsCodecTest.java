@@ -237,6 +237,38 @@ public class OpenAiChatCompletionsCodecTest {
         assertThat(root.get("choices").get(0).get("finish_reason").asText(), is("tool_calls"));
     }
 
+    private String concatStreamedContent(java.util.List<SseEvent> events) throws Exception {
+        StringBuilder text = new StringBuilder();
+        for (SseEvent e : events) {
+            if ("[DONE]".equals(e.getData())) {
+                continue;
+            }
+            JsonNode delta = OBJECT_MAPPER.readTree(e.getData()).get("choices").get(0).get("delta");
+            if (delta != null && delta.has("content")) {
+                // role-only first chunk carries content:"" so appending it is harmless
+                text.append(delta.get("content").asText());
+            }
+        }
+        return text.toString();
+    }
+
+    @Test
+    public void shouldEmitSubwordDeltasWhenSubwordStreamingEnabled() throws Exception {
+        // given
+        Completion completion = completion().withText("MockServer streams tokens quickly");
+
+        // when — default whole-word splitting vs opt-in subword streaming
+        java.util.List<SseEvent> wholeWord = codec.encodeStreaming(completion, "gpt-4o", null);
+        java.util.List<SseEvent> subword = codec.encodeStreaming(completion, "gpt-4o",
+            StreamingPhysics.streamingPhysics().withSubwordStreaming(true));
+
+        // then — subword mode produces strictly more events (finer deltas) ...
+        assertThat(subword.size(), is(greaterThan(wholeWord.size())));
+        // ... but the reconstructed text is identical in both modes
+        assertThat(concatStreamedContent(subword), is("MockServer streams tokens quickly"));
+        assertThat(concatStreamedContent(wholeWord), is("MockServer streams tokens quickly"));
+    }
+
     @Test
     public void shouldForceToolCallsFinishReasonWhenToolChoiceRequiredInStreaming() throws Exception {
         // given

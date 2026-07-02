@@ -10,6 +10,7 @@ import org.mockserver.llm.ParsedMessage;
 import org.mockserver.llm.ProviderCodec;
 import org.mockserver.llm.StreamingFormat;
 import org.mockserver.llm.StreamingPhysicsExpander;
+import org.mockserver.llm.TokenCounter;
 import org.mockserver.model.*;
 
 import java.time.Instant;
@@ -156,7 +157,7 @@ public class OllamaCodec implements ProviderCodec {
 
         // Text delta chunks
         if (text != null && !text.isEmpty()) {
-            String[] tokens = text.split("(?<=\\s)|(?=\\s)");
+            List<String> tokens = TokenCounter.streamingTextTokens(text, physics);
             for (String token : tokens) {
                 if (!token.isEmpty()) {
                     String chunkData = "{\"model\":\"" + escapeJson(modelName) +

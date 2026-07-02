@@ -10,6 +10,7 @@ import org.mockserver.llm.ParsedConversation;
 import org.mockserver.llm.ParsedMessage;
 import org.mockserver.llm.ProviderCodec;
 import org.mockserver.llm.StreamingPhysicsExpander;
+import org.mockserver.llm.TokenCounter;
 import org.mockserver.model.*;
 
 import java.util.ArrayList;
@@ -200,7 +201,7 @@ public class OpenAiResponsesCodec implements ProviderCodec {
             events.add(sseEvent().withEvent("response.output_item.added").withData(itemAddedData));
 
             // text deltas
-            String[] tokens = text.split("(?<=\\s)|(?=\\s)");
+            List<String> tokens = TokenCounter.streamingTextTokens(text, physics);
             for (String token : tokens) {
                 if (!token.isEmpty()) {
                     String deltaData = "{\"type\":\"response.output_text.delta\",\"item_id\":\"" + msgId +

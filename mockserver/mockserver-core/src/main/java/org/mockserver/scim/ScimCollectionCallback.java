@@ -54,6 +54,18 @@ public class ScimCollectionCallback extends ScimResourceCallbackBase {
             }
         }
 
+        // sorting (SCIM RFC 7644 §3.4.2.3: sortBy attribute path + ascending/descending sortOrder)
+        String sortBy = request.getFirstQueryStringParameter("sortBy");
+        String sortOrder = request.getFirstQueryStringParameter("sortOrder");
+        try {
+            ScimSort sort = ScimSort.parse(sortBy, sortOrder);
+            if (sort != null) {
+                stored = sort.apply(stored);
+            }
+        } catch (IllegalArgumentException e) {
+            return scimError(400, e.getMessage(), "invalidValue");
+        }
+
         int totalResults = stored.size();
 
         // pagination (1-based startIndex, count = page size)

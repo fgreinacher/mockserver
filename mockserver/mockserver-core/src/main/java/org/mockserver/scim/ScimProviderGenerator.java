@@ -115,7 +115,7 @@ public class ScimProviderGenerator {
         root.putObject("bulk").put("supported", false).put("maxOperations", 0).put("maxPayloadSize", 0);
         root.putObject("filter").put("supported", config.isEnforceFilter()).put("maxResults", CrudDataStore.DEFAULT_MAX_ITEMS);
         root.putObject("changePassword").put("supported", false);
-        root.putObject("sort").put("supported", false);
+        root.putObject("sort").put("supported", true);
         root.putObject("etag").put("supported", false);
         ArrayNode authSchemes = root.putArray("authenticationSchemes");
         ObjectNode bearer = authSchemes.addObject();

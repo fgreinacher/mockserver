@@ -145,6 +145,74 @@ public class ScimProviderIntegrationTest {
     }
 
     @Test
+    public void sortByAscendingOrdersResources() throws Exception {
+        mockServer.mockScimProvider();
+        send("POST", "/scim/v2/Users", "{\"userName\":\"charlie\"}");
+        send("POST", "/scim/v2/Users", "{\"userName\":\"alice\"}");
+        send("POST", "/scim/v2/Users", "{\"userName\":\"bob\"}");
+
+        HttpResponse<String> sorted = send("GET", "/scim/v2/Users?sortBy=userName", null);
+        assertThat(sorted.statusCode(), is(200));
+        JsonNode resources = MAPPER.readTree(sorted.body()).get("Resources");
+        assertThat(resources.get(0).get("userName").asText(), is("alice"));
+        assertThat(resources.get(1).get("userName").asText(), is("bob"));
+        assertThat(resources.get(2).get("userName").asText(), is("charlie"));
+    }
+
+    @Test
+    public void sortByDescendingReversesOrder() throws Exception {
+        mockServer.mockScimProvider();
+        send("POST", "/scim/v2/Users", "{\"userName\":\"charlie\"}");
+        send("POST", "/scim/v2/Users", "{\"userName\":\"alice\"}");
+        send("POST", "/scim/v2/Users", "{\"userName\":\"bob\"}");
+
+        HttpResponse<String> sorted = send("GET",
+            "/scim/v2/Users?sortBy=userName&sortOrder=descending", null);
+        assertThat(sorted.statusCode(), is(200));
+        JsonNode resources = MAPPER.readTree(sorted.body()).get("Resources");
+        assertThat(resources.get(0).get("userName").asText(), is("charlie"));
+        assertThat(resources.get(1).get("userName").asText(), is("bob"));
+        assertThat(resources.get(2).get("userName").asText(), is("alice"));
+    }
+
+    @Test
+    public void sortByNestedAttributePath() throws Exception {
+        mockServer.mockScimProvider();
+        send("POST", "/scim/v2/Users", "{\"userName\":\"c\",\"name\":{\"familyName\":\"Brown\"}}");
+        send("POST", "/scim/v2/Users", "{\"userName\":\"a\",\"name\":{\"familyName\":\"Anderson\"}}");
+
+        HttpResponse<String> sorted = send("GET",
+            "/scim/v2/Users?sortBy=" + urlEncode("name.familyName"), null);
+        assertThat(sorted.statusCode(), is(200));
+        JsonNode resources = MAPPER.readTree(sorted.body()).get("Resources");
+        assertThat(resources.get(0).get("userName").asText(), is("a"));
+        assertThat(resources.get(1).get("userName").asText(), is("c"));
+    }
+
+    @Test
+    public void invalidSortByReturns400() throws Exception {
+        mockServer.mockScimProvider();
+        send("POST", "/scim/v2/Users", "{\"userName\":\"a\"}");
+
+        HttpResponse<String> invalid = send("GET",
+            "/scim/v2/Users?sortBy=" + urlEncode("bad path!"), null);
+        assertThat(invalid.statusCode(), is(400));
+        JsonNode body = MAPPER.readTree(invalid.body());
+        assertThat(body.get("scimType").asText(), is("invalidValue"));
+    }
+
+    @Test
+    public void invalidSortOrderReturns400() throws Exception {
+        mockServer.mockScimProvider();
+        send("POST", "/scim/v2/Users", "{\"userName\":\"a\"}");
+
+        HttpResponse<String> invalid = send("GET",
+            "/scim/v2/Users?sortBy=userName&sortOrder=sideways", null);
+        assertThat(invalid.statusCode(), is(400));
+        assertThat(MAPPER.readTree(invalid.body()).get("scimType").asText(), is("invalidValue"));
+    }
+
+    @Test
     public void patchReplaceAddRemovePersists() throws Exception {
         mockServer.mockScimProvider();
         HttpResponse<String> created = send("POST", "/scim/v2/Users",

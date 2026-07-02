@@ -271,14 +271,14 @@ curl_close($ch);</code></pre>
         <tr><th>Method &amp; Path</th><th>Behaviour</th></tr>
     </thead>
     <tbody>
-        <tr><td><span class="inline_code">GET {basePath}/Users</span></td><td>List users (supports <span class="inline_code">?filter</span>, <span class="inline_code">?startIndex</span>, <span class="inline_code">?count</span>) — returns a ListResponse.</td></tr>
+        <tr><td><span class="inline_code">GET {basePath}/Users</span></td><td>List users (supports <span class="inline_code">?filter</span>, <span class="inline_code">?sortBy</span>, <span class="inline_code">?sortOrder</span>, <span class="inline_code">?startIndex</span>, <span class="inline_code">?count</span>) — returns a ListResponse.</td></tr>
         <tr><td><span class="inline_code">POST {basePath}/Users</span></td><td>Create a user (<span class="inline_code">userName</span> required) — <span class="inline_code">201</span> with a <span class="inline_code">Location</span> header.</td></tr>
         <tr><td><span class="inline_code">GET {basePath}/Users/{id}</span></td><td>Get a user — <span class="inline_code">200</span> or <span class="inline_code">404</span> error envelope.</td></tr>
         <tr><td><span class="inline_code">PUT {basePath}/Users/{id}</span></td><td>Replace a user (preserves <span class="inline_code">id</span> and <span class="inline_code">meta.created</span>).</td></tr>
         <tr><td><span class="inline_code">PATCH {basePath}/Users/{id}</span></td><td>Apply a SCIM PatchOp.</td></tr>
         <tr><td><span class="inline_code">DELETE {basePath}/Users/{id}</span></td><td>Delete a user — <span class="inline_code">204</span> or <span class="inline_code">404</span>.</td></tr>
         <tr><td colspan="2"><em>The same six endpoints exist for <span class="inline_code">{basePath}/Groups</span> (<span class="inline_code">displayName</span> required on create).</em></td></tr>
-        <tr><td><span class="inline_code">GET {basePath}/ServiceProviderConfig</span></td><td>Discovery — advertises supported features (<span class="inline_code">patch</span>/<span class="inline_code">filter</span> reflect the config; <span class="inline_code">bulk</span>/<span class="inline_code">sort</span>/<span class="inline_code">etag</span> are <span class="inline_code">false</span>; OAuth bearer-token auth scheme).</td></tr>
+        <tr><td><span class="inline_code">GET {basePath}/ServiceProviderConfig</span></td><td>Discovery — advertises supported features (<span class="inline_code">patch</span>/<span class="inline_code">filter</span> reflect the config; <span class="inline_code">sort</span> is <span class="inline_code">true</span>; <span class="inline_code">bulk</span>/<span class="inline_code">etag</span> are <span class="inline_code">false</span>; OAuth bearer-token auth scheme).</td></tr>
         <tr><td><span class="inline_code">GET {basePath}/ResourceTypes</span></td><td>Discovery — a ListResponse of the User and Group resource types.</td></tr>
         <tr><td><span class="inline_code">GET {basePath}/Schemas</span></td><td>Discovery — a ListResponse of the core User and Group schema definitions.</td></tr>
     </tbody>
@@ -313,6 +313,21 @@ curl_close($ch);</code></pre>
     (<span class="inline_code">and</span>/<span class="inline_code">or</span>/<span class="inline_code">not</span>),
     value-paths, and the ordered operators (<span class="inline_code">gt</span>/<span class="inline_code">ge</span>/<span class="inline_code">lt</span>/<span class="inline_code">le</span>)
     are not yet supported.</p>
+
+<h3>Sorting</h3>
+
+<p>List responses can be ordered with the <span class="inline_code">sortBy</span> and
+    <span class="inline_code">sortOrder</span> query parameters (SCIM RFC 7644). <span class="inline_code">sortBy</span>
+    is an attribute name, including a nested dotted path such as
+    <span class="inline_code">name.familyName</span>; <span class="inline_code">sortOrder</span> is
+    <span class="inline_code">ascending</span> (the default) or <span class="inline_code">descending</span>.
+    For example <span class="inline_code">?sortBy=userName&amp;sortOrder=descending</span>. Comparison is
+    case-insensitive, and resources whose sort attribute has no value are always ordered last (regardless of
+    sort order). Sorting is applied after any <span class="inline_code">filter</span> and before
+    <span class="inline_code">startIndex</span>/<span class="inline_code">count</span> pagination. A malformed
+    <span class="inline_code">sortBy</span> path, or a <span class="inline_code">sortOrder</span> other than
+    <span class="inline_code">ascending</span>/<span class="inline_code">descending</span>, returns a
+    <span class="inline_code">400</span> error envelope.</p>
 
 <h3>Supported PATCH Operations</h3>
 

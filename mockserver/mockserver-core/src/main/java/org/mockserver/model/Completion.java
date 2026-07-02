@@ -130,6 +130,9 @@ public class Completion extends ObjectWithJsonToString {
                 if (fragment.getSeed() != null) {
                     merged.withSeed(fragment.getSeed());
                 }
+                if (fragment.getSubwordStreaming() != null) {
+                    merged.withSubwordStreaming(fragment.getSubwordStreaming());
+                }
             } else {
                 throw new IllegalArgumentException(
                     "withStreamingPhysics accepts Delay or StreamingPhysics fragments; got: "
