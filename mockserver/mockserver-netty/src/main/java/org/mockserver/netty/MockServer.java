@@ -204,7 +204,7 @@ public class MockServer extends LifeCycle {
                 new ChainedAuthenticationHandler(controlPlaneAuthenticationHandlers.toArray(new AuthenticationHandler[0]))
             );
         }
-        MockServerUnificationInitializer initializer = new MockServerUnificationInitializer(configuration, MockServer.this, httpState, new HttpActionHandler(configuration, getForwardClientEventLoopGroup(), httpState, proxyConfigurations, nettyClientSslContextFactory), nettyServerSslContextFactory);
+        MockServerUnificationInitializer initializer = new MockServerUnificationInitializer(configuration, MockServer.this, httpState, new HttpActionHandler(configuration, this::getForwardClientEventLoopGroup, httpState, proxyConfigurations, nettyClientSslContextFactory), nettyServerSslContextFactory);
         this.mcpSessionManager = initializer.getMcpSessionManager();
         serverServerBootstrap = new ServerBootstrap()
             .group(bossGroup, workerGroup)

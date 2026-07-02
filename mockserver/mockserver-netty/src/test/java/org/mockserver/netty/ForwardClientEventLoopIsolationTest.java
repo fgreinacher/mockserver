@@ -6,6 +6,7 @@ import org.junit.Test;
 import org.mockserver.lifecycle.LifeCycle;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicReference;
@@ -56,7 +57,9 @@ public class ForwardClientEventLoopIsolationTest {
         MockServer mockServer = new MockServer();
         try {
             EventLoopGroup workerGroup = readGroupField(mockServer, "workerGroup");
-            EventLoopGroup forwardClientGroup = readGroupField(mockServer, "forwardClientGroup");
+            // forwardClientGroup is created lazily on first forward — force it via the accessor so the
+            // disjointness invariant is asserted on the actual group instance the forward client uses.
+            EventLoopGroup forwardClientGroup = forceForwardClientGroup(mockServer);
 
             assertThat("workerGroup must be present", workerGroup, is(notNullValue()));
             assertThat("forwardClientGroup must be present", forwardClientGroup, is(notNullValue()));
@@ -79,7 +82,7 @@ public class ForwardClientEventLoopIsolationTest {
     public void forwardClientThreadsMustBeNamedDistinctly() throws Exception {
         MockServer mockServer = new MockServer();
         try {
-            EventLoopGroup forwardClientGroup = readGroupField(mockServer, "forwardClientGroup");
+            EventLoopGroup forwardClientGroup = forceForwardClientGroup(mockServer);
 
             // Force the (lazily-created) forward-client event-loop thread(s) to start and capture a name.
             // The Scheduler thread factory names them "MockServer-<SimpleName>-forwardClientEventLoop<N>",
@@ -119,7 +122,7 @@ public class ForwardClientEventLoopIsolationTest {
         MockServer mockServer = new MockServer();
         try {
             EventLoopGroup workerGroup = readGroupField(mockServer, "workerGroup");
-            EventLoopGroup forwardClientGroup = readGroupField(mockServer, "forwardClientGroup");
+            EventLoopGroup forwardClientGroup = forceForwardClientGroup(mockServer);
 
             Set<SingleThreadEventExecutor> workerExecutors = singleThreadExecutorsOf(workerGroup);
             Set<SingleThreadEventExecutor> forwardExecutors = singleThreadExecutorsOf(forwardClientGroup);
@@ -139,6 +142,17 @@ public class ForwardClientEventLoopIsolationTest {
         Field field = LifeCycle.class.getDeclaredField(fieldName);
         field.setAccessible(true);
         return (EventLoopGroup) field.get(lifeCycle);
+    }
+
+    /**
+     * Force lazy creation of the forward-client group by invoking the (protected) accessor
+     * reflectively. Returns the created group — which is also now stored in the {@code forwardClientGroup}
+     * field — so the disjointness invariants are asserted on the real instance the forward client uses.
+     */
+    private static EventLoopGroup forceForwardClientGroup(LifeCycle lifeCycle) throws Exception {
+        Method method = LifeCycle.class.getDeclaredMethod("getForwardClientEventLoopGroup");
+        method.setAccessible(true);
+        return (EventLoopGroup) method.invoke(lifeCycle);
     }
 
     private static Set<SingleThreadEventExecutor> singleThreadExecutorsOf(EventLoopGroup group) {

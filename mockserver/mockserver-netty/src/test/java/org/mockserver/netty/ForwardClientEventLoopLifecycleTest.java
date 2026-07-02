@@ -4,7 +4,7 @@ import io.netty.channel.EventLoopGroup;
 import org.junit.Test;
 import org.mockserver.lifecycle.LifeCycle;
 
-import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -37,9 +37,9 @@ public class ForwardClientEventLoopLifecycleTest {
         for (int cycle = 0; cycle < 3; cycle++) {
             MockServer mockServer = new MockServer();
 
-            EventLoopGroup forwardClientGroup = readForwardClientGroup(mockServer);
-            // Force the lazily-created forward thread to start so we are genuinely asserting it gets
-            // cleaned up (not merely that it was never created).
+            // The group itself is now created lazily on first forward; force that creation via the
+            // accessor, then force its thread to start, so we genuinely assert it gets cleaned up.
+            EventLoopGroup forwardClientGroup = forceForwardClientGroup(mockServer);
             forwardClientGroup.submit(() -> { }).get();
             assertThat("forward client group is live while the server runs",
                 forwardClientGroup.isShutdown(), is(false));
@@ -67,10 +67,10 @@ public class ForwardClientEventLoopLifecycleTest {
             remaining <= baseline, is(true));
     }
 
-    private static EventLoopGroup readForwardClientGroup(LifeCycle lifeCycle) throws Exception {
-        Field field = LifeCycle.class.getDeclaredField("forwardClientGroup");
-        field.setAccessible(true);
-        return (EventLoopGroup) field.get(lifeCycle);
+    private static EventLoopGroup forceForwardClientGroup(LifeCycle lifeCycle) throws Exception {
+        Method method = LifeCycle.class.getDeclaredMethod("getForwardClientEventLoopGroup");
+        method.setAccessible(true);
+        return (EventLoopGroup) method.invoke(lifeCycle);
     }
 
     private static int countForwardClientThreads() {

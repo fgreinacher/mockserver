@@ -55,7 +55,15 @@ public abstract class LifeCycle implements Stoppable {
     // ForwardClientEventLoopIsolationTest / ForwardConnectionPoolLoopbackCallbackTest (mockserver-netty)
     // and NettyHttpClientConnectionPoolTest (mockserver-core) lock the invariant, but the failsafe
     // phase remains the backstop. See docs/operations/performance-tuning.md.
-    protected final EventLoopGroup forwardClientGroup;
+    //
+    // LAZY: this group is created on the FIRST forward/proxy use (via getForwardClientEventLoopGroup()),
+    // NOT in the constructor — a pure-mock deployment that never forwards never allocates it (saving
+    // clientNioEventLoopThreadCount selectors/threads at startup). volatile for safe double-checked-lock
+    // publication; all creation and shutdown of this field happen under forwardClientGroupLock so a
+    // first-forward racing a stop() can never leak an un-terminated group (see the accessor and
+    // stopAsync()). Read reflectively by name in the ForwardClientEventLoop* guard tests.
+    protected volatile EventLoopGroup forwardClientGroup;
+    private final Object forwardClientGroupLock = new Object();
     protected final HttpState httpState;
     private final Configuration configuration;
     protected ServerBootstrap serverServerBootstrap;
@@ -82,9 +90,9 @@ public abstract class LifeCycle implements Stoppable {
         boolean nativeTransport = this.configuration.useNativeTransport();
         this.bossGroup = NettyTransport.newEventLoopGroup(5, new Scheduler.SchedulerThreadFactory(this.getClass().getSimpleName() + "-bossEventLoop"), nativeTransport);
         this.workerGroup = NettyTransport.newEventLoopGroup(this.configuration.nioEventLoopThreadCount(), new Scheduler.SchedulerThreadFactory(this.getClass().getSimpleName() + "-workerEventLoop"), nativeTransport);
-        // Outbound forward/proxy (loopback) HTTP client gets its OWN event-loop group, disjoint from
-        // the server worker group above (see field javadoc). Sized by clientNioEventLoopThreadCount.
-        this.forwardClientGroup = NettyTransport.newEventLoopGroup(this.configuration.clientNioEventLoopThreadCount(), new Scheduler.SchedulerThreadFactory(this.getClass().getSimpleName() + "-forwardClientEventLoop"), nativeTransport);
+        // NOTE: the outbound forward/proxy (loopback) client's event-loop group (forwardClientGroup) is
+        // NOT created here — it is created lazily on first forward via getForwardClientEventLoopGroup(),
+        // so a pure-mock server never allocates it. It remains disjoint from workerGroup (see field javadoc).
         this.scheduler = new Scheduler(this.configuration, this.mockServerLogger);
         this.httpState = new HttpState(this.configuration, this.mockServerLogger, this.scheduler);
         this.otelMetricsExporter = org.mockserver.metrics.OtelMetricsExporter.startIfEnabled();
@@ -379,15 +387,29 @@ public abstract class LifeCycle implements Stoppable {
                 }
                 org.mockserver.llm.semantic.SemanticMatching.clear();
 
+                // The forward-client group is created lazily, so it may never have been created (a
+                // pure-mock server). Read it under the same lock the accessor creates it under: this is
+                // the synchronization point that prevents a first-forward racing this stop from leaking
+                // an un-terminated group — if the accessor wins the lock later it sees stopping==true and
+                // shuts its own group down immediately.
+                final EventLoopGroup forwardGroupToStop;
+                synchronized (forwardClientGroupLock) {
+                    forwardGroupToStop = forwardClientGroup;
+                }
+
                 // Shut down all event loops to terminate all threads.
                 bossGroup.shutdownGracefully(5, 5, MILLISECONDS);
                 workerGroup.shutdownGracefully(5, 5, MILLISECONDS);
-                forwardClientGroup.shutdownGracefully(5, 5, MILLISECONDS);
+                if (forwardGroupToStop != null) {
+                    forwardGroupToStop.shutdownGracefully(5, 5, MILLISECONDS);
+                }
 
                 // Wait until all threads are terminated.
                 bossGroup.terminationFuture().syncUninterruptibly();
                 workerGroup.terminationFuture().syncUninterruptibly();
-                forwardClientGroup.terminationFuture().syncUninterruptibly();
+                if (forwardGroupToStop != null) {
+                    forwardGroupToStop.terminationFuture().syncUninterruptibly();
+                }
 
                 stopFuture.complete(message);
             }).start();
@@ -428,9 +450,38 @@ public abstract class LifeCycle implements Stoppable {
      * @return the dedicated event-loop group for the outbound forward/proxy (loopback) HTTP client,
      * kept disjoint from the server worker group so a pooled channel reused inside a synchronous
      * local callback is never pinned to a blocked server worker thread (see field javadoc).
+     * <p>
+     * Created lazily on the first call (double-checked locking on {@link #forwardClientGroupLock}) so a
+     * pure-mock server that never forwards never allocates it. The group is always a NEW group sized by
+     * {@code clientNioEventLoopThreadCount} — never the {@code workerGroup} — preserving the disjoint-group
+     * self-deadlock invariant documented on the field. If the server is already stopping when the first
+     * forward arrives, the group is created but immediately shut down so it can never leak past
+     * {@link #stopAsync()} (its {@code isShuttingDown()} then makes {@code NettyHttpClient.sendRequest()}
+     * no-op cleanly); all creation and the {@code stopAsync()} teardown read/write the field under the
+     * same lock, so a first-forward racing a stop can never leak an un-terminated group.
      */
     protected EventLoopGroup getForwardClientEventLoopGroup() {
-        return forwardClientGroup;
+        EventLoopGroup group = forwardClientGroup;
+        if (group != null) {
+            return group;
+        }
+        synchronized (forwardClientGroupLock) {
+            if (forwardClientGroup == null) {
+                // Always a NEW, distinct group (never workerGroup) — the disjointness invariant.
+                EventLoopGroup created = NettyTransport.newEventLoopGroup(
+                    configuration.clientNioEventLoopThreadCount(),
+                    new Scheduler.SchedulerThreadFactory(getClass().getSimpleName() + "-forwardClientEventLoop"),
+                    configuration.useNativeTransport());
+                if (stopping.get()) {
+                    // stopAsync()'s teardown pass for this group may already have run; shut this one
+                    // down immediately so it is never left un-terminated. No thread has started yet
+                    // (no task submitted), so this terminates promptly.
+                    created.shutdownGracefully(0, 0, MILLISECONDS);
+                }
+                forwardClientGroup = created;
+            }
+            return forwardClientGroup;
+        }
     }
 
     public Scheduler getScheduler() {

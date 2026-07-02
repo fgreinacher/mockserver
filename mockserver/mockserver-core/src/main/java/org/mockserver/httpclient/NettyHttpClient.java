@@ -37,6 +37,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static org.mockserver.model.HttpResponse.response;
@@ -66,7 +67,12 @@ public class NettyHttpClient {
     private static final HopByHopHeaderFilter hopByHopHeaderFilter = new HopByHopHeaderFilter();
     private final Configuration configuration;
     private final MockServerLogger mockServerLogger;
-    private final EventLoopGroup eventLoopGroup;
+    // Supplies the outbound event-loop group lazily. For the forward/proxy client this is the
+    // LifeCycle accessor (a method reference to getForwardClientEventLoopGroup()), so the disjoint
+    // forward-client group is only created on the FIRST forward/proxy request — a pure-mock
+    // deployment that never forwards never pays for it. May be null for callers (chiefly tests) that
+    // never forward; eventLoopGroup() then returns null, exactly matching the historical behaviour.
+    private final Supplier<EventLoopGroup> eventLoopGroupSupplier;
     private final Map<ProxyConfiguration.Type, ProxyConfiguration> proxyConfigurations;
     private final boolean forwardProxyClient;
     private final NettySslContextFactory nettySslContextFactory;
@@ -77,9 +83,21 @@ public class NettyHttpClient {
     }
 
     public NettyHttpClient(Configuration configuration, MockServerLogger mockServerLogger, EventLoopGroup eventLoopGroup, List<ProxyConfiguration> proxyConfigurations, boolean forwardProxyClient, NettySslContextFactory nettySslContextFactory) {
+        // Wrap a concrete group as a constant supplier so all call paths share the lazy-resolution
+        // seam; a null group stays null (eventLoopGroup() returns null) preserving prior behaviour.
+        this(configuration, mockServerLogger, eventLoopGroup == null ? (Supplier<EventLoopGroup>) null : () -> eventLoopGroup, proxyConfigurations, forwardProxyClient, nettySslContextFactory);
+    }
+
+    /**
+     * Supplier-based constructor: the outbound event-loop group is resolved lazily on first use
+     * ({@link #eventLoopGroup()}) rather than captured eagerly at construction. The forward/proxy
+     * client passes the {@code LifeCycle} accessor here so the disjoint forward-client group is only
+     * created the first time MockServer actually forwards/proxies.
+     */
+    public NettyHttpClient(Configuration configuration, MockServerLogger mockServerLogger, Supplier<EventLoopGroup> eventLoopGroupSupplier, List<ProxyConfiguration> proxyConfigurations, boolean forwardProxyClient, NettySslContextFactory nettySslContextFactory) {
         this.configuration = configuration;
         this.mockServerLogger = mockServerLogger;
-        this.eventLoopGroup = eventLoopGroup;
+        this.eventLoopGroupSupplier = eventLoopGroupSupplier;
         this.proxyConfigurations = proxyConfigurations != null ? proxyConfigurations.stream().collect(Collectors.toMap(ProxyConfiguration::getType, proxyConfiguration -> proxyConfiguration)) : ImmutableMap.of();
         this.forwardProxyClient = forwardProxyClient;
         this.nettySslContextFactory = nettySslContextFactory;
@@ -90,6 +108,16 @@ public class NettyHttpClient {
                 Boolean.TRUE.equals(configuration.forwardConnectionPoolKeepAlive()),
                 configuration.forwardConnectionPoolMaxTotalPerKey())
             : null;
+    }
+
+    /**
+     * Resolves the outbound event-loop group, triggering its (lazy) creation on the FIRST call for a
+     * forward/proxy client. Returns {@code null} when no supplier was provided (callers that never
+     * forward), matching the historical behaviour where the group field could be {@code null}. The
+     * {@code LifeCycle} accessor memoises the group, so repeated calls return the same instance.
+     */
+    private EventLoopGroup eventLoopGroup() {
+        return eventLoopGroupSupplier == null ? null : eventLoopGroupSupplier.get();
     }
 
     public CompletableFuture<HttpResponse> sendRequest(final HttpRequest httpRequest) throws SocketConnectionException {
@@ -133,6 +161,8 @@ public class NettyHttpClient {
     }
 
     public CompletableFuture<HttpResponse> sendRequest(final HttpRequest httpRequest, @Nullable InetSocketAddress remoteAddress, Long connectionTimeoutMillis, boolean disableStreaming) throws SocketConnectionException {
+        // Resolve (lazily creating on first forward) once per request so the whole request uses one group.
+        final EventLoopGroup eventLoopGroup = eventLoopGroup();
         if (!eventLoopGroup.isShuttingDown()) {
             if (proxyConfigurations != null && !Boolean.TRUE.equals(httpRequest.isSecure())
                 && proxyConfigurations.containsKey(ProxyConfiguration.Type.HTTP)
@@ -276,6 +306,7 @@ public class NettyHttpClient {
      */
     private void connectFresh(HttpRequest httpRequest, InetSocketAddress remoteAddress, Long connectionTimeoutMillis, boolean disableStreaming, boolean secure, Protocol httpProtocol, String poolKey, CompletableFuture<Message> responseFuture, AtomicLong firstByteMillis, AtomicLong connectionEstablishedMillis, CompletableFuture<HttpResponse> httpResponseFuture) {
         final HttpClientInitializer clientInitializer = new HttpClientInitializer(proxyConfigurations, mockServerLogger, forwardProxyClient, nettySslContextFactory, httpProtocol, configuration);
+        final EventLoopGroup eventLoopGroup = eventLoopGroup();
         Bootstrap bootstrap = new Bootstrap()
             .group(eventLoopGroup)
             .channel(NettyTransport.socketChannelClassFor(eventLoopGroup))
@@ -373,7 +404,7 @@ public class NettyHttpClient {
     private void applyForwardSocketKeepAlive(Bootstrap bootstrap) {
         applyForwardSocketKeepAlive(
             bootstrap,
-            eventLoopGroup,
+            eventLoopGroup(),
             Boolean.TRUE.equals(configuration.forwardSocketKeepAlive()),
             configuration.forwardSocketKeepAliveIdleSeconds(),
             configuration.forwardSocketKeepAliveIntervalSeconds(),
@@ -448,6 +479,7 @@ public class NettyHttpClient {
     }
 
     public CompletableFuture<BinaryMessage> sendRequest(final BinaryMessage binaryRequest, final boolean isSecure, InetSocketAddress remoteAddress, Long connectionTimeoutMillis) throws SocketConnectionException {
+        final EventLoopGroup eventLoopGroup = eventLoopGroup();
         if (!eventLoopGroup.isShuttingDown()) {
             if (proxyConfigurations != null && !isSecure && proxyConfigurations.containsKey(ProxyConfiguration.Type.HTTP)) {
                 remoteAddress = proxyConfigurations.get(ProxyConfiguration.Type.HTTP).getProxyAddress();
