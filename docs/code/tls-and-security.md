@@ -199,7 +199,16 @@ matches a request that presented no client certificate. See
 
 ### Control Plane mTLS
 
-Control plane endpoints (`/mockserver/expectation`, `/mockserver/verify`, etc.) can require mTLS authentication. When configured, `HttpState.controlPlaneRequestAuthenticated()` validates the client certificate chain against the configured trust store.
+Control plane endpoints (`/mockserver/expectation`, `/mockserver/verify`, etc.) can require mTLS authentication. When configured, `HttpState.controlPlaneRequestAuthenticated()` delegates to `MTLSAuthenticationHandler`, which validates the presented client-certificate chain against the configured trust store (`controlPlaneTLSMutualAuthenticationCAChain`).
+
+For each presented certificate, paired with each configured CA, the handler:
+
+| Check | How | Failure |
+|-------|-----|---------|
+| PKIX path validation | Builds a single-certificate `CertPath` for the presented certificate and validates it against that CA as the sole `TrustAnchor` (`CertPathValidator` "PKIX", `setRevocationEnabled(false)`). This performs signature verification, validity-window (`notBefore`/`notAfter`) enforcement and basic X.509 path processing in one JDK-audited step. | Rejected (unknown issuer, bad signature, expired/not-yet-valid) |
+| Extended Key Usage | If the presented certificate carries an EKU extension it must include `clientAuth` (`id-kp-clientAuth` `1.3.6.1.5.5.7.3.2`) or `anyExtendedKeyUsage` (`2.5.29.37.0`). A certificate with **no** EKU extension is unrestricted and is allowed (RFC 5280 practice). | Rejected when EKU present but lacks clientAuth |
+
+A presented certificate authenticates if any (certificate, CA) pair passes both checks; otherwise the handler throws `AuthenticationException`. Revocation (CRL/OCSP) is intentionally disabled so validation never makes a network call, consistent with the rest of the codebase. Because a certificate with no EKU is accepted, existing client certificates (including those that carry `serverAuth`+`clientAuth`, as MockServer's own generated certificates do) keep working unchanged.
 
 ## Control Plane Authentication
 
@@ -323,7 +332,7 @@ The MCP endpoint (`/mockserver/mcp`) enforces the same control-plane **authentic
 | `AuthenticationResult` | `o.m.authentication` | Immutable enriched outcome: authenticated flag, verified principal, principalSource, read-only claims/scopes |
 | `ChainedAuthenticationHandler` | `o.m.authentication` | Chains multiple `AuthenticationHandler` instances (logical AND — all must pass); combines results selecting the first verified principal and unioning scopes |
 | `AuthenticationException` | `o.m.authentication` | Thrown on authentication failure |
-| `MTLSAuthenticationHandler` | `o.m.authentication.mtls` | Validates client certificate chain against configured CA certificates via `X509Certificate.verify()` |
+| `MTLSAuthenticationHandler` | `o.m.authentication.mtls` | Validates client certificate chain against configured CA certificates via a PKIX `CertPath` (revocation disabled) plus a `clientAuth` Extended Key Usage check (absent EKU allowed) |
 | `JWTAuthenticationHandler` | `o.m.authentication.jwt` | Loads JWK keys from URL (`RemoteJWKSet`) or file (`ImmutableJWKSet`), extracts Bearer token from `Authorization` header, delegates to `JWTValidator` |
 | `OidcAuthenticationHandler` | `o.m.authentication.oidc` | Verifies an external-IdP OIDC Bearer token (signature + issuer + audience + exp/nbf + required scopes) and returns a verified-principal `AuthenticationResult`; resolves the JWK set directly or via OIDC discovery |
 | `ControlPlaneRole` | `o.m.authentication.authorization` | Coarse hierarchical role enum (`READ` < `MUTATE` < `ADMIN`) with `satisfies(required)` |

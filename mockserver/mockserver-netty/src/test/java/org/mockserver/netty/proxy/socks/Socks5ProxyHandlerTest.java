@@ -267,6 +267,53 @@ public class Socks5ProxyHandlerTest {
     }
 
     @Test
+    public void shouldRejectWrongUsernameAndCloseChannel() {
+        // given - credentials are set; the constant-time username comparison must still reject a
+        // mismatching username exactly as before (behaviour-preserving after the timing-safe compare)
+        configuration.proxyAuthenticationUsername("testuser");
+        configuration.proxyAuthenticationPassword("testpass");
+
+        EmbeddedChannel channel = createChannel();
+        try {
+            // step 1: initial request
+            channel.writeInbound(Unpooled.wrappedBuffer(new byte[]{
+                0x05, 0x01, 0x02
+            }));
+            ByteBuf initialResponse = channel.readOutbound();
+            assertThat(initialResponse, is(notNullValue()));
+            initialResponse.release();
+
+            // step 2: password auth with WRONG username but correct password
+            byte[] wrongUsername = "wronguser".getBytes();
+            byte[] password = "testpass".getBytes();
+            byte[] authRequest = new byte[1 + 1 + wrongUsername.length + 1 + password.length];
+            authRequest[0] = 0x01;
+            authRequest[1] = (byte) wrongUsername.length;
+            System.arraycopy(wrongUsername, 0, authRequest, 2, wrongUsername.length);
+            authRequest[2 + wrongUsername.length] = (byte) password.length;
+            System.arraycopy(password, 0, authRequest, 3 + wrongUsername.length, password.length);
+
+            // when
+            channel.writeInbound(Unpooled.wrappedBuffer(authRequest));
+
+            // then - should respond with auth FAILURE
+            ByteBuf authResponse = channel.readOutbound();
+            assertThat("should write auth failure response", authResponse, is(notNullValue()));
+            byte[] authResponseBytes = ByteBufUtil.getBytes(authResponse);
+            authResponse.release();
+
+            assertThat("subneg version should be 0x01", authResponseBytes[0], is((byte) 0x01));
+            assertThat("status should be FAILURE (0xff)", authResponseBytes[1], is((byte) 0xff));
+
+            // and - channel should be closed
+            channel.runPendingTasks();
+            assertFalse("channel should be closed after auth failure", channel.isActive());
+        } finally {
+            safeClose(channel);
+        }
+    }
+
+    @Test
     public void shouldReplaceProxyHandlerOnConnectCommand() {
         // given - complete initial handshake first
         EmbeddedChannel channel = createChannel();

@@ -168,14 +168,15 @@ public class DataPlaneAuthenticator {
     }
 
     /**
-     * Constant-time byte comparison via {@link MessageDigest#isEqual(byte[], byte[])} (documented to
-     * be constant-time and to not short-circuit on length). Note: {@code isEqual} returns false fast
-     * when the lengths differ, which leaks only the length of the supplied credential — never the
-     * secret's content — and matches the guarantee provided by other constant-time HMAC/token
-     * comparisons.
+     * Constant-time byte comparison. Delegates to the shared
+     * {@link org.mockserver.authentication.ConstantTimeEquals} so the control-plane proxy
+     * authentication and this data-plane authenticator share one audited implementation rather than
+     * duplicating the {@link MessageDigest#isEqual(byte[], byte[])} call. {@code isEqual} returns
+     * false fast when the lengths differ, which leaks only the length of the supplied credential —
+     * never the secret's content.
      */
     private static boolean constantTimeEquals(byte[] a, byte[] b) {
-        return MessageDigest.isEqual(a, b);
+        return org.mockserver.authentication.ConstantTimeEquals.equals(a, b);
     }
 
     private Outcome reject() {

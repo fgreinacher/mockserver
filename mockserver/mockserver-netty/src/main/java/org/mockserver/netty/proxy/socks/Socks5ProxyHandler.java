@@ -4,6 +4,7 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.socksx.v5.*;
+import org.mockserver.authentication.ConstantTimeEquals;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.lifecycle.LifeCycle;
 import org.mockserver.log.model.LogEntry;
@@ -79,9 +80,11 @@ public class Socks5ProxyHandler extends SocksProxyHandler<Socks5Message> {
     private void handlePasswordAuthRequest(ChannelHandlerContext ctx, Socks5PasswordAuthRequest passwordAuthRequest) {
         String username = configuration.proxyAuthenticationUsername();
         String password = configuration.proxyAuthenticationPassword();
-        // we need the null-check again here, in case the properties got unset between init and auth request
+        // we need the null-check again here, in case the properties got unset between init and auth request.
+        // Credentials are compared in constant time (ConstantTimeEquals) so an attacker cannot recover the
+        // configured username/password one byte at a time by measuring how long the comparison takes.
         if (isNotBlank(username) && isNotBlank(password)
-            && username.equals(passwordAuthRequest.username()) && password.equals(passwordAuthRequest.password())) {
+            && ConstantTimeEquals.equals(username, passwordAuthRequest.username()) && ConstantTimeEquals.equals(password, passwordAuthRequest.password())) {
             ctx.pipeline().replace(Socks5PasswordAuthRequestDecoder.class, null, new Socks5CommandRequestDecoder());
             ctx.writeAndFlush(new DefaultSocks5PasswordAuthResponse(Socks5PasswordAuthStatus.SUCCESS));
         } else {

@@ -272,6 +272,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Control-plane mTLS now validates a full PKIX certificate path and enforces the clientAuth Extended
+  Key Usage.** `MTLSAuthenticationHandler` previously validated a presented client certificate only with a
+  single-level signature `verify()` plus a validity-window `checkValidity()` check. It now builds a proper
+  PKIX `CertPath` for the presented certificate and validates it against the configured control-plane CA(s)
+  as trust anchors (revocation checking disabled by default, consistent with the rest of the codebase, so
+  validation stays fully offline). It additionally enforces Extended Key Usage: when the client certificate
+  carries an EKU extension it must permit `clientAuth` (`id-kp-clientAuth` 1.3.6.1.5.5.7.3.2) or
+  `anyExtendedKeyUsage`, so a certificate scoped to `serverAuth` only can no longer authenticate as a
+  control-plane client. A certificate with no EKU extension remains unrestricted and is still accepted (RFC
+  5280 practice), so this is backward compatible with existing client certificates. Enabled only when
+  `controlPlaneTLSMutualAuthenticationCAChain` is configured.
+
+- **SOCKS5 proxy authentication now compares the username and password in constant time.**
+  `Socks5ProxyHandler` compared the configured proxy credentials with `String.equals`, whose early-exit on
+  the first differing byte is a timing side channel an attacker could use to recover the credentials one
+  byte at a time. Both the username and password are now compared with a shared constant-time helper
+  (`ConstantTimeEquals`, `MessageDigest.isEqual` on UTF-8 bytes) — the same timing-safe comparison the
+  data-plane authenticator already uses, now extracted so there is a single audited implementation. Correct
+  credentials are still accepted and wrong credentials still rejected exactly as before.
+
 - **Documented that the `/mockserver/metrics` Prometheus scrape endpoint is unauthenticated by design,
   and how to secure it.** The scrape endpoint is intentionally served outside the control-plane auth gate
   (Prometheus/OTEL scrapers cannot present a control-plane certificate or bearer token), so its labels
