@@ -42,6 +42,8 @@ sitemap:
 
 <p><strong>Inspecting AI agent traffic?</strong> If you want to see the HTTPS calls that Claude Code, OpenCode, or Python AI libraries send to LLM APIs and MCP servers, see <a href="/mock_server/ai_traffic_inspection.html">Inspect AI Agent Traffic</a>. It covers proxy setup, CA trust, and per-tool configuration for AI tools.</p>
 
+<p><strong>Proxying WebSockets?</strong> MockServer also proxies WebSocket connections. When a client opens a WebSocket (an HTTP <span class="inline_code">Upgrade: websocket</span> request) through MockServer and no matching WebSocket expectation exists, MockServer connects to the real upstream WebSocket server (over <span class="inline_code">ws</span> or <span class="inline_code">wss</span>), relays the handshake, and then relays messages in both directions until either side closes. The relayed frames (text, binary, ping, pong, close) are recorded alongside the connection so you can inspect them with <a href="/mock_server/verification.html">recorded requests</a> and in the dashboard. The number of frames recorded per connection is capped by the <span class="inline_code">webSocketProxyMaxRecordedFrames</span> <a href="/mock_server/configuration_properties.html">configuration property</a> (default 1000; set to 0 to record only the handshake). This currently covers HTTP/1.1 WebSocket upgrades over plain and TLS upstreams.</p>
+
 <a id="start_mockserver" class="anchor" href="#start_mockserver">&nbsp;</a>
 
 <h2>0. Start MockServer</h2>

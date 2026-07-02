@@ -41,6 +41,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Integer maxLoggedBodyBytes;
     private Integer ringBufferSize;
     private Integer maxWebSocketExpectations;
+    private Integer webSocketProxyMaxRecordedFrames;
+    private Integer webSocketProxyIdleTimeoutSeconds;
     private Boolean outputMemoryUsageCsv;
     private String memoryUsageCsvDirectory;
 
@@ -333,6 +335,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.maxLoggedBodyBytes = configuration.maxLoggedBodyBytes();
             this.ringBufferSize = configuration.ringBufferSize();
             this.maxWebSocketExpectations = configuration.maxWebSocketExpectations();
+            this.webSocketProxyMaxRecordedFrames = configuration.webSocketProxyMaxRecordedFrames();
+            this.webSocketProxyIdleTimeoutSeconds = configuration.webSocketProxyIdleTimeoutSeconds();
             this.outputMemoryUsageCsv = configuration.outputMemoryUsageCsv();
             this.memoryUsageCsvDirectory = configuration.memoryUsageCsvDirectory();
 
@@ -630,6 +634,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (maxWebSocketExpectations != null && (maxWebSocketExpectations < 0 || maxWebSocketExpectations > 100000)) {
             throw new IllegalArgumentException("maxWebSocketExpectations must be between 0 and 100000, got: " + maxWebSocketExpectations);
         }
+        if (webSocketProxyMaxRecordedFrames != null && (webSocketProxyMaxRecordedFrames < 0 || webSocketProxyMaxRecordedFrames > 1000000)) {
+            throw new IllegalArgumentException("webSocketProxyMaxRecordedFrames must be between 0 and 1000000, got: " + webSocketProxyMaxRecordedFrames);
+        }
+        if (webSocketProxyIdleTimeoutSeconds != null && (webSocketProxyIdleTimeoutSeconds < 0 || webSocketProxyIdleTimeoutSeconds > 86400)) {
+            throw new IllegalArgumentException("webSocketProxyIdleTimeoutSeconds must be between 0 and 86400, got: " + webSocketProxyIdleTimeoutSeconds);
+        }
         if (forwardProxyTLSX509CertificatesTrustManagerType != null) {
             try {
                 ForwardProxyTLSX509CertificatesTrustManager.valueOf(forwardProxyTLSX509CertificatesTrustManagerType);
@@ -681,6 +691,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.maxLoggedBodyBytes(maxLoggedBodyBytes);
         configuration.ringBufferSize(ringBufferSize);
         configuration.maxWebSocketExpectations(maxWebSocketExpectations);
+        configuration.webSocketProxyMaxRecordedFrames(webSocketProxyMaxRecordedFrames);
+        configuration.webSocketProxyIdleTimeoutSeconds(webSocketProxyIdleTimeoutSeconds);
         configuration.outputMemoryUsageCsv(outputMemoryUsageCsv);
         configuration.memoryUsageCsvDirectory(memoryUsageCsvDirectory);
 
@@ -1039,6 +1051,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (maxWebSocketExpectations != null) {
             target.maxWebSocketExpectations(maxWebSocketExpectations);
+        }
+        if (webSocketProxyMaxRecordedFrames != null) {
+            target.webSocketProxyMaxRecordedFrames(webSocketProxyMaxRecordedFrames);
+        }
+        if (webSocketProxyIdleTimeoutSeconds != null) {
+            target.webSocketProxyIdleTimeoutSeconds(webSocketProxyIdleTimeoutSeconds);
         }
         if (outputMemoryUsageCsv != null) {
             target.outputMemoryUsageCsv(outputMemoryUsageCsv);
@@ -1980,6 +1998,24 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setMaxWebSocketExpectations(Integer maxWebSocketExpectations) {
         this.maxWebSocketExpectations = maxWebSocketExpectations;
+        return this;
+    }
+
+    public Integer getWebSocketProxyMaxRecordedFrames() {
+        return webSocketProxyMaxRecordedFrames;
+    }
+
+    public ConfigurationDTO setWebSocketProxyMaxRecordedFrames(Integer webSocketProxyMaxRecordedFrames) {
+        this.webSocketProxyMaxRecordedFrames = webSocketProxyMaxRecordedFrames;
+        return this;
+    }
+
+    public Integer getWebSocketProxyIdleTimeoutSeconds() {
+        return webSocketProxyIdleTimeoutSeconds;
+    }
+
+    public ConfigurationDTO setWebSocketProxyIdleTimeoutSeconds(Integer webSocketProxyIdleTimeoutSeconds) {
+        this.webSocketProxyIdleTimeoutSeconds = webSocketProxyIdleTimeoutSeconds;
         return this;
     }
 

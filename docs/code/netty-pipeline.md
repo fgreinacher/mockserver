@@ -664,6 +664,95 @@ When the `http2Enabled` configuration property is `false`, `NettySslContextFacto
 `h2` via ALPN and `PortUnificationHandler` ignores the h2c cleartext preface, so every connection —
 direct or relayed — falls back to HTTP/1.1.
 
+## WebSocket Proxy Passthrough
+
+MockServer can **proxy** a WebSocket connection through to a real upstream server, in addition to **mocking** one
+(the `WEBSOCKET_RESPONSE` action — see [ai-protocol-mocking.md](ai-protocol-mocking.md#websocket-mocking)). When a
+WebSocket upgrade request arrives in proxy mode and **no** WebSocket mock expectation matches — or it matches a plain
+`FORWARD` expectation — MockServer opens the upstream WebSocket connection, relays the `101 Switching Protocols`
+handshake, then relays frames bidirectionally until either side closes.
+
+```mermaid
+sequenceDiagram
+    participant C as WebSocket Client (SUT)
+    participant MS as MockServer (proxy)
+    participant U as Upstream WS Server
+
+    C->>MS: GET /path Upgrade: websocket
+    Note over MS: no WS mock matches → passthrough
+    MS->>U: client-side WS handshake (ws/wss)
+    U-->>MS: 101 Switching Protocols
+    MS-->>C: 101 Switching Protocols (server-side handshake)
+    Note over C,U: bidirectional frame relay
+    C->>MS: text / binary / ping frame
+    MS->>U: same frame (recorded CLIENT_TO_UPSTREAM)
+    U->>MS: text / binary / pong frame
+    MS->>C: same frame (recorded UPSTREAM_TO_CLIENT)
+    C->>MS: close
+    MS->>U: close
+    Note over MS: on close, flush FORWARDED_REQUEST transcript
+```
+
+**Placement.** The interception lives in `HttpActionHandler` (`mockserver-core`), where the mock-vs-forward decision
+is already made: `WebSocketProxyRelayHandler.isWebSocketUpgrade(request)` is checked in the unmatched-proxy branch of
+`processAction` (before `handleUnmatchedProxyForward`) and, for a matched plain `HttpForward` action, at the top of
+`dispatchPrimaryActionInternal`. The relay itself is `WebSocketProxyRelayHandler` (`mockserver-core`), which:
+
+1. Resolves the upstream host/port (the `REMOTE_SOCKET` port-forward target, the configured `proxyRemoteHost`, or the
+   request `Host` header for a reverse proxy) and the scheme (`wss` when `request.isSecure()`, else `ws`).
+2. Opens the upstream connection on the **same event loop** as the inbound client channel
+   (`NettyTransport.socketChannelClassFor(...)`), so both relay halves run single-threaded with no cross-thread races.
+   TLS uses `NettySslContextFactory.createClientSslContext(...)`.
+3. Drives the **client-side** handshake to the upstream (`WebSocketClientHandshaker`), forwarding the client's custom
+   headers (e.g. `Authorization`, `Cookie`) and requested subprotocol.
+4. On upstream `101`, completes the **server-side** handshake back to the original client (reusing the same
+   `WebSocketServerHandshakerFactory` approach as the WS mock handler), strips the HTTP server handlers, and installs a
+   `FrameRelayHandler` on each channel.
+
+**Backpressure.** Each `FrameRelayHandler` mirrors its channel's writability onto the *peer's* `autoRead` in
+`channelWritabilityChanged` (the standard Netty proxy pattern): when the channel it writes to saturates, reads on the
+source channel are paused and resumed when it drains, so a slow peer cannot grow the other side's
+`ChannelOutboundBuffer` without bound.
+
+**TLS to the upstream.** The upstream leg uses `NettySslContextFactory.createClientSslContext(true, …)` — the
+**forward-proxy** client context — so `forwardProxyTLSX509CertificatesTrustManagerType` (default `ANY`) governs which
+upstream certificates are trusted, exactly like the matched-forward path. (Using the non-forward context would trust
+only MockServer's own CA and fail `wss` to any real upstream.)
+
+**SSRF guard.** Before connecting, `relay()` calls `InetAddressValidator.validateForwardTarget(configuration, host)` —
+the same guard every matched-forward handler enforces — so with `forwardProxyBlockPrivateNetworks=true` a WS upgrade to
+a loopback / link-local / RFC1918 / cloud-metadata (`169.254.169.254`) target is rejected with a `502` instead of being
+relayed. No-op when the feature is disabled (the default).
+
+**Recording (flush-on-close only).** Each relayed frame is captured into a bounded, per-connection `FrameTranscript`
+(direction, opcode, payload — text as a UTF-8 string, other opcodes as base64, per-frame payload capped at 32KB). The
+transcript is flushed to the event log **once, when the connection closes** — a long-lived relay does not appear in
+`retrieveRecordedRequests` until it closes. It is written as a single `FORWARDED_REQUEST`: request = the upgrade `GET`,
+response = `101` with an `x-mockserver-websocket-frames` count header, an `x-mockserver-websocket-transcript-truncated`
+flag, and the transcript as the JSON body — so `retrieveRecordedRequests` / `retrieveRecordedRequestsAndResponses` and
+the dashboard show the WebSocket traffic. Two independent caps bound memory: the frame-count cap
+`webSocketProxyMaxRecordedFrames` (default `1000`, `0` disables frame recording — the handshake is still recorded and is
+*not* flagged truncated) and an absolute 8MB cap on the accumulated transcript JSON. Because base64 inflates payload by
+~1.33× and Java `String`/`StringBuilder` store UTF-16 (~2 bytes/char), the frame-count cap alone could otherwise pin
+~85MB for a connection of 1000 maximally-sized (32KB) frames; the 8MB JSON cap is the real bound. Beyond either cap
+frames are relayed but not recorded and the transcript is flagged truncated.
+
+**Idle reaping (opt-in).** With `webSocketProxyIdleTimeoutSeconds > 0`, an `IdleStateHandler` on each relay channel
+closes the relay (flushing the transcript) once neither side has sent a frame for that period. Default `0` (off) —
+legitimately idle long-lived WebSocket connections are left to TCP keep-alive and peer-close propagation.
+
+**Matched-`HttpForward` semantics.** A WS upgrade matched by a plain `HttpForward` expectation is relayed to the
+forward target, but only the **connect** is driven by that expectation: `Times`/`TimeToLive` selection and `verify`
+work as usual, but the response-shaping features that assume a single buffered HTTP response — `delay`, `rateLimit`,
+`chaos`, request/response/stream **breakpoints**, and **drift** analysis — do **not** apply to a passthrough WebSocket
+(there is no single response to delay, rate-limit, mutate, or compare). Use the `WEBSOCKET_RESPONSE` mock action for
+frame-level control.
+
+**Boundary (v1).** HTTP/1.1 upgrade relay only, plain and TLS upstream. HTTP/2 extended-CONNECT (RFC 8441) WebSocket is
+**not** relayed — such an upgrade falls through to the normal HTTP forward path. Only the plain `HttpForward` action
+(static host/port/scheme) routes a matched WS upgrade to passthrough; the template/callback/replace forward variants
+fall through to their normal handlers.
+
 ## DNS UDP Server
 
 When `dnsEnabled=true`, `MockServer.bindDnsPort()` creates a separate Netty `Bootstrap` with `NioDatagramChannel` for UDP DNS:
@@ -777,4 +866,5 @@ This means genuine SSL negotiation failures (e.g., client sends plain HTTP to a 
 | `StreamingAwareHttpObjectAggregator` | `mockserver-core/.../codec/StreamingAwareHttpObjectAggregator.java` | Replaces `HttpObjectAggregator` in forward-path client pipelines; detects streaming responses and switches to `StreamingResponseRelayHandler` |
 | `StreamingResponseRelayHandler` | `mockserver-core/.../httpclient/StreamingResponseRelayHandler.java` | Consumes unaggregated `HttpObject` events; relays chunks immediately; captures bounded body; signals `HttpActionHandler` on completion |
 | `StreamingBody` | `mockserver-core/.../model/StreamingBody.java` | Chunk sink bridging relay handler to server-side response writer; holds bounded capture buffer |
+| `WebSocketProxyRelayHandler` | `mockserver-core/.../mock/action/http/WebSocketProxyRelayHandler.java` | WebSocket proxy passthrough: opens the upstream WS connection (plain/TLS), relays the `101` handshake and frames bidirectionally, and records the upgrade + a bounded frame transcript as a `FORWARDED_REQUEST` |
 | `AltSvcHeaderHandler` | `mockserver-netty/.../netty/unification/AltSvcHeaderHandler.java` | Outbound handler that adds `Alt-Svc` header to TCP responses when HTTP/3 is enabled; does not clobber user-set values |

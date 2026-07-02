@@ -184,6 +184,16 @@ mockServerClient.when(
 );
 ```
 
+### Proxy passthrough (relay to a real upstream)
+
+WebSocket is no longer mock-only. When MockServer is used as a **proxy** and a WebSocket upgrade request matches no
+`WEBSOCKET_RESPONSE` expectation (or matches a plain `FORWARD` expectation), MockServer relays the connection through
+to the real upstream WebSocket server — completing the upstream `ws`/`wss` handshake, relaying the `101` back to the
+client, then relaying frames bidirectionally until either side closes. The relayed frames are recorded (bounded by
+`webSocketProxyMaxRecordedFrames`) so `retrieveRecordedRequests` and the dashboard show the traffic. This is
+implemented at the proxy/relay layer by `WebSocketProxyRelayHandler`, not the mock action handler — see
+[netty-pipeline.md → WebSocket Proxy Passthrough](netty-pipeline.md#websocket-proxy-passthrough).
+
 ## Realtime Voice API Mocking (OpenAI Realtime, Gemini Live)
 
 ### Outcome

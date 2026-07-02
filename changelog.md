@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **WebSocket proxy passthrough + frame recording.** MockServer can now proxy WebSocket connections through to a real
+  upstream server, not just mock them. When a WebSocket upgrade request (`GET` + `Upgrade: websocket`) arrives in proxy
+  mode and no WebSocket mock expectation matches — or it matches a plain `FORWARD` expectation — MockServer completes
+  the upstream connection (honouring `ws`/`wss` scheme and TLS), relays the `101 Switching Protocols` handshake, and
+  relays frames bidirectionally (text, binary, ping, pong, close) until either side closes. This lets a system under
+  test pointed at MockServer as a proxy reach a real WebSocket backend. The relayed traffic is recorded: the upgrade
+  exchange is logged as a `FORWARDED_REQUEST` (request = the upgrade, response = `101` carrying a JSON transcript of the
+  relayed frames with direction/opcode/payload), so `retrieveRecordedRequests` and the dashboard show the WebSocket
+  traffic. The transcript is flushed to the log once, on connection close. Frame recording is bounded per connection by
+  the new **`webSocketProxyMaxRecordedFrames`** configuration property (default `1000`; set to `0` to disable frame
+  recording — the handshake is still recorded) plus an absolute 8MB transcript cap, following the `maxLogEntries`
+  memory-management philosophy. The upstream TLS leg uses the forward-proxy trust manager
+  (`forwardProxyTLSX509CertificatesTrustManagerType`, default `ANY`) so real `wss` backends are reachable, and the same
+  `forwardProxyBlockPrivateNetworks` SSRF guard the matched-forward path enforces applies (a WS upgrade to a
+  loopback / RFC1918 / cloud-metadata target is refused with `502`). A slow peer cannot exhaust memory — the relay
+  applies standard writability-based backpressure. An opt-in **`webSocketProxyIdleTimeoutSeconds`** (default `0`, off)
+  reaps abandoned relays. For a WS upgrade matched by a plain `FORWARD` expectation, `Times`/`verify` apply but
+  response-shaping features (`delay`, `rateLimit`, `chaos`, breakpoints, drift) do not — use the `WEBSOCKET_RESPONSE`
+  mock action for frame-level control. Scope (v1): HTTP/1.1 upgrade relay (plain and TLS upstream); HTTP/2
+  extended-CONNECT WebSocket is not yet relayed. See
+  [docs/code/netty-pipeline.md](docs/code/netty-pipeline.md#websocket-proxy-passthrough).
+
 - **Seedable template `faker` for reproducible fixtures — new `templateFakerSeed` property.** The template
   `faker` sample-data helper (Velocity `$faker`, Mustache `{{faker.*}}`, JavaScript `faker`) can now be seeded
   deterministically. `templateFakerSeed` defaults to `0`, which leaves faker unseeded so it produces different,

@@ -652,6 +652,39 @@ mockserver.enableCORSForAllResponses=true</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxWebSocketExpectations="2000"</code></pre>
 </div>
 
+<button id="button_configuration_web_socket_proxy_max_recorded_frames" class="accordion title"><strong>Maximum Recorded Frames Per Proxied WebSocket</strong></button>
+<div class="panel title">
+    <p>Maximum number of WebSocket frames recorded per proxied (passthrough) WebSocket connection. When MockServer proxies a WebSocket upgrade to a real upstream server (no matching WebSocket expectation), the relayed frames (text, binary, ping, pong, close) are captured into a per-connection transcript that is written to the request log when the connection closes, so <span class="inline_code">retrieveRecordedRequests</span> and the dashboard show the WebSocket traffic. Once this limit is reached the remaining frames on that connection are still relayed but not recorded, which bounds memory on long-lived connections.</p>
+    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">1000</span> (set to <span class="this_value">0</span> to disable frame recording; the upgrade handshake is still recorded)</p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.webSocketProxyMaxRecordedFrames(int count)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.webSocketProxyMaxRecordedFrames=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_WEB_SOCKET_PROXY_MAX_RECORDED_FRAMES=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.webSocketProxyMaxRecordedFrames=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.webSocketProxyMaxRecordedFrames="500"</code></pre>
+</div>
+
+<button id="button_configuration_web_socket_proxy_idle_timeout_seconds" class="accordion title"><strong>Proxied WebSocket Idle Timeout</strong></button>
+<div class="panel title">
+    <p>Idle timeout, in seconds, for a proxied (passthrough) WebSocket connection. When set to a positive value, a relayed WebSocket connection whose two directions have both been idle (no message sent either way) for this many seconds is closed, reaping half-open or abandoned relays.</p>
+    <p>The default is <span class="this_value">0</span>, which disables idle reaping &mdash; long-lived WebSocket connections that are legitimately idle (for example waiting for server-pushed events) are left open and rely on TCP keep-alive. Raise it only if you need MockServer to bound how long an idle passthrough relay is held open.</p>
+    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">0</span> (disabled)</p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.webSocketProxyIdleTimeoutSeconds(int seconds)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.webSocketProxyIdleTimeoutSeconds=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_WEB_SOCKET_PROXY_IDLE_TIMEOUT_SECONDS=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.webSocketProxyIdleTimeoutSeconds=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.webSocketProxyIdleTimeoutSeconds="300"</code></pre>
+</div>
+
 <button id="button_configuration_log_memory_statistics" class="accordion title"><strong>Output JVM Memory Usage</strong></button>
 <div class="panel title">
     <p>Output JVM memory usage metrics to CSV file periodically called <strong>memoryUsage_&lt;yyyy-MM-dd&gt;.csv</strong></p>

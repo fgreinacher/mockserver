@@ -103,6 +103,8 @@ public class HttpActionHandler {
 
     // forwarding
     private NettyHttpClient httpClient;
+    private final NettySslContextFactory nettySslContextFactory;
+    private WebSocketProxyRelayHandler webSocketProxyRelayHandler;
     private HopByHopHeaderFilter hopByHopHeaderFilter = new HopByHopHeaderFilter();
     private HttpRequestToCurlSerializer httpRequestToCurlSerializer;
     private final org.mockserver.metrics.Metrics metrics;
@@ -126,7 +128,66 @@ public class HttpActionHandler {
         // never triggers creation of the disjoint forward-client group. See NettyHttpClient and
         // LifeCycle#getForwardClientEventLoopGroup().
         this.httpClient = new NettyHttpClient(configuration, mockServerLogger, eventLoopGroupSupplier, proxyConfigurations, true, nettySslContextFactory);
+        this.nettySslContextFactory = nettySslContextFactory;
         this.metrics = new org.mockserver.metrics.Metrics(configuration);
+    }
+
+    private WebSocketProxyRelayHandler getWebSocketProxyRelayHandler() {
+        if (webSocketProxyRelayHandler == null) {
+            webSocketProxyRelayHandler = new WebSocketProxyRelayHandler(configuration, mockServerLogger, nettySslContextFactory);
+        }
+        return webSocketProxyRelayHandler;
+    }
+
+    /**
+     * Attempt to relay a WebSocket upgrade request straight through to a real upstream server (passthrough proxy).
+     * Returns {@code true} when the request is a WebSocket upgrade and an upstream address could be resolved, in
+     * which case the relay takes over the channel; {@code false} otherwise so the caller falls back to normal HTTP
+     * forwarding / matching. Only ever invoked with a live Netty {@code ctx} (never in WAR deployments).
+     */
+    private boolean attemptWebSocketPassthrough(final HttpRequest request, final ChannelHandlerContext ctx,
+                                                final String forwardHost, final Integer forwardPort, final Boolean forwardTls) {
+        if (ctx == null || !WebSocketProxyRelayHandler.isWebSocketUpgrade(request)) {
+            return false;
+        }
+        String host;
+        int port;
+        boolean tls;
+        if (isNotBlank(forwardHost)) {
+            host = forwardHost;
+            port = forwardPort != null ? forwardPort : (Boolean.TRUE.equals(forwardTls) ? 443 : 80);
+            tls = Boolean.TRUE.equals(forwardTls);
+        } else {
+            InetSocketAddress remoteAddress = getRemoteAddressWithFallback(ctx);
+            tls = Boolean.TRUE.equals(request.isSecure());
+            if (remoteAddress != null) {
+                host = remoteAddress.getHostString();
+                port = remoteAddress.getPort();
+            } else {
+                // reverse-proxy by Host header (SUT points its WebSocket client at MockServer as a proxy)
+                String hostHeader = request.getFirstHeader(HOST.toString());
+                if (isEmpty(hostHeader)) {
+                    return false;
+                }
+                String[] hostParts = HttpRequest.splitHostPort(hostHeader);
+                host = hostParts[0];
+                if (hostParts.length > 1) {
+                    try {
+                        port = Integer.parseInt(hostParts[1]);
+                    } catch (NumberFormatException e) {
+                        // malformed Host header port — fall back to normal forwarding rather than relaying
+                        return false;
+                    }
+                } else {
+                    port = tls ? 443 : 80;
+                }
+            }
+        }
+        if (isEmpty(host)) {
+            return false;
+        }
+        getWebSocketProxyRelayHandler().relay(request, ctx, host, port, tls);
+        return true;
     }
 
     /**
@@ -291,6 +352,13 @@ public class HttpActionHandler {
 
         } else if (proxyingRequest || potentiallyHttpProxy) {
 
+            // WebSocket passthrough: a WS upgrade request in proxy mode with no matching mock expectation is
+            // relayed straight through to the real upstream server (101 handshake + bidirectional frame relay),
+            // rather than being forwarded as a plain (broken) HTTP request. Falls back to normal forwarding when
+            // the request is not a WS upgrade or no upstream address can be resolved.
+            if (attemptWebSocketPassthrough(request, ctx, null, null, null)) {
+                return;
+            }
             handleUnmatchedProxyForward(request, responseWriter, ctx, synchronous, potentiallyHttpProxy);
 
         } else {
@@ -422,6 +490,18 @@ public class HttpActionHandler {
         // fire cross-protocol scenario transitions when this expectation has them
         fireCrossProtocolEvents(expectation, request);
         final Action action = expectation.getAction();
+        // WebSocket passthrough for a matched plain FORWARD expectation: relay the WS upgrade to the forward
+        // target (host/port/scheme) instead of forwarding it as a plain HTTP request. Only the plain HttpForward
+        // action carries a static host/port/scheme; the template/callback/replace forward variants fall through to
+        // their normal handlers (documented boundary).
+        if (action instanceof HttpForward && WebSocketProxyRelayHandler.isWebSocketUpgrade(request) && ctx != null) {
+            HttpForward forward = (HttpForward) action;
+            if (attemptWebSocketPassthrough(request, ctx, forward.getHost(), forward.getPort(),
+                forward.getScheme() == HttpForward.Scheme.HTTPS)) {
+                expectationPostProcessor.run();
+                return;
+            }
+        }
         // capture matchCount before scheduling to avoid race with concurrent requests
         final int capturedMatchCount = expectation.getMatchCount();
         // chaos: gate by the time-based outage window once per request and apply the

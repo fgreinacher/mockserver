@@ -113,6 +113,8 @@ public class Configuration {
     private Integer maxLoggedBodyBytes;
     private Integer ringBufferSize;
     private Integer maxWebSocketExpectations;
+    private Integer webSocketProxyMaxRecordedFrames;
+    private Integer webSocketProxyIdleTimeoutSeconds;
     private Boolean outputMemoryUsageCsv;
     private String memoryUsageCsvDirectory;
 
@@ -1661,6 +1663,56 @@ public class Configuration {
      */
     public Configuration maxWebSocketExpectations(Integer maxWebSocketExpectations) {
         this.maxWebSocketExpectations = maxWebSocketExpectations;
+        return this;
+    }
+
+    public Integer webSocketProxyMaxRecordedFrames() {
+        if (webSocketProxyMaxRecordedFrames == null) {
+            return ConfigurationProperties.webSocketProxyMaxRecordedFrames();
+        }
+        return webSocketProxyMaxRecordedFrames;
+    }
+
+    /**
+     * <p>
+     * Maximum number of WebSocket frames recorded per proxied (passthrough) WebSocket connection. When MockServer
+     * proxies a WebSocket upgrade to a real upstream server (no matching mock expectation), the relayed frames are
+     * captured into a per-connection transcript written to the event log as a {@code FORWARDED_REQUEST} on close, so
+     * {@code retrieveRecordedRequests} and the dashboard show the WebSocket traffic. Once this cap is reached the
+     * remaining frames are relayed but not recorded (the transcript is flagged truncated), bounding memory.
+     * </p>
+     * <p>
+     * The default is 1000. Set to 0 to disable frame recording (the upgrade handshake is still recorded).
+     * </p>
+     *
+     * @param webSocketProxyMaxRecordedFrames maximum number of relayed WebSocket frames recorded per proxied connection
+     */
+    public Configuration webSocketProxyMaxRecordedFrames(Integer webSocketProxyMaxRecordedFrames) {
+        this.webSocketProxyMaxRecordedFrames = webSocketProxyMaxRecordedFrames;
+        return this;
+    }
+
+    public Integer webSocketProxyIdleTimeoutSeconds() {
+        if (webSocketProxyIdleTimeoutSeconds == null) {
+            return ConfigurationProperties.webSocketProxyIdleTimeoutSeconds();
+        }
+        return webSocketProxyIdleTimeoutSeconds;
+    }
+
+    /**
+     * <p>
+     * Idle timeout (in seconds) for a proxied (passthrough) WebSocket connection. When positive, a relayed WebSocket
+     * connection whose two directions have both been idle for this many seconds is closed, reaping abandoned relays.
+     * </p>
+     * <p>
+     * The default is 0 (disabled) — legitimately idle long-lived WebSocket connections are left to TCP keep-alive and
+     * peer-close propagation.
+     * </p>
+     *
+     * @param webSocketProxyIdleTimeoutSeconds idle timeout in seconds for proxied WebSocket relays (0 disables)
+     */
+    public Configuration webSocketProxyIdleTimeoutSeconds(Integer webSocketProxyIdleTimeoutSeconds) {
+        this.webSocketProxyIdleTimeoutSeconds = webSocketProxyIdleTimeoutSeconds;
         return this;
     }
 

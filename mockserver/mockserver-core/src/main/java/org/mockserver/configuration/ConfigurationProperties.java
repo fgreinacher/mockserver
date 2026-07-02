@@ -114,6 +114,8 @@ public class ConfigurationProperties {
     // 131072-slot ring (~14.7MB of empty LogEntry shells) purely as a side effect of retention sizing.
     static final int DEFAULT_MAX_RING_BUFFER_SIZE = 16384;
     private static final String MOCKSERVER_MAX_WEB_SOCKET_EXPECTATIONS = "mockserver.maxWebSocketExpectations";
+    private static final String MOCKSERVER_WEB_SOCKET_PROXY_MAX_RECORDED_FRAMES = "mockserver.webSocketProxyMaxRecordedFrames";
+    private static final String MOCKSERVER_WEB_SOCKET_PROXY_IDLE_TIMEOUT_SECONDS = "mockserver.webSocketProxyIdleTimeoutSeconds";
     private static final String MOCKSERVER_OUTPUT_MEMORY_USAGE_CSV = "mockserver.outputMemoryUsageCsv";
     private static final String MOCKSERVER_MEMORY_USAGE_CSV_DIRECTORY = "mockserver.memoryUsageCsvDirectory";
 
@@ -1925,6 +1927,51 @@ public class ConfigurationProperties {
      */
     public static void maxWebSocketExpectations(int count) {
         setProperty(MOCKSERVER_MAX_WEB_SOCKET_EXPECTATIONS, "" + count);
+    }
+
+    public static int webSocketProxyMaxRecordedFrames() {
+        return readIntegerProperty(MOCKSERVER_WEB_SOCKET_PROXY_MAX_RECORDED_FRAMES, "MOCKSERVER_WEB_SOCKET_PROXY_MAX_RECORDED_FRAMES", 1000);
+    }
+
+    /**
+     * <p>
+     * Maximum number of WebSocket frames recorded per proxied (passthrough) WebSocket connection. When MockServer
+     * proxies a WebSocket upgrade to a real upstream server (no matching mock expectation), the relayed frames
+     * (text, binary, ping, pong, close) are captured into a per-connection transcript that is written to the event
+     * log as a {@code FORWARDED_REQUEST} when the connection closes, so {@code retrieveRecordedRequests} and the
+     * dashboard show the WebSocket traffic. Once this cap is reached the remaining frames on that connection are
+     * relayed but not recorded (the transcript is flagged truncated), bounding memory on long-lived connections.
+     * </p>
+     * <p>
+     * The default is 1000. Set to 0 to disable frame recording (the upgrade handshake is still recorded).
+     * </p>
+     *
+     * @param count maximum number of relayed WebSocket frames recorded per proxied connection
+     */
+    public static void webSocketProxyMaxRecordedFrames(int count) {
+        setProperty(MOCKSERVER_WEB_SOCKET_PROXY_MAX_RECORDED_FRAMES, "" + count);
+    }
+
+    public static int webSocketProxyIdleTimeoutSeconds() {
+        return readIntegerProperty(MOCKSERVER_WEB_SOCKET_PROXY_IDLE_TIMEOUT_SECONDS, "MOCKSERVER_WEB_SOCKET_PROXY_IDLE_TIMEOUT_SECONDS", 0);
+    }
+
+    /**
+     * <p>
+     * Idle timeout (in seconds) for a proxied (passthrough) WebSocket connection. When set to a positive value, a
+     * relayed WebSocket connection whose two directions have both been idle (no frame sent either way) for this many
+     * seconds is closed, reaping half-open / abandoned relays.
+     * </p>
+     * <p>
+     * The default is 0, which disables idle reaping — long-lived WebSocket connections that are legitimately idle
+     * (e.g. waiting for server-pushed events) are left to TCP keep-alive and normal peer-close propagation. Raise it
+     * only if you need MockServer to bound how long an idle passthrough relay is held open.
+     * </p>
+     *
+     * @param seconds idle timeout in seconds for proxied WebSocket relays (0 disables)
+     */
+    public static void webSocketProxyIdleTimeoutSeconds(int seconds) {
+        setProperty(MOCKSERVER_WEB_SOCKET_PROXY_IDLE_TIMEOUT_SECONDS, "" + seconds);
     }
 
     public static boolean outputMemoryUsageCsv() {
