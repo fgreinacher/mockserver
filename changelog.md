@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Startup warm-up removes first-request latency — new `startupWarmup` property (default on).** The very
+  first request handled by a freshly started MockServer was a few hundred milliseconds slower than every
+  request after it because the request-handling path (Netty HTTP codec, JSON serialisation, response writers)
+  only loads and initialises on first use — a cost paid by every readiness poll, including Testcontainers wait
+  strategies. MockServer now sends itself a single background `PUT /mockserver/status` loopback request
+  immediately after the ports bind, so that one-off cost is paid off the start-up thread and the first real
+  request is fast. The warm-up never delays port binding, is fail-soft (any failure is ignored and logged only
+  at TRACE), and uses a control-plane endpoint that creates no recorded requests or log events, so it never
+  pollutes `verify`/`retrieve`. Disable with `-Dmockserver.startupWarmup=false` /
+  `MOCKSERVER_STARTUP_WARMUP=false` (e.g. in a locked-down environment where MockServer must not connect to
+  itself).
+
 - **MCP spec 2025-06-18 negotiation with structured tool output and resource links.** MockServer's MCP
   server (`McpRequestProcessor`) now advertises and negotiates the **2025-06-18** MCP revision while staying
   backward compatible: a client that requests `2025-06-18` gets it, clients still on `2025-03-26`/`2024-11-05`
@@ -173,6 +185,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fan-in are deferred.
 
 ### Changed
+
+- **Standard Docker image starts ~34% faster — Application Class Data Sharing (AppCDS) archive baked in at
+  image build.** The standard `mockserver/mockserver` image now trains an AppCDS class archive over MockServer's
+  own classes during the image build (the same train-at-build approach as the `-aot` variant, on a
+  jlink-trimmed JDK 17 runtime), so the JVM maps pre-parsed class data instead of re-loading ~5,800 classes on
+  every container start. Measured launch-to-ready dropped from ~0.86 s to ~0.57 s on the same machine. This is
+  the standard HotSpot JVM with full feature parity — no behaviour changes — and if the archive is ever
+  missing or unreadable the JVM logs a warning and starts normally without it. Image size is unchanged
+  (the trimmed runtime offsets the archive). The `-aot` variant (JDK 25 Leyden) remains the fastest-start
+  option.
+
+- **Fewer startup threads when not proxying — the forward-client event-loop group is now created lazily.**
+  The Netty event-loop group used to forward/proxy requests to upstream services (5 threads by default,
+  `clientNioEventLoopThreadCount`) was created at server construction even for pure-mock deployments that
+  never proxy. It is now created on the first forward/proxy action, so mock-only servers start with fewer
+  threads and less allocation. Proxy behaviour is unchanged, including the guarantee that forwarded requests
+  never share event loops with the server's own worker threads (the deadlock-prevention isolation is
+  preserved exactly).
+
+- **Faster startup when TLS is not used — BouncyCastle security provider now registers lazily.** The
+  BouncyCastle JCE provider (several hundred classes) was loaded and registered during server construction
+  even when no TLS connection was ever made. Registration is now deferred to the first operation that
+  actually needs it (dynamic certificate or key generation, typically the first HTTPS connection), removing
+  that class-loading cost from start-up for plain-HTTP usage. Behaviour is unchanged for TLS users — the
+  provider registers exactly as before on first use, and `proactivelyInitialiseTLS=true` still initialises
+  everything eagerly at start-up.
 
 ### Fixed
 
