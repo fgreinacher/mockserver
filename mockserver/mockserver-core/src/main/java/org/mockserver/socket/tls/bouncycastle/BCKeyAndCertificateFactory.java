@@ -50,9 +50,23 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
     private final Configuration configuration;
     private final MockServerLogger mockServerLogger;
 
-    private static synchronized void ensureProviderRegistered() {
+    /**
+     * Registers the BouncyCastle JCE provider on first use, deferring the ~460-class BouncyCastle
+     * load off the startup path: this is invoked lazily by the first key/cert operation that actually
+     * needs the provider (key/cert generation, signing, CA loading), NOT from the constructor, so a
+     * MockServer that never establishes a TLS connection never pays the cost. The double-checked
+     * {@code volatile} guard keeps the fast path a single volatile read once registered, and the
+     * {@code synchronized} entry makes concurrent first-TLS-connections safe (idempotent registration).
+     */
+    private static void ensureProviderRegistered() {
         if (!providerRegistered) {
-            if (Security.getProvider("BC") == null) {
+            registerProvider();
+        }
+    }
+
+    private static synchronized void registerProvider() {
+        if (!providerRegistered) {
+            if (Security.getProvider(PROVIDER_NAME) == null) {
                 Security.addProvider(new BouncyCastleProvider());
             }
             providerRegistered = true;
@@ -66,7 +80,6 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
     private X509Certificate certificateAuthorityX509Certificate;
 
     public BCKeyAndCertificateFactory(Configuration configuration, MockServerLogger mockServerLogger) {
-        ensureProviderRegistered();
         this.configuration = configuration;
         this.mockServerLogger = mockServerLogger;
     }
@@ -76,6 +89,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
      */
     @Override
     public void buildAndSaveCertificateAuthorityPrivateKeyAndX509Certificate() {
+        ensureProviderRegistered();
         if (dynamicallyUpdateCertificateAuthority() && certificateAuthorityCertificateNotYetCreated()) {
             try {
                 AsymmetricKeyPairAlgorithm keyGenerationAndSigningAlgorithm = KeyAndCertificateFactory.DEFAULT_KEY_GENERATION_AND_SIGNING_ALGORITHM;
@@ -146,6 +160,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
      * load ca certificate
      */
     public X509Certificate certificateAuthorityX509Certificate() {
+        ensureProviderRegistered();
         if (certificateAuthorityX509Certificate == null) {
             if (dynamicallyUpdateCertificateAuthority()) {
                 buildAndSaveCertificateAuthorityPrivateKeyAndX509Certificate();
@@ -211,6 +226,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
      */
     @Override
     public void buildAndSavePrivateKeyAndX509Certificate() {
+        ensureProviderRegistered();
         if (shouldGenerateCertificates()) {
             try {
                 if (dynamicallyUpdateCertificateAuthority()) {
@@ -264,6 +280,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
      * load leaf private key
      */
     public PrivateKey privateKey() {
+        ensureProviderRegistered();
         if (shouldGenerateCertificates()) {
             return privateKey;
         } else {
@@ -283,6 +300,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
      * load leaf certificate
      */
     public X509Certificate x509Certificate() {
+        ensureProviderRegistered();
         if (shouldGenerateCertificates()) {
             return x509Certificate;
         } else {
@@ -394,6 +412,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
 
     @Override
     public String writeCertificateAuthorityToDisk() {
+        ensureProviderRegistered();
         // certificateAuthorityX509Certificate() lazily generates the dynamic CA when enabled, or loads
         // the baked-in/custom CA otherwise. Only the PUBLIC certificate is written, atomically, into the
         // instance-scoped directory (the shared helper handles PEM encoding + atomic move).
@@ -405,6 +424,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
 
     @Override
     public List<X509Certificate> certificateChain() {
+        ensureProviderRegistered();
         final List<X509Certificate> result = new ArrayList<>();
         if (shouldGenerateCertificates()) {
             result.add(x509Certificate());

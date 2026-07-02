@@ -812,6 +812,11 @@
                         <exclude>**/PrometheusRemoteWriteProtocolVersionConfigurationTest.java</exclude>
                         <!-- Mutates mockserver.driftDetectionEnabled/driftSampleRate global ConfigurationProperties -->
                         <exclude>**/DriftDetectionConfigTest.java</exclude>
+                        <!-- Mutates the JVM-global java.security.Security provider list (removes/re-adds the BC provider)
+                             and the BCKeyAndCertificateFactory static registration guard to test lazy provider registration -->
+                        <exclude>**/BCKeyAndCertificateFactoryLazyProviderTest.java</exclude>
+                        <!-- Resets the OpenAiResponsesState JVM-wide singleton via getInstance().reset() -->
+                        <exclude>**/OpenAiResponsesStateTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -933,6 +938,8 @@
                                 <include>**/PrometheusRemoteWriteExporterTest.java</include>
                                 <include>**/PrometheusRemoteWriteProtocolVersionConfigurationTest.java</include>
                                 <include>**/DriftDetectionConfigTest.java</include>
+                                <include>**/BCKeyAndCertificateFactoryLazyProviderTest.java</include>
+                                <include>**/OpenAiResponsesStateTest.java</include>
                             </includes>
                         </configuration>
                     </execution>
