@@ -227,6 +227,16 @@ interface DashboardState {
 
   error: string | null;
 
+  /**
+   * Where the current {@link error} came from, so a data push only supersedes a
+   * banner it is entitled to. `'push'` = carried in a WebSocket message
+   * (`message.error`); `'client'` = set locally via {@link setError} (a
+   * user-action failure such as a failed clear, a parse failure, or a
+   * connection-lost notice). A clean data push clears a `'push'` error but must
+   * leave a `'client'` error standing until it is dismissed or superseded.
+   */
+  errorSource: 'push' | 'client' | null;
+
   /** Transient toast/snackbar for action feedback (success/info/warning/error). */
   notification: { message: string; severity: 'success' | 'info' | 'warning' | 'error' } | null;
 
@@ -343,6 +353,7 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
   logShowForwarded: true,
 
   error: null,
+  errorSource: null,
   notification: null,
 
   debugMismatchOpen: false,
@@ -378,13 +389,39 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
     // on (the initial view is 'get-started') until they navigate themselves.
     // We deliberately do NOT auto-advance to the dashboard when the first data
     // arrives — landing on Get Started should be sticky.
-    set((s) => ({
-      logMessages: reconcileByKey(s.logMessages, message.logMessages ?? [], logMessagesCache),
-      activeExpectations: reconcileByKey(s.activeExpectations, message.activeExpectations ?? [], activeExpectationsCache),
-      recordedRequests: reconcileByKey(s.recordedRequests, message.recordedRequests ?? [], recordedRequestsCache),
-      proxiedRequests: reconcileByKey(s.proxiedRequests, message.proxiedRequests ?? [], proxiedRequestsCache),
-      error: message.error ?? null,
-    })),
+    set((s) => {
+      // Reconcile only the arrays actually present in this push. An error-only
+      // message (e.g. a filter that failed to deserialize server-side arrives as
+      // `{"error": "..."}` with no data arrays) must NOT blank the four panels —
+      // an absent field keeps the previous array untouched until the next
+      // event-driven push replaces it.
+      const next = {
+        logMessages: message.logMessages !== undefined
+          ? reconcileByKey(s.logMessages, message.logMessages, logMessagesCache)
+          : s.logMessages,
+        activeExpectations: message.activeExpectations !== undefined
+          ? reconcileByKey(s.activeExpectations, message.activeExpectations, activeExpectationsCache)
+          : s.activeExpectations,
+        recordedRequests: message.recordedRequests !== undefined
+          ? reconcileByKey(s.recordedRequests, message.recordedRequests, recordedRequestsCache)
+          : s.recordedRequests,
+        proxiedRequests: message.proxiedRequests !== undefined
+          ? reconcileByKey(s.proxiedRequests, message.proxiedRequests, proxiedRequestsCache)
+          : s.proxiedRequests,
+      };
+      if (message.error != null) {
+        // A push carried an error — record that it came from a push so a later
+        // clean push may clear it.
+        return { ...next, error: message.error, errorSource: 'push' as const };
+      }
+      if (s.errorSource === 'push') {
+        // The standing banner was itself set by a push; a clean push supersedes it.
+        return { ...next, error: null, errorSource: null };
+      }
+      // A user-action / connection error (set via setError) survives the push —
+      // it stays until dismissed or explicitly superseded.
+      return next;
+    }),
 
   clearUI: () => {
     logMessagesCache.clear();
@@ -405,6 +442,7 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
       pendingEditExpectation: null,
       pendingBreakpointPrefill: null,
       error: null,
+      errorSource: null,
       notification: null,
       view: 'get-started' as ViewMode,
 
@@ -484,7 +522,10 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
     set({ pendingBreakpointPrefill: prefill, view: 'breakpoints' as ViewMode, selectedTrafficKey: null });
   },
   clearPendingBreakpointPrefill: () => set({ pendingBreakpointPrefill: null }),
-  setError: (error) => set({ error }),
+  // A locally-set error (failed clear, parse failure, connection-lost notice) is
+  // tagged 'client' so a subsequent data push cannot silently wipe it — it stays
+  // until the user dismisses it or a later setError/push supersedes it.
+  setError: (error) => set({ error, errorSource: error != null ? 'client' : null }),
   setNotification: (notification) => set({ notification }),
   openDebugMismatch: (result) =>
     set({ debugMismatchOpen: true, debugMismatchResult: result, debugMismatchLoading: false, debugMismatchError: null }),

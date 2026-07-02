@@ -66,7 +66,7 @@ export function useWebSocket(params: ConnectionParams) {
   }, [params, setError]);
 
   const scheduleReconnect = useCallback(
-    (filter: RequestFilter) => {
+    () => {
       // Keep retrying with a capped backoff rather than permanently giving up — a server that
       // is down longer than the first few attempts (a deploy/restart) should still reconnect
       // automatically once it comes back. onopen resets the counter and clears the error.
@@ -82,7 +82,11 @@ export function useWebSocket(params: ConnectionParams) {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       const delay = RECONNECT_DELAY_MS * Math.min(reconnectCountRef.current, 5); // capped at 15s
       reconnectTimerRef.current = setTimeout(() => {
-        connectRef.current(filter);
+        // Reconnect with the LAST filter actually requested — read live from the ref, never a
+        // stale closure value. A filter set via sendFilter() while the socket was OPEN only
+        // updates lastFilterRef (no reconnect), so a closure-captured filter would resurrect the
+        // pre-filter state on reconnect and silently stream unfiltered data to the panels.
+        connectRef.current(lastFilterRef.current);
       }, delay);
     },
     [setError, params.host, params.port],
@@ -130,7 +134,7 @@ export function useWebSocket(params: ConnectionParams) {
         // Fire-and-forget: distinguish an auth rejection from a down server so the right message
         // is shown. Never blocks or defers the reconnect (probe failures are swallowed internally).
         void probeAuthRequired();
-        scheduleReconnect(filter);
+        scheduleReconnect();
       };
 
       ws.onerror = () => {

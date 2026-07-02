@@ -100,6 +100,45 @@ describe('useWebSocket timer behaviour', () => {
     expect(MockWebSocket.instances).toHaveLength(2);
   });
 
+  it('reconnects with the last filter set via sendFilter, not the stale initial filter', () => {
+    const { result } = renderHook(() => useWebSocket(defaultParams));
+
+    act(() => {
+      result.current.connect({});
+    });
+    const first = MockWebSocket.instances[0]!;
+    act(() => {
+      first.simulateOpen();
+    });
+    // The initial open sends the empty filter.
+    expect(JSON.parse(first.sentMessages[0]!)).toEqual({});
+
+    // The user narrows the filter while the socket is OPEN; sendFilter updates the live filter
+    // in place (no reconnect) rather than re-connecting.
+    const filter = { path: '/api/.*' };
+    act(() => {
+      result.current.sendFilter(filter);
+    });
+    expect(JSON.parse(first.sentMessages[1]!)).toEqual(filter);
+
+    // The server restarts: the socket drops and a reconnect is scheduled.
+    act(() => {
+      first.simulateClose();
+    });
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    // The reconnected socket must re-send the CURRENT filter — not the {} it first connected
+    // with — otherwise the panels would silently stream unfiltered data after a restart.
+    expect(MockWebSocket.instances).toHaveLength(2);
+    const second = MockWebSocket.instances[1]!;
+    act(() => {
+      second.simulateOpen();
+    });
+    expect(JSON.parse(second.sentMessages[0]!)).toEqual(filter);
+  });
+
   it('uses capped backoff: delay = min(count,5) * RECONNECT_DELAY_MS', () => {
     const { result } = renderHook(() => useWebSocket(defaultParams));
 

@@ -21,6 +21,7 @@ describe('DashboardStore', () => {
       proxiedSearch: '',
       trafficSearch: '',
       error: null,
+      errorSource: null,
       notification: null,
     });
   });
@@ -69,8 +70,18 @@ describe('DashboardStore', () => {
       expect(useDashboardStore.getState().error).toBe('invalid filter');
     });
 
-    it('clears error when no error in message', () => {
-      useDashboardStore.setState({ error: 'old error' });
+    it('clears a push-sourced error when a later push carries no error', () => {
+      // An error carried by a push is remembered as push-sourced …
+      useDashboardStore.getState().applyMessage({
+        logMessages: [],
+        activeExpectations: [],
+        recordedRequests: [],
+        proxiedRequests: [],
+        error: 'invalid filter',
+      });
+      expect(useDashboardStore.getState().error).toBe('invalid filter');
+
+      // … and a subsequent clean push supersedes it.
       useDashboardStore.getState().applyMessage({
         logMessages: [],
         activeExpectations: [],
@@ -78,6 +89,43 @@ describe('DashboardStore', () => {
         proxiedRequests: [],
       });
       expect(useDashboardStore.getState().error).toBeNull();
+    });
+
+    it('keeps the existing panels when an error-only message arrives (no data arrays)', () => {
+      // Seed all four panels.
+      useDashboardStore.getState().applyMessage({
+        logMessages: [{ key: 'l1', value: {} }],
+        activeExpectations: [{ key: 'e1', value: {} }],
+        recordedRequests: [{ key: 'r1', value: {} }],
+        proxiedRequests: [{ key: 'p1', value: {} }],
+      });
+
+      // A filter that fails to deserialize server-side is pushed as `{"error": ...}`
+      // with NO data arrays — the panels must not be blanked.
+      useDashboardStore.getState().applyMessage({ error: 'invalid filter' } as WebSocketMessage);
+
+      const state = useDashboardStore.getState();
+      expect(state.logMessages).toHaveLength(1);
+      expect(state.activeExpectations).toHaveLength(1);
+      expect(state.recordedRequests).toHaveLength(1);
+      expect(state.proxiedRequests).toHaveLength(1);
+      expect(state.error).toBe('invalid filter');
+    });
+
+    it('does not wipe a user-action error on the next data push', () => {
+      // A user action (e.g. a failed "clear server") sets an error via setError.
+      useDashboardStore.getState().setError('Failed to clear server');
+
+      // A routine data push arrives ~1s later.
+      useDashboardStore.getState().applyMessage({
+        logMessages: [{ key: 'l1', value: {} }],
+        activeExpectations: [],
+        recordedRequests: [],
+        proxiedRequests: [],
+      });
+
+      // Only push-sourced errors auto-clear — the user-action error must persist.
+      expect(useDashboardStore.getState().error).toBe('Failed to clear server');
     });
 
     it('stays on get-started when the first data arrives (no auto-switch)', () => {
