@@ -3,6 +3,7 @@ import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
 import Typography from '@mui/material/Typography';
+import Link from '@mui/material/Link';
 import Tooltip from '@mui/material/Tooltip';
 import ToggleButton from '@mui/material/ToggleButton';
 import SortIcon from '@mui/icons-material/Sort';
@@ -13,6 +14,8 @@ import Panel from './Panel';
 import JsonListItemComponent, { extractPriority } from './JsonListItem';
 import ProgressiveList from './ProgressiveList';
 import ConfirmDialog from './ConfirmDialog';
+import MatcherPlaygroundDialog from './MatcherPlaygroundDialog';
+import OpenApiImportDialog from './OpenApiImportDialog';
 import { useExpansion } from '../hooks/useExpansion';
 import { useConnectionParams } from '../hooks/useConnectionParams';
 import { applyClientFilters } from '../lib/clientFilters';
@@ -51,10 +54,18 @@ export default function ExpectationPanel() {
   const llmProviderFilter = useDashboardStore((s) => s.llmProviderFilter);
   const setNotification = useDashboardStore((s) => s.setNotification);
   const editExpectation = useDashboardStore((s) => s.editExpectation);
+  const setView = useDashboardStore((s) => s.setView);
 
   // Pending single-expectation delete, awaiting confirmation. Null when no
   // delete is in flight.
   const [pendingDelete, setPendingDelete] = useState<JsonListItem | null>(null);
+
+  // The expectation whose matcher is being dry-run in the playground (null when
+  // closed). Seeds MatcherPlaygroundDialog with the row's exact JSON.
+  const [testExpectation, setTestExpectation] = useState<JsonListItem | null>(null);
+
+  // Empty-state "import a spec" action opens the OpenAPI import dialog inline.
+  const [openApiOpen, setOpenApiOpen] = useState(false);
 
   // When true, rows are sorted by match priority (descending), which mirrors
   // the order MockServer evaluates equally-specific mocks. Off by default so
@@ -105,6 +116,11 @@ export default function ExpectationPanel() {
     },
     [editExpectation],
   );
+
+  // Open the matcher playground seeded with this row's exact expectation JSON.
+  const handleTest = useCallback((item: JsonListItem) => {
+    setTestExpectation(item);
+  }, []);
 
   // Duplicate: load a COPY of the expectation into the Composer with its id
   // stripped so saving creates a new expectation. Reuses the same Composer
@@ -303,11 +319,23 @@ export default function ExpectationPanel() {
           </Box>
         )}
         {filtered.length === 0 ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
-            {expectations.length === 0
-              ? 'No active expectations — add one in the Mocks tab, or import an OpenAPI/WSDL spec from the tools menu.'
-              : 'No matching expectations'}
-          </Typography>
+          expectations.length === 0 ? (
+            <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
+              No active expectations —{' '}
+              <Link component="button" type="button" onClick={() => setView('composer')} sx={{ verticalAlign: 'baseline' }}>
+                add one in the Mocks composer
+              </Link>
+              , or{' '}
+              <Link component="button" type="button" onClick={() => setOpenApiOpen(true)} sx={{ verticalAlign: 'baseline' }}>
+                import an OpenAPI spec
+              </Link>
+              .
+            </Typography>
+          ) : (
+            <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
+              No matching expectations
+            </Typography>
+          )
         ) : (
           <ProgressiveList
             count={filtered.length}
@@ -325,6 +353,7 @@ export default function ExpectationPanel() {
                   turnPosition={turnPositions.get(item.key)}
                   expanded={expansion.isExpanded(item.key)}
                   onToggleExpand={expansion.toggle}
+                  onTest={hasId ? handleTest : undefined}
                   onEdit={hasId ? handleEdit : undefined}
                   onDuplicate={hasId ? handleDuplicate : undefined}
                   onDelete={hasId ? setPendingDelete : undefined}
@@ -355,6 +384,20 @@ export default function ExpectationPanel() {
         confirmLabel="Delete selected"
         onConfirm={() => { void handleBulkDelete(); }}
         onClose={() => setBulkDeleteConfirm(false)}
+      />
+      {/* Per-row "Test expectation" — dry-run what a registered expectation
+          matches. Mounted only while open so it re-seeds from the chosen row. */}
+      {testExpectation && (
+        <MatcherPlaygroundDialog
+          open
+          onClose={() => setTestExpectation(null)}
+          initialExpectation={JSON.stringify(testExpectation.value, null, 2)}
+        />
+      )}
+      <OpenApiImportDialog
+        open={openApiOpen}
+        onClose={() => setOpenApiOpen(false)}
+        connectionParams={params}
       />
     </>
   );

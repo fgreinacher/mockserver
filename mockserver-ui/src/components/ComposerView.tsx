@@ -25,6 +25,7 @@ import ToggleButton from '@mui/material/ToggleButton';
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import DeleteIcon from '@mui/icons-material/Delete';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import ScienceOutlinedIcon from '@mui/icons-material/ScienceOutlined';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import List from '@mui/material/List';
@@ -40,6 +41,7 @@ import { buildBaseUrl } from '../lib/mcpClient';
 import LlmConversationForm from './LlmConversationForm';
 import HumanErrorAlert from './HumanErrorAlert';
 import StandardReview from './StandardReview';
+import MatcherPlaygroundDialog from './MatcherPlaygroundDialog';
 import {
   buildExpectationJson,
   unmodeledFieldNames,
@@ -470,7 +472,43 @@ function bodyEditorConfig(type: BodyMatcherType): { language: string; schema?: o
   }
 }
 
+/**
+ * Count the non-empty lines that `parseKeyValueLines` (in standardCodegen) will
+ * silently drop at codegen time: a line with no separator, or one whose key is
+ * empty before the separator. Kept deliberately in lockstep with that parser so
+ * the surfaced warning reflects exactly what gets dropped — the registered
+ * payload is unchanged; this only makes the drop visible.
+ */
+function countIgnoredKeyValueLines(text: string, separator: ':' | '='): number {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((line) => {
+      const idx = line.indexOf(separator);
+      if (idx < 0) return true;
+      return line.slice(0, idx).trim().length === 0;
+    }).length;
+}
+
+/**
+ * Non-blocking helper text for a matcher line-list field: undefined when every
+ * line parses, otherwise "N line(s) ignored — expected <format>".
+ */
+function ignoredLinesWarning(text: string, separator: ':' | '=', formatHint: string): string | undefined {
+  const n = countIgnoredKeyValueLines(text, separator);
+  if (n === 0) return undefined;
+  return `${n} line${n === 1 ? '' : 's'} ignored — expected ${formatHint}`;
+}
+
 function MatcherPanel({ matcher, setMatcher }: { matcher: MatcherState; setMatcher: (m: MatcherState) => void }) {
+  // Non-blocking warnings for lines that MockServer's codegen will drop. They do
+  // NOT change what is registered — malformed lines are still dropped — they just
+  // surface the silent loss so a typo'd matcher isn't shipped unnoticed.
+  const headersWarning = ignoredLinesWarning(matcher.headers, ':', 'Name: value');
+  const queryWarning = ignoredLinesWarning(matcher.queryString, '=', 'key=value');
+  const cookiesWarning = ignoredLinesWarning(matcher.cookies, '=', 'name=value');
+  const pathParamsWarning = ignoredLinesWarning(matcher.pathParams, '=', 'name=value');
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       <Box sx={{ display: 'flex', gap: 1 }}>
@@ -520,7 +558,11 @@ function MatcherPanel({ matcher, setMatcher }: { matcher: MatcherState; setMatch
           value={matcher.headers}
           onChange={(e) => setMatcher({ ...matcher, headers: e.target.value })}
           placeholder={'Accept: application/json\n!Authorization: Bearer …'}
-          slotProps={{ input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } } }}
+          helperText={headersWarning}
+          slotProps={{
+            input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } },
+            formHelperText: headersWarning ? { sx: { color: 'warning.main' } } : undefined,
+          }}
         />
         <TextField
           label="Query params (key=value per line)"
@@ -531,7 +573,11 @@ function MatcherPanel({ matcher, setMatcher }: { matcher: MatcherState; setMatch
           value={matcher.queryString}
           onChange={(e) => setMatcher({ ...matcher, queryString: e.target.value })}
           placeholder={'limit=50\noffset=0'}
-          slotProps={{ input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } } }}
+          helperText={queryWarning}
+          slotProps={{
+            input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } },
+            formHelperText: queryWarning ? { sx: { color: 'warning.main' } } : undefined,
+          }}
         />
       </Box>
       <Box sx={{ display: 'flex', gap: 1 }}>
@@ -544,7 +590,11 @@ function MatcherPanel({ matcher, setMatcher }: { matcher: MatcherState; setMatch
           value={matcher.cookies}
           onChange={(e) => setMatcher({ ...matcher, cookies: e.target.value })}
           placeholder={'session=abc123\ntheme=dark'}
-          slotProps={{ input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } } }}
+          helperText={cookiesWarning}
+          slotProps={{
+            input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } },
+            formHelperText: cookiesWarning ? { sx: { color: 'warning.main' } } : undefined,
+          }}
         />
         <TextField
           label="Path parameters (name=value per line)"
@@ -555,7 +605,11 @@ function MatcherPanel({ matcher, setMatcher }: { matcher: MatcherState; setMatch
           value={matcher.pathParams}
           onChange={(e) => setMatcher({ ...matcher, pathParams: e.target.value })}
           placeholder={'id=42  (for paths like /users/{id})'}
-          slotProps={{ input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } } }}
+          helperText={pathParamsWarning}
+          slotProps={{
+            input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } },
+            formHelperText: pathParamsWarning ? { sx: { color: 'warning.main' } } : undefined,
+          }}
         />
       </Box>
       <Box>
@@ -4015,6 +4069,75 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     [activeExpectations],
   );
 
+  // The draft action assembled from the current form state. Lifted to the
+  // component level (from the Review step's inline builder) so the "Test
+  // Matcher" playground and the Review preview share ONE buildExpectationJson
+  // call — the matcher you test is byte-for-byte the one that would register.
+  const draftAction = useMemo<StandardActionPayload>(() => {
+    const a: StandardActionPayload = { type: actionType };
+    if (actionType === 'static') a.static = staticState;
+    if (actionType === 'forward') a.forward = forwardState;
+    if (actionType === 'forward_override') a.forwardOverride = forwardOverrideState;
+    if (actionType === 'forward_fallback') a.forwardFallback = forwardFallbackState;
+    if (actionType === 'callback') a.callback = callbackState;
+    if (actionType === 'template') a.template = templateState;
+    if (actionType === 'error') a.error = errorState;
+    if (actionType === 'websocket') a.websocket = {
+      subprotocol: websocketState.subprotocol,
+      messages: websocketState.messages,
+      closeConnection: websocketState.closeConnection,
+      matchers: websocketState.matchers,
+    };
+    if (actionType === 'sse') a.sse = sseState;
+    if (actionType === 'binary_response') a.binaryResponse = binaryResponseState;
+    if (actionType === 'dns_response') a.dnsResponse = dnsResponseState;
+    if (actionType === 'forward_template') a.forwardTemplate = forwardTemplateState;
+    if (actionType === 'forward_class_callback') a.forwardClassCallback = forwardClassCallbackState;
+    if (actionType === 'grpc_stream') a.grpcStream = grpcStreamState;
+    if (chaosEnabled && actionType !== 'error') a.chaos = chaosState;
+    // Steps override top-level side-effects
+    if (stepsEnabled && stepsState.length > 0) {
+      a.steps = stepsState;
+    } else if (sideEffectsEnabled && sideEffects.length > 0) {
+      a.sideEffects = sideEffects;
+    }
+    if (captureEnabled && captureRules.length > 0) {
+      a.capture = captureRules;
+    }
+    // Edit overlay — carry the retained original so buildExpectationJson merges
+    // the form output onto it (preserving unmodeled fields).
+    if (editOriginal) {
+      a.editOriginal = editOriginal;
+      a.editActionModeled = editActionModeled;
+    }
+    return a;
+  }, [
+    actionType, staticState, forwardState, forwardOverrideState, forwardFallbackState,
+    callbackState, templateState, errorState, websocketState, sseState, binaryResponseState,
+    dnsResponseState, forwardTemplateState, forwardClassCallbackState, grpcStreamState,
+    chaosEnabled, chaosState, stepsEnabled, stepsState, sideEffectsEnabled, sideEffects,
+    captureEnabled, captureRules, editOriginal, editActionModeled,
+  ]);
+
+  // For DNS kind, attach the DNS matcher so buildExpectationJson emits the DNS
+  // request shape instead of the HTTP request-matcher shape.
+  const effectiveMatcher = useMemo<MatcherState>(
+    () => (kind === 'dns' ? { ...matcher, dns: dnsMatcher } : matcher),
+    [kind, matcher, dnsMatcher],
+  );
+
+  // The exact expectation JSON that would be registered, used to seed the
+  // "Test Matcher" playground. Empty string when the draft can't be built yet.
+  const draftExpectationJson = useMemo(() => {
+    try {
+      return JSON.stringify(buildExpectationJson(effectiveMatcher, draftAction), null, 2);
+    } catch {
+      return '';
+    }
+  }, [effectiveMatcher, draftAction]);
+
+  const [matcherPlaygroundOpen, setMatcherPlaygroundOpen] = useState(false);
+
   return (
     <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
       <Tabs
@@ -4364,6 +4487,16 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
               ) : (
                 <>
                   <MatcherPanel matcher={matcher} setMatcher={setMatcher} />
+                  <Box sx={{ mt: 1 }}>
+                    <Button
+                      size="small"
+                      variant="text"
+                      startIcon={<ScienceOutlinedIcon fontSize="small" />}
+                      onClick={() => setMatcherPlaygroundOpen(true)}
+                    >
+                      Test Matcher
+                    </Button>
+                  </Box>
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
                     {kind === 'grpc'
                       ? 'gRPC path convention: /package.Service/Method. gRPC clients send Content-Type: application/grpc — add it to the matcher headers to restrict to gRPC traffic only.'
@@ -4592,47 +4725,11 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
                 curl, then the single Register button (mirrors the
                 LLM Conversation form's review-and-register section). */}
             {(() => {
-              const currentAction: StandardActionPayload = { type: actionType };
-              if (actionType === 'static') currentAction.static = staticState;
-              if (actionType === 'forward') currentAction.forward = forwardState;
-              if (actionType === 'forward_override') currentAction.forwardOverride = forwardOverrideState;
-              if (actionType === 'forward_fallback') currentAction.forwardFallback = forwardFallbackState;
-              if (actionType === 'callback') currentAction.callback = callbackState;
-              if (actionType === 'template') currentAction.template = templateState;
-              if (actionType === 'error') currentAction.error = errorState;
-              if (actionType === 'websocket') currentAction.websocket = {
-                subprotocol: websocketState.subprotocol,
-                messages: websocketState.messages,
-                closeConnection: websocketState.closeConnection,
-                matchers: websocketState.matchers,
-              };
-              if (actionType === 'sse') currentAction.sse = sseState;
-              if (actionType === 'binary_response') currentAction.binaryResponse = binaryResponseState;
-              if (actionType === 'dns_response') currentAction.dnsResponse = dnsResponseState;
-              if (actionType === 'forward_template') currentAction.forwardTemplate = forwardTemplateState;
-              if (actionType === 'forward_class_callback') currentAction.forwardClassCallback = forwardClassCallbackState;
-              if (actionType === 'grpc_stream') currentAction.grpcStream = grpcStreamState;
-              if (chaosEnabled && actionType !== 'error') currentAction.chaos = chaosState;
-              // Steps override top-level side-effects
-              if (stepsEnabled && stepsState.length > 0) {
-                currentAction.steps = stepsState;
-              } else if (sideEffectsEnabled && sideEffects.length > 0) {
-                currentAction.sideEffects = sideEffects;
-              }
-              // Capture rules are cross-cutting — they apply regardless of action
-              // / steps mode (blank rows are dropped at codegen time).
-              if (captureEnabled && captureRules.length > 0) {
-                currentAction.capture = captureRules;
-              }
-              // Edit overlay — when editing/duplicating, carry the retained
-              // original so buildExpectationJson merges the form output onto it
-              // (preserving unmodeled fields). Threaded through the SAME
-              // buildExpectationJson path for both the preview (StandardReview)
-              // and the wire payload (registerExpectation), so they cannot drift.
-              if (editOriginal) {
-                currentAction.editOriginal = editOriginal;
-                currentAction.editActionModeled = editActionModeled;
-              }
+              // Assembled at the component level (memoised `draftAction`) so the
+              // Review preview and the "Test Matcher" playground share the SAME
+              // buildExpectationJson call and cannot drift. The edit-overlay
+              // (editOriginal / editActionModeled) is already folded in there.
+              const currentAction = draftAction;
 
               // Fields being preserved through the edit that this form does not
               // model — surfaced as a subtle indicator so the user knows they are
@@ -4641,13 +4738,8 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
                 ? unmodeledFieldNames(editOriginal, { actionModeled: editActionModeled })
                 : [];
 
-              // Build the effective matcher: for DNS kind, attach the DNS
-              // matcher fields so buildExpectationJson emits { dnsName, ... }
-              // instead of the HTTP request matcher shape.
-              const effectiveMatcher = kind === 'dns'
-                ? { ...matcher, dns: dnsMatcher }
-                : matcher;
-
+              // `effectiveMatcher` is memoised at the component level (attaches
+              // the DNS matcher for DNS kind).
               const dispatchRegister = () => void handleRegister(currentAction, effectiveMatcher);
 
               // Per-action validation — returns why the Register button is disabled (or null when
@@ -4865,6 +4957,16 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
         message={snackMessage ?? ''}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       />
+      {/* Locally-rendered matcher playground seeded with the current draft, so a
+          user can dry-run the matcher they're building without leaving the form.
+          Mounted only while open so it re-seeds from the latest draft each time. */}
+      {matcherPlaygroundOpen && (
+        <MatcherPlaygroundDialog
+          open
+          onClose={() => setMatcherPlaygroundOpen(false)}
+          initialExpectation={draftExpectationJson}
+        />
+      )}
     </Box>
   );
 }

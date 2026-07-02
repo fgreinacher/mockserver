@@ -87,6 +87,41 @@ describe('ExpectationPanel', () => {
     expect(state.view).toBe('composer');
   });
 
+  it('Test expectation opens the matcher playground seeded with the row JSON', async () => {
+    const user = userEvent.setup();
+    const value = { id: 'exp-test', httpRequest: { method: 'GET', path: '/to-test' }, httpResponse: { statusCode: 200 } };
+    useDashboardStore.setState({ activeExpectations: [{ key: 'exp-test', value }] });
+
+    render(<ExpectationPanel />);
+    await user.click(screen.getByLabelText('Test expectation'));
+
+    // The matcher playground opens...
+    expect(screen.getByText('Matcher Test Playground')).toBeInTheDocument();
+    // ...seeded with this expectation's exact JSON.
+    const candidate = screen.getByLabelText('Candidate expectation JSON') as HTMLTextAreaElement;
+    expect(candidate.value).toContain('/to-test');
+  });
+
+  it('empty-state composer link navigates to the composer view', async () => {
+    const user = userEvent.setup();
+    useDashboardStore.setState({ activeExpectations: [], view: 'dashboard' });
+
+    render(<ExpectationPanel />);
+    await user.click(screen.getByRole('button', { name: /add one in the Mocks composer/i }));
+
+    expect(useDashboardStore.getState().view).toBe('composer');
+  });
+
+  it('empty-state import link opens the OpenAPI import dialog', async () => {
+    const user = userEvent.setup();
+    useDashboardStore.setState({ activeExpectations: [] });
+
+    render(<ExpectationPanel />);
+    await user.click(screen.getByRole('button', { name: /import an OpenAPI spec/i }));
+
+    expect(screen.getByText('Import OpenAPI')).toBeInTheDocument();
+  });
+
   it('Duplicate loads an id-stripped copy into the Composer, preserving priority', async () => {
     const user = userEvent.setup();
     const value = {
