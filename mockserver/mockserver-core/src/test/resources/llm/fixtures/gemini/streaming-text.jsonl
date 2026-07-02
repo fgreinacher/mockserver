@@ -1,14 +1,12 @@
-{"candidates":[{"content":{"parts":[{"text":"Hello!"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":" "}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":"How"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":" "}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":"can"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":" "}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":"I"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":" "}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":"help"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":" "}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":"you"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":" "}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
-{"candidates":[{"content":{"parts":[{"text":"today?"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":"Hell"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":"o"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":"!"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":" How"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":" can"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":" I"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":" help"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":" you"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":" toda"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":"y"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
+{"candidates":[{"content":{"parts":[{"text":"?"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro"}
 {"candidates":[{"content":{"parts":[],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":0},"modelVersion":"gemini-1.5-pro"}

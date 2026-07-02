@@ -119,7 +119,8 @@
               "type": "integer"
             },
             "subwordStreaming": {
-              "type": "boolean"
+              "type": "boolean",
+              "default": true
             }
           }
         }

@@ -46,12 +46,38 @@ public class OpenAiChatCompletionsCodecStreamingTest {
     }
 
     @Test
-    public void shouldProduceContentDeltaChunks() throws Exception {
-        // given — "Hello world" splits into ["Hello", " ", "world"]
+    public void shouldProduceSubwordContentDeltaChunksByDefault() throws Exception {
+        // given — subword streaming is the default: "Hello world" segments into
+        // finer subword deltas ["Hell", "o", " worl", "d"]
+        Completion completion = completion().withText("Hello world");
+
+        // when — null physics selects the default (subword) split
+        List<SseEvent> events = codec.encodeStreaming(completion, "gpt-4o", null);
+
+        // then — 4 content chunks between first (role) and final (finish_reason) and [DONE]
+        int contentDeltaCount = 0;
+        StringBuilder concatenated = new StringBuilder();
+        for (int i = 1; i < events.size() - 2; i++) {
+            JsonNode chunk = OBJECT_MAPPER.readTree(events.get(i).getData());
+            JsonNode delta = chunk.get("choices").get(0).get("delta");
+            if (delta.has("content")) {
+                contentDeltaCount++;
+                concatenated.append(delta.get("content").asText());
+            }
+        }
+        assertThat(contentDeltaCount, is(4));
+        assertThat(concatenated.toString(), is("Hello world"));
+    }
+
+    @Test
+    public void shouldProduceWholeWordContentDeltaChunksWhenSubwordStreamingDisabled() throws Exception {
+        // given — an explicit subwordStreaming=false opts back into whole-word deltas:
+        // "Hello world" -> ["Hello", " ", "world"]
         Completion completion = completion().withText("Hello world");
 
         // when
-        List<SseEvent> events = codec.encodeStreaming(completion, "gpt-4o", null);
+        List<SseEvent> events = codec.encodeStreaming(completion, "gpt-4o",
+            StreamingPhysics.streamingPhysics().withSubwordStreaming(false));
 
         // then — 3 content chunks between first (role) and final (finish_reason) and [DONE]
         int contentDeltaCount = 0;

@@ -421,6 +421,16 @@ curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
 </p>
 
 <p>
+    By default the text is split into fine, <strong>subword-sized</strong> chunks that closely
+    match how a real provider streams tokens (so a streamed response emits more, smaller deltas).
+    Set <span class="inline_code">subwordStreaming</span> to <span class="inline_code">false</span> in
+    <span class="inline_code">streamingPhysics</span> if you prefer the coarser whole-word chunking
+    (one chunk per word). The timing controls below behave identically in both modes &mdash; subword
+    chunking simply produces more deltas, which makes the overall stream take slightly longer at the
+    same <span class="inline_code">tokensPerSecond</span> rate.
+</p>
+
+<p>
     Use <span class="inline_code">streamingPhysics</span> to control timing &mdash; useful for testing
     loading indicators, timeouts, and backpressure handling:
 </p>
@@ -462,6 +472,7 @@ curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
         <tr><td><span class="inline_code">tokensPerSecond</span></td><td>Base token emission rate (1 &ndash; 10000)</td></tr>
         <tr><td><span class="inline_code">jitter</span></td><td>Fractional uniform deviation from the base rate (0.0 &ndash; 1.0)</td></tr>
         <tr><td><span class="inline_code">seed</span></td><td>PRNG seed for reproducible inter-token timing</td></tr>
+        <tr><td><span class="inline_code">subwordStreaming</span></td><td>Whether to stream fine subword-sized deltas (<span class="inline_code">true</span>, the default) or coarser whole-word deltas (<span class="inline_code">false</span>). Subword deltas are closer to a real provider's per-token stream</td></tr>
     </tbody>
 </table>
 

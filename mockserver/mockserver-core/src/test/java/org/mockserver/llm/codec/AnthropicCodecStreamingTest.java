@@ -47,12 +47,33 @@ public class AnthropicCodecStreamingTest {
     }
 
     @Test
-    public void shouldSplitTextIntoTokens() throws Exception {
-        // given — "Hello world" splits into ["Hello", " ", "world"]
+    public void shouldSplitTextIntoSubwordTokensByDefault() throws Exception {
+        // given — subword streaming is the default: "Hello world" segments into
+        // finer subword deltas ["Hell", "o", " worl", "d"]
+        Completion completion = completion().withText("Hello world");
+
+        // when — null physics selects the default (subword) split
+        List<SseEvent> events = codec.encodeStreaming(completion, "test-model", null);
+
+        // then — one content_block_delta per subword piece
+        int deltaCount = 0;
+        for (SseEvent event : events) {
+            if ("content_block_delta".equals(event.getEvent())) {
+                deltaCount++;
+            }
+        }
+        assertThat(deltaCount, is(4));
+    }
+
+    @Test
+    public void shouldSplitTextIntoWholeWordsWhenSubwordStreamingDisabled() throws Exception {
+        // given — an explicit subwordStreaming=false opts back into whole-word deltas:
+        // "Hello world" -> ["Hello", " ", "world"]
         Completion completion = completion().withText("Hello world");
 
         // when
-        List<SseEvent> events = codec.encodeStreaming(completion, "test-model", null);
+        List<SseEvent> events = codec.encodeStreaming(completion, "test-model",
+            StreamingPhysics.streamingPhysics().withSubwordStreaming(false));
 
         // then — should have 3 content_block_delta events
         int deltaCount = 0;

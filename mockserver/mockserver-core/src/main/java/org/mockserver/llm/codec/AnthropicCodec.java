@@ -207,7 +207,8 @@ public class AnthropicCodec implements ProviderCodec {
                 ",\"content_block\":{\"type\":\"text\",\"text\":\"\"}}";
             events.add(sseEvent().withEvent("content_block_start").withData(blockStartData));
 
-            // Split text into tokens (naive: split on whitespace boundaries preserving spaces)
+            // Split text into streaming deltas: subword-sized by default, or whole words
+            // when streamingPhysics.subwordStreaming is explicitly false.
             List<String> tokens = TokenCounter.streamingTextTokens(text, physics);
             for (String token : tokens) {
                 if (!token.isEmpty()) {

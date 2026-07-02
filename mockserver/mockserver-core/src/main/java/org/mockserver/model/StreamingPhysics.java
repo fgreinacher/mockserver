@@ -61,12 +61,15 @@ public class StreamingPhysics extends ObjectWithJsonToString {
     }
 
     /**
-     * When {@code true}, streaming responses emit finer, subword-sized deltas
-     * (a lightweight BPE approximation, see {@code org.mockserver.llm.TokenCounter})
-     * instead of the default whole-word splitting. Off (or {@code null}) preserves
-     * the long-standing whitespace-boundary deltas. The per-event timing math is
-     * unchanged — each delta is still one physics event — so subword mode simply
-     * produces more, smaller events, closer to a real provider's per-token stream.
+     * Controls streaming delta granularity. Subword-sized deltas (a lightweight
+     * BPE approximation, see {@code org.mockserver.llm.TokenCounter}) are now the
+     * <strong>default</strong>: leaving this unset ({@code null}) — or setting it
+     * {@code true} — emits finer, more realistic per-token deltas. Set it explicitly
+     * to {@code false} to opt back into the legacy whole-word (whitespace-boundary)
+     * splitting. The per-event timing math is unchanged — each delta is still one
+     * physics event — so subword mode simply produces more, smaller events, closer
+     * to a real provider's per-token stream (and therefore a slightly longer total
+     * stream duration for the same {@code tokensPerSecond}).
      */
     public StreamingPhysics withSubwordStreaming(Boolean subwordStreaming) {
         this.subwordStreaming = subwordStreaming;

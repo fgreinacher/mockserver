@@ -253,20 +253,26 @@ public class OpenAiChatCompletionsCodecTest {
     }
 
     @Test
-    public void shouldEmitSubwordDeltasWhenSubwordStreamingEnabled() throws Exception {
+    public void shouldEmitSubwordDeltasByDefaultAndWholeWordWhenDisabled() throws Exception {
         // given
         Completion completion = completion().withText("MockServer streams tokens quickly");
 
-        // when — default whole-word splitting vs opt-in subword streaming
-        java.util.List<SseEvent> wholeWord = codec.encodeStreaming(completion, "gpt-4o", null);
+        // when — explicit whole-word (opt-out) vs subword (the default, selected either
+        // by an explicit flag or simply by a null physics)
+        java.util.List<SseEvent> wholeWord = codec.encodeStreaming(completion, "gpt-4o",
+            StreamingPhysics.streamingPhysics().withSubwordStreaming(false));
         java.util.List<SseEvent> subword = codec.encodeStreaming(completion, "gpt-4o",
             StreamingPhysics.streamingPhysics().withSubwordStreaming(true));
+        java.util.List<SseEvent> defaultMode = codec.encodeStreaming(completion, "gpt-4o", null);
 
-        // then — subword mode produces strictly more events (finer deltas) ...
+        // then — subword mode produces strictly more events (finer deltas) than whole-word ...
         assertThat(subword.size(), is(greaterThan(wholeWord.size())));
-        // ... but the reconstructed text is identical in both modes
+        // ... and the default (null physics) now matches the subword granularity
+        assertThat(defaultMode.size(), is(subword.size()));
+        // ... but the reconstructed text is identical in all modes
         assertThat(concatStreamedContent(subword), is("MockServer streams tokens quickly"));
         assertThat(concatStreamedContent(wholeWord), is("MockServer streams tokens quickly"));
+        assertThat(concatStreamedContent(defaultMode), is("MockServer streams tokens quickly"));
     }
 
     @Test

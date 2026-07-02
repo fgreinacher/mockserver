@@ -96,13 +96,15 @@ Parameters:
 - `tokensPerSecond` -- base rate (1-10000)
 - `jitter` -- fractional uniform deviation (0.0-1.0)
 - `seed` -- PRNG seed for reproducible timing
-- `subwordStreaming` -- when `true`, split completion text into finer, subword-sized deltas instead of whole words (off by default)
+- `subwordStreaming` -- split completion text into finer, subword-sized deltas instead of whole words. **On by default** (unset/`null` resolves to subword); set explicitly to `false` to opt back into the legacy whole-word split
 
 The expanded events are handed to `HttpSseResponseActionHandler` which already honours per-event delays.
 
 ### Streaming delta granularity (`subwordStreaming`)
 
-Each chat codec's `encodeStreaming` splits the completion text into deltas via `TokenCounter.streamingTextTokens(text, physics)`. **By default** (or with a `null` physics / `subwordStreaming` off) this reproduces the long-standing whitespace-boundary split — each word and each whitespace run is its own delta — so the wire output and the codec golden fixtures are **byte-identical** to before. When `streamingPhysics.subwordStreaming` is `true`, the text is instead segmented into **subword-sized, concatenation-exact pieces** (a leading space absorbed into the following word, words chunked into ~4-character subword units) via `TokenCounter.segmentForStreaming`, approximating a real provider's per-token stream. The per-event **timing math is unchanged** — each delta is still exactly one physics event getting the `timeToFirstToken` / `1000 / tokensPerSecond` delay — so subword mode simply emits more, smaller events (closer to real token counts), never altering the `StreamingPhysicsExpander` algorithm. The joined deltas always equal the original text exactly, in both modes.
+Each chat codec's `encodeStreaming` splits the completion text into deltas via `TokenCounter.streamingTextTokens(text, physics)`. **Subword deltas are now the default**: a `null` physics or an unset `subwordStreaming` flag segments the text into **subword-sized, concatenation-exact pieces** (a leading space absorbed into the following word, words chunked into ~4-character subword units) via `TokenCounter.segmentForStreaming`, approximating a real provider's per-token stream. Only an **explicit** `streamingPhysics.subwordStreaming: false` selects the legacy whitespace-boundary split — each word and each whitespace run its own delta. The per-event **timing math is unchanged** — each delta is still exactly one physics event getting the `timeToFirstToken` / `1000 / tokensPerSecond` delay — so subword mode simply emits more, smaller events (closer to real token counts), never altering the `StreamingPhysicsExpander` algorithm. Because a stream now carries more real-token deltas at the same per-token cadence, **the total stream duration is slightly longer** for a given `tokensPerSecond` than the old whole-word default. The joined deltas always equal the original text exactly, in both modes.
+
+> **Behaviour change (default flip).** `subwordStreaming` shipped default-`false` and was flipped to default-`true`. The streaming codec golden fixtures (`streaming-text.jsonl` for every provider) were regenerated to reflect the finer deltas; non-streaming and streaming-tool-call goldens are unchanged (the canonical tool-call completion has no text). Consumers that need the exact old whole-word wire output must now set `subwordStreaming: false` explicitly.
 
 ## Conversation Matchers
 

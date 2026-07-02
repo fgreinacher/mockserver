@@ -130,13 +130,23 @@ public class TokenCounterTest {
     // ---- subword streaming segmentation ----
 
     @Test
-    public void streamingDefaultReproducesWhitespaceSplit() {
-        // null physics and subwordStreaming-off must reproduce the legacy split
-        // (each word and each whitespace run its own delta), so goldens are stable
+    public void streamingDefaultUsesSubwordSplit() {
+        // subword streaming is now the default: a null physics or an unset flag
+        // segments into finer, subword-sized deltas rather than whole words
         List<String> viaNull = TokenCounter.streamingTextTokens("Hello world", null);
-        assertThat(viaNull, contains("Hello", " ", "world"));
-        List<String> viaOff = TokenCounter.streamingTextTokens(
+        assertThat(viaNull, is(TokenCounter.segmentForStreaming("Hello world")));
+        assertThat(viaNull.size(), is(greaterThan(3)));
+        List<String> viaUnset = TokenCounter.streamingTextTokens(
             "Hello world", org.mockserver.model.StreamingPhysics.streamingPhysics());
+        assertThat(viaUnset, is(TokenCounter.segmentForStreaming("Hello world")));
+    }
+
+    @Test
+    public void streamingExplicitlyOffReproducesWhitespaceSplit() {
+        // only an explicit subwordStreaming=false opts back into the legacy split
+        // (each word and each whitespace run its own delta)
+        List<String> viaOff = TokenCounter.streamingTextTokens(
+            "Hello world", org.mockserver.model.StreamingPhysics.streamingPhysics().withSubwordStreaming(false));
         assertThat(viaOff, contains("Hello", " ", "world"));
     }
 
@@ -145,7 +155,8 @@ public class TokenCounterTest {
         String text = "MockServer streams tokens";
         List<String> subword = TokenCounter.streamingTextTokens(
             text, org.mockserver.model.StreamingPhysics.streamingPhysics().withSubwordStreaming(true));
-        List<String> whole = TokenCounter.streamingTextTokens(text, null);
+        List<String> whole = TokenCounter.streamingTextTokens(
+            text, org.mockserver.model.StreamingPhysics.streamingPhysics().withSubwordStreaming(false));
         // finer granularity
         assertThat(subword.size(), is(greaterThan(whole.size())));
         // every piece non-empty

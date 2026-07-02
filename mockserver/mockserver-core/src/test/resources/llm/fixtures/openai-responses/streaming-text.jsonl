@@ -1,19 +1,17 @@
 {"event":"response.created","data":{"type":"response.created","response":{"id":"<id>","object":"response","status":"in_progress","model":"gpt-4o","created_at":0,"output":[]}}}
 {"event":"response.in_progress","data":{"type":"response.in_progress","response":{"id":"<id>","object":"response","status":"in_progress"}}}
 {"event":"response.output_item.added","data":{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"<id>","role":"assistant","content":[]}}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"Hello!"}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" "}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"How"}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" "}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"can"}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" "}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"I"}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" "}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"help"}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" "}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"you"}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" "}}
-{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"today?"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"Hell"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"o"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"!"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" How"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" can"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" I"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" help"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" you"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":" toda"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"y"}}
+{"event":"response.output_text.delta","data":{"type":"response.output_text.delta","item_id":"<id>","output_index":0,"content_index":0,"delta":"?"}}
 {"event":"response.output_text.done","data":{"type":"response.output_text.done","item_id":"<id>","output_index":0,"content_index":0,"text":"Hello! How can I help you today?"}}
 {"event":"response.output_item.done","data":{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"<id>","role":"assistant"}}}
 {"event":"response.completed","data":{"type":"response.completed","response":{"id":"<id>","object":"response","status":"completed","model":"gpt-4o","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}}

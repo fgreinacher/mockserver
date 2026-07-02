@@ -236,14 +236,14 @@ public final class TokenCounter {
      * streaming response, honouring the streaming physics' {@code subwordStreaming}
      * mode.
      *
-     * <p>When {@code subwordStreaming} is off (the default, or a {@code null}
-     * physics) this reproduces the long-standing whitespace-boundary split
-     * (each word and each whitespace run is its own delta), so existing wire
-     * output and golden fixtures are byte-identical. When it is on, the text is
-     * segmented into subword-sized pieces via {@link #segmentForStreaming(String)}
-     * — finer, more realistic per-token deltas. Either way the concatenation of
-     * the returned pieces equals the input text exactly, and every piece is
-     * non-empty.
+     * <p>When {@code subwordStreaming} is on — which is now the <strong>default</strong>
+     * for a {@code null} physics or an unset flag — the text is segmented into
+     * subword-sized pieces via {@link #segmentForStreaming(String)}, giving finer,
+     * more realistic per-token deltas. Only an <em>explicit</em>
+     * {@code subwordStreaming=false} selects the legacy whitespace-boundary split
+     * (each word and each whitespace run its own delta). Either way the
+     * concatenation of the returned pieces equals the input text exactly, and every
+     * piece is non-empty.
      *
      * @param text    the completion text (may be {@code null}/empty)
      * @param physics the streaming physics (may be {@code null})
@@ -253,7 +253,9 @@ public final class TokenCounter {
         if (text == null || text.isEmpty()) {
             return Collections.emptyList();
         }
-        boolean subword = physics != null && Boolean.TRUE.equals(physics.getSubwordStreaming());
+        // Subword streaming is the default: only an explicit subwordStreaming=false
+        // (not null / unset) opts back into the legacy whole-word/whitespace split.
+        boolean subword = physics == null || !Boolean.FALSE.equals(physics.getSubwordStreaming());
         if (subword) {
             return segmentForStreaming(text);
         }

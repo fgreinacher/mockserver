@@ -1,16 +1,14 @@
 {"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Hello!"},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" "},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"How"},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" "},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"can"},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" "},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"I"},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" "},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"help"},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" "},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"you"},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" "},"finish_reason":null}]}
-{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"today?"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Hell"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"o"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" How"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" can"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" I"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" help"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" you"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":" toda"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"y"},"finish_reason":null}]}
+{"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"?"},"finish_reason":null}]}
 {"id":"<id>","object":"chat.completion.chunk","created":0,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 "[DONE]"
