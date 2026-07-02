@@ -922,7 +922,7 @@ public class LoadScenarioOrchestratorTest {
             .withSteps(new LoadStep().withRequest(request().withPath("/api").withHeader("Host", "target")));
 
         assertThat(orchestrator.start(scenario, sender), is(nullValue()));
-        assertThat("traffic flows", awaitAtLeast(sender, 10, 5_000L), is(true));
+        assertThat("traffic flows", awaitQueue(sender.sent, 10, 5_000L), is(true));
         assertThat("a verdict is computed once requests complete",
             awaitVerdict("threshold-pass", 5_000L), is(true));
 
@@ -1046,6 +1046,151 @@ public class LoadScenarioOrchestratorTest {
         assertThat(status.thresholdResults.get(0).observed, greaterThanOrEqualTo(1.0));
         assertThat(status.verdict, is("PASS"));
         orchestrator.stop("throughput-threshold");
+    }
+
+    // -- Per-step response checks (k6 'check' parity) --
+
+    /** A synchronous fake sender returning a fixed status code and body. */
+    private static final class BodySender implements Function<HttpRequest, CompletableFuture<HttpResponse>> {
+        final ConcurrentLinkedQueue<HttpRequest> sent = new ConcurrentLinkedQueue<>();
+        private final int statusCode;
+        private final String body;
+
+        BodySender(int statusCode, String body) {
+            this.statusCode = statusCode;
+            this.body = body;
+        }
+
+        @Override
+        public CompletableFuture<HttpResponse> apply(HttpRequest httpRequest) {
+            sent.add(httpRequest);
+            return CompletableFuture.completedFuture(response().withStatusCode(statusCode).withBody(body));
+        }
+    }
+
+    /** Poll until the queue has recorded at least {@code n} requests (or timeout). */
+    private boolean awaitQueue(ConcurrentLinkedQueue<HttpRequest> queue, int n, long timeoutMillis) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (System.currentTimeMillis() < deadline) {
+            if (queue.size() >= n) {
+                return true;
+            }
+            Thread.sleep(5);
+        }
+        return queue.size() >= n;
+    }
+
+    @Test
+    public void perStepChecksRecordPassAndFail() throws Exception {
+        // Every response is 200 with body {"status":"bad"}: a STATUS==200 check always PASSES while a
+        // BODY_JSONPATH $.status EQUALS "ok" check always FAILS. Both outcomes must be recorded.
+        BodySender sender = new BodySender(200, "{\"status\":\"bad\"}");
+        LoadScenario scenario = new LoadScenario()
+            .withName("checks-record")
+            .withProfile(LoadProfile.constant(2, 60_000L))
+            .withSteps(new LoadStep()
+                .withRequest(request().withPath("/api").withHeader("Host", "target"))
+                .withCheck(new org.mockserver.load.LoadCheck()
+                    .withSource(org.mockserver.load.LoadCheck.Source.STATUS)
+                    .withComparator(org.mockserver.load.LoadCheck.Comparator.EQUALS).withValue("200"))
+                .withCheck(new org.mockserver.load.LoadCheck()
+                    .withSource(org.mockserver.load.LoadCheck.Source.BODY_JSONPATH).withJsonPath("$.status")
+                    .withComparator(org.mockserver.load.LoadCheck.Comparator.EQUALS).withValue("ok")));
+
+        assertThat(orchestrator.start(scenario, sender), is(nullValue()));
+        assertThat("traffic flows", awaitQueue(sender.sent, 10, 5_000L), is(true));
+        // Poll until both a pass and a fail have been aggregated into the status snapshot.
+        long deadline = System.currentTimeMillis() + 5_000L;
+        LoadScenarioOrchestrator.LoadScenarioStatus status = orchestrator.statusFor("checks-record");
+        while (System.currentTimeMillis() < deadline
+            && (status == null || status.checkResults.size() < 2)) {
+            Thread.sleep(5);
+            status = orchestrator.statusFor("checks-record");
+        }
+        assertThat(status.checkResults, hasSize(2));
+        long totalPassed = status.checkResults.stream().mapToLong(r -> r.passed).sum();
+        long totalFailed = status.checkResults.stream().mapToLong(r -> r.failed).sum();
+        assertThat("the STATUS check passed at least once", totalPassed, greaterThan(0L));
+        assertThat("the JSONPath check failed at least once", totalFailed, greaterThan(0L));
+        // The STATUS check aggregate has only passes; the JSONPath aggregate has only fails.
+        LoadScenarioOrchestrator.CheckResult statusCheck = status.checkResults.stream()
+            .filter(r -> "STATUS".equals(r.source)).findFirst().orElseThrow(AssertionError::new);
+        LoadScenarioOrchestrator.CheckResult jsonCheck = status.checkResults.stream()
+            .filter(r -> "BODY_JSONPATH".equals(r.source)).findFirst().orElseThrow(AssertionError::new);
+        assertThat(statusCheck.passed, greaterThan(0L));
+        assertThat(statusCheck.failed, is(0L));
+        assertThat(jsonCheck.failed, greaterThan(0L));
+        assertThat(jsonCheck.passed, is(0L));
+        orchestrator.stop("checks-record");
+    }
+
+    @Test
+    public void checkFailureRateThresholdTripsAndAbortsAfterGrace() throws Exception {
+        // A check that always fails drives CHECK_FAILURE_RATE to 1.0, breaching a < 0.5 threshold. With
+        // abortOnFail + a grace window, the run FAILs but only aborts once the grace elapses.
+        BodySender sender = new BodySender(200, "{\"status\":\"bad\"}");
+        LoadScenario scenario = new LoadScenario()
+            .withName("check-rate-abort")
+            .withProfile(LoadProfile.constant(2, 60_000L))
+            .withAbortOnFail(true)
+            .withAbortGraceMillis(1_000L)
+            .withThresholds(new org.mockserver.load.LoadThreshold()
+                .withMetric(org.mockserver.load.LoadThreshold.Metric.CHECK_FAILURE_RATE)
+                .withComparator(org.mockserver.slo.SloObjective.Comparator.LESS_THAN)
+                .withThreshold(0.5))
+            .withSteps(new LoadStep()
+                .withRequest(request().withPath("/api").withHeader("Host", "target"))
+                .withCheck(new org.mockserver.load.LoadCheck()
+                    .withSource(org.mockserver.load.LoadCheck.Source.BODY_JSONPATH).withJsonPath("$.status")
+                    .withComparator(org.mockserver.load.LoadCheck.Comparator.EQUALS).withValue("ok")));
+
+        assertThat(orchestrator.start(scenario, sender), is(nullValue()));
+        assertThat("traffic flows", awaitQueue(sender.sent, 5, 5_000L), is(true));
+        assertThat("a verdict is computed once checks are evaluated",
+            awaitVerdict("check-rate-abort", 5_000L), is(true));
+
+        LoadScenarioOrchestrator.LoadScenarioStatus midRun = orchestrator.statusFor("check-rate-abort");
+        assertThat("CHECK_FAILURE_RATE breach yields a FAIL verdict", midRun.verdict, is("FAIL"));
+        assertThat("not aborted before the grace window",
+            midRun.state, is(org.mockserver.load.LoadScenarioState.RUNNING));
+        assertThat(midRun.thresholdResults.get(0).metric, is("CHECK_FAILURE_RATE"));
+        assertThat(midRun.thresholdResults.get(0).observed, closeTo(1.0, 0.0001));
+        assertThat(midRun.thresholdResults.get(0).satisfied, is(false));
+
+        clock.set(10_000L + 1_500L);
+        orchestrator.tickNow();
+        long abortDeadline = System.currentTimeMillis() + 5_000L;
+        while (orchestrator.statusFor("check-rate-abort") != null
+            && orchestrator.statusFor("check-rate-abort").state == org.mockserver.load.LoadScenarioState.RUNNING
+            && System.currentTimeMillis() < abortDeadline) {
+            orchestrator.tickNow();
+            Thread.sleep(5);
+        }
+        LoadScenarioOrchestrator.LoadScenarioStatus terminal = orchestrator.statusFor("check-rate-abort");
+        assertThat(terminal.state, is(org.mockserver.load.LoadScenarioState.STOPPED));
+        assertThat(terminal.abortedByThreshold, is(true));
+        assertThat(terminal.verdict, is("FAIL"));
+    }
+
+    @Test
+    public void noChecksLeavesCheckResultsEmpty() throws Exception {
+        // A scenario without checks records no check results (non-breaking default).
+        RecordingSender sender = new RecordingSender();
+        LoadScenario scenario = new LoadScenario()
+            .withName("no-checks")
+            .withMaxRequests(10)
+            .withProfile(LoadProfile.constant(2, 60_000L))
+            .withSteps(new LoadStep().withRequest(request().withPath("/api").withHeader("Host", "target")));
+
+        assertThat(orchestrator.start(scenario, sender), is(nullValue()));
+        assertThat(awaitAtLeast(sender, 10, 5_000L), is(true));
+        long deadline = System.currentTimeMillis() + 2_000L;
+        while (orchestrator.getStatus() != null && org.mockserver.load.LoadScenarioState.RUNNING == orchestrator.getStatus().state
+            && System.currentTimeMillis() < deadline) {
+            orchestrator.tickNow();
+            Thread.sleep(5);
+        }
+        assertThat(orchestrator.statusFor("no-checks").checkResults, is(empty()));
     }
 
     @Test

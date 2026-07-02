@@ -4916,9 +4916,39 @@ components:
           description: "optional cross-step capture rules applied to this step's response. Each binds an extracted value to a variable name visible to SUBSEQUENT steps in the same iteration via $iteration.captured.<name> (Velocity) / {{iteration.captured.<name>}} (Mustache), in path, body and header templates. Scope is per-iteration (one virtual user's single pass through the steps)."
           items:
             $ref: "#/components/schemas/LoadCapture"
+        checks:
+          type: array
+          description: "optional per-step response assertions (k6 'check' parity). Each check extracts a value from this step's response and compares it against an expected value; pass/fail outcomes feed the mock_server_load_checks metric, the end-of-run report and the CHECK_FAILURE_RATE threshold. Observational — a failing check never fails an individual request or stops dispatch. Omitted (the default) leaves behaviour unchanged."
+          items:
+            $ref: "#/components/schemas/LoadCheck"
         weight:
           type: number
           description: "relative selection weight, used only when the scenario's stepSelection is WEIGHTED: each iteration runs exactly ONE step chosen at random with probability proportional to its weight (e.g. weights 7 / 2 / 1 model a 70% / 20% / 10% mixed workload). Omitted means 1.0 in WEIGHTED mode; must be > 0 when WEIGHTED. Ignored under the default SEQUENTIAL mode (all steps run in order)."
+    LoadCheck:
+      description: "a per-step response assertion (the load equivalent of a k6 check). Extracts a value from a step's response (status code, a header, or a body JSONPath) and compares it against an expected value with a comparator. Observational: a failing check is counted (metric + report + CHECK_FAILURE_RATE threshold) but never fails the individual request. Extraction reuses the same primitives as LoadCapture."
+      type: object
+      additionalProperties: false
+      required:
+        - source
+        - comparator
+      properties:
+        source:
+          type: string
+          enum: [STATUS, HEADER, BODY_JSONPATH]
+          description: "where to read the observed value from: the response status code, a response header (headerName), or a JSONPath over the response body (jsonPath)"
+        headerName:
+          type: string
+          description: "the response header name to read (required when source is HEADER)"
+        jsonPath:
+          type: string
+          description: "the JSONPath to evaluate over the response body (required when source is BODY_JSONPATH)"
+        comparator:
+          type: string
+          enum: [EQUALS, NOT_EQUALS, CONTAINS, MATCHES, GT, LT, GTE, LTE]
+          description: "how the observed value is compared to value: string comparators (EQUALS/NOT_EQUALS/CONTAINS/MATCHES — MATCHES is a full-match regex) operate on the raw string; numeric comparators (GT/LT/GTE/LTE) parse both sides as numbers and fail the check when either side is not a number"
+        value:
+          type: string
+          description: "the expected value / comparand the observed value is compared against"
     LoadCapture:
       description: "a declarative cross-step capture / correlation rule: extracts a value from a step's response and binds it to a variable name that a later step in the same iteration can reference from its templated request fields. Best-effort: on no match it falls back to defaultValue (when set) or leaves the variable unset, never failing the run."
       type: object
@@ -4952,15 +4982,15 @@ components:
       properties:
         metric:
           type: string
-          enum: [LATENCY_P50, LATENCY_P95, LATENCY_P99, LATENCY_P999, ERROR_RATE, THROUGHPUT_RPS]
-          description: "the per-run metric to evaluate: latency percentiles in milliseconds, ERROR_RATE as a 0.0-1.0 fraction, THROUGHPUT_RPS as requests/second over the run's elapsed time"
+          enum: [LATENCY_P50, LATENCY_P95, LATENCY_P99, LATENCY_P999, ERROR_RATE, THROUGHPUT_RPS, CHECK_FAILURE_RATE]
+          description: "the per-run metric to evaluate: latency percentiles in milliseconds, ERROR_RATE as a 0.0-1.0 fraction, THROUGHPUT_RPS as requests/second over the run's elapsed time, CHECK_FAILURE_RATE as failed per-step checks as a 0.0-1.0 fraction of all evaluated checks (0 when no checks ran)"
         comparator:
           type: string
           enum: [LESS_THAN, LESS_THAN_OR_EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL]
           description: "how the observed per-run value is compared to the threshold"
         threshold:
           type: number
-          description: "the threshold value (milliseconds for latency metrics, a 0.0-1.0 fraction for ERROR_RATE, requests/second for THROUGHPUT_RPS)"
+          description: "the threshold value (milliseconds for latency metrics, a 0.0-1.0 fraction for ERROR_RATE or CHECK_FAILURE_RATE, requests/second for THROUGHPUT_RPS)"
     LoadPacing:
       description: "adaptive iteration pacing (think-time) for a load scenario: a target per-virtual-user iteration cycle time. After a closed-model VU finishes one pass through the steps, the orchestrator waits whatever remains of the target cycle before launching that VU's next iteration; on overrun the next iteration starts immediately (no wait). Applies only to the closed-model VU loop — open-model RATE iterations ignore it, their arrival rate already governing spacing — and composes with per-step thinkTime. In-flight latency measurement is unchanged; pacing only affects when the next iteration launches."
       type: object
@@ -5128,7 +5158,7 @@ components:
             properties:
               metric:
                 type: string
-                enum: [LATENCY_P50, LATENCY_P95, LATENCY_P99, LATENCY_P999, ERROR_RATE, THROUGHPUT_RPS]
+                enum: [LATENCY_P50, LATENCY_P95, LATENCY_P99, LATENCY_P999, ERROR_RATE, THROUGHPUT_RPS, CHECK_FAILURE_RATE]
               comparator:
                 type: string
                 enum: [LESS_THAN, LESS_THAN_OR_EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL]
@@ -5139,12 +5169,42 @@ components:
                 description: "the observed per-run value at evaluation time (latency ms, error-rate fraction, or requests/second)"
               satisfied:
                 type: boolean
+        checkResults:
+          type: array
+          description: "per-distinct-check pass/fail aggregates for the run's per-step checks (present when any check was evaluated)"
+          items:
+            $ref: "#/components/schemas/LoadCheckResult"
         runId:
           type: string
         startedAt:
           type: integer
           format: int64
         endedAt:
+          type: integer
+          format: int64
+    LoadCheckResult:
+      description: "the aggregate pass/fail counts for one distinct per-step check across a load run"
+      type: object
+      properties:
+        step:
+          type: string
+          description: "the step label (step name or index) the check ran on"
+        source:
+          type: string
+          enum: [STATUS, HEADER, BODY_JSONPATH]
+        detail:
+          type: string
+          description: "the header name (HEADER) or JSONPath (BODY_JSONPATH); absent for STATUS"
+        comparator:
+          type: string
+          enum: [EQUALS, NOT_EQUALS, CONTAINS, MATCHES, GT, LT, GTE, LTE]
+        value:
+          type: string
+          description: "the expected comparand value"
+        passed:
+          type: integer
+          format: int64
+        failed:
           type: integer
           format: int64
     LoadScenarioReport:
@@ -5224,7 +5284,7 @@ components:
             properties:
               metric:
                 type: string
-                enum: [LATENCY_P50, LATENCY_P95, LATENCY_P99, LATENCY_P999, ERROR_RATE, THROUGHPUT_RPS]
+                enum: [LATENCY_P50, LATENCY_P95, LATENCY_P99, LATENCY_P999, ERROR_RATE, THROUGHPUT_RPS, CHECK_FAILURE_RATE]
               comparator:
                 type: string
                 enum: [LESS_THAN, LESS_THAN_OR_EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL]
@@ -5234,6 +5294,11 @@ components:
                 type: number
               satisfied:
                 type: boolean
+        checkResults:
+          type: array
+          description: "per-distinct-check pass/fail aggregates for the run's per-step response checks"
+          items:
+            $ref: "#/components/schemas/LoadCheckResult"
     SloObjective:
       description: "a single service-level objective over the recorded SLI samples"
       type: object

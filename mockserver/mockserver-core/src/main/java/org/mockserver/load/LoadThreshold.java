@@ -30,6 +30,9 @@ public class LoadThreshold extends ObjectWithJsonToString {
      *       (succeeded + failed), in (0..1). In-flight (dispatched-but-not-yet-completed) requests are
      *       excluded so the rate is never diluted by requests whose outcome is not yet known.</li>
      *   <li>{@link #THROUGHPUT_RPS} — requests sent per second over the run's elapsed time.</li>
+     *   <li>{@link #CHECK_FAILURE_RATE} — failed per-step {@link LoadCheck}s as a <b>fraction</b> of all
+     *       evaluated checks, in (0..1); {@code 0} when no checks ran. Lets a CI run fail when too many
+     *       response assertions break.</li>
      * </ul>
      */
     public enum Metric {
@@ -38,7 +41,8 @@ public class LoadThreshold extends ObjectWithJsonToString {
         LATENCY_P99,
         LATENCY_P999,
         ERROR_RATE,
-        THROUGHPUT_RPS
+        THROUGHPUT_RPS,
+        CHECK_FAILURE_RATE
     }
 
     private Metric metric;

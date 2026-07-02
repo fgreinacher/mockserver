@@ -3,6 +3,7 @@ package org.mockserver.load;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.mockserver.mock.action.http.LoadScenarioOrchestrator.CheckResult;
 import org.mockserver.mock.action.http.LoadScenarioOrchestrator.LoadScenarioStatus;
 import org.mockserver.mock.action.http.LoadScenarioOrchestrator.ThresholdResult;
 import org.mockserver.serialization.ObjectMapperFactory;
@@ -113,6 +114,30 @@ public final class LoadScenarioReport {
             }
         }
 
+        ArrayNode checks = node.putArray("checkResults");
+        if (status.checkResults != null) {
+            for (CheckResult result : status.checkResults) {
+                ObjectNode c = checks.addObject();
+                if (result.step != null) {
+                    c.put("step", result.step);
+                }
+                if (result.source != null) {
+                    c.put("source", result.source);
+                }
+                if (result.detail != null && !result.detail.isEmpty()) {
+                    c.put("detail", result.detail);
+                }
+                if (result.comparator != null) {
+                    c.put("comparator", result.comparator);
+                }
+                if (result.value != null) {
+                    c.put("value", result.value);
+                }
+                c.put("passed", result.passed);
+                c.put("failed", result.failed);
+            }
+        }
+
         try {
             return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(node);
         } catch (Exception e) {
@@ -126,11 +151,19 @@ public final class LoadScenarioReport {
      */
     public static String toJUnitXml(LoadScenarioStatus status) {
         int thresholdCount = status.thresholdResults != null ? status.thresholdResults.size() : 0;
-        int tests = thresholdCount + 1;
+        int checkCount = status.checkResults != null ? status.checkResults.size() : 0;
+        int tests = thresholdCount + checkCount + 1;
         int failures = 0;
         if (status.thresholdResults != null) {
             for (ThresholdResult result : status.thresholdResults) {
                 if (!result.satisfied) {
+                    failures++;
+                }
+            }
+        }
+        if (status.checkResults != null) {
+            for (CheckResult result : status.checkResults) {
+                if (result.failed > 0) {
                     failures++;
                 }
             }
@@ -170,6 +203,22 @@ public final class LoadScenarioReport {
                 if (!result.satisfied) {
                     String message = "observed " + formatNumber(result.observed) + " "
                         + result.comparator + " " + formatNumber(result.threshold) + " not satisfied";
+                    xml.append("    <failure message=\"").append(escape(message)).append("\"/>\n");
+                }
+                xml.append("  </testcase>\n");
+            }
+        }
+
+        if (status.checkResults != null) {
+            for (CheckResult result : status.checkResults) {
+                String detail = result.detail != null && !result.detail.isEmpty() ? " " + result.detail : "";
+                String name = "check: step " + result.step + " " + result.source + detail
+                    + " " + result.comparator + " " + result.value;
+                xml.append("  <testcase name=\"").append(escape(name)).append('"')
+                    .append(" assertions=\"").append(result.passed + result.failed).append("\">\n");
+                if (result.failed > 0) {
+                    String message = result.failed + " of " + (result.passed + result.failed)
+                        + " evaluations failed";
                     xml.append("    <failure message=\"").append(escape(message)).append("\"/>\n");
                 }
                 xml.append("  </testcase>\n");

@@ -1,6 +1,7 @@
 package org.mockserver.serialization.model;
 
 import org.mockserver.load.LoadCapture;
+import org.mockserver.load.LoadCheck;
 import org.mockserver.load.LoadStep;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.ObjectWithReflectiveEqualsHashCodeToString;
@@ -20,6 +21,7 @@ public class LoadStepDTO extends ObjectWithReflectiveEqualsHashCodeToString impl
     private String name;
     private Map<String, String> labels;
     private List<LoadCapture> captures;
+    private List<LoadCheck> checks;
     private Double weight;
 
     public LoadStepDTO(LoadStep step) {
@@ -36,6 +38,9 @@ public class LoadStepDTO extends ObjectWithReflectiveEqualsHashCodeToString impl
             }
             if (step.getCaptures() != null && !step.getCaptures().isEmpty()) {
                 captures = new ArrayList<>(step.getCaptures());
+            }
+            if (step.getChecks() != null && !step.getChecks().isEmpty()) {
+                checks = new ArrayList<>(step.getChecks());
             }
             weight = step.getWeight();
         }
@@ -61,6 +66,9 @@ public class LoadStepDTO extends ObjectWithReflectiveEqualsHashCodeToString impl
         }
         if (captures != null && !captures.isEmpty()) {
             step.withCaptures(captures);
+        }
+        if (checks != null && !checks.isEmpty()) {
+            step.withChecks(checks);
         }
         if (weight != null) {
             step.withWeight(weight);
@@ -110,6 +118,15 @@ public class LoadStepDTO extends ObjectWithReflectiveEqualsHashCodeToString impl
 
     public LoadStepDTO setCaptures(List<LoadCapture> captures) {
         this.captures = captures;
+        return this;
+    }
+
+    public List<LoadCheck> getChecks() {
+        return checks;
+    }
+
+    public LoadStepDTO setChecks(List<LoadCheck> checks) {
+        this.checks = checks;
         return this;
     }
 

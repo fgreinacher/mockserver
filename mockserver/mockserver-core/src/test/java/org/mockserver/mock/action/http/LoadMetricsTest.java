@@ -136,6 +136,7 @@ public class LoadMetricsTest {
         assertThat(scrapeContains("mock_server_load_iterations"), is(true));
         assertThat(scrapeContains("mock_server_load_throttled"), is(true));
         assertThat(scrapeContains("mock_server_load_errors"), is(true));
+        assertThat(scrapeContains("mock_server_load_checks"), is(true));
         assertThat(scrapeContains("mock_server_load_active_vus"), is(true));
         assertThat(scrapeContains("mock_server_load_inflight_requests"), is(true));
     }
@@ -308,6 +309,43 @@ public class LoadMetricsTest {
             Thread.sleep(5);
         }
         assertThat(Metrics.getLoadErrorCount("errors-load", runId, "http_5xx"), greaterThanOrEqualTo(5L));
+    }
+
+    @Test
+    public void checksCounterIncrementsOnPassAndFail() throws Exception {
+        enableMetrics(null);
+        // 200 with body {"ok":false}: a STATUS==200 check PASSES, a BODY_JSONPATH $.ok==true check FAILS.
+        RecordingSender sender = new RecordingSender(200, "{\"ok\":false}");
+        LoadScenario scenario = new LoadScenario()
+            .withName("checks-metric")
+            .withMaxRequests(5)
+            .withProfile(LoadProfile.constant(1, 60_000L))
+            .withSteps(new LoadStep()
+                .withName("assert")
+                .withRequest(request().withPath("/api").withHeader("Host", "target"))
+                .withCheck(new org.mockserver.load.LoadCheck()
+                    .withSource(org.mockserver.load.LoadCheck.Source.STATUS)
+                    .withComparator(org.mockserver.load.LoadCheck.Comparator.EQUALS).withValue("200"))
+                .withCheck(new org.mockserver.load.LoadCheck()
+                    .withSource(org.mockserver.load.LoadCheck.Source.BODY_JSONPATH).withJsonPath("$.ok")
+                    .withComparator(org.mockserver.load.LoadCheck.Comparator.EQUALS).withValue("true")));
+
+        assertThat(orchestrator.start(scenario, sender), is(nullValue()));
+        assertThat(awaitAtLeast(sender, 5, 5_000L), is(true));
+
+        String runId = orchestrator.getStatus().runId;
+        long deadline = System.currentTimeMillis() + 5_000L;
+        while ((Metrics.getLoadCheckCount("checks-metric", runId, "assert", "pass") == 0
+            || Metrics.getLoadCheckCount("checks-metric", runId, "assert", "fail") == 0)
+            && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5);
+        }
+        assertThat("pass outcomes are counted",
+            Metrics.getLoadCheckCount("checks-metric", runId, "assert", "pass"), greaterThan(0L));
+        assertThat("fail outcomes are counted",
+            Metrics.getLoadCheckCount("checks-metric", runId, "assert", "fail"), greaterThan(0L));
+        assertThat(scrapeContains("mock_server_load_checks"), is(true));
+        orchestrator.stop("checks-metric");
     }
 
     @Test

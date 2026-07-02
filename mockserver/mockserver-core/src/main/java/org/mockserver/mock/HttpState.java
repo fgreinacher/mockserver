@@ -4187,6 +4187,29 @@ public class HttpState {
                     resultNode.put("satisfied", result.satisfied);
                 }
             }
+            if (status.checkResults != null && !status.checkResults.isEmpty()) {
+                com.fasterxml.jackson.databind.node.ArrayNode checkResultsNode = node.putArray("checkResults");
+                for (org.mockserver.mock.action.http.LoadScenarioOrchestrator.CheckResult result : status.checkResults) {
+                    com.fasterxml.jackson.databind.node.ObjectNode resultNode = checkResultsNode.addObject();
+                    if (result.step != null) {
+                        resultNode.put("step", result.step);
+                    }
+                    if (result.source != null) {
+                        resultNode.put("source", result.source);
+                    }
+                    if (result.detail != null && !result.detail.isEmpty()) {
+                        resultNode.put("detail", result.detail);
+                    }
+                    if (result.comparator != null) {
+                        resultNode.put("comparator", result.comparator);
+                    }
+                    if (result.value != null) {
+                        resultNode.put("value", result.value);
+                    }
+                    resultNode.put("passed", result.passed);
+                    resultNode.put("failed", result.failed);
+                }
+            }
             node.put("runId", status.runId);
             node.put("startedAt", status.startedAtEpochMillis);
             if (status.endedAtEpochMillis != null) {

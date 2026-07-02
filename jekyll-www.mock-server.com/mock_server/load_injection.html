@@ -142,6 +142,7 @@ schema_faq:
 					<li><a href="#iteration_variables">Per-Iteration Template Variables</a></li>
 					<li><a href="#data_feeders">Data Feeders</a></li>
 					<li><a href="#cross_step_capture">Cross-Step Capture</a></li>
+					<li><a href="#checks">Per-Step Response Checks</a></li>
 					<li><a href="#weighted_step_selection">Weighted Step Selection</a></li>
 				</ul>
 			</td>
@@ -475,7 +476,7 @@ curl -s -X PUT http://localhost:1080/mockserver/loadScenario/stop \
         <tr>
             <td><code class="inline code">GET</code></td>
             <td><code class="inline code">/mockserver/loadScenario</code></td>
-            <td>List <strong>all</strong> registered scenarios: <code class="inline code">{ scenarios: [ { name, state, startDelayMillis, definition, &hellip;live status fields } ] }</code>. <code class="inline code">state</code> ∈ <code class="inline code">LOADED</code> / <code class="inline code">PENDING</code> / <code class="inline code">RUNNING</code> / <code class="inline code">COMPLETED</code> / <code class="inline code">STOPPED</code>. Live fields (when active/run): <code class="inline code">stageIndex</code>, <code class="inline code">stageType</code>, <code class="inline code">currentTarget</code>, <code class="inline code">currentVus</code>, <code class="inline code">requestsSent</code>, <code class="inline code">succeeded</code>, <code class="inline code">failed</code>, <code class="inline code">p50Millis</code>, <code class="inline code">p95Millis</code>, <code class="inline code">p99Millis</code>, <code class="inline code">p999Millis</code>, <code class="inline code">droppedIterations</code>, <code class="inline code">verdict</code>, <code class="inline code">abortedByThreshold</code>, <code class="inline code">thresholdResults</code>, <code class="inline code">runId</code>, <code class="inline code">startedAt</code>, <code class="inline code">endedAt</code>.</td>
+            <td>List <strong>all</strong> registered scenarios: <code class="inline code">{ scenarios: [ { name, state, startDelayMillis, definition, &hellip;live status fields } ] }</code>. <code class="inline code">state</code> ∈ <code class="inline code">LOADED</code> / <code class="inline code">PENDING</code> / <code class="inline code">RUNNING</code> / <code class="inline code">COMPLETED</code> / <code class="inline code">STOPPED</code>. Live fields (when active/run): <code class="inline code">stageIndex</code>, <code class="inline code">stageType</code>, <code class="inline code">currentTarget</code>, <code class="inline code">currentVus</code>, <code class="inline code">requestsSent</code>, <code class="inline code">succeeded</code>, <code class="inline code">failed</code>, <code class="inline code">p50Millis</code>, <code class="inline code">p95Millis</code>, <code class="inline code">p99Millis</code>, <code class="inline code">p999Millis</code>, <code class="inline code">droppedIterations</code>, <code class="inline code">verdict</code>, <code class="inline code">abortedByThreshold</code>, <code class="inline code">thresholdResults</code>, <code class="inline code">checkResults</code>, <code class="inline code">runId</code>, <code class="inline code">startedAt</code>, <code class="inline code">endedAt</code>.</td>
         </tr>
         <tr>
             <td><code class="inline code">GET</code></td>
@@ -760,6 +761,11 @@ curl -s -X PUT http://localhost:1080/mockserver/loadScenario/stop \
             <td><code class="inline code">captures</code></td>
             <td>array</td>
             <td>Optional list of capture rules that extract a value from this step's response and bind it to a named variable for use in later steps' templates. Each entry has a <code class="inline code">name</code>, a <code class="inline code">source</code> (<code class="inline code">BODY_JSONPATH</code> / <code class="inline code">HEADER</code> / <code class="inline code">BODY_REGEX</code>), an <code class="inline code">expression</code>, and an optional <code class="inline code">defaultValue</code>. See <a href="#cross_step_capture">Cross-Step Capture</a>.</td>
+        </tr>
+        <tr>
+            <td><code class="inline code">checks</code></td>
+            <td>array</td>
+            <td>Optional list of per-step response assertions (like a k6 <code class="inline code">check</code>). Each entry has a <code class="inline code">source</code> (<code class="inline code">STATUS</code> / <code class="inline code">HEADER</code> with <code class="inline code">headerName</code> / <code class="inline code">BODY_JSONPATH</code> with <code class="inline code">jsonPath</code>), a <code class="inline code">comparator</code> (<code class="inline code">EQUALS</code>, <code class="inline code">NOT_EQUALS</code>, <code class="inline code">CONTAINS</code>, <code class="inline code">MATCHES</code>, <code class="inline code">GT</code>, <code class="inline code">LT</code>, <code class="inline code">GTE</code>, <code class="inline code">LTE</code>), and an expected <code class="inline code">value</code>. See <a href="#checks">Per-Step Response Checks</a>.</td>
         </tr>
         <tr>
             <td><code class="inline code">weight</code></td>
@@ -2304,6 +2310,63 @@ curl -s -X PUT http://localhost:1080/mockserver/loadScenario \
 
 <p>Step 1 logs in and captures the response body's <code class="inline code">$.accessToken</code> into <code class="inline code">token</code>. Step 2 — in the same iteration — sends it as <code class="inline code">Authorization: Bearer &lt;token&gt;</code>. With 5 VUs, each VU's iterations each capture and replay their own token independently.</p>
 
+<a id="checks" class="anchor" href="#checks">&nbsp;</a>
+
+<h2>Per-Step Response Checks</h2>
+
+<p>A load test that only tracks latency and errors will happily report <strong>green</strong> while your service returns a <code class="inline code">200</code> with the <em>wrong body</em> — a broken feature flag, an empty result set, a silently degraded response. Only 5xx and connection failures surface otherwise. <strong>Per-step checks</strong> (the load equivalent of a <a href="https://grafana.com/docs/k6/latest/using-k6/checks/">k6 <code class="inline code">check</code></a>) close that gap: attach <code class="inline code">checks</code> to a step and each one asserts something about that step's response.</p>
+
+<p>Each check has a <code class="inline code">source</code> (where to read the observed value), a <code class="inline code">comparator</code>, and an expected <code class="inline code">value</code>:</p>
+
+<table>
+    <thead>
+        <tr>
+            <th style="width: 130px;">Field</th>
+            <th>Values</th>
+            <th>Meaning</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><code class="inline code">source</code></td>
+            <td><code class="inline code">STATUS</code>, <code class="inline code">HEADER</code>, <code class="inline code">BODY_JSONPATH</code></td>
+            <td>Where to read the observed value: the response status code; a response header (set <code class="inline code">headerName</code>); or a JSONPath over the response body (set <code class="inline code">jsonPath</code>).</td>
+        </tr>
+        <tr>
+            <td><code class="inline code">comparator</code></td>
+            <td><code class="inline code">EQUALS</code>, <code class="inline code">NOT_EQUALS</code>, <code class="inline code">CONTAINS</code>, <code class="inline code">MATCHES</code>, <code class="inline code">GT</code>, <code class="inline code">LT</code>, <code class="inline code">GTE</code>, <code class="inline code">LTE</code></td>
+            <td>How the observed value is compared to <code class="inline code">value</code>. The string comparators work on the raw text (<code class="inline code">MATCHES</code> is a full-match regex); the numeric comparators (<code class="inline code">GT</code>/<code class="inline code">LT</code>/<code class="inline code">GTE</code>/<code class="inline code">LTE</code>) parse both sides as numbers and fail the check if either side is not a number.</td>
+        </tr>
+        <tr>
+            <td><code class="inline code">value</code></td>
+            <td>string</td>
+            <td>The expected value the observed value is compared against.</td>
+        </tr>
+    </tbody>
+</table>
+
+<p><strong>Checks never fail an individual request</strong> — they are observational. Each evaluated check is counted as a pass or a fail: the counts feed the <code class="inline code">mock_server_load_checks</code> metric (labelled <code class="inline code">outcome="pass"|"fail"</code>), the per-check <code class="inline code">checkResults</code> in the <a href="#summary_report">summary report</a> and live status, and the <a href="#thresholds"><code class="inline code">CHECK_FAILURE_RATE</code> threshold</a> — so you can <strong>fail a CI run</strong> when too many checks break (and, with <code class="inline code">abortOnFail</code>, stop it early). A check that can't be evaluated (a bad JSONPath, or no response at all on a connection error) simply counts as a fail. Omitting <code class="inline code">checks</code> changes nothing — it is off by default.</p>
+
+<pre class="prettyprint lang-json code"><code class="code">{
+  "name": "checked-scenario",
+  "profile": { "stages": [ { "type": "VU", "vus": 5, "durationMillis": 60000 } ] },
+  "thresholds": [
+    { "metric": "CHECK_FAILURE_RATE", "comparator": "LESS_THAN", "threshold": 0.01 }
+  ],
+  "steps": [
+    {
+      "request": { "method": "GET", "path": "/api/orders/123", "socketAddress": { "host": "target", "port": 8080 } },
+      "checks": [
+        { "source": "STATUS", "comparator": "EQUALS", "value": "200" },
+        { "source": "HEADER", "headerName": "Content-Type", "comparator": "CONTAINS", "value": "application/json" },
+        { "source": "BODY_JSONPATH", "jsonPath": "$.status", "comparator": "EQUALS", "value": "CONFIRMED" }
+      ]
+    }
+  ]
+}</code></pre>
+
+<p>Every iteration fires the request and evaluates all three checks against the response. The status verdict flips to <code class="inline code">FAIL</code> if more than 1% of checks fail, so a service that returns <code class="inline code">200</code> but with <code class="inline code">$.status != "CONFIRMED"</code> is caught even though no request errored.</p>
+
 <a id="weighted_step_selection" class="anchor" href="#weighted_step_selection">&nbsp;</a>
 
 <h2>Weighted Step Selection</h2>
@@ -2587,8 +2650,8 @@ curl -s -X PUT http://localhost:1080/mockserver/loadScenario \
     <tbody>
         <tr>
             <td><code class="inline code">metric</code></td>
-            <td><code class="inline code">LATENCY_P50</code>, <code class="inline code">LATENCY_P95</code>, <code class="inline code">LATENCY_P99</code>, <code class="inline code">LATENCY_P999</code>, <code class="inline code">ERROR_RATE</code>, <code class="inline code">THROUGHPUT_RPS</code></td>
-            <td>The metric to check. Latency percentiles are in milliseconds; <code class="inline code">ERROR_RATE</code> is a 0–1 fraction; <code class="inline code">THROUGHPUT_RPS</code> is requests/second.</td>
+            <td><code class="inline code">LATENCY_P50</code>, <code class="inline code">LATENCY_P95</code>, <code class="inline code">LATENCY_P99</code>, <code class="inline code">LATENCY_P999</code>, <code class="inline code">ERROR_RATE</code>, <code class="inline code">THROUGHPUT_RPS</code>, <code class="inline code">CHECK_FAILURE_RATE</code></td>
+            <td>The metric to check. Latency percentiles are in milliseconds; <code class="inline code">ERROR_RATE</code> is a 0–1 fraction; <code class="inline code">THROUGHPUT_RPS</code> is requests/second; <code class="inline code">CHECK_FAILURE_RATE</code> is the 0–1 fraction of failed <a href="#checks">per-step checks</a> (0 when no checks ran).</td>
         </tr>
         <tr>
             <td><code class="inline code">comparator</code></td>

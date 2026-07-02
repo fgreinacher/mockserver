@@ -3,6 +3,7 @@ package org.mockserver.load;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.Test;
+import org.mockserver.mock.action.http.LoadScenarioOrchestrator.CheckResult;
 import org.mockserver.mock.action.http.LoadScenarioOrchestrator.LoadScenarioStatus;
 import org.mockserver.mock.action.http.LoadScenarioOrchestrator.ThresholdResult;
 import org.mockserver.serialization.ObjectMapperFactory;
@@ -31,6 +32,14 @@ public class LoadScenarioReportTest {
     private LoadScenarioStatus status(String name, LoadScenarioState state, String verdict,
                                       boolean abortedByThreshold, long requestsSent, long succeeded,
                                       long failed, List<ThresholdResult> thresholdResults) {
+        return status(name, state, verdict, abortedByThreshold, requestsSent, succeeded, failed,
+            thresholdResults, Collections.emptyList());
+    }
+
+    private LoadScenarioStatus status(String name, LoadScenarioState state, String verdict,
+                                      boolean abortedByThreshold, long requestsSent, long succeeded,
+                                      long failed, List<ThresholdResult> thresholdResults,
+                                      List<CheckResult> checkResults) {
         LoadScenario scenario = LoadScenario.loadScenario(name);
         return new LoadScenarioStatus(
             name,
@@ -56,7 +65,8 @@ public class LoadScenarioReportTest {
             0L,             // startDelayMillis
             verdict,
             abortedByThreshold,
-            thresholdResults
+            thresholdResults,
+            checkResults
         );
     }
 
@@ -98,6 +108,45 @@ public class LoadScenarioReportTest {
         assertThat(results.get(1).get("metric").asText(), is("ERROR_RATE"));
         assertThat(results.get(1).get("observed").asDouble(), closeTo(0.05, 1e-9));
         assertThat(results.get(1).get("satisfied").asBoolean(), is(false));
+    }
+
+    @Test
+    public void jsonContainsCheckResults() throws Exception {
+        List<CheckResult> checks = Arrays.asList(
+            new CheckResult("assert", "STATUS", "", "EQUALS", "200", 190L, 0L),
+            new CheckResult("assert", "BODY_JSONPATH", "$.status", "EQUALS", "ok", 150L, 40L)
+        );
+        LoadScenarioStatus status = status("checkout", LoadScenarioState.COMPLETED, null, false, 200, 190, 10,
+            Collections.emptyList(), checks);
+
+        JsonNode report = objectMapper.readTree(LoadScenarioReport.toJson(status));
+        JsonNode results = report.get("checkResults");
+        assertThat(results.size(), is(2));
+        assertThat(results.get(0).get("source").asText(), is("STATUS"));
+        assertThat(results.get(0).get("passed").asLong(), is(190L));
+        assertThat(results.get(0).get("failed").asLong(), is(0L));
+        assertThat(results.get(1).get("source").asText(), is("BODY_JSONPATH"));
+        assertThat(results.get(1).get("detail").asText(), is("$.status"));
+        assertThat(results.get(1).get("failed").asLong(), is(40L));
+    }
+
+    @Test
+    public void junitFailedCheckProducesFailureTestcase() throws Exception {
+        List<CheckResult> checks = Arrays.asList(
+            new CheckResult("assert", "STATUS", "", "EQUALS", "200", 190L, 0L),
+            new CheckResult("assert", "BODY_JSONPATH", "$.status", "EQUALS", "ok", 150L, 40L)
+        );
+        LoadScenarioStatus status = status("checkout", LoadScenarioState.COMPLETED, "PASS", false, 200, 200, 0,
+            Collections.emptyList(), checks);
+
+        String xml = LoadScenarioReport.toJUnitXml(status);
+
+        assertWellFormed(xml);
+        // 0 thresholds + 2 checks + run-completed = 3 tests; one check with failures = 1 failure.
+        assertThat(xml, containsString("tests=\"3\""));
+        assertThat(xml, containsString("failures=\"1\""));
+        assertThat(xml, containsString("check: step assert BODY_JSONPATH $.status EQUALS ok"));
+        assertThat(xml, containsString("40 of 190 evaluations failed"));
     }
 
     @Test

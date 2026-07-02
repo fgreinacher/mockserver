@@ -133,6 +133,7 @@ public class Metrics {
     private static volatile Counter loadIterationsTotal;     // labels: scenario, run_id
     private static volatile Counter loadThrottledTotal;      // labels: scenario, run_id, reason
     private static volatile Counter loadErrorsTotal;         // labels: scenario, run_id, kind
+    private static volatile Counter loadChecksTotal;         // labels: scenario, run_id, step, outcome
     // GaugeWithCallback live readers, installed by the orchestrator while a run is active.
     private static final AtomicReference<Supplier<Map<LoadGaugeKey, Integer>>> loadActiveVusReader = new AtomicReference<>();
     private static final AtomicReference<Supplier<Map<LoadGaugeKey, Integer>>> loadInflightReader = new AtomicReference<>();
@@ -144,6 +145,7 @@ public class Metrics {
     private static volatile io.opentelemetry.api.metrics.LongCounter otelLoadIterations;
     private static volatile io.opentelemetry.api.metrics.LongCounter otelLoadThrottled;
     private static volatile io.opentelemetry.api.metrics.LongCounter otelLoadErrors;
+    private static volatile io.opentelemetry.api.metrics.LongCounter otelLoadChecks;
 
     private final Boolean metricsEnabled;
 
@@ -364,6 +366,11 @@ public class Metrics {
             .help("Total load-scenario request errors by kind (timeout, connection, render, http_5xx, null_response)")
             .labelNames("scenario", "run_id", "kind")
             .register();
+        loadChecksTotal = Counter.builder()
+            .name("mock_server_load_checks")
+            .help("Total per-step load-scenario response checks by scenario/run/step and outcome (pass, fail)")
+            .labelNames("scenario", "run_id", "step", "outcome")
+            .register();
         GaugeWithCallback.builder()
             .name("mock_server_load_active_vus")
             .help("Number of active virtual users in the running load scenario, by scenario and run")
@@ -455,6 +462,7 @@ public class Metrics {
             loadIterationsTotal = null;
             loadThrottledTotal = null;
             loadErrorsTotal = null;
+            loadChecksTotal = null;
             loadCustomLabelNames = new String[0];
             otelLoadRequestDuration = null;
             otelLoadRequests = null;
@@ -463,6 +471,7 @@ public class Metrics {
             otelLoadIterations = null;
             otelLoadThrottled = null;
             otelLoadErrors = null;
+            otelLoadChecks = null;
             loadActiveVusReader.set(null);
             loadInflightReader.set(null);
             activeExpectationsSupplier.set(null);
@@ -1179,6 +1188,7 @@ public class Metrics {
         evictLoadSeries(loadIterationsTotal, matchesRun);
         evictLoadSeries(loadThrottledTotal, matchesRun);
         evictLoadSeries(loadErrorsTotal, matchesRun);
+        evictLoadSeries(loadChecksTotal, matchesRun);
     }
 
     private static void evictLoadSeries(Histogram metric, java.util.function.Function<java.util.List<String>, Boolean> matches) {
@@ -1384,6 +1394,28 @@ public class Metrics {
     }
 
     /**
+     * Increment the per-step response-check counter for the given outcome.
+     *
+     * @param step    the step label (step name or index)
+     * @param outcome one of "pass" or "fail"
+     */
+    public static void incrementLoadCheck(String scenario, String runId, String step, String outcome) {
+        Counter counter = loadChecksTotal;
+        if (counter != null) {
+            counter.labelValues(nonNull(scenario, "unknown"), nonNull(runId, "unknown"),
+                nonNull(step, "unknown"), nonNull(outcome, "unknown")).inc();
+        }
+        io.opentelemetry.api.metrics.LongCounter otel = otelLoadChecks;
+        if (otel != null) {
+            otel.add(1, io.opentelemetry.api.common.Attributes.of(
+                io.opentelemetry.api.common.AttributeKey.stringKey("scenario"), nonNull(scenario, "unknown"),
+                io.opentelemetry.api.common.AttributeKey.stringKey("run_id"), nonNull(runId, "unknown"),
+                io.opentelemetry.api.common.AttributeKey.stringKey("step"), nonNull(step, "unknown"),
+                io.opentelemetry.api.common.AttributeKey.stringKey("outcome"), nonNull(outcome, "unknown")));
+        }
+    }
+
+    /**
      * Register the live readers for the active-VU and in-flight load gauges. Called by the
      * orchestrator on start (and cleared with null on stop), so the gauges read the running scenario
      * at scrape time. Mirrors the chaos GaugeWithCallback pattern.
@@ -1404,7 +1436,8 @@ public class Metrics {
                                                    io.opentelemetry.api.metrics.LongCounter responseBytes,
                                                    io.opentelemetry.api.metrics.LongCounter iterations,
                                                    io.opentelemetry.api.metrics.LongCounter throttled,
-                                                   io.opentelemetry.api.metrics.LongCounter errors) {
+                                                   io.opentelemetry.api.metrics.LongCounter errors,
+                                                   io.opentelemetry.api.metrics.LongCounter checks) {
         otelLoadRequestDuration = duration;
         otelLoadRequests = requests;
         otelLoadRequestBytes = requestBytes;
@@ -1412,6 +1445,7 @@ public class Metrics {
         otelLoadIterations = iterations;
         otelLoadThrottled = throttled;
         otelLoadErrors = errors;
+        otelLoadChecks = checks;
     }
 
     /** Live readers for the OTEL load observable gauges (active VUs / in-flight). */
@@ -1457,6 +1491,19 @@ public class Metrics {
         }
         try {
             return (long) counter.labelValues(nonNull(scenario, "unknown"), nonNull(runId, "unknown"), nonNull(kind, "unknown")).get();
+        } catch (Exception e) {
+            return 0L;
+        }
+    }
+
+    public static long getLoadCheckCount(String scenario, String runId, String step, String outcome) {
+        Counter counter = loadChecksTotal;
+        if (counter == null) {
+            return 0L;
+        }
+        try {
+            return (long) counter.labelValues(nonNull(scenario, "unknown"), nonNull(runId, "unknown"),
+                nonNull(step, "unknown"), nonNull(outcome, "unknown")).get();
         } catch (Exception e) {
             return 0L;
         }

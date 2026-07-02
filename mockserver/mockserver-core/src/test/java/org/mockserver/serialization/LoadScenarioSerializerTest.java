@@ -239,6 +239,42 @@ public class LoadScenarioSerializerTest {
     }
 
     @Test
+    public void roundTripsStepChecks() {
+        LoadScenario scenario = new LoadScenario()
+            .withName("checked-flow")
+            .withProfile(LoadProfile.constant(5, 30_000L))
+            .withSteps(
+                new LoadStep()
+                    .withRequest(request().withMethod("GET").withPath("/api"))
+                    .withCheck(new org.mockserver.load.LoadCheck()
+                        .withSource(org.mockserver.load.LoadCheck.Source.STATUS)
+                        .withComparator(org.mockserver.load.LoadCheck.Comparator.EQUALS)
+                        .withValue("200"))
+                    .withCheck(new org.mockserver.load.LoadCheck()
+                        .withSource(org.mockserver.load.LoadCheck.Source.BODY_JSONPATH)
+                        .withJsonPath("$.status")
+                        .withComparator(org.mockserver.load.LoadCheck.Comparator.EQUALS)
+                        .withValue("ok")),
+                new LoadStep().withRequest(request().withMethod("GET").withPath("/other")));
+
+        String json = serializer.serialize(scenario);
+        LoadScenario parsed = serializer.deserialize(json);
+
+        LoadStep first = parsed.getSteps().get(0);
+        assertThat(first.getChecks(), hasSize(2));
+        org.mockserver.load.LoadCheck statusCheck = first.getChecks().get(0);
+        assertThat(statusCheck.getSource(), is(org.mockserver.load.LoadCheck.Source.STATUS));
+        assertThat(statusCheck.getComparator(), is(org.mockserver.load.LoadCheck.Comparator.EQUALS));
+        assertThat(statusCheck.getValue(), is("200"));
+        org.mockserver.load.LoadCheck jsonCheck = first.getChecks().get(1);
+        assertThat(jsonCheck.getSource(), is(org.mockserver.load.LoadCheck.Source.BODY_JSONPATH));
+        assertThat(jsonCheck.getJsonPath(), is("$.status"));
+        assertThat(jsonCheck.getValue(), is("ok"));
+        // The second step declares no checks.
+        assertThat(parsed.getSteps().get(1).getChecks(), is(nullValue()));
+    }
+
+    @Test
     public void roundTripsShapeWithoutEmittingExpandedStages() {
         LoadScenario scenario = new LoadScenario()
             .withName("spike-shape")

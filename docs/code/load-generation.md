@@ -87,7 +87,8 @@ triggered by name. Preloading is fail-soft: an invalid definition logs a WARN an
 | `LoadScenario` | `name`, ordered `steps`, `profile`, `templateType` (default `VELOCITY`), optional `maxRequests`, optional `labels` (`Map<String,String>` — scenario-level custom metric labels), optional `pacing` (`LoadPacing` — adaptive iteration pacing; see [Adaptive pacing (think-time)](#adaptive-pacing-think-time)), optional `feeder` (`LoadFeeder` — parameterized test data; see [Data feeders](#data-feeders)). |
 | `LoadPacing` | a `mode` ∈ `{NONE, CONSTANT_PACING, CONSTANT_THROUGHPUT}` (default `NONE`) and a `value` — the target per-VU iteration **cycle** (closed model only). |
 | `LoadFeeder` | an inline dataset (`rows`, or raw `data` + `format`) and a selection `strategy` ∈ `{CIRCULAR, RANDOM, SEQUENTIAL}` (default `CIRCULAR`); one row per iteration is exposed as `iteration.data`. |
-| `LoadStep` | a `request` (reuses `HttpRequest`; template strings live in its fields), an optional `thinkTime` (`Delay`) — inter-step pacing only, an optional `name` (used as the `route` metric label when set; otherwise the path is auto-templatized), and optional `labels` (`Map<String,String>` — step-level custom metric labels that override scenario labels for this step). |
+| `LoadStep` | a `request` (reuses `HttpRequest`; template strings live in its fields), an optional `thinkTime` (`Delay`) — inter-step pacing only, an optional `name` (used as the `route` metric label when set; otherwise the path is auto-templatized), optional `labels` (`Map<String,String>` — step-level custom metric labels that override scenario labels for this step), optional `captures` (`List<LoadCapture>` — cross-step correlation; see [Cross-step capture / correlation](#cross-step-capture--correlation)), and optional `checks` (`List<LoadCheck>` — per-step response assertions; see [Per-step response checks](#per-step-response-checks)). |
+| `LoadCheck` | a per-step response assertion: a `source` ∈ `{STATUS, HEADER, BODY_JSONPATH}` (with `headerName`/`jsonPath` as needed), a `comparator` ∈ `{EQUALS, NOT_EQUALS, CONTAINS, MATCHES, GT, LT, GTE, LTE}`, and an expected `value`. |
 | `LoadProfile` | a `List<LoadStage> stages` run in sequence. |
 | `LoadStage` | one slice of the run: a `type` ∈ `{VU, RATE, PAUSE}`, a required `durationMillis` (> 0), an optional `curve` ∈ `{LINEAR, EXPONENTIAL, QUADRATIC}` (ramps only; default `LINEAR`), and the setpoint fields for its type (see below). |
 | `RampCurve` | the interpolation helper. `valueAt(start, end, p)` is the single tested place the curve math lives, for both the VU driver and the rate scheduler. |
@@ -188,6 +189,40 @@ by key, so the syntax is uniform across them.
 Step 1 logs in and captures the response body's `$.token` into `token`; step 2 — same iteration — sends
 it as `Authorization: Bearer <token>`. With 5 VUs, each VU's iterations each capture and replay their own
 token independently.
+
+## Per-step response checks
+
+Load metrics alone only surface **transport-level** failures — a 5xx or a connection error. A `200` that
+carries the *wrong body* passes silently. Per-step **checks** (the load equivalent of a k6 `check`) close
+that gap: each `LoadStep` can declare `checks`, response assertions evaluated against **that step's
+response** after it returns.
+
+- **Model** — a `LoadCheck` has a `source` ∈ `{STATUS, HEADER (+ headerName), BODY_JSONPATH (+ jsonPath)}`,
+  a `comparator` ∈ `{EQUALS, NOT_EQUALS, CONTAINS, MATCHES, GT, LT, GTE, LTE}`, and an expected `value`.
+  String comparators operate on the raw extracted string (`MATCHES` is a full-match regex); numeric
+  comparators (`GT`/`LT`/`GTE`/`LTE`) parse both sides as numbers and **fail** the check when either side
+  is not a number.
+- **Extraction is shared** — checks reuse the same `LoadResponseExtractor` primitives (JSONPath / header /
+  status) that `LoadCapture` correlation uses, so there is one extraction implementation.
+- **Observational, never fatal** — a failing check never fails an individual request or stops dispatch. It
+  is *counted*: each evaluated check increments `mock_server_load_checks{outcome="pass"|"fail"}` (guarded to
+  the current run, like the rest of the family) and the per-run per-check aggregate surfaced in the
+  [summary report](#summary-report) (`checkResults`) and the live status.
+- **Best-effort** — a malformed JSONPath/regex is logged at debug and **counts as a fail** (a check that
+  cannot be evaluated has not been satisfied), never throwing out of the dispatch path. Checks are skipped
+  entirely when there is no response (a connection error, already surfaced by the error metrics), so they
+  only ever assert against a real response.
+- **CI gating** — the [`CHECK_FAILURE_RATE` threshold](#in-run-thresholds-passfail-verdicts) turns the
+  aggregate failed-check fraction into a PASS/FAIL verdict (and, with `abortOnFail`, an early abort).
+- **Default** — no `checks` means no evaluation and no `checkResults`; behaviour is unchanged.
+
+```json
+"checks": [
+  { "source": "STATUS", "comparator": "EQUALS", "value": "200" },
+  { "source": "HEADER", "headerName": "Content-Type", "comparator": "CONTAINS", "value": "application/json" },
+  { "source": "BODY_JSONPATH", "jsonPath": "$.status", "comparator": "EQUALS", "value": "ok" }
+]
+```
 
 ## Data feeders
 
@@ -707,15 +742,17 @@ load test the moment a metric breaches its budget.
 
 - **Model** — `LoadScenario.thresholds` is a list of `LoadThreshold`, each a `{metric, comparator,
   threshold}` triple. `metric` is one of `LATENCY_P50/P95/P99/P999` (milliseconds), `ERROR_RATE` (a
-  0–1 fraction) or `THROUGHPUT_RPS` (requests/second). `comparator` reuses the SLO feature's
+  0–1 fraction), `THROUGHPUT_RPS` (requests/second), or `CHECK_FAILURE_RATE` (a 0–1 fraction of failed
+  per-step [checks](#per-step-response-checks)). `comparator` reuses the SLO feature's
   `SloObjective.Comparator` (`LESS_THAN`, `LESS_THAN_OR_EQUAL`, `GREATER_THAN`,
   `GREATER_THAN_OR_EQUAL`). The verdict is **PASS iff every threshold holds, FAIL if any breaches**.
 - **Per-run evaluation, not the global SLO store** — thresholds are computed on each control tick from
   *this run's own* data: latency percentiles from a `copy()` of the run's HDR `latencyHistogram`,
   `ERROR_RATE = failed / max(1, succeeded + failed)` (a fraction of *completed* requests — in-flight
   dispatched-but-not-yet-completed requests are excluded so the rate is never diluted by requests whose
-  outcome is not yet known), and `THROUGHPUT_RPS = requestsSent /
-  max(0.001s, elapsed/1000)`. This deliberately does **not** read `SloSampleStore`, which aggregates
+  outcome is not yet known), `THROUGHPUT_RPS = requestsSent /
+  max(0.001s, elapsed/1000)`, and `CHECK_FAILURE_RATE = failedChecks / max(1, passedChecks +
+  failedChecks)` (0 when no checks ran). This deliberately does **not** read `SloSampleStore`, which aggregates
   *all* forward traffic rather than this one run. The verdict stays `null` until at least one request
   has completed (a run is never failed on zero samples), and is always `null` for a scenario with no
   thresholds (unchanged behaviour).
@@ -727,8 +764,9 @@ load test the moment a metric breaches its budget.
   window. `abortOnFail` defaults to false (the run always finishes its stages); a normally-completed
   run does a final evaluation so it carries PASS/FAIL.
 - **Status DTO** — `LoadScenarioStatus` (the `GET /mockserver/loadScenario` list entry) exposes
-  `verdict` (`"PASS"`/`"FAIL"`/absent), `abortedByThreshold`, and `thresholdResults` (each `{metric,
-  comparator, threshold, observed, satisfied}`).
+  `verdict` (`"PASS"`/`"FAIL"`/absent), `abortedByThreshold`, `thresholdResults` (each `{metric,
+  comparator, threshold, observed, satisfied}`), and `checkResults` (per-distinct-check `{step, source,
+  detail, comparator, value, passed, failed}` aggregates).
 - **CI mapping** — clients should map a terminal `verdict == FAIL` to a non-zero process exit code so a
   breached load test fails the pipeline. (The client convenience methods that do this are a later wave;
   for now poll the status and inspect `verdict` directly.)
@@ -746,11 +784,14 @@ Two renderings of the same data:
 - **JSON** (default) — `{ scenario, runId, state, verdict, abortedByThreshold, timing:{
   startedAtEpochMillis, endedAtEpochMillis, durationMillis }, counts:{ requestsSent, succeeded, failed,
   droppedIterations, errorRate }, latencyMillis:{ p50, p95, p99, p999 }, thresholdResults:[ { metric,
-  comparator, threshold, observed, satisfied } ] }`. `errorRate = failed / max(1, succeeded + failed)`
+  comparator, threshold, observed, satisfied } ], checkResults:[ { step, source, detail, comparator,
+  value, passed, failed } ] }`. `errorRate = failed / max(1, succeeded + failed)`
   (failures as a fraction of *completed* requests; in-flight requests are excluded).
 - **JUnit XML** (`?format=junit`, `application/xml`) — a `<testsuite name="load:{scenario}" tests=…
   failures=… time={durationSeconds}>` with one `<testcase name="threshold: {metric} {comparator}
-  {threshold}">` per threshold (a breach adds a `<failure>`), plus a `<testcase name="run completed">`
+  {threshold}">` per threshold (a breach adds a `<failure>`), one `<testcase name="check: step …">` per
+  distinct per-step check (a check with any failed evaluation adds a `<failure>`), plus a
+  `<testcase name="run completed">`
   that fails when the run was `abortedByThreshold`, carries a `FAIL` verdict, or stopped with request
   failures. p95/p99/error-rate (and the other counts/percentiles) are emitted as `<properties>` and a
   `<system-out>` line so CI consumers (Buildkite, JUnit) render them. The scenario name and all messages
@@ -786,6 +827,7 @@ scenario, run_id, step, route, method, status_class
 | `mock_server_load_iterations` | Counter | LongCounter | `scenario`, `run_id` | Full iteration completions (one per VU loop) |
 | `mock_server_load_throttled` | Counter | LongCounter | `scenario`, `run_id`, `reason` | Dispatches skipped by the self-load guard (`reason` = `inflight_cap` or `rate_limit`) |
 | `mock_server_load_errors` | Counter | LongCounter | `scenario`, `run_id`, `kind` | Failed dispatches (`kind` = `render`, `connection`, `timeout`, `null_response`, `http_5xx`) |
+| `mock_server_load_checks` | Counter | LongCounter | `scenario`, `run_id`, `step`, `outcome` | Per-step [response checks](#per-step-response-checks) evaluated, by `outcome` = `pass` or `fail` |
 | `mock_server_load_active_vus` | GaugeWithCallback | Observable gauge | `scenario`, `run_id` | Virtual users currently running |
 | `mock_server_load_inflight_requests` | GaugeWithCallback | Observable gauge | `scenario`, `run_id` | Dispatches in flight at scrape time |
 

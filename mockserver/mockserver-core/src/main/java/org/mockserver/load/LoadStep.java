@@ -48,6 +48,15 @@ public class LoadStep extends ObjectWithJsonToString {
      */
     private List<LoadCapture> captures;
     /**
+     * Optional per-step response assertions (the load equivalent of k6 {@code check}s). Each check
+     * extracts a value from this step's response and compares it against an expected value; the
+     * pass/fail outcome feeds the {@code mock_server_load_checks} metric, the end-of-run report, and
+     * the {@link LoadThreshold.Metric#CHECK_FAILURE_RATE} threshold. Observational — a failing check
+     * never fails an individual request. Null/empty (the default) leaves behaviour unchanged. See
+     * {@link LoadCheck}.
+     */
+    private List<LoadCheck> checks;
+    /**
      * Relative selection weight, used only when the scenario's
      * {@link LoadScenario#getStepSelection() stepSelection} is
      * {@link LoadScenario.StepSelection#WEIGHTED WEIGHTED}: each iteration runs exactly ONE step chosen
@@ -134,6 +143,26 @@ public class LoadStep extends ObjectWithJsonToString {
             this.captures = new ArrayList<>();
         }
         this.captures.add(capture);
+        return this;
+    }
+
+    /**
+     * Per-step response assertions for this step (may be null/empty). See {@link #checks}.
+     */
+    public List<LoadCheck> getChecks() {
+        return checks;
+    }
+
+    public LoadStep withChecks(List<LoadCheck> checks) {
+        this.checks = checks != null ? new ArrayList<>(checks) : null;
+        return this;
+    }
+
+    public LoadStep withCheck(LoadCheck check) {
+        if (this.checks == null) {
+            this.checks = new ArrayList<>();
+        }
+        this.checks.add(check);
         return this;
     }
 

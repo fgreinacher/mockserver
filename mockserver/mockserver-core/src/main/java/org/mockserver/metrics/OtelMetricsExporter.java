@@ -268,7 +268,10 @@ public class OtelMetricsExporter {
         io.opentelemetry.api.metrics.LongCounter errors = meter.counterBuilder("mock_server_load_errors")
             .setDescription("Total load-scenario request errors by kind")
             .build();
-        Metrics.registerOtelLoadInstruments(duration, requests, requestBytes, responseBytes, iterations, throttled, errors);
+        io.opentelemetry.api.metrics.LongCounter checks = meter.counterBuilder("mock_server_load_checks")
+            .setDescription("Total per-step load-scenario response checks by outcome")
+            .build();
+        Metrics.registerOtelLoadInstruments(duration, requests, requestBytes, responseBytes, iterations, throttled, errors, checks);
 
         meter.gaugeBuilder("mock_server_load_active_vus")
             .setDescription("Number of active virtual users in the running load scenario")
@@ -311,7 +314,7 @@ public class OtelMetricsExporter {
      */
     public void stop() {
         Metrics.registerOtelRequestDurationHistogram(null);
-        Metrics.registerOtelLoadInstruments(null, null, null, null, null, null, null);
+        Metrics.registerOtelLoadInstruments(null, null, null, null, null, null, null, null);
         try {
             meterProvider.shutdown().join(2, java.util.concurrent.TimeUnit.SECONDS);
         } catch (Exception e) {
