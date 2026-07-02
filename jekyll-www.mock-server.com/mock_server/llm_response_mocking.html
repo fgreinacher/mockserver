@@ -528,6 +528,16 @@ curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
     &mdash; ideal for reproducible tests of retrieval / vector-search code.
 </p>
 
+<p>
+    When <span class="inline_code">deterministicFromInput</span> is <span class="inline_code">true</span>, the vector is
+    also <strong>semantically plausible</strong>: it is derived from the words and character n-grams in the input
+    text, so texts that share vocabulary get a <strong>higher cosine similarity</strong> and unrelated texts are
+    near-orthogonal. This means your retrieval / RAG code can rank related documents above unrelated ones
+    offline &mdash; for example <span class="inline_code">"the cat sat on the mat"</span> scores far higher against
+    <span class="inline_code">"a cat sits on a mat"</span> than against <span class="inline_code">"quarterly financial
+    report"</span> &mdash; with no real embedding model and deterministic results for the same input, seed, and dimensions.
+</p>
+
 <pre class="prettyprint lang-json code"><code class="code">{
   "httpRequest": {
     "method": "POST",

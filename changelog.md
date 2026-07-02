@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Deterministic embeddings are now semantically plausible, so offline RAG-retrieval tests can rank.** A mocked
+  embeddings response with `deterministicFromInput: true` previously produced a hash-seeded uniform-random unit
+  vector, so cosine similarity between related texts was meaningless — you could not test vector-search / RAG
+  ranking against a mock. MockServer now builds the deterministic vector by **n-gram feature hashing**: the input
+  is tokenised (Unicode-aware, lowercased) into word unigrams, word bigrams, and character 3-grams; each feature
+  is hashed (seeded FNV-1a) into a bucket with a signed, sublinear-TF-weighted contribution; the result is
+  L2-normalised. Texts that share vocabulary now have a **higher cosine similarity** (paraphrases ~0.3–0.6) while
+  unrelated texts stay **near-orthogonal** (~0.0–0.1) — e.g. `"the cat sat on the mat"` ranks far above
+  `"quarterly financial report"` against `"a cat sits on a mat"` — so retrieval code can rank related documents
+  offline with no real embedding model. The vector stays deterministic for the same input, seed, and
+  dimensions and unit-length (feature-less input falls back to a seeded non-zero vector); the
+  `dimensions`/`seed` parameters, provider JSON envelopes, and the non-deterministic (default) random path are
+  unchanged.
+
 - **Authenticated cross-node cluster verify/retrieve fan-in.** The opt-in cluster fan-in
   (`clusterVerifyFanIn`) now works on a cluster with control-plane authentication enabled. A new
   `clusterFanInPeerAuthToken` property (env `MOCKSERVER_CLUSTER_FAN_IN_PEER_AUTH_TOKEN`, default empty)
