@@ -1,0 +1,189 @@
+---
+title: "MockServer Start-up Time"
+shortTitle: "Start-up Time"
+description: "MockServer starts in under a second by default. The standard image uses a baked-in class-data-sharing archive (~0.57 s ready); the -aot variant uses a JDK 25 Leyden AOT cache (~0.35 s). A built-in warmup step eliminates the first-request cold penalty."
+layout: page
+pageOrder: 4
+section: 'Performance Testing'
+subsection: true
+sitemap:
+  priority: 0.8
+  changefreq: 'monthly'
+  lastmod: 2026-07-02T08:00:00+01:00
+keywords: mockserver startup time, mockserver fast start, mockserver aot, mockserver appcds, mockserver testcontainers startup
+schema_faq:
+  - question: "How fast does MockServer start?"
+    answer: "The standard mockserver/mockserver Docker image reaches ready in roughly 0.57 s (measured on arm64, median of 5 cold starts). The -aot variant, which uses a JDK 25 Leyden AOT cache, reaches ready in roughly 0.35 s. Both figures include container overhead and are machine-relative. A built-in warmup step means the first request after port bind is answered in ~5–10 ms rather than the 200–350 ms a cold JVM would otherwise take."
+  - question: "What is the -aot image and when should I use it?"
+    answer: "The -aot image tags (e.g. mockserver/mockserver:latest-aot) ship a JDK 25 Leyden AOT class-metadata cache baked in at build time, cutting time-to-ready to roughly 0.35 s. They are the best choice when you start many short-lived containers and the ~0.2 s savings per container adds up. The AOT cache is CPU-architecture specific (a separate cache is baked per platform), and this variant uses the JDK TLS provider rather than netty-tcnative. In Testcontainers use MockServerContainer.aotImage() to select the -aot variant automatically."
+  - question: "What is the startupWarmup property?"
+    answer: "startupWarmup (default true) makes MockServer send one PUT /mockserver/status request to itself immediately after the port binds. This drives the full request-handling path through the JVM, loading the class burst that otherwise hits the first real caller. With warmup on, the first request from outside arrives in ~5–10 ms instead of 200–350 ms. Set -Dmockserver.startupWarmup=false or MOCKSERVER_STARTUP_WARMUP=false to disable it — useful if you are benchmarking cold-start behaviour."
+  - question: "Does the AppCDS archive in the standard image affect how MockServer behaves?"
+    answer: "No. Class-data sharing pre-loads class metadata so the JVM spends less time parsing and verifying class files. The runtime behaviour is identical to a standard JVM start. If the archive is ever unusable — for example if the image were rebuilt against a different JDK build — the JVM logs a warning and starts normally. There is no risk of incorrect behaviour from the archive."
+  - question: "Why doesn't MockServer offer a GraalVM native-image distribution?"
+    answer: "MockServer loads user-supplied classes at runtime: class callbacks, expectation initializers, and custom matchers. GraalVM native-image requires a closed world at build time, which is fundamentally incompatible with runtime class loading. In testing, features not explicitly traced during the build-time metadata step failed silently at runtime — HTTPS, templates, and logging each failed without reporting a clear error. The real HotSpot JVM is the only distribution that can provide 100% feature parity."
+---
+
+<p itemprop="headline">The standard <span class="inline_code">mockserver/mockserver</span> image reaches ready in roughly <strong>0.57&nbsp;s</strong> &mdash; about a third faster than MockServer 7.3.0 &mdash; thanks to a class-data-sharing archive baked in at build time. For the lowest possible container start, the <span class="inline_code">-aot</span> image variant uses a JDK&nbsp;25 Leyden AOT cache and reaches ready in roughly <strong>0.35&nbsp;s</strong>. A built-in warmup step means the first real request you send is answered in ~5&ndash;10&nbsp;ms rather than the hundreds of milliseconds a cold JVM would otherwise take. For test suites, the single biggest speed lever remains <a href="/mock_server/mockserver_testcontainers.html#fast-tests">one container per suite with <span class="inline_code">reset()</span> between tests</a> &mdash; that brings per-test cost to milliseconds regardless of image choice.</p>
+
+<table class="table-standard">
+    <thead>
+        <tr>
+            <th>Image</th>
+            <th>Time to ready (typical)</th>
+            <th>Notes</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><span class="inline_code">mockserver/mockserver</span> (standard)</td>
+            <td><strong>~0.57&nbsp;s</strong></td>
+            <td>Default. Class-data-sharing archive baked at build time (JDK&nbsp;17). Identical runtime behaviour to a plain JVM start; archive fallback if unusable.</td>
+        </tr>
+        <tr>
+            <td><span class="inline_code">mockserver/mockserver:&lt;version&gt;-aot</span></td>
+            <td><strong>~0.35&nbsp;s</strong></td>
+            <td>JDK&nbsp;25 Leyden AOT cache. CPU-arch specific. JDK TLS provider (see <a href="#aot_image">below</a>).</td>
+        </tr>
+        <tr>
+            <td>In-process (JVM test, no container)</td>
+            <td><strong>Tens of ms</strong></td>
+            <td>JVM already warm. No Docker overhead. See <a href="/mock_server/mockserver_testcontainers.html#fast-tests">Fast Tests</a>.</td>
+        </tr>
+    </tbody>
+</table>
+
+<p><em>Figures measured on arm64 Mac, medians of 5 cold starts, container-launch to first successful <span class="inline_code">PUT /mockserver/status</span> response. Absolute numbers are machine-relative; they shift on different hardware and JDK builds.</em></p>
+
+<a id="standard_image" class="anchor" href="#standard_image">&nbsp;</a>
+<h2>Standard image — class-data sharing</h2>
+
+<p>The standard <span class="inline_code">mockserver/mockserver</span> image includes a class-data-sharing (CDS) archive produced at image-build time. CDS lets the JVM map pre-parsed class metadata directly from a shared file, skipping the work of reading and verifying every class from the jar on each cold start. The archive was trained against the real MockServer startup path, so the classes that matter most arrive cheapest.</p>
+
+<p>If the archive is ever unusable &mdash; for example because the image was rebuilt against a different JDK patch &mdash; the JVM logs a warning and starts normally. There is no risk of incorrect behaviour from the archive.</p>
+
+<p>The image is built on a jlink-trimmed JDK&nbsp;17 runtime on a distroless base, so the archive size (~33&nbsp;MB) is offset by the smaller runtime: the complete image is 411&nbsp;MB versus 422&nbsp;MB for the pre-archive 7.3.0 image.</p>
+
+<a id="aot_image" class="anchor" href="#aot_image">&nbsp;</a>
+<h2>-aot image — JDK 25 Leyden AOT cache</h2>
+
+<p>The <span class="inline_code">-aot</span> image tags (<span class="inline_code">mockserver/mockserver:latest-aot</span>, <span class="inline_code">mockserver/mockserver:&lt;version&gt;-aot</span>) go further: they bake a Project Leyden AOT class-metadata cache (JEPs 483, 514, 515) into the image. At build time the image starts MockServer as a training run, records which classes were loaded and how they were used, and writes the result into the image. At runtime the JVM reads the cache rather than loading and resolving classes from scratch.</p>
+
+<p>Because it is the real HotSpot JVM, the <span class="inline_code">-aot</span> variant has 100% feature parity with the standard image &mdash; no closed-world limitations, no missing features at runtime. The same expectations, templates, TLS, and class callbacks all work. Unlike a native binary, there is no build-time metadata to maintain.</p>
+
+<p><strong>Caveats to be aware of:</strong></p>
+<ul>
+    <li>The AOT cache is CPU-architecture and JDK-build specific. A multi-arch build bakes a separate cache per platform; the cache for an amd64 image cannot run on arm64 and vice versa.</li>
+    <li>This variant uses the JDK TLS provider rather than netty-tcnative. TLS connections work correctly; TLS handshake throughput under sustained high load may be marginally lower.</li>
+    <li>If the cache is incompatible (wrong architecture or JDK build), the JVM logs a warning and starts normally &mdash; the same graceful fallback as the standard image archive.</li>
+</ul>
+
+<p><strong>Selecting the <span class="inline_code">-aot</span> image in Testcontainers:</strong></p>
+
+<pre class="prettyprint lang-java code"><code class="code">// aotImage() returns the default image with -aot appended to the tag,
+// staying in lockstep with the client library version.
+try (MockServerContainer mockServer = new MockServerContainer(MockServerContainer.aotImage())) {
+    mockServer.start();
+    // use mockServer.getClient() as normal
+}
+
+// Or pin an explicit -aot tag:
+try (MockServerContainer mockServer = new MockServerContainer(
+        DockerImageName.parse("mockserver/mockserver:{{ site.mockserver_version }}-aot"))) {
+    mockServer.start();
+}</code></pre>
+
+<a id="startup_warmup" class="anchor" href="#startup_warmup">&nbsp;</a>
+<h2>First-request warmup</h2>
+
+<p>Even after the port binds and the container reports healthy, a cold JVM takes an extra 200&ndash;350&nbsp;ms to answer the very first request. That penalty comes from a burst of ~217 classes that the JVM loads the first time it runs the full request-handling path &mdash; Netty HTTP encoders, Jackson serializers, response writers. Every subsequent request avoids that cost entirely.</p>
+
+<p>MockServer eliminates this penalty automatically. Immediately after the port binds, a background thread issues one internal <span class="inline_code">PUT /mockserver/status</span> request, which drives the full request-handling path and loads that class burst before any real caller arrives. The result: the first request you send from outside lands in ~5&ndash;10&nbsp;ms instead of 200&ndash;350&nbsp;ms.</p>
+
+<p>The warmup runs as a daemon thread so it never delays JVM shutdown. If it fails for any reason (network not yet available, timeout) it logs the failure at TRACE level and moves on &mdash; the server continues normally. The warmup request goes through the same pre-authentication path as health checks and Kubernetes readiness probes, so it works even when <a href="/mock_server/control_plane_authorisation.html">control-plane authentication</a> is enabled.</p>
+
+<p><strong>Configuration.</strong> The warmup is on by default. To disable it &mdash; for example when benchmarking cold-start behaviour &mdash; set:</p>
+
+<ul>
+    <li>Java system property: <span class="inline_code">-Dmockserver.startupWarmup=false</span></li>
+    <li>Environment variable: <span class="inline_code">MOCKSERVER_STARTUP_WARMUP=false</span></li>
+</ul>
+
+<p>Full property reference: <a href="/mock_server/configuration_properties.html#button_configuration_startup_warmup">Startup Warmup &mdash; Configuration Properties</a>.</p>
+
+<a id="lazy_init" class="anchor" href="#lazy_init">&nbsp;</a>
+<h2>Lazy subsystem initialisation</h2>
+
+<p>Two subsystems that are only needed in some deployments now initialise on demand rather than at startup:</p>
+
+<ul>
+    <li><strong>TLS crypto.</strong> The BouncyCastle security provider (~460 classes) loads only when MockServer first generates or uses a TLS certificate &mdash; typically the first HTTPS connection. A server used purely for HTTP mocking never pays that cost.</li>
+    <li><strong>Proxy event-loop threads.</strong> The event-loop group used for forwarding requests to upstream servers is created only when the first proxied request arrives. A mock-only server never allocates those threads or their associated memory. If you enable <span class="inline_code">proactivelyInitialiseTLS=true</span>, TLS is still set up at startup &mdash; that property is designed for deployments that need TLS ready immediately, and lazy initialisation does not override it.</li>
+</ul>
+
+<a id="fast_test_suites" class="anchor" href="#fast_test_suites">&nbsp;</a>
+<h2>Fast test suites</h2>
+
+<p>The largest speed gain available in a test suite is architectural, not runtime: start <strong>one container for the whole suite</strong> and call <span class="inline_code">client.reset()</span> between tests. <span class="inline_code">reset()</span> clears all expectations and recorded requests in milliseconds, giving the same isolation as a fresh container without paying the startup cost per test. For JVM tests that need no network isolation, running MockServer in-process eliminates container overhead altogether.</p>
+
+<p>See <a href="/mock_server/mockserver_testcontainers.html#fast-tests">Fast Tests: Startup Time, Memory and Reuse</a> for complete examples including suite-scoped containers, <span class="inline_code">withReuse(true)</span> for local development, memory caps, and when to choose in-process versus containerised.</p>
+
+<p><strong>Wait strategy.</strong> The default Testcontainers wait strategy (HTTP GET on <span class="inline_code">/mockserver/status</span>) is fine as-is. Because the built-in warmup runs before the first external request arrives, by the time the wait strategy polling period elapses the server has already warmed itself and the first real request you send will be fast.</p>
+
+<a id="how_measured" class="anchor" href="#how_measured">&nbsp;</a>
+<h2>How these figures are measured</h2>
+
+<p>All numbers on this page come from a measurement harness in <span class="inline_code">scripts/perf/</span>. The methodology:</p>
+
+<ul>
+    <li><strong>Metric:</strong> wall-clock time from <span class="inline_code">docker run</span> (or <span class="inline_code">java -jar</span>) until the first successful response to <span class="inline_code">PUT /mockserver/status</span> &mdash; this is the time a caller or Testcontainers wait strategy would observe.</li>
+    <li><strong>Sample:</strong> medians of 5 independent cold starts. The first run after building an artifact is often slower (OS page cache cold), so runs are discarded if they are clear outliers.</li>
+    <li><strong>Machine-relative:</strong> absolute times depend on the host machine, JDK build, and Docker daemon. Only compare figures produced on the same machine in the same session.</li>
+    <li><strong>Tight poll races warmup:</strong> the harness polls every 2&nbsp;ms, which can finish before the built-in warmup completes. The first-request figures on this page use a 600&nbsp;ms post-bind poll interval, which is closer to a real Testcontainers wait-strategy interval. At that interval, the warmup has already run and the first response is ~5&ndash;10&nbsp;ms.</li>
+</ul>
+
+<a id="ecosystem_outlook" class="anchor" href="#ecosystem_outlook">&nbsp;</a>
+<h2>Where the Java ecosystem is heading</h2>
+
+<p>Several JVM startup technologies are maturing in parallel. The <span class="inline_code">-aot</span> image already uses JDK&nbsp;25 Leyden (JEPs 483, 514, 515). Here is where the broader landscape sits:</p>
+
+<table class="table-standard">
+    <thead>
+        <tr>
+            <th>Technology</th>
+            <th>JDK status</th>
+            <th>What it does</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>Project Leyden &mdash; class-metadata cache (JEPs 483, 514, 515)</td>
+            <td>GA in JDK 24/25</td>
+            <td>Pre-loads class loading, linking, and AOT profiling. The <span class="inline_code">-aot</span> image uses this today.</td>
+        </tr>
+        <tr>
+            <td>Project Leyden &mdash; AOT code compilation (draft JEP 8335368)</td>
+            <td>No release target yet</td>
+            <td>Would pre-compile JIT output into the AOT cache, reducing time-to-peak performance as well as startup time.</td>
+        </tr>
+        <tr>
+            <td>CRaC (Checkpoint/Restore in Userspace)</td>
+            <td>Azul and Liberica JDKs only &mdash; not mainline OpenJDK</td>
+            <td>Snapshots a running JVM and restores from checkpoint in ~50&nbsp;ms. Requires a non-mainline JDK and the checkpoint contains environment state (credentials, CA keys) that must be regenerated on restore.</td>
+        </tr>
+        <tr>
+            <td>GraalVM native-image</td>
+            <td>Community/commercial product, not mainline JDK</td>
+            <td>Compiles to a native binary; no JVM at runtime. MockServer does not offer a native-image distribution because its feature set depends on runtime class loading (class callbacks, expectation initializers, custom matchers) which is incompatible with native-image's closed-world assumption. In evaluation, features not explicitly traced during build-time metadata collection failed silently at runtime without reporting a clear error. The supported lightweight distribution for JVM-less environments is the <a href="/mock_server/running_mock_server.html#running_from_command_line">jlink binary bundle</a>.</td>
+        </tr>
+    </tbody>
+</table>
+
+<h2>See also</h2>
+
+<ul>
+    <li><a href="/mock_server/mockserver_testcontainers.html#fast-tests">Fast Tests: Startup Time, Memory and Reuse</a> &mdash; suite-scoped containers, <span class="inline_code">withReuse(true)</span>, memory caps, and in-process testing</li>
+    <li><a href="/mock_server/performance.html">Scalability &amp; Latency</a> &mdash; throughput and latency benchmarks once MockServer is running</li>
+    <li><a href="/mock_server/configuration_properties.html#button_configuration_startup_warmup">Configuration Properties &mdash; Startup Warmup</a></li>
+    <li><a href="/mock_server/running_mock_server.html">Running MockServer</a> &mdash; all deployment options including Docker, jar, and Testcontainers</li>
+</ul>

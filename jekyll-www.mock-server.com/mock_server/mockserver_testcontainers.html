@@ -480,7 +480,7 @@ func Example() {
 
 <h3>Startup is fast</h3>
 
-<p>The <span class="inline_code">mockserver/mockserver</span> container image starts quickly — it reaches ready in under a second on a typical developer machine (measured ~0.8 s on 7.3.0). If startup appears to take several seconds, check that the image version being pulled matches the client library on the classpath and that the wait strategy in use polls for readiness rather than sleeping for a fixed interval.</p>
+<p>The <span class="inline_code">mockserver/mockserver</span> container image starts quickly &mdash; it reaches ready in roughly <strong>0.57&nbsp;s</strong> on a typical developer machine, thanks to a class-data-sharing archive baked into the image at build time. If startup appears to take several seconds, check that the image version being pulled matches the client library on the classpath and that the wait strategy in use polls for readiness rather than sleeping for a fixed interval. For a full breakdown of startup times and options, see <a href="/mock_server/startup_time.html">Start-up Time</a>.</p>
 
 <h3>One container per suite, reset between tests</h3>
 
@@ -598,15 +598,15 @@ client.stop();</code></pre>
     </thead>
     <tbody>
     <tr><td>No Docker required</td><td>Requires Docker</td></tr>
-    <tr><td>Starts in tens of milliseconds</td><td>~0.8 s cold start (or zero with reuse)</td></tr>
+    <tr><td>Starts in tens of milliseconds</td><td>~0.57 s cold start (or zero with reuse)</td></tr>
     <tr><td>Shares the test JVM classpath — class callbacks and custom matchers work naturally</td><td>Full network isolation — the mock server runs in a separate process</td></tr>
     <tr><td>Best for single-language JVM test suites</td><td>Required for non-JVM languages; preferred for multi-service integration tests where network isolation matters</td></tr>
     </tbody>
 </table>
 
-<h3>Runtime-level startup options we've evaluated</h3>
+<h3>Runtime-level startup options</h3>
 
-<p>The following figures are measured on MockServer 7.3.0 on a typical developer machine (macOS arm64). Results vary by machine and workload; treat these as order-of-magnitude guidance, not guarantees.</p>
+<p>The following figures are measured on a typical developer machine (macOS arm64). Results vary by machine and workload; treat these as order-of-magnitude guidance, not guarantees. For a full breakdown see <a href="/mock_server/startup_time.html">Start-up Time</a>.</p>
 
 <table>
     <thead>
@@ -614,33 +614,28 @@ client.stop();</code></pre>
     </thead>
     <tbody>
     <tr>
-        <td>Standard image (distroless Java 17 + shaded jar)</td>
-        <td>~0.7–0.8 s</td>
-        <td>Default. Close to the practical floor for a JVM container (~0.2–0.3 s of that is container overhead).</td>
-    </tr>
-    <tr>
-        <td>AppCDS (class-data sharing, JDK 13+)</td>
-        <td>~10–25% faster (noisy)</td>
-        <td>Not shipped. Measured improvement was small and variable; superseded by the JDK 25 AOT cache below.</td>
+        <td>Standard image (distroless JDK 17 + class-data sharing archive)</td>
+        <td>~0.57 s</td>
+        <td>Default. Class-data-sharing archive baked in at image build time; identical runtime behaviour to a plain JVM start.</td>
     </tr>
     <tr>
         <td>Project Leyden AOT cache (JDK 25, JEP 483/514)</td>
-        <td>~0.35 s (~2&times; faster)</td>
-        <td>Experimental — available as opt-in <span class="inline_code">-aot</span> image tags; see below.</td>
+        <td>~0.35 s</td>
+        <td>Available as opt-in <span class="inline_code">-aot</span> image tags; see below.</td>
     </tr>
     <tr>
         <td>GraalVM native-image</td>
-        <td>~72 ms (~10&times; faster)</td>
-        <td>Not supported and not planned — see below.</td>
+        <td>~72 ms (~8&times; faster)</td>
+        <td>Not supported &mdash; see below.</td>
     </tr>
     </tbody>
 </table>
 
 <h4>Project Leyden AOT cache (JDK 25, JEP 483/514)</h4>
 
-<p>Measured ~38% faster JVM start on the host and roughly half the container time-to-ready (~0.35 s vs ~0.7–0.8 s) with identical behaviour to the standard image. Because it is the real HotSpot JVM, there is 100% feature parity — no closed-world limitations, no missing features at runtime.</p>
+<p>Measured roughly 40% lower container time-to-ready (~0.35 s vs ~0.57 s for the standard image) with identical behaviour. Because it is the real HotSpot JVM, there is 100% feature parity &mdash; no closed-world limitations, no missing features at runtime.</p>
 
-<p>From the next release the AOT variant is published as <strong>opt-in image tags</strong> (like the GraalJS variant) to Docker Hub and ECR Public — <span class="inline_code">mockserver/mockserver:&lt;version&gt;-aot</span> and <span class="inline_code">mockserver/mockserver:latest-aot</span>. In a JVM test you can select it through the MockServer Testcontainers module:</p>
+<p>The AOT variant is published as <strong>opt-in image tags</strong> to Docker Hub and ECR Public &mdash; <span class="inline_code">mockserver/mockserver:&lt;version&gt;-aot</span> and <span class="inline_code">mockserver/mockserver:latest-aot</span>. In a JVM test you can select it through the MockServer Testcontainers module:</p>
 
 <pre class="prettyprint lang-java code"><code class="code">// aotImage() = the default resolved image with -aot appended to its tag,
 // so it stays in lockstep with the client library version.
