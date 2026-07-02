@@ -1352,7 +1352,7 @@ public class HttpState {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationToJavaSerializer().serialize(requests),
                                     MediaType.create("application", "java").withCharset(UTF_8)
@@ -1365,7 +1365,7 @@ public class HttpState {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationToJavaScriptSerializer().serialize(requests),
                                     MediaType.create("application", "javascript").withCharset(UTF_8)
@@ -1378,7 +1378,7 @@ public class HttpState {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationToPythonSerializer().serialize(requests),
                                     MediaType.create("text", "x-python").withCharset(UTF_8)
@@ -1391,7 +1391,7 @@ public class HttpState {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationToGoSerializer().serialize(requests),
                                     MediaType.create("text", "x-go").withCharset(UTF_8)
@@ -1404,7 +1404,7 @@ public class HttpState {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationToCSharpSerializer().serialize(requests),
                                     MediaType.create("text", "x-csharp").withCharset(UTF_8)
@@ -1417,7 +1417,7 @@ public class HttpState {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationToRubySerializer().serialize(requests),
                                     MediaType.create("text", "x-ruby").withCharset(UTF_8)
@@ -1430,7 +1430,7 @@ public class HttpState {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationToRustSerializer().serialize(requests),
                                     MediaType.create("text", "x-rust").withCharset(UTF_8)
@@ -1443,7 +1443,7 @@ public class HttpState {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationToPhpSerializer().serialize(requests),
                                     MediaType.create("application", "x-httpd-php").withCharset(UTF_8)
@@ -1456,7 +1456,7 @@ public class HttpState {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationSerializerThatSerializesBodyDefault().serialize(requests),
                                     MediaType.JSON_UTF_8
@@ -1482,7 +1482,7 @@ public class HttpState {
                                 List<Expectation> expectations = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationExportSerializer().serializeAsOpenApi(expectations),
                                     MediaType.JSON_UTF_8
@@ -1495,7 +1495,7 @@ public class HttpState {
                                 List<Expectation> expectations = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getExpectationExportSerializer().serializeAsPostmanCollection(expectations),
                                     MediaType.JSON_UTF_8
@@ -1508,7 +1508,7 @@ public class HttpState {
                                 List<Expectation> expectations = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response
                                     .withBody(getExpectationExportSerializer().serializeAsBrunoCollection(expectations))
                                     .withHeader(io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE.toString(), "application/zip")
@@ -1521,7 +1521,7 @@ public class HttpState {
                                 List<Expectation> expectations = postProcessRecordedExpectations(awaitRetrieve(
                                     consumer -> mockServerLog.retrieveRecordedExpectations(requestDefinition, consumer),
                                     logCorrelationId, request
-                                ));
+                                ), request);
                                 response.withBody(
                                     getHarConverter().serialize(expectationsToLogEvents(expectations)),
                                     MediaType.JSON_UTF_8
@@ -2067,6 +2067,16 @@ public class HttpState {
                                 throw new IllegalArgumentException("unable to auto-detect import format — use ?format=har, ?format=postman or ?format=pact query parameter");
                             }
                         }
+                        // Optional consolidation of imported exchanges (e.g. a HAR that
+                        // captured the same endpoint many times) into reusable mocks —
+                        // ?consolidate=true collapses by request shape into unlimited-times
+                        // expectations (sequencing differing responses); ?parameterize=true
+                        // additionally generalises volatile path/query/header/body values.
+                        if ("true".equalsIgnoreCase(request.getFirstQueryStringParameter("consolidate"))
+                            || "true".equalsIgnoreCase(request.getFirstQueryStringParameter("parameterize"))) {
+                            boolean parameterizeImport = "true".equalsIgnoreCase(request.getFirstQueryStringParameter("parameterize"));
+                            importedExpectations = RecordedExpectationPostProcessor.consolidate(importedExpectations, parameterizeImport);
+                        }
                         List<Expectation> upsertedExpectations = add(
                             importedExpectations.toArray(new Expectation[0])
                         );
@@ -2101,6 +2111,83 @@ public class HttpState {
                             e.getMessage(),
                             MediaType.create("text", "plain").toString()
                         );
+                    }
+                }
+                canHandle.complete(true);
+
+            } else if (request.matches("PUT", PATH_PREFIX + "/recordings/promote", "/recordings/promote")) {
+
+                // Server-side "promote recordings to active mocks": the REST equivalent of the
+                // MCP create_expectations_from_recorded_traffic tool. Retrieves recorded
+                // (FORWARDED_REQUEST) exchanges matching an optional request-matcher filter,
+                // consolidates them into reusable mocks (unlimited times, path/value
+                // parameterization, differing responses sequenced), redacts secrets, and
+                // ACTIVATES them (adds to the active expectation set).
+                if (controlPlaneRequestAuthenticated(request, responseWriter)) {
+                    try {
+                        RequestDefinition filter = request();
+                        String requestBody = request.getBodyAsJsonOrXmlString();
+                        if (isNotBlank(requestBody)) {
+                            filter = getRequestDefinitionSerializer().deserialize(requestBody);
+                        }
+                        final RequestDefinition promoteFilter = filter;
+                        final String promoteCorrelationId = UUIDService.getUUID();
+                        List<Expectation> recorded = awaitRetrieve(
+                            (Consumer<Consumer<List<Expectation>>>) consumer -> mockServerLog.retrieveRecordedExpectations(promoteFilter, consumer),
+                            promoteCorrelationId, request
+                        );
+
+                        // Redact BEFORE consolidation (on by default; ?redactSensitiveData=false to
+                        // disable) so promoted mocks never carry captured credentials. Redacting the
+                        // raw single-response recordings first also lets responses that differed only
+                        // in a secret collapse, and avoids the single-response redactor flattening a
+                        // consolidated SEQUENTIAL response list.
+                        org.mockserver.imports.ImportRedaction.Options redactionOptions = buildImportRedactionOptions(request);
+                        recorded = org.mockserver.imports.ImportRedaction.redact(recorded, redactionOptions);
+
+                        // Consolidate by default; ?consolidate=false promotes verbatim (still
+                        // upgraded to unlimited times, mirroring the MCP tool). ?parameterize
+                        // defaults on for promote and generalises volatile path/query/header/body
+                        // values so a single recorded id does not pin the mock.
+                        boolean consolidate = !"false".equalsIgnoreCase(request.getFirstQueryStringParameter("consolidate"));
+                        boolean parameterize = !"false".equalsIgnoreCase(request.getFirstQueryStringParameter("parameterize"));
+                        List<Expectation> produced;
+                        if (consolidate) {
+                            produced = RecordedExpectationPostProcessor.consolidate(recorded, parameterize);
+                        } else {
+                            produced = new ArrayList<>(recorded.size());
+                            for (Expectation recordedExpectation : recorded) {
+                                produced.add(new Expectation(
+                                    recordedExpectation.getHttpRequest(),
+                                    org.mockserver.matchers.Times.unlimited(),
+                                    org.mockserver.matchers.TimeToLive.unlimited(),
+                                    0
+                                ).thenRespond(recordedExpectation.getHttpResponse()));
+                            }
+                        }
+
+                        List<Expectation> activated = add(produced.toArray(new Expectation[0]));
+                        responseWriter.writeResponse(request, response()
+                            .withStatusCode(CREATED.code())
+                            .withBody(getExpectationSerializer().serialize(activated), MediaType.JSON_UTF_8), true);
+                    } catch (IllegalArgumentException iae) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.ERROR)
+                                .setMessageFormat("exception handling request to promote recordings:{}error:{}")
+                                .setArguments(request, iae.getMessage())
+                                .setThrowable(iae)
+                        );
+                        responseWriter.writeResponse(request, BAD_REQUEST, iae.getMessage(), MediaType.create("text", "plain").toString());
+                    } catch (Exception e) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.ERROR)
+                                .setMessageFormat("exception handling request to promote recordings:{}error:{}")
+                                .setArguments(request, e.getMessage())
+                                .setThrowable(e)
+                        );
+                        responseWriter.writeResponse(request, BAD_REQUEST, e.getMessage(), MediaType.create("text", "plain").toString());
                     }
                 }
                 canHandle.complete(true);
@@ -6788,9 +6875,25 @@ public class HttpState {
      * @param expectations the recorded expectations as retrieved from the event log
      * @return the post-processed list when the flag is on, otherwise the input list
      */
-    private List<Expectation> postProcessRecordedExpectations(List<Expectation> expectations) {
+    private List<Expectation> postProcessRecordedExpectations(List<Expectation> expectations, HttpRequest request) {
         List<Expectation> processed = expectations;
-        if (Boolean.TRUE.equals(configuration.deduplicateRecordedExpectations())) {
+        // Per-request opt-in overrides via query parameters take precedence over the
+        // config-flag path: ?consolidate=true collapses recorded exchanges by request
+        // shape into unlimited-times mocks (sequencing differing responses), and
+        // ?parameterize=true additionally generalises volatile path/query/header/body
+        // values. Default (neither param, flag off) keeps the historical verbatim output.
+        boolean consolidateParam = "true".equalsIgnoreCase(request.getFirstQueryStringParameter("consolidate"));
+        boolean parameterizeParam = "true".equalsIgnoreCase(request.getFirstQueryStringParameter("parameterize"));
+        if (consolidateParam || parameterizeParam) {
+            int inputCount = processed == null ? 0 : processed.size();
+            processed = RecordedExpectationPostProcessor.consolidate(processed, parameterizeParam);
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setType(LogEntry.LogMessageType.INFO)
+                    .setLogLevel(Level.INFO)
+                    .setMessageFormat("consolidated recorded expectations from " + inputCount + " to " + processed.size())
+            );
+        } else if (Boolean.TRUE.equals(configuration.deduplicateRecordedExpectations())) {
             int inputCount = processed == null ? 0 : processed.size();
             boolean templatizeValues = Boolean.TRUE.equals(configuration.templatizeRecordedValues());
             processed = RecordedExpectationPostProcessor.deduplicateAndTemplatize(processed, templatizeValues);

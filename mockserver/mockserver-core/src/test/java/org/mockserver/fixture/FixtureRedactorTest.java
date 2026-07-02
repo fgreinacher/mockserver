@@ -485,4 +485,25 @@ public class FixtureRedactorTest {
         assertThat(req.getFirstQueryStringParameter("X-Amz-Security-Token"), is(REDACTED_PLACEHOLDER));
         assertThat(req.getFirstQueryStringParameter("X-Amz-Date"), is("20260629T000000Z"));
     }
+
+    @Test
+    public void shouldRedactAndPreserveMultiResponseSequentialList() {
+        // given - a consolidated expectation with a SEQUENTIAL two-response list, each
+        // carrying a secret header (the single-response redactor would have dropped the list)
+        Expectation expectation = new Expectation(request().withMethod("GET").withPath("/token"))
+            .withResponseMode(org.mockserver.mock.ResponseMode.SEQUENTIAL)
+            .thenRespond(Arrays.asList(
+                response().withStatusCode(200).withHeader("Set-Cookie", "session=first-secret"),
+                response().withStatusCode(200).withHeader("Set-Cookie", "session=second-secret")
+            ));
+
+        // when
+        Expectation[] redacted = redactor.redact(new Expectation[]{expectation});
+
+        // then - the list is preserved (both responses), SEQUENTIAL mode kept, secrets masked
+        assertThat(redacted[0].getHttpResponses().size(), is(2));
+        assertThat(redacted[0].getResponseMode(), is(org.mockserver.mock.ResponseMode.SEQUENTIAL));
+        assertThat(redacted[0].getHttpResponses().get(0).getFirstHeader("Set-Cookie"), is(REDACTED_PLACEHOLDER));
+        assertThat(redacted[0].getHttpResponses().get(1).getFirstHeader("Set-Cookie"), is(REDACTED_PLACEHOLDER));
+    }
 }

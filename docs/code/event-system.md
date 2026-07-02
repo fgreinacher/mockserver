@@ -519,6 +519,63 @@ Library → Export (format dropdown + "Copy as code" button). The same Export ta
 Rust — that code is generated client-side in the dashboard (by `verificationCodegen.ts`) from the
 retrieved request JSON, one `verify(...)` per request, rather than by a server-side serializer.
 
+## Record &rarr; Mock (Consolidation, Promotion, HAR Import)
+
+Raw recorded expectations are a verbatim 1:1 dump: `MockServerEventLog.retrieveRecordedExpectations()`
+maps every `FORWARDED_REQUEST` log entry (via `LogEntry::getExpectation`) to an exact-match
+`Times.once()` expectation. Recording 50 hits to `GET /users/123` therefore yields 50 identical,
+brittle expectations. `RecordedExpectationPostProcessor` turns that dump into reusable mocks.
+
+```mermaid
+flowchart LR
+    LOG["FORWARDED_REQUEST\nlog entries"] --> RET["retrieveRecordedExpectations()\n(verbatim, Times.once())"]
+    RET -->|"?consolidate=true"| CONS["RecordedExpectationPostProcessor.consolidate()"]
+    CONS --> OUT["reusable mocks:\nTimes.unlimited(),\n{id} path params,\nSEQUENTIAL responses,\nvolatile headers stripped"]
+    RET -->|"default (no option)"| VERBATIM["unchanged output"]
+```
+
+Two engines live in `RecordedExpectationPostProcessor` (both pure functions):
+
+| Method | Behaviour | Trigger |
+|--------|-----------|---------|
+| `deduplicateAndTemplatize(list, templatizeValues)` | Conservative dedup: preserves recorded `Times`, emits **one expectation per distinct response** (differing responses are *not* merged). | config flags `deduplicateRecordedExpectations` / `templatizeRecordedValues` |
+| `consolidate(list, parameterizeValues)` | Record&rarr;mock: **one expectation per request shape**, `Times.unlimited()`, differing responses **sequenced** into a `SEQUENTIAL` list, volatile request headers stripped (reusing `HarImporter.volatileRequestHeaders()`). | `?consolidate=true` retrieve/import query param, or the promote endpoint |
+
+`consolidate` groups eligible exchanges (concrete `HttpResponse` only) by structural signature
+(method + templatized path shape + body shape). Where a group spans several concrete ids the varying
+`/users/{id}` segments become declared path parameters; a single id keeps its concrete path. Distinct
+responses are collected in first-seen order and de-duplicated — identical hits collapse to one
+response, differing responses become a `ResponseMode.SEQUENTIAL` multi-response list on a single
+expectation. With `parameterizeValues` (`?parameterize=true`) volatile query-parameter, header and
+JSON-body leaf values are additionally generalised to regex matchers (same heuristics as
+`deduplicateAndTemplatize`).
+
+`HttpState.postProcessRecordedExpectations(list, request)` wires the query parameters into every
+`RECORDED_EXPECTATIONS` retrieve format: `?consolidate=true` (and/or `?parameterize=true`) takes
+precedence over the config-flag path; with neither present and the flag off, output is byte-for-byte
+identical to historical behaviour (non-breaking).
+
+**Promotion (`PUT /mockserver/recordings/promote`).** The server-side equivalent of the MCP
+`create_expectations_from_recorded_traffic` tool. It retrieves recorded expectations matching an
+optional request-matcher filter (JSON body; empty body = all), **redacts secrets first** (via
+`ImportRedaction`, on by default — redacting the raw single-response recordings before consolidation
+so responses differing only in a secret collapse and the single-response redactor never flattens a
+sequenced list), consolidates/parameterizes them (`?consolidate` / `?parameterize`, both on by
+default; `?consolidate=false` promotes verbatim but still upgraded to `Times.unlimited()`), then
+**activates** the result via `HttpState.add(...)` and returns it as `201 Created`.
+
+**HAR import.** `PUT /mockserver/import?format=har` already turns a HAR capture into expectations via
+`HarImporter` (HAR was previously export-only for the recorded-request path; import has since been
+added for HAR/Postman/Pact). `?consolidate=true` / `?parameterize=true` now run the same consolidation
+engine over the imported expectations before they are upserted, so a HAR that captured one endpoint
+many times collapses into a compact reusable mock set.
+
+**Redaction preserves multi-response lists.** `FixtureRedactor.redactExpectation` now redacts and
+preserves a `SEQUENTIAL`/`WEIGHTED`/`SWITCH` `httpResponses` list (with its `responseMode`,
+`responseWeights` and `switchAfter`) instead of silently dropping all but the single
+`getHttpResponse()` — required because consolidation can emit sequenced responses that later pass
+through the config-driven `redactSecretsInRecordedExpectations` step on the retrieve path.
+
 ## Persistence System
 
 ### Disk Capture for Recorded Requests (NDJSON)

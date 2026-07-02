@@ -130,6 +130,10 @@ sitemap:
 
 <p>When a HAR entry has <span class="inline_code">postData.text</span>, it is included in the request matcher if the body is reasonably sized (under 4 KB). Larger request bodies are omitted from matching to keep expectations permissive.</p>
 
+<h3>Consolidating a HAR into reusable mocks</h3>
+
+<p>A HAR captured from a browser or staging traffic often hits the same endpoint many times. By default MockServer creates one expectation per entry. Add <span class="inline_code">consolidate=true</span> (and optionally <span class="inline_code">parameterize=true</span>) to <span class="inline_code">PUT /mockserver/import?format=har&consolidate=true</span> to collapse those into a compact set of unlimited-use mocks &mdash; grouping by request shape, inferring <span class="inline_code">/users/{id}</span> path parameters from varying id segments, stripping volatile request headers, and sequencing differing responses for the same request. This is the same consolidation used by the proxy <a href="/proxy/record_and_replay.html#consolidate_on_retrieve">record &amp; replay</a> flow.</p>
+
 <h3>Base64 response bodies</h3>
 
 <p>HAR files sometimes encode response bodies as Base64 (indicated by <span class="inline_code">content.encoding: "base64"</span>). MockServer automatically decodes these back to plain text for the generated response body.</p>

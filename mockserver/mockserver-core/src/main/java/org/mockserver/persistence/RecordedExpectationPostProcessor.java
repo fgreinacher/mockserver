@@ -2,7 +2,11 @@ package org.mockserver.persistence;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.mockserver.imports.HarImporter;
+import org.mockserver.matchers.TimeToLive;
+import org.mockserver.matchers.Times;
 import org.mockserver.mock.Expectation;
+import org.mockserver.mock.ResponseMode;
 import org.mockserver.model.Body;
 import org.mockserver.model.Header;
 import org.mockserver.model.Headers;
@@ -20,7 +24,9 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -225,6 +231,146 @@ public class RecordedExpectationPostProcessor {
         return result;
     }
 
+    /**
+     * Consolidate a list of recorded expectations into a compact set of reusable
+     * <b>active mocks</b> — the "record&rarr;mock" engine. This differs from
+     * {@link #deduplicateAndTemplatize(List, boolean)} (which preserves the
+     * recorded {@link Times}/{@link org.mockserver.matchers.TimeToLive} and emits
+     * one expectation per distinct response) in three deliberate ways, so the
+     * output is directly usable as long-lived mocks rather than a faithful replay
+     * of what was recorded:
+     * <ol>
+     *   <li><b>One expectation per request shape.</b> All exchanges sharing a
+     *       structural signature (method + templatized path shape + body shape)
+     *       collapse into a single expectation. Where the group spans several
+     *       concrete ids the varying id path segments become {@code {id}} path
+     *       parameters (path inference); otherwise the concrete path is kept.</li>
+     *   <li><b>Unlimited times/TTL.</b> Every consolidated expectation is emitted
+     *       with {@link Times#unlimited()} and
+     *       {@link org.mockserver.matchers.TimeToLive#unlimited()} so it keeps
+     *       matching, replacing the recorded {@code Times.once()} that makes raw
+     *       recordings brittle.</li>
+     *   <li><b>Differing responses are sequenced.</b> When the same request shape
+     *       produced several <i>distinct</i> responses they are attached as a
+     *       {@link ResponseMode#SEQUENTIAL} response list (first-seen order,
+     *       de-duplicated) rather than fanned out into multiple competing
+     *       expectations.</li>
+     * </ol>
+     * Volatile request headers (reusing {@link HarImporter#volatileRequestHeaders()})
+     * are always stripped from the generated matcher. When
+     * {@code parameterizeValues} is set, volatile-looking query parameter, header
+     * and JSON body leaf values are additionally generalised to regex matchers
+     * (the same heuristics used by {@link #deduplicateAndTemplatize(List, boolean)}).
+     *
+     * <p>Ineligible expectations (no concrete {@link HttpResponse} — callbacks,
+     * forwards, errors, OpenAPI matchers, etc.) are passed through unchanged in
+     * their original position. Pure function: the input and its elements are not
+     * mutated.
+     *
+     * @param expectations       recorded expectations (may be {@code null}/empty)
+     * @param parameterizeValues when {@code true}, also generalise volatile query
+     *                           parameter, header and JSON body leaf values
+     * @return the consolidated expectations
+     */
+    public static List<Expectation> consolidate(List<Expectation> expectations, boolean parameterizeValues) {
+        List<Expectation> result = new ArrayList<>();
+        if (expectations == null || expectations.isEmpty()) {
+            return result;
+        }
+
+        // Bucket eligible expectations by structural signature, preserving order.
+        Map<String, List<Expectation>> groups = new LinkedHashMap<>();
+        for (Expectation expectation : expectations) {
+            if (!isEligible(expectation)) {
+                continue;
+            }
+            String signature = structuralSignature((HttpRequest) expectation.getHttpRequest());
+            groups.computeIfAbsent(signature, k -> new ArrayList<>()).add(expectation);
+        }
+
+        // Emit in original first-seen order: ineligible items stay in place, each
+        // group is emitted once (as a single consolidated expectation) at the
+        // position of its first member.
+        Set<String> emitted = new HashSet<>();
+        for (Expectation expectation : expectations) {
+            if (!isEligible(expectation)) {
+                result.add(expectation);
+                continue;
+            }
+            String signature = structuralSignature((HttpRequest) expectation.getHttpRequest());
+            if (emitted.add(signature)) {
+                result.add(consolidateGroup(groups.get(signature), parameterizeValues));
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Collapse a structural-signature group into a single unlimited-times mock.
+     * Distinct responses are sequenced (SEQUENTIAL) when there is more than one.
+     */
+    private static Expectation consolidateGroup(List<Expectation> group, boolean parameterizeValues) {
+        HttpRequest representative = (HttpRequest) group.get(0).getHttpRequest();
+
+        HttpRequest consolidatedRequest;
+        if (hasVariableSegment(representative) && partitionSpansMultiplePaths(group)) {
+            consolidatedRequest = templatizedRequest(representative);
+        } else {
+            consolidatedRequest = representative.clone();
+        }
+
+        stripVolatileHeaders(consolidatedRequest);
+        if (parameterizeValues) {
+            generalizeQueryParameters(consolidatedRequest);
+            generalizeHeaders(consolidatedRequest);
+            generalizeJsonBody(consolidatedRequest);
+        }
+
+        List<HttpResponse> responses = distinctResponses(group);
+        Expectation consolidated = new Expectation(consolidatedRequest, Times.unlimited(), TimeToLive.unlimited(), 0);
+        if (responses.size() <= 1) {
+            consolidated.thenRespond(responses.isEmpty() ? null : responses.get(0));
+        } else {
+            consolidated.withResponseMode(ResponseMode.SEQUENTIAL).thenRespond(responses);
+        }
+        return consolidated;
+    }
+
+    /**
+     * Distinct concrete responses of a group, in first-seen order. Equal responses
+     * collapse (so 50 identical hits yield one response); differing responses are
+     * preserved for SEQUENTIAL replay.
+     */
+    private static List<HttpResponse> distinctResponses(List<Expectation> group) {
+        Set<HttpResponse> seen = new LinkedHashSet<>();
+        for (Expectation expectation : group) {
+            HttpResponse response = expectation.getHttpResponse();
+            if (response != null) {
+                seen.add(response);
+            }
+        }
+        return new ArrayList<>(seen);
+    }
+
+    /**
+     * Remove volatile request headers from a generated matcher, reusing exactly the
+     * volatile-header set applied to HAR imports ({@link HarImporter#volatileRequestHeaders()}).
+     */
+    private static void stripVolatileHeaders(HttpRequest request) {
+        Headers headers = request.getHeaders();
+        if (headers == null || headers.isEmpty()) {
+            return;
+        }
+        Set<String> volatileHeaders = HarImporter.volatileRequestHeaders();
+        for (Header entry : new ArrayList<>(headers.getEntries())) {
+            String name = entry.getName() != null ? entry.getName().getValue() : null;
+            if (name != null && volatileHeaders.contains(name.toLowerCase(Locale.ROOT))) {
+                request.removeHeader(name);
+            }
+        }
+    }
+
     private static boolean isEligible(Expectation expectation) {
         return expectation != null
             && expectation.getHttpRequest() instanceof HttpRequest
@@ -324,7 +470,16 @@ public class RecordedExpectationPostProcessor {
      * The response and all other request properties are preserved.
      */
     private static Expectation templatize(Expectation representative) {
-        HttpRequest original = (HttpRequest) representative.getHttpRequest();
+        return rebuild(representative, templatizedRequest((HttpRequest) representative.getHttpRequest()));
+    }
+
+    /**
+     * Build a templated copy of {@code original}, replacing each variable id path
+     * segment with a {@code {paramN}} path parameter and declaring the parameter so
+     * MockServer's path matcher treats it as a wildcard segment. All other request
+     * properties are preserved. Pure: {@code original} is not mutated.
+     */
+    private static HttpRequest templatizedRequest(HttpRequest original) {
         HttpRequest templated = original.clone();
 
         String[] segments = pathSegments(original);
@@ -351,7 +506,7 @@ public class RecordedExpectationPostProcessor {
             templated.withPathParameter(name, ".*");
         }
 
-        return rebuild(representative, templated);
+        return templated;
     }
 
     /**

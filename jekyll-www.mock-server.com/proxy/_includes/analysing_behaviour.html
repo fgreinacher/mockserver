@@ -23,6 +23,33 @@ curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=RECORDED_EXPECTAT
 
 <p>By default only id-like <em>path segments</em> are templatized. Enable the <code class="inline code">templatizeRecordedValues</code> property (in addition to <code class="inline code">deduplicateRecordedExpectations</code>) to also generalize volatile-looking <strong>query parameter</strong>, <strong>header</strong> and <strong>JSON body</strong> values &mdash; UUIDs, long ids, ISO-8601 / epoch-millis timestamps, JWTs and long opaque tokens &mdash; into regex matchers, so the recorded expectation matches future requests instead of being pinned to one captured value. It is conservative: stable values (short strings, words, booleans, small numbers such as a page size or status code) are kept verbatim. Both properties are off by default, so recorded output is unchanged unless you opt in.</p>
 
+<a id="consolidate_on_retrieve" class="anchor" href="#consolidate_on_retrieve">&nbsp;</a>
+
+<h2>Consolidate a Recording Into Reusable Mocks</h2>
+
+<p>Without any options, a recording is a verbatim one-to-one dump: recording 50 hits to <code class="inline code">GET /users/123</code> gives you 50 identical single-use expectations. Add <strong>consolidate=true</strong> to the retrieve call to collapse a recording into a compact, reusable mock set in one step &mdash; without having to set any server property first:</p>
+
+<pre class="prettyprint lang-bash code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=RECORDED_EXPECTATIONS&consolidate=true"</code></pre>
+
+<p>With <code class="inline code">consolidate=true</code> MockServer groups recorded calls by request shape and, for each shape, returns a <strong>single unlimited-use expectation</strong> (so it keeps matching instead of expiring after one call). Calls that differ only in an id path segment (<code class="inline code">/users/123</code>, <code class="inline code">/users/456</code>) collapse into one <code class="inline code">/users/{id}</code> expectation; volatile request headers (<code class="inline code">Authorization</code>, <code class="inline code">User-Agent</code>, tracing headers, &hellip;) are dropped from the matcher; and when the same request returned <em>different</em> responses over time, those responses are attached as a <strong>sequence</strong> (the first call gets the first response, the next call the second, and so on). Add <strong>parameterize=true</strong> as well to also generalize volatile query-parameter, header and JSON-body values (UUIDs, timestamps, tokens) into matchers.</p>
+
+<p>Recording with no query parameter is unchanged, so existing scripts keep working.</p>
+
+<a id="promote_to_mocks" class="anchor" href="#promote_to_mocks">&nbsp;</a>
+
+<h2>Promote a Recording to Active Mocks</h2>
+
+<p>To turn a recording directly into <strong>active mocks</strong> on the running server &mdash; consolidated, parameterized, secret-redacted and ready to serve &mdash; call the promote endpoint after recording:</p>
+
+<pre class="prettyprint lang-bash code"><code class="code"># promote all recorded traffic to active mocks
+curl -v -X PUT "http://localhost:1080/mockserver/recordings/promote"
+
+# or promote only traffic matching a request filter (JSON body)
+curl -v -X PUT "http://localhost:1080/mockserver/recordings/promote" \
+  -d '{ "path": "/users/.*" }'</code></pre>
+
+<p>The promote endpoint retrieves the matching recorded traffic, redacts credentials (on by default), consolidates and parameterizes it (both on by default &mdash; add <code class="inline code">?consolidate=false</code> or <code class="inline code">?parameterize=false</code> to turn either off), then <strong>activates</strong> the resulting unlimited-use expectations and returns them as JSON with a <strong>201 Created</strong> status. After that you can switch the real dependency off and serve the recording back with no further configuration.</p>
+
 <a id="code_export" class="anchor" href="#code_export">&nbsp;</a>
 
 <h2>Export Recorded Expectations as Client Code</h2>

@@ -346,4 +346,123 @@ public class RecordedExpectationPostProcessorTest {
         // a lowercase hex digest / git SHA is volatile (high-entropy, mixed)
         assertThat(RecordedExpectationPostProcessor.isVolatileValue("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b"), is(true));
     }
+
+    // ----- consolidate (record -> mock engine) ------------------------------
+
+    @Test
+    public void shouldConsolidateFiftyIdenticalHitsToOneUnlimitedExpectation() {
+        // given - 50 identical recorded hits to GET /users/123 (as raw recording would emit
+        // 50 brittle Times.once() expectations)
+        HttpResponse sharedResponse = response().withStatusCode(200).withBody("{\"name\":\"x\"}");
+        java.util.List<Expectation> recorded = new java.util.ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            recorded.add(recorded("GET", "/users/123", sharedResponse.clone()));
+        }
+
+        // when
+        List<Expectation> result = RecordedExpectationPostProcessor.consolidate(recorded, false);
+
+        // then - a single unlimited-times expectation
+        assertThat(result.size(), is(1));
+        Expectation consolidated = result.get(0);
+        assertThat(consolidated.getTimes().isUnlimited(), is(true));
+        assertThat(consolidated.getTimeToLive().isUnlimited(), is(true));
+        assertThat(consolidated.getHttpResponse().getBodyAsString(), containsString("\"name\":\"x\""));
+        // single distinct response -> no sequential list
+        assertThat(consolidated.getHttpResponses(), is(org.hamcrest.CoreMatchers.nullValue()));
+    }
+
+    @Test
+    public void shouldParameterizeVaryingPathSegmentAcrossManyIds() {
+        // given - the same endpoint hit with three different numeric ids
+        HttpResponse sharedResponse = response().withStatusCode(200);
+        List<Expectation> recorded = Arrays.asList(
+            recorded("GET", "/users/123", sharedResponse.clone()),
+            recorded("GET", "/users/456", sharedResponse.clone()),
+            recorded("GET", "/users/789", sharedResponse.clone())
+        );
+
+        // when
+        List<Expectation> result = RecordedExpectationPostProcessor.consolidate(recorded, false);
+
+        // then - one expectation matching /users/{id}, unlimited times
+        assertThat(result.size(), is(1));
+        assertThat(result.get(0).getHttpRequest().toString(), containsString("/users/{id}"));
+        assertThat(result.get(0).getTimes().isUnlimited(), is(true));
+    }
+
+    @Test
+    public void shouldStripVolatileRequestHeaders() {
+        // given - a recorded request carrying volatile headers (from HarImporter's set)
+        List<Expectation> recorded = Collections.singletonList(recordedRequest(
+            request().withMethod("GET").withPath("/users/1")
+                .withHeader("Authorization", "Bearer secret-token")
+                .withHeader("User-Agent", "curl/8.0")
+                .withHeader("X-Tenant", "acme"),
+            response().withStatusCode(200)));
+
+        // when
+        List<Expectation> result = RecordedExpectationPostProcessor.consolidate(recorded, false);
+
+        // then - volatile headers gone, meaningful header kept
+        org.mockserver.model.HttpRequest req = (org.mockserver.model.HttpRequest) result.get(0).getHttpRequest();
+        assertThat(req.getFirstHeader("Authorization"), is(""));
+        assertThat(req.getFirstHeader("User-Agent"), is(""));
+        assertThat(req.getFirstHeader("X-Tenant"), is("acme"));
+    }
+
+    @Test
+    public void shouldSequenceDifferingResponsesForSameRequestShape() {
+        // given - same GET /users/1 returned two different bodies over time
+        List<Expectation> recorded = Arrays.asList(
+            recorded("GET", "/users/1", response().withStatusCode(200).withBody("first")),
+            recorded("GET", "/users/1", response().withStatusCode(200).withBody("second")),
+            // an exact duplicate of the first response should collapse, not add a third step
+            recorded("GET", "/users/1", response().withStatusCode(200).withBody("first"))
+        );
+
+        // when
+        List<Expectation> result = RecordedExpectationPostProcessor.consolidate(recorded, false);
+
+        // then - ONE expectation with a SEQUENTIAL two-response list (deduped, first-seen order)
+        assertThat(result.size(), is(1));
+        Expectation consolidated = result.get(0);
+        assertThat(consolidated.getResponseMode(), is(org.mockserver.mock.ResponseMode.SEQUENTIAL));
+        assertThat(consolidated.getHttpResponses().size(), is(2));
+        assertThat(consolidated.getHttpResponses().get(0).getBodyAsString(), is("first"));
+        assertThat(consolidated.getHttpResponses().get(1).getBodyAsString(), is("second"));
+        assertThat(consolidated.getTimes().isUnlimited(), is(true));
+    }
+
+    @Test
+    public void shouldParameterizeVolatileValuesWhenFlagSet() {
+        // given - a volatile UUID query param on a consolidated request
+        List<Expectation> recorded = Collections.singletonList(recordedRequest(
+            request().withMethod("GET").withPath("/orders")
+                .withQueryStringParameter("traceId", "123e4567-e89b-12d3-a456-426614174000"),
+            response().withStatusCode(200)));
+
+        // when - parameterize=true
+        List<Expectation> result = RecordedExpectationPostProcessor.consolidate(recorded, true);
+
+        org.mockserver.model.HttpRequest req = (org.mockserver.model.HttpRequest) result.get(0).getHttpRequest();
+        assertThat(req.getFirstQueryStringParameter("traceId"), is(".+"));
+    }
+
+    @Test
+    public void shouldPassThroughIneligibleAndReturnEmptyForNull() {
+        Expectation forwardOnly = new Expectation(request().withMethod("GET").withPath("/proxy/x"));
+        List<Expectation> recorded = Arrays.asList(
+            forwardOnly,
+            recorded("GET", "/users/1", response().withStatusCode(200)),
+            recorded("GET", "/users/2", response().withStatusCode(200))
+        );
+
+        List<Expectation> result = RecordedExpectationPostProcessor.consolidate(recorded, false);
+        assertThat(result.contains(forwardOnly), is(true));
+        assertThat(result.size(), is(2)); // forwardOnly + one consolidated /users/{id}
+
+        assertThat(RecordedExpectationPostProcessor.consolidate(null, false).isEmpty(), is(true));
+        assertThat(RecordedExpectationPostProcessor.consolidate(Collections.emptyList(), true).isEmpty(), is(true));
+    }
 }

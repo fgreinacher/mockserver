@@ -43,6 +43,18 @@ public class HarImporter {
     );
 
     /**
+     * The lower-cased set of request header names that are volatile, hop-by-hop or
+     * over-constraining and so should not appear in a generated request matcher.
+     * Exposed (read-only) so the recorded-expectation consolidation path can reuse
+     * exactly the same set when stripping volatile headers from recorded requests.
+     *
+     * @return an immutable set of lower-cased volatile request header names
+     */
+    public static Set<String> volatileRequestHeaders() {
+        return VOLATILE_REQUEST_HEADERS;
+    }
+
+    /**
      * Headers that should NOT appear in response bodies because they are hop-by-hop
      * or volatile.
      */

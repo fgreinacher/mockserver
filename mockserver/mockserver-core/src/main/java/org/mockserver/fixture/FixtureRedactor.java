@@ -224,6 +224,27 @@ public class FixtureRedactor {
             result.thenRespondWithSse(sseResponse);
         }
 
+        // Preserve a multi-response (SEQUENTIAL/WEIGHTED/SWITCH/RANDOM) response list —
+        // e.g. produced by recorded-expectation consolidation — redacting each response.
+        // Without this the single-response branch above would silently drop the list.
+        List<HttpResponse> responses = expectation.getHttpResponses();
+        if (responses != null && !responses.isEmpty()) {
+            List<HttpResponse> redactedResponses = new ArrayList<>(responses.size());
+            for (HttpResponse eachResponse : responses) {
+                redactedResponses.add(eachResponse != null ? redactResponse(eachResponse) : null);
+            }
+            result.thenRespond(redactedResponses);
+            if (expectation.getResponseMode() != null) {
+                result.withResponseMode(expectation.getResponseMode());
+            }
+            if (expectation.getResponseWeights() != null) {
+                result.withResponseWeights(expectation.getResponseWeights());
+            }
+            if (expectation.getSwitchAfter() != null) {
+                result.withSwitchAfter(expectation.getSwitchAfter());
+            }
+        }
+
         return result;
     }
 

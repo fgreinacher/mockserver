@@ -140,7 +140,7 @@ The retrieve and clear endpoints accept type parameters:
 |-------|-------------|
 | `REQUESTS` | Received requests matching the filter |
 | `REQUEST_RESPONSES` | Request/response pairs |
-| `RECORDED_EXPECTATIONS` | Expectations recorded from proxy forwarding |
+| `RECORDED_EXPECTATIONS` | Expectations recorded from proxy forwarding (supports `?consolidate=true` / `?parameterize=true` — see [Record-to-Expectations](#record-to-expectations-rest--consolidation--promotion)) |
 | `ACTIVE_EXPECTATIONS` | Currently active expectations |
 | `LOGS` | Log messages |
 
@@ -315,6 +315,12 @@ The endpoint goes through `controlPlaneRequestAuthenticated()` — mTLS / JWT re
 ### Record-to-Expectations (MCP)
 
 The `create_expectations_from_recorded_traffic` MCP tool converts `FORWARDED_REQUEST` log entries into active mock expectations. It reuses the existing `RECORDED_EXPECTATIONS` retrieve mechanism (`MockServerEventLog.retrieveRecordedExpectations()` which filters for `FORWARDED_REQUEST` entries and maps them to `Expectation` objects via `LogEntry.getExpectation()`). The tool deserializes the retrieved expectations, upgrades them from `Times.once()` to `Times.unlimited()` for persistent mocking, and adds them via `HttpState.add()`. Optional `method` and `path` parameters filter the recorded traffic, and `preview=true` returns the expectations as JSON without activating them.
+
+### Record-to-Expectations (REST) — Consolidation & Promotion
+
+`PUT /mockserver/recordings/promote` is the REST equivalent of the MCP tool above. It takes an optional request-matcher filter in the JSON body (empty body = all recorded traffic), **redacts secrets first** (`ImportRedaction`, on by default), **consolidates/parameterizes** the recorded traffic (`RecordedExpectationPostProcessor.consolidate()`; `?consolidate` / `?parameterize`, both on by default — `?consolidate=false` promotes verbatim but still upgraded to `Times.unlimited()`), then **activates** the result via `HttpState.add()` and returns it as `201 Created`.
+
+Unlike the raw MCP tool (a verbatim 1:1 dump — 50 hits to `GET /users/123` become 50 brittle `Times.once()` expectations), `consolidate()` collapses exchanges by request shape into a single `Times.unlimited()` expectation, infers `/users/{id}` path parameters from varying id segments, strips volatile request headers (reusing `HarImporter.volatileRequestHeaders()`), and sequences differing responses for the same request shape into one `ResponseMode.SEQUENTIAL` multi-response expectation. The same engine is exposed on the retrieve path (`?type=RECORDED_EXPECTATIONS&consolidate=true[&parameterize=true]`) and on HAR import (`?format=har&consolidate=true`); see [event-system.md → Record &rarr; Mock](event-system.md#record--mock-consolidation-promotion-har-import) for the full model. Default retrieve output (no query parameter, config flag off) is unchanged.
 
 ### LLM Record/Replay (MCP)
 
