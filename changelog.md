@@ -174,6 +174,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Documented that the `/mockserver/metrics` Prometheus scrape endpoint is unauthenticated by design,
+  and how to secure it.** The scrape endpoint is intentionally served outside the control-plane auth gate
+  (Prometheus/OTEL scrapers cannot present a control-plane certificate or bearer token), so its labels
+  (`upstream_host`; LLM `provider`/`model` token & cost counters) are readable by anyone with network reach.
+  No behaviour change: `metricsEnabled=false` (the default) already fully disables it (returns `404`, exposes
+  nothing), and the JSON snapshot `PUT /mockserver/retrieve?type=METRICS` remains behind the control-plane
+  auth gate — only the scrape endpoint is open. The API Security page and internal docs now spell out the
+  trade-off and the three ways to lock it down: disable it, restrict it at the network layer, or prefer
+  PUSH-based export (OpenTelemetry OTLP metrics or Prometheus Remote-Write), which exposes no scrape endpoint.
+
 - **The dashboard and UI WebSocket now require control-plane authentication when it is enabled.** With
   mTLS/JWT/OIDC control-plane auth configured, `GET /mockserver/dashboard*` and the
   `/_mockserver_ui_websocket` upgrade were previously served without credentials, so any network-reachable

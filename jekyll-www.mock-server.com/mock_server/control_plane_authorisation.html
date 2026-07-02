@@ -71,6 +71,7 @@ sitemap:
     <li>The health/lifecycle probes <code>/mockserver/status</code> and <code>/mockserver/ready</code> are <strong>neither authenticated nor authorized</strong> — they are always reachable so health-check infrastructure never needs credentials. (<code>/mockserver/bind</code> and <code>/mockserver/stop</code> <em>are</em> authenticated when control-plane authentication is enabled.)</li>
     <li>The <a href="/mock_server/mockserver_ui.html">dashboard</a> (<code>/mockserver/dashboard</code>) and its live UI WebSocket require the <strong>same control-plane authentication</strong> as every other control-plane endpoint when it is enabled — otherwise anyone with network reach could read all captured traffic. The dashboard is a read, so a <code>read</code>-only role may view it. When no control-plane authentication is configured (the default) the dashboard stays open. Because a browser cannot attach a bearer token to a WebSocket, a token/OIDC-authenticated dashboard must be served through an authenticating reverse proxy (or use mutual TLS).</li>
     <li>MockServer's own <a href="/mock_server/ai_mcp_setup.html">MCP control plane</a> (<code>/mockserver/mcp</code>) is authenticated (the bearer token is validated), but per-tool authorization is <strong>not yet enforced</strong>. Treat any authenticated MCP session as <code>mutate</code>-capable.</li>
+    <li>The Prometheus scrape endpoint <code>/mockserver/metrics</code> is <strong>intentionally NOT behind control-plane authentication</strong> — Prometheus and OpenTelemetry scrapers cannot present a control-plane certificate or bearer token while scraping, so gating it would break metrics collection. See <a href="#metrics_scrape_endpoint">Securing the metrics scrape endpoint</a> below for what it can expose and how to lock it down. (Note the JSON metrics snapshot <code>PUT /mockserver/retrieve?type=METRICS</code> <em>is</em> behind the control-plane auth gate — only the Prometheus scrape endpoint is open.)</li>
 </ul>
 
 <a id="control_plane_authorization_roles" class="anchor" href="#control_plane_authorization_roles">&nbsp;</a>
@@ -153,6 +154,22 @@ ConfigurationProperties.controlPlaneScopeMapping(Map.of(
 <ul>
     <li><code class="inline_code">mockserver.localBoundIP=127.0.0.1</code> &mdash; bind the listener to the loopback interface so MockServer is reachable only from the local host. When running inside a container, set this to <code class="inline_code">0.0.0.0</code> and restrict access at the container, network, or orchestration layer instead.</li>
     <li><code class="inline_code">mockserver.attemptToProxyIfNoMatchingExpectation=false</code> &mdash; return <code class="inline_code">404 Not Found</code> for any request that matches no expectation, so MockServer serves only the traffic you have explicitly defined and does not forward unmatched requests upstream.</li>
+</ul>
+
+<a id="metrics_scrape_endpoint" class="anchor" href="#metrics_scrape_endpoint">&nbsp;</a>
+
+<h3>Securing the metrics scrape endpoint</h3>
+<p>The Prometheus scrape endpoint <code class="inline_code">GET /mockserver/metrics</code> is served <strong>without control-plane authentication by design</strong>: Prometheus and OpenTelemetry scrapers cannot attach a control-plane client certificate or bearer token to a scrape, so requiring one would prevent metrics from being collected at all. (In contrast, the JSON metrics snapshot <code class="inline_code">PUT /mockserver/retrieve?type=METRICS</code> goes through <code class="inline_code">HttpState.handle</code> and <em>is</em> gated by control-plane authentication like every other <code class="inline_code">retrieve</code> operation.)</p>
+<p>Because the endpoint is open, be aware of what its labels can reveal to anyone with network reach:</p>
+<ul>
+    <li><strong>Upstream/proxy destinations</strong> &mdash; the forward and proxy observability series carry an <code class="inline_code">upstream_host</code> label (host only, never the full URL or path), exposing which backends MockServer forwards to.</li>
+    <li><strong>LLM cost and token metadata</strong> &mdash; when <a href="/mock_server/llm_response_mocking.html">LLM mocking</a> is used, <code class="inline_code">mock_server_llm_input_tokens</code>, <code class="inline_code">mock_server_llm_output_tokens</code>, and <code class="inline_code">mock_server_llm_cost_usd</code> are labelled by <code class="inline_code">provider</code> and <code class="inline_code">model</code>.</li>
+</ul>
+<p>To secure it, choose whichever fits your deployment (they combine):</p>
+<ul>
+    <li><strong>Disable it entirely</strong> &mdash; <code class="inline_code">mockserver.metricsEnabled=false</code> (the default) fully disables the endpoint: <code class="inline_code">/mockserver/metrics</code> returns <code class="inline_code">404 Not Found</code> and no metrics are exposed. Leave it off unless you are actively scraping.</li>
+    <li><strong>Restrict access at the network layer</strong> &mdash; don't expose the MockServer port publicly. Bind to loopback (<code class="inline_code">mockserver.localBoundIP=127.0.0.1</code>), keep it on an internal network, or restrict it with a firewall rule or Kubernetes <code class="inline_code">NetworkPolicy</code> that permits only your Prometheus scraper.</li>
+    <li><strong>Prefer push-based export</strong> &mdash; both <a href="/mock_server/configuration_properties.html#button_configuration_otel">OpenTelemetry OTLP metrics export</a> (<code class="inline_code">mockserver.otelMetricsEnabled</code>) and <a href="/mock_server/configuration_properties.html#button_configuration_prometheus_remote_write">Prometheus Remote-Write</a> (<code class="inline_code">mockserver.prometheusRemoteWriteEnabled</code>) <strong>push</strong> the same metrics to your backend and expose <em>no</em> scrape endpoint at all. With metrics pushed and <code class="inline_code">metricsEnabled=false</code>, there is nothing to lock down on the MockServer side.</li>
 </ul>
 
 <a id="hardening_forwarding" class="anchor" href="#hardening_forwarding">&nbsp;</a>
