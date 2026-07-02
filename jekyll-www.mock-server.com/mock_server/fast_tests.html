@@ -1,0 +1,244 @@
+---
+title: "Fast Tests: Startup Time, Memory and Reuse"
+shortTitle: "Fast Tests"
+description: "Keep MockServer tests fast: start one container per suite and reset() between tests for millisecond per-test cost, run MockServer in-process for JVM suites, bound container memory, and pick the right image variant for the fastest startup."
+layout: page
+pageOrder: 5
+section: 'Performance Testing'
+subsection: true
+sitemap:
+  priority: 0.7
+  changefreq: 'monthly'
+  lastmod: 2026-07-02T09:00:00+01:00
+keywords: mockserver fast tests, mockserver testcontainers reuse, mockserver reset between tests, mockserver in-process, mockserver container memory limit, mockserver startup time
+schema_faq:
+  - question: "What is the fastest way to run MockServer in tests?"
+    answer: "Start one MockServer container per test suite and call client.reset() between tests — reset() clears all expectations and recorded requests in milliseconds, giving the same isolation as a fresh container without the startup cost per test. For JVM test suites that need no network isolation, running MockServer in-process (mockserver-netty or the JUnit 5 extension) is faster still: it starts in tens of milliseconds with no Docker overhead."
+  - question: "How do I limit MockServer's memory in tests?"
+    answer: "Set a container memory limit — the image caps the JVM heap at 75% of the container limit (-XX:MaxRAMPercentage=75.0), so limiting the container to 256 MiB caps the heap at ~192 MiB. To set an explicit heap size instead, pass -Xmx via the JAVA_TOOL_OPTIONS environment variable; note that overriding -XX:MaxRAMPercentage via JAVA_TOOL_OPTIONS has no effect because the image applies its own value afterwards."
+  - question: "Does MockServer support GraalVM native-image?"
+    answer: "No, and there are no plans to. MockServer loads user-supplied classes at runtime (class callbacks, expectation initializers, custom matchers), which is incompatible with native-image's closed-world model — in testing, features not explicitly exercised during build-time metadata collection failed silently at runtime. For faster container startup use the -aot image tags (JDK 25 Leyden AOT cache, ~0.35 s to ready); for JVM-less environments use the jlink binary bundle."
+---
+
+<p itemprop="headline">There is a clear performance hierarchy for MockServer in tests. The biggest win is <strong>architectural</strong>: start one container per suite and call <span class="inline_code">client.reset()</span> between tests — this brings per-test cost down to milliseconds regardless of how fast the container starts. The next step up is <strong>avoiding the container entirely for JVM tests</strong> by running MockServer in-process, which eliminates Docker overhead altogether. Only after those two are in place does <strong>runtime-level startup optimisation</strong> — faster base images, AOT caches — make a meaningful difference.</p>
+
+<p>The examples below use the Java <a href="/mock_server/mockserver_testcontainers.html">Testcontainers module</a>; the same suite-scoped container and reset-between-tests pattern applies to every language the <a href="/mock_server/mockserver_testcontainers.html">Testcontainers modules</a> support.</p>
+
+<a id="startup_is_fast" class="anchor" href="#startup_is_fast">&nbsp;</a>
+
+<h2>Startup is fast</h2>
+
+<p>The <span class="inline_code">mockserver/mockserver</span> container image starts quickly &mdash; it reaches ready in roughly <strong>0.57&nbsp;s</strong> on a typical developer machine, thanks to a class-data-sharing archive baked into the image at build time. If startup appears to take several seconds, check that the image version being pulled matches the client library on the classpath and that the wait strategy in use polls for readiness rather than sleeping for a fixed interval. For a full breakdown of startup times and options, see <a href="/mock_server/startup_time.html">Start-up Time</a>.</p>
+
+<a id="one_container_per_suite" class="anchor" href="#one_container_per_suite">&nbsp;</a>
+
+<h2>One container per suite, reset between tests</h2>
+
+<p>The most effective way to keep tests fast is to start a single MockServer container once for the whole test class (or suite) and call <span class="inline_code">client.reset()</span> between tests. <span class="inline_code">reset()</span> clears all expectations and recorded requests in milliseconds, giving the same isolation as a fresh container without paying the startup cost on every test.</p>
+
+<pre class="prettyprint lang-java code"><code class="code">import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.mockserver.client.MockServerClient;
+import org.mockserver.testcontainers.MockServerContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpResponse.response;
+
+@Testcontainers
+class SuiteReuseExampleTest {
+
+    @Container
+    static MockServerContainer mockServer = new MockServerContainer();
+
+    static MockServerClient client;
+
+    @BeforeAll
+    static void startClient() {
+        client = mockServer.getClient();
+    }
+
+    @AfterEach
+    void resetBetweenTests() {
+        client.reset(); // clears expectations and recorded requests in milliseconds
+    }
+
+    @Test
+    void shouldMockFirstEndpoint() {
+        client
+            .when(request().withPath("/first"))
+            .respond(response().withBody("one"));
+        // point the system under test at mockServer.getEndpoint()
+    }
+
+    @Test
+    void shouldMockSecondEndpoint() {
+        client
+            .when(request().withPath("/second"))
+            .respond(response().withBody("two"));
+        // point the system under test at mockServer.getEndpoint()
+    }
+}</code></pre>
+
+<p>Testcontainers' <a href="https://java.testcontainers.org/features/reuse/">reuse feature</a> (<span class="inline_code">withReuse(true)</span> on the container, plus <span class="inline_code">testcontainers.reuse.enable=true</span> in <span class="inline_code">~/.testcontainers.properties</span>) keeps the container alive across test runs. Combined with <span class="inline_code">client.reset()</span> between tests, this eliminates startup cost entirely for local development iterations. When using <span class="inline_code">withReuse(true)</span>, also call <span class="inline_code">client.reset()</span> at the start of the suite (for example in <span class="inline_code">@BeforeAll</span>) so any state left behind by an aborted previous run is cleared before the first test executes.</p>
+
+<a id="bounding_memory" class="anchor" href="#bounding_memory">&nbsp;</a>
+
+<h2>Bounding memory</h2>
+
+<p>The image caps the JVM heap at 75% of the container memory limit (<span class="inline_code">-XX:MaxRAMPercentage=75.0</span>). Setting a container memory limit is the supported way to control MockServer's footprint in your test environment. Without a limit, idle footprint is roughly 200 MiB (measured at idle with no active requests and no explicit memory limit).</p>
+
+<pre class="prettyprint lang-java code"><code class="code">// Limit MockServer to 256 MiB of container memory (heap capped at ~192 MiB)
+MockServerContainer mockServer = new MockServerContainer()
+    .withCreateContainerCmdModifier(cmd ->
+        cmd.getHostConfig().withMemory(256 * 1024 * 1024L));</code></pre>
+
+<p>To override the percentage entirely, set an explicit heap size via <span class="inline_code">JAVA_TOOL_OPTIONS</span>:</p>
+
+<pre class="prettyprint lang-java code"><code class="code">MockServerContainer mockServer = new MockServerContainer()
+    .withEnv("JAVA_TOOL_OPTIONS", "-Xmx128m");</code></pre>
+
+<p>Note: setting a different <span class="inline_code">-XX:MaxRAMPercentage</span> via <span class="inline_code">JAVA_TOOL_OPTIONS</span> has no effect — the image applies its own value after <span class="inline_code">JAVA_TOOL_OPTIONS</span>, so it always wins. Use an explicit <span class="inline_code">-Xmx</span> instead, which takes precedence over the percentage cap.</p>
+
+<a id="in_process" class="anchor" href="#in_process">&nbsp;</a>
+
+<h2>Fastest option for Java tests: run MockServer in-process</h2>
+
+<p>For JVM test suites, starting MockServer inside the test JVM is faster than any container variant because the JVM is already warm and no Docker daemon round-trip is required. There are two ways to do it:</p>
+
+<ul>
+    <li><strong>Programmatic start</strong> — add <span class="inline_code">mockserver-netty</span> as a test dependency and call <span class="inline_code">ClientAndServer.startClientAndServer(0)</span>. MockServer starts on a random free port inside the already-warm JVM and is ready in tens of milliseconds.</li>
+    <li><strong>JUnit 5 extension</strong> — add <span class="inline_code">mockserver-junit-jupiter</span> as a test dependency and annotate the test class with <span class="inline_code">@MockServerSettings</span> (which already includes <span class="inline_code">@ExtendWith(MockServerExtension.class)</span> internally). The extension starts MockServer before any tests run and stops it after all tests complete. See <a href="/mock_server/running_mock_server.html#junit_test_extension">Running MockServer via JUnit 5 Test Extension</a> for full usage and options.</li>
+</ul>
+
+<p><strong>Maven</strong></p>
+
+<pre class="prettyprint lang-xml code"><code class="code">&lt;!-- programmatic start --&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.mock-server&lt;/groupId&gt;
+    &lt;artifactId&gt;mockserver-netty&lt;/artifactId&gt;
+    &lt;version&gt;{{ site.mockserver_version }}&lt;/version&gt;
+    &lt;scope&gt;test&lt;/scope&gt;
+&lt;/dependency&gt;
+
+&lt;!-- or: JUnit 5 extension (brings in mockserver-netty transitively) --&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.mock-server&lt;/groupId&gt;
+    &lt;artifactId&gt;mockserver-junit-jupiter&lt;/artifactId&gt;
+    &lt;version&gt;{{ site.mockserver_version }}&lt;/version&gt;
+    &lt;scope&gt;test&lt;/scope&gt;
+&lt;/dependency&gt;</code></pre>
+
+<p><strong>Programmatic start (random port, no Docker):</strong></p>
+
+<pre class="prettyprint lang-java code"><code class="code">import org.mockserver.integration.ClientAndServer;
+
+// Starts in tens of milliseconds — no Docker required.
+// Pass 0 to let MockServer pick a free port automatically.
+ClientAndServer client = ClientAndServer.startClientAndServer(0);
+int port = client.getLocalPort();
+
+// … set up expectations and run tests …
+
+client.stop();</code></pre>
+
+<p><strong>Trade-offs</strong></p>
+
+<table>
+    <thead>
+    <tr><th>In-process (mockserver-netty / JUnit 5 extension)</th><th>Testcontainers</th></tr>
+    </thead>
+    <tbody>
+    <tr><td>No Docker required</td><td>Requires Docker</td></tr>
+    <tr><td>Starts in tens of milliseconds</td><td>~0.57 s cold start (or zero with reuse)</td></tr>
+    <tr><td>Shares the test JVM classpath — class callbacks and custom matchers work naturally</td><td>Full network isolation — the mock server runs in a separate process</td></tr>
+    <tr><td>Best for single-language JVM test suites</td><td>Required for non-JVM languages; preferred for multi-service integration tests where network isolation matters</td></tr>
+    </tbody>
+</table>
+
+<a id="runtime_startup_options" class="anchor" href="#runtime_startup_options">&nbsp;</a>
+
+<h2>Runtime-level startup options</h2>
+
+<p>The following figures are measured on a typical developer machine (macOS arm64). Results vary by machine and workload; treat these as order-of-magnitude guidance, not guarantees. For a full breakdown see <a href="/mock_server/startup_time.html">Start-up Time</a>.</p>
+
+<table>
+    <thead>
+    <tr><th>Option</th><th>Time-to-ready (typical)</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td>Standard image (distroless JDK 17 + class-data sharing archive)</td>
+        <td>~0.57 s</td>
+        <td>Default. Class-data-sharing archive baked in at image build time; identical runtime behaviour to a plain JVM start.</td>
+    </tr>
+    <tr>
+        <td>Project Leyden AOT cache (JDK 25, JEP 483/514)</td>
+        <td>~0.35 s</td>
+        <td>Available as opt-in <span class="inline_code">-aot</span> image tags; see below.</td>
+    </tr>
+    <tr>
+        <td>GraalVM native-image</td>
+        <td>~72 ms (~8&times; faster)</td>
+        <td>Not supported &mdash; see below.</td>
+    </tr>
+    </tbody>
+</table>
+
+<h3>Project Leyden AOT cache (JDK 25, JEP 483/514)</h3>
+
+<p>Measured roughly 40% lower container time-to-ready (~0.35 s vs ~0.57 s for the standard image) with identical behaviour. Because it is the real HotSpot JVM, there is 100% feature parity &mdash; no closed-world limitations, no missing features at runtime.</p>
+
+<p>The AOT variant is published as <strong>opt-in image tags</strong> to Docker Hub and ECR Public &mdash; <span class="inline_code">mockserver/mockserver:&lt;version&gt;-aot</span> and <span class="inline_code">mockserver/mockserver:latest-aot</span>. In a JVM test you can select it through the MockServer Testcontainers module:</p>
+
+<pre class="prettyprint lang-java code"><code class="code">// aotImage() = the default resolved image with -aot appended to its tag,
+// so it stays in lockstep with the client library version.
+try (MockServerContainer mockServer = new MockServerContainer(MockServerContainer.aotImage())) {
+    mockServer.start();
+    // ... use mockServer.getClient() ...
+}
+
+// Or pin an explicit -aot tag (both X.Y.Z-aot and mockserver-X.Y.Z-aot
+// tag forms are published; aotImage() resolves the mockserver-X.Y.Z-aot form):
+try (MockServerContainer mockServer = new MockServerContainer(
+        DockerImageName.parse("mockserver/mockserver:7.3.0-aot"))) {
+    mockServer.start();
+}</code></pre>
+
+<p>The variant is also defined at <a href="https://github.com/mock-server/mockserver-monorepo/blob/master/docker/aot/Dockerfile"><span class="inline_code">docker/aot/Dockerfile</span></a> in the MockServer repository, so you can build it yourself for local evaluation. It jlink-trims a JDK 25 runtime, starts MockServer during the image build as a training run, and bakes the resulting AOT cache into the image:</p>
+
+<pre class="prettyprint lang-sh code"><code class="code"># The build context requires ca-bundle.pem (may be empty — it is only needed behind a
+# corporate TLS-inspection proxy; see the Dockerfile comments).
+cd docker/aot && touch ca-bundle.pem && docker build .
+
+# Pin a specific MockServer version:
+cd docker/aot && touch ca-bundle.pem && docker build --build-arg VERSION=7.3.0 .</code></pre>
+
+<p>Why it is not the default image:</p>
+<ul>
+    <li>The AOT cache is CPU-architecture and JDK-build specific — a multi-arch build bakes a separate cache per platform, which adds complexity.</li>
+    <li>There is no distroless Java 25 base image yet; this variant copies a jlink-trimmed JDK 25 runtime onto <span class="inline_code">gcr.io/distroless/java-base-debian12:nonroot</span>.</li>
+    <li>The AOT cache format may change between JDK releases while the feature is still maturing.</li>
+    <li>This variant uses the JDK TLS provider rather than netty-tcnative, which may reduce TLS handshake throughput under high load.</li>
+</ul>
+
+<h3>GraalVM native-image</h3>
+
+<p>Measured ~10&times; faster to ready (~72 ms) with ~30% less memory — but MockServer does <strong>not</strong> support GraalVM native-image and has no plans to. MockServer loads user-supplied classes at runtime: class callbacks, expectation initializers, and custom matchers. Native-image's closed-world model cannot support runtime class loading, and in testing every feature not explicitly exercised during the build-time metadata-collection step — HTTPS, templates, even logging — failed silently at runtime. The supported lightweight distribution is the <a href="/mock_server/running_mock_server.html#running_from_command_line">jlink binary bundle</a>.</p>
+
+<a id="bottom_line" class="anchor" href="#bottom_line">&nbsp;</a>
+
+<h2>The bottom line</h2>
+
+<p>Whichever container image you use, the suite-scoped container plus <span class="inline_code">client.reset()</span> pattern described above brings per-test cost down to milliseconds — and that outweighs any runtime-level startup optimisation by a wide margin. For JVM tests that need no network isolation, running MockServer in-process eliminates container overhead entirely.</p>
+
+<h2>See also</h2>
+
+<ul>
+    <li><a href="/mock_server/mockserver_testcontainers.html">Testcontainers</a> &mdash; official MockServer Testcontainers modules for Java, .NET, Node.js, Python, Rust and Go</li>
+    <li><a href="/mock_server/startup_time.html">Start-up Time</a> &mdash; the full breakdown of container startup times, image variants, and the built-in warmup</li>
+    <li><a href="/mock_server/running_mock_server.html">Running MockServer</a> &mdash; all deployment options including Docker, jar, JUnit, and Testcontainers</li>
+    <li><a href="/mock_server/mockserver_clients.html">MockServer clients</a> &mdash; typed client libraries for every supported language</li>
+</ul>
