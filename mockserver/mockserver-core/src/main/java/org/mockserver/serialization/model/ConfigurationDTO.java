@@ -83,6 +83,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Boolean velocityDisallowClassLoading;
     private String velocityDisallowedText;
     private String mustacheDisallowedText;
+    private Long templateFakerSeed;
 
     private String initializationClass;
     private String initializationJsonPath;
@@ -167,6 +168,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private String forwardProxyTLSCustomTrustX509Certificates;
     private String forwardProxyPrivateKey;
     private String forwardProxyCertificateChain;
+    private String forwardProxyClientCertificatesByHost;
 
     private Long slowRequestThresholdMillis;
     private Boolean metricsRequestDurationRouteLabels;
@@ -374,6 +376,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.velocityDisallowClassLoading = configuration.velocityDisallowClassLoading();
             this.velocityDisallowedText = configuration.velocityDisallowedText();
             this.mustacheDisallowedText = configuration.mustacheDisallowedText();
+            this.templateFakerSeed = configuration.templateFakerSeed();
 
             this.initializationClass = configuration.initializationClass();
             this.initializationJsonPath = configuration.initializationJsonPath();
@@ -469,6 +472,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.forwardProxyTLSCustomTrustX509Certificates = configuration.forwardProxyTLSCustomTrustX509Certificates();
             this.forwardProxyPrivateKey = configuration.forwardProxyPrivateKey();
             this.forwardProxyCertificateChain = configuration.forwardProxyCertificateChain();
+            this.forwardProxyClientCertificatesByHost = configuration.forwardProxyClientCertificatesByHost();
 
             this.slowRequestThresholdMillis = configuration.slowRequestThresholdMillis();
             this.metricsRequestDurationRouteLabels = configuration.metricsRequestDurationRouteLabels();
@@ -721,6 +725,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.velocityDisallowClassLoading(velocityDisallowClassLoading);
         configuration.velocityDisallowedText(velocityDisallowedText);
         configuration.mustacheDisallowedText(mustacheDisallowedText);
+        configuration.templateFakerSeed(templateFakerSeed);
 
         configuration.initializationClass(initializationClass);
         configuration.initializationJsonPath(initializationJsonPath);
@@ -818,6 +823,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.forwardProxyTLSCustomTrustX509Certificates(forwardProxyTLSCustomTrustX509Certificates);
         configuration.forwardProxyPrivateKey(forwardProxyPrivateKey);
         configuration.forwardProxyCertificateChain(forwardProxyCertificateChain);
+        configuration.forwardProxyClientCertificatesByHost(forwardProxyClientCertificatesByHost);
 
         configuration.slowRequestThresholdMillis(slowRequestThresholdMillis);
         configuration.metricsRequestDurationRouteLabels(metricsRequestDurationRouteLabels);
@@ -1139,6 +1145,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (mustacheDisallowedText != null) {
             target.mustacheDisallowedText(mustacheDisallowedText);
         }
+        if (templateFakerSeed != null) {
+            target.templateFakerSeed(templateFakerSeed);
+        }
         if (initializationClass != null) {
             target.initializationClass(initializationClass);
         }
@@ -1351,6 +1360,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (forwardProxyCertificateChain != null) {
             target.forwardProxyCertificateChain(forwardProxyCertificateChain);
+        }
+        if (forwardProxyClientCertificatesByHost != null) {
+            target.forwardProxyClientCertificatesByHost(forwardProxyClientCertificatesByHost);
         }
         if (slowRequestThresholdMillis != null) {
             target.slowRequestThresholdMillis(slowRequestThresholdMillis);
@@ -2286,6 +2298,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
         return this;
     }
 
+    public Long getTemplateFakerSeed() {
+        return templateFakerSeed;
+    }
+
+    public ConfigurationDTO setTemplateFakerSeed(Long templateFakerSeed) {
+        this.templateFakerSeed = templateFakerSeed;
+        return this;
+    }
+
     public String getInitializationClass() {
         return initializationClass;
     }
@@ -2936,6 +2957,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setForwardProxyCertificateChain(String forwardProxyCertificateChain) {
         this.forwardProxyCertificateChain = forwardProxyCertificateChain;
+        return this;
+    }
+
+    public String getForwardProxyClientCertificatesByHost() {
+        return forwardProxyClientCertificatesByHost;
+    }
+
+    public ConfigurationDTO setForwardProxyClientCertificatesByHost(String forwardProxyClientCertificatesByHost) {
+        this.forwardProxyClientCertificatesByHost = forwardProxyClientCertificatesByHost;
         return this;
     }
 

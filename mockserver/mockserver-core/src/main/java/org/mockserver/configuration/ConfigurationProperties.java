@@ -281,6 +281,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_VELOCITY_DISALLOW_CLASS_LOADING = "mockserver.velocityDisallowClassLoading";
     private static final String MOCKSERVER_VELOCITY_DISALLOWED_TEXT = "mockserver.velocityDisallowedText";
     private static final String MOCKSERVER_MUSTACHE_DISALLOWED_TEXT = "mockserver.mustacheDisallowedText";
+    private static final String MOCKSERVER_TEMPLATE_FAKER_SEED = "mockserver.templateFakerSeed";
 
     // mock initialization
     private static final String MOCKSERVER_INITIALIZATION_CLASS = "mockserver.initializationClass";
@@ -434,6 +435,7 @@ public class ConfigurationProperties {
     // outbound - fixed private key & x509
     private static final String MOCKSERVER_FORWARD_PROXY_TLS_PRIVATE_KEY = "mockserver.forwardProxyPrivateKey";
     private static final String MOCKSERVER_FORWARD_PROXY_TLS_X509_CERTIFICATE_CHAIN = "mockserver.forwardProxyCertificateChain";
+    private static final String MOCKSERVER_FORWARD_PROXY_CLIENT_CERTIFICATES_BY_HOST = "mockserver.forwardProxyClientCertificatesByHost";
 
     // service mesh / sidecar
     private static final String MOCKSERVER_TRANSPARENT_PROXY_ENABLED = "mockserver.transparentProxyEnabled";
@@ -3777,6 +3779,26 @@ public class ConfigurationProperties {
         setProperty(MOCKSERVER_MUSTACHE_DISALLOWED_TEXT, mustacheDisallowedText);
     }
 
+    public static long templateFakerSeed() {
+        return readLongProperty(MOCKSERVER_TEMPLATE_FAKER_SEED, "MOCKSERVER_TEMPLATE_FAKER_SEED", 0L);
+    }
+
+    /**
+     * Seed for the template {@code faker} sample-data helper (net.datafaker).
+     * <p>
+     * The default is 0, which leaves faker unseeded so it produces different, time/random-based
+     * sample values on every render (behaviour unchanged). Set a non-zero value to seed faker
+     * deterministically so faker-driven templates generate reproducible fixtures across runs — the
+     * template analogue of the OpenAPI example generator's fixed-seed model. The seed initialises a
+     * per-engine faker whose sequence is deterministic for a given order of renders; determinism is
+     * strongest for sequential (single-threaded) fixture generation.
+     *
+     * @param seed faker seed, 0 to leave faker unseeded (random)
+     */
+    public static void templateFakerSeed(long seed) {
+        setProperty(MOCKSERVER_TEMPLATE_FAKER_SEED, "" + seed);
+    }
+
     // mock initialization
 
     public static String initializationClass() {
@@ -5595,6 +5617,27 @@ public class ConfigurationProperties {
     public static void forwardProxyCertificateChain(String certificateChain) {
         fileExists(certificateChain);
         setProperty(MOCKSERVER_FORWARD_PROXY_TLS_X509_CERTIFICATE_CHAIN, certificateChain);
+    }
+
+    public static String forwardProxyClientCertificatesByHost() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_FORWARD_PROXY_CLIENT_CERTIFICATES_BY_HOST, "MOCKSERVER_FORWARD_PROXY_CLIENT_CERTIFICATES_BY_HOST", "");
+    }
+
+    /**
+     * Per-host outbound mTLS (client authentication) certificate/key map for forwarded or proxied requests.
+     * <p>
+     * A comma-separated list of {@code host=certificateChainPath;privateKeyPath} entries, where each path is a
+     * file system path or classpath location of an X.509 PEM certificate chain and a PKCS#8 or PKCS#1 PEM private
+     * key. When MockServer opens an outbound TLS connection to a matching upstream host (case-insensitive), it
+     * presents that host's certificate/key pair for mTLS; any host without an entry falls back to the global
+     * {@code forwardProxyPrivateKey} / {@code forwardProxyCertificateChain} pair (or MockServer's own generated
+     * key/cert). The default is empty (global pair only). Example:
+     * {@code api.internal=/certs/api-chain.pem;/certs/api-key.pem,billing.internal=/certs/billing-chain.pem;/certs/billing-key.pem}
+     *
+     * @param clientCertificatesByHost comma-separated host=certificateChainPath;privateKeyPath entries
+     */
+    public static void forwardProxyClientCertificatesByHost(String clientCertificatesByHost) {
+        setProperty(MOCKSERVER_FORWARD_PROXY_CLIENT_CERTIFICATES_BY_HOST, clientCertificatesByHost != null ? clientCertificatesByHost : "");
     }
 
     @SuppressWarnings("ConstantConditions")

@@ -65,7 +65,8 @@ final class PolyglotRunner {
         HttpTemplateOutputDeserializer httpTemplateOutputDeserializer,
         Class<? extends DTO<T>> dtoClass,
         long executionTimeoutMillis,
-        boolean rawText
+        boolean rawText,
+        Object fakerOverride
     ) {
         // rawText (streaming payload templating): coerce the handle(request) return value to text — a
         // returned string is emitted verbatim, any other value is JSON.stringify'd — instead of always
@@ -116,7 +117,7 @@ final class PolyglotRunner {
             try {
                 return evaluate(
                     script, fullScript, includeResponse, request, response, iteration,
-                    objectMapper, mockServerLogger, httpTemplateOutputDeserializer, dtoClass, context, rawText
+                    objectMapper, mockServerLogger, httpTemplateOutputDeserializer, dtoClass, context, rawText, fakerOverride
                 );
             } catch (PolyglotException polyglotException) {
                 if (watchdogFired.get() && (polyglotException.isCancelled() || polyglotException.isInterrupted())) {
@@ -157,7 +158,8 @@ final class PolyglotRunner {
         HttpTemplateOutputDeserializer httpTemplateOutputDeserializer,
         Class<? extends DTO<T>> dtoClass,
         Context context,
-        boolean rawText
+        boolean rawText,
+        Object fakerOverride
     ) {
         {
             // In GraalVM Polyglot, context.getBindings("js") returns the JavaScript global scope
@@ -174,6 +176,11 @@ final class PolyglotRunner {
             TemplateFunctions.BUILT_IN_FUNCTIONS.forEach((key, supplier) ->
                 jsBindings.putMember(key, supplier.get()));
             TemplateFunctions.BUILT_IN_HELPERS.forEach(jsBindings::putMember);
+            // Override the shared unseeded faker with a per-engine seeded faker when a non-zero
+            // templateFakerSeed is configured, so faker-driven JS templates generate reproducible fixtures.
+            if (fakerOverride != null) {
+                jsBindings.putMember("faker", fakerOverride);
+            }
 
             // Expose jsonPath('$.field') and xPath('//field') request-body extraction functions to the
             // script scope, sharing the same extraction logic / error handling as the Mustache and

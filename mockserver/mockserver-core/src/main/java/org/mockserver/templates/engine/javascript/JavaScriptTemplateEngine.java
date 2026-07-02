@@ -46,6 +46,9 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
     private final Configuration configuration;
     private final Predicate<String> classFilter;
     private final boolean polyglotAvailable;
+    // Per-engine seeded faker when templateFakerSeed is non-zero, else null (the shared unseeded faker
+    // from BUILT_IN_HELPERS is used). Resolved once so the seeded sequence is deterministic across renders.
+    private final Object seededFaker;
 
     public JavaScriptTemplateEngine(MockServerLogger mockServerLogger, Configuration configuration) {
         this(mockServerLogger, configuration, POLYGLOT_AVAILABLE);
@@ -63,6 +66,9 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
         this.httpTemplateOutputDeserializer = new HttpTemplateOutputDeserializer(mockServerLogger);
         this.objectMapper = ObjectMapperFactory.createObjectMapper();
         this.classFilter = className -> isClassAllowed(className, this.configuration);
+        this.seededFaker = this.configuration.templateFakerSeed() != 0L
+            ? org.mockserver.templates.engine.TemplateFunctions.resolveFaker(this.configuration.templateFakerSeed())
+            : null;
         if (mockServerLogger != null
             && mockServerLogger.isEnabledForInstance(Level.WARN)
             && !isNotBlank(this.configuration.javascriptDisallowedClasses())) {
@@ -138,7 +144,8 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
                 httpTemplateOutputDeserializer,
                 null,
                 executionTimeout == null ? 0L : executionTimeout,
-                true
+                true,
+                seededFaker
             );
         } catch (JavaScriptTemplateTimeoutException e) {
             throw e;
@@ -191,7 +198,8 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
                 httpTemplateOutputDeserializer,
                 dtoClass,
                 executionTimeout == null ? 0L : executionTimeout,
-                false
+                false,
+                seededFaker
             );
         } catch (JavaScriptTemplateTimeoutException e) {
             // Surface the timeout as-is (with its clear, already-logged message) rather than wrapping

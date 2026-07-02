@@ -128,6 +128,12 @@ public class VelocityTemplateEngine implements TemplateEngine {
             TemplateFunctions.BUILT_IN_FUNCTIONS.size() + TemplateFunctions.BUILT_IN_HELPERS.size());
         functionsAndHelpers.putAll(TemplateFunctions.BUILT_IN_FUNCTIONS);
         functionsAndHelpers.putAll(TemplateFunctions.BUILT_IN_HELPERS);
+        // When a non-zero templateFakerSeed is configured, replace the shared unseeded $faker with a
+        // per-engine seeded faker so faker-driven templates generate reproducible fixtures. Seed 0
+        // (the default) keeps the shared unseeded faker, so behaviour is unchanged.
+        if (configuration.templateFakerSeed() != 0L) {
+            functionsAndHelpers.put("faker", TemplateFunctions.resolveFaker(configuration.templateFakerSeed()));
+        }
         this.sharedFunctionsAndHelpers = Collections.unmodifiableMap(functionsAndHelpers);
         this.templateRepository = StringResourceLoader.getRepository(templateRepositoryName);
         this.registeredTemplates = Collections.synchronizedMap(new LinkedHashMap<String, Boolean>(256, 0.75f, true) {

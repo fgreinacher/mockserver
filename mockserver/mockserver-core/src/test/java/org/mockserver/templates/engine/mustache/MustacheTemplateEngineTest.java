@@ -1075,6 +1075,30 @@ public class MustacheTemplateEngineTest {
     }
 
     @Test
+    public void shouldProduceDeterministicFakerOutputWhenTemplateFakerSeedSet() {
+        // given
+        String template = "{" + NEW_LINE +
+            "    'statusCode': 200," + NEW_LINE +
+            "    'body': \"{'firstName': '{{ faker.name.firstName }}', 'email': '{{ faker.internet.emailAddress }}'}\"" + NEW_LINE +
+            "}";
+        HttpRequest request = request().withPath("/somePath");
+
+        // when — two independent engines configured with the SAME non-zero seed
+        HttpResponse responseA = new MustacheTemplateEngine(mockServerLogger, configuration().templateFakerSeed(4242L)).executeTemplate(template, request, HttpResponseDTO.class);
+        HttpResponse responseB = new MustacheTemplateEngine(mockServerLogger, configuration().templateFakerSeed(4242L)).executeTemplate(template, request, HttpResponseDTO.class);
+        // and one engine configured with a DIFFERENT non-zero seed
+        HttpResponse responseC = new MustacheTemplateEngine(mockServerLogger, configuration().templateFakerSeed(9999L)).executeTemplate(template, request, HttpResponseDTO.class);
+        String bodyA = responseA.getBodyAsString();
+        String bodyB = responseB.getBodyAsString();
+        String bodyC = responseC.getBodyAsString();
+
+        // then — same seed reproduces byte-identical faker output; a different seed differs
+        assertThat("same seed must reproduce identical faker output", bodyA, is(bodyB));
+        assertThat("faker must have produced a value", bodyA, not(containsString("'firstName': ''")));
+        assertThat("different seed should produce different faker output", bodyC, not(is(bodyA)));
+    }
+
+    @Test
     public void shouldHandleMultipleHttpRequestsWithMustacheResponseTemplateInParallel()
         throws InterruptedException, ExecutionException {
         // given

@@ -1190,6 +1190,27 @@ public class JavaScriptTemplateEngineTest {
     }
 
     @Test
+    public void shouldProduceDeterministicFakerOutputWhenTemplateFakerSeedSet() {
+        // given
+        graalJsAvailable();
+        String template = "return {" + NEW_LINE +
+            "    'statusCode': 200," + NEW_LINE +
+            "    'body': '{\"firstName\": \"' + faker.name().firstName() + '\", \"email\": \"' + faker.internet().emailAddress() + '\"}'" + NEW_LINE +
+            "};";
+        HttpRequest request = request().withPath("/somePath");
+
+        // when — two engines with the SAME seed, one with a DIFFERENT seed
+        String bodyA = new JavaScriptTemplateEngine(mockServerLogger, configuration().javascriptTemplateExecutionTimeout(0L).templateFakerSeed(4242L)).executeTemplate(template, request, HttpResponseDTO.class).getBodyAsString();
+        String bodyB = new JavaScriptTemplateEngine(mockServerLogger, configuration().javascriptTemplateExecutionTimeout(0L).templateFakerSeed(4242L)).executeTemplate(template, request, HttpResponseDTO.class).getBodyAsString();
+        String bodyC = new JavaScriptTemplateEngine(mockServerLogger, configuration().javascriptTemplateExecutionTimeout(0L).templateFakerSeed(9999L)).executeTemplate(template, request, HttpResponseDTO.class).getBodyAsString();
+
+        // then — same seed reproduces identical faker output; a different seed differs
+        assertThat("same seed must reproduce identical faker output", bodyA, is(bodyB));
+        assertThat("faker must have produced a value", bodyA, not(containsString("\"firstName\": \"\"")));
+        assertThat("different seed should produce different faker output", bodyC, not(is(bodyA)));
+    }
+
+    @Test
     public void shouldRestrictGlobalContextMultipleHttpRequestsInParallel() throws InterruptedException, ExecutionException {
         // given
         graalJsAvailable();

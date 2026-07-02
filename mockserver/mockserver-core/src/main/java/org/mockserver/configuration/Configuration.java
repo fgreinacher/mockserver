@@ -211,6 +211,7 @@ public class Configuration {
     private Boolean velocityDisallowClassLoading;
     private String velocityDisallowedText;
     private String mustacheDisallowedText;
+    private Long templateFakerSeed;
 
     // mock initialization
     private String initializationClass;
@@ -372,6 +373,7 @@ public class Configuration {
     // outbound - fixed private key & x509
     private String forwardProxyPrivateKey;
     private String forwardProxyCertificateChain;
+    private String forwardProxyClientCertificatesByHost;
 
     // service mesh / sidecar
     private Boolean transparentProxyEnabled;
@@ -3102,6 +3104,27 @@ public class Configuration {
         return this;
     }
 
+    public Long templateFakerSeed() {
+        if (templateFakerSeed == null) {
+            return ConfigurationProperties.templateFakerSeed();
+        }
+        return templateFakerSeed;
+    }
+
+    /**
+     * Seed for the template {@code faker} sample-data helper (net.datafaker).
+     * <p>
+     * The default is 0, which leaves faker unseeded so it produces different, time/random-based
+     * sample values on every render. Set a non-zero value to seed faker deterministically so
+     * faker-driven templates generate reproducible fixtures across runs.
+     *
+     * @param templateFakerSeed faker seed, 0 to leave faker unseeded (random)
+     */
+    public Configuration templateFakerSeed(Long templateFakerSeed) {
+        this.templateFakerSeed = templateFakerSeed;
+        return this;
+    }
+
     public String initializationClass() {
         if (initializationClass == null) {
             return ConfigurationProperties.initializationClass();
@@ -5236,6 +5259,26 @@ public class Configuration {
     public Configuration forwardProxyCertificateChain(String forwardProxyCertificateChain) {
         fileExists(forwardProxyCertificateChain);
         this.forwardProxyCertificateChain = forwardProxyCertificateChain;
+        return this;
+    }
+
+    public String forwardProxyClientCertificatesByHost() {
+        if (forwardProxyClientCertificatesByHost == null) {
+            return ConfigurationProperties.forwardProxyClientCertificatesByHost();
+        }
+        return forwardProxyClientCertificatesByHost;
+    }
+
+    /**
+     * Per-host outbound mTLS certificate/key map for forwarded or proxied requests, as a comma-separated list of
+     * {@code host=certificateChainPath;privateKeyPath} entries. A matching upstream host (case-insensitive) is sent
+     * that host's cert/key pair for client authentication; any host without an entry falls back to the global
+     * {@code forwardProxyPrivateKey} / {@code forwardProxyCertificateChain} pair. The default is empty.
+     *
+     * @param forwardProxyClientCertificatesByHost comma-separated host=certificateChainPath;privateKeyPath entries
+     */
+    public Configuration forwardProxyClientCertificatesByHost(String forwardProxyClientCertificatesByHost) {
+        this.forwardProxyClientCertificatesByHost = forwardProxyClientCertificatesByHost;
         return this;
     }
 

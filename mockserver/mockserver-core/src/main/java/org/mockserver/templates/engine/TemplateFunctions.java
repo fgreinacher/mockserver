@@ -21,6 +21,7 @@ import org.mockserver.uuid.UUIDService;
 import java.security.SecureRandom;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.Random;
 import java.util.function.Supplier;
 
 public class TemplateFunctions implements Supplier<Object> {
@@ -64,6 +65,24 @@ public class TemplateFunctions implements Supplier<Object> {
 
     public TemplateFunctions(Supplier<String> supplier) {
         this.supplier = supplier;
+    }
+
+    /**
+     * Resolve the {@code faker} helper bound into template contexts.
+     * <p>
+     * When {@code templateFakerSeed} is 0 (the default) the shared, unseeded {@link #FAKER} is
+     * returned, so faker-driven sample data stays time/random-based and behaviour is unchanged. When a
+     * non-zero seed is configured a fresh {@link Faker} backed by a {@link Random} seeded with that
+     * value is returned, so faker-driven templates produce reproducible fixtures across runs (the
+     * template analogue of the OpenAPI {@code SampleDataGenerator} fixed-seed model). The returned
+     * seeded faker is intended to be created once per template engine and reused across renders, so its
+     * value sequence is deterministic for a given order of renders.
+     *
+     * @param templateFakerSeed faker seed, 0 to leave faker unseeded (random)
+     * @return the shared unseeded faker when the seed is 0, otherwise a freshly seeded faker
+     */
+    public static Faker resolveFaker(long templateFakerSeed) {
+        return templateFakerSeed == 0L ? FAKER : new Faker(new Random(templateFakerSeed));
     }
 
     public static String randomInteger(int max) {

@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Seedable template `faker` for reproducible fixtures — new `templateFakerSeed` property.** The template
+  `faker` sample-data helper (Velocity `$faker`, Mustache `{{faker.*}}`, JavaScript `faker`) can now be seeded
+  deterministically. `templateFakerSeed` defaults to `0`, which leaves faker unseeded so it produces different,
+  random values on every render (behaviour unchanged); a non-zero value seeds a per-engine `Faker` so
+  faker-driven templates generate reproducible fixtures across runs — the template analogue of the OpenAPI
+  example generator's fixed-seed model. Determinism is strongest for sequential (single-threaded) generation.
+  Wired through the config trio (`ConfigurationProperties` / `Configuration` / `ConfigurationDTO`) and honoured
+  by all three template engines. See [docs/code/configuration-reference.md](docs/code/configuration-reference.md).
+
+- **Per-host upstream mTLS — new `forwardProxyClientCertificatesByHost` property.** Outbound client
+  authentication (mTLS to the upstream) was global-only; it can now vary by upstream host. The property is a
+  comma-separated list of `host=certificateChainPath;privateKeyPath` entries — a matching upstream host
+  (case-insensitive) is sent that host's cert/key pair for client authentication, and any host without an entry
+  falls back to the global `forwardProxyPrivateKey` / `forwardProxyCertificateChain` pair (default empty, so
+  behaviour is unchanged). Contexts are cached per mapped host while all unmapped hosts share one context, so a
+  forward proxy that sees many upstreams cannot grow the cache without bound. See
+  [docs/code/tls-and-security.md](docs/code/tls-and-security.md#per-host-outbound-mtls).
+
 - **Testcontainers modules for Ruby and PHP, plus a wired client on every polyglot module.** MockServer now
   ships official Testcontainers modules for **eight** languages — Ruby (`testcontainers-mockserver`, RubyGems)
   and PHP (`mock-server/mockserver-testcontainers`, Packagist) join the existing Java, .NET, Node.js, Python,

@@ -144,7 +144,26 @@ public class NettySslContextFactory {
     }
 
     public SslContext createClientSslContext(boolean forwardProxyClient, boolean enableHttp2) {
-        String key = "forwardProxyClient=" + forwardProxyClient + ",enableHttp2=" + enableHttp2;
+        return createClientSslContext(forwardProxyClient, enableHttp2, null);
+    }
+
+    /**
+     * Build (or return the cached) outbound client {@link SslContext} for connecting to an upstream.
+     * <p>
+     * When {@code host} has a per-host client certificate/key mapping configured via
+     * {@code forwardProxyClientCertificatesByHost}, that host's cert/key pair is presented for outbound
+     * mTLS; otherwise the global {@code forwardProxyPrivateKey} / {@code forwardProxyCertificateChain}
+     * pair (or MockServer's own generated key/cert) is used, exactly as before. Contexts are cached:
+     * every host that resolves to the global pair shares one cached context (so the cache cannot grow
+     * unbounded across many upstream hosts), while each host with its own mapping gets its own context.
+     *
+     * @param host the upstream target host (may be null/blank — then only the global pair is ever used)
+     */
+    public SslContext createClientSslContext(boolean forwardProxyClient, boolean enableHttp2, String host) {
+        // Only hosts with an explicit per-host cert/key mapping are keyed by host; all other hosts share
+        // the empty host-key so a forward proxy seeing many upstream hosts cannot grow the cache without bound.
+        String hostKeyPart = perHostForwardProxyCertAndKey(host) != null ? host.toLowerCase(Locale.ROOT) : "";
+        String key = "forwardProxyClient=" + forwardProxyClient + ",enableHttp2=" + enableHttp2 + ",host=" + hostKeyPart;
         SslContext clientSslContext = clientSslContexts.get(key);
         if (clientSslContext != null && !configuration.rebuildTLSContext()) {
             return clientSslContext;
@@ -163,8 +182,8 @@ public class NettySslContextFactory {
                         .forClient()
                         .protocols(effectiveTlsProtocols())
                         .keyManager(
-                            forwardProxyPrivateKey(),
-                            forwardProxyCertificateChain()
+                            forwardProxyPrivateKey(host),
+                            forwardProxyCertificateChain(host)
                         );
                 if (enableHttp2) {
                     configureALPN(sslContextBuilder);
@@ -204,8 +223,9 @@ public class NettySslContextFactory {
         return clientSslContext;
     }
 
-    private PrivateKey forwardProxyPrivateKey() {
-        String forwardProxyPrivateKey = configuration.forwardProxyPrivateKey();
+    private PrivateKey forwardProxyPrivateKey(String host) {
+        String[] perHost = perHostForwardProxyCertAndKey(host);
+        String forwardProxyPrivateKey = perHost != null ? perHost[1] : configuration.forwardProxyPrivateKey();
         if (isNotBlank(forwardProxyPrivateKey)) {
             // Cache the parsed key by the PEM *contents* (not the file path) so an unchanged PEM is
             // parsed only once while a rotated key file (same path, new contents) is re-parsed.
@@ -216,8 +236,9 @@ public class NettySslContextFactory {
         }
     }
 
-    private X509Certificate[] forwardProxyCertificateChain() {
-        String forwardProxyCertificateChain = configuration.forwardProxyCertificateChain();
+    private X509Certificate[] forwardProxyCertificateChain(String host) {
+        String[] perHost = perHostForwardProxyCertAndKey(host);
+        String forwardProxyCertificateChain = perHost != null ? perHost[0] : configuration.forwardProxyCertificateChain();
         if (isNotBlank(forwardProxyCertificateChain)) {
             // Cache the parsed chain by the PEM *contents* (not the file path) so an unchanged PEM
             // chain is parsed only once while a rotated file is re-parsed. A clone is returned so
@@ -229,6 +250,54 @@ public class NettySslContextFactory {
         } else {
             return keyAndCertificateFactory.certificateChain().toArray(new X509Certificate[0]);
         }
+    }
+
+    /**
+     * Resolve the per-host outbound mTLS certificate chain and private key for {@code host} from the
+     * {@code forwardProxyClientCertificatesByHost} property.
+     * <p>
+     * The property is a comma-separated list of {@code host=certificateChainPath;privateKeyPath} entries;
+     * host matching is case-insensitive. Returns {@code [certificateChainPath, privateKeyPath]} for the
+     * first matching host, or {@code null} when {@code host} is blank, no mapping is configured, or no
+     * entry matches — in which case the caller falls back to the global forward-proxy cert/key pair.
+     * Malformed entries (no {@code =}, or no {@code ;} separating the two paths) are skipped.
+     */
+    private String[] perHostForwardProxyCertAndKey(String host) {
+        return resolveForwardProxyClientCertificate(configuration.forwardProxyClientCertificatesByHost(), host);
+    }
+
+    /**
+     * Pure resolver for {@link #perHostForwardProxyCertAndKey(String)} — package-private for unit testing.
+     * See that method's Javadoc for the format and semantics.
+     */
+    static String[] resolveForwardProxyClientCertificate(String mapping, String host) {
+        if (host == null || host.isEmpty()) {
+            return null;
+        }
+        if (!isNotBlank(mapping)) {
+            return null;
+        }
+        for (String entry : mapping.split(",")) {
+            int equals = entry.indexOf('=');
+            if (equals <= 0) {
+                continue;
+            }
+            String mappedHost = entry.substring(0, equals).trim();
+            if (!mappedHost.equalsIgnoreCase(host)) {
+                continue;
+            }
+            String pair = entry.substring(equals + 1).trim();
+            int semicolon = pair.indexOf(';');
+            if (semicolon <= 0 || semicolon >= pair.length() - 1) {
+                continue;
+            }
+            String certificateChainPath = pair.substring(0, semicolon).trim();
+            String privateKeyPath = pair.substring(semicolon + 1).trim();
+            if (isNotBlank(certificateChainPath) && isNotBlank(privateKeyPath)) {
+                return new String[]{certificateChainPath, privateKeyPath};
+            }
+        }
+        return null;
     }
 
     private X509Certificate[] jvmCAX509TrustCertificates(List<X509Certificate> additionalX509Certificates) throws NoSuchAlgorithmException, KeyStoreException {

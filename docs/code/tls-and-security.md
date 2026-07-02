@@ -152,6 +152,26 @@ When forwarding requests, MockServer's `NettyHttpClient` needs to trust upstream
 | `JVM` | Use the JVM's default truststore |
 | `CUSTOM` | Use a custom CA chain from configuration |
 
+### Per-Host Outbound mTLS
+
+Outbound client authentication (mTLS to the upstream) is global by default: the single
+`forwardProxyPrivateKey` / `forwardProxyCertificateChain` pair (or MockServer's own generated key/cert) is
+presented to every upstream. `forwardProxyClientCertificatesByHost` adds a per-host override — a
+comma-separated list of `host=certificateChainPath;privateKeyPath` entries. When MockServer opens an outbound
+TLS connection whose target host matches an entry (case-insensitive), that host's cert/key pair is presented;
+any host without an entry falls back to the global pair. The default is empty (global pair only, unchanged).
+
+Selection and caching live in `NettySslContextFactory.createClientSslContext(forwardProxyClient, enableHttp2, host)`:
+
+- The pure, unit-tested resolver `resolveForwardProxyClientCertificate(mapping, host)` parses the map and returns
+  the matching `[certificateChainPath, privateKeyPath]` (or `null` to fall back). Malformed entries (missing `=`
+  or `;`, or a blank cert/key) are skipped.
+- The `SslContext` cache is keyed by host **only for hosts that have a mapping**; every unmapped host shares one
+  global-pair context, so a forward proxy that sees many upstream hosts cannot grow the cache without bound.
+- The target host is taken from the upstream socket (`REMOTE_SOCKET`) at pipeline-init time in
+  `HttpClientInitializer`, the same host already used for SNI. The `CONNECT`-tunnel loopback
+  (`RelayConnectHandler`) is MockServer talking to itself, not an upstream, so it keeps the global pair.
+
 ### Forward Target SSRF Validation
 
 When `forwardProxyBlockPrivateNetworks` is `true` (default `false`), MockServer validates the target host before opening any outbound connection. `InetAddressValidator.validateForwardTarget` resolves the hostname and rejects addresses in these ranges:
@@ -453,6 +473,9 @@ check handled earlier in `PortUnificationHandler` and is unaffected.
 | `certificateAuthorityCertificate` | (auto) | PEM file for custom CA certificate |
 | `forwardProxyTLSX509CertificatesTrustManagerType` | ANY | Trust mode for upstream connections |
 | `forwardProxyTLSCustomTrustX509Certificates` | (none) | PEM file for custom upstream trust |
+| `forwardProxyPrivateKey` | (none) | Global outbound mTLS client private key (PKCS#8/PKCS#1 PEM) |
+| `forwardProxyCertificateChain` | (none) | Global outbound mTLS client certificate chain (X.509 PEM) |
+| `forwardProxyClientCertificatesByHost` | (none) | Per-host outbound mTLS cert/key map: `host=certChainPath;keyPath,...`; falls back to the global pair |
 | `controlPlaneTLSMutualAuthenticationRequired` | false | Require mTLS for control plane |
 | `controlPlaneTLSMutualAuthenticationCAChain` | (none) | CA chain for control plane mTLS |
 | `controlPlaneJWTAuthenticationJWKSource` | (none) | JWK source URL for JWT validation |

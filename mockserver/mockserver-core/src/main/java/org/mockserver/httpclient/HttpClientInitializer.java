@@ -95,7 +95,7 @@ public class HttpClientInitializer extends ChannelInitializer<SocketChannel> {
 
         if (secure) {
             InetSocketAddress remoteAddress = channel.attr(REMOTE_SOCKET).get();
-            pipeline.addLast(nettySslContextFactory.createClientSslContext(forwardProxyClient, httpProtocol != null && httpProtocol.equals(Protocol.HTTP_2)).newHandler(channel.alloc(), remoteAddress.getHostName(), remoteAddress.getPort()));
+            pipeline.addLast(nettySslContextFactory.createClientSslContext(forwardProxyClient, httpProtocol != null && httpProtocol.equals(Protocol.HTTP_2), remoteAddress.getHostName()).newHandler(channel.alloc(), remoteAddress.getHostName(), remoteAddress.getPort()));
         }
 
         // add logging

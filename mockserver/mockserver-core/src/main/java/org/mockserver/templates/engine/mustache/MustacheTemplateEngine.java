@@ -47,6 +47,9 @@ public class MustacheTemplateEngine implements TemplateEngine {
     private final Configuration configuration;
     private final Mustache.Compiler compiler;
     private HttpTemplateOutputDeserializer httpTemplateOutputDeserializer;
+    // Per-engine seeded faker when templateFakerSeed is non-zero, else null (the shared unseeded faker
+    // from BUILT_IN_HELPERS is used). Resolved once so the seeded sequence is deterministic across renders.
+    private final Object seededFaker;
 
     // jmustache cannot invoke a helper method with an argument the way Velocity ($scenario.get('x')) and
     // JavaScript (scenario.get('x')) can, so scenario state is exposed the same way as jsonPath/xPath: as a
@@ -100,6 +103,9 @@ public class MustacheTemplateEngine implements TemplateEngine {
             out.write(state == null ? "" : state);
         });
         this.scenarioMustacheHelper = Collections.unmodifiableMap(scenario);
+        this.seededFaker = configuration.templateFakerSeed() != 0L
+            ? TemplateFunctions.resolveFaker(configuration.templateFakerSeed())
+            : null;
     }
 
     /**
@@ -150,6 +156,9 @@ public class MustacheTemplateEngine implements TemplateEngine {
             }
             data.putAll(TemplateFunctions.BUILT_IN_FUNCTIONS);
             data.putAll(TemplateFunctions.BUILT_IN_HELPERS);
+            if (seededFaker != null) {
+                data.put("faker", seededFaker);
+            }
             data.put("scenario", scenarioMustacheHelper);
             data.put("xPath", (Mustache.Lambda) (frag, out) -> evaluatedXPath(frag.execute(), request, out));
             data.put("jsonPath", (Mustache.Lambda) (frag, out) -> evaluateJsonPath(data, frag.execute(), request, out));
@@ -173,6 +182,9 @@ public class MustacheTemplateEngine implements TemplateEngine {
             }
             data.putAll(TemplateFunctions.BUILT_IN_FUNCTIONS);
             data.putAll(TemplateFunctions.BUILT_IN_HELPERS);
+            if (seededFaker != null) {
+                data.put("faker", seededFaker);
+            }
             data.put("scenario", scenarioMustacheHelper);
             data.put("xPath", (Mustache.Lambda) (frag, out) -> evaluatedXPath(frag.execute(), request, out));
             data.put("jsonPath", (Mustache.Lambda) (frag, out) -> evaluateJsonPath(data, frag.execute(), request, out));

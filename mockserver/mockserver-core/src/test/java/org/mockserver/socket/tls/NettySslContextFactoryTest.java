@@ -118,6 +118,78 @@ public class NettySslContextFactoryTest {
         }
     }
 
+    // ---- per-host outbound mTLS cert/key resolver ----
+
+    @Test
+    public void shouldResolveNullPerHostCertificateForBlankHostOrMapping() {
+        assertThat(NettySslContextFactory.resolveForwardProxyClientCertificate("h=/c.pem;/k.pem", null), is(nullValue()));
+        assertThat(NettySslContextFactory.resolveForwardProxyClientCertificate("h=/c.pem;/k.pem", ""), is(nullValue()));
+        assertThat(NettySslContextFactory.resolveForwardProxyClientCertificate("", "h"), is(nullValue()));
+        assertThat(NettySslContextFactory.resolveForwardProxyClientCertificate(null, "h"), is(nullValue()));
+    }
+
+    @Test
+    public void shouldResolvePerHostCertificateForMatchingHost() {
+        String[] result = NettySslContextFactory.resolveForwardProxyClientCertificate("api.internal=/certs/c.pem;/certs/k.pem", "api.internal");
+        assertThat(result, is(new String[]{"/certs/c.pem", "/certs/k.pem"}));
+    }
+
+    @Test
+    public void shouldMatchHostCaseInsensitivelyAndTrimWhitespace() {
+        String[] result = NettySslContextFactory.resolveForwardProxyClientCertificate("  API.Internal = /certs/c.pem ; /certs/k.pem  ", "api.internal");
+        assertThat(result, is(new String[]{"/certs/c.pem", "/certs/k.pem"}));
+    }
+
+    @Test
+    public void shouldReturnNullWhenNoHostMatches() {
+        assertThat(NettySslContextFactory.resolveForwardProxyClientCertificate("a=/c.pem;/k.pem", "b"), is(nullValue()));
+    }
+
+    @Test
+    public void shouldSelectCorrectEntryFromMultipleAndSkipMalformedEntries() {
+        String mapping = "noequals,blankcert==;/k.pem,nosemicolon=/only.pem,a=/ac.pem;/ak.pem,b=/bc.pem;/bk.pem";
+        assertThat(NettySslContextFactory.resolveForwardProxyClientCertificate(mapping, "a"), is(new String[]{"/ac.pem", "/ak.pem"}));
+        assertThat(NettySslContextFactory.resolveForwardProxyClientCertificate(mapping, "b"), is(new String[]{"/bc.pem", "/bk.pem"}));
+        assertThat(NettySslContextFactory.resolveForwardProxyClientCertificate(mapping, "nosemicolon"), is(nullValue()));
+    }
+
+    // ---- per-host outbound mTLS context selection & caching ----
+
+    @Test
+    public void shouldShareClientSslContextAcrossUnmappedHosts() {
+        // given — no per-host mapping configured
+        NettySslContextFactory factory = new NettySslContextFactory(configuration(), new MockServerLogger(), false);
+
+        // when — two different upstream hosts, neither mapped
+        SslContext contextA = factory.createClientSslContext(true, false, "a.example.com");
+        SslContext contextB = factory.createClientSslContext(true, false, "b.example.com");
+
+        // then — both share the single global client context (cache does not grow per host)
+        assertThat(contextA, sameInstance(contextB));
+    }
+
+    @Test
+    public void shouldSelectPerHostForwardProxyCertificateOnlyForMappedHost() throws IOException {
+        // given — a per-host mapping whose cert/key point at garbage PEM content
+        File certFile = createTempPemFile("host-cert.pem", "not a real certificate");
+        File keyFile = createTempPemFile("host-key.pem", "not a real private key");
+        Configuration configuration = configuration()
+            .forwardProxyClientCertificatesByHost("secure.host=" + certFile.getAbsolutePath() + ";" + keyFile.getAbsolutePath());
+        NettySslContextFactory factory = new NettySslContextFactory(configuration, new MockServerLogger(), false);
+
+        // when / then — the mapped host selects the (garbage) per-host key and fails to build,
+        // proving per-host selection engaged
+        try {
+            factory.createClientSslContext(true, false, "secure.host");
+            fail("expected RuntimeException for invalid per-host forward proxy key");
+        } catch (RuntimeException e) {
+            assertThat(e.getMessage(), containsString("Exception creating SSL context for client"));
+        }
+
+        // and an unmapped host falls back to the valid global/default pair and builds successfully
+        assertThat(factory.createClientSslContext(true, false, "unmapped.host"), is(notNullValue()));
+    }
+
     private File createTempPemFile(String name, String content) throws IOException {
         File file = tempFolder.newFile(name);
         try (FileWriter writer = new FileWriter(file)) {

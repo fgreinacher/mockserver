@@ -354,6 +354,23 @@
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.forwardProxyCertificateChain="/some/existing/path"</code></pre>
 </div>
 
+<button id="button_configuration_forward_proxy_client_certificates_by_host" class="accordion title"><strong>Per-Host Outbound Client Certificate/Key (mTLS)</strong></button>
+<div class="panel title">
+    <p>Present a different client certificate and key for outbound mTLS depending on which upstream host MockServer is connecting to. By default the fixed outbound client key/certificate above are used for every upstream; this property lets you override them per host.</p>
+    <p>The value is a comma-separated list of <code>host=certificateChainPath;privateKeyPath</code> entries. When MockServer opens a TLS connection to a matching upstream host (matched case-insensitively), it presents that host's certificate/key pair; any host that is not listed falls back to the fixed outbound client key/certificate (or, if those are not set, MockServer's own generated certificate). Each certificate chain is an X.509 PEM file and each private key a PKCS#8 or PKCS#1 PEM file.</p>
+    <p>Type: <span class="keyword">string</span> Default: <span class="this_value">null</span></p>
+    <p>Java Code:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">ConfigurationProperties.forwardProxyClientCertificatesByHost(String clientCertificatesByHost)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.forwardProxyClientCertificatesByHost=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_FORWARD_PROXY_CLIENT_CERTIFICATES_BY_HOST=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.forwardProxyClientCertificatesByHost=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.forwardProxyClientCertificatesByHost="api.internal=/certs/api-chain.pem;/certs/api-key.pem,billing.internal=/certs/billing-chain.pem;/certs/billing-key.pem"</code></pre>
+</div>
+
 <a id="tls_configuration_mockserver_client" class="anchor" href="#tls_configuration_mockserver_client">&nbsp;</a>
 
 <h4>MockServer Client </h4>

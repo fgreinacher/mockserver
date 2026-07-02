@@ -68,7 +68,7 @@ The first three feed into the **static** `ConfigurationProperties`. The fourth u
 | TLS inbound — dynamic | `certificateAuthorityPrivateKey`, `certificateAuthorityCertificate`, `dynamicallyCreateCertificateAuthorityCertificate`, `directoryToSaveDynamicSSLCertificate`, `preventCertificateDynamicUpdate`, `sslCertificateDomainName`, `sslSubjectAlternativeNameDomains`, `sslSubjectAlternativeNameIps` |
 | TLS inbound — fixed | `privateKeyPath`, `x509CertificatePath` |
 | mTLS | `tlsMutualAuthenticationRequired`, `tlsMutualAuthenticationCertificateChain` |
-| TLS outbound | `forwardProxyTLSX509CertificatesTrustManagerType`, `forwardProxyTLSCustomTrustX509Certificates`, `forwardProxyPrivateKey`, `forwardProxyCertificateChain` |
+| TLS outbound | `forwardProxyTLSX509CertificatesTrustManagerType`, `forwardProxyTLSCustomTrustX509Certificates`, `forwardProxyPrivateKey`, `forwardProxyCertificateChain`, `forwardProxyClientCertificatesByHost` (per-host outbound mTLS cert/key map — see [tls-and-security.md](tls-and-security.md#per-host-outbound-mtls)) |
 | Protocol selection | `tlsProtocols`, `proactivelyInitialiseTLS`, `useBouncyCastleForKeyAndCertificateGeneration`, `useSemicolonAsQueryParameterSeparator` |
 | MCP | `mcpEnabled` |
 | WASM rules | `wasmEnabled`, `wasmMaxMemoryPages` |
@@ -84,6 +84,7 @@ The first three feed into the **static** `ConfigurationProperties`. The fourth u
 | Load generation | `loadGenerationEnabled`, `loadGenerationSuppressEventLog`, `loadGenerationMaxVirtualUsers`, `loadGenerationMaxInFlightRequests`, `loadGenerationMaxRequestsPerSecond`, `loadGenerationMaxDurationMillis`, `loadGenerationMaxSteps` |
 | Breakpoints | `breakpointTimeoutMillis`, `breakpointMaxHeld` (breakpoint activation is now via the matcher-based registry REST API) |
 | Template restrictions | `javascriptDisallowedClasses`, `javascriptDisallowedText`, `javascriptTemplateExecutionTimeout` (millis; default 5000, 0/negative disables — wall-clock cancellation of runaway JS templates), `velocityDisallowClassLoading`, `velocityDisallowedText`, `mustacheDisallowedText` |
+| Template sample data | `templateFakerSeed` (long; default 0 = unseeded/random. Non-zero seeds the template `faker` helper — Velocity `$faker`, Mustache `{{faker.*}}`, JavaScript `faker` — deterministically so faker-driven templates produce reproducible fixtures across runs. The seed initialises a per-engine `Faker`; its value sequence is deterministic for a given order of renders, strongest for sequential generation. The template analogue of the OpenAPI `SampleDataGenerator` fixed seed) |
 | Drift detection | `driftSemanticAnalysisEnabled`, `driftResponseTimeThresholdMs`, `driftAlertWebhookEnabled`, `driftAlertWebhookUrl`, `driftAlertSeverityThreshold`, `driftAlertCooldownMillis` |
 | Control-plane audit | `controlPlaneAuditEnabled`, `controlPlaneAuditMaxEntries`, `controlPlaneAuditReads`, `auditLogFile` |
 | Clustered state | `stateBackend`, `clusterEnabled`, `clusterName`, `clusterTransportConfig`, `clusterSharedTimesEnabled` |
