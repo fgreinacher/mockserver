@@ -38,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `JAVASCRIPT` response/forward templates silently degrading when the optional GraalJS engine
+  (`org.graalvm.polyglot:polyglot` + `js`) is absent from the classpath — as it is in the standard netty
+  jar-with-dependencies and Docker image. Previously such a template logged an error and returned an empty
+  (`null`) response, so a user who wrote a JavaScript template got a confusing degraded result. It now
+  **fails loudly** with a clear, actionable error: *"JavaScript response templates require the GraalJS
+  engine, which is not on the classpath. Add the org.graalvm.polyglot:js (or js-community) dependency, or
+  use the Velocity or Mustache template engine."* Behaviour is unchanged when GraalJS is present. The
+  response-templates documentation now states that only Velocity and Mustache are available by default and
+  that JavaScript requires adding the optional GraalJS dependency (or the `graaljs` Docker image variant).
+
 - Fixed silent loss of expectations and log events on JVMs that report an undefined (`-1`) heap max via JMX
   (for example GraalVM native images or unusual servlet-container setups): the heap-based defaults for
   `maxExpectations` and `maxLogEntries` computed a negative capacity, so expectations were accepted with `201`

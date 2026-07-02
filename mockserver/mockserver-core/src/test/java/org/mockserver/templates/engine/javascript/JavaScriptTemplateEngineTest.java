@@ -1328,4 +1328,46 @@ public class JavaScriptTemplateEngineTest {
         ));
     }
 
+    @Test
+    public void shouldFailWithClearErrorWhenJavaScriptTemplateUsedButGraalJsUnavailable() {
+        // given - GraalJS forced unavailable via the test-visible constructor. This simulates the shipped
+        // netty jar-with-dependencies / Docker image, where the optional org.graalvm.polyglot dependency is
+        // absent (POLYGLOT_AVAILABLE=false), even though GraalJS may be on this test classpath.
+        String template = "return { 'statusCode': 200, 'body': 'hello' };";
+        HttpRequest request = request().withPath("/somePath").withMethod("GET");
+        JavaScriptTemplateEngine engine = new JavaScriptTemplateEngine(mockServerLogger, configuration, false);
+
+        // when
+        RuntimeException exception = assertThrows(RuntimeException.class, () ->
+            engine.executeTemplate(template, request, HttpResponseDTO.class));
+
+        // then - fails loudly with an actionable message instead of silently returning null (degraded response)
+        assertThat(exception.getMessage(), allOf(
+            containsString("JavaScript response templates require the GraalJS engine"),
+            containsString("not on the classpath"),
+            containsString("org.graalvm.polyglot:js"),
+            containsString("Velocity or Mustache")
+        ));
+        // and the failure is logged at ERROR level
+        verify(mockServerLogger).logEvent(new LogEntry()
+            .setLogLevel(Level.ERROR)
+            .setHttpRequest(request)
+            .setMessageFormat("JavaScript response templates require the GraalJS engine, which is not on the classpath. Add the org.graalvm.polyglot:js (or js-community) dependency, or use the Velocity or Mustache template engine."));
+    }
+
+    @Test
+    public void shouldRenderNormallyWhenGraalJsAvailable() {
+        // given - GraalJS present: behaviour is unchanged (control for the fail-loud test above)
+        graalJsAvailable();
+        String template = "return { 'statusCode': 200, 'body': 'hello' };";
+        HttpRequest request = request().withPath("/somePath").withMethod("GET");
+
+        // when
+        HttpResponse actualHttpResponse = new JavaScriptTemplateEngine(mockServerLogger, configuration, true)
+            .executeTemplate(template, request, HttpResponseDTO.class);
+
+        // then
+        assertThat(actualHttpResponse, is(response().withStatusCode(200).withBody("hello")));
+    }
+
 }

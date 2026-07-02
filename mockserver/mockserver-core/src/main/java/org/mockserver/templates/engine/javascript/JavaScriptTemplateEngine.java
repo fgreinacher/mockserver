@@ -45,8 +45,19 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
     private final HttpTemplateOutputDeserializer httpTemplateOutputDeserializer;
     private final Configuration configuration;
     private final Predicate<String> classFilter;
+    private final boolean polyglotAvailable;
 
     public JavaScriptTemplateEngine(MockServerLogger mockServerLogger, Configuration configuration) {
+        this(mockServerLogger, configuration, POLYGLOT_AVAILABLE);
+    }
+
+    /**
+     * Visible for testing: allows exercising the polyglot-unavailable (fail-loud) path even when the
+     * GraalVM Polyglot API is present on the test classpath. Production always uses the public two-arg
+     * constructor, which pins {@code polyglotAvailable} to the real classpath probe {@link #POLYGLOT_AVAILABLE}.
+     */
+    JavaScriptTemplateEngine(MockServerLogger mockServerLogger, Configuration configuration, boolean polyglotAvailable) {
+        this.polyglotAvailable = polyglotAvailable;
         this.configuration = (configuration == null) ? configuration() : configuration;
         this.mockServerLogger = mockServerLogger;
         this.httpTemplateOutputDeserializer = new HttpTemplateOutputDeserializer(mockServerLogger);
@@ -105,42 +116,44 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
     }
 
     private <T> T executeTemplateInternal(String template, HttpRequest request, HttpResponse response, org.mockserver.load.IterationContext iteration, Class<? extends DTO<T>> dtoClass, boolean includeResponse) {
-        String script = includeResponse ? wrapTemplateWithResponse(template) : wrapTemplate(template);
-        try {
-            validateTemplate(template);
-            if (POLYGLOT_AVAILABLE) {
-                // Delegate to PolyglotRunner (nested holder class). The JVM only resolves the
-                // org.graalvm.polyglot.* references inside PolyglotRunner when this branch is
-                // taken, so the standard distribution (no GraalVM on classpath) loads this class
-                // and degrades gracefully via the else branch instead of failing with NoClassDefFoundError.
-                Long executionTimeout = configuration.javascriptTemplateExecutionTimeout();
-                return PolyglotRunner.run(
-                    script,
-                    includeResponse,
-                    request,
-                    response,
-                    iteration,
-                    classFilter,
-                    objectMapper,
-                    mockServerLogger,
-                    httpTemplateOutputDeserializer,
-                    dtoClass,
-                    executionTimeout == null ? 0L : executionTimeout
-                );
-            } else {
+        if (!polyglotAvailable) {
+            // Fail loudly rather than silently degrade. A JavaScript template was actually used but the
+            // GraalVM Polyglot API (GraalJS) is not on the classpath, so we cannot render it. Surface a
+            // clear, actionable error the same way a template transform failure does (RuntimeException),
+            // instead of returning null and producing a confusing empty/degraded response.
+            String message = "JavaScript response templates require the GraalJS engine, which is not on the classpath. " +
+                "Add the org.graalvm.polyglot:js (or js-community) dependency, or use the Velocity or Mustache template engine.";
+            if (mockServerLogger != null) {
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setLogLevel(Level.ERROR)
                         .setHttpRequest(request)
-                        .setMessageFormat(
-                            "JavaScript based templating requires GraalVM Polyglot on the classpath, " +
-                                "please add org.graalvm.polyglot:polyglot and org.graalvm.polyglot:js to the classpath, " +
-                                "or use the MockServer 'graaljs' Docker image variant"
-                        )
-                        .setArguments(new RuntimeException("GraalVM Polyglot API not on classpath"))
+                        .setMessageFormat(message)
                 );
-                return null;
             }
+            throw new RuntimeException(message);
+        }
+        String script = includeResponse ? wrapTemplateWithResponse(template) : wrapTemplate(template);
+        try {
+            validateTemplate(template);
+            // Delegate to PolyglotRunner (nested holder class). The JVM only resolves the
+            // org.graalvm.polyglot.* references inside PolyglotRunner when this branch is
+            // reached, so the standard distribution (no GraalVM on classpath) never triggers a
+            // NoClassDefFoundError — that case is handled by the fail-loud guard above.
+            Long executionTimeout = configuration.javascriptTemplateExecutionTimeout();
+            return PolyglotRunner.run(
+                script,
+                includeResponse,
+                request,
+                response,
+                iteration,
+                classFilter,
+                objectMapper,
+                mockServerLogger,
+                httpTemplateOutputDeserializer,
+                dtoClass,
+                executionTimeout == null ? 0L : executionTimeout
+            );
         } catch (JavaScriptTemplateTimeoutException e) {
             // Surface the timeout as-is (with its clear, already-logged message) rather than wrapping
             // it in the generic transform-failure message, so callers/tests can recognise the cap firing.

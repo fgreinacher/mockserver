@@ -632,7 +632,9 @@ Three template engines are supported for `RESPONSE_TEMPLATE` and `FORWARD_TEMPLA
 |--------|-------|-------------------|
 | Velocity | `VelocityTemplateEngine` | `$request` |
 | Mustache | `MustacheTemplateEngine` | `request` (with `#jsonPath` and `#xPath` lambdas) |
-| JavaScript | `JavaScriptTemplateEngine` | `request` (Nashorn, Java 17+) |
+| JavaScript | `JavaScriptTemplateEngine` | `request` (GraalJS / GraalVM Polyglot — see note below) |
+
+> **JavaScript requires the optional GraalJS engine.** Velocity and Mustache are always available, but the GraalVM Polyglot (`org.graalvm.polyglot:polyglot` + `js`) dependency is `<optional>true</optional>` and is **not** bundled in the standard netty jar-with-dependencies or Docker image (`POLYGLOT_AVAILABLE=false` there). If a `JAVASCRIPT` template is actually used without GraalJS on the classpath, `JavaScriptTemplateEngine` **fails loudly** with a clear `RuntimeException` ("JavaScript response templates require the GraalJS engine, which is not on the classpath...") instead of silently degrading. Add the dependency, or run the `graaljs` Docker image variant, to enable it.
 
 All engines receive built-in dynamic variables from `TemplateFunctions.BUILT_IN_FUNCTIONS` (`now`, `now_epoch`, `now_iso_8601`, `uuid`, `rand_int`, `rand_bytes`, etc.) and five helper objects from `TemplateFunctions.BUILT_IN_HELPERS`:
 
