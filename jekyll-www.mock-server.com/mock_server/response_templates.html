@@ -29,6 +29,8 @@ sitemap:
 
 <p>Templates are evaluated at request time, so the response is always fresh. See the sections below for the full template format reference, available variables, and helper objects.</p>
 
+<p>The same templating also applies to <strong>streaming responses</strong>: set a <span class="inline_code">templateType</span> on an <span class="inline_code">httpSseResponse</span> or <span class="inline_code">httpWebSocketResponse</span> (or per-message on a gRPC stream response) and each event/message payload is rendered as a response template against the request, using the same variables and helpers described here. See <a href="/mock_server/ai_protocol_mocking.html">SSE &amp; WebSocket mocking</a>.</p>
+
 <a id="response_templates" class="anchor" href="#response_templates">&nbsp;</a>
 
 <h2>Response Templates</h2>

@@ -10,6 +10,7 @@ public class HttpSseResponse extends Action<HttpSseResponse> {
     private Headers headers;
     private List<SseEvent> events;
     private Boolean closeConnection;
+    private HttpTemplate.TemplateType templateType;
 
     public static HttpSseResponse sseResponse() {
         return new HttpSseResponse();
@@ -88,6 +89,27 @@ public class HttpSseResponse extends Action<HttpSseResponse> {
         return closeConnection;
     }
 
+    /**
+     * Opt-in response templating: when set (to {@link HttpTemplate.TemplateType#VELOCITY},
+     * {@link HttpTemplate.TemplateType#MUSTACHE} or {@link HttpTemplate.TemplateType#JAVASCRIPT}),
+     * each event's {@code data} payload is rendered as a response template against the triggering
+     * request (so {@code $!request.body}, {@code $jsonPath(...)}, the built-in helpers, the
+     * {@code faker} helper and the {@code scenario} helper are all available) rather than emitted
+     * verbatim. The template is rendered once per event, immediately before the event is written.
+     * <p>
+     * When {@code null} (the default) every event is emitted byte-for-byte unchanged, exactly as
+     * before this field existed.
+     */
+    public HttpSseResponse withTemplateType(HttpTemplate.TemplateType templateType) {
+        this.templateType = templateType;
+        this.hashCode = 0;
+        return this;
+    }
+
+    public HttpTemplate.TemplateType getTemplateType() {
+        return templateType;
+    }
+
     @Override
     @JsonIgnore
     public Type getType() {
@@ -112,13 +134,14 @@ public class HttpSseResponse extends Action<HttpSseResponse> {
         return Objects.equals(statusCode, that.statusCode) &&
             Objects.equals(headers, that.headers) &&
             Objects.equals(events, that.events) &&
-            Objects.equals(closeConnection, that.closeConnection);
+            Objects.equals(closeConnection, that.closeConnection) &&
+            templateType == that.templateType;
     }
 
     @Override
     public int hashCode() {
         if (hashCode == 0) {
-            hashCode = Objects.hash(super.hashCode(), statusCode, headers, events, closeConnection);
+            hashCode = Objects.hash(super.hashCode(), statusCode, headers, events, closeConnection, templateType);
         }
         return hashCode;
     }

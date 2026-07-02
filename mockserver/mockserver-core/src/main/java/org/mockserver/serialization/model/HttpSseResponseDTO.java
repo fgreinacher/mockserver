@@ -3,6 +3,7 @@ package org.mockserver.serialization.model;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import org.mockserver.model.Headers;
 import org.mockserver.model.HttpSseResponse;
+import org.mockserver.model.HttpTemplate;
 import org.mockserver.model.ObjectWithReflectiveEqualsHashCodeToString;
 
 import java.util.ArrayList;
@@ -14,6 +15,7 @@ public class HttpSseResponseDTO extends ObjectWithReflectiveEqualsHashCodeToStri
     private Headers headers;
     private List<SseEventDTO> events;
     private Boolean closeConnection;
+    private HttpTemplate.TemplateType templateType;
     @JsonInclude(JsonInclude.Include.NON_DEFAULT)
     private boolean primary;
 
@@ -29,6 +31,7 @@ public class HttpSseResponseDTO extends ObjectWithReflectiveEqualsHashCodeToStri
                 events = new ArrayList<>();
                 httpSseResponse.getEvents().forEach(event -> events.add(new SseEventDTO(event)));
             }
+            templateType = httpSseResponse.getTemplateType();
             primary = httpSseResponse.isPrimary();
         }
     }
@@ -42,6 +45,7 @@ public class HttpSseResponseDTO extends ObjectWithReflectiveEqualsHashCodeToStri
             .withStatusCode(statusCode)
             .withHeaders(headers)
             .withCloseConnection(closeConnection)
+            .withTemplateType(templateType)
             .withPrimary(primary);
         if (events != null) {
             events.forEach(eventDTO -> httpSseResponse.withEvent(eventDTO.buildObject()));
@@ -91,6 +95,15 @@ public class HttpSseResponseDTO extends ObjectWithReflectiveEqualsHashCodeToStri
 
     public HttpSseResponseDTO setCloseConnection(Boolean closeConnection) {
         this.closeConnection = closeConnection;
+        return this;
+    }
+
+    public HttpTemplate.TemplateType getTemplateType() {
+        return templateType;
+    }
+
+    public HttpSseResponseDTO setTemplateType(HttpTemplate.TemplateType templateType) {
+        this.templateType = templateType;
         return this;
     }
 

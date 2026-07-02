@@ -30,6 +30,7 @@ public class GrpcStreamResponseActionHandler {
     private final GrpcProtoDescriptorStore descriptorStore;
     private final Configuration configuration;
     private final WebSocketClientRegistry webSocketClientRegistry;
+    private final StreamTemplateRenderer templateRenderer;
 
     public GrpcStreamResponseActionHandler(MockServerLogger mockServerLogger, Scheduler scheduler, GrpcProtoDescriptorStore descriptorStore, Configuration configuration, WebSocketClientRegistry webSocketClientRegistry) {
         this.mockServerLogger = mockServerLogger;
@@ -37,6 +38,7 @@ public class GrpcStreamResponseActionHandler {
         this.descriptorStore = descriptorStore;
         this.configuration = configuration;
         this.webSocketClientRegistry = webSocketClientRegistry;
+        this.templateRenderer = new StreamTemplateRenderer(mockServerLogger, configuration);
     }
 
     public void handle(GrpcStreamResponse grpcStreamResponse, ChannelHandlerContext ctx, org.mockserver.model.HttpRequest request) {
@@ -116,7 +118,7 @@ public class GrpcStreamResponseActionHandler {
                 if (!ctx.channel().isActive()) {
                     return;
                 }
-                byte[] frameBytes = encodeMessage(message, methodDescriptor);
+                byte[] frameBytes = encodeMessage(message, methodDescriptor, request);
 
                 if (!streamBreakpointsActive) {
                     // Default-off fast path: write immediately
@@ -268,10 +270,16 @@ public class GrpcStreamResponseActionHandler {
         });
     }
 
-    private byte[] encodeMessage(GrpcStreamMessage message, com.google.protobuf.Descriptors.MethodDescriptor methodDescriptor) {
+    private byte[] encodeMessage(GrpcStreamMessage message, com.google.protobuf.Descriptors.MethodDescriptor methodDescriptor, org.mockserver.model.HttpRequest request) {
+        // Opt-in per-message templating: when the message has a templateType, render its JSON against the
+        // triggering request (full request/template context — request fields, scenario state, faker) before
+        // encoding. When templateType is null the raw JSON is encoded unchanged (static, byte-for-byte).
+        String json = message.getTemplateType() != null
+            ? templateRenderer.render(message.getTemplateType(), message.getJson(), request)
+            : message.getJson();
         // Delegate to the transport-neutral encoder so HTTP/2 and HTTP/3 server-streaming
         // produce byte-identical gRPC frames.
-        return GrpcStreamMessageEncoder.encode(message, methodDescriptor, descriptorStore);
+        return GrpcStreamMessageEncoder.encode(json, methodDescriptor, descriptorStore);
     }
 
     private void finishStream(ChannelHandlerContext ctx, GrpcStreamResponse grpcStreamResponse,

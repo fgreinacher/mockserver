@@ -3,6 +3,7 @@ package org.mockserver.mock.action.http;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.*;
+import org.mockserver.configuration.Configuration;
 import org.mockserver.llm.StreamingFormat;
 import org.mockserver.llm.codec.BedrockEventStreamEncoder;
 import org.mockserver.log.model.LogEntry;
@@ -22,10 +23,12 @@ public class HttpSseResponseActionHandler {
 
     private final MockServerLogger mockServerLogger;
     private final Scheduler scheduler;
+    private final StreamTemplateRenderer templateRenderer;
 
-    public HttpSseResponseActionHandler(MockServerLogger mockServerLogger, Scheduler scheduler) {
+    public HttpSseResponseActionHandler(MockServerLogger mockServerLogger, Scheduler scheduler, Configuration configuration) {
         this.mockServerLogger = mockServerLogger;
         this.scheduler = scheduler;
+        this.templateRenderer = new StreamTemplateRenderer(mockServerLogger, configuration);
     }
 
     public void handle(HttpSseResponse httpSseResponse, ChannelHandlerContext ctx, org.mockserver.model.HttpRequest request) {
@@ -88,7 +91,7 @@ public class HttpSseResponseActionHandler {
                 if (!ctx.channel().isActive()) {
                     return;
                 }
-                byte[] chunkBytes = formatChunkBytes(event, format);
+                byte[] chunkBytes = formatChunkBytes(renderEvent(event, httpSseResponse, request), format);
                 DefaultHttpContent content = new DefaultHttpContent(
                     Unpooled.wrappedBuffer(chunkBytes)
                 );
@@ -142,6 +145,25 @@ public class HttpSseResponseActionHandler {
         } else {
             writeEvent.run();
         }
+    }
+
+    /**
+     * When the SSE response has a {@code templateType}, render the event's {@code data} payload as a
+     * response template against the triggering request, returning a copy of the event with the rendered
+     * data (the original event is never mutated, so a reused expectation renders freshly per request).
+     * When there is no {@code templateType} (or no data), the original event is returned unchanged so
+     * static responses are byte-for-byte identical.
+     */
+    private SseEvent renderEvent(SseEvent event, HttpSseResponse httpSseResponse, org.mockserver.model.HttpRequest request) {
+        if (httpSseResponse.getTemplateType() == null || event.getData() == null) {
+            return event;
+        }
+        String renderedData = templateRenderer.render(httpSseResponse.getTemplateType(), event.getData(), request);
+        return SseEvent.sseEvent()
+            .withEvent(event.getEvent())
+            .withData(renderedData)
+            .withId(event.getId())
+            .withRetry(event.getRetry());
     }
 
     private void finishStream(ChannelHandlerContext ctx, HttpSseResponse httpSseResponse) {

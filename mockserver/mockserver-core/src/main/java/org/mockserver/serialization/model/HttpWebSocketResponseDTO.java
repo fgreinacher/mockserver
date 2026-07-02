@@ -1,6 +1,7 @@
 package org.mockserver.serialization.model;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import org.mockserver.model.HttpTemplate;
 import org.mockserver.model.HttpWebSocketResponse;
 import org.mockserver.model.ObjectWithReflectiveEqualsHashCodeToString;
 
@@ -14,6 +15,7 @@ public class HttpWebSocketResponseDTO extends ObjectWithReflectiveEqualsHashCode
     private List<WebSocketMessageMatcherDTO> matchers;
     private Boolean closeConnection;
     private GraphQLBodyDTO graphqlSubscriptionFilter;
+    private HttpTemplate.TemplateType templateType;
     @JsonInclude(JsonInclude.Include.NON_DEFAULT)
     private boolean primary;
 
@@ -35,6 +37,7 @@ public class HttpWebSocketResponseDTO extends ObjectWithReflectiveEqualsHashCode
             if (httpWebSocketResponse.getGraphqlSubscriptionFilter() != null) {
                 graphqlSubscriptionFilter = new GraphQLBodyDTO(httpWebSocketResponse.getGraphqlSubscriptionFilter());
             }
+            templateType = httpWebSocketResponse.getTemplateType();
             primary = httpWebSocketResponse.isPrimary();
         }
     }
@@ -47,6 +50,7 @@ public class HttpWebSocketResponseDTO extends ObjectWithReflectiveEqualsHashCode
             .withDelay(delay != null ? delay.buildObject() : null)
             .withSubprotocol(subprotocol)
             .withCloseConnection(closeConnection)
+            .withTemplateType(templateType)
             .withPrimary(primary);
         if (messages != null) {
             messages.forEach(messageDTO -> httpWebSocketResponse.withMessage(messageDTO.buildObject()));
@@ -111,6 +115,15 @@ public class HttpWebSocketResponseDTO extends ObjectWithReflectiveEqualsHashCode
 
     public HttpWebSocketResponseDTO setGraphqlSubscriptionFilter(GraphQLBodyDTO graphqlSubscriptionFilter) {
         this.graphqlSubscriptionFilter = graphqlSubscriptionFilter;
+        return this;
+    }
+
+    public HttpTemplate.TemplateType getTemplateType() {
+        return templateType;
+    }
+
+    public HttpWebSocketResponseDTO setTemplateType(HttpTemplate.TemplateType templateType) {
+        this.templateType = templateType;
         return this;
     }
 

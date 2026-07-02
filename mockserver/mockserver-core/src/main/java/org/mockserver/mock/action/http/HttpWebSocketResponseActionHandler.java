@@ -32,12 +32,14 @@ public class HttpWebSocketResponseActionHandler {
     private final Scheduler scheduler;
     private final Configuration configuration;
     private final WebSocketClientRegistry webSocketClientRegistry;
+    private final StreamTemplateRenderer templateRenderer;
 
     public HttpWebSocketResponseActionHandler(MockServerLogger mockServerLogger, Scheduler scheduler, Configuration configuration, WebSocketClientRegistry webSocketClientRegistry) {
         this.mockServerLogger = mockServerLogger;
         this.scheduler = scheduler;
         this.configuration = configuration;
         this.webSocketClientRegistry = webSocketClientRegistry;
+        this.templateRenderer = new StreamTemplateRenderer(mockServerLogger, configuration);
     }
 
     public void handle(HttpWebSocketResponse httpWebSocketResponse, ChannelHandlerContext ctx, org.mockserver.model.HttpRequest request) {
@@ -194,7 +196,13 @@ public class HttpWebSocketResponseActionHandler {
                     frameBytes = message.getBinary();
                     isBinary = true;
                 } else if (message.getText() != null) {
-                    frameBytes = message.getText().getBytes(StandardCharsets.UTF_8);
+                    // Opt-in templating: render the text payload against the triggering request when a
+                    // templateType is set on the response (binary frames are never templated). Rendering
+                    // happens before breakpoint dispatch so interception observes the rendered bytes.
+                    String text = httpWebSocketResponse.getTemplateType() != null
+                        ? templateRenderer.render(httpWebSocketResponse.getTemplateType(), message.getText(), request)
+                        : message.getText();
+                    frameBytes = text.getBytes(StandardCharsets.UTF_8);
                     isBinary = false;
                 } else {
                     scheduleMessages(messages, index + 1, ctx, httpWebSocketResponse, request, handshaker,

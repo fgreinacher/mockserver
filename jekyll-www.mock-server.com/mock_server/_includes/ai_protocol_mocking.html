@@ -2,6 +2,8 @@
 
 <p>Server-Sent Events (SSE) responses stream events to clients over a long-lived HTTP connection. This is the transport used by MCP's Streamable HTTP protocol and many other AI APIs.</p>
 
+<p>By default each event's <code>data</code> is a fixed string. To generate event content dynamically &mdash; for example to echo a value from the request into every event &mdash; set an optional <code>templateType</code> (<code>VELOCITY</code>, <code>MUSTACHE</code> or <code>JAVASCRIPT</code>) on the <code>httpSseResponse</code>. Each event's <code>data</code> is then rendered as a <a href="/mock_server/response_templates.html">response template</a> against the triggering request, with the same context available in response templates (request fields, <code>jsonPath</code>, built-in helpers, faker and scenario state). When <code>templateType</code> is not set, events are sent exactly as written.</p>
+
 <button id="button_sse_basic" class="accordion">SSE response with multiple events</button>
 <div class="panel">
     <button class="accordion inner">Java</button>
@@ -590,6 +592,8 @@ $client-&gt;when(
 <h2>WebSocket Mocking</h2>
 
 <p>Mock WebSocket endpoints that perform the upgrade handshake and send a sequence of text or binary messages. Useful for testing clients that connect to WebSocket APIs (GraphQL subscriptions, real-time feeds, etc.).</p>
+
+<p>As with SSE, text messages can be generated dynamically by setting an optional <code>templateType</code> (<code>VELOCITY</code>, <code>MUSTACHE</code> or <code>JAVASCRIPT</code>) on the <code>httpWebSocketResponse</code>: each text message is then rendered as a <a href="/mock_server/response_templates.html">response template</a> against the triggering request. Binary messages are always sent verbatim, and with no <code>templateType</code> every message is sent exactly as written.</p>
 
 <button id="button_ws_basic" class="accordion">WebSocket response with text messages</button>
 <div class="panel">

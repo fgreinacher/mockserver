@@ -64,11 +64,21 @@ final class PolyglotRunner {
         MockServerLogger mockServerLogger,
         HttpTemplateOutputDeserializer httpTemplateOutputDeserializer,
         Class<? extends DTO<T>> dtoClass,
-        long executionTimeoutMillis
+        long executionTimeoutMillis,
+        boolean rawText
     ) {
-        String serialiseFunction = includeResponse
-            ? " function serialise(request, response) { return JSON.stringify(handle(JSON.parse(request), JSON.parse(response)), null, 2); }"
-            : " function serialise(request) { return JSON.stringify(handle(JSON.parse(request)), null, 2); }";
+        // rawText (streaming payload templating): coerce the handle(request) return value to text — a
+        // returned string is emitted verbatim, any other value is JSON.stringify'd — instead of always
+        // JSON.stringify'ing and then deserialising into a response object. rawText always implies the
+        // no-response (single-argument) template shape.
+        String serialiseFunction;
+        if (rawText) {
+            serialiseFunction = " function serialise(request) { var r = handle(JSON.parse(request)); return (r === null || r === undefined) ? '' : ((typeof r === 'string') ? r : JSON.stringify(r)); }";
+        } else if (includeResponse) {
+            serialiseFunction = " function serialise(request, response) { return JSON.stringify(handle(JSON.parse(request), JSON.parse(response)), null, 2); }";
+        } else {
+            serialiseFunction = " function serialise(request) { return JSON.stringify(handle(JSON.parse(request)), null, 2); }";
+        }
         String fullScript = script + serialiseFunction;
 
         // HostAccess.ALL is equivalent to the previous JSR-223 polyglot.js.allowHostAccess=true.
@@ -106,7 +116,7 @@ final class PolyglotRunner {
             try {
                 return evaluate(
                     script, fullScript, includeResponse, request, response, iteration,
-                    objectMapper, mockServerLogger, httpTemplateOutputDeserializer, dtoClass, context
+                    objectMapper, mockServerLogger, httpTemplateOutputDeserializer, dtoClass, context, rawText
                 );
             } catch (PolyglotException polyglotException) {
                 if (watchdogFired.get() && (polyglotException.isCancelled() || polyglotException.isInterrupted())) {
@@ -146,7 +156,8 @@ final class PolyglotRunner {
         MockServerLogger mockServerLogger,
         HttpTemplateOutputDeserializer httpTemplateOutputDeserializer,
         Class<? extends DTO<T>> dtoClass,
-        Context context
+        Context context,
+        boolean rawText
     ) {
         {
             // In GraalVM Polyglot, context.getBindings("js") returns the JavaScript global scope
@@ -198,6 +209,23 @@ final class PolyglotRunner {
             }
 
             String stringifiedResponse = stringifiedResult.asString();
+
+            if (rawText) {
+                // Streaming payload templating: the serialise() wrapper already coerced the handle()
+                // result to text, so return it verbatim without deserialising into a response object.
+                if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setType(TEMPLATE_GENERATED)
+                            .setLogLevel(Level.INFO)
+                            .setHttpRequest(request)
+                            .setMessageFormat(TEMPLATE_GENERATED_MESSAGE_FORMAT)
+                            .setArguments(stringifiedResponse, script, request)
+                    );
+                }
+                //noinspection unchecked
+                return (T) stringifiedResponse;
+            }
 
             JsonNode generatedObject = null;
             try {

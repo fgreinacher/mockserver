@@ -3385,7 +3385,7 @@ public class HttpActionHandler {
 
     private HttpSseResponseActionHandler getHttpSseResponseActionHandler() {
         if (httpSseResponseActionHandler == null) {
-            httpSseResponseActionHandler = new HttpSseResponseActionHandler(mockServerLogger, scheduler);
+            httpSseResponseActionHandler = new HttpSseResponseActionHandler(mockServerLogger, scheduler, configuration);
         }
         return httpSseResponseActionHandler;
     }

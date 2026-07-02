@@ -83,6 +83,8 @@ flowchart TB
 3. Formats each event per the SSE specification — multi-line `data` values are split into multiple `data:` lines; `id`, `event`, and `retry` fields are written when non-null
 4. Writes `LastHttpContent.EMPTY_LAST_CONTENT` to terminate the chunked stream, then closes the channel if `closeConnection` is `true` (or null, which defaults to closing)
 
+Since T1.2, streaming payloads can be **templated**: setting an optional `templateType` (`VELOCITY`/`MUSTACHE`/`JAVASCRIPT`) on the `httpSseResponse` (or `httpWebSocketResponse`, or per-message on `grpcStreamResponse`) renders each event's `data` (each WebSocket text frame / each gRPC message `json`) as a response template against the triggering request via the shared `StreamTemplateRenderer` — same request/template context as `httpResponseTemplate` (`$!request.body`, `$jsonPath(...)`, built-in helpers, `faker`, `scenario`). Rendering is per event/message and opt-in; with no `templateType` payloads are emitted byte-for-byte unchanged. See *Templated streaming payloads* in [request-processing.md](request-processing.md).
+
 ```mermaid
 sequenceDiagram
     participant Client
@@ -296,7 +298,7 @@ Notes and limitations:
 - **Escaping**: the caller response is Velocity-templated (response text is Velocity-escaped so `$`/`#` render literally), whereas the webhook POST body is a literal request override (JSON-escaped only — no Velocity escaping, which would corrupt `$`/`#`).
 - **Custom handlers + push**: push delivery fires only for the generic `tasks/send` catch-all. Custom `onTaskSend(...)` handlers still return a task response to the caller but do not POST to the webhook.
 - **Delivery failures are non-fatal-but-visible**: the caller response template renders only when the webhook returns a response; if the webhook is unreachable the caller receives the forward error rather than a synthesised 200.
-- **Streaming JSON-RPC id**: the SSE event envelopes use a fixed placeholder id (`"1"`) because `HttpSseResponse` events are static (not templated), so the streaming response id is not correlated to the request id — streaming clients correlate by the stream itself.
+- **Streaming JSON-RPC id**: the A2A builder's SSE event envelopes use a fixed placeholder id (`"1"`); streaming clients correlate by the stream itself. Since T1.2, `HttpSseResponse` (and `HttpWebSocketResponse` / gRPC `grpcStreamResponse`) support an optional `templateType`, so a hand-authored streaming expectation *can* now template each event/message payload — e.g. echo the request's JSON-RPC id via `$jsonPath.find("$.id")` — against the triggering request. The A2A builder itself still emits static envelopes.
 
 ### Usage
 

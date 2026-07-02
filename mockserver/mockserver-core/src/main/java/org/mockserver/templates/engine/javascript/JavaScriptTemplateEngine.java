@@ -111,16 +111,50 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
     public String renderTemplate(String template, HttpRequest request) {
         // JavaScript templates are designed to construct and return a full response object, not a text
         // fragment, so they are not supported for FileBody templating. Use httpResponseTemplate (or
-        // httpResponseTemplate with templateFile) with a JavaScript template instead.
+        // httpResponseTemplate with templateFile) with a JavaScript template instead. Streaming payload
+        // templating uses renderTemplateText(...) below, which executes the template and coerces its
+        // return value to text.
         throw new UnsupportedOperationException("JavaScript templates are not supported for file body templating; use a Velocity or Mustache templateType, or an httpResponseTemplate for JavaScript");
     }
 
-    private <T> T executeTemplateInternal(String template, HttpRequest request, HttpResponse response, org.mockserver.load.IterationContext iteration, Class<? extends DTO<T>> dtoClass, boolean includeResponse) {
+    @Override
+    public String renderTemplateText(String template, HttpRequest request) {
+        assertPolyglotAvailable(request);
+        String script = wrapTemplate(template);
+        try {
+            validateTemplate(template);
+            Long executionTimeout = configuration.javascriptTemplateExecutionTimeout();
+            // rawText=true: the template's handle(request) return value is coerced to text (a string is
+            // used verbatim, any other value is JSON.stringify'd) rather than deserialised into a response.
+            return PolyglotRunner.run(
+                script,
+                false,
+                request,
+                null,
+                null,
+                classFilter,
+                objectMapper,
+                mockServerLogger,
+                httpTemplateOutputDeserializer,
+                null,
+                executionTimeout == null ? 0L : executionTimeout,
+                true
+            );
+        } catch (JavaScriptTemplateTimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(formatLogMessage("Exception:{}transforming template:{}for request:{}", isNotBlank(e.getMessage()) ? e.getMessage() : e.getClass().getSimpleName(), template, request), e);
+        }
+    }
+
+    /**
+     * Fail loudly rather than silently degrade. If a JavaScript template is actually used but the
+     * GraalVM Polyglot API (GraalJS) is not on the classpath, we cannot render it, so surface a clear,
+     * actionable error the same way a template transform failure does (RuntimeException) instead of
+     * returning null and producing a confusing empty/degraded response.
+     */
+    private void assertPolyglotAvailable(HttpRequest request) {
         if (!polyglotAvailable) {
-            // Fail loudly rather than silently degrade. A JavaScript template was actually used but the
-            // GraalVM Polyglot API (GraalJS) is not on the classpath, so we cannot render it. Surface a
-            // clear, actionable error the same way a template transform failure does (RuntimeException),
-            // instead of returning null and producing a confusing empty/degraded response.
             String message = "JavaScript response templates require the GraalJS engine, which is not on the classpath. " +
                 "Add the org.graalvm.polyglot:js (or js-community) dependency, or use the Velocity or Mustache template engine.";
             if (mockServerLogger != null) {
@@ -133,6 +167,10 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
             }
             throw new RuntimeException(message);
         }
+    }
+
+    private <T> T executeTemplateInternal(String template, HttpRequest request, HttpResponse response, org.mockserver.load.IterationContext iteration, Class<? extends DTO<T>> dtoClass, boolean includeResponse) {
+        assertPolyglotAvailable(request);
         String script = includeResponse ? wrapTemplateWithResponse(template) : wrapTemplate(template);
         try {
             validateTemplate(template);
@@ -152,7 +190,8 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
                 mockServerLogger,
                 httpTemplateOutputDeserializer,
                 dtoClass,
-                executionTimeout == null ? 0L : executionTimeout
+                executionTimeout == null ? 0L : executionTimeout,
+                false
             );
         } catch (JavaScriptTemplateTimeoutException e) {
             // Surface the timeout as-is (with its clear, already-logged message) rather than wrapping

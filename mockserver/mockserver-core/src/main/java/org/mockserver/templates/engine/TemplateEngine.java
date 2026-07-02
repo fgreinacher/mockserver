@@ -22,6 +22,25 @@ public interface TemplateEngine {
     String renderTemplate(String template, HttpRequest httpRequest);
 
     /**
+     * Renders a template against the request and returns the raw rendered text fragment, for use as a
+     * streaming payload (an SSE event's {@code data}, a WebSocket text frame, or a gRPC stream message).
+     * Unlike {@link #renderTemplate(String, HttpRequest)} — which the text-based engines (Velocity,
+     * Mustache) support but the JavaScript engine cannot, because a JavaScript template constructs a
+     * whole response object — this method is supported by all three engines: the JavaScript engine
+     * executes the template's {@code handle(request)} function and coerces its return value to text
+     * (a returned string is used verbatim; any other value is {@code JSON.stringify}'d). The default
+     * delegates to {@link #renderTemplate(String, HttpRequest)} so the text-based engines need no
+     * override.
+     *
+     * @param template    the template text
+     * @param httpRequest the request context
+     * @return the rendered text fragment
+     */
+    default String renderTemplateText(String template, HttpRequest httpRequest) {
+        return renderTemplate(template, httpRequest);
+    }
+
+    /**
      * Renders a template against the request with an optional per-iteration load-scenario
      * variable injected under the key {@code "iteration"}, returning the raw rendered text.
      * Used only by the load-generation executor to vary a request step's fields per iteration

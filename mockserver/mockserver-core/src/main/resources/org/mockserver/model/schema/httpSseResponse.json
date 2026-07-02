@@ -36,6 +36,13 @@
         }
       }
     },
+    "templateType": {
+      "enum": [
+        "VELOCITY",
+        "JAVASCRIPT",
+        "MUSTACHE"
+      ]
+    },
     "closeConnection": {
       "type": "boolean"
     },

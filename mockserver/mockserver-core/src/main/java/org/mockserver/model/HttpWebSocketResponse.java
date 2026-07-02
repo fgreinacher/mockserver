@@ -11,6 +11,7 @@ public class HttpWebSocketResponse extends Action<HttpWebSocketResponse> {
     private List<WebSocketMessageMatcher> matchers;
     private Boolean closeConnection;
     private GraphQLBody graphqlSubscriptionFilter;
+    private HttpTemplate.TemplateType templateType;
 
     public static HttpWebSocketResponse webSocketResponse() {
         return new HttpWebSocketResponse();
@@ -105,6 +106,28 @@ public class HttpWebSocketResponse extends Action<HttpWebSocketResponse> {
         return graphqlSubscriptionFilter;
     }
 
+    /**
+     * Opt-in response templating: when set (to {@link HttpTemplate.TemplateType#VELOCITY},
+     * {@link HttpTemplate.TemplateType#MUSTACHE} or {@link HttpTemplate.TemplateType#JAVASCRIPT}),
+     * each configured text {@link WebSocketMessage} is rendered as a response template against the
+     * triggering request (so {@code $!request.body}, {@code $jsonPath(...)}, the built-in helpers,
+     * the {@code faker} helper and the {@code scenario} helper are all available) rather than sent
+     * verbatim. The template is rendered once per message, immediately before the frame is written.
+     * Binary messages are never templated.
+     * <p>
+     * When {@code null} (the default) every message is sent byte-for-byte unchanged, exactly as
+     * before this field existed.
+     */
+    public HttpWebSocketResponse withTemplateType(HttpTemplate.TemplateType templateType) {
+        this.templateType = templateType;
+        this.hashCode = 0;
+        return this;
+    }
+
+    public HttpTemplate.TemplateType getTemplateType() {
+        return templateType;
+    }
+
     @Override
     @JsonIgnore
     public Type getType() {
@@ -130,13 +153,14 @@ public class HttpWebSocketResponse extends Action<HttpWebSocketResponse> {
             Objects.equals(messages, that.messages) &&
             Objects.equals(matchers, that.matchers) &&
             Objects.equals(closeConnection, that.closeConnection) &&
-            Objects.equals(graphqlSubscriptionFilter, that.graphqlSubscriptionFilter);
+            Objects.equals(graphqlSubscriptionFilter, that.graphqlSubscriptionFilter) &&
+            templateType == that.templateType;
     }
 
     @Override
     public int hashCode() {
         if (hashCode == 0) {
-            hashCode = Objects.hash(super.hashCode(), subprotocol, messages, matchers, closeConnection, graphqlSubscriptionFilter);
+            hashCode = Objects.hash(super.hashCode(), subprotocol, messages, matchers, closeConnection, graphqlSubscriptionFilter, templateType);
         }
         return hashCode;
     }
