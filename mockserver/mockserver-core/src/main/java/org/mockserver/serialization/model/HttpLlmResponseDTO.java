@@ -11,6 +11,8 @@ public class HttpLlmResponseDTO extends ObjectWithReflectiveEqualsHashCodeToStri
     private Completion completion;
     private EmbeddingResponse embedding;
     private RerankResponse rerank;
+    private ModerationResponse moderation;
+    private LlmContentFilter contentFilter;
     private ConversationPredicates conversationPredicates;
     private LlmChaosProfile chaos;
     @JsonInclude(JsonInclude.Include.NON_DEFAULT)
@@ -26,6 +28,8 @@ public class HttpLlmResponseDTO extends ObjectWithReflectiveEqualsHashCodeToStri
             completion = httpLlmResponse.getCompletion();
             embedding = httpLlmResponse.getEmbedding();
             rerank = httpLlmResponse.getRerank();
+            moderation = httpLlmResponse.getModeration();
+            contentFilter = httpLlmResponse.getContentFilter();
             conversationPredicates = httpLlmResponse.getConversationPredicates();
             chaos = httpLlmResponse.getChaos();
             primary = httpLlmResponse.isPrimary();
@@ -43,6 +47,8 @@ public class HttpLlmResponseDTO extends ObjectWithReflectiveEqualsHashCodeToStri
             .withCompletion(completion)
             .withEmbedding(embedding)
             .withRerank(rerank)
+            .withModeration(moderation)
+            .withContentFilter(contentFilter)
             .withConversationPredicates(conversationPredicates)
             .withChaos(chaos)
             .withPrimary(primary);
@@ -99,6 +105,24 @@ public class HttpLlmResponseDTO extends ObjectWithReflectiveEqualsHashCodeToStri
 
     public HttpLlmResponseDTO setRerank(RerankResponse rerank) {
         this.rerank = rerank;
+        return this;
+    }
+
+    public ModerationResponse getModeration() {
+        return moderation;
+    }
+
+    public HttpLlmResponseDTO setModeration(ModerationResponse moderation) {
+        this.moderation = moderation;
+        return this;
+    }
+
+    public LlmContentFilter getContentFilter() {
+        return contentFilter;
+    }
+
+    public HttpLlmResponseDTO setContentFilter(LlmContentFilter contentFilter) {
+        this.contentFilter = contentFilter;
         return this;
     }
 

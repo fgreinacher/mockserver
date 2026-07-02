@@ -12,6 +12,8 @@ public class HttpLlmResponse extends Action<HttpLlmResponse> {
     private Completion completion;
     private EmbeddingResponse embedding;
     private RerankResponse rerank;
+    private ModerationResponse moderation;
+    private LlmContentFilter contentFilter;
     private ConversationPredicates conversationPredicates;
     private LlmChaosProfile chaos;
     // volatile: lazily reconstructed (see getConversationMatcher) on the concurrent
@@ -73,6 +75,38 @@ public class HttpLlmResponse extends Action<HttpLlmResponse> {
 
     public RerankResponse getRerank() {
         return rerank;
+    }
+
+    /**
+     * Configure this response as an OpenAI Moderations endpoint response
+     * ({@code POST /v1/moderations}) — a flagged/not-flagged verdict with per-category
+     * scores. When set, the response returns the moderations wire shape instead of a
+     * completion.
+     */
+    public HttpLlmResponse withModeration(ModerationResponse moderation) {
+        this.moderation = moderation;
+        this.hashCode = 0;
+        return this;
+    }
+
+    public ModerationResponse getModeration() {
+        return moderation;
+    }
+
+    /**
+     * Optional Azure OpenAI content-filter severities. When set on an Azure response,
+     * the {@code content_filter_results} (per choice) and {@code prompt_filter_results}
+     * (top-level) annotations are added so agents can detect filtering. Also shapes the
+     * severities of a chaos content-filter block.
+     */
+    public HttpLlmResponse withContentFilter(LlmContentFilter contentFilter) {
+        this.contentFilter = contentFilter;
+        this.hashCode = 0;
+        return this;
+    }
+
+    public LlmContentFilter getContentFilter() {
+        return contentFilter;
     }
 
     public HttpLlmResponse withConversationPredicates(ConversationPredicates conversationPredicates) {
@@ -172,6 +206,8 @@ public class HttpLlmResponse extends Action<HttpLlmResponse> {
             Objects.equals(completion, that.completion) &&
             Objects.equals(embedding, that.embedding) &&
             Objects.equals(rerank, that.rerank) &&
+            Objects.equals(moderation, that.moderation) &&
+            Objects.equals(contentFilter, that.contentFilter) &&
             Objects.equals(conversationPredicates, that.conversationPredicates) &&
             Objects.equals(chaos, that.chaos);
     }
@@ -179,7 +215,7 @@ public class HttpLlmResponse extends Action<HttpLlmResponse> {
     @Override
     public int hashCode() {
         if (hashCode == 0) {
-            hashCode = Objects.hash(super.hashCode(), provider, model, completion, embedding, rerank, conversationPredicates, chaos);
+            hashCode = Objects.hash(super.hashCode(), provider, model, completion, embedding, rerank, moderation, contentFilter, conversationPredicates, chaos);
         }
         return hashCode;
     }

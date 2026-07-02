@@ -53,6 +53,7 @@ public class LlmChaosProfile extends ObjectWithJsonToString {
     private Long tokenQuotaLimit;     // stateful token quota: max tokens allowed per window (TPM/TPD)
     private Long tokenQuotaWindowMillis; // stateful token quota: window length in milliseconds
     private String errorKind;          // optional: OVERLOAD | RATE_LIMIT | SERVER_ERROR -> emit the active provider's error body/status
+    private Double contentFilterBlockProbability; // 0.0–1.0; null/0 = never inject a content-filter block
 
     public static LlmChaosProfile llmChaosProfile() {
         return new LlmChaosProfile();
@@ -244,6 +245,33 @@ public class LlmChaosProfile extends ObjectWithJsonToString {
         return errorKind;
     }
 
+    /**
+     * Optional probability (0.0–1.0) of injecting a <em>content-filter block</em> —
+     * the provider-correct response an LLM returns when it refuses on content-policy
+     * grounds. Unlike the generic {@code errorKind}/{@code errorStatus} path, the shape
+     * is provider-specific: OpenAI-family → HTTP 400 with a {@code content_filter} error;
+     * Azure → HTTP 400 whose {@code innererror} carries the filter result; Anthropic/Bedrock
+     * → HTTP 200 with {@code stop_reason:"refusal"}; Gemini → HTTP 200 with
+     * {@code finishReason:"SAFETY"}. Probabilistic and seeded-deterministic in exactly the
+     * same way as {@code errorProbability} (shares {@code seed}): {@code null}/{@code 0.0}
+     * never fires, {@code 1.0} always fires, a fractional value draws once. When it fires it
+     * takes priority over the generic probabilistic error. The flagged severities come from
+     * the response's {@code contentFilter} (Azure), defaulting to hate at {@code high}.
+     */
+    public LlmChaosProfile withContentFilterBlockProbability(Double contentFilterBlockProbability) {
+        if (contentFilterBlockProbability != null
+            && (Double.isNaN(contentFilterBlockProbability) || contentFilterBlockProbability < 0.0 || contentFilterBlockProbability > 1.0)) {
+            throw new IllegalArgumentException("contentFilterBlockProbability must be between 0.0 and 1.0, got " + contentFilterBlockProbability);
+        }
+        this.contentFilterBlockProbability = contentFilterBlockProbability;
+        this.hashCode = 0;
+        return this;
+    }
+
+    public Double getContentFilterBlockProbability() {
+        return contentFilterBlockProbability;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -269,14 +297,16 @@ public class LlmChaosProfile extends ObjectWithJsonToString {
             Objects.equals(quotaErrorStatus, that.quotaErrorStatus) &&
             Objects.equals(tokenQuotaLimit, that.tokenQuotaLimit) &&
             Objects.equals(tokenQuotaWindowMillis, that.tokenQuotaWindowMillis) &&
-            Objects.equals(errorKind, that.errorKind);
+            Objects.equals(errorKind, that.errorKind) &&
+            Objects.equals(contentFilterBlockProbability, that.contentFilterBlockProbability);
     }
 
     @Override
     public int hashCode() {
         if (hashCode == 0) {
             hashCode = Objects.hash(errorStatus, retryAfter, errorProbability, truncateMode, truncateAtFraction, malformedSse, seed,
-                quotaName, quotaLimit, quotaWindowMillis, quotaErrorStatus, tokenQuotaLimit, tokenQuotaWindowMillis, errorKind);
+                quotaName, quotaLimit, quotaWindowMillis, quotaErrorStatus, tokenQuotaLimit, tokenQuotaWindowMillis, errorKind,
+                contentFilterBlockProbability);
         }
         return hashCode;
     }

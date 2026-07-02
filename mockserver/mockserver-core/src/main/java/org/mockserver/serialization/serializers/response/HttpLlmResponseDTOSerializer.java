@@ -32,6 +32,12 @@ public class HttpLlmResponseDTOSerializer extends StdSerializer<HttpLlmResponseD
         if (httpLlmResponseDTO.getRerank() != null) {
             jgen.writeObjectField("rerank", httpLlmResponseDTO.getRerank());
         }
+        if (httpLlmResponseDTO.getModeration() != null) {
+            jgen.writeObjectField("moderation", httpLlmResponseDTO.getModeration());
+        }
+        if (httpLlmResponseDTO.getContentFilter() != null) {
+            jgen.writeObjectField("contentFilter", httpLlmResponseDTO.getContentFilter());
+        }
         if (httpLlmResponseDTO.getConversationPredicates() != null) {
             jgen.writeObjectField("conversationPredicates", httpLlmResponseDTO.getConversationPredicates());
         }

@@ -153,6 +153,39 @@
         }
       }
     },
+    "moderation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "flaggedCategories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "model": {
+          "type": "string"
+        }
+      }
+    },
+    "contentFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hate": {
+          "type": "string"
+        },
+        "sexual": {
+          "type": "string"
+        },
+        "violence": {
+          "type": "string"
+        },
+        "selfHarm": {
+          "type": "string"
+        }
+      }
+    },
     "conversationPredicates": {
       "type": "object",
       "additionalProperties": false,
@@ -262,6 +295,14 @@
         "tokenQuotaWindowMillis": {
           "type": "integer",
           "minimum": 1
+        },
+        "contentFilterBlockProbability": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "errorKind": {
+          "type": "string"
         }
       }
     },

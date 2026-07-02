@@ -187,6 +187,47 @@ public class LlmChaosProfileTest {
         assertThat(exception.getMessage(), is("tokenQuotaWindowMillis must be >= 1, got 0"));
     }
 
+    // --- contentFilterBlockProbability validation ---
+
+    @Test
+    public void withContentFilterBlockProbabilityAcceptsNullAndRange() {
+        llmChaosProfile().withContentFilterBlockProbability(null);
+        llmChaosProfile().withContentFilterBlockProbability(0.0);
+        llmChaosProfile().withContentFilterBlockProbability(0.5);
+        llmChaosProfile().withContentFilterBlockProbability(1.0);
+    }
+
+    @Test
+    public void withContentFilterBlockProbabilityRejectsBelowZero() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+            () -> llmChaosProfile().withContentFilterBlockProbability(-0.1));
+        assertThat(exception.getMessage(), is("contentFilterBlockProbability must be between 0.0 and 1.0, got -0.1"));
+    }
+
+    @Test
+    public void withContentFilterBlockProbabilityRejectsAboveOne() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+            () -> llmChaosProfile().withContentFilterBlockProbability(1.1));
+        assertThat(exception.getMessage(), is("contentFilterBlockProbability must be between 0.0 and 1.0, got 1.1"));
+    }
+
+    @Test
+    public void withContentFilterBlockProbabilityRejectsNaN() {
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+            () -> llmChaosProfile().withContentFilterBlockProbability(Double.NaN));
+        assertThat(exception.getMessage(), is("contentFilterBlockProbability must be between 0.0 and 1.0, got NaN"));
+    }
+
+    @Test
+    public void equalsShouldIncludeContentFilterBlockProbability() {
+        LlmChaosProfile a = llmChaosProfile().withContentFilterBlockProbability(0.5);
+        LlmChaosProfile b = llmChaosProfile().withContentFilterBlockProbability(0.5);
+        LlmChaosProfile c = llmChaosProfile().withContentFilterBlockProbability(1.0);
+        assertThat(a.equals(b), is(true));
+        assertThat(a.hashCode() == b.hashCode(), is(true));
+        assertThat(a.equals(c), is(false));
+    }
+
     // --- equals/hashCode with token quota fields ---
 
     @Test
