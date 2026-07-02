@@ -714,6 +714,8 @@
                              contention it can exceed the 5s javascriptTemplateExecutionTimeout (CI-red since
                              5b23d6d17, builds 1354+) -->
                         <exclude>**/StreamTemplateRendererTest.java</exclude>
+                        <!-- mutates JVM-global system properties (templateFakerSeed, forwardProxyClientCertificatesByHost) -->
+                        <exclude>**/CoreMiscConfigurationTest.java</exclude>
                         <!-- WS2.1 scenario-state template tests mutate the CrossProtocolEventBus singleton (live ScenarioManager) -->
                         <exclude>**/VelocityScenarioStateTemplateTest.java</exclude>
                         <exclude>**/JavaScriptScenarioStateTemplateTest.java</exclude>
@@ -879,6 +881,7 @@
                                 <include>**/MustacheTemplateEngineTest.java</include>
                                 <include>**/VelocityTemplateEngineTest.java</include>
                                 <include>**/StreamTemplateRendererTest.java</include>
+                                <include>**/CoreMiscConfigurationTest.java</include>
                                 <include>**/VelocityScenarioStateTemplateTest.java</include>
                                 <include>**/JavaScriptScenarioStateTemplateTest.java</include>
                                 <include>**/MustacheScenarioStateTemplateTest.java</include>
