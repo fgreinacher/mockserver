@@ -1,6 +1,8 @@
 package org.mockserver.mock.action.http;
 
 import org.mockserver.configuration.Configuration;
+import org.mockserver.grpc.GrpcForwardTranslator;
+import org.mockserver.grpc.GrpcProtoDescriptorStore;
 import org.mockserver.httpclient.NettyHttpClient;
 import org.mockserver.filters.HopByHopHeaderFilter;
 import org.mockserver.log.model.LogEntry;
@@ -31,11 +33,20 @@ public abstract class HttpForwardAction {
     protected final Configuration configuration;
     private final NettyHttpClient httpClient;
     private HopByHopHeaderFilter hopByHopHeaderFilter = new HopByHopHeaderFilter();
+    // gRPC forward-proxy: when set (threaded from HttpActionHandler), a matched FORWARD-class
+    // action whose request is a decoded gRPC exchange is re-encoded to protobuf frames before the
+    // upstream call and the upstream response is decoded back to JSON. Null (the default) leaves
+    // ordinary HTTP forwarding byte-for-byte unchanged.
+    private GrpcProtoDescriptorStore grpcDescriptorStore;
 
     HttpForwardAction(MockServerLogger mockServerLogger, Configuration configuration, NettyHttpClient httpClient) {
         this.mockServerLogger = mockServerLogger;
         this.configuration = configuration;
         this.httpClient = httpClient;
+    }
+
+    public void setGrpcDescriptorStore(GrpcProtoDescriptorStore grpcDescriptorStore) {
+        this.grpcDescriptorStore = grpcDescriptorStore;
     }
 
     protected HttpForwardActionResult sendRequest(HttpRequest request, @Nullable InetSocketAddress remoteAddress, Function<HttpResponse, HttpResponse> overrideHttpResponse) {
@@ -72,6 +83,24 @@ public abstract class HttpForwardAction {
                 : forwardProxyHttp2Enabled
                     ? filtered.withProtocol(request.getProtocol())
                     : filtered.withProtocol(null);
+
+            // gRPC forward-proxy: re-encode a decoded gRPC request (JSON body + x-grpc-* headers,
+            // produced by GrpcToHttpRequestHandler) back into gRPC-framed protobuf and force HTTP/2 so
+            // the upstream gRPC server receives a valid call. The upstream framed response is decoded
+            // back to JSON via the composed override below, making both the client response and the
+            // recorded FORWARDED_REQUEST replayable. No-op when the request is not a gRPC exchange.
+            final boolean grpcForward = grpcDescriptorStore != null
+                && grpcDescriptorStore.hasServices()
+                && GrpcForwardTranslator.isGrpcForwardRequest(request);
+            Function<HttpResponse, HttpResponse> effectiveOverride = overrideHttpResponse;
+            if (grpcForward) {
+                final String grpcService = request.getFirstHeader(GrpcForwardTranslator.SERVICE_HEADER);
+                final String grpcMethod = request.getFirstHeader(GrpcForwardTranslator.METHOD_HEADER);
+                toSend = GrpcForwardTranslator.encodeRequestForUpstream(toSend, grpcDescriptorStore);
+                final Function<HttpResponse, HttpResponse> decode =
+                    resp -> GrpcForwardTranslator.decodeResponseFromUpstream(resp, grpcService, grpcMethod, grpcDescriptorStore);
+                effectiveOverride = overrideHttpResponse == null ? decode : overrideHttpResponse.andThen(decode);
+            }
 
             // Per-upstream circuit breaker (default off): when the breaker for this upstream is
             // open, fail fast with a 503 instead of attempting the forward. Resolve the key from the
@@ -115,7 +144,7 @@ public abstract class HttpForwardAction {
                 });
             }
 
-            return new HttpForwardActionResult(request, responseFuture, overrideHttpResponse, remoteAddress);
+            return new HttpForwardActionResult(request, responseFuture, effectiveOverride, remoteAddress);
         } catch (Exception e) {
             // A synchronous failure (e.g. the upstream connection throws before a future is returned)
             // must still count against the breaker so a stuck half-open trial slot is released and the

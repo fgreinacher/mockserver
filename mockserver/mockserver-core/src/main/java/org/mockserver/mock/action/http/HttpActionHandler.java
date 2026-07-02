@@ -10,6 +10,8 @@ import org.mockserver.closurecallback.websocketregistry.LocalCallbackRegistry;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.cors.CORSHeaders;
 import org.mockserver.filters.HopByHopHeaderFilter;
+import org.mockserver.grpc.GrpcForwardTranslator;
+import org.mockserver.grpc.GrpcProtoDescriptorStore;
 import org.mockserver.httpclient.NettyHttpClient;
 import org.mockserver.httpclient.SocketCommunicationException;
 import org.mockserver.log.model.LogEntry;
@@ -978,7 +980,11 @@ public class HttpActionHandler {
                             clonedRequest.withProtocol(Protocol.HTTP_2);
                         }
                         long forwardStartNanos = org.mockserver.time.TimeService.nanoTime();
-                        final HttpForwardActionResult responseFuture = new HttpForwardActionResult(clonedRequest, httpClient.sendRequest(clonedRequest, remoteAddress, potentiallyHttpProxy ? 1000 : configuration.socketConnectionTimeoutInMillis()), null, remoteAddress);
+                        // gRPC forward-proxy: capture the decode override from the (still-tagged) request,
+                        // then re-encode the JSON body to protobuf frames for the upstream gRPC call.
+                        final java.util.function.Function<HttpResponse, HttpResponse> grpcDecode = grpcDecodeOverride(clonedRequest);
+                        final HttpRequest requestToSend = grpcEncodeForForward(clonedRequest);
+                        final HttpForwardActionResult responseFuture = new HttpForwardActionResult(clonedRequest, httpClient.sendRequest(requestToSend, remoteAddress, potentiallyHttpProxy ? 1000 : configuration.socketConnectionTimeoutInMillis()), grpcDecode, remoteAddress);
                         HttpResponse response = responseFuture.getHttpResponse().get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
                         long responseTimeMs = (org.mockserver.time.TimeService.nanoTime() - forwardStartNanos) / 1_000_000;
                         if (response == null) {
@@ -1185,11 +1191,14 @@ public class HttpActionHandler {
                 requestToForward.withProtocol(Protocol.HTTP_2);
             }
             long forwardStartNanos = org.mockserver.time.TimeService.nanoTime();
+            // gRPC forward-proxy: capture the decode override then re-encode to protobuf for upstream.
+            final java.util.function.Function<HttpResponse, HttpResponse> grpcDecode = grpcDecodeOverride(requestToForward);
+            final HttpRequest requestToSend = grpcEncodeForForward(requestToForward);
             final HttpForwardActionResult responseFuture = new HttpForwardActionResult(
                 requestToForward,
-                httpClient.sendRequest(requestToForward, remoteAddress,
+                httpClient.sendRequest(requestToSend, remoteAddress,
                     potentiallyHttpProxy ? 1000 : configuration.socketConnectionTimeoutInMillis()),
-                null, remoteAddress
+                grpcDecode, remoteAddress
             );
             HttpResponse response = responseFuture.getHttpResponse().get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
             long responseTimeMs = (org.mockserver.time.TimeService.nanoTime() - forwardStartNanos) / 1_000_000;
@@ -1409,7 +1418,10 @@ public class HttpActionHandler {
                             clonedRequest.withProtocol(Protocol.HTTP_2);
                         }
                         long forwardStartNanos = org.mockserver.time.TimeService.nanoTime();
-                        final HttpForwardActionResult responseFuture = new HttpForwardActionResult(clonedRequest, httpClient.sendRequest(clonedRequest, targetAddress), null, targetAddress);
+                        // gRPC forward-proxy: capture the decode override then re-encode to protobuf for upstream.
+                        final java.util.function.Function<HttpResponse, HttpResponse> grpcDecode = grpcDecodeOverride(clonedRequest);
+                        final HttpRequest requestToSend = grpcEncodeForForward(clonedRequest);
+                        final HttpForwardActionResult responseFuture = new HttpForwardActionResult(clonedRequest, httpClient.sendRequest(requestToSend, targetAddress), grpcDecode, targetAddress);
                         HttpResponse response = responseFuture.getHttpResponse().get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
                         long responseTimeMs = (org.mockserver.time.TimeService.nanoTime() - forwardStartNanos) / 1_000_000;
                         if (response == null) {
@@ -3358,9 +3370,36 @@ public class HttpActionHandler {
         return httpResponseObjectCallbackActionHandler;
     }
 
+    /**
+     * gRPC forward-proxy (anonymous / unmatched proxy path): re-encode a decoded gRPC request back
+     * into gRPC-framed protobuf for the upstream call. No-op (returns the same request) when the
+     * request is not a decoded gRPC exchange or no descriptors are loaded.
+     */
+    private HttpRequest grpcEncodeForForward(HttpRequest request) {
+        return GrpcForwardTranslator.encodeRequestForUpstream(request, httpStateHandler.getGrpcDescriptorStore());
+    }
+
+    /**
+     * Companion to {@link #grpcEncodeForForward}: a response override that decodes the upstream
+     * gRPC-framed protobuf response back to JSON and re-stamps the {@code x-grpc-*} headers, so the
+     * client response can be re-framed and the recorded {@code FORWARDED_REQUEST} is replayable.
+     * Returns {@code null} (no override) when the request is not a gRPC exchange. Must be called with
+     * the request BEFORE {@link #grpcEncodeForForward} strips its {@code x-grpc-*} headers.
+     */
+    private java.util.function.Function<HttpResponse, HttpResponse> grpcDecodeOverride(HttpRequest grpcRequest) {
+        GrpcProtoDescriptorStore store = httpStateHandler.getGrpcDescriptorStore();
+        if (store == null || !store.hasServices() || !GrpcForwardTranslator.isGrpcForwardRequest(grpcRequest)) {
+            return null;
+        }
+        final String service = grpcRequest.getFirstHeader(GrpcForwardTranslator.SERVICE_HEADER);
+        final String method = grpcRequest.getFirstHeader(GrpcForwardTranslator.METHOD_HEADER);
+        return resp -> GrpcForwardTranslator.decodeResponseFromUpstream(resp, service, method, store);
+    }
+
     private HttpForwardActionHandler getHttpForwardActionHandler() {
         if (httpForwardActionHandler == null) {
             httpForwardActionHandler = new HttpForwardActionHandler(mockServerLogger, configuration, httpClient);
+            httpForwardActionHandler.setGrpcDescriptorStore(httpStateHandler.getGrpcDescriptorStore());
         }
         return httpForwardActionHandler;
     }
@@ -3368,6 +3407,7 @@ public class HttpActionHandler {
     private HttpForwardTemplateActionHandler getHttpForwardTemplateActionHandler() {
         if (httpForwardTemplateActionHandler == null) {
             httpForwardTemplateActionHandler = new HttpForwardTemplateActionHandler(mockServerLogger, configuration, httpClient);
+            httpForwardTemplateActionHandler.setGrpcDescriptorStore(httpStateHandler.getGrpcDescriptorStore());
         }
         return httpForwardTemplateActionHandler;
     }
@@ -3375,6 +3415,7 @@ public class HttpActionHandler {
     private HttpForwardClassCallbackActionHandler getHttpForwardClassCallbackActionHandler() {
         if (httpForwardClassCallbackActionHandler == null) {
             httpForwardClassCallbackActionHandler = new HttpForwardClassCallbackActionHandler(mockServerLogger, configuration, httpClient);
+            httpForwardClassCallbackActionHandler.setGrpcDescriptorStore(httpStateHandler.getGrpcDescriptorStore());
         }
         return httpForwardClassCallbackActionHandler;
     }
@@ -3382,6 +3423,7 @@ public class HttpActionHandler {
     private HttpForwardObjectCallbackActionHandler getHttpForwardObjectCallbackActionHandler() {
         if (httpForwardObjectCallbackActionHandler == null) {
             httpForwardObjectCallbackActionHandler = new HttpForwardObjectCallbackActionHandler(httpStateHandler, configuration, httpClient);
+            httpForwardObjectCallbackActionHandler.setGrpcDescriptorStore(httpStateHandler.getGrpcDescriptorStore());
         }
         return httpForwardObjectCallbackActionHandler;
     }
@@ -3389,6 +3431,7 @@ public class HttpActionHandler {
     private HttpOverrideForwardedRequestActionHandler getHttpOverrideForwardedRequestCallbackActionHandler() {
         if (httpOverrideForwardedRequestCallbackActionHandler == null) {
             httpOverrideForwardedRequestCallbackActionHandler = new HttpOverrideForwardedRequestActionHandler(mockServerLogger, configuration, httpClient);
+            httpOverrideForwardedRequestCallbackActionHandler.setGrpcDescriptorStore(httpStateHandler.getGrpcDescriptorStore());
         }
         return httpOverrideForwardedRequestCallbackActionHandler;
     }
@@ -3396,6 +3439,7 @@ public class HttpActionHandler {
     private HttpForwardValidateActionHandler getHttpForwardValidateActionHandler() {
         if (httpForwardValidateActionHandler == null) {
             httpForwardValidateActionHandler = new HttpForwardValidateActionHandler(mockServerLogger, configuration, httpClient);
+            httpForwardValidateActionHandler.setGrpcDescriptorStore(httpStateHandler.getGrpcDescriptorStore());
         }
         return httpForwardValidateActionHandler;
     }
@@ -3403,6 +3447,7 @@ public class HttpActionHandler {
     private HttpForwardWithFallbackActionHandler getHttpForwardWithFallbackActionHandler() {
         if (httpForwardWithFallbackActionHandler == null) {
             httpForwardWithFallbackActionHandler = new HttpForwardWithFallbackActionHandler(mockServerLogger, configuration, httpClient);
+            httpForwardWithFallbackActionHandler.setGrpcDescriptorStore(httpStateHandler.getGrpcDescriptorStore());
         }
         return httpForwardWithFallbackActionHandler;
     }

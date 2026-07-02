@@ -963,6 +963,47 @@ curl_close($ch);</code></pre>{% endraw %}
     </tbody>
 </table>
 
+<a id="grpc_forward_proxy" class="anchor" href="#grpc_forward_proxy">&nbsp;</a>
+
+<h2>Forwarding &amp; Recording gRPC Calls</h2>
+
+<p>As well as returning mocked responses, MockServer can <strong>forward a gRPC call to a real upstream gRPC server</strong> and <strong>record the exchange</strong> so it can later be replayed as a mock &mdash; the same record-then-mock workflow available for HTTP. This is useful for capturing real service behaviour once and then testing offline against the recording.</p>
+
+<p>Forwarding happens when a gRPC request either matches a <span class="inline_code">forward</span> expectation, or (in proxy mode) matches no expectation at all. MockServer re-encodes the request back into gRPC protobuf framing, relays it upstream over HTTP/2, then decodes the framed response and returns it to your client &mdash; all transparently, so your gRPC client is unaware a proxy is in the path.</p>
+
+<p>Forward a specific method to an upstream gRPC server:</p>
+
+<pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/com.example.grpc.GreetingService/Greeting")
+    )
+    .forward(
+        forward()
+            .withHost("upstream-grpc.example.com")
+            .withPort(50051)
+    );</code></pre>
+
+<p>Provided a <a href="#loading_proto_descriptors">proto descriptor</a> is loaded, the forwarded exchange is recorded with the decoded gRPC method path, status, and message JSON. Retrieve the recording as replayable expectations and re-apply it later to serve the same responses without the upstream:</p>
+
+<pre class="prettyprint lang-java code"><code class="code">// after driving traffic through the proxy, snapshot what was forwarded
+Expectation[] recorded = mockServerClient
+    .retrieveRecordedExpectations(
+        request().withPath("/com.example.grpc.GreetingService/Greeting")
+    );
+
+// (later, offline) replay the captured responses as mocks
+mockServerClient.upsert(recorded);</code></pre>
+
+<p><strong>What is supported:</strong></p>
+
+<ul>
+    <li><strong>Unary and client-streaming</strong> requests, and <strong>unary and server-streaming</strong> responses, are forwarded and recorded.</li>
+    <li><strong>Decoding requires a proto descriptor on the proxy.</strong> Load one via <span class="inline_code">grpcDescriptorDirectory</span>, <span class="inline_code">grpcProtoDirectory</span>, or the <span class="inline_code">PUT /mockserver/grpc/descriptors</span> REST API before forwarding. Without a descriptor the gRPC bytes are still forwarded, but the recording is undecoded (binary body only).</li>
+    <li><strong>Fully bidirectional streaming</strong> forward is not yet supported.</li>
+    <li><strong>Reach HTTPS/HTTP-2 gRPC servers over TLS.</strong> A plaintext (h2c) upstream may receive the forwarded call over HTTP/1.1; most real gRPC servers require HTTP/2 over TLS, which is reached via ALPN.</li>
+</ul>
+
 <a id="grpc_limitations" class="anchor" href="#grpc_limitations">&nbsp;</a>
 
 <h2>Limitations</h2>

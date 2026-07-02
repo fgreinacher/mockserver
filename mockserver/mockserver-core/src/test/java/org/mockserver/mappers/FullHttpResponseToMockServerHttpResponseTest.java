@@ -101,6 +101,48 @@ public class FullHttpResponseToMockServerHttpResponseTest {
     }
 
     @Test
+    public void shouldFoldTrailersIntoHeaders() {
+        // gRPC servers deliver the terminal grpc-status / grpc-message in HTTP trailers; these must
+        // survive into the response model (otherwise a non-OK gRPC status is silently lost).
+        FullHttpResponse nettyResponse = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        nettyResponse.headers().add("content-type", "application/grpc");
+        nettyResponse.trailingHeaders().add("grpc-status", "5");
+        nettyResponse.trailingHeaders().add("grpc-message", "not found");
+
+        try {
+            HttpResponse result = mapper.mapFullHttpResponseToMockServerResponse(nettyResponse);
+
+            assertThat(result.getFirstHeader("content-type"), equalTo("application/grpc"));
+            assertThat(result.getFirstHeader("grpc-status"), equalTo("5"));
+            assertThat(result.getFirstHeader("grpc-message"), equalTo("not found"));
+        } finally {
+            nettyResponse.release();
+        }
+    }
+
+    @Test
+    public void shouldNotDuplicateTrailerWhenAlsoPresentAsHeader() {
+        // a trailer whose name is already a header must not be folded in (no duplicate values)
+        FullHttpResponse nettyResponse = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        nettyResponse.headers().add("x-dup", "header-value");
+        nettyResponse.trailingHeaders().add("x-dup", "trailer-value");
+
+        try {
+            HttpResponse result = mapper.mapFullHttpResponseToMockServerResponse(nettyResponse);
+
+            List<Header> headers = result.getHeaderList();
+            for (Header h : headers) {
+                if (h.getName().getValue().equalsIgnoreCase("x-dup")) {
+                    assertThat(h.getValues().size(), equalTo(1));
+                    assertThat(h.getValues().get(0).getValue(), equalTo("header-value"));
+                }
+            }
+        } finally {
+            nettyResponse.release();
+        }
+    }
+
+    @Test
     public void shouldMapMultipleHeaderValues() {
         // given
         FullHttpResponse nettyResponse = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);

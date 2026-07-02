@@ -786,9 +786,39 @@ All overrides are cleared on `HttpState.reset()`. An empty `service` string sets
 | `PUT /mockserver/grpc/services` | List all loaded gRPC services and their methods |
 | `PUT /mockserver/grpc/clear` | Clear all loaded descriptors and reset the store |
 
-### Limitations
+### gRPC Forward Proxy + Record/Replay
 
-- **gRPC forwarding/proxy** is deferred — requires HTTP/2 + gRPC-framing client changes to `NettyHttpClient`
+MockServer can forward a gRPC call to a real upstream gRPC server and record the decoded exchange, bringing the record-then-mock workflow to gRPC. When a decoded gRPC request (produced by `GrpcToHttpRequestHandler`, i.e. carrying `x-grpc-service`/`x-grpc-method` + a JSON body + `application/grpc`) matches a `FORWARD`-class expectation, or arrives in proxy mode with no matching expectation, the forward path:
+
+1. re-encodes the JSON request body back into gRPC length-prefixed protobuf frames, sets `content-type: application/grpc`, forces HTTP/2, adds `te: trailers`, and strips the internal `x-grpc-*` helper headers so they do not leak upstream;
+2. decodes the upstream's gRPC-framed protobuf response back to JSON and re-stamps `x-grpc-service`/`x-grpc-method` (and `grpc-status-name`) onto the response so `GrpcToHttpResponseHandler` re-frames it for the calling client and the logged `FORWARDED_REQUEST` entry carries decoded JSON.
+
+```mermaid
+flowchart LR
+    Client["gRPC client"] -->|"application/grpc\nprotobuf frame"| Proxy["MockServer proxy\n(descriptors loaded)"]
+    Proxy -->|"decode → JSON,\nmatch FORWARD / proxy no-match"| Enc["GrpcForwardTranslator\nencodeRequestForUpstream"]
+    Enc -->|"re-framed protobuf,\nHTTP/2"| Upstream["real gRPC server"]
+    Upstream -->|"framed protobuf\nresponse"| Dec["GrpcForwardTranslator\ndecodeResponseFromUpstream"]
+    Dec -->|"JSON + x-grpc-* stamped"| Log["FORWARDED_REQUEST\n(decoded, replayable)"]
+    Dec -->|"re-frame"| Client
+```
+
+| Class | Module | Purpose |
+|-------|--------|---------|
+| `GrpcForwardTranslator` | core (`org.mockserver.grpc`) | `encodeRequestForUpstream` (JSON → gRPC-framed protobuf, force HTTP/2) and `decodeResponseFromUpstream` (framed protobuf → JSON + re-stamp headers). Both fail-safe: non-gRPC / unknown-method / error → original message returned unchanged. |
+
+Wiring: the matched `FORWARD`-family path threads the descriptor store into `HttpForwardAction` (`setGrpcDescriptorStore`, set in the `HttpActionHandler` handler getters) and applies the transform once in `HttpForwardAction.sendRequest` (covers all `FORWARD*` action types); the response is decoded via a composed `overrideHttpResponse` so both the client write and the recorded log entry see the decoded JSON. The unmatched/anonymous proxy paths in `HttpActionHandler` apply the same helper (`grpcEncodeForForward` / `grpcDecodeOverride`) around their inline `httpClient.sendRequest` calls.
+
+**Boundaries and requirements:**
+
+- **Descriptors on the proxy are required to decode.** `GrpcToHttpRequestHandler` only converts inbound gRPC to JSON when the descriptor store `hasServices()`. Without descriptors on the proxy the raw `application/grpc` bytes are still forwarded verbatim over HTTP/2 and recorded, but undecoded (binary body, no method JSON).
+- **Unary + client-streaming requests** (single JSON object / JSON array body) and **unary + server-streaming responses** (one or more frames) are handled. Full bidirectional streaming forward is out of scope — it is driven by the multiplex bidi pipeline, not the request/response forward path.
+- **Transport downgrade.** The re-encoded request is marked HTTP/2; `NettyHttpClient` downgrades a non-secure HTTP/2 request to HTTP/1.1, so a cleartext (h2c) upstream receives the framed `application/grpc` body over HTTP/1.1 (which MockServer-to-MockServer handles, since the gRPC handlers are content-type driven and present on the HTTP/1.1 pipeline). Reach a strict HTTP/2-only gRPC server over TLS (h2 via ALPN).
+- **Terminal status from upstream trailers.** Real gRPC servers send `grpc-status`/`grpc-message` in HTTP/2 (or chunked HTTP/1.1) **trailers**, not as headers. `FullHttpResponseToMockServerHttpResponse.setHeaders` folds the upstream `trailingHeaders()` into the response model (only for trailer names not already present as headers), so `decodeResponseFromUpstream` sees the real `grpc-status` and stamps `grpc-status-name` — otherwise a non-OK upstream RPC would be relayed and recorded as OK.
+- **`FORWARD_REPLACE` (`httpOverrideForwardedRequest`) ordering with gRPC.** The gRPC response decode is composed *after* any user-supplied `overrideHttpResponse`, so a user override on a gRPC `FORWARD_REPLACE` sees the raw framed protobuf upstream response (not the decoded JSON); the decode-to-JSON + header re-stamp runs last. Overriding the *request* side of `FORWARD_REPLACE` is applied before the gRPC re-encode, so an override that rewrites the JSON body is honoured. Editing the framed bytes directly in an override is not supported.
+
+### Streaming Limitations
+
 - **True client streaming and bidirectional streaming** are supported via the `Http2MultiplexHandler` multiplex pipeline (per-stream child channels), opt-in behind `grpcBidiStreamingEnabled`; when disabled the default `InboundHttp2ToHttpAdapter` path aggregates full messages and bidi actions return 501
 - **WAR deployment** returns 501 for `GRPC_STREAM_RESPONSE` actions (no `ChannelHandlerContext` available)
 - **Proto reflection** is supported — a `GrpcServerReflectionHandler` (core, with a `GrpcBidiReflectionHandler` on the multiplex path) answers v1 and v1alpha `ServerReflection` requests without a generated stub; descriptors may still be provided via files or API upload
@@ -803,7 +833,7 @@ All overrides are cleared on `HttpState.reset()`. An empty `service` string sets
 | `SseEventDTO`, `HttpSseResponseDTO`, `JsonRpcBodyDTO` | `mockserver-core` | `org.mockserver.serialization.model` |
 | `HttpRequestTemplateObject` (jsonRpc fields) | `mockserver-core` | `org.mockserver.templates.engine.model` |
 | `GrpcStreamMessage`, `GrpcStreamResponse` | `mockserver-core` | `org.mockserver.model` |
-| `GrpcFrameCodec`, `GrpcJsonMessageConverter`, `GrpcProtoDescriptorStore`, `GrpcProtoFileCompiler`, `GrpcStatusMapper`, `GrpcWebTranslator`, `GrpcException` | `mockserver-core` | `org.mockserver.grpc` |
+| `GrpcFrameCodec`, `GrpcJsonMessageConverter`, `GrpcProtoDescriptorStore`, `GrpcProtoFileCompiler`, `GrpcStatusMapper`, `GrpcWebTranslator`, `GrpcForwardTranslator`, `GrpcException` | `mockserver-core` | `org.mockserver.grpc` |
 | `ConnectError`, `ConnectResponse`, `ConnectUnaryDetector` | `mockserver-core` | `org.mockserver.grpc.connect` |
 | `GrpcHealthRegistry`, `GrpcHealthCheckHandler`, `ServingStatus` | `mockserver-core` | `org.mockserver.grpc` |
 | `GrpcChaosProfile` | `mockserver-core` | `org.mockserver.model` |
@@ -847,8 +877,11 @@ All overrides are cleared on `HttpState.reset()`. An empty `service` string sets
 | `GrpcProtoDescriptorStoreTest` | core | 7 | Unit |
 | `GrpcStatusMapperTest` | core | 9 | Unit |
 | `GrpcWebTranslatorTest` | core | 20 | Unit |
+| `GrpcForwardTranslatorTest` | core | 13 | Unit |
+| `HttpForwardActionHandlerGrpcTest` | core | 3 | Unit |
 | `GrpcStreamResponseDTOTest` | core | 3 | Unit |
 | `GrpcIntegrationTest` | netty | 11 | Integration |
+| `GrpcForwardProxyIntegrationTest` | netty | 3 | Integration |
 | `GrpcWebHandlerTest` | netty | 12 | Handler |
 | `ConnectErrorTest` | core | 6 | Unit |
 | `ConnectResponseTest` | core | 9 | Unit |

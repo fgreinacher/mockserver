@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **gRPC forward proxy + record/replay — bring the record-then-mock workflow to gRPC.** Until now gRPC
+  support was mock-only: MockServer could decode inbound gRPC to JSON and serve mocked responses, but could
+  not forward a gRPC call to a real upstream gRPC server. Now, when a gRPC request (HTTP/2 +
+  `application/grpc`) matches a `FORWARD`-class expectation — or arrives in proxy mode with no matching
+  expectation — MockServer re-encodes the decoded request back into gRPC-framed protobuf, relays it to the
+  upstream gRPC service, decodes the framed protobuf response back to JSON, and re-frames it for the calling
+  client. The forwarded exchange is recorded in the event log as a `FORWARDED_REQUEST` carrying the decoded
+  gRPC method path, status, and (when a proto descriptor is registered) the decoded message JSON, so
+  `retrieveRecordedExpectations` (and `promote_recordings`) produce a replayable gRPC mock — the same
+  record → snapshot → replay loop already available for HTTP/SSE. A non-OK terminal `grpc-status`/`grpc-message`
+  delivered by a real upstream in HTTP/2 (or chunked HTTP/1.1) trailers is preserved through the relay and the
+  recording, rather than being defaulted to `OK`. Unary and client-streaming request bodies
+  (single JSON object / JSON array) and unary or server-streaming responses (one or more frames) are handled.
+  Decoding of the recorded exchange requires the proto descriptor to be loaded on the proxy (via
+  `grpcDescriptorDirectory` / `grpcProtoDirectory` / `PUT /mockserver/grpc/descriptors`); without descriptors
+  the gRPC bytes are still forwarded verbatim but recorded undecoded. Full bidirectional streaming forward is
+  out of scope (it is driven by the multiplex bidi pipeline, not the request/response forward path). The
+  transform is fail-safe — a non-gRPC request, an unknown method, or any conversion error leaves ordinary
+  HTTP forwarding byte-for-byte unchanged (`GrpcForwardTranslator`, `org.mockserver.grpc`).
+
 - **The dashboard now warns when log events are being silently evicted — the #1 cause of "verification
   intermittently fails".** When MockServer's log ring buffer fills up, the oldest events are dropped, so
   verifications and the dashboard silently miss requests. The Dashboard and Traffic views now show a

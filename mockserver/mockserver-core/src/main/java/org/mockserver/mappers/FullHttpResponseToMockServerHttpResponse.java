@@ -89,19 +89,35 @@ public class FullHttpResponseToMockServerHttpResponse {
     }
 
     private void setHeaders(HttpResponse httpResponse, FullHttpResponse fullHttpResponse) {
-        Set<String> headerNames = fullHttpResponse.headers().names();
-        if (!headerNames.isEmpty()) {
-            Headers headers = new Headers();
-            for (String headerName : headerNames) {
-                // Skip the Netty HTTP/2 extension-header family (x-http2-*). These are injected by
-                // InboundHttp2ToHttpAdapter when decoding an HTTP/2 response and are internal plumbing
-                // rather than real response headers; letting them into the model leaks the upstream
-                // stream id back onto the client leg (PROTOCOL_ERROR / GOAWAY hang) and pollutes logs.
-                if (HTTP2_EXTENSION_HEADER_NAMES.contains(headerName.toLowerCase(Locale.ROOT))) {
-                    continue;
-                }
-                headers.withEntry(headerName, fullHttpResponse.headers().getAll(headerName));
+        Headers headers = new Headers();
+        Set<String> seen = new HashSet<>();
+        for (String headerName : fullHttpResponse.headers().names()) {
+            // Skip the Netty HTTP/2 extension-header family (x-http2-*). These are injected by
+            // InboundHttp2ToHttpAdapter when decoding an HTTP/2 response and are internal plumbing
+            // rather than real response headers; letting them into the model leaks the upstream
+            // stream id back onto the client leg (PROTOCOL_ERROR / GOAWAY hang) and pollutes logs.
+            if (HTTP2_EXTENSION_HEADER_NAMES.contains(headerName.toLowerCase(Locale.ROOT))) {
+                continue;
             }
+            headers.withEntry(headerName, fullHttpResponse.headers().getAll(headerName));
+            seen.add(headerName.toLowerCase(Locale.ROOT));
+        }
+        // Fold in HTTP/2 (and chunked HTTP/1.1) TRAILERS. Real gRPC servers deliver the terminal
+        // grpc-status / grpc-message in trailers, which land in FullHttpResponse.trailingHeaders()
+        // and would otherwise be dropped -- silently relaying (and recording) a non-OK upstream RPC
+        // as OK. A trailer is folded in only when a header of the same name is not already present,
+        // so ordinary responses (which rarely carry trailers) are unaffected and no value is
+        // duplicated. The x-http2-* plumbing is skipped here too.
+        for (String trailerName : fullHttpResponse.trailingHeaders().names()) {
+            if (HTTP2_EXTENSION_HEADER_NAMES.contains(trailerName.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            if (seen.contains(trailerName.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            headers.withEntry(trailerName, fullHttpResponse.trailingHeaders().getAll(trailerName));
+        }
+        if (!headers.isEmpty()) {
             httpResponse.withHeaders(headers);
         }
     }
