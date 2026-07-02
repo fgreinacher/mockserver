@@ -31,8 +31,11 @@ keywords: "mcp tools, mockserver mcp tools, create_expectation, verify_request, 
         <tr><td><a href="#verify_request_sequence"><code>verify_request_sequence</code></a></td><td>Verify requests were received in order</td><td>High</td></tr>
         <tr><td><a href="#retrieve_recorded_requests"><code>retrieve_recorded_requests</code></a></td><td>Get recorded requests</td><td>High</td></tr>
         <tr><td><a href="#retrieve_request_responses"><code>retrieve_request_responses</code></a></td><td>Get request-response pairs</td><td>High</td></tr>
+        <tr><td><a href="#list_expectations"><code>list_expectations</code></a></td><td>List the active mock expectations, optionally filtered</td><td>High</td></tr>
         <tr><td><a href="#retrieve_logs"><code>retrieve_logs</code></a></td><td>Get log messages for debugging</td><td>High</td></tr>
         <tr><td><a href="#clear_expectations"><code>clear_expectations</code></a></td><td>Clear matching expectations and/or logs</td><td>High</td></tr>
+        <tr><td><a href="#set_operating_mode"><code>set_operating_mode</code></a></td><td>Switch operating mode &mdash; SIMULATE, SPY, or CAPTURE</td><td>High</td></tr>
+        <tr><td><a href="#promote_recordings"><code>promote_recordings</code></a></td><td>Promote recorded traffic into active mocks (redact, consolidate, parameterize)</td><td>High</td></tr>
         <tr><td><a href="#reset"><code>reset</code></a></td><td>Reset all MockServer state</td><td>High</td></tr>
         <tr><td><a href="#get_status"><code>get_status</code></a></td><td>Server status and ports</td><td>High</td></tr>
         <tr><td><a href="#manage_service_chaos"><code>manage_service_chaos</code></a></td><td>Register, remove, or clear service-scoped HTTP chaos per upstream host</td><td>High</td></tr>
@@ -320,6 +323,36 @@ keywords: "mcp tools, mockserver mcp tools, create_expectation, verify_request, 
   }
 }</code></pre>
 
+<a id="list_expectations" class="anchor" href="#list_expectations">&nbsp;</a>
+
+<h3>list_expectations</h3>
+
+<p>List the mock expectations that are currently active, optionally filtered by request method and/or path. Each expectation is returned in the full MockServer JSON format (including its <code>id</code>), so an agent can inspect what is mocked and then modify it (with <code>create_expectation</code> / <code>raw_expectation</code>) or remove it (with <code>clear_expectations</code>).</p>
+
+<table>
+    <thead>
+        <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><code>method</code></td><td>string</td><td>No</td><td>Only return expectations whose request matcher targets this HTTP method</td></tr>
+        <tr><td><code>path</code></td><td>string</td><td>No</td><td>Only return expectations whose request matcher targets this path</td></tr>
+    </tbody>
+</table>
+
+<p><strong>Example request:</strong></p>
+
+<pre class="prettyprint code"><code class="code">{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "tools/call",
+  "params": {
+    "name": "list_expectations",
+    "arguments": {
+      "path": "/api/users"
+    }
+  }
+}</code></pre>
+
 <a id="retrieve_logs" class="anchor" href="#retrieve_logs">&nbsp;</a>
 
 <h3>retrieve_logs</h3>
@@ -395,6 +428,76 @@ keywords: "mcp tools, mockserver mcp tools, create_expectation, verify_request, 
     "arguments": {
       "path": "/api/users",
       "type": "EXPECTATIONS"
+    }
+  }
+}</code></pre>
+
+<a id="set_operating_mode" class="anchor" href="#set_operating_mode">&nbsp;</a>
+
+<h3>set_operating_mode</h3>
+
+<p>Set MockServer's high-level operating mode in a single switch. This lets an agent flip between mocking and recording without reconfiguring the server:</p>
+
+<ul>
+    <li><code>SIMULATE</code> &mdash; match expectations and return mocks; unmatched requests get a <code>404</code> (the default).</li>
+    <li><code>SPY</code> &mdash; match expectations and return mocks, but forward unmatched requests to the real upstream so they are served live and recorded.</li>
+    <li><code>CAPTURE</code> &mdash; forward and record everything (with no expectations defined this captures all traffic).</li>
+</ul>
+
+<p>Use <code>SPY</code> or <code>CAPTURE</code> to record real upstream traffic, then turn it into mocks with <a href="#promote_recordings"><code>promote_recordings</code></a>.</p>
+
+<table>
+    <thead>
+        <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><code>mode</code></td><td>string</td><td>Yes</td><td>One of <code>SIMULATE</code>, <code>SPY</code>, or <code>CAPTURE</code> (case-insensitive)</td></tr>
+    </tbody>
+</table>
+
+<p><strong>Example request:</strong></p>
+
+<pre class="prettyprint code"><code class="code">{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "tools/call",
+  "params": {
+    "name": "set_operating_mode",
+    "arguments": {
+      "mode": "SPY"
+    }
+  }
+}</code></pre>
+
+<a id="promote_recordings" class="anchor" href="#promote_recordings">&nbsp;</a>
+
+<h3>promote_recordings</h3>
+
+<p>Promote traffic already recorded by MockServer's forwarding/proxy mode (for example after <a href="#set_operating_mode"><code>set_operating_mode</code></a> <code>SPY</code>/<code>CAPTURE</code>) into active mock expectations in one step &mdash; the "record then mock" workflow. Secrets are redacted, and by default the recordings are consolidated and parameterized into reusable mocks (unlimited use). This mirrors <code>PUT /mockserver/recordings/promote</code>.</p>
+
+<table>
+    <thead>
+        <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><code>method</code></td><td>string</td><td>No</td><td>Filter recorded traffic by HTTP method</td></tr>
+        <tr><td><code>path</code></td><td>string</td><td>No</td><td>Filter recorded traffic by request path</td></tr>
+        <tr><td><code>consolidate</code></td><td>boolean</td><td>No</td><td>Collapse duplicate recordings into consolidated reusable mocks. Defaults to <code>true</code>; set <code>false</code> to promote each recording verbatim.</td></tr>
+        <tr><td><code>parameterize</code></td><td>boolean</td><td>No</td><td>When consolidating, generalise volatile path/query/header/body values so a single recorded id does not pin the mock. Defaults to <code>true</code>.</td></tr>
+        <tr><td><code>redactSensitiveData</code></td><td>boolean</td><td>No</td><td>Redact secrets (auth headers, common secret body fields) from promoted mocks. Defaults to <code>true</code>.</td></tr>
+    </tbody>
+</table>
+
+<p><strong>Example request:</strong></p>
+
+<pre class="prettyprint code"><code class="code">{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "promote_recordings",
+    "arguments": {
+      "path": "/api/users"
     }
   }
 }</code></pre>

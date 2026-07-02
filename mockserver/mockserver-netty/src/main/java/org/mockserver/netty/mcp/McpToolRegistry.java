@@ -33,6 +33,7 @@ import org.mockserver.matchers.TimeToLive;
 import org.mockserver.matchers.Times;
 import org.mockserver.mock.Expectation;
 import org.mockserver.mock.HttpState;
+import org.mockserver.mock.MockMode;
 import org.mockserver.mock.mcp.McpToolSchemaGenerator;
 import org.mockserver.mock.OpenAPIExpectation;
 import org.mockserver.model.*;
@@ -130,7 +131,9 @@ public class McpToolRegistry {
         "mock_llm_completion",
         "create_llm_conversation",
         "mock_llm_failover",
-        "mock_adversarial_llm_response"
+        "mock_adversarial_llm_response",
+        "set_operating_mode",
+        "promote_recordings"
     );
 
     /**
@@ -178,6 +181,7 @@ public class McpToolRegistry {
         "diff_agent_runs",
         "detect_llm_drift",
         "list_mock_tools",
+        "list_expectations",
         "raw_retrieve",
         "raw_verify",
         "run_contract_test",
@@ -231,6 +235,9 @@ public class McpToolRegistry {
         registerDetectLlmDrift();
         registerMockAdversarialLlmResponse();
         registerListMockTools();
+        registerListExpectations();
+        registerSetOperatingMode();
+        registerPromoteRecordings();
     }
 
     private void registerListMockTools() {
@@ -256,6 +263,167 @@ public class McpToolRegistry {
             return resultNode;
         } catch (Exception e) {
             return errorResult("Failed to generate mock tools", e);
+        }
+    }
+
+    private void registerListExpectations() {
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        ObjectNode properties = schema.putObject("properties");
+        properties.putObject("method").put("type", "string").put("description", "Optionally filter active expectations to those whose request matcher targets this HTTP method");
+        properties.putObject("path").put("type", "string").put("description", "Optionally filter active expectations to those whose request matcher targets this path");
+
+        tools.put("list_expectations", new ToolDefinition(
+            "list_expectations",
+            "Lists the currently active mock expectations, optionally filtered by a request method and/or path. "
+                + "Returns each expectation in the full MockServer JSON format (including its id), so an agent can inspect, "
+                + "modify (via create_expectation/raw_expectation) or clear (via clear_expectations) what is mocked. "
+                + "Equivalent to PUT /mockserver/retrieve?type=ACTIVE_EXPECTATIONS.",
+            schema,
+            this::handleListExpectations
+        ));
+    }
+
+    private JsonNode handleListExpectations(JsonNode params) {
+        try {
+            HttpRequest filterRequest = request();
+            JsonNode methodNode = params.path("method");
+            if (!methodNode.isMissingNode() && !methodNode.isNull()) {
+                filterRequest.withMethod(methodNode.asText());
+            }
+            JsonNode pathNode = params.path("path");
+            if (!pathNode.isMissingNode() && !pathNode.isNull()) {
+                filterRequest.withPath(pathNode.asText());
+            }
+
+            HttpRequest retrieveRequest = request()
+                .withMethod("PUT")
+                .withPath("/mockserver/retrieve")
+                .withQueryStringParameter("type", "ACTIVE_EXPECTATIONS")
+                .withQueryStringParameter("format", "JSON")
+                .withBody(getRequestDefinitionSerializer().serialize(filterRequest));
+
+            HttpResponse retrieveResponse = httpState.retrieve(retrieveRequest);
+            String body = retrieveResponse.getBodyAsString();
+
+            ObjectNode resultNode = objectMapper.createObjectNode();
+            if (body != null && !body.isEmpty()) {
+                JsonNode expectations = objectMapper.readTree(body);
+                resultNode.set("expectations", expectations);
+                resultNode.put("count", expectations.isArray() ? expectations.size() : 0);
+            } else {
+                resultNode.set("expectations", objectMapper.createArrayNode());
+                resultNode.put("count", 0);
+            }
+            return resultNode;
+        } catch (Exception e) {
+            return errorResult("Failed to list expectations", e);
+        }
+    }
+
+    private void registerSetOperatingMode() {
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        ObjectNode properties = schema.putObject("properties");
+        ObjectNode modeProp = properties.putObject("mode");
+        modeProp.put("type", "string").put("description", "Operating mode: SIMULATE (match mocks, 404 unmatched), SPY (match mocks, forward+record unmatched), or CAPTURE (forward+record everything)");
+        modeProp.putArray("enum").add("SIMULATE").add("SPY").add("CAPTURE");
+        schema.putArray("required").add("mode");
+
+        tools.put("set_operating_mode", new ToolDefinition(
+            "set_operating_mode",
+            "Sets the high-level operating mode of MockServer in one switch: SIMULATE (return mocks, 404 on no match), "
+                + "SPY (return mocks but forward+record requests that match no expectation), or CAPTURE (forward+record all traffic). "
+                + "SPY/CAPTURE let an agent record real upstream traffic that can then be turned into mocks via promote_recordings. "
+                + "Equivalent to PUT /mockserver/mode?mode=<MODE>.",
+            schema,
+            this::handleSetOperatingMode
+        ));
+    }
+
+    private JsonNode handleSetOperatingMode(JsonNode params) {
+        try {
+            JsonNode modeNode = params.path("mode");
+            if (modeNode.isMissingNode() || modeNode.isNull() || !modeNode.isTextual()) {
+                return errorResult("'mode' is required (one of SIMULATE, SPY, CAPTURE)");
+            }
+            MockMode mode;
+            try {
+                mode = MockMode.parse(modeNode.asText());
+            } catch (IllegalArgumentException iae) {
+                return errorResult(iae.getMessage());
+            }
+            httpState.setMode(mode);
+
+            ObjectNode resultNode = objectMapper.createObjectNode();
+            resultNode.put("status", "ok");
+            resultNode.put("mode", mode.name());
+            resultNode.put("proxyUnmatchedRequests", mode.proxyUnmatchedRequests());
+            return resultNode;
+        } catch (Exception e) {
+            return errorResult("Failed to set operating mode", e);
+        }
+    }
+
+    private void registerPromoteRecordings() {
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        ObjectNode properties = schema.putObject("properties");
+        properties.putObject("method").put("type", "string").put("description", "Filter recorded traffic by HTTP method (e.g. GET, POST)");
+        properties.putObject("path").put("type", "string").put("description", "Filter recorded traffic by request path (e.g. /api/users)");
+        properties.putObject("consolidate").put("type", "boolean").put("description", "Collapse duplicate recorded exchanges into consolidated reusable mocks (default true); when false each recording is promoted verbatim");
+        properties.putObject("parameterize").put("type", "boolean").put("description", "When consolidating, generalise volatile path/query/header/body values so a single recorded id does not pin the mock (default true)");
+        properties.putObject("redactSensitiveData").put("type", "boolean").put("description", "Redact secrets (auth headers, common secret body fields) from promoted mocks (default true)");
+
+        tools.put("promote_recordings", new ToolDefinition(
+            "promote_recordings",
+            "Promotes traffic already recorded by MockServer's forwarding/proxy mode (e.g. after set_operating_mode SPY/CAPTURE) "
+                + "into ACTIVE mock expectations in one step, so an agent can \"record then mock\". Redacts secrets, and by default "
+                + "consolidates and parameterizes the recordings into reusable mocks (unlimited times). "
+                + "Equivalent to PUT /mockserver/recordings/promote.",
+            schema,
+            this::handlePromoteRecordings
+        ));
+    }
+
+    private JsonNode handlePromoteRecordings(JsonNode params) {
+        try {
+            HttpRequest filter = request();
+            JsonNode methodNode = params.path("method");
+            if (!methodNode.isMissingNode() && !methodNode.isNull()) {
+                filter.withMethod(methodNode.asText());
+            }
+            JsonNode pathNode = params.path("path");
+            if (!pathNode.isMissingNode() && !pathNode.isNull()) {
+                filter.withPath(pathNode.asText());
+            }
+
+            boolean consolidate = params.path("consolidate").asBoolean(true);
+            boolean parameterize = params.path("parameterize").asBoolean(true);
+            boolean redact = params.path("redactSensitiveData").asBoolean(true);
+            org.mockserver.imports.ImportRedaction.Options redactionOptions = redact
+                ? org.mockserver.imports.ImportRedaction.Options.enabled()
+                : org.mockserver.imports.ImportRedaction.Options.disabled();
+
+            List<Expectation> activated = httpState.promoteRecordings(filter, consolidate, parameterize, redactionOptions);
+
+            ObjectNode resultNode = objectMapper.createObjectNode();
+            if (activated.isEmpty()) {
+                resultNode.put("status", "no_recorded_traffic");
+                resultNode.put("message", "No recorded traffic found matching the filter. "
+                    + "Ensure MockServer has forwarded requests (e.g. via set_operating_mode SPY/CAPTURE or create_forward_expectation) before calling this tool.");
+                resultNode.put("count", 0);
+                return resultNode;
+            }
+            resultNode.put("status", "promoted");
+            resultNode.put("count", activated.size());
+            ArrayNode ids = resultNode.putArray("ids");
+            for (Expectation exp : activated) {
+                ids.add(exp.getId());
+            }
+            return resultNode;
+        } catch (Exception e) {
+            return errorResult("Failed to promote recordings", e);
         }
     }
 

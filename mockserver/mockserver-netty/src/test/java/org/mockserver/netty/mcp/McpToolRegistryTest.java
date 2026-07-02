@@ -90,7 +90,10 @@ public class McpToolRegistryTest {
         assertThat(tools.containsKey("mock_llm_failover"), is(true));
         assertThat(tools.containsKey("export_optimisation_report"), is(true));
         assertThat(tools.containsKey("diff_agent_runs"), is(true));
-        assertThat(tools.size(), is(37));
+        assertThat(tools.containsKey("list_expectations"), is(true));
+        assertThat(tools.containsKey("set_operating_mode"), is(true));
+        assertThat(tools.containsKey("promote_recordings"), is(true));
+        assertThat(tools.size(), is(40));
     }
 
     @Test
@@ -2159,6 +2162,159 @@ public class McpToolRegistryTest {
         assertThat(result.path("logEntries").isArray(), is(true));
     }
 
+    // ---- list_expectations tool ----
+
+    @Test
+    public void shouldListActiveExpectations() {
+        // given - two active expectations created through the MCP server
+        ObjectNode create1 = objectMapper.createObjectNode();
+        create1.put("method", "GET");
+        create1.put("path", "/list-a");
+        create1.put("responseBody", "a");
+        toolRegistry.callTool("create_expectation", create1);
+        ObjectNode create2 = objectMapper.createObjectNode();
+        create2.put("method", "POST");
+        create2.put("path", "/list-b");
+        create2.put("responseBody", "b");
+        toolRegistry.callTool("create_expectation", create2);
+
+        // when
+        JsonNode result = toolRegistry.callTool("list_expectations", objectMapper.createObjectNode());
+
+        // then
+        assertThat(result.path("count").asInt(), is(2));
+        assertThat(result.path("expectations").isArray(), is(true));
+        assertThat(result.path("expectations").size(), is(2));
+    }
+
+    @Test
+    public void shouldListActiveExpectationsFilteredByPath() {
+        ObjectNode create1 = objectMapper.createObjectNode();
+        create1.put("method", "GET");
+        create1.put("path", "/filter-keep");
+        create1.put("responseBody", "keep");
+        toolRegistry.callTool("create_expectation", create1);
+        ObjectNode create2 = objectMapper.createObjectNode();
+        create2.put("method", "GET");
+        create2.put("path", "/filter-drop");
+        create2.put("responseBody", "drop");
+        toolRegistry.callTool("create_expectation", create2);
+
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("path", "/filter-keep");
+        JsonNode result = toolRegistry.callTool("list_expectations", params);
+
+        assertThat(result.path("count").asInt(), is(1));
+        assertThat(result.path("expectations").get(0).toString(), containsString("/filter-keep"));
+    }
+
+    @Test
+    public void shouldListNoExpectationsWhenNoneRegistered() {
+        JsonNode result = toolRegistry.callTool("list_expectations", objectMapper.createObjectNode());
+        assertThat(result.path("count").asInt(), is(0));
+        assertThat(result.path("expectations").isArray(), is(true));
+        assertThat(result.path("expectations").size(), is(0));
+    }
+
+    // ---- set_operating_mode tool ----
+
+    @Test
+    public void shouldSetOperatingModeToSpy() {
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("mode", "SPY");
+        JsonNode result = toolRegistry.callTool("set_operating_mode", params);
+
+        assertThat(result.path("status").asText(), is("ok"));
+        assertThat(result.path("mode").asText(), is("SPY"));
+        assertThat(result.path("proxyUnmatchedRequests").asBoolean(), is(true));
+    }
+
+    @Test
+    public void shouldSetOperatingModeToSimulate() {
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("mode", "simulate");
+        JsonNode result = toolRegistry.callTool("set_operating_mode", params);
+
+        assertThat(result.path("mode").asText(), is("SIMULATE"));
+        assertThat(result.path("proxyUnmatchedRequests").asBoolean(), is(false));
+    }
+
+    @Test
+    public void shouldRejectUnknownOperatingMode() {
+        ObjectNode params = objectMapper.createObjectNode();
+        params.put("mode", "BOGUS");
+        JsonNode result = toolRegistry.callTool("set_operating_mode", params);
+
+        assertThat(result.path("error").asBoolean(), is(true));
+        assertThat(result.path("message").asText(), containsString("BOGUS"));
+    }
+
+    @Test
+    public void shouldRejectMissingOperatingMode() {
+        JsonNode result = toolRegistry.callTool("set_operating_mode", objectMapper.createObjectNode());
+        assertThat(result.path("error").asBoolean(), is(true));
+    }
+
+    // ---- promote_recordings tool ----
+
+    @Test
+    public void shouldPromoteRecordedTrafficToActiveExpectations() throws Exception {
+        // given - recorded (forwarded) traffic, what SPY/CAPTURE mode produces
+        httpState.log(new LogEntry()
+            .setType(FORWARDED_REQUEST)
+            .setLogLevel(org.slf4j.event.Level.INFO)
+            .setHttpRequest(request().withMethod("GET").withPath("/promote/users"))
+            .setHttpResponse(response().withStatusCode(200).withBody("[{\"id\":1}]"))
+            .setExpectation(request().withMethod("GET").withPath("/promote/users"),
+                response().withStatusCode(200).withBody("[{\"id\":1}]"))
+            .setMessageFormat("returning response:{}for forwarded request")
+            .setArguments(response().withStatusCode(200).withBody("[{\"id\":1}]"))
+        );
+        Thread.sleep(500);
+
+        // when
+        JsonNode result = toolRegistry.callTool("promote_recordings", objectMapper.createObjectNode());
+
+        // then
+        assertThat(result.path("status").asText(), is("promoted"));
+        assertThat(result.path("count").asInt() >= 1, is(true));
+        assertThat(result.path("ids").isArray(), is(true));
+
+        // and the promoted mock is now an active expectation
+        JsonNode active = toolRegistry.callTool("list_expectations", objectMapper.createObjectNode());
+        assertThat(active.path("count").asInt() >= 1, is(true));
+        assertThat(active.path("expectations").toString(), containsString("/promote/users"));
+    }
+
+    @Test
+    public void shouldReportNoRecordedTrafficWhenNothingToPromote() {
+        JsonNode result = toolRegistry.callTool("promote_recordings", objectMapper.createObjectNode());
+        assertThat(result.path("status").asText(), is("no_recorded_traffic"));
+        assertThat(result.path("count").asInt(), is(0));
+    }
+
+    // ---- create_expectation -> verify_request round-trip ----
+
+    @Test
+    public void shouldRoundTripCreateExpectationThenVerifyRequest() {
+        // create a mock, then verify a request pattern that has NOT been received yet fails
+        ObjectNode create = objectMapper.createObjectNode();
+        create.put("method", "GET");
+        create.put("path", "/round-trip");
+        create.put("responseBody", "ok");
+        JsonNode created = toolRegistry.callTool("create_expectation", create);
+        assertThat(created.path("status").asText(), is("created"));
+
+        ObjectNode verify = objectMapper.createObjectNode();
+        verify.put("method", "GET");
+        verify.put("path", "/round-trip");
+        verify.put("atLeast", 1);
+        JsonNode verifyResult = toolRegistry.callTool("verify_request", verify);
+        // no request received against the mock yet, so verification reports not-verified with a diff
+        assertThat(verifyResult.path("verified").asBoolean(), is(false));
+        assertThat(verifyResult.path("message").asText().isEmpty(), is(false));
+    }
+
     // ---- per-tool read/mutate classification (control-plane authorization) ----
 
     @Test
@@ -2178,7 +2334,9 @@ public class McpToolRegistryTest {
             "mock_llm_completion",
             "create_llm_conversation",
             "mock_llm_failover",
-            "mock_adversarial_llm_response")) {
+            "mock_adversarial_llm_response",
+            "set_operating_mode",
+            "promote_recordings")) {
             assertThat("expected '" + tool + "' to be classified as mutating",
                 McpToolRegistry.isMutatingTool(tool), is(true));
         }
@@ -2204,6 +2362,7 @@ public class McpToolRegistryTest {
             "diff_agent_runs",
             "detect_llm_drift",
             "list_mock_tools",
+            "list_expectations",
             "raw_retrieve",
             "raw_verify",
             "run_contract_test",

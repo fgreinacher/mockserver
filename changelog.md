@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Expectation-authoring and record/replay control tools on the MCP server.** An AI coding agent
+  (Claude Code, Cursor, etc.) can now stand up and drive mocks entirely through the MCP server at
+  `/mockserver/mcp`, closing the "AI agents can only read, not author" gap. Three new tools are added,
+  each delegating to the existing `HttpState` control-plane operation (no logic fork):
+  `list_expectations` (READ — active expectations, optionally filtered by method/path;
+  `PUT /retrieve?type=ACTIVE_EXPECTATIONS`), `set_operating_mode` (MUTATE — switch SIMULATE/SPY/CAPTURE;
+  `PUT /mockserver/mode`), and `promote_recordings` (MUTATE — turn recorded traffic into active mocks with
+  redaction/consolidation/parameterization; `PUT /mockserver/recordings/promote`). Each tool is classified
+  read-vs-mutate so the control-plane authorization gate applies — a MUTATE tool requires the MUTATE role
+  when `controlPlaneAuthorizationEnabled` is on. The pre-existing authoring/read tools (`create_expectation`,
+  `raw_expectation`, `clear_expectations`, `verify_request`, `retrieve_recorded_requests`,
+  `retrieve_request_responses`) are unchanged; the `/mockserver/mode` and `/mockserver/recordings/promote`
+  REST handlers were refactored onto new shared `HttpState.setMode(...)` / `HttpState.promoteRecordings(...)`
+  methods so REST and MCP share one code path.
+
 - **OpenAI Responses API server-side state — `previous_response_id` chaining, `store`, and
   `GET /v1/responses/{id}`.** MockServer's Responses API mock (`OPENAI_RESPONSES`) is no longer stateless:
   each issued `POST /v1/responses` response is recorded (by default; honours the request's `store` flag) in a

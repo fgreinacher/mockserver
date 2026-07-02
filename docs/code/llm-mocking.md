@@ -235,6 +235,8 @@ Two MCP tools expose the LLM mocking feature to agents:
 
 The first two validate provider availability against `ProviderCodecRegistry` at registration time. The analysis tools delegate to `org.mockserver.llm.analysis.AgentRunAnalyzer`.
 
+Beyond these LLM-specific tools, the same MCP server exposes generic **expectation-authoring and record/replay control tools** (`create_expectation`, `raw_expectation`, `list_expectations`, `clear_expectations`, `verify_request`, `retrieve_recorded_requests`, `retrieve_request_responses`, `set_operating_mode`, `promote_recordings`) so an agent can author and drive any mock — including recording real LLM traffic in SPY/CAPTURE mode and promoting it to mocks. Each is read/mutate-classified for the control-plane authorization gate. See [ai-protocol-mocking.md → Expectation-authoring and record/replay control tools](ai-protocol-mocking.md#expectation-authoring-and-recordreplay-control-tools).
+
 ## Structured-output validation
 
 Structured-output validation against a JSON Schema works on **both sides** of a mock, both built on `JsonSchemaValidator`:

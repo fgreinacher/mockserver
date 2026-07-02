@@ -1451,6 +1451,43 @@ public class McpStreamableHttpHandlerTest {
     }
 
     @Test
+    public void shouldRejectSetOperatingModeWhenAuthorizationEnabledAndCallerLacksMutateRole() throws Exception {
+        // set_operating_mode is a newly-added MUTATE authoring/control tool: a READ-only principal
+        // must be denied and the mode must not change.
+        AuthzFixture fixture = newAuthorizedFixture(true, java.util.Set.of("readers"));
+
+        ObjectNode args = objectMapper.createObjectNode();
+        args.put("mode", "SPY");
+        FullHttpResponse response = callTool(fixture.channel, fixture.sessionId, "set_operating_mode", args);
+
+        assertThat(response, notNullValue());
+        JsonNode json = parseResponse(response);
+        assertThat(json.path("error").path("code").asInt(), is(JsonRpcMessage.INVALID_REQUEST));
+        assertThat(json.path("error").path("message").asText(), containsString("Forbidden for control plane"));
+        assertThat(json.path("result").isMissingNode() || json.path("result").isNull(), is(true));
+
+        response.release();
+        fixture.channel.close();
+    }
+
+    @Test
+    public void shouldAllowListExpectationsWhenAuthorizationEnabledAndCallerHasReadRole() throws Exception {
+        // list_expectations is a newly-added READ authoring tool: a READ principal may call it.
+        AuthzFixture fixture = newAuthorizedFixture(true, java.util.Set.of("readers"));
+
+        FullHttpResponse response = callTool(fixture.channel, fixture.sessionId, "list_expectations", null);
+
+        assertThat(response, notNullValue());
+        assertThat(response.status(), is(HttpResponseStatus.OK));
+        JsonNode json = parseResponse(response);
+        assertThat(json.path("error").isMissingNode() || json.path("error").isNull(), is(true));
+        assertThat(json.path("result").path("isError").asBoolean(false), is(false));
+
+        response.release();
+        fixture.channel.close();
+    }
+
+    @Test
     public void shouldRejectReadToolWhenAuthorizationEnabledAndCallerHasNoMappedRole() throws Exception {
         // fail-closed: a verified principal whose scopes map to NO role is denied even reads
         AuthzFixture fixture = newAuthorizedFixture(true, java.util.Set.of("unmapped-scope"));

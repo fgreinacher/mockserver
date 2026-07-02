@@ -2231,43 +2231,18 @@ public class HttpState {
                         if (isNotBlank(requestBody)) {
                             filter = getRequestDefinitionSerializer().deserialize(requestBody);
                         }
-                        final RequestDefinition promoteFilter = filter;
-                        final String promoteCorrelationId = UUIDService.getUUID();
-                        List<Expectation> recorded = awaitRetrieve(
-                            (Consumer<Consumer<List<Expectation>>>) consumer -> mockServerLog.retrieveRecordedExpectations(promoteFilter, consumer),
-                            promoteCorrelationId, request
-                        );
 
                         // Redact BEFORE consolidation (on by default; ?redactSensitiveData=false to
-                        // disable) so promoted mocks never carry captured credentials. Redacting the
-                        // raw single-response recordings first also lets responses that differed only
-                        // in a secret collapse, and avoids the single-response redactor flattening a
-                        // consolidated SEQUENTIAL response list.
+                        // disable) so promoted mocks never carry captured credentials. Consolidate by
+                        // default (?consolidate=false promotes verbatim); ?parameterize defaults on and
+                        // generalises volatile path/query/header/body values so a single recorded id
+                        // does not pin the mock. Delegates to the shared promoteRecordings(...) so the
+                        // REST endpoint and the promote_recordings MCP tool share one code path.
                         org.mockserver.imports.ImportRedaction.Options redactionOptions = buildImportRedactionOptions(request);
-                        recorded = org.mockserver.imports.ImportRedaction.redact(recorded, redactionOptions);
-
-                        // Consolidate by default; ?consolidate=false promotes verbatim (still
-                        // upgraded to unlimited times, mirroring the MCP tool). ?parameterize
-                        // defaults on for promote and generalises volatile path/query/header/body
-                        // values so a single recorded id does not pin the mock.
                         boolean consolidate = !"false".equalsIgnoreCase(request.getFirstQueryStringParameter("consolidate"));
                         boolean parameterize = !"false".equalsIgnoreCase(request.getFirstQueryStringParameter("parameterize"));
-                        List<Expectation> produced;
-                        if (consolidate) {
-                            produced = RecordedExpectationPostProcessor.consolidate(recorded, parameterize);
-                        } else {
-                            produced = new ArrayList<>(recorded.size());
-                            for (Expectation recordedExpectation : recorded) {
-                                produced.add(new Expectation(
-                                    recordedExpectation.getHttpRequest(),
-                                    org.mockserver.matchers.Times.unlimited(),
-                                    org.mockserver.matchers.TimeToLive.unlimited(),
-                                    0
-                                ).thenRespond(recordedExpectation.getHttpResponse()));
-                            }
-                        }
 
-                        List<Expectation> activated = add(produced.toArray(new Expectation[0]));
+                        List<Expectation> activated = promoteRecordings(filter, consolidate, parameterize, redactionOptions);
                         responseWriter.writeResponse(request, response()
                             .withStatusCode(CREATED.code())
                             .withBody(getExpectationSerializer().serialize(activated), MediaType.JSON_UTF_8), true);
@@ -2442,9 +2417,7 @@ public class HttpState {
 
                 if (controlPlaneRequestAuthenticated(request, responseWriter)) {
                     try {
-                        MockMode mode = MockMode.parse(request.getFirstQueryStringParameter("mode"));
-                        mockMode = mode;
-                        configuration.attemptToProxyIfNoMatchingExpectation(mode.proxyUnmatchedRequests());
+                        MockMode mode = setMode(MockMode.parse(request.getFirstQueryStringParameter("mode")));
                         responseWriter.writeResponse(request, response()
                             .withStatusCode(OK.code())
                             .withBody("{\"mode\":\"" + mode + "\",\"proxyUnmatchedRequests\":" + mode.proxyUnmatchedRequests() + "}", MediaType.JSON_UTF_8), true);
@@ -6190,6 +6163,70 @@ public class HttpState {
 
     public MockServerEventLog getMockServerLog() {
         return mockServerLog;
+    }
+
+    /**
+     * Set the high-level operating mode (SIMULATE/SPY/CAPTURE), the single behavioural
+     * switch behind {@code PUT /mockserver/mode}. Records the mode so {@code GET /mockserver/mode}
+     * round-trips it and toggles {@code attemptToProxyIfNoMatchingExpectation} to match. Shared
+     * by the REST handler and the {@code set_operating_mode} MCP tool so there is one code path.
+     *
+     * @param mode the mode to apply (must not be null)
+     * @return the applied mode
+     */
+    public MockMode setMode(MockMode mode) {
+        if (mode == null) {
+            throw new IllegalArgumentException("mode is required (one of SIMULATE, SPY, CAPTURE)");
+        }
+        this.mockMode = mode;
+        configuration.attemptToProxyIfNoMatchingExpectation(mode.proxyUnmatchedRequests());
+        return mode;
+    }
+
+    /**
+     * Promote traffic already recorded by MockServer's forwarding/proxy mode into ACTIVE mock
+     * expectations — the shared implementation behind {@code PUT /mockserver/recordings/promote}
+     * and the {@code promote_recordings} MCP tool, so an agent can "record then mock" in one step.
+     * Retrieves recorded {@code FORWARDED_REQUEST} exchanges matching the optional filter, redacts
+     * secrets (per {@code redactionOptions}), optionally consolidates/parameterizes them into
+     * reusable mocks (unlimited times), and ADDs them to the active expectation set.
+     *
+     * @param filter           optional request-matcher filter (null promotes all recorded traffic)
+     * @param consolidate      when true, collapse duplicate exchanges into consolidated mocks;
+     *                         when false, promote each recording verbatim (still unlimited times)
+     * @param parameterize     when true (and consolidating), generalise volatile path/query/header/
+     *                         body values so a single recorded id does not pin the mock
+     * @param redactionOptions redaction options (null defaults to enabled with the default lists)
+     * @return the activated expectations (with their assigned ids)
+     */
+    public List<Expectation> promoteRecordings(RequestDefinition filter, boolean consolidate, boolean parameterize, org.mockserver.imports.ImportRedaction.Options redactionOptions) {
+        final RequestDefinition promoteFilter = filter != null ? filter : request();
+        final String promoteCorrelationId = UUIDService.getUUID();
+        List<Expectation> recorded = awaitRetrieve(
+            (Consumer<Consumer<List<Expectation>>>) consumer -> mockServerLog.retrieveRecordedExpectations(promoteFilter, consumer),
+            promoteCorrelationId, promoteFilter instanceof HttpRequest ? (HttpRequest) promoteFilter : null
+        );
+
+        // Redact BEFORE consolidation so promoted mocks never carry captured credentials and so
+        // responses that differed only in a secret can collapse together.
+        recorded = org.mockserver.imports.ImportRedaction.redact(recorded, redactionOptions != null ? redactionOptions : org.mockserver.imports.ImportRedaction.Options.enabled());
+
+        List<Expectation> produced;
+        if (consolidate) {
+            produced = RecordedExpectationPostProcessor.consolidate(recorded, parameterize);
+        } else {
+            produced = new ArrayList<>(recorded.size());
+            for (Expectation recordedExpectation : recorded) {
+                produced.add(new Expectation(
+                    recordedExpectation.getHttpRequest(),
+                    org.mockserver.matchers.Times.unlimited(),
+                    org.mockserver.matchers.TimeToLive.unlimited(),
+                    0
+                ).thenRespond(recordedExpectation.getHttpResponse()));
+            }
+        }
+
+        return add(produced.toArray(new Expectation[0]));
     }
 
     public Scheduler getScheduler() {

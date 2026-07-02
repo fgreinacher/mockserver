@@ -157,7 +157,7 @@ client = MultiServerMCPClient({
 tools = await client.get_tools()
 agent = create_react_agent(model, tools)</code></pre>
 
-<p>The agent can now create expectations, verify requests, retrieve recorded traffic, and debug mismatches through the same MCP tools as the IDE assistants above.</p>
+<p>The agent can now create and list expectations, verify requests, retrieve recorded traffic, switch operating mode (SIMULATE / SPY / CAPTURE), promote recorded traffic into mocks, and debug mismatches through the same MCP tools as the IDE assistants above. This lets an agent both author mocks from scratch and "record then mock" a real API without leaving the IDE.</p>
 
 <h2>Quick Test</h2>
 

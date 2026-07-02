@@ -842,6 +842,24 @@ flowchart LR
 | `record_llm_fixtures` | Snapshots recorded proxy traffic into a fixture file: retrieves FORWARDED_REQUEST entries, converts SSE responses, redacts secrets, writes to the specified path |
 | `load_expectations_from_file` | Loads a fixture file and adds its expectations as active mocks for replay |
 
+### Expectation-authoring and record/replay control tools
+
+So an AI coding agent (Claude Code, Cursor, …) can stand up and drive mocks from the IDE without leaving the MCP protocol, `McpToolRegistry` exposes authoring and control tools that each delegate to the corresponding `HttpState` control-plane operation — there is no separate matching/verification path. The `/mockserver/mode` and `/mockserver/recordings/promote` REST handlers and their MCP tools share the same `HttpState.setMode(...)` / `HttpState.promoteRecordings(...)` methods.
+
+| Tool | Class | Delegates to | Purpose |
+|------|-------|--------------|---------|
+| `create_expectation` | MUTATE | `HttpState.add` | Create a mock from a simplified method/path/response DSL (plus chaos) |
+| `raw_expectation` | MUTATE | `HttpState.add` | Create a mock from the full MockServer expectation JSON (`PUT /mockserver/expectation` schema) |
+| `list_expectations` | READ | `HttpState.retrieve` (`ACTIVE_EXPECTATIONS`) | List the active expectations, optionally filtered by method/path, in full JSON incl. id |
+| `clear_expectations` | MUTATE | `HttpState.clear` | Clear expectations by request matcher or expectation id |
+| `verify_request` | READ | `HttpState.verify` | Verify a request pattern met its `VerificationTimes`; returns pass/fail + closest-match diff |
+| `retrieve_recorded_requests` | READ | `HttpState.retrieve` (`REQUESTS`) | Return recorded requests, optionally filtered |
+| `retrieve_request_responses` | READ | `HttpState.retrieve` (`REQUEST_RESPONSES`) | Return recorded request/response pairs |
+| `set_operating_mode` | MUTATE | `HttpState.setMode` | Switch the high-level mode SIMULATE / SPY / CAPTURE (`PUT /mockserver/mode`) |
+| `promote_recordings` | MUTATE | `HttpState.promoteRecordings` | Turn recorded (forwarded) traffic into active mocks with redaction + consolidation + parameterization (`PUT /mockserver/recordings/promote`) |
+
+The read-vs-mutate class drives control-plane authorization: when `controlPlaneAuthorizationEnabled=true`, a MUTATE tool requires the MUTATE role and a READ tool the READ role (see the control-plane note at the top of this page). A typical "record then mock" agent flow is `set_operating_mode SPY` → drive the app so unmatched requests are forwarded and recorded → `promote_recordings` → `list_expectations` to confirm.
+
 ### SSE Timing
 
 When the capture records per-chunk timing, the delays are carried on the `x-mockserver-chunk-delays-ms` header (a comma-separated list of millisecond gaps). `SseAwareExpectationConverter` parses that header and replays each SSE event with its captured delay, reproducing the original stream timing. When the header is absent, empty, or malformed, replay falls back to a fixed inter-event delay (50ms default).
