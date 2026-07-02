@@ -77,3 +77,59 @@ export async function runContractTest(
   await ensureOk(res);
   return res.json() as Promise<ContractTestReport>;
 }
+
+/**
+ * A single recorded request/response pair's traffic-validation outcome.
+ * `matchedOperation` is the OpenAPI operation the pair was located against, or
+ * `null` when no operation in the spec matched the request.
+ */
+export interface TrafficValidationResult {
+  method: string;
+  path: string;
+  matchedOperation: string | null;
+  passed: boolean;
+  requestErrors: string[];
+  responseErrors: string[];
+}
+
+/**
+ * The full traffic-validation report returned by `PUT /mockserver/trafficValidate`.
+ * There is no `baseUrl` — the server validates the request/response pairs it has
+ * already recorded, so no live service is contacted.
+ */
+export interface TrafficValidationReport {
+  totalRequests: number;
+  passed: number;
+  failed: number;
+  allPassed: boolean;
+  results: TrafficValidationResult[];
+}
+
+/** Request payload for a recorded-traffic validation run. */
+export interface TrafficValidationRequest {
+  /** A URL, file path, or inline OpenAPI spec (JSON or YAML). */
+  spec: string;
+}
+
+/**
+ * Validate the traffic MockServer has already recorded against an OpenAPI spec.
+ * The safer, CI-style twin of {@link runContractTest}: no live service is
+ * contacted — each recorded request/response pair is located against the spec
+ * and validated in place. Returns a per-pair pass/fail report.
+ */
+export async function validateRecordedTraffic(
+  params: ConnectionParams,
+  request: TrafficValidationRequest,
+  signal?: AbortSignal,
+): Promise<TrafficValidationReport> {
+  const base = buildBaseUrl(params);
+  const body: TrafficValidationRequest = { spec: request.spec };
+  const res = await fetch(`${base}/mockserver/trafficValidate`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+  await ensureOk(res);
+  return res.json() as Promise<TrafficValidationReport>;
+}

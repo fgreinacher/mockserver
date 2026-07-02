@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '@mui/material/styles';
 import { buildTheme } from '../theme';
 import ContractTestPanel from '../components/ContractTestPanel';
-import type { ContractTestReport } from '../lib/contractTest';
+import type { ContractTestReport, TrafficValidationReport } from '../lib/contractTest';
 
 const params = { host: '127.0.0.1', port: '1080', secure: false };
 
@@ -163,6 +163,111 @@ describe('ContractTestPanel', () => {
     // passes through as the user-facing message.
     await waitFor(() => {
       expect(screen.getByText(/invalid baseUrl: missing host/)).toBeInTheDocument();
+    });
+  });
+});
+
+const trafficViolations: TrafficValidationReport = {
+  totalRequests: 2,
+  passed: 1,
+  failed: 1,
+  allPassed: false,
+  results: [
+    {
+      method: 'GET',
+      path: '/pet/1',
+      matchedOperation: 'getPet',
+      passed: true,
+      requestErrors: [],
+      responseErrors: [],
+    },
+    {
+      method: 'POST',
+      path: '/pet',
+      matchedOperation: 'createPet',
+      passed: false,
+      requestErrors: ['request body did not match schema'],
+      responseErrors: ['response status 500 is not defined in the spec'],
+    },
+  ],
+};
+
+const emptyTraffic: TrafficValidationReport = {
+  totalRequests: 0,
+  passed: 0,
+  failed: 0,
+  allPassed: true,
+  results: [],
+};
+
+describe('ContractTestPanel — Validate Recorded Traffic mode', () => {
+  it('switches to traffic mode, hiding the base-URL field and enabling Run with only a spec', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('button', { name: 'Validate Recorded Traffic' }));
+
+    // the live-mode-only base URL field is gone
+    expect(screen.queryByRole('textbox', { name: /Target base URL/i })).not.toBeInTheDocument();
+    // description reflects the offline nature of the mode
+    expect(screen.getByText(/no live service is contacted/i)).toBeInTheDocument();
+
+    const runButton = screen.getByRole('button', { name: 'Validate Traffic' });
+    expect(runButton).toBeDisabled();
+
+    await user.type(screen.getByRole('textbox', { name: /OpenAPI spec/i }), 'https://example.com/openapi.json');
+    expect(runButton).not.toBeDisabled();
+  });
+
+  it('validates recorded traffic and renders a per-request request/response error table', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => trafficViolations }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('button', { name: 'Validate Recorded Traffic' }));
+    await user.type(screen.getByRole('textbox', { name: /OpenAPI spec/i }), 'https://example.com/openapi.json');
+    await user.click(screen.getByRole('button', { name: 'Validate Traffic' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('createPet')).toBeInTheDocument();
+    });
+
+    // summary chips
+    expect(screen.getByText('2 requests')).toBeInTheDocument();
+    expect(screen.getByText('1 passed')).toBeInTheDocument();
+    expect(screen.getAllByText('1 invalid').length).toBeGreaterThan(0);
+
+    // one PASS, one FAIL row
+    expect(screen.getByText('PASS')).toBeInTheDocument();
+    expect(screen.getByText('FAIL')).toBeInTheDocument();
+    expect(screen.getByText('getPet')).toBeInTheDocument();
+
+    // request + response errors render in their own columns
+    expect(screen.getByText('request body did not match schema')).toBeInTheDocument();
+    expect(screen.getByText('response status 500 is not defined in the spec')).toBeInTheDocument();
+
+    // it issued a PUT to the trafficValidate endpoint with only the spec
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain('/mockserver/trafficValidate');
+    expect(init.method).toBe('PUT');
+    const sent = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(sent).toEqual({ spec: 'https://example.com/openapi.json' });
+  });
+
+  it('shows a helpful message when there is no recorded traffic to validate', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => emptyTraffic })));
+
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('button', { name: 'Validate Recorded Traffic' }));
+    await user.type(screen.getByRole('textbox', { name: /OpenAPI spec/i }), 'inline');
+    await user.click(screen.getByRole('button', { name: 'Validate Traffic' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/No recorded traffic to validate/i)).toBeInTheDocument();
     });
   });
 });

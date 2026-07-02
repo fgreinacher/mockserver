@@ -550,11 +550,12 @@ The server evaluates the objectives and returns an `SloVerdict` with `result` (`
 
 ## Contract View
 
-`ContractTestPanel.tsx` (view = `contract`, AppBar label **Contract**, under the **Verify** group) validates mocks and recorded traffic against an OpenAPI spec. Two modes:
-- **Traffic validate** — calls `PUT /mockserver/trafficValidate` with a spec (URL or inline YAML/JSON) to check whether all recorded traffic conforms to the spec.
-- **Contract test** — calls `PUT /mockserver/contractTest` with a spec and a target `baseUrl` (and optional `operationId`) to exercise the live service and report pass/fail per operation.
+`ContractTestPanel.tsx` (view = `contract`, AppBar label **Contract**, under the **Verify** group) validates mocks and recorded traffic against an OpenAPI spec. A ToggleButtonGroup switches between two modes; both take the OpenAPI spec as a URL, file path, or inline YAML/JSON document (the same spec `TextField`):
 
-Results are rendered as a report table with columns: operation, status code received, pass/fail, and validation errors. The UI result type (`lib/contractTest.ts`) has fields `operationId`, `method`, `path`, `statusCodeReceived`, `passed`, and `validationErrors: string[]`; the Java client maps these to `ContractResult.requestErrors`/`responseErrors`.
+- **Live Contract Test** — calls `PUT /mockserver/contractTest` with a spec, a target `baseUrl`, and an optional `operationId` to exercise the live service and report pass/fail per operation. Results render as a table with columns: result (PASS/FAIL), operation, method, path, status code received, and validation errors. The UI result type `ContractTestOperationResult` (`lib/contractTest.ts`) has fields `operationId`, `method`, `path`, `statusCodeReceived`, `passed`, and `validationErrors: string[]`.
+- **Validate Recorded Traffic** — calls `PUT /mockserver/trafficValidate` with only a spec (no `baseUrl`; the endpoint contacts no live service). The server locates every request/response pair it has already recorded against the spec and validates each in place — the safer, CI-style twin of the live contract test. Results render as a table with columns: result, method, path, matched operation, request errors, and response errors. The UI result type `TrafficValidationResult` has fields `method`, `path`, `matchedOperation: string | null`, `passed`, `requestErrors: string[]`, and `responseErrors: string[]`; the report adds `totalRequests`/`passed`/`failed`/`allPassed`. When no traffic has been recorded (`totalRequests === 0`) the panel shows an info alert prompting the user to record or proxy traffic first.
+
+Both modes surface the server's `{ "error": ... }` envelope on failure via `HumanErrorAlert`. `lib/contractTest.ts` is framework-agnostic (plain `fetch`) so `runContractTest` and `validateRecordedTraffic` are unit-tested independently of the component.
 
 ## Cluster View
 
