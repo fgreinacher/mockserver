@@ -7,6 +7,7 @@
  */
 
 export { mockServerClient, MockMode, ModeStatus, StoredFile, PactVerificationReport, ClockStatus, GrpcMethod, GrpcService, KeysToMultiValues, MockServerClient, MockServerClientOptions, ScenarioHandle, ScenarioList, ScenarioSetOptions, ScenarioState } from './mockServerClient';
+export { setupMockServer, SetupMockServerOptions, MockServerHandle } from './setupMockServer';
 export { Llm, LlmMockBuilder, LlmConversationBuilder, LlmFailoverBuilder, TurnBuilder, Completion, ToolUse, Usage, StreamingPhysics, EmbeddingResponse, IsolationSource, Provider, Role } from './llm';
 export { default as llm } from './llm';
 export { mcpMock, McpMockBuilder, McpToolBuilder, McpResourceBuilder, McpPromptBuilder } from './mcpMockBuilder';

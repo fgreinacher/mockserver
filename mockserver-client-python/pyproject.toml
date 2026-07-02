@@ -33,6 +33,9 @@ dev = [
   "pytest-cov >= 7.1.0",
 ]
 
+[project.entry-points.pytest11]
+mockserver = "mockserver.pytest_plugin"
+
 [project.urls]
 Homepage = "https://www.mock-server.com"
 Repository = "https://github.com/mock-server/mockserver-monorepo"

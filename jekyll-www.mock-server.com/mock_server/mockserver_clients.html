@@ -92,6 +92,61 @@ new MockServerClient(&quot;localhost&quot;, 1080)
         VerificationTimes.atLeast(1)
     );</code></pre>
 
+<a id="spring-boot-starter" class="anchor" href="#spring-boot-starter">&nbsp;</a>
+
+<h2>Spring Boot Starter</h2>
+
+<p>For Spring Boot applications, the <strong>mockserver-spring-boot-starter</strong> auto-configures a local
+    MockServer and exposes an injectable <span class="inline_code">MockServerClient</span> bean. It is intended
+    for <strong>local development and integration testing</strong> (it starts a real embedded MockServer) and is
+    <strong>disabled by default</strong>, so adding it to the classpath never changes application behaviour on its
+    own.</p>
+
+<p>Install via Maven:</p>
+
+<pre class="prettyprint code"><code class="code">&lt;dependency&gt;
+    &lt;groupId&gt;org.mock-server&lt;/groupId&gt;
+    &lt;artifactId&gt;mockserver-spring-boot-starter&lt;/artifactId&gt;
+    &lt;version&gt;{{ site.mockserver_version }}&lt;/version&gt;
+    &lt;scope&gt;test&lt;/scope&gt;
+&lt;/dependency&gt;</code></pre>
+
+<p>Enable it and (optionally) choose a port in <span class="inline_code">application.properties</span> — use a
+    dev or test profile so it never activates in production:</p>
+
+<pre class="prettyprint code"><code class="code">mockserver.enabled=true
+mockserver.port=1080
+# optional:
+# mockserver.initialization-json=classpath:initializerJson.json
+# mockserver.log-level=WARN</code></pre>
+
+<table>
+    <tr><th>Property</th><th>Default</th><th>Description</th></tr>
+    <tr><td><span class="inline_code">mockserver.enabled</span></td><td><span class="inline_code">false</span></td><td>Master switch — start MockServer and register the bean</td></tr>
+    <tr><td><span class="inline_code">mockserver.port</span></td><td><span class="inline_code">0</span></td><td>Port to bind; <span class="inline_code">0</span> picks a free ephemeral port (read the real port from the bean via <span class="inline_code">getPort()</span>)</td></tr>
+    <tr><td><span class="inline_code">mockserver.initialization-json</span></td><td>&nbsp;</td><td>Path to an initialization JSON file of expectations to preload</td></tr>
+    <tr><td><span class="inline_code">mockserver.log-level</span></td><td>&nbsp;</td><td>MockServer log level (<span class="inline_code">WARN</span>, <span class="inline_code">INFO</span>, <span class="inline_code">DEBUG</span>, <span class="inline_code">OFF</span>)</td></tr>
+</table>
+
+<p>Then inject the client anywhere in your application context:</p>
+
+<pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
+import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpResponse.response;
+
+@Service
+class MyClient {
+    MyClient(MockServerClient mockServerClient) {
+        mockServerClient
+            .when(request().withMethod(&quot;GET&quot;).withPath(&quot;/hello&quot;))
+            .respond(response().withStatusCode(200).withBody(&quot;world&quot;));
+    }
+}</code></pre>
+
+<p>The server starts when the Spring context refreshes and stops when it closes. A single bean is registered, so
+    it is injectable as either <span class="inline_code">MockServerClient</span> or
+    <span class="inline_code">ClientAndServer</span>; declare your own bean to override the auto-configured one.</p>
+
 <a id="javascript-mockserver-client" class="anchor" href="#javascript-mockserver-client">&nbsp;</a>
 
 <h2>JavaScript Client</h2>
@@ -130,6 +185,24 @@ mockServerClient(&quot;localhost&quot;, 1080)
         function () { /* request was received at least once */ },
         function () { /* verification failed */ }
     );</code></pre>
+
+<p>For jest, vitest, mocha, or <span class="inline_code">node:test</span>, the client also ships a
+    framework-agnostic <span class="inline_code">setupMockServer()</span> helper that starts and stops MockServer
+    (via <a target="_blank" href="https://www.npmjs.org/package/mockserver-node" rel="noopener noreferrer">mockserver-node</a>)
+    and hands back a ready client plus an idempotent <span class="inline_code">stop()</span>:</p>
+
+<pre class="prettyprint lang-javascript code"><code class="code">const { setupMockServer } = require('mockserver-client/setupMockServer');
+
+let mockServer;
+beforeAll(async () =&gt; { mockServer = await setupMockServer({ serverPort: 1080 }); });
+afterAll(async () =&gt; { await mockServer.stop(); });
+
+test('responds', async () =&gt; {
+    await mockServer.client.mockAnyResponse({
+        httpRequest: { path: &quot;/hello&quot; },
+        httpResponse: { body: &quot;world&quot; }
+    });
+});</code></pre>
 
 <a id="python-mockserver-client" class="anchor" href="#python-mockserver-client">&nbsp;</a>
 
@@ -182,6 +255,22 @@ except MockServerConnectionError as e:
     print(f"Connection failed: {e}")</code></pre>
 
 <p>Requires Python &gt;= 3.9.</p>
+
+<p>The client also ships a <strong>pytest fixture</strong>, registered automatically on install, so tests can
+    request a ready, reset client with no <span class="inline_code">conftest.py</span> wiring. The
+    <span class="inline_code">mockserver</span> fixture connects to a running server when
+    <span class="inline_code">MOCKSERVER_HOST</span> / <span class="inline_code">MOCKSERVER_PORT</span> are set,
+    otherwise it launches a self-contained binary for the test session, and resets the server before and after
+    every test:</p>
+
+<pre class="prettyprint lang-python code"><code class="code">from mockserver import HttpRequest, HttpResponse
+
+def test_hello(mockserver):
+    mockserver.when(
+        HttpRequest(path=&quot;/hello&quot;)
+    ).respond(
+        HttpResponse(status_code=200, body=&quot;world&quot;)
+    )</code></pre>
 
 <a id="ruby-mockserver-client" class="anchor" href="#ruby-mockserver-client">&nbsp;</a>
 

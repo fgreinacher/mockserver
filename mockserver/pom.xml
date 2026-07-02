@@ -64,6 +64,7 @@
         <bouncycastle.version>1.84</bouncycastle.version>
         <spring.version>7.0.8</spring.version>
         <spring-web.version>7.0.8</spring-web.version>
+        <spring-boot.version>4.0.6</spring-boot.version>
         <mockito.version>5.23.0</mockito.version>
         <hamcrest.version>3.0</hamcrest.version>
         <xmlunit.version>2.12.0</xmlunit.version>
@@ -107,6 +108,7 @@
         <module>mockserver-junit-jupiter-no-dependencies</module>
         <module>mockserver-spring-test-listener</module>
         <module>mockserver-spring-test-listener-no-dependencies</module>
+        <module>mockserver-spring-boot-starter</module>
         <!-- examples relocated to repo-root examples/java (kept in the reactor so they stay compiled/tested) -->
         <module>../examples/java</module>
         <module>mockserver-async</module>
@@ -204,6 +206,11 @@
             <dependency>
                 <groupId>${project.groupId}</groupId>
                 <artifactId>mockserver-spring-test-listener-no-dependencies</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>${project.groupId}</groupId>
+                <artifactId>mockserver-spring-boot-starter</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -731,6 +738,18 @@
                 <groupId>org.springframework</groupId>
                 <artifactId>spring-core</artifactId>
                 <version>${spring-web.version}</version>
+            </dependency>
+
+            <!-- spring boot (mockserver-spring-boot-starter) -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-autoconfigure</artifactId>
+                <version>${spring-boot.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot</artifactId>
+                <version>${spring-boot.version}</version>
             </dependency>
 
             <!-- test -->

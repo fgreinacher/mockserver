@@ -34,6 +34,8 @@
     "mockServer.d.ts",
     "mockServerClient.js",
     "mockServerClient.d.ts",
+    "setupMockServer.js",
+    "setupMockServer.d.ts",
     "sendRequest.js",
     "webSocketClient.js"
   ],

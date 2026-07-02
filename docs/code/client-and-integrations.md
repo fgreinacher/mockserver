@@ -328,6 +328,69 @@ class MyTest {
 4. `MockServerTestExecutionListener` injects the `ClientAndServer` into `MockServerClient` fields
 5. After each test, `reset()` clears state
 
+### Spring Boot Starter
+
+The `mockserver-spring-boot-starter` module provides **Spring Boot auto-configuration** for main-application
+(non-test-runner) use: adding it to the classpath and setting `mockserver.enabled=true` starts a
+`ClientAndServer` inside the application context and exposes it as an injectable `MockServerClient` bean. It is
+intended for **local development and integration testing** (it starts a real embedded MockServer), and is
+disabled by default so its mere presence never changes behaviour.
+
+It uses the Spring Boot 3/4 auto-configuration mechanism (an
+`org.springframework.boot.autoconfigure.AutoConfiguration.imports` file under `META-INF/spring/`, not the legacy
+`spring.factories`), targeting Spring Boot 4.0.x / Spring Framework 7 (the version already used elsewhere in the
+build) on the `jakarta` namespace.
+
+```mermaid
+sequenceDiagram
+    participant CTX as Spring Context Refresh
+    participant AC as MockServerAutoConfiguration
+    participant P as MockServerProperties
+    participant CS as ClientAndServer
+
+    CTX->>AC: @ConditionalOnProperty mockserver.enabled=true
+    AC->>P: bind mockserver.* properties
+    AC->>CS: startClientAndServer(configuration, port)
+    CS-->>AC: running server (also a MockServerClient)
+    AC-->>CTX: register ClientAndServer bean
+    Note over CTX,CS: on context close, bean destroyMethod=stop shuts the server down
+```
+
+**Configuration properties** (`mockserver.*`):
+
+| Property | Default | Purpose |
+|----------|---------|---------|
+| `mockserver.enabled` | `false` | Master switch — start MockServer and register the bean |
+| `mockserver.port` | `0` | Bind port; `0` picks a free ephemeral port (read the actual port from the bean) |
+| `mockserver.initialization-json` | — | Path to an initialization JSON file of expectations to preload |
+| `mockserver.log-level` | — | MockServer log level (e.g. `WARN`, `INFO`, `DEBUG`, `OFF`) |
+
+**Usage:**
+
+```java
+@SpringBootApplication
+public class MyDevApp { }
+
+// application.properties (dev / test profile only):
+// mockserver.enabled=true
+// mockserver.port=1080
+
+@Service
+class MyClient {
+    MyClient(MockServerClient mockServerClient) { // injected; also injectable as ClientAndServer
+        mockServerClient
+            .when(request().withPath("/hello"))
+            .respond(response().withBody("world"));
+    }
+}
+```
+
+**How it works:**
+1. `MockServerAutoConfiguration` is listed in `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` and is gated by `@ConditionalOnProperty(prefix = "mockserver", name = "enabled", havingValue = "true")`
+2. `MockServerProperties` (`@ConfigurationProperties(prefix = "mockserver")`) binds the `mockserver.*` values
+3. A single `ClientAndServer` bean is created (`@ConditionalOnMissingBean`, so you can override it) with `destroyMethod = "stop"`; because `ClientAndServer extends MockServerClient` the one bean satisfies both `ClientAndServer` and `MockServerClient` injection points
+4. The server starts on context refresh and stops on context close
+
 ### Maven Plugin Glob Support
 
 The Maven plugin's `initializationJson` parameter now supports glob patterns for loading multiple expectation files. The plugin uses `FilePath.expandFilePathGlobs()` to resolve glob characters (`*`, `**`, `?`, `[]`, `{}`) into matching file paths.
@@ -411,6 +474,26 @@ network) using `file://` fixtures and a stubbed downloader, plus one integration
 when a real bundle is available. *(Known minor follow-up: the PHP pruner relies on `version_compare`,
 which can treat `7.3.0` and `7.3.0-SNAPSHOT` as equal — prune order between those two is not
 guaranteed; tracked as a follow-up.)*
+
+### Test-Runner Fixtures & Helpers
+
+Thin, framework-native on-ramps wrap the launchers above so users get a ready client with one line of
+setup. All follow the same shape: start (or connect to) a server, hand back a reset client, tear down after.
+
+| Client | Framework | Entry point | File |
+|--------|-----------|-------------|------|
+| Ruby | RSpec | `require 'mockserver/rspec'` → `mockserver` (shared context, `:mockserver` tag) | `mockserver-client-ruby/lib/mockserver/rspec.rb` |
+| Python | pytest | `mockserver` fixture (auto-registered via the `pytest11` entry point) + `mockserver_server`/`mockserver_host`/`mockserver_port` | `mockserver-client-python/mockserver/pytest_plugin.py` |
+| Node | jest / vitest / mocha / node:test | `setupMockServer(options)` → `{ client, host, serverPort, stop }` | `mockserver-client-node/setupMockServer.js` |
+
+* **pytest** — the `mockserver` fixture connects to an external server when `MOCKSERVER_HOST`/`MOCKSERVER_PORT`
+  are set, otherwise launches a self-contained binary (via `launcher.start`) for the session; it resets the
+  server before and after every test. Registration via `[project.entry-points.pytest11]` in `pyproject.toml`
+  means `pip install`ed users get the fixtures automatically, opt-in by requesting them.
+* **Node** — `setupMockServer()` lazily requires `mockserver-node` (kept a devDependency, so importing the
+  client never pulls it in) to start/stop the server, and returns a `mockServerClient` plus an idempotent
+  `stop()`. Framework-agnostic: usable from `beforeAll`/`afterAll`, a vitest/jest `globalSetup` module, or a
+  plain script.
 
 ## Node.js Client
 
@@ -538,6 +621,8 @@ graph TB
 | `MockServerPropertyCustomizer` | spring-test-listener | Spring context customizer |
 | `MockServerTestExecutionListener` | spring-test-listener | Spring test lifecycle |
 | `MockServerPort` | spring-test-listener | Port injection annotation |
+| `MockServerAutoConfiguration` | spring-boot-starter | Spring Boot auto-configuration (main app) |
+| `MockServerProperties` | spring-boot-starter | `mockserver.*` `@ConfigurationProperties` |
 | `WebSocketClient` | core | Client-side WebSocket connector |
 | `WebSocketClientHandler` | core | Client-side WebSocket handshake |
 | `WebSocketClientRegistry` | core | Server-side client registry |
