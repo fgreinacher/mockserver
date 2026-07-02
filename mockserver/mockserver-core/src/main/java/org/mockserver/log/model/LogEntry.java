@@ -796,11 +796,17 @@ public class LogEntry implements EventTranslator<LogEntry> {
         TEMPLATE_GENERATED,
         SERVER_CONFIGURATION,
         AUTHENTICATION_FAILED,
+        // A matched response/forward template rendered output that could not be turned into a valid
+        // HttpResponse/HttpRequest (failed JSON-schema validation, or threw while transforming). The
+        // action then degrades to a 404 fallback; this distinct type makes that failure visible and
+        // request-correlated instead of being buried as a generic ERROR while the 404 is logged as a
+        // success-looking EXPECTATION_RESPONSE. Counterpart to TEMPLATE_GENERATED.
+        TEMPLATE_GENERATION_FAILED,
     }
 
     public enum LogMessageTypeCategory {
         MATCHING(LogMessageType.EXPECTATION_MATCHED, LogMessageType.EXPECTATION_NOT_MATCHED, LogMessageType.NO_MATCH_RESPONSE),
-        REQUEST_LIFECYCLE(LogMessageType.RECEIVED_REQUEST, LogMessageType.FORWARDED_REQUEST, LogMessageType.EXPECTATION_RESPONSE, LogMessageType.TEMPLATE_GENERATED),
+        REQUEST_LIFECYCLE(LogMessageType.RECEIVED_REQUEST, LogMessageType.FORWARDED_REQUEST, LogMessageType.EXPECTATION_RESPONSE, LogMessageType.TEMPLATE_GENERATED, LogMessageType.TEMPLATE_GENERATION_FAILED),
         EXPECTATION_MANAGEMENT(LogMessageType.CREATED_EXPECTATION, LogMessageType.UPDATED_EXPECTATION, LogMessageType.REMOVED_EXPECTATION, LogMessageType.CLEARED),
         VERIFICATION(LogMessageType.VERIFICATION, LogMessageType.VERIFICATION_FAILED, LogMessageType.VERIFICATION_PASSED, LogMessageType.RETRIEVED),
         SERVER(LogMessageType.SERVER_CONFIGURATION, LogMessageType.AUTHENTICATION_FAILED, LogMessageType.OPENAPI_REQUEST_VALIDATION_FAILED, LogMessageType.OPENAPI_RESPONSE_VALIDATION_FAILED),

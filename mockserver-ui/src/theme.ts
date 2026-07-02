@@ -33,6 +33,7 @@ export const logTypeColors = {
   VERIFICATION_FAILED: 'rgb(234, 67, 106)',
   FORWARDED_REQUEST: 'rgb(152, 208, 255)',
   TEMPLATE_GENERATED: 'rgb(241, 186, 27)',
+  TEMPLATE_GENERATION_FAILED: 'rgb(211, 33, 45)',
   SERVER_CONFIGURATION: 'rgb(138, 175, 136)',
   DEFAULT: 'rgb(201, 125, 240)',
 } as const;
@@ -62,6 +63,8 @@ const logTypeColorsDark: Partial<Record<LogType, string>> = {
   // Dark wine/maroon reds disappear on dark — brighten.
   ERROR: 'rgb(214, 132, 156)',
   EXCEPTION: 'rgb(244, 96, 106)',
+  // Match the EXCEPTION brightening so a failed template generation reads clearly on dark.
+  TEMPLATE_GENERATION_FAILED: 'rgb(244, 96, 106)',
 };
 
 /**

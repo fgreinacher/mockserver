@@ -168,6 +168,10 @@ public class DashboardLogEntryDTOSerializer extends StdSerializer<DashboardLogEn
             case TEMPLATE_GENERATED:
                 style.put("color", "rgb(241, 186, 27)");
                 break;
+            case TEMPLATE_GENERATION_FAILED:
+                style.put("color", "rgb(211,33,45)");
+                style.put("style.whiteSpace", "pre-wrap");
+                break;
             case SERVER_CONFIGURATION:
                 style.put("color", "rgb(138, 175, 136)");
                 break;

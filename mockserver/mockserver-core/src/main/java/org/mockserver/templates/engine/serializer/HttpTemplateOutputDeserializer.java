@@ -14,6 +14,7 @@ import org.slf4j.event.Level;
 
 import static org.apache.commons.lang3.StringUtils.isEmpty;
 import static org.apache.commons.lang3.StringUtils.uncapitalize;
+import static org.mockserver.log.model.LogEntry.LogMessageType.TEMPLATE_GENERATION_FAILED;
 import static org.mockserver.validator.jsonschema.JsonSchemaHttpRequestValidator.jsonSchemaHttpRequestValidator;
 import static org.mockserver.validator.jsonschema.JsonSchemaHttpResponseValidator.jsonSchemaHttpResponseValidator;
 
@@ -45,21 +46,31 @@ public class HttpTemplateOutputDeserializer {
             if (isEmpty(validationErrors)) {
                 result = objectMapper.readValue(json, dtoClass).buildObject();
             } else {
+                // The template rendered output that is not a valid HttpResponse/HttpRequest. Classify this
+                // as TEMPLATE_GENERATION_FAILED (not a generic ERROR) and carry both the validation errors
+                // and the offending rendered output, correlated to the request. Returning null makes the
+                // action degrade to a 404 fallback; the 404 remains the correct client response (there is
+                // no valid response to return) and is intentionally NOT changed here — this is an
+                // observability fix only. Without this, the failure was invisible: the fallback 404 was
+                // logged as a success-looking EXPECTATION_RESPONSE and the real error as an undistinguished
+                // ERROR line.
                 mockServerLogger.logEvent(
                     new LogEntry()
+                        .setType(TEMPLATE_GENERATION_FAILED)
                         .setLogLevel(Level.ERROR)
                         .setHttpRequest(request)
-                        .setMessageFormat("validation failed:{}" + uncapitalize(dtoClass.getSimpleName()) + ":{}")
+                        .setMessageFormat("template generated output that failed " + uncapitalize(dtoClass.getSimpleName()) + " validation:{}generated output:{}")
                         .setArguments(validationErrors, json)
                 );
             }
         } catch (Exception e) {
             mockServerLogger.logEvent(
                 new LogEntry()
+                    .setType(TEMPLATE_GENERATION_FAILED)
                     .setLogLevel(Level.ERROR)
                     .setHttpRequest(request)
-                    .setMessageFormat("exception transforming json:{}")
-                    .setArguments(json)
+                    .setMessageFormat("exception transforming template generated output into a valid response:{}generated output:{}")
+                    .setArguments(e.getMessage(), json)
                     .setThrowable(e)
             );
         }

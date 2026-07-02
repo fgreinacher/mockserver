@@ -122,12 +122,12 @@ disruptor.getRingBuffer().tryPublishEvent(
 
 ## LogEntry
 
-Each event is represented by a `LogEntry` with 25 possible types, organized into `LogMessageTypeCategory` groups for per-category log level overrides:
+Each event is represented by a `LogEntry` with 26 possible types, organized into `LogMessageTypeCategory` groups for per-category log level overrides:
 
 | Category Group | Types |
 |----------------|-------|
 | `MATCHING` | `EXPECTATION_MATCHED`, `EXPECTATION_NOT_MATCHED`, `NO_MATCH_RESPONSE` |
-| `REQUEST_LIFECYCLE` | `RECEIVED_REQUEST`, `FORWARDED_REQUEST`, `EXPECTATION_RESPONSE`, `TEMPLATE_GENERATED` |
+| `REQUEST_LIFECYCLE` | `RECEIVED_REQUEST`, `FORWARDED_REQUEST`, `EXPECTATION_RESPONSE`, `TEMPLATE_GENERATED`, `TEMPLATE_GENERATION_FAILED` |
 | `EXPECTATION_MANAGEMENT` | `CREATED_EXPECTATION`, `UPDATED_EXPECTATION`, `REMOVED_EXPECTATION`, `CLEARED` |
 | `VERIFICATION` | `VERIFICATION`, `VERIFICATION_FAILED`, `VERIFICATION_PASSED`, `RETRIEVED` |
 | `SERVER` | `SERVER_CONFIGURATION`, `AUTHENTICATION_FAILED`, `OPENAPI_RESPONSE_VALIDATION_FAILED` |
