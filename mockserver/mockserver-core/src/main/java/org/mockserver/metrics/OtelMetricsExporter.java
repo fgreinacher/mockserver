@@ -119,6 +119,7 @@ public class OtelMetricsExporter {
                 .buildWithCallback(measurement -> measurement.record(Metrics.get(name)));
         }
         registerJvmMetrics(meter);
+        registerMonotonicTotalCounters(meter);
         registerSlowRequestCounter(meter);
         registerChaosCounter(meter);
         registerActiveServiceChaosGauge(meter);
@@ -197,6 +198,21 @@ public class OtelMetricsExporter {
                     }
                 }
             });
+    }
+
+    /**
+     * Mirror the five dual-published {@code _total} monotonic counters to OTLP as observable
+     * counters (delta temporality applies), so OTLP-only consumers get the proper monotonic totals
+     * without a Prometheus scrape. Reads the single source of truth on {@link Metrics} so the OTLP
+     * series can never drift from the Prometheus registration. The per-{@link Metrics.Name} gauge
+     * loop above still mirrors the legacy {@code *_count} gauges unchanged; these add the {@code
+     * _total} series alongside them.
+     */
+    private static void registerMonotonicTotalCounters(Meter meter) {
+        Metrics.MONOTONIC_TOTAL_COUNTER_NAMES.forEach((name, counterName) ->
+            meter.counterBuilder(counterName + "_total")
+                .setDescription(name.description + " (monotonic counter; mirrors Prometheus counter)")
+                .buildWithCallback(m -> m.record(Metrics.getMonotonicTotalCount(name))));
     }
 
     private static void registerSlowRequestCounter(Meter meter) {

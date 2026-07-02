@@ -77,6 +77,32 @@ curl http://localhost:1080/mockserver/metrics</code></pre>
     </tbody>
 </table>
 
+<p>
+    Each of these four gauges (plus <span class="inline_code">llm_chaos_injected_count</span>) is genuinely
+    <strong>monotonic</strong> (only ever increases). Because the four gauge names above are read by the dashboard UI and
+    existing Grafana dashboards, they are kept unchanged; alongside each one MockServer <strong>additionally</strong>
+    publishes a proper Prometheus <span class="inline_code">Counter</span> with a
+    <span class="inline_code">_total</span> suffix. Use the <span class="inline_code">_total</span> counters in PromQL
+    <span class="inline_code">rate()</span>/<span class="inline_code">increase()</span> queries &mdash; they are true
+    monotonic counters, which those functions model correctly:
+</p>
+
+<table class="table table-bordered table-striped">
+    <thead>
+        <tr><th>Legacy gauge (unchanged)</th><th>Counter for <span class="inline_code">rate()</span>/<span class="inline_code">increase()</span></th></tr>
+    </thead>
+    <tbody>
+        <tr><td><span class="inline_code">requests_received_count</span></td><td><span class="inline_code">mock_server_requests_received_total</span></td></tr>
+        <tr><td><span class="inline_code">expectations_not_matched_count</span></td><td><span class="inline_code">mock_server_expectations_not_matched_total</span></td></tr>
+        <tr><td><span class="inline_code">response_expectations_matched_count</span></td><td><span class="inline_code">mock_server_response_expectations_matched_total</span></td></tr>
+        <tr><td><span class="inline_code">forward_expectations_matched_count</span></td><td><span class="inline_code">mock_server_forward_expectations_matched_total</span></td></tr>
+        <tr><td><span class="inline_code">llm_chaos_injected_count</span></td><td><span class="inline_code">mock_server_llm_chaos_injected_total</span></td></tr>
+    </tbody>
+</table>
+
+<pre class="prettyprint lang-bash code"><code class="code"># requests-per-second over the last 5 minutes
+rate(mock_server_requests_received_total[5m])</code></pre>
+
 <h4>Per-expectation match counter (opt-in)</h4>
 
 <p>

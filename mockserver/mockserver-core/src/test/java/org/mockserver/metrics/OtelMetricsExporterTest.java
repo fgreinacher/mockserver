@@ -2,6 +2,7 @@ package org.mockserver.metrics;
 
 import io.opentelemetry.sdk.metrics.data.MetricData;
 import io.opentelemetry.sdk.testing.exporter.InMemoryMetricReader;
+import org.junit.ClassRule;
 import org.junit.Test;
 import org.mockserver.configuration.Configuration;
 
@@ -16,6 +17,15 @@ import static org.hamcrest.core.Is.is;
 import static org.mockserver.configuration.Configuration.configuration;
 
 public class OtelMetricsExporterTest {
+
+    // Serialise against MetricsTest and the other classes that mutate the process-global
+    // PrometheusRegistry / static Metrics state. Under Surefire parallel=classes (the default-test
+    // phase a developer hits when running -Dtest=MetricsTest,OtelMetricsExporterTest), two such
+    // classes would otherwise run concurrently and race on registry clear()/re-registration,
+    // producing order-dependent "metric absent / reads 0" flakes. This class already runs in the
+    // sequential CI phase; the class-rule lock additionally makes ad-hoc parallel runs safe.
+    @ClassRule
+    public static final MetricsLock metricsLock = new MetricsLock();
 
     @Test
     public void resolvesDeltaTemporalityTrimmedAndCaseInsensitiveElseCumulative() {
@@ -312,6 +322,45 @@ public class OtelMetricsExporterTest {
             // a genuine gauge is still a Gauge regardless of the delta reader
             MetricData activeChaos = metricByName(collected, "mock_server_active_service_chaos");
             assertThat(activeChaos.getType(), is(io.opentelemetry.sdk.metrics.data.MetricDataType.LONG_GAUGE));
+        } finally {
+            exporter.stop();
+        }
+    }
+
+    @Test
+    public void exportsMonotonicTotalCountersAsMonotonicSums() {
+        // the five dual-published _total counters mirror to OTLP as observable monotonic Sums
+        // (not gauges), alongside the legacy per-Name _count gauges which stay Gauges
+        Metrics.resetAdditionalMetricsForTesting();
+        Metrics enabled = new Metrics(configuration().metricsEnabled(true));
+        enabled.increment(Metrics.Name.REQUESTS_RECEIVED_COUNT);
+        enabled.increment(Metrics.Name.REQUESTS_RECEIVED_COUNT);
+        enabled.increment(Metrics.Name.FORWARD_EXPECTATIONS_MATCHED_COUNT);
+
+        InMemoryMetricReader reader = InMemoryMetricReader.create();
+        OtelMetricsExporter exporter = OtelMetricsExporter.startWithReader(reader);
+        try {
+            Collection<MetricData> collected = reader.collectAllMetrics();
+            Set<String> names = collected.stream().map(MetricData::getName).collect(Collectors.toSet());
+
+            // all five _total counters are exported
+            assertThat(names, hasItem("mock_server_requests_received_total"));
+            assertThat(names, hasItem("mock_server_expectations_not_matched_total"));
+            assertThat(names, hasItem("mock_server_response_expectations_matched_total"));
+            assertThat(names, hasItem("mock_server_forward_expectations_matched_total"));
+            assertThat(names, hasItem("mock_server_llm_chaos_injected_total"));
+
+            // the legacy _count gauge is still exported as a gauge (coexists)
+            assertThat(names, hasItem("requests_received_count"));
+
+            MetricData requests = metricByName(collected, "mock_server_requests_received_total");
+            assertThat(requests.getType(), is(io.opentelemetry.sdk.metrics.data.MetricDataType.LONG_SUM));
+            assertThat(requests.getLongSumData().isMonotonic(), is(true));
+            long value = requests.getLongSumData().getPoints().iterator().next().getValue();
+            assertThat(value, is(2L));
+
+            MetricData legacyGauge = metricByName(collected, "requests_received_count");
+            assertThat(legacyGauge.getType(), is(io.opentelemetry.sdk.metrics.data.MetricDataType.LONG_GAUGE));
         } finally {
             exporter.stop();
         }

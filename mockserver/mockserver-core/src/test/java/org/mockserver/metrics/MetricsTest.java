@@ -7,6 +7,7 @@ import io.prometheus.metrics.model.snapshots.MetricSnapshot;
 import io.prometheus.metrics.model.snapshots.MetricSnapshots;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.ClassRule;
 import org.junit.Test;
 import org.mockserver.mock.Expectation;
 import org.mockserver.mock.action.http.ServiceChaosRegistry;
@@ -25,6 +26,15 @@ import static org.mockserver.model.HttpChaosProfile.httpChaosProfile;
 import static org.mockserver.model.HttpRequest.request;
 
 public class MetricsTest {
+
+    // Serialise against OtelMetricsExporterTest and the other classes that mutate the process-global
+    // PrometheusRegistry / static Metrics state. Under Surefire parallel=classes (the default-test
+    // phase a developer hits when running -Dtest=MetricsTest,OtelMetricsExporterTest), two such
+    // classes would otherwise run concurrently and race on registry clear()/re-registration,
+    // producing order-dependent "metric absent / reads 0" flakes. This class already runs in the
+    // sequential CI phase; the class-rule lock additionally makes ad-hoc parallel runs safe.
+    @ClassRule
+    public static final MetricsLock metricsLock = new MetricsLock();
 
     @Before
     public void resetStaticState() {
@@ -599,6 +609,102 @@ public class MetricsTest {
         PrometheusRegistry.defaultRegistry.clear();
     }
 
+    // --- T0.5b: dual-published _total counters alongside the legacy _count gauges ----------------
+
+    /**
+     * The five monotonic counts now ALSO publish a proper Prometheus {@code Counter} exposed as
+     * {@code mock_server_<base>_total}, so {@code rate()}/{@code increase()} work correctly — while
+     * the legacy {@code *_count} gauge is retained unchanged for dashboard/Grafana back-compat. This
+     * pins that BOTH series coexist in the exposition: the {@code _total} counter and the legacy
+     * {@code _count} gauge, each with the correct {@code # TYPE} line.
+     */
+    @Test
+    public void dualPublishesTotalCounterAlongsideLegacyCountGauge() {
+        new Metrics(configuration().metricsEnabled(true));
+        String text = scrapeClassicText();
+
+        // legacy _count gauge name -> new _total counter exposition name
+        String[][] pairs = {
+            {"requests_received_count", "mock_server_requests_received_total"},
+            {"expectations_not_matched_count", "mock_server_expectations_not_matched_total"},
+            {"response_expectations_matched_count", "mock_server_response_expectations_matched_total"},
+            {"forward_expectations_matched_count", "mock_server_forward_expectations_matched_total"},
+            {"llm_chaos_injected_count", "mock_server_llm_chaos_injected_total"},
+        };
+        for (String[] pair : pairs) {
+            String legacyGauge = pair[0];
+            String totalCounter = pair[1];
+            assertThat("legacy gauge " + legacyGauge + " must still be present as a gauge (back-compat)",
+                text.contains("# TYPE " + legacyGauge + " gauge"), is(true));
+            assertThat("new counter " + totalCounter + " must be present as a counter",
+                text.contains("# TYPE " + totalCounter + " counter"), is(true));
+        }
+    }
+
+    /**
+     * The dual-published counter is incremented in lock-step with the legacy gauge from the same
+     * {@link Metrics#increment(Metrics.Name)} call site, so both move together.
+     */
+    @Test
+    public void monotonicTotalCounterIncrementsWithLegacyGauge() {
+        Metrics metrics = new Metrics(configuration().metricsEnabled(true));
+
+        metrics.increment(Metrics.Name.REQUESTS_RECEIVED_COUNT);
+        metrics.increment(Metrics.Name.REQUESTS_RECEIVED_COUNT);
+        metrics.increment(Metrics.Name.LLM_CHAOS_INJECTED_COUNT);
+
+        // legacy gauge value
+        assertThat(Metrics.get(Metrics.Name.REQUESTS_RECEIVED_COUNT), is(2));
+        assertThat(Metrics.get(Metrics.Name.LLM_CHAOS_INJECTED_COUNT), is(1));
+        // dual-published counter value (moves in lock-step)
+        assertThat(Metrics.getMonotonicTotalCount(Metrics.Name.REQUESTS_RECEIVED_COUNT), is(2L));
+        assertThat(Metrics.getMonotonicTotalCount(Metrics.Name.LLM_CHAOS_INJECTED_COUNT), is(1L));
+        // both series render in the exposition with matching values (the counter snapshot's
+        // metadata name is the unsuffixed name; the exposition text appends _total)
+        assertThat(scrapeUnlabeledCounterValue("mock_server_requests_received"), is(2.0));
+        assertThat(scrapeGaugeValue("requests_received_count"), is(2.0));
+    }
+
+    @Test
+    public void getMonotonicTotalCountReturnsZeroWhenDisabledOrNotMonotonic() {
+        // metrics disabled -> counter not registered -> 0
+        assertThat(Metrics.getMonotonicTotalCount(Metrics.Name.REQUESTS_RECEIVED_COUNT), is(0L));
+
+        new Metrics(configuration().metricsEnabled(true));
+        // a level (non-monotonic) Name has no dual-published counter -> 0
+        assertThat(Metrics.getMonotonicTotalCount(Metrics.Name.FORWARD_ACTIONS_COUNT), is(0L));
+    }
+
+    /**
+     * Pins the reset-on-server-reset contract documented in docs/code/metrics.md: on a MockServer
+     * reset the legacy {@code _count} gauge is zeroed by {@link Metrics#clear()} /
+     * {@link Metrics#clearRequestAndExpectationMetrics()}, but the dual-published {@code _total}
+     * counter follows Prometheus counter semantics like the other {@code _total} counters — it is
+     * NOT zeroed by a reset and keeps climbing (only a process restart / the testing reset hook
+     * clears it). So after a reset the two series diverge by design: gauge 0, counter unchanged.
+     */
+    @Test
+    public void monotonicTotalCounterSurvivesServerResetWhileLegacyGaugeIsZeroed() {
+        Metrics metrics = new Metrics(configuration().metricsEnabled(true));
+        metrics.increment(Metrics.Name.REQUESTS_RECEIVED_COUNT);
+        metrics.increment(Metrics.Name.REQUESTS_RECEIVED_COUNT);
+        metrics.increment(Metrics.Name.LLM_CHAOS_INJECTED_COUNT);
+
+        // Metrics.clear() — the general server-reset path — zeroes every gauge...
+        Metrics.clear();
+        assertThat(Metrics.get(Metrics.Name.REQUESTS_RECEIVED_COUNT), is(0));
+        assertThat(Metrics.get(Metrics.Name.LLM_CHAOS_INJECTED_COUNT), is(0));
+        // ...but leaves the monotonic _total counters untouched (counter semantics).
+        assertThat(Metrics.getMonotonicTotalCount(Metrics.Name.REQUESTS_RECEIVED_COUNT), is(2L));
+        assertThat(Metrics.getMonotonicTotalCount(Metrics.Name.LLM_CHAOS_INJECTED_COUNT), is(1L));
+
+        // The request/expectation subset reset likewise zeroes only the gauge, not the counter.
+        metrics.increment(Metrics.Name.REQUESTS_RECEIVED_COUNT);
+        Metrics.clearRequestAndExpectationMetrics();
+        assertThat(Metrics.get(Metrics.Name.REQUESTS_RECEIVED_COUNT), is(0));
+        assertThat(Metrics.getMonotonicTotalCount(Metrics.Name.REQUESTS_RECEIVED_COUNT), is(3L));
+    }
+
     /** Render the classic Prometheus text exposition (0.0.4), the format dashboards/scrapers read. */
     private static String scrapeClassicText() {
         try {
@@ -612,6 +718,18 @@ public class MetricsTest {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static double scrapeUnlabeledCounterValue(String name) {
+        MetricSnapshots snapshots = PrometheusRegistry.defaultRegistry.scrape();
+        for (MetricSnapshot snapshot : snapshots) {
+            if (snapshot.getMetadata().getName().equals(name) && snapshot instanceof CounterSnapshot counterSnapshot) {
+                for (CounterSnapshot.CounterDataPointSnapshot dataPoint : counterSnapshot.getDataPoints()) {
+                    return dataPoint.getValue();
+                }
+            }
+        }
+        return 0.0;
     }
 
     private static double scrapeGaugeValue(String name) {

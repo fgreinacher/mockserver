@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Prometheus `_total` counters for the five monotonic metrics (correct `rate()`/`increase()`).** The five
+  genuinely-monotonic counts — `requests_received_count`, `expectations_not_matched_count`,
+  `response_expectations_matched_count`, `forward_expectations_matched_count`, and `llm_chaos_injected_count` —
+  now additionally publish a proper Prometheus `Counter` alongside their legacy gauge:
+  `mock_server_requests_received_total`, `mock_server_expectations_not_matched_total`,
+  `mock_server_response_expectations_matched_total`, `mock_server_forward_expectations_matched_total`, and
+  `mock_server_llm_chaos_injected_total`. This is non-breaking and additive — the legacy `_count` gauges are
+  retained unchanged so the dashboard UI and existing Grafana dashboards keep working, while PromQL
+  `rate()`/`increase()` queries can now use the true monotonic `_total` series (e.g.
+  `rate(mock_server_requests_received_total[5m])`). The new counters are incremented in lock-step with the
+  legacy gauges from the same call sites and are mirrored to the OTLP export as observable monotonic counters.
+
 - **WASM matcher envelope v2 — query parameters and cookies in `match_request`.** The richer WASM ABI now
   exposes the request's **query-string parameters** and **cookies** to a module, so a rule can route on
   `?tenant=acme` or a `session` cookie, not just method/path/headers/body. The JSON envelope passed to
