@@ -81,6 +81,17 @@ new MockServerClient(&quot;localhost&quot;, 1080)
         response().withStatusCode(200).withBody(&quot;world&quot;)
     );</code></pre>
 
+<p>The constructors above are fully supported. As a more discoverable alternative, a fluent
+    <span class="inline_code">builder()</span> covers every construction option (host, port, context path, TLS,
+    control plane JWT, proxy configuration and request override) with sensible defaults
+    (<span class="inline_code">localhost</span>, <span class="inline_code">1080</span>):</p>
+
+<pre class="prettyprint lang-java code"><code class="code">MockServerClient client = MockServerClient.builder()
+    .host(&quot;localhost&quot;)
+    .port(1080)
+    .secure(true)
+    .build();</code></pre>
+
 <p>Verify a request was received:</p>
 
 <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;

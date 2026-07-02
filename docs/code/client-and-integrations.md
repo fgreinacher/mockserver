@@ -47,6 +47,34 @@ HttpRequest[] requests = client.retrieveRecordedRequests(
 );
 ```
 
+### Construction
+
+`MockServerClient` exposes eight constructor overloads spanning `host`/`port`/`contextPath`,
+`Configuration`/`ClientConfiguration`, and a `CompletableFuture<Integer>` port. These remain fully
+supported and are not deprecated. In addition, `MockServerClient.builder()` returns a fluent `Builder`
+that covers every construction dimension in one discoverable place, with sensible defaults
+(`host` = `localhost`, `port` = `1080`, empty context path):
+
+```java
+MockServerClient client = MockServerClient.builder()
+    .host("localhost")
+    .port(1080)
+    .contextPath("/mockserver")
+    .secure(true)                       // withSecure(...)
+    .proxyConfiguration(proxy)          // withProxyConfiguration(...)
+    .controlPlaneJWT("token")           // withControlPlaneJWT(...)
+    .requestOverride(request())         // withRequestOverride(...)
+    .configuration(clientConfiguration())
+    .build();
+```
+
+The builder introduces no new behaviour: `build()` selects the matching constructor and applies the
+existing `with...` setters, so a builder-produced client is identical to a directly-constructed one.
+Constructor validation is inherited (an empty `host` throws `IllegalArgumentException` from `build()`),
+and `portFuture(...)` is mutually exclusive with `host`/`port`/`contextPath` (the future-based
+constructor always targets `localhost` with an empty context path). The `Builder` is a nested class in
+`mockserver/mockserver-client-java/src/main/java/org/mockserver/client/MockServerClient.java`.
+
 ### API Methods
 
 #### Expectation Setup

@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fluent `MockServerClient.builder()`.** The Java client gains a discoverable fluent builder that
+  covers every existing construction dimension in one place — `host` (default `localhost`), `port`
+  (default `1080`), `contextPath`, `Configuration`/`ClientConfiguration`, `portFuture`, plus TLS
+  (`secure`), `proxyConfiguration`, control plane JWT (`controlPlaneJWT`) and `requestOverride` that
+  previously required post-construction `with...` setters. `MockServerClient.builder().host("localhost").port(1080).build()`
+  is equivalent to the corresponding constructor call. The eight existing constructors remain fully
+  supported and are **not** deprecated; the builder simply delegates to them, so it introduces no
+  behaviour change. Misconfiguration stays loud (an empty `host` throws `IllegalArgumentException`, and
+  `portFuture(...)` cannot be combined with `host`/`port`/`contextPath`). See
+  `docs/code/client-and-integrations.md` and the
+  [MockServer Clients](https://www.mock-server.com/mock_server/mockserver_clients.html) page.
+
 - **Observability quick-win bundle — Grafana dashboard, Helm ServiceMonitor, and a durable audit file sink.** Three
   independent additions that make MockServer easier to monitor in production:
   - **Standalone Grafana dashboard for the server metric family.** `examples/grafana/mockserver-server.json` (with a

@@ -84,6 +84,28 @@ import static org.mockserver.verify.VerificationTimes.exactly;
 import static org.slf4j.event.Level.*;
 
 /**
+ * Client for communicating with a running MockServer instance.
+ * <p>
+ * Instances can be created directly via one of the constructors, for example:
+ * <pre>
+ * MockServerClient client = new MockServerClient("localhost", 1080);
+ * </pre>
+ * or, for a more discoverable and self-documenting alternative that covers every
+ * construction dimension (host, port, context path, TLS, control plane JWT, proxy
+ * configuration and request override) with sensible defaults, via the fluent
+ * {@link #builder()}:
+ * <pre>
+ * MockServerClient client = MockServerClient.builder()
+ *     .host("localhost")
+ *     .port(1080)
+ *     .contextPath("/mockserver")
+ *     .secure(true)
+ *     .build();
+ * </pre>
+ * The builder simply delegates to the existing constructors and {@code with...}
+ * setters, so both approaches produce identically-configured clients; the
+ * constructors remain fully supported.
+ *
  * @author jamesdbloom
  */
 @SuppressWarnings({"UnusedReturnValue", "FieldMayBeFinal"})
@@ -259,6 +281,203 @@ public class MockServerClient implements Stoppable {
 
     private NioEventLoopGroup eventLoopGroup() {
         return new NioEventLoopGroup(configuration.clientNioEventLoopThreadCount(), new Scheduler.SchedulerThreadFactory(this.getClass().getSimpleName() + "-eventLoop"));
+    }
+
+    /**
+     * Create a fluent {@link Builder} for constructing a {@link MockServerClient}.
+     * <p>
+     * The builder is a discoverable alternative to the constructors that covers every
+     * construction dimension in one place, with sensible defaults ({@code host} =
+     * {@code "localhost"}, {@code port} = {@code 1080}, empty context path). It delegates
+     * to the existing constructors and {@code with...} setters, so it introduces no new
+     * behaviour; the constructors remain fully supported. For example:
+     * <pre>
+     * MockServerClient client = MockServerClient.builder()
+     *     .host("localhost")
+     *     .port(1080)
+     *     .build();
+     * </pre>
+     *
+     * @return a new builder pre-populated with the default host and port
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Fluent builder for {@link MockServerClient}.
+     * <p>
+     * Covers every dimension exposed by the {@link MockServerClient} constructors and
+     * {@code with...} setters:
+     * <ul>
+     *     <li>{@link #configuration(ClientConfiguration)} / {@link #configuration(Configuration)}</li>
+     *     <li>{@link #host(String)} (default {@code "localhost"})</li>
+     *     <li>{@link #port(int)} (default {@code 1080})</li>
+     *     <li>{@link #contextPath(String)} (default empty)</li>
+     *     <li>{@link #portFuture(CompletableFuture)} (mutually exclusive with host/port/contextPath)</li>
+     *     <li>{@link #secure(boolean)} — TLS, delegates to {@link MockServerClient#withSecure(boolean)}</li>
+     *     <li>{@link #proxyConfiguration(ProxyConfiguration)} — delegates to {@link MockServerClient#withProxyConfiguration(ProxyConfiguration)}</li>
+     *     <li>{@link #controlPlaneJWT(String)} / {@link #controlPlaneJWT(Supplier)} — delegates to {@link MockServerClient#withControlPlaneJWT(Supplier)}</li>
+     *     <li>{@link #requestOverride(HttpRequest)} — delegates to {@link MockServerClient#withRequestOverride(HttpRequest)}</li>
+     * </ul>
+     * The builder performs no construction work until {@link #build()} is called, at which
+     * point it selects the matching constructor and applies the configured setters, so the
+     * resulting client is identical to one built directly. Validation (for example, the
+     * empty-host check) is inherited from the constructors and surfaces from {@link #build()}.
+     */
+    public static final class Builder {
+
+        private ClientConfiguration configuration;
+        private String host = "localhost";
+        private int port = 1080;
+        private String contextPath = "";
+        private CompletableFuture<Integer> portFuture;
+        private Boolean secure;
+        private ProxyConfiguration proxyConfiguration;
+        private Supplier<String> controlPlaneJWTSupplier;
+        private HttpRequest requestOverride;
+        private boolean hostSet;
+        private boolean portSet;
+        private boolean contextPathSet;
+
+        private Builder() {
+        }
+
+        /**
+         * Use the given {@link ClientConfiguration}. When {@code null} the client falls back
+         * to the default configuration, matching the constructors' behaviour.
+         */
+        public Builder configuration(ClientConfiguration configuration) {
+            this.configuration = configuration;
+            return this;
+        }
+
+        /**
+         * Use the given {@link Configuration}, wrapped as a {@link ClientConfiguration} (the
+         * same conversion the {@code MockServerClient(Configuration, ...)} constructors perform).
+         */
+        public Builder configuration(Configuration configuration) {
+            this.configuration = configuration == null ? null : clientConfiguration(configuration);
+            return this;
+        }
+
+        /**
+         * The host of the MockServer to communicate with. Defaults to {@code "localhost"}.
+         */
+        public Builder host(String host) {
+            this.host = host;
+            this.hostSet = true;
+            return this;
+        }
+
+        /**
+         * The port of the MockServer to communicate with. Defaults to {@code 1080}.
+         */
+        public Builder port(int port) {
+            this.port = port;
+            this.portSet = true;
+            return this;
+        }
+
+        /**
+         * The context path that the MockServer war is deployed to. Defaults to empty.
+         */
+        public Builder contextPath(String contextPath) {
+            this.contextPath = contextPath;
+            this.contextPathSet = true;
+            return this;
+        }
+
+        /**
+         * Resolve the port lazily from a {@link CompletableFuture}, for use when the MockServer
+         * port is not yet known at client-construction time. This is mutually exclusive with
+         * {@link #host(String)}, {@link #port(int)} and {@link #contextPath(String)}: the
+         * future-based constructor always communicates with {@code localhost} using an empty
+         * context path.
+         */
+        public Builder portFuture(CompletableFuture<Integer> portFuture) {
+            this.portFuture = portFuture;
+            return this;
+        }
+
+        /**
+         * Whether to communicate with MockServer over TLS. Delegates to
+         * {@link MockServerClient#withSecure(boolean)}.
+         */
+        public Builder secure(boolean secure) {
+            this.secure = secure;
+            return this;
+        }
+
+        /**
+         * Route communication to MockServer via a proxy. Delegates to
+         * {@link MockServerClient#withProxyConfiguration(ProxyConfiguration)}.
+         */
+        public Builder proxyConfiguration(ProxyConfiguration proxyConfiguration) {
+            this.proxyConfiguration = proxyConfiguration;
+            return this;
+        }
+
+        /**
+         * A fixed JWT for control plane authorisation. Delegates to
+         * {@link MockServerClient#withControlPlaneJWT(String)}.
+         */
+        public Builder controlPlaneJWT(String controlPlaneJWT) {
+            this.controlPlaneJWTSupplier = () -> controlPlaneJWT;
+            return this;
+        }
+
+        /**
+         * A JWT supplier for control plane authorisation. Delegates to
+         * {@link MockServerClient#withControlPlaneJWT(Supplier)}.
+         */
+        public Builder controlPlaneJWT(Supplier<String> controlPlaneJWTSupplier) {
+            this.controlPlaneJWTSupplier = controlPlaneJWTSupplier;
+            return this;
+        }
+
+        /**
+         * A request override applied to every control plane request. Delegates to
+         * {@link MockServerClient#withRequestOverride(HttpRequest)}.
+         */
+        public Builder requestOverride(HttpRequest requestOverride) {
+            this.requestOverride = requestOverride;
+            return this;
+        }
+
+        /**
+         * Build the {@link MockServerClient}, selecting the matching constructor and applying
+         * the configured {@code with...} setters. Constructor validation (such as the
+         * empty-host check) surfaces from here.
+         *
+         * @throws IllegalArgumentException if {@link #portFuture(CompletableFuture)} is combined
+         *                                  with an explicit host, port or context path, or if a
+         *                                  constructor rejects the supplied values
+         */
+        public MockServerClient build() {
+            MockServerClient client;
+            if (portFuture != null) {
+                if (hostSet || portSet || contextPathSet) {
+                    throw new IllegalArgumentException("portFuture(...) can not be combined with host(...), port(...) or contextPath(...); the future-based client always communicates with localhost using an empty context path");
+                }
+                client = new MockServerClient(configuration, portFuture);
+            } else {
+                client = new MockServerClient(configuration, host, port, contextPath);
+            }
+            if (secure != null) {
+                client.withSecure(secure);
+            }
+            if (proxyConfiguration != null) {
+                client.withProxyConfiguration(proxyConfiguration);
+            }
+            if (controlPlaneJWTSupplier != null) {
+                client.withControlPlaneJWT(controlPlaneJWTSupplier);
+            }
+            if (requestOverride != null) {
+                client.withRequestOverride(requestOverride);
+            }
+            return client;
+        }
     }
 
     /**
