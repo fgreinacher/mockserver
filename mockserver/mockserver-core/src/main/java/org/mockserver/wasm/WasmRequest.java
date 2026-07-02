@@ -1,5 +1,11 @@
 package org.mockserver.wasm;
 
+import org.mockserver.model.Cookie;
+import org.mockserver.model.Header;
+import org.mockserver.model.HttpRequest;
+import org.mockserver.model.NottableString;
+import org.mockserver.model.Parameter;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -62,6 +68,48 @@ public class WasmRequest {
      */
     public static WasmRequest ofBody(String body) {
         return new WasmRequest("", "", new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), body);
+    }
+
+    /**
+     * Build a {@link WasmRequest} from an {@link HttpRequest}, copying its method, path,
+     * query-string parameters, headers and cookies, and using the supplied {@code body}. Shared by the
+     * WASM body matcher and the response shaper so both expose an identical request envelope to a module.
+     *
+     * @param request the matched HTTP request (must not be null)
+     * @param body    the body string to expose (the matcher passes the matched body string)
+     */
+    public static WasmRequest fromHttpRequest(HttpRequest request, String body) {
+        WasmRequest wasmRequest = new WasmRequest(
+            request.getMethod() == null ? "" : request.getMethod().getValue(),
+            request.getPath() == null ? "" : request.getPath().getValue(),
+            null,
+            null,
+            null,
+            body
+        );
+        for (Header header : request.getHeaderList()) {
+            if (header.getValues() != null) {
+                for (NottableString value : header.getValues()) {
+                    wasmRequest.withHeader(header.getName().getValue(), value == null ? null : value.getValue());
+                }
+            }
+        }
+        if (request.getQueryStringParameters() != null) {
+            for (Parameter parameter : request.getQueryStringParameters().getEntries()) {
+                if (parameter.getValues() != null) {
+                    for (NottableString value : parameter.getValues()) {
+                        wasmRequest.withQueryStringParameter(parameter.getName().getValue(), value == null ? null : value.getValue());
+                    }
+                }
+            }
+        }
+        for (Cookie cookie : request.getCookieList()) {
+            wasmRequest.withCookie(
+                cookie.getName().getValue(),
+                cookie.getValue() == null ? null : cookie.getValue().getValue()
+            );
+        }
+        return wasmRequest;
     }
 
     public String getMethod() {

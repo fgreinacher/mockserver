@@ -2,15 +2,18 @@ package org.mockserver.wasm;
 
 import com.dylibso.chicory.runtime.ExportFunction;
 import com.dylibso.chicory.runtime.Instance;
+import com.dylibso.chicory.runtime.Memory;
 import com.dylibso.chicory.wasm.Parser;
 import com.dylibso.chicory.wasm.WasmModule;
 import com.dylibso.chicory.wasm.types.MemoryLimits;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.mockserver.serialization.ObjectMapperFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
@@ -52,6 +55,25 @@ public class WasmRuntime {
     static final String MATCH = "match";
     /** Richer request-envelope export name. */
     static final String MATCH_REQUEST = "match_request";
+    /** Optional response-shaping export name (ABI v3). */
+    static final String SHAPE_RESPONSE = "shape_response";
+
+    /**
+     * Version of the JSON envelope passed to {@link #SHAPE_RESPONSE} (the <strong>ABI v3</strong>
+     * response-shaping envelope). Distinct from {@link #ENVELOPE_VERSION} (the match envelope's version):
+     * the shape envelope is {@code {"version":3,"request":{...v2 request...},"response":{...}}}, nesting the
+     * whole match envelope under {@code request} and adding the response the expectation would return.
+     */
+    static final int SHAPE_ENVELOPE_VERSION = 3;
+
+    /**
+     * Maximum number of bytes {@link #SHAPE_RESPONSE} may return. The module returns a packed
+     * {@code (ptr &lt;&lt; 32) | len} pointer into its linear memory; a {@code len} larger than this cap is
+     * rejected (the runtime falls back to the unshaped response) so a misbehaving or hostile module cannot
+     * force MockServer to read an unbounded region. 1 MiB comfortably covers realistic mock bodies while
+     * staying well under the default {@code wasmMaxMemoryPages} (16 MiB) linear-memory ceiling.
+     */
+    static final int SHAPE_MAX_RETURN_BYTES = 1024 * 1024;
 
     /**
      * Version of the JSON envelope passed to {@link #MATCH_REQUEST}. Declared as the
@@ -142,20 +164,7 @@ public class WasmRuntime {
      */
     public boolean callMatch(WasmRequest request) {
         try {
-            WasmModule module = parseModule(wasmBytes);
-            Instance.Builder builder = Instance.builder(module);
-
-            // Cap the WASM module's linear memory at maxMemoryPages while preserving
-            // the module's declared initial pages (needed for data segment initialization).
-            if (module.memorySection().isPresent()
-                && module.memorySection().get().memoryCount() > 0) {
-                MemoryLimits declared = module.memorySection().get().getMemory(0).limits();
-                int effectiveMax = Math.min(declared.maximumPages(), maxMemoryPages);
-                int effectiveInit = Math.min(declared.initialPages(), effectiveMax);
-                builder.withMemoryLimits(new MemoryLimits(effectiveInit, effectiveMax));
-            }
-
-            Instance instance = builder.build();
+            Instance instance = buildInstance(parseModule(wasmBytes));
 
             byte[] input;
             ExportFunction matchFn = tryExport(instance, MATCH_REQUEST);
@@ -182,6 +191,101 @@ public class WasmRuntime {
     }
 
     /**
+     * Call the module's optional {@link #SHAPE_RESPONSE} export to (possibly) rewrite the response the
+     * matched expectation would return. This is the <strong>ABI v3</strong> response-shaping hook.
+     * <p>
+     * The runtime writes the {@link #buildShapeEnvelope shape envelope} into linear memory at offset 0 and
+     * calls {@code shape_response(0, len) -> i64}. The module writes its response JSON somewhere in its own
+     * linear memory and returns a packed {@code (ptr &lt;&lt; 32) | len}; the runtime reads {@code len} bytes at
+     * {@code ptr} and parses them into a {@link WasmResponse}. A return of {@code 0} means "no change".
+     *
+     * @param request  the matched request parts (serialised under the envelope's {@code request} field)
+     * @param response the response the expectation would return (serialised under {@code response})
+     * @return the parsed shaped response, or {@code null} when the module does not export
+     *         {@link #SHAPE_RESPONSE} or explicitly opts out (returns {@code 0})
+     * @throws WasmShapeException if the module traps, returns an out-of-bounds or oversized region, or
+     *         returns bytes that are not a valid response JSON object — the caller falls back to the
+     *         unshaped response and logs once (see {@link WasmResponseShaper})
+     */
+    public WasmResponse callShape(WasmRequest request, WasmResponse response) {
+        Instance instance;
+        ExportFunction shapeFn;
+        try {
+            instance = buildInstance(parseModule(wasmBytes));
+            shapeFn = tryExport(instance, SHAPE_RESPONSE);
+        } catch (Exception e) {
+            throw new WasmShapeException("failed to instantiate WASM module for response shaping", e);
+        }
+        if (shapeFn == null) {
+            // module is a pure predicate — it does not shape responses; not an error
+            return null;
+        }
+        long packed;
+        try {
+            byte[] input = buildShapeEnvelope(request, response).getBytes(StandardCharsets.UTF_8);
+            instance.memory().write(0, input);
+            long[] result = shapeFn.apply(0L, input.length);
+            if (result.length == 0) {
+                throw new WasmShapeException("shape_response returned no value");
+            }
+            packed = result[0];
+        } catch (WasmShapeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new WasmShapeException("WASM shape_response trapped", e);
+        }
+        return readShapedResult(instance.memory(), packed);
+    }
+
+    /**
+     * Decode the module's packed {@code shape_response} return value and read/parse the response JSON it
+     * points at. {@code packed == 0} means "no change" (returns {@code null}). Otherwise the high 32 bits
+     * are a pointer and the low 32 bits a length into {@code memory}; the length is capped at
+     * {@link #SHAPE_MAX_RETURN_BYTES} and an out-of-bounds region or unparseable JSON raises a
+     * {@link WasmShapeException}. Package-private so the size-cap/out-of-bounds/parse fail-safe branches
+     * are directly testable against a real chicory {@link Memory}.
+     */
+    static WasmResponse readShapedResult(Memory memory, long packed) {
+        if (packed == 0L) {
+            // explicit opt-out: leave the response unchanged
+            return null;
+        }
+        int ptr = (int) (packed >>> 32);
+        int len = (int) (packed & 0xFFFFFFFFL);
+        if (ptr < 0 || len < 0) {
+            throw new WasmShapeException("shape_response returned an invalid pointer/length");
+        }
+        if (len > SHAPE_MAX_RETURN_BYTES) {
+            throw new WasmShapeException("shape_response returned " + len + " bytes, exceeding the "
+                + SHAPE_MAX_RETURN_BYTES + "-byte cap");
+        }
+        byte[] output;
+        try {
+            output = memory.readBytes(ptr, len);
+        } catch (Exception e) {
+            throw new WasmShapeException("shape_response returned an out-of-bounds memory region", e);
+        }
+        return parseShapedResponse(new String(output, StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Build a chicory {@link Instance} for the parsed module, capping its linear memory at
+     * {@link #maxMemoryPages} while preserving the module's declared initial pages (needed for data
+     * segment initialization). Shared by {@link #callMatch(WasmRequest)} and {@link #callShape}.
+     */
+    private Instance buildInstance(WasmModule module) {
+        Instance.Builder builder = Instance.builder(module);
+        if (module.memorySection().isPresent()
+            && module.memorySection().get().memoryCount() > 0) {
+            MemoryLimits declared = module.memorySection().get().getMemory(0).limits();
+            int effectiveMax = Math.min(declared.maximumPages(), maxMemoryPages);
+            int effectiveInit = Math.min(declared.initialPages(), effectiveMax);
+            builder.withMemoryLimits(new MemoryLimits(effectiveInit, effectiveMax));
+        }
+        return builder.build();
+    }
+
+    /**
      * Resolve an exported function by name, returning {@code null} if the module does
      * not export it (chicory throws rather than returning null for a missing export).
      */
@@ -203,6 +307,14 @@ public class WasmRuntime {
      * over version 1, so modules that only read method/path/headers/body are unaffected.
      */
     static String buildEnvelope(WasmRequest request) {
+        return requestNode(request).toString();
+    }
+
+    /**
+     * Build the request envelope {@link ObjectNode} (shared by the match envelope and, nested under
+     * {@code request}, by the {@link #buildShapeEnvelope shape envelope}).
+     */
+    private static ObjectNode requestNode(WasmRequest request) {
         ObjectNode root = OBJECT_MAPPER.createObjectNode();
         root.put("version", ENVELOPE_VERSION);
         root.put("method", request.getMethod());
@@ -222,7 +334,84 @@ public class WasmRuntime {
         } else {
             root.put("body", request.getBody());
         }
+        return root;
+    }
+
+    /**
+     * Serialise the {@link #SHAPE_RESPONSE} input envelope (ABI v3):
+     * {@code {"version":3,"request":{...v2 request...},"response":{"statusCode":int|null,
+     * "headers":{name:[values]},"body":string|null}}}. The {@code request} field is the same envelope
+     * {@link #buildEnvelope match modules} receive, so a module can route the shape on any request part.
+     */
+    static String buildShapeEnvelope(WasmRequest request, WasmResponse response) {
+        ObjectNode root = OBJECT_MAPPER.createObjectNode();
+        root.put("version", SHAPE_ENVELOPE_VERSION);
+        root.set("request", requestNode(request));
+        ObjectNode resp = root.putObject("response");
+        if (response.getStatusCode() == null) {
+            resp.putNull("statusCode");
+        } else {
+            resp.put("statusCode", response.getStatusCode());
+        }
+        putMultiValued(resp.putObject("headers"), response.getHeaders());
+        if (response.getBody() == null) {
+            resp.putNull("body");
+        } else {
+            resp.put("body", response.getBody());
+        }
         return root.toString();
+    }
+
+    /**
+     * Parse the response JSON a {@link #SHAPE_RESPONSE} module returned into a {@link WasmResponse}.
+     * Recognises {@code statusCode} (integer), {@code headers} (name to array-of-values or scalar) and
+     * {@code body} (string); absent fields become {@code null} (unchanged). A body-only or header-only
+     * return is valid — the omitted fields simply leave the corresponding response part untouched.
+     *
+     * @throws WasmShapeException if the bytes are not a JSON object
+     */
+    private static WasmResponse parseShapedResponse(String json) {
+        JsonNode node;
+        try {
+            node = OBJECT_MAPPER.readTree(json);
+        } catch (Exception e) {
+            throw new WasmShapeException("shape_response returned invalid JSON", e);
+        }
+        if (node == null || !node.isObject()) {
+            throw new WasmShapeException("shape_response must return a JSON object");
+        }
+        Integer statusCode = null;
+        JsonNode statusNode = node.get("statusCode");
+        if (statusNode != null && statusNode.isNumber()) {
+            statusCode = statusNode.intValue();
+        }
+        Map<String, List<String>> headers = null;
+        JsonNode headersNode = node.get("headers");
+        if (headersNode != null && headersNode.isObject()) {
+            headers = new LinkedHashMap<>();
+            java.util.Iterator<String> names = headersNode.fieldNames();
+            while (names.hasNext()) {
+                String name = names.next();
+                JsonNode valueNode = headersNode.get(name);
+                List<String> values = new ArrayList<>();
+                if (valueNode != null && valueNode.isArray()) {
+                    for (JsonNode value : valueNode) {
+                        if (!value.isNull()) {
+                            values.add(value.asText());
+                        }
+                    }
+                } else if (valueNode != null && !valueNode.isNull()) {
+                    values.add(valueNode.asText());
+                }
+                headers.put(name, values);
+            }
+        }
+        String body = null;
+        JsonNode bodyNode = node.get("body");
+        if (bodyNode != null && !bodyNode.isNull()) {
+            body = bodyNode.asText();
+        }
+        return new WasmResponse(statusCode, headers, body);
     }
 
     /**

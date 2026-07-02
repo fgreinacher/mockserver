@@ -1,0 +1,17 @@
+[package]
+name = "mockserver-wasm-shape-response-example"
+version = "0.1.0"
+edition = "2021"
+description = "Example MockServer WASM module that both matches a request and shapes the response (ABI v3), built on mockserver-wasm-sdk"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+mockserver-wasm-sdk = { path = "../sdk-rust" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+strip = true

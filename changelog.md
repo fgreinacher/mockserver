@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **WASM response shaping (host ABI v3).** WASM custom-rule modules can now compute the response, not just
+  match the request. A module that exports an optional `shape_response(i32 ptr, i32 len) -> i64` function is
+  invoked after a match with a JSON envelope `{version:3, request:{…v2 request…}, response:{statusCode,
+  headers, body}}` describing the response the matched expectation would return; it returns a (possibly
+  partial) response JSON `{statusCode?, headers?, body?}` that MockServer applies — replacing the status,
+  merging headers, and replacing the body — enabling WASM-computed dynamic responses. Fully backward
+  compatible: modules without the export stay pure predicates, and a module can export **both**
+  `match_request` and `shape_response` to match first, then shape. Fail-safe: any trap, invalid JSON, or an
+  over-sized return (capped at 1 MiB) leaves the response unshaped and logs once per module — a broken
+  shaper never fails the request. The `examples/wasm/sdk-rust` authoring SDK gains `ShapeEnvelope`,
+  `ShapeResponse` and a `ResponseBuilder`, plus `export_shape_response!` /
+  `export_match_and_shape_response!` macros, and a new `examples/wasm/rust-shape-response` example module
+  (matches `POST /shape`, sets `X-Shaped: true`, and rewrites a JSON body field). `POST /mockserver/wasm/test`
+  accepts an optional candidate `response` and returns the shaped response so IDEs can preview shaping. See
+  `docs/code/wasm-rules.md` and the [WASM Custom Rules](https://www.mock-server.com/mock_server/wasm_rules.html) page.
+
 - **SCIM list endpoints now support sorting.** The mock SCIM 2.0 provider's `GET {basePath}/Users|Groups`
   listing accepts the standard `sortBy` and `sortOrder` query parameters (RFC 7644). `sortBy` is an
   attribute name or nested dotted path (e.g. `name.familyName`); `sortOrder` is `ascending` (default) or

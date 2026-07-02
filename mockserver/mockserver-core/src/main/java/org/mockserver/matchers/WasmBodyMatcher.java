@@ -1,7 +1,6 @@
 package org.mockserver.matchers;
 
 import org.mockserver.configuration.ConfigurationProperties;
-import org.mockserver.model.Header;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.RequestDefinition;
 import org.mockserver.wasm.WasmRequest;
@@ -52,38 +51,7 @@ public class WasmBodyMatcher extends BodyMatcher<String> {
     private WasmRequest buildWasmRequest(MatchDifference context, String body) {
         RequestDefinition requestDefinition = context == null ? null : context.getHttpRequest();
         if (requestDefinition instanceof HttpRequest) {
-            HttpRequest request = (HttpRequest) requestDefinition;
-            WasmRequest wasmRequest = new WasmRequest(
-                request.getMethod() == null ? "" : request.getMethod().getValue(),
-                request.getPath() == null ? "" : request.getPath().getValue(),
-                null,
-                null,
-                null,
-                body
-            );
-            for (Header header : request.getHeaderList()) {
-                if (header.getValues() != null) {
-                    for (org.mockserver.model.NottableString value : header.getValues()) {
-                        wasmRequest.withHeader(header.getName().getValue(), value == null ? null : value.getValue());
-                    }
-                }
-            }
-            if (request.getQueryStringParameters() != null) {
-                for (org.mockserver.model.Parameter parameter : request.getQueryStringParameters().getEntries()) {
-                    if (parameter.getValues() != null) {
-                        for (org.mockserver.model.NottableString value : parameter.getValues()) {
-                            wasmRequest.withQueryStringParameter(parameter.getName().getValue(), value == null ? null : value.getValue());
-                        }
-                    }
-                }
-            }
-            for (org.mockserver.model.Cookie cookie : request.getCookieList()) {
-                wasmRequest.withCookie(
-                    cookie.getName().getValue(),
-                    cookie.getValue() == null ? null : cookie.getValue().getValue()
-                );
-            }
-            return wasmRequest;
+            return WasmRequest.fromHttpRequest((HttpRequest) requestDefinition, body);
         }
         return WasmRequest.ofBody(body);
     }

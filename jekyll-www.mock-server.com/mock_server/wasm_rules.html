@@ -111,6 +111,46 @@ export_match_request!(rule);
 
 <p>See the <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/wasm/sdk-rust" rel="noopener noreferrer">SDK crate</a> and sample modules in the repository (each with a prebuilt <span class="inline_code">.wasm</span>): <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/wasm/rust-request" rel="noopener noreferrer">method + path + header</a> and <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/wasm/rust-request-v2" rel="noopener noreferrer">method + path + query parameter + cookie</a>.</p>
 
+<h3>Computing the response (response shaping)</h3>
+
+<p>A WASM module can also <strong>compute the response</strong>, not just match the request. If your module exports an optional <span class="inline_code">shape_response</span> function, MockServer calls it <em>after</em> a match, passing the response the matched expectation would return, and applies whatever the module returns &mdash; letting you generate dynamic responses in WASM. A module without this export stays a pure matcher; a module can export <strong>both</strong> <span class="inline_code">match_request</span> and <span class="inline_code">shape_response</span> to match first, then shape.</p>
+
+<p>MockServer writes a JSON <strong>shape envelope</strong> into linear memory and calls <span class="inline_code">shape_response(0, len)</span>. It nests the same request envelope your matcher sees under <span class="inline_code">request</span>, plus the response the expectation would return under <span class="inline_code">response</span>:</p>
+
+<pre class="prettyprint lang-json code">
+{
+  "version": 3,
+  "request":  { "version": 2, "method": "POST", "path": "/shape", "headers": {}, "body": "{}" },
+  "response": { "statusCode": 201, "headers": { "Content-Type": ["application/json"] }, "body": "{\"name\":\"acme\"}" }
+}
+</pre>
+
+<p>The module returns a possibly-partial response <span class="inline_code">{ "statusCode", "headers", "body" }</span>: a returned <span class="inline_code">statusCode</span> replaces the status, each returned header is merged in (overwriting a same-named header, leaving others intact), and a returned <span class="inline_code">body</span> replaces the body. Anything omitted is left unchanged, and returning nothing leaves the response exactly as it was.</p>
+
+<p>The <span class="inline_code">mockserver-wasm-sdk</span> crate makes this ergonomic with a <span class="inline_code">ShapeEnvelope</span> reader and a <span class="inline_code">ResponseBuilder</span>. This module matches <span class="inline_code">POST /shape</span>, adds an <span class="inline_code">X-Shaped</span> header, and rewrites the JSON body:</p>
+
+<pre class="prettyprint lang-rust code">
+#![no_std]
+use mockserver_wasm_sdk::{export_match_and_shape_response, write_parts, Request, ResponseBuilder, ShapeEnvelope};
+
+fn matches(req: &Request) -> bool {
+    req.method() == "POST" && req.path() == "/shape"
+}
+
+fn shape(env: &ShapeEnvelope, out: ResponseBuilder) -> i64 {
+    let mut buf = [0u8; 1024];
+    let original = env.response().body_unescaped(&mut buf).unwrap_or("{}");
+    let name = Request::new(original.as_bytes()).field("name").unwrap_or("world");
+    let mut greeting = [0u8; 256];
+    let body = write_parts(&mut greeting, &["{\"greeting\":\"Hello, ", name, "!\",\"shaped\":true}"]);
+    out.status(200).header("X-Shaped", "true").body(body).finish()
+}
+
+export_match_and_shape_response!(matches, shape);
+</pre>
+
+<p>Response shaping is <strong>fail-safe</strong>: if a module traps, returns invalid JSON, or returns more than 1&nbsp;MiB, MockServer keeps the original (unshaped) response and logs a warning once per module &mdash; a broken module never breaks the request. See the <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/wasm/rust-shape-response" rel="noopener noreferrer">response-shaping sample module</a>.</p>
+
 <h3>Uploading a WASM module</h3>
 
 <p>Upload a compiled WASM module using the REST API:</p>
@@ -179,6 +219,19 @@ curl -X POST "http://localhost:1080/mockserver/wasm/test" \
 </pre>
 
 <p>Supply either <span class="inline_code">module</span> (base64-encoded WASM bytes) or <span class="inline_code">moduleName</span> (a module already uploaded). The <span class="inline_code">request</span> object is optional and defaults to an empty body-only request; within it, <span class="inline_code">queryStringParameters</span> and <span class="inline_code">headers</span> take an array of values (or a single value) per name and <span class="inline_code">cookies</span> takes a single value per name. Like live matching, this is fail-closed: an invalid module returns <span class="inline_code">{"matched":false}</span> rather than an error.</p>
+
+<p>To also preview <strong>response shaping</strong>, include a candidate <span class="inline_code">response</span> (<span class="inline_code">{ "statusCode", "headers", "body" }</span>). The result then carries a <span class="inline_code">shaped</span> field with the response the module would produce, or <span class="inline_code">null</span> when the module does not shape:</p>
+
+<pre class="prettyprint lang-bash code">
+curl -X POST "http://localhost:1080/mockserver/wasm/test" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "module": "&lt;base64-encoded .wasm&gt;",
+        "request":  { "method": "POST", "path": "/shape" },
+        "response": { "statusCode": 201, "headers": { "Content-Type": ["application/json"] }, "body": "{\"name\":\"acme\"}" }
+      }'
+# Returns: {"matched":true,"shaped":{"statusCode":200,"headers":{"X-Shaped":["true"]},"body":"{\"greeting\":\"Hello, acme!\",\"shaped\":true}"}}
+</pre>
 
 <h3>Configuration properties</h3>
 

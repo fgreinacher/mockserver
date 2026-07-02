@@ -1,0 +1,3 @@
+# Rust build output — the prebuilt shape-response.wasm is committed separately at the crate root.
+/target
+Cargo.lock

@@ -791,6 +791,11 @@
                         <exclude>**/WasmRuntimeRealModuleTest.java</exclude>
                         <!-- Mutates the shared static WasmRuntime.MODULE_CACHE and WasmStore singleton; asserts exact cache sizes -->
                         <exclude>**/WasmRuntimeModuleCacheTest.java</exclude>
+                        <!-- Response-shaping (ABI v3) tests: populate the shared WasmRuntime.MODULE_CACHE and (for the
+                             action-handler test) mutate ConfigurationProperties.wasmEnabled + WasmStore singleton -->
+                        <exclude>**/WasmRuntimeShapeAbiTest.java</exclude>
+                        <exclude>**/WasmResponseShaperTest.java</exclude>
+                        <exclude>**/HttpResponseActionHandlerWasmShapeTest.java</exclude>
                         <exclude>**/XPathEvaluatorTest.java</exclude>
                         <exclude>**/WasmBodyMatcherTest.java</exclude>
                         <exclude>**/GraphQLMatcherTest.java</exclude>
@@ -928,6 +933,9 @@
                                 <include>**/WasmRuntimeTest.java</include>
                                 <include>**/WasmRuntimeRealModuleTest.java</include>
                                 <include>**/WasmRuntimeModuleCacheTest.java</include>
+                                <include>**/WasmRuntimeShapeAbiTest.java</include>
+                                <include>**/WasmResponseShaperTest.java</include>
+                                <include>**/HttpResponseActionHandlerWasmShapeTest.java</include>
                                 <include>**/XPathEvaluatorTest.java</include>
                                 <include>**/WasmBodyMatcherTest.java</include>
                                 <include>**/GraphQLMatcherTest.java</include>

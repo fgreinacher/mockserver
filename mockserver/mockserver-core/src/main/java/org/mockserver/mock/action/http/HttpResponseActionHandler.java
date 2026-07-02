@@ -1,6 +1,7 @@
 package org.mockserver.mock.action.http;
 
 import org.mockserver.configuration.Configuration;
+import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.file.FileReader;
 import org.mockserver.graphql.GraphQLResponseSynthesizer;
 import org.mockserver.graphql.GraphQLSchemaException;
@@ -20,6 +21,9 @@ import org.mockserver.openapi.JsonSchemaResponseSynthesizer;
 import org.mockserver.templates.engine.TemplateEngine;
 import org.mockserver.templates.engine.mustache.MustacheTemplateEngine;
 import org.mockserver.templates.engine.velocity.VelocityTemplateEngine;
+import org.mockserver.model.WasmBody;
+import org.mockserver.wasm.WasmResponseShaper;
+import org.mockserver.wasm.WasmStore;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.slf4j.event.Level.WARN;
@@ -77,7 +81,31 @@ public class HttpResponseActionHandler {
                 }
             }
         }
+        shapeResponseWithWasm(response, httpRequest, matchedRequest);
         return response;
+    }
+
+    /**
+     * When the matched expectation matched on a {@link WasmBody} and that module exports
+     * {@code shape_response} (ABI v3), hand the fully-materialised response to the module so it can
+     * rewrite it (WASM-computed dynamic responses). Runs last, so the module sees the final response
+     * (after any templating/schema/GraphQL synthesis). Gated on {@link ConfigurationProperties#wasmEnabled()}
+     * and fail-safe: any module failure leaves the response untouched (see {@link WasmResponseShaper}).
+     */
+    private void shapeResponseWithWasm(HttpResponse response, HttpRequest httpRequest, RequestDefinition matchedRequest) {
+        if (response == null || httpRequest == null || !(matchedRequest instanceof HttpRequest)) {
+            return;
+        }
+        Body<?> matchedBody = ((HttpRequest) matchedRequest).getBody();
+        if (!(matchedBody instanceof WasmBody) || !ConfigurationProperties.wasmEnabled()) {
+            return;
+        }
+        String moduleName = ((WasmBody) matchedBody).getModuleName();
+        byte[] wasmBytes = WasmStore.getInstance().get(moduleName);
+        if (wasmBytes == null) {
+            return;
+        }
+        new WasmResponseShaper(mockServerLogger).shape(response, httpRequest, moduleName, wasmBytes);
     }
 
     /**

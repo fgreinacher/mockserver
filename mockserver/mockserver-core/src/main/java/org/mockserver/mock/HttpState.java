@@ -3328,13 +3328,90 @@ public class HttpState {
             }
 
             boolean matched = new org.mockserver.wasm.WasmRuntime(wasmBytes).callMatch(wasmRequest);
+            com.fasterxml.jackson.databind.node.ObjectNode result = objectMapper.createObjectNode();
+            result.put("matched", matched);
+            // Optionally exercise the shape_response export (ABI v3): when the caller supplies a candidate
+            // "response", return the shaped response the module would produce (or null when it does not shape
+            // / opts out / fails), so IDEs can preview response shaping without a live expectation.
+            com.fasterxml.jackson.databind.JsonNode candidateResponseNode = node.get("response");
+            if (candidateResponseNode != null && candidateResponseNode.isObject()) {
+                addWasmShapedResponse(result, wasmBytes, wasmRequest, candidateResponseNode);
+            }
             return response()
                 .withStatusCode(OK.code())
-                .withBody(objectMapper.createObjectNode().put("matched", matched).toString(), MediaType.JSON_UTF_8);
+                .withBody(result.toString(), MediaType.JSON_UTF_8);
         } catch (Exception e) {
             return response()
                 .withStatusCode(BAD_REQUEST.code())
                 .withBody(objectMapper.createObjectNode().put("error", "failed to test WASM module: " + e.getMessage()).toString(), MediaType.JSON_UTF_8);
+        }
+    }
+
+    /**
+     * Exercise a module's {@code shape_response} export against a caller-supplied candidate response and
+     * add the shaped result to {@code result} under {@code "shaped"} (or {@code null} when the module does
+     * not shape, opts out, or fails — the endpoint stays fail-safe). Used by {@code POST /wasm/test}.
+     */
+    private static void addWasmShapedResponse(com.fasterxml.jackson.databind.node.ObjectNode result,
+                                              byte[] wasmBytes,
+                                              org.mockserver.wasm.WasmRequest wasmRequest,
+                                              com.fasterxml.jackson.databind.JsonNode responseNode) {
+        try {
+            Integer statusCode = responseNode.has("statusCode") && responseNode.get("statusCode").isNumber()
+                ? responseNode.get("statusCode").intValue() : null;
+            String body = responseNode.has("body") && !responseNode.get("body").isNull()
+                ? responseNode.get("body").asText() : null;
+            java.util.Map<String, java.util.List<String>> headers = new java.util.LinkedHashMap<>();
+            com.fasterxml.jackson.databind.JsonNode headersNode = responseNode.get("headers");
+            if (headersNode != null && headersNode.isObject()) {
+                java.util.Iterator<String> names = headersNode.fieldNames();
+                while (names.hasNext()) {
+                    String name = names.next();
+                    com.fasterxml.jackson.databind.JsonNode valuesNode = headersNode.get(name);
+                    java.util.List<String> values = new java.util.ArrayList<>();
+                    if (valuesNode != null && valuesNode.isArray()) {
+                        for (com.fasterxml.jackson.databind.JsonNode v : valuesNode) {
+                            if (!v.isNull()) {
+                                values.add(v.asText());
+                            }
+                        }
+                    } else if (valuesNode != null && !valuesNode.isNull()) {
+                        values.add(valuesNode.asText());
+                    }
+                    headers.put(name, values);
+                }
+            }
+            org.mockserver.wasm.WasmResponse shaped = new org.mockserver.wasm.WasmRuntime(wasmBytes)
+                .callShape(wasmRequest, new org.mockserver.wasm.WasmResponse(statusCode, headers, body));
+            if (shaped == null) {
+                result.putNull("shaped");
+                return;
+            }
+            com.fasterxml.jackson.databind.node.ObjectNode shapedNode = result.putObject("shaped");
+            if (shaped.getStatusCode() == null) {
+                shapedNode.putNull("statusCode");
+            } else {
+                shapedNode.put("statusCode", shaped.getStatusCode());
+            }
+            com.fasterxml.jackson.databind.node.ObjectNode shapedHeaders = shapedNode.putObject("headers");
+            if (shaped.getHeaders() != null) {
+                for (java.util.Map.Entry<String, java.util.List<String>> entry : shaped.getHeaders().entrySet()) {
+                    com.fasterxml.jackson.databind.node.ArrayNode values = shapedHeaders.putArray(entry.getKey());
+                    if (entry.getValue() != null) {
+                        for (String value : entry.getValue()) {
+                            values.add(value);
+                        }
+                    }
+                }
+            }
+            if (shaped.getBody() == null) {
+                shapedNode.putNull("body");
+            } else {
+                shapedNode.put("body", shaped.getBody());
+            }
+        } catch (Exception e) {
+            // fail-safe: a broken shaper never breaks the test endpoint
+            result.putNull("shaped");
         }
     }
 

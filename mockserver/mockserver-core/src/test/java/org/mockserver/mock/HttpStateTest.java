@@ -3767,6 +3767,76 @@ public class HttpStateTest {
         }
     }
 
+    private static String shapeResponseModuleBase64() throws java.io.IOException {
+        try (java.io.InputStream in = HttpStateTest.class.getResourceAsStream("/org/mockserver/wasm/shape-response.wasm")) {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+            return java.util.Base64.getEncoder().encodeToString(out.toByteArray());
+        }
+    }
+
+    @Test
+    public void shouldTestWasmModuleAndReturnShapedResponseWhenCandidateProvided() throws java.io.IOException {
+        // given — the shape-response module matches POST /shape and, given a candidate response, shapes it
+        boolean original = configuration.wasmEnabled();
+        try {
+            configuration.wasmEnabled(true);
+            String body = "{\"module\":\"" + shapeResponseModuleBase64() + "\","
+                + "\"request\":{\"method\":\"POST\",\"path\":\"/shape\",\"body\":\"{}\"},"
+                + "\"response\":{\"statusCode\":201,\"headers\":{\"Content-Type\":[\"application/json\"]},\"body\":\"{\\\"name\\\":\\\"acme\\\"}\"}}";
+            HttpRequest testRequest = request("/mockserver/wasm/test").withMethod("POST").withBody(body);
+            FakeResponseWriter responseWriter = new FakeResponseWriter();
+
+            // when
+            boolean handle = httpState.handle(testRequest, responseWriter, false);
+
+            // then — matched true and the shaped response is returned
+            assertThat(handle, is(true));
+            assertThat(responseWriter.response.getStatusCode(), is(200));
+            com.fasterxml.jackson.databind.JsonNode result = org.mockserver.serialization.ObjectMapperFactory.createObjectMapper()
+                .readTree(responseWriter.response.getBodyAsString());
+            assertThat(result.get("matched").asBoolean(), is(true));
+            com.fasterxml.jackson.databind.JsonNode shaped = result.get("shaped");
+            assertThat(shaped, is(notNullValue()));
+            assertThat(shaped.get("statusCode").asInt(), is(200));
+            assertThat(shaped.get("headers").get("X-Shaped").get(0).asText(), is("true"));
+            assertThat(shaped.get("body").asText(), is("{\"greeting\":\"Hello, acme!\",\"shaped\":true}"));
+        } finally {
+            configuration.wasmEnabled(original);
+        }
+    }
+
+    @Test
+    public void shouldTestWasmModuleWithNullShapedWhenModuleDoesNotShape() throws java.io.IOException {
+        // given — a pure predicate module (no shape_response) with a candidate response present
+        boolean original = configuration.wasmEnabled();
+        try {
+            configuration.wasmEnabled(true);
+            String body = "{\"module\":\"" + matchRequestModuleBase64() + "\","
+                + "\"request\":{\"method\":\"POST\",\"path\":\"/orders\",\"headers\":{\"X-Tenant\":[\"acme\"]}},"
+                + "\"response\":{\"statusCode\":200,\"body\":\"{}\"}}";
+            HttpRequest testRequest = request("/mockserver/wasm/test").withMethod("POST").withBody(body);
+            FakeResponseWriter responseWriter = new FakeResponseWriter();
+
+            // when
+            boolean handle = httpState.handle(testRequest, responseWriter, false);
+
+            // then — matched true, shaped is explicit null (module does not shape)
+            assertThat(handle, is(true));
+            com.fasterxml.jackson.databind.JsonNode result = org.mockserver.serialization.ObjectMapperFactory.createObjectMapper()
+                .readTree(responseWriter.response.getBodyAsString());
+            assertThat(result.get("matched").asBoolean(), is(true));
+            assertThat(result.has("shaped"), is(true));
+            assertThat(result.get("shaped").isNull(), is(true));
+        } finally {
+            configuration.wasmEnabled(original);
+        }
+    }
+
     @Test
     public void shouldTestLoadedWasmModuleByName() throws java.io.IOException {
         // given
