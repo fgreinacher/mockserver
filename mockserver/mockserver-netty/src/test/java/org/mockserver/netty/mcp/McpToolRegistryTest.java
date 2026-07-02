@@ -89,7 +89,8 @@ public class McpToolRegistryTest {
         assertThat(tools.containsKey("retrieve_logs"), is(true));
         assertThat(tools.containsKey("mock_llm_failover"), is(true));
         assertThat(tools.containsKey("export_optimisation_report"), is(true));
-        assertThat(tools.size(), is(36));
+        assertThat(tools.containsKey("diff_agent_runs"), is(true));
+        assertThat(tools.size(), is(37));
     }
 
     @Test
@@ -2200,6 +2201,7 @@ public class McpToolRegistryTest {
             "explain_unmatched_requests",
             "explain_agent_run",
             "export_optimisation_report",
+            "diff_agent_runs",
             "detect_llm_drift",
             "list_mock_tools",
             "raw_retrieve",

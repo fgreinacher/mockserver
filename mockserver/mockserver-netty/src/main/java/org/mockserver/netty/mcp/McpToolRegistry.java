@@ -175,6 +175,7 @@ public class McpToolRegistry {
         "explain_unmatched_requests",
         "explain_agent_run",
         "export_optimisation_report",
+        "diff_agent_runs",
         "detect_llm_drift",
         "list_mock_tools",
         "raw_retrieve",
@@ -226,6 +227,7 @@ public class McpToolRegistry {
         registerVerifyCostBudget();
         registerExplainAgentRun();
         registerExportOptimisationReport();
+        registerDiffAgentRuns();
         registerDetectLlmDrift();
         registerMockAdversarialLlmResponse();
         registerListMockTools();
@@ -3884,11 +3886,14 @@ public class McpToolRegistry {
         ObjectNode properties = schema.putObject("properties");
         ObjectNode formatProp = properties.putObject("format");
         formatProp.put("type", "string").put("description",
-            "Output format: 'markdown' for the copy-paste optimisation brief (default), 'json' for the structured LlmOptimisationReport bundle, or 'csv' for the per-call + totals spreadsheet export.");
+            "Output format: 'markdown' for the copy-paste optimisation brief (default), 'json' for the structured LlmOptimisationReport bundle, 'csv' for the per-call + totals spreadsheet export, or an eval/fine-tune dataset export of the captured sessions — 'openai-evals' (OpenAI-evals JSONL), 'fine-tune' (chat fine-tune JSONL), or 'promptfoo' (promptfoo test-suite JSON). All formats redact secrets.");
         ArrayNode formatEnum = formatProp.putArray("enum");
         formatEnum.add("markdown");
         formatEnum.add("json");
         formatEnum.add("csv");
+        formatEnum.add("openai-evals");
+        formatEnum.add("fine-tune");
+        formatEnum.add("promptfoo");
         properties.putObject("session").put("type", "string").put("description",
             "Optional session/grouping key filter (e.g. 'host:api.openai.com'); default is all captured LLM traffic.");
         properties.putObject("host").put("type", "string").put("description",
@@ -3911,8 +3916,11 @@ public class McpToolRegistry {
     private JsonNode handleExportOptimisationReport(JsonNode params) {
         try {
             String format = params.path("format").asText("markdown");
-            if (!"markdown".equalsIgnoreCase(format) && !"json".equalsIgnoreCase(format) && !"csv".equalsIgnoreCase(format)) {
-                return errorResult("'format' must be one of: markdown, json, csv");
+            java.util.Optional<org.mockserver.llm.analysis.LlmDatasetExporter.DatasetFormat> datasetFormat =
+                org.mockserver.llm.analysis.LlmDatasetExporter.DatasetFormat.fromWire(format);
+            if (!datasetFormat.isPresent()
+                && !"markdown".equalsIgnoreCase(format) && !"json".equalsIgnoreCase(format) && !"csv".equalsIgnoreCase(format)) {
+                return errorResult("'format' must be one of: markdown, json, csv, openai-evals, fine-tune, promptfoo");
             }
             org.mockserver.llm.analysis.LlmOptimisationReportService.Filter filter =
                 new org.mockserver.llm.analysis.LlmOptimisationReportService.Filter(
@@ -3925,6 +3933,12 @@ public class McpToolRegistry {
                 new org.mockserver.llm.analysis.LlmOptimisationReportService();
             org.mockserver.llm.analysis.LlmOptimisationReportService.Result result = service.build(pairs, filter);
 
+            if (datasetFormat.isPresent()) {
+                ObjectNode resultNode = objectMapper.createObjectNode();
+                resultNode.put("format", format.toLowerCase().replace('_', '-'));
+                resultNode.put("dataset", service.renderDataset(result, datasetFormat.get()));
+                return resultNode;
+            }
             if ("json".equalsIgnoreCase(format)) {
                 ObjectNode resultNode = objectMapper.createObjectNode();
                 resultNode.put("format", "json");
@@ -3944,6 +3958,124 @@ public class McpToolRegistry {
         } catch (Exception e) {
             return errorResult("Failed to export optimisation report", e);
         }
+    }
+
+    // --- diff_agent_runs ---
+
+    private void registerDiffAgentRuns() {
+        ObjectNode schema = objectMapper.createObjectNode();
+        schema.put("type", "object");
+        ObjectNode properties = schema.putObject("properties");
+        ObjectNode before = properties.putObject("before");
+        before.put("type", "object").put("description",
+            "Selects the BEFORE run from captured LLM traffic by session/host/provider (same filter as export_optimisation_report).");
+        ObjectNode beforeProps = before.putObject("properties");
+        beforeProps.putObject("session").put("type", "string").put("description", "Session/grouping key (e.g. 'host:api.openai.com').");
+        beforeProps.putObject("host").put("type", "string").put("description", "Upstream host filter (e.g. api.openai.com).");
+        beforeProps.putObject("provider").put("type", "string").put("description", "LLM provider filter (e.g. OPENAI).");
+        ObjectNode after = properties.putObject("after");
+        after.put("type", "object").put("description", "Selects the AFTER run — same shape as 'before'.");
+        ObjectNode afterProps = after.putObject("properties");
+        afterProps.putObject("session").put("type", "string").put("description", "Session/grouping key.");
+        afterProps.putObject("host").put("type", "string").put("description", "Upstream host filter.");
+        afterProps.putObject("provider").put("type", "string").put("description", "LLM provider filter.");
+        properties.putObject("normalization").put("type", "object").put("description",
+            "Optional prompt-normalisation options (whitespace, JSON key ordering, volatile ids) applied before diffing.");
+
+        tools.put("diff_agent_runs", new ToolDefinition(
+            "diff_agent_runs",
+            "Prompt-level diff of two recorded agent runs captured through MockServer. Reconstructs each run's canonical "
+                + "conversation, normalises the prompts (whitespace / JSON key order / volatile ids), and reports what changed: "
+                + "message additions / removals / edits, tool calls added or removed, and the token / cost delta. Read-only and "
+                + "deterministic — MockServer never calls an LLM. Message text is masked for credential shapes.",
+            schema,
+            this::handleDiffAgentRuns
+        ));
+    }
+
+    private JsonNode handleDiffAgentRuns(JsonNode params) {
+        try {
+            org.mockserver.llm.analysis.LlmOptimisationReportService.Filter beforeFilter = filterFromParams(params.path("before"));
+            org.mockserver.llm.analysis.LlmOptimisationReportService.Filter afterFilter = filterFromParams(params.path("after"));
+
+            NormalizationOptions options = null;
+            if (params.path("normalization").isObject()) {
+                options = objectMapper.treeToValue(params.get("normalization"), NormalizationOptions.class);
+            }
+
+            List<LogEventRequestAndResponse> pairs = retrieveRecordedPairs(null);
+            org.mockserver.llm.analysis.LlmOptimisationReportService service =
+                new org.mockserver.llm.analysis.LlmOptimisationReportService();
+            org.mockserver.llm.analysis.LlmOptimisationReportService.Result beforeResult = service.build(pairs, beforeFilter);
+            org.mockserver.llm.analysis.LlmOptimisationReportService.Result afterResult = service.build(pairs, afterFilter);
+
+            org.mockserver.llm.analysis.AgentRunDiff.RunDiffResult diff = new org.mockserver.llm.analysis.AgentRunDiff()
+                .diff(diffRunSide(beforeResult), diffRunSide(afterResult), options);
+
+            ObjectNode resultNode = objectMapper.createObjectNode();
+            resultNode.put("promptChanged", diff.isPromptChanged());
+            resultNode.put("messageCountBefore", diff.getMessageCountBefore());
+            resultNode.put("messageCountAfter", diff.getMessageCountAfter());
+            ArrayNode messageDiffs = resultNode.putArray("messageDiffs");
+            for (org.mockserver.llm.analysis.AgentRunDiff.MessageDiff md : diff.getMessageDiffs()) {
+                ObjectNode m = messageDiffs.addObject();
+                m.put("changeType", md.getChangeType().name());
+                m.put("role", md.getRole());
+                m.put("beforeText", md.getBeforeText());
+                m.put("afterText", md.getAfterText());
+            }
+            ArrayNode added = resultNode.putArray("toolCallsAdded");
+            diff.getToolCallsAdded().forEach(added::add);
+            ArrayNode removed = resultNode.putArray("toolCallsRemoved");
+            diff.getToolCallsRemoved().forEach(removed::add);
+            if (diff.getTokenDelta() != null) {
+                org.mockserver.llm.analysis.AgentRunDiff.TokenDelta d = diff.getTokenDelta();
+                ObjectNode t = resultNode.putObject("tokenDelta");
+                t.put("inputTokensBefore", d.getInputTokensBefore());
+                t.put("inputTokensAfter", d.getInputTokensAfter());
+                t.put("inputTokensDelta", d.getInputTokensDelta());
+                t.put("outputTokensBefore", d.getOutputTokensBefore());
+                t.put("outputTokensAfter", d.getOutputTokensAfter());
+                t.put("outputTokensDelta", d.getOutputTokensDelta());
+                t.put("costUsdBefore", d.getCostUsdBefore());
+                t.put("costUsdAfter", d.getCostUsdAfter());
+                t.put("costUsdDelta", d.getCostUsdDelta());
+            }
+            return resultNode;
+        } catch (Exception e) {
+            return errorResult("Failed to diff agent runs", e);
+        }
+    }
+
+    private static org.mockserver.llm.analysis.LlmOptimisationReportService.Filter filterFromParams(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return new org.mockserver.llm.analysis.LlmOptimisationReportService.Filter(null, null, null);
+        }
+        return new org.mockserver.llm.analysis.LlmOptimisationReportService.Filter(
+            emptyToNull(node.path("session").asText(null)),
+            emptyToNull(node.path("host").asText(null)),
+            emptyToNull(node.path("provider").asText(null)));
+    }
+
+    private static org.mockserver.llm.analysis.AgentRunDiff.RunSide diffRunSide(
+        org.mockserver.llm.analysis.LlmOptimisationReportService.Result result) {
+        List<HttpRequest> requests = new ArrayList<>();
+        Provider provider = null;
+        for (org.mockserver.llm.analysis.LlmOptimisationReportBuilder.CapturedExchange exchange : result.getIncludedExchanges()) {
+            if (exchange.getRequest() == null) {
+                continue;
+            }
+            requests.add(exchange.getRequest());
+            if (provider == null) {
+                provider = LlmProviderSniffer.detectForAnalysis(exchange.getRequest(), exchange.getResponse()).orElse(null);
+            }
+        }
+        org.mockserver.llm.analysis.LlmOptimisationReport.Totals totals = result.getReport().getTotals();
+        return new org.mockserver.llm.analysis.AgentRunDiff.RunSide(
+            requests, provider,
+            totals != null ? totals.getInputTokens() : null,
+            totals != null ? totals.getOutputTokens() : null,
+            totals != null ? totals.getEstimatedCostUsd() : null);
     }
 
     // --- detect_llm_drift ---

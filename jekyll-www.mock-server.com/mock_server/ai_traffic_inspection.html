@@ -306,6 +306,17 @@ asyncio.run(main())</code></pre>
 
 <p>The same exports are also available via the <a href="/mock_server/mockserver_clients.html">retrieve API</a>.</p>
 
+<h3>Export Captured LLM Sessions as an Eval / Fine-Tune Dataset</h3>
+
+<p>Captured LLM traffic can be exported directly as a dataset for eval and fine-tune tooling &mdash; the prompt comes from each request and the expected answer from the response. These are new <code class="code inline">format=</code> values on the optimisation report endpoint, and every export is <strong>redacted by default</strong> (auth headers, credential query parameters, configured body fields, and secret shapes in message text are masked):</p>
+
+<pre class="prettyprint code"><code class="code"># OpenAI-evals JSONL   |   chat fine-tune JSONL   |   promptfoo test suite
+curl -s "http://localhost:1080/mockserver/llm/optimisationReport?format=openai-evals"
+curl -s "http://localhost:1080/mockserver/llm/optimisationReport?format=fine-tune"
+curl -s "http://localhost:1080/mockserver/llm/optimisationReport?format=promptfoo"</code></pre>
+
+<p>You can also diff two recorded runs at the prompt level (what prompt text, tool calls, or token/cost changed) with <code class="code inline">PUT /mockserver/llm/diffRuns</code>. See <a href="/mock_server/ai_optimisation.html">AI Cost Optimisation</a> for both.</p>
+
 <h3>Retrieve API</h3>
 
 <p>Retrieve all proxied request-response pairs as JSON:</p>

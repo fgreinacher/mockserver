@@ -253,6 +253,30 @@ opencode run "summarise the README and suggest one improvement"</code></pre>
     <p>Returns <code class="code inline">text/csv; charset=utf-8</code> — a spreadsheet-friendly export with two sections: a per-call table (provider, model, input/output/cached/reasoning tokens, estimated cost, latency, tool-call count, finish reason) and a totals/verdict summary. Open it in a spreadsheet or feed it to a data pipeline.</p>
 </div>
 
+<button id="button_export_optimisation_rest_dataset" class="accordion">Eval / fine-tune / promptfoo dataset export</button>
+<div class="panel">
+<pre class="prettyprint lang-bash code"><code class="code"># OpenAI-evals JSONL (one {"input":[...],"ideal":"..."} sample per line)
+curl -s "http://localhost:1080/mockserver/llm/optimisationReport?format=openai-evals"
+
+# Chat fine-tune JSONL (one {"messages":[...]} conversation per line)
+curl -s "http://localhost:1080/mockserver/llm/optimisationReport?format=fine-tune"
+
+# promptfoo test suite (a single {"tests":[...]} JSON document)
+curl -s "http://localhost:1080/mockserver/llm/optimisationReport?format=promptfoo"</code></pre>
+    <p>Turn your captured LLM sessions into ready-to-use datasets for eval and fine-tune tooling. The prompt messages come from each captured request and the expected/ideal answer from the captured response. <strong>Redaction is on by default</strong> — every export runs through MockServer's redactor (Authorization / api-key headers, credential query parameters, and any configured body fields) and masks obvious secret shapes (e.g. <code class="code inline">sk-…</code>, AWS keys, bearer tokens) in message text, so nothing sensitive leaks into a dataset. The JSONL formats are served as <code class="code inline">application/x-ndjson</code>; promptfoo as <code class="code inline">application/json</code>.</p>
+</div>
+
+<button id="button_export_optimisation_rest_diff" class="accordion">Diff two agent runs</button>
+<div class="panel">
+<pre class="prettyprint lang-bash code"><code class="code">curl -s -X PUT "http://localhost:1080/mockserver/llm/diffRuns" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "before": {"session": "host:api.openai.com", "provider": "OPENAI"},
+        "after":  {"session": "host:api.openai.com", "provider": "OPENAI"}
+      }'</code></pre>
+    <p>Compare two recorded runs at the prompt level. MockServer reconstructs each run's conversation, normalises the prompts (so whitespace, JSON key ordering, and volatile ids/timestamps don't show up as changes), and reports what changed: message edits/additions/removals, tool calls added or removed, and the token/cost delta. Deterministic and read-only — no LLM is called. Message text is masked for secret shapes. Select each run with the same <code class="code inline">session</code>/<code class="code inline">host</code>/<code class="code inline">provider</code> filter used by the report.</p>
+</div>
+
 <button id="button_export_optimisation_rest_filtered" class="accordion">Filtered by host or provider</button>
 <div class="panel">
 <pre class="prettyprint lang-bash code"><code class="code"># Only OpenAI traffic
@@ -279,9 +303,9 @@ curl -s "http://localhost:1080/mockserver/llm/optimisationReport?format=markdown
     <tbody>
         <tr>
             <td><code class="code inline">format</code></td>
-            <td><code class="code inline">json</code> | <code class="code inline">markdown</code> | <code class="code inline">csv</code></td>
+            <td><code class="code inline">json</code> | <code class="code inline">markdown</code> | <code class="code inline">csv</code> | <code class="code inline">openai-evals</code> | <code class="code inline">fine-tune</code> | <code class="code inline">promptfoo</code></td>
             <td><code class="code inline">json</code></td>
-            <td>Output format. <code class="code inline">markdown</code> returns the pre-framed optimisation brief; <code class="code inline">json</code> returns the structured <code class="code inline">LlmOptimisationReport</code> bundle; <code class="code inline">csv</code> returns a per-call table plus a totals/verdict summary as <code class="code inline">text/csv</code>.</td>
+            <td>Output format. <code class="code inline">markdown</code> returns the pre-framed optimisation brief; <code class="code inline">json</code> returns the structured <code class="code inline">LlmOptimisationReport</code> bundle; <code class="code inline">csv</code> returns a per-call table plus a totals/verdict summary as <code class="code inline">text/csv</code>; <code class="code inline">openai-evals</code> and <code class="code inline">fine-tune</code> export the captured sessions as JSONL datasets; <code class="code inline">promptfoo</code> exports a promptfoo test-suite JSON document. All dataset exports are redacted by default.</td>
         </tr>
         <tr>
             <td><code class="code inline">session</code></td>

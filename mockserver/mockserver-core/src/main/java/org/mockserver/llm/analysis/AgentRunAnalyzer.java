@@ -308,8 +308,11 @@ public class AgentRunAnalyzer {
     /**
      * Decode each request and return the conversation with the most messages —
      * the richest/latest snapshot of the dialogue. Null if none decode.
+     * <p>
+     * Public so sibling analysers ({@link AgentRunDiff}) reconstruct the canonical
+     * run the same way this analyser does.
      */
-    private ParsedConversation canonicalConversation(List<HttpRequest> requests, Provider provider) {
+    public ParsedConversation canonicalConversation(List<HttpRequest> requests, Provider provider) {
         if (requests == null || provider == null) {
             return null;
         }

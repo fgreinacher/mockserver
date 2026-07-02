@@ -711,7 +711,9 @@ Key source files under `mockserver/mockserver-core/src/main/java/org/mockserver/
 | `llm/analysis/OptimisationSignals.java` | Six deterministic signal detectors (see below); pure — no network, no LLM |
 | `llm/analysis/LlmOptimisationBriefRenderer.java` | Renders an `LlmOptimisationReport` to a pre-framed Markdown brief |
 | `llm/analysis/LlmOptimisationCsvRenderer.java` | Renders an `LlmOptimisationReport` to CSV (per-call rows + totals/verdict summary, RFC-4180 escaped) |
-| `llm/analysis/LlmOptimisationReportService.java` | Façade: `build(pairs, filter)` + `renderBrief(result)` + `renderCsv(result)` — used by both the REST handler and the MCP tool; also pushes the verdict snapshot to `Metrics` for the optimisation gauges |
+| `llm/analysis/LlmDatasetExporter.java` | Exports captured sessions as eval / fine-tune / promptfoo datasets (OpenAI-evals JSONL, chat fine-tune JSONL, promptfoo test-suite JSON); redacts via `FixtureRedactor` + credential masking |
+| `llm/analysis/AgentRunDiff.java` | Prompt-level diff of two recorded runs — normalises via `PromptNormalizer`, LCS message alignment, tool-call add/remove, token/cost delta |
+| `llm/analysis/LlmOptimisationReportService.java` | Façade: `build(pairs, filter)` + `renderBrief(result)` + `renderCsv(result)` + `renderDataset(result, format)` — used by both the REST handler and the MCP tool; also pushes the verdict snapshot to `Metrics` for the optimisation gauges |
 
 ## LLM Optimisation Export
 
@@ -749,16 +751,44 @@ The per-call `latencyMs` is the measured upstream round-trip time. It is carried
 
 | Query parameter | Values | Default |
 |-----------------|--------|---------|
-| `format` | `json` \| `markdown` \| `csv` | `json` |
+| `format` | `json` \| `markdown` \| `csv` \| `openai-evals` \| `fine-tune` \| `promptfoo` | `json` |
 | `session` | grouping key | all captured LLM traffic |
 | `host` | upstream hostname | all hosts |
 | `provider` | `OPENAI` \| `ANTHROPIC` \| `GEMINI` \| `BEDROCK` \| `AZURE_OPENAI` \| `OLLAMA` | all providers |
 
-An unrecognised `format` returns `400` with `format must be one of: json, markdown, csv`. The `csv` format is served as `text/csv; charset=utf-8`.
+An unrecognised `format` returns `400` with `format must be one of: json, markdown, csv, openai-evals, fine-tune, promptfoo`. The `csv` format is served as `text/csv; charset=utf-8`; the JSONL dataset formats (`openai-evals`, `fine-tune`) as `application/x-ndjson; charset=utf-8`; and `promptfoo` as `application/json; charset=utf-8`.
 
 CORS is enabled on this endpoint so the dashboard UI can call it even when the dashboard and control plane are on different origins.
 
-**MCP tool** — `export_optimisation_report` (registered in `McpToolRegistry.registerExportOptimisationReport`), same parameters as the REST endpoint (`format` accepts `markdown` (default), `json`, or `csv`). Returns the brief text (`brief`), JSON bundle (`report`), or CSV text (`csv`) as a tool result.
+**MCP tool** — `export_optimisation_report` (registered in `McpToolRegistry.registerExportOptimisationReport`), same parameters as the REST endpoint (`format` accepts `markdown` (default), `json`, `csv`, or the three dataset formats). Returns the brief text (`brief`), JSON bundle (`report`), CSV text (`csv`), or dataset text (`dataset`) as a tool result.
+
+### Dataset export (eval / fine-tune / promptfoo)
+
+`format=openai-evals|fine-tune|promptfoo` turns the captured sessions into datasets that eval / fine-tune tooling consumes, served by `LlmDatasetExporter` via `LlmOptimisationReportService.renderDataset(result, format)` (reusing the same `Result.getIncludedExchanges()` the report is built from). For each captured exchange the exporter decodes the **prompt messages** from the request (via the provider `ProviderCodec`) and the **assistant / ideal turn** from the response (via the provider `LlmClient.parseCompletionResponse`). Non-LLM exchanges and requests that decode to no messages are skipped (mirroring the report's inclusion rule).
+
+| Format | Wire values | Shape |
+|--------|-------------|-------|
+| OpenAI-evals | `openai-evals`, `evals` | JSONL, one sample per line: `{"input":[{role,content}…],"ideal":"<assistant response>"}` |
+| Chat fine-tune | `fine-tune`, `finetune` | JSONL, one conversation per line: `{"messages":[…prompt…,{"role":"assistant","content":…}]}` (assistant `tool_calls` included when present) |
+| promptfoo | `promptfoo` | single JSON document `{"tests":[{"description":…,"vars":{"messages":[…]},"assert":[{"type":"equals","value":"<ideal>"}]}]}` |
+
+**Redaction (on by default).** Every export runs each request and response through `FixtureRedactor` before emission (default sensitive headers / query params plus any configured `mockserver.fixtureBodyRedactFields`), and additionally masks credential shapes (OpenAI `sk-…`, AWS `AKIA…`, bearer, GitHub tokens) in free-text message content via `LlmOptimisationBriefRenderer.maskSecrets` — so a key a user pasted into a prompt never reaches the dataset. An empty capture yields an empty JSONL document (or `{"tests":[]}` for promptfoo). The dataset shapes are additive convenience exports, not frozen wire contracts.
+
+### Agent-run diff
+
+`PUT /mockserver/llm/diffRuns` (handled by `HttpRequestHandler.handleDiffRuns`, MCP tool `diff_agent_runs`) diffs two recorded agent runs at the prompt level. Each side is selected by the same `session`/`host`/`provider` filter the report uses; the endpoint builds an `LlmOptimisationReportService.Result` per side (reusing the report plumbing for provider detection + token/cost totals), then `AgentRunDiff` reconstructs each run's canonical conversation (`AgentRunAnalyzer.canonicalConversation`), normalises every message through `PromptNormalizer`, and aligns the two message sequences with a longest-common-subsequence diff (an adjacent REMOVED+ADDED of the same role is coalesced into a single `CHANGED`).
+
+Request body:
+
+```json
+{
+  "before": {"session": "host:api.openai.com", "provider": "OPENAI"},
+  "after":  {"session": "host:api.openai.com", "provider": "OPENAI"},
+  "normalization": { "collapseWhitespace": true, "sortJsonKeys": true }
+}
+```
+
+Response: `{"promptChanged", "messageCountBefore/After", "messageDiffs":[{changeType, role, beforeText, afterText}], "toolCallsAdded", "toolCallsRemoved", "tokenDelta":{input/output tokens + cost before/after/delta}}`. `tokenDelta` is present only when both sides carry usage totals. The diff is deterministic and read-only — no LLM is called — and message text is masked for credential shapes. Prompt normalisation means cosmetic churn (whitespace, JSON key order, volatile ids/timestamps) is not reported as a change. The endpoint sits behind `controlPlaneRequestAuthenticated` like the other admin endpoints; no new configuration property is introduced.
 
 ### CSV format
 

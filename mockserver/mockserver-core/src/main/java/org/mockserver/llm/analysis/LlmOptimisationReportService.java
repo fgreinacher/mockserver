@@ -177,6 +177,17 @@ public class LlmOptimisationReportService {
         return csvRenderer.render(result.getReport());
     }
 
+    /**
+     * Render the captured session as an eval / fine-tune / promptfoo dataset for a
+     * previously built result. The exporter always redacts request and response
+     * content via {@link FixtureRedactor} (default sensitive headers/query params
+     * plus any configured {@code mockserver.fixtureBodyRedactFields}) before
+     * emission, so secrets and configured PII never reach the dataset.
+     */
+    public String renderDataset(Result result, LlmDatasetExporter.DatasetFormat format) {
+        return new LlmDatasetExporter().export(result.getIncludedExchanges(), format, redactor());
+    }
+
     private FixtureRedactor redactor() {
         List<String> bodyFields = bodyFields();
         return bodyFields.isEmpty()
