@@ -24,13 +24,17 @@ import SearchIcon from '@mui/icons-material/Search';
 import SaveAltIcon from '@mui/icons-material/SaveAlt';
 import ReplayIcon from '@mui/icons-material/Replay';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
+import ChecklistIcon from '@mui/icons-material/Checklist';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
 import { useDashboardStore } from '../store';
 import { useConnectionParams } from '../hooks/useConnectionParams';
 import { useDragResize } from '../hooks/useDragResize';
 import JsonViewer from './JsonViewer';
 import ErrorBoundary from './ErrorBoundary';
+import ConfirmDialog from './ConfirmDialog';
 import CaptureAsMockDialog from './CaptureAsMockDialog';
 import DiffRequestsDialog from './DiffRequestsDialog';
+import { clearLoggedRequest, requestDefinitionOf } from '../lib/traffic';
 import LlmUsageDetail from './LlmUsageDetail';
 import {
   AnthropicConversationView,
@@ -418,6 +422,11 @@ interface TrafficRowProps {
   compareDisabled?: boolean;
   /** Stable handler — receives this row's `itemKey`. */
   onCompareToggle?: (key: string) => void;
+  /** When set, a bulk-select checkbox is rendered (no two-row cap, unlike compare). */
+  selectMode?: boolean;
+  selectChecked?: boolean;
+  /** Stable handler — receives this row's `itemKey`. */
+  onSelectToggle?: (key: string) => void;
 }
 
 // `TrafficRow` is wrapped in `React.memo` (see the `export`/assignment below) so
@@ -438,6 +447,9 @@ function TrafficRowImpl({
   compareChecked,
   compareDisabled,
   onCompareToggle,
+  selectMode,
+  selectChecked,
+  onSelectToggle,
 }: TrafficRowProps) {
   const model = getModelLabel(summary.parsed);
   const tokens = getTokenSummary(summary.parsed);
@@ -447,6 +459,10 @@ function TrafficRowImpl({
   const handleCompareToggle = useCallback(
     () => onCompareToggle?.(itemKey),
     [onCompareToggle, itemKey],
+  );
+  const handleSelectToggle = useCallback(
+    () => onSelectToggle?.(itemKey),
+    [onSelectToggle, itemKey],
   );
 
   return (
@@ -476,6 +492,16 @@ function TrafficRowImpl({
           onClick={(e) => e.stopPropagation()}
           onChange={handleCompareToggle}
           slotProps={{ input: { 'aria-label': `Select request ${index} to compare` } }}
+          sx={{ p: 0.25, flexShrink: 0 }}
+        />
+      )}
+      {selectMode && (
+        <Checkbox
+          size="small"
+          checked={!!selectChecked}
+          onClick={(e) => e.stopPropagation()}
+          onChange={handleSelectToggle}
+          slotProps={{ input: { 'aria-label': `Select request ${index}` } }}
           sx={{ p: 0.25, flexShrink: 0 }}
         />
       )}
@@ -1295,10 +1321,20 @@ export default function TrafficInspector() {
   const [compareKeys, setCompareKeys] = useState<string[]>([]);
   const [diffDialogOpen, setDiffDialogOpen] = useState(false);
 
+  // Bulk-select mode: pick any number of requests and clear them in one action.
+  // Kept separate from (and mutually exclusive with) compare mode, which caps at
+  // two and drives the diff dialog.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const [bulkClearConfirm, setBulkClearConfirm] = useState(false);
+  const clearingRef = useRef(false);
+
   const toggleCompareMode = useCallback(() => {
     setCompareMode((prev) => {
       // Leaving compare mode clears any pending selection.
       if (prev) setCompareKeys([]);
+      // Entering compare mode exits the mutually-exclusive select mode.
+      else { setSelectMode(false); setSelectedKeys(new Set()); }
       return !prev;
     });
   }, []);
@@ -1308,6 +1344,23 @@ export default function TrafficInspector() {
       if (prev.includes(key)) return prev.filter((k) => k !== key);
       if (prev.length >= 2) return prev; // cap at two; row checkbox is disabled past this
       return [...prev, key];
+    });
+  }, []);
+
+  const toggleSelectMode = useCallback(() => {
+    setSelectMode((prev) => {
+      if (prev) setSelectedKeys(new Set()); // leaving select mode clears the picks
+      else { setCompareMode(false); setCompareKeys([]); } // entering exits compare mode
+      return !prev;
+    });
+  }, []);
+
+  const toggleSelectKey = useCallback((key: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
     });
   }, []);
 
@@ -1359,11 +1412,13 @@ export default function TrafficInspector() {
     (key: string) => {
       if (compareMode) {
         toggleCompareKey(key);
+      } else if (selectMode) {
+        toggleSelectKey(key);
       } else {
         handleRowClick(key);
       }
     },
-    [compareMode, toggleCompareKey, handleRowClick],
+    [compareMode, selectMode, toggleCompareKey, toggleSelectKey, handleRowClick],
   );
 
   // Resolve the two selected requests to the JSON the diff endpoint expects (the request
@@ -1392,9 +1447,69 @@ export default function TrafficInspector() {
 
   const canDiff = validCompareKeys.length === 2;
 
+  // Selected keys whose request still exists (a WebSocket refresh can drop one),
+  // resolved against the currently-filtered rows so "select all" and the count
+  // track exactly what is visible.
+  const filteredKeys = useMemo(() => filtered.map(({ item }) => item.key), [filtered]);
+  const validSelectedKeys = useMemo(
+    () => filteredKeys.filter((key) => selectedKeys.has(key)),
+    [filteredKeys, selectedKeys],
+  );
+  const allSelected = filteredKeys.length > 0 && validSelectedKeys.length === filteredKeys.length;
+  const someSelected = validSelectedKeys.length > 0 && !allSelected;
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedKeys((prev) => {
+      const allPicked = filteredKeys.length > 0 && filteredKeys.every((key) => prev.has(key));
+      return allPicked ? new Set() : new Set(filteredKeys);
+    });
+  }, [filteredKeys]);
+
+  const handleBulkClear = useCallback(async () => {
+    if (clearingRef.current) return;
+    const targets = allRequests.filter((item) => validSelectedKeys.includes(item.key));
+    if (targets.length === 0) return;
+    clearingRef.current = true;
+    try {
+      // No bulk endpoint exists — batch one clear-by-request-matcher call per
+      // selected row (allSettled so one failure doesn't abort the rest).
+      const results = await Promise.allSettled(
+        targets.map((item) => clearLoggedRequest(connectionParams, requestDefinitionOf(item.value))),
+      );
+      const clearedKeys = new Set(
+        targets.filter((_, i) => results[i]?.status === 'fulfilled').map((item) => item.key),
+      );
+      const failures = results.filter(
+        (r): r is PromiseRejectedResult => r.status === 'rejected',
+      );
+      // Optimistically drop the cleared rows; the next WebSocket push reconciles.
+      if (clearedKeys.size > 0) {
+        useDashboardStore.setState((s) => ({
+          recordedRequests: s.recordedRequests.filter((i) => !clearedKeys.has(i.key)),
+          proxiedRequests: s.proxiedRequests.filter((i) => !clearedKeys.has(i.key)),
+        }));
+      }
+      setSelectedKeys((prev) => {
+        const next = new Set(prev);
+        for (const key of clearedKeys) next.delete(key);
+        return next;
+      });
+      const setNotification = useDashboardStore.getState().setNotification;
+      if (failures.length === 0) {
+        setNotification({ message: `Cleared ${clearedKeys.size} request${clearedKeys.size === 1 ? '' : 's'}`, severity: 'success' });
+      } else if (clearedKeys.size === 0) {
+        setNotification({ message: humanizeError(failures[0]?.reason ?? 'Clear failed').message, severity: 'error' });
+      } else {
+        setNotification({ message: `Cleared ${clearedKeys.size}, ${failures.length} failed`, severity: 'warning' });
+      }
+    } finally {
+      clearingRef.current = false;
+    }
+  }, [allRequests, validSelectedKeys, connectionParams]);
+
   // The side-by-side master/detail split is user-resizable only when the detail
-  // pane is actually shown (not stacked, an entry selected, not comparing).
-  const resizableSplit = !stacked && Boolean(selectedEntry) && !compareMode;
+  // pane is actually shown (not stacked, an entry selected, not comparing/selecting).
+  const resizableSplit = !stacked && Boolean(selectedEntry) && !compareMode && !selectMode;
 
   return (
     <Box
@@ -1425,14 +1540,14 @@ export default function TrafficInspector() {
               ? masterWidth.value
               : '100%',
           flexShrink: stacked
-            ? selectedEntry && !compareMode
+            ? selectedEntry && !compareMode && !selectMode
               ? 0
               : undefined
             : resizableSplit
               ? 0
               : undefined,
           minWidth: stacked ? 0 : 300,
-          height: stacked && selectedEntry && !compareMode ? '45%' : undefined,
+          height: stacked && selectedEntry && !compareMode && !selectMode ? '45%' : undefined,
           overflow: 'hidden',
           // Disable the width transition while actively dragging so the pane
           // tracks the pointer 1:1.
@@ -1509,6 +1624,45 @@ export default function TrafficInspector() {
               Diff ({validCompareKeys.length}/2)
             </Button>
           )}
+          <Tooltip title="Select multiple requests to clear at once">
+            <ToggleButton
+              value="select"
+              size="small"
+              selected={selectMode}
+              onChange={toggleSelectMode}
+              aria-label="Select requests"
+              sx={{ height: 28, px: 1, fontSize: '0.7rem', textTransform: 'none', flexShrink: 0 }}
+            >
+              <ChecklistIcon sx={{ fontSize: '0.95rem', mr: 0.5 }} />
+              Select
+            </ToggleButton>
+          </Tooltip>
+          {selectMode && (
+            <>
+              <Tooltip title="Select all / none">
+                <Checkbox
+                  size="small"
+                  checked={allSelected}
+                  indeterminate={someSelected}
+                  disabled={filteredKeys.length === 0}
+                  onChange={toggleSelectAll}
+                  slotProps={{ input: { 'aria-label': 'Select all requests' } }}
+                  sx={{ p: 0.25, flexShrink: 0 }}
+                />
+              </Tooltip>
+              <Button
+                size="small"
+                color="error"
+                variant="outlined"
+                disabled={validSelectedKeys.length === 0}
+                startIcon={<DeleteOutlineIcon sx={{ fontSize: '0.95rem' }} />}
+                onClick={() => setBulkClearConfirm(true)}
+                sx={{ height: 28, px: 1, fontSize: '0.7rem', textTransform: 'none', flexShrink: 0 }}
+              >
+                Clear ({validSelectedKeys.length})
+              </Button>
+            </>
+          )}
         </Box>
         <Box sx={{ flex: 1, overflowY: 'auto', bgcolor: 'background.default' }}>
           {filtered.length === 0 ? (
@@ -1522,12 +1676,21 @@ export default function TrafficInspector() {
                 itemKey={item.key}
                 summary={summary}
                 index={filtered.length - index}
-                selected={compareMode ? validCompareKeys.includes(item.key) : selectedKey === item.key}
+                selected={
+                  compareMode
+                    ? validCompareKeys.includes(item.key)
+                    : selectMode
+                      ? selectedKeys.has(item.key)
+                      : selectedKey === item.key
+                }
                 onSelect={handleRowSelect}
                 compareMode={compareMode}
                 compareChecked={validCompareKeys.includes(item.key)}
                 compareDisabled={validCompareKeys.length >= 2}
                 onCompareToggle={toggleCompareKey}
+                selectMode={selectMode}
+                selectChecked={selectedKeys.has(item.key)}
+                onSelectToggle={toggleSelectKey}
               />
             ))
           )}
@@ -1558,8 +1721,8 @@ export default function TrafficInspector() {
         />
       )}
 
-      {/* Detail pane (hidden while picking requests to compare) */}
-      {selectedEntry && !compareMode && (
+      {/* Detail pane (hidden while picking requests to compare or bulk-select) */}
+      {selectedEntry && !compareMode && !selectMode && (
         <Paper
           variant="outlined"
           sx={{
@@ -1616,6 +1779,15 @@ export default function TrafficInspector() {
           initialActual={compareJson[1] ?? ''}
         />
       )}
+
+      <ConfirmDialog
+        open={bulkClearConfirm}
+        title={`Clear ${validSelectedKeys.length} request${validSelectedKeys.length === 1 ? '' : 's'}?`}
+        message={`Remove the ${validSelectedKeys.length} selected request${validSelectedKeys.length === 1 ? '' : 's'} from the log. Identical requests captured alongside them may also be cleared. Expectations are kept. This cannot be undone.`}
+        confirmLabel="Clear selected"
+        onConfirm={() => { void handleBulkClear(); }}
+        onClose={() => setBulkClearConfirm(false)}
+      />
 
     </Box>
   );

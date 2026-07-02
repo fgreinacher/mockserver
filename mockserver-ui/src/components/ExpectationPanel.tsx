@@ -1,8 +1,13 @@
 import { useMemo, useRef, useState, useCallback } from 'react';
+import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
+import Checkbox from '@mui/material/Checkbox';
 import Typography from '@mui/material/Typography';
 import Tooltip from '@mui/material/Tooltip';
 import ToggleButton from '@mui/material/ToggleButton';
 import SortIcon from '@mui/icons-material/Sort';
+import ChecklistIcon from '@mui/icons-material/Checklist';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
 import { useDashboardStore } from '../store';
 import Panel from './Panel';
 import JsonListItemComponent, { extractPriority } from './JsonListItem';
@@ -55,6 +60,12 @@ export default function ExpectationPanel() {
   // the order MockServer evaluates equally-specific mocks. Off by default so
   // the list keeps its natural (insertion) order.
   const [sortByPriority, setSortByPriority] = useState(false);
+
+  // Bulk-select mode: when on, each row shows a checkbox and a toolbar offers
+  // "delete selected". `selectedKeys` holds the chosen expectation row keys.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
 
   // Guards the confirm handler against re-entrancy: the ConfirmDialog button
   // fires onConfirm() before the close re-render lands, so a fast double-click
@@ -127,6 +138,90 @@ export default function ExpectationPanel() {
     }
   }, [pendingDelete, params, setNotification]);
 
+  // Rows eligible for bulk selection: only expectations carrying an id can be
+  // deleted through the per-id clear endpoint.
+  const selectableItems = useMemo(
+    () => filtered.filter((item) => expectationIdOf(item) !== null),
+    [filtered],
+  );
+  const selectableKeys = useMemo(
+    () => new Set(selectableItems.map((item) => item.key)),
+    [selectableItems],
+  );
+  // Selected keys intersected with what is currently selectable — a WebSocket
+  // refresh can remove a row after it was ticked, so never act on a stale key.
+  const effectiveSelected = useMemo(
+    () => selectableItems.filter((item) => selectedKeys.has(item.key)),
+    [selectableItems, selectedKeys],
+  );
+  const allSelected = selectableItems.length > 0 && effectiveSelected.length === selectableItems.length;
+  const someSelected = effectiveSelected.length > 0 && !allSelected;
+
+  const toggleSelectMode = useCallback(() => {
+    setSelectMode((prev) => {
+      if (prev) setSelectedKeys(new Set()); // leaving select mode clears the picks
+      return !prev;
+    });
+  }, []);
+
+  const toggleSelectKey = useCallback((key: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedKeys((prev) => {
+      // If every selectable row is already picked, clear; otherwise select all.
+      const allPicked = selectableItems.length > 0 && selectableItems.every((item) => prev.has(item.key));
+      return allPicked ? new Set() : new Set(selectableItems.map((item) => item.key));
+    });
+  }, [selectableItems]);
+
+  const handleBulkDelete = useCallback(async () => {
+    if (deletingRef.current) return;
+    const targets = effectiveSelected
+      .map((item) => ({ key: item.key, id: expectationIdOf(item) }))
+      .filter((t): t is { key: string; id: string } => t.id !== null);
+    if (targets.length === 0) return;
+    deletingRef.current = true;
+    try {
+      // Batch the per-id clears client-side (no bulk endpoint exists). Use
+      // allSettled so one failure does not abort the rest.
+      const results = await Promise.allSettled(
+        targets.map((t) => deleteExpectation(params, t.id)),
+      );
+      const succeededKeys = new Set(
+        targets.filter((_, i) => results[i]?.status === 'fulfilled').map((t) => t.key),
+      );
+      const failures = results.filter((r) => r.status === 'rejected');
+      // Optimistically drop the successfully-deleted rows; the next WebSocket
+      // push reconciles the rest.
+      if (succeededKeys.size > 0) {
+        useDashboardStore.setState((s) => ({
+          activeExpectations: s.activeExpectations.filter((e) => !succeededKeys.has(e.key)),
+        }));
+      }
+      setSelectedKeys((prev) => {
+        const next = new Set(prev);
+        for (const key of succeededKeys) next.delete(key);
+        return next;
+      });
+      if (failures.length === 0) {
+        setNotification({ message: `Deleted ${succeededKeys.size} expectation${succeededKeys.size === 1 ? '' : 's'}`, severity: 'success' });
+      } else if (succeededKeys.size === 0) {
+        setNotification({ message: `Failed to delete ${failures.length} expectation${failures.length === 1 ? '' : 's'}`, severity: 'error' });
+      } else {
+        setNotification({ message: `Deleted ${succeededKeys.size}, ${failures.length} failed`, severity: 'warning' });
+      }
+    } finally {
+      deletingRef.current = false;
+    }
+  }, [effectiveSelected, params, setNotification]);
+
   return (
     <>
       <Panel
@@ -136,21 +231,77 @@ export default function ExpectationPanel() {
         searchValue={search}
         onSearchChange={setSearch}
         headerActions={
-          <Tooltip title="Sort by match priority (highest first)">
-            <ToggleButton
-              value="priority"
-              selected={sortByPriority}
-              onChange={() => setSortByPriority((prev) => !prev)}
-              size="small"
-              aria-label="Sort by priority"
-              sx={{ height: 24, px: 0.75, py: 0, textTransform: 'none', gap: 0.25 }}
-            >
-              <SortIcon sx={{ fontSize: '1rem' }} />
-              <Typography variant="caption">Priority</Typography>
-            </ToggleButton>
-          </Tooltip>
+          <>
+            <Tooltip title="Sort by match priority (highest first)">
+              <ToggleButton
+                value="priority"
+                selected={sortByPriority}
+                onChange={() => setSortByPriority((prev) => !prev)}
+                size="small"
+                aria-label="Sort by priority"
+                sx={{ height: 24, px: 0.75, py: 0, textTransform: 'none', gap: 0.25 }}
+              >
+                <SortIcon sx={{ fontSize: '1rem' }} />
+                <Typography variant="caption">Priority</Typography>
+              </ToggleButton>
+            </Tooltip>
+            <Tooltip title="Select multiple expectations to delete at once">
+              <ToggleButton
+                value="select"
+                selected={selectMode}
+                onChange={toggleSelectMode}
+                size="small"
+                aria-label="Select expectations"
+                sx={{ height: 24, px: 0.75, py: 0, textTransform: 'none', gap: 0.25 }}
+              >
+                <ChecklistIcon sx={{ fontSize: '1rem' }} />
+                <Typography variant="caption">Select</Typography>
+              </ToggleButton>
+            </Tooltip>
+          </>
         }
       >
+        {selectMode && (
+          // Bulk-actions toolbar — a select-all checkbox, the running count and
+          // a "delete selected" action. Only shown while select mode is on.
+          <Box
+            data-testid="expectation-bulk-toolbar"
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
+              px: 0.5,
+              py: 0.25,
+              borderBottom: 1,
+              borderColor: 'divider',
+              flexShrink: 0,
+            }}
+          >
+            <Checkbox
+              size="small"
+              checked={allSelected}
+              indeterminate={someSelected}
+              disabled={selectableItems.length === 0}
+              onChange={toggleSelectAll}
+              slotProps={{ input: { 'aria-label': 'Select all expectations' } }}
+              sx={{ p: 0.25 }}
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+              {effectiveSelected.length} selected
+            </Typography>
+            <Button
+              size="small"
+              color="error"
+              variant="outlined"
+              disabled={effectiveSelected.length === 0}
+              startIcon={<DeleteOutlineIcon sx={{ fontSize: '1rem' }} />}
+              onClick={() => setBulkDeleteConfirm(true)}
+              sx={{ height: 24, py: 0, textTransform: 'none' }}
+            >
+              Delete selected
+            </Button>
+          </Box>
+        )}
         {filtered.length === 0 ? (
           <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
             {expectations.length === 0
@@ -177,6 +328,8 @@ export default function ExpectationPanel() {
                   onEdit={hasId ? handleEdit : undefined}
                   onDuplicate={hasId ? handleDuplicate : undefined}
                   onDelete={hasId ? setPendingDelete : undefined}
+                  onSelectToggle={selectMode && hasId ? toggleSelectKey : undefined}
+                  selected={selectMode && selectableKeys.has(item.key) && selectedKeys.has(item.key)}
                 />
               );
             }}
@@ -194,6 +347,14 @@ export default function ExpectationPanel() {
         confirmLabel="Delete"
         onConfirm={() => { void handleConfirmDelete(); }}
         onClose={() => setPendingDelete(null)}
+      />
+      <ConfirmDialog
+        open={bulkDeleteConfirm}
+        title={`Delete ${effectiveSelected.length} expectation${effectiveSelected.length === 1 ? '' : 's'}?`}
+        message={`Remove the ${effectiveSelected.length} selected expectation${effectiveSelected.length === 1 ? '' : 's'} from the server. Recorded requests and logs are kept. This cannot be undone.`}
+        confirmLabel="Delete selected"
+        onConfirm={() => { void handleBulkDelete(); }}
+        onClose={() => setBulkDeleteConfirm(false)}
       />
     </>
   );

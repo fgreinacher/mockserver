@@ -288,11 +288,15 @@ sitemap:
 
 <p>The <strong>because</strong> section in <code>EXPECTATION_NOT_MATCHED</code> entries can be expanded to show which properties matched and which did not, making it easy to debug why a request was not matched.</p>
 
+<p>MockServer keeps only a bounded number of recent log events in memory (controlled by <code>maxLogEntries</code>). Once that limit is reached the oldest events are dropped — a common, easy-to-miss cause of "verification intermittently fails" or requests seeming to vanish from the dashboard. When this happens, the Dashboard and Traffic views show a dismissible warning telling you how many events have been dropped; increase <a href="/mock_server/configuration_properties.html">maxLogEntries</a> (see also the <a href="/mock_server/performance.html">performance guide</a>) so events are retained. The warning only appears when the server is started with metrics enabled and events are actually being dropped.</p>
+
 <a id="ui_active_expectations_section" class="anchor" href="#ui_active_expectations_section">&nbsp;</a>
 
 <h2>Active Expectations</h2>
 
-<p>The Active Expectations panel shows all currently active expectations in the order they are applied, taking into account <strong>priority</strong>, <strong>timeToLive</strong>, and <strong>times</strong>. Each expectation is collapsed by default showing its ID, method, and path. Click to expand and see the full expectation definition including request matchers, actions, and timing constraints.</p>
+<p>The Active Expectations panel shows all currently active expectations in the order they are applied, taking into account <strong>priority</strong>, <strong>timeToLive</strong>, and <strong>times</strong>. Each expectation is collapsed by default showing its ID, method, and path. Click to expand and see the full expectation definition including request matchers, actions, and timing constraints. Hover a row to <strong>edit</strong>, <strong>duplicate</strong>, or <strong>delete</strong> a single expectation.</p>
+
+<p>To remove several at once, click <strong>Select</strong> in the panel header to turn on multi-select: tick the checkbox on each expectation you want (or use the header checkbox to select all), then click <strong>Delete selected</strong> and confirm. Recorded requests and logs are kept.</p>
 
 <a id="ui_requests_received_section" class="anchor" href="#ui_requests_received_section">&nbsp;</a>
 
@@ -327,6 +331,8 @@ sitemap:
     <li><strong>Master list</strong> (left) — one row per request, showing the provider kind (Anthropic, OpenAI, Gemini, Ollama, MCP, HTTP), HTTP method and path, status code, and — for LLM calls — the model name and token counts.</li>
     <li><strong>Detail pane</strong> (right) — shown when you click a row in the master list.</li>
 </ul>
+
+<p>The master list header also has a <strong>Compare</strong> toggle (pick exactly two requests to diff them field-by-field) and a <strong>Select</strong> toggle for bulk actions: tick any number of rows (or use the header checkbox to select all), then click <strong>Clear</strong> and confirm to remove those captured requests from the log. Because requests are cleared by matching their shape, identical requests captured alongside a selection may also be removed. Select and Compare are separate modes — turning one on turns the other off.</p>
 
 <h3>LLM Usage Strip</h3>
 

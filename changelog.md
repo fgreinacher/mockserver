@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The dashboard now warns when log events are being silently evicted — the #1 cause of "verification
+  intermittently fails".** When MockServer's log ring buffer fills up, the oldest events are dropped, so
+  verifications and the dashboard silently miss requests. The Dashboard and Traffic views now show a
+  dismissible warning banner whenever the server's `mock_server_dropped_log_events` counter is non-zero
+  ("The log ring buffer is full, so the oldest events have been dropped (N so far)…"), pointing at
+  `maxLogEntries` / `ringBufferSize` with a link to the performance docs. The banner reuses the existing
+  Prometheus metrics endpoint the Metrics view already polls (no new server endpoint) and stays hidden on a
+  healthy server or when metrics are disabled. It re-appears only if *more* events are dropped after a
+  dismissal.
+- **Bulk actions in the dashboard: multi-select expectations and captured requests to clear them in one go.**
+  The Active Expectations list and the Traffic inspector each gained a "Select" mode with per-row checkboxes,
+  a select-all toggle and a running count. "Delete selected" removes the chosen expectations (batched per-id
+  clears) and "Clear selected" removes the chosen captured requests from the log, each behind a confirmation
+  dialog. Compare mode in the Traffic inspector is unchanged (still capped at two rows for a diff) and is
+  mutually exclusive with the new uncapped select mode.
+
 - **Migration importers for WireMock, Mountebank and Mockoon.** Teams moving off another mock tool can now
   convert their existing stubs into MockServer expectations in one shot through the existing
   `PUT /mockserver/import` endpoint, via `?format=wiremock`, `?format=mountebank` or `?format=mockoon`

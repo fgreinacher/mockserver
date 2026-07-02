@@ -37,6 +37,7 @@ import GenerateStubDialog from './components/GenerateStubDialog';
 import ConfirmDialog from './components/ConfirmDialog';
 import ErrorBoundary from './components/ErrorBoundary';
 import AnalyticsBanner from './components/AnalyticsBanner';
+import LogPressureBanner from './components/LogPressureBanner';
 import { getConfiguration } from './lib/configuration';
 import { initAnalytics, trackView } from './lib/analytics';
 import type { RequestFilter } from './types';
@@ -260,6 +261,13 @@ export default function App() {
               The dashboard has lost its live connection to MockServer and is trying to
               reconnect. Displayed data may be stale until the connection is restored.
             </Alert>
+          )}
+          {/* Log-pressure warning: only the traffic/log views (Dashboard grid +
+              Traffic inspector) render request/log data that silent ring-buffer
+              eviction would make incomplete, so the banner is scoped to them —
+              which also avoids polling metrics from unrelated tabs. */}
+          {(view === 'dashboard' || view === 'traffic') && (
+            <LogPressureBanner connectionParams={params} />
           )}
           <AnalyticsBanner />
           {(view === 'dashboard' || view === 'traffic' || view === 'sessions') && (

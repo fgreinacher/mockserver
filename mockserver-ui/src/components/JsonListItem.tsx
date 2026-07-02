@@ -2,6 +2,7 @@ import { Fragment, memo, useDeferredValue, useState, useMemo } from 'react';
 import type React from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
+import Checkbox from '@mui/material/Checkbox';
 import Tooltip from '@mui/material/Tooltip';
 import IconButton from '@mui/material/IconButton';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -54,6 +55,13 @@ interface JsonListItemProps {
    * Expectations panel.
    */
   onDelete?: (item: JsonListItemType) => void;
+  /**
+   * When provided, a leading selection checkbox is rendered (bulk-select mode).
+   * `selected` reflects its checked state and the callback receives this row's
+   * key. Only wired up by the Active Expectations panel's bulk-actions mode.
+   */
+  onSelectToggle?: (key: string) => void;
+  selected?: boolean;
 }
 
 import { PROVIDER_DISPLAY } from '../lib/clientFilters';
@@ -241,7 +249,7 @@ function extractChaosSummary(value: Record<string, unknown>): string | null {
   return parts.length > 0 ? parts.join(', ') : 'enabled';
 }
 
-function JsonListItem({ item, index, turnPosition, expanded: expandedProp, onToggleExpand, onEdit, onDuplicate, onDelete }: JsonListItemProps) {
+function JsonListItem({ item, index, turnPosition, expanded: expandedProp, onToggleExpand, onEdit, onDuplicate, onDelete, onSelectToggle, selected }: JsonListItemProps) {
   const [internalExpanded, setInternalExpanded] = useState(false);
   const expanded = expandedProp ?? internalExpanded;
   const handleToggle = () => {
@@ -266,6 +274,7 @@ function JsonListItem({ item, index, turnPosition, expanded: expandedProp, onTog
         px: 1,
         borderBottom: 1,
         borderColor: 'divider',
+        bgcolor: selected ? 'action.selected' : undefined,
         '&:hover .copy-btn': { opacity: 1 },
         '&:hover .row-actions': { opacity: 1 },
         // Keep the actions reachable for keyboard users even without hover.
@@ -289,6 +298,19 @@ function JsonListItem({ item, index, turnPosition, expanded: expandedProp, onTog
             items have synthetic keys like "<id>_request" / "<id>_proxied" and
             no value.id field). */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+          {onSelectToggle && (
+            // Leading bulk-select checkbox (Active Expectations bulk-actions
+            // mode). stopPropagation keeps ticking it from toggling the row's
+            // expand state.
+            <Checkbox
+              size="small"
+              checked={!!selected}
+              onClick={(e) => e.stopPropagation()}
+              onChange={() => onSelectToggle(item.key)}
+              slotProps={{ input: { 'aria-label': `Select expectation ${index}` } }}
+              sx={{ p: 0.25, flexShrink: 0 }}
+            />
+          )}
           {/* The chevron IconButton is the accessible/keyboard control; the row
               stays click-to-toggle for the mouse but is not itself a button. */}
           <IconButton

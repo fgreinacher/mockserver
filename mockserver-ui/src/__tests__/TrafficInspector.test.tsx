@@ -10,6 +10,7 @@ import TrafficInspector, {
 } from '../components/TrafficInspector';
 import type { McpParsed } from '../lib/llmTraffic';
 import { useDashboardStore } from '../store';
+import * as trafficLib from '../lib/traffic';
 
 function renderTrafficInspector() {
   return render(
@@ -1068,5 +1069,82 @@ describe('TrafficInspector — MCP JSON-RPC error classification (pure helper)',
     const info = mcpErrorInfo({ ...base, result: { ok: true } }, 200);
     expect(info.isError).toBe(false);
     expect(info.code).toBeNull();
+  });
+});
+
+describe('TrafficInspector — bulk select + clear', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      recordedRequests: [
+        { key: 'r1', value: { httpRequest: { method: 'GET', path: '/a' }, httpResponse: { statusCode: 200 } } },
+        { key: 'r2', value: { httpRequest: { method: 'GET', path: '/b' }, httpResponse: { statusCode: 200 } } },
+        { key: 'r3', value: { httpRequest: { method: 'GET', path: '/c' }, httpResponse: { statusCode: 200 } } },
+      ],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+      notification: null,
+    });
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it('reveals uncapped select checkboxes and a Clear button in select mode', async () => {
+    const user = userEvent.setup();
+    renderTrafficInspector();
+
+    // No checkboxes until a mode is enabled.
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Select requests/i }));
+
+    // Per-row checkboxes (3) + the header "select all" checkbox = 4, none capped/disabled.
+    const rowCheckboxes = screen.getAllByRole('checkbox').filter(
+      (c) => c.getAttribute('aria-label')?.startsWith('Select request'),
+    );
+    expect(rowCheckboxes).toHaveLength(3);
+    await user.click(rowCheckboxes[0]!);
+    await user.click(rowCheckboxes[1]!);
+    await user.click(rowCheckboxes[2]!);
+    // No two-item cap — all three stay enabled and checked.
+    rowCheckboxes.forEach((c) => expect(c).toBeEnabled());
+    expect(screen.getByRole('button', { name: /Clear \(3\)/ })).toBeEnabled();
+  });
+
+  it('bulk-clears selected requests via clearLoggedRequest and drops the rows', async () => {
+    const user = userEvent.setup();
+    const spy = vi.spyOn(trafficLib, 'clearLoggedRequest').mockResolvedValue(undefined);
+    renderTrafficInspector();
+
+    await user.click(screen.getByRole('button', { name: /Select requests/i }));
+    await user.click(screen.getByLabelText('Select all requests'));
+    await user.click(screen.getByRole('button', { name: /Clear \(3\)/ }));
+
+    // Confirmation gate — nothing cleared until confirmed.
+    expect(spy).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Clear selected' }));
+
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(3));
+    // Each call sends the request definition (the httpRequest) for a selected row.
+    const paths = spy.mock.calls.map((c) => (c[1] as { path: string }).path).sort();
+    expect(paths).toEqual(['/a', '/b', '/c']);
+
+    await vi.waitFor(() =>
+      expect(useDashboardStore.getState().recordedRequests).toHaveLength(0),
+    );
+    expect(useDashboardStore.getState().notification).toMatchObject({ severity: 'success' });
+  });
+
+  it('leaving compare mode is not broken by select mode (mutually exclusive)', async () => {
+    const user = userEvent.setup();
+    renderTrafficInspector();
+
+    await user.click(screen.getByRole('button', { name: /Compare requests/i }));
+    expect(screen.getByRole('button', { name: /Diff \(/ })).toBeInTheDocument();
+
+    // Entering select mode exits compare mode (Diff button gone).
+    await user.click(screen.getByRole('button', { name: /Select requests/i }));
+    expect(screen.queryByRole('button', { name: /Diff \(/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Clear \(0\)/ })).toBeDisabled();
   });
 });

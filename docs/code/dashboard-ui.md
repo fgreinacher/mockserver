@@ -156,6 +156,8 @@ When `resetKeys` changes (the user navigates to another tab), the boundary clear
 
 `src/lib/expectations.ts` exposes `deleteExpectation(params, id)`, which issues `PUT /mockserver/clear?type=expectations` with body `{ "id": "<expectationId>" }` to remove a single expectation without disturbing logs or recorded requests.
 
+`src/lib/traffic.ts` exposes `clearLoggedRequest(params, requestDefinition)` (issues `PUT /mockserver/clear?type=log` with the request definition as the matcher body, removing the matching log entries / captured requests) and `requestDefinitionOf(value)` (returns the row's `httpRequest`, or the whole value when absent). Used by the Traffic inspector's bulk-clear.
+
 ## Top-Level Views
 
 The dashboard has **nineteen top-level views** controlled by the AppBar. The view state is stored in Zustand as `view: ViewMode` where:
@@ -363,6 +365,10 @@ Each row in `ExpectationPanel` exposes two inline actions (shown only when the r
 
 - **Delete** — opens a `ConfirmDialog` describing what will be removed; on confirmation calls `deleteExpectation(params, id)` from `src/lib/expectations.ts`, which issues `PUT /mockserver/clear?type=expectations { "id": "<id>" }`. The row is optimistically removed from the local store; a success toast confirms. Recorded requests and logs are kept.
 - **Edit** — calls the store action `editExpectation(item.value)`, which sets `pendingEditExpectation` in the store and switches `view` to `'composer'`. `ComposerView` detects the non-null `pendingEditExpectation` in a `useEffect`, loads the expectation JSON into the form, and switches to **Advanced** mode automatically. `clearPendingEditExpectation()` is called after loading so the signal is consumed once.
+
+### Bulk Select and Delete (Expectations)
+
+A **Select** toggle in the `ExpectationPanel` header turns on bulk-select mode: each row shows a leading checkbox (`JsonListItem` renders it when `onSelectToggle` is passed), and a toolbar strip above the list offers a select-all checkbox, a running count, and a **Delete selected** action. Only rows carrying an `expectationId` are selectable. On confirmation (`ConfirmDialog`), the panel batches per-id clears client-side via `Promise.allSettled(ids.map(id => deleteExpectation(params, id)))` — there is no bulk-clear endpoint — optimistically drops the succeeded rows from the store, and reports success / partial-failure / all-failed as a success / warning / error toast. Selected keys are always intersected with the currently-selectable rows so a WebSocket refresh that removes a row cannot act on a stale key.
 
 ### Generate Stub on Unmatched Requests
 
@@ -666,6 +672,12 @@ See [docs/code/breakpoints.md](breakpoints.md) for the server-side architecture 
 **Replay button** — appears top-right of the detail pane for each traffic row. Clicking opens `ReplayDialog`, which calls `PUT /mockserver/replay` with the captured `HttpRequest` JSON and displays the upstream response (or an error) in a `JsonViewer`. This uses the same `NettyHttpClient`-backed handler as any other forward request (see [Request Replay](request-processing.md#request-replay)).
 
 **Compare (diff) button** — a `CompareArrowsIcon` checkbox on each row. Selecting two rows enables structural comparison of those two requests or their responses via the `DiffPanel` (`PUT /mockserver/diff`). This is the same diff engine used by the Tools menu "Diff two requests" dialog.
+
+**Select mode (bulk clear)** — a `ChecklistIcon` **Select** toggle in the master-list header turns on bulk-select mode: each `TrafficRow` renders a checkbox (uncapped, unlike the two-row compare cap) and the header gains a select-all checkbox and a **Clear (N)** button. Select mode and compare mode are mutually exclusive — entering one exits the other. On confirmation (`ConfirmDialog`), `handleBulkClear` batches one `clearLoggedRequest(params, requestDefinitionOf(item.value))` call per selected row (`src/lib/traffic.ts` → `PUT /mockserver/clear?type=log` with the request definition as the matcher body), because MockServer has no delete-by-id for captured requests. Cleared rows are optimistically removed from `recordedRequests` / `proxiedRequests` and the outcome is reported as a success / warning / error toast. Because the server clears by request *shape* (not a unique id), identical requests captured alongside a selection may also be removed — the confirmation dialog says so.
+
+## Log-Pressure Banner (silent eviction warning)
+
+`src/components/LogPressureBanner.tsx` warns when MockServer's log ring buffer has evicted events — the most common cause of "verification intermittently fails" and "the dashboard is missing requests". `App.tsx` mounts it only on the Dashboard and Traffic views (the request/log views that eviction would make incomplete, which also avoids polling metrics from unrelated tabs). The dropped-event count comes from the Prometheus counter `mock_server_dropped_log_events` via `useDroppedLogEvents` (`src/hooks/useDroppedLogEvents.ts`), which polls the existing `GET /mockserver/metrics` endpoint slowly (15s), pauses while the tab is hidden, and stops permanently on a `404` (metrics disabled — the counter is then unavailable, so the banner can never fire). No new server endpoint was added. The banner is a dismissible MUI warning `Alert`; dismissal is remembered at the count seen at dismiss time, so it re-appears only if *more* events are subsequently dropped. It stays hidden on a healthy server (count 0) or when metrics are disabled.
 
 ## AppBar Styling and Responsive Behaviour
 

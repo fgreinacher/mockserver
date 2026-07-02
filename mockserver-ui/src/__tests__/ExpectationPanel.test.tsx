@@ -205,4 +205,73 @@ describe('ExpectationPanel', () => {
     // The row is kept on failure.
     expect(useDashboardStore.getState().activeExpectations).toHaveLength(1);
   });
+
+  describe('bulk select + delete', () => {
+    const twoExpectations = () => [
+      { key: 'exp-a', value: { id: 'exp-a', httpRequest: { method: 'GET', path: '/a' } } },
+      { key: 'exp-b', value: { id: 'exp-b', httpRequest: { method: 'GET', path: '/b' } } },
+    ];
+
+    it('reveals checkboxes and a bulk toolbar when Select mode is enabled', async () => {
+      const user = userEvent.setup();
+      useDashboardStore.setState({ activeExpectations: twoExpectations() });
+      render(<ExpectationPanel />);
+
+      // No per-row select checkboxes until Select mode is on.
+      expect(screen.queryByLabelText('Select expectation 1')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Select expectations' }));
+
+      expect(screen.getByTestId('expectation-bulk-toolbar')).toBeInTheDocument();
+      expect(screen.getByLabelText('Select expectation 1')).toBeInTheDocument();
+      expect(screen.getByLabelText('Select expectation 2')).toBeInTheDocument();
+    });
+
+    it('bulk-deletes the selected expectations, drops the rows and notifies', async () => {
+      const user = userEvent.setup();
+      const del = vi.spyOn(expectationsLib, 'deleteExpectation').mockResolvedValue(undefined);
+      useDashboardStore.setState({ activeExpectations: twoExpectations() });
+      render(<ExpectationPanel />);
+
+      await user.click(screen.getByRole('button', { name: 'Select expectations' }));
+      // Select all via the toolbar checkbox.
+      await user.click(screen.getByLabelText('Select all expectations'));
+      expect(screen.getByText('2 selected')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /Delete selected/ }));
+      // Confirmation gate — nothing deleted yet.
+      expect(del).not.toHaveBeenCalled();
+      await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+      await waitFor(() => expect(del).toHaveBeenCalledTimes(2));
+      const ids = del.mock.calls.map((c) => c[1]).sort();
+      expect(ids).toEqual(['exp-a', 'exp-b']);
+
+      await waitFor(() =>
+        expect(useDashboardStore.getState().activeExpectations).toHaveLength(0),
+      );
+      expect(useDashboardStore.getState().notification).toMatchObject({ severity: 'success' });
+    });
+
+    it('reports a partial failure as a warning and keeps the failed row', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(expectationsLib, 'deleteExpectation').mockImplementation(async (_p, id) => {
+        if (id === 'exp-b') throw new Error('nope');
+      });
+      useDashboardStore.setState({ activeExpectations: twoExpectations() });
+      render(<ExpectationPanel />);
+
+      await user.click(screen.getByRole('button', { name: 'Select expectations' }));
+      await user.click(screen.getByLabelText('Select all expectations'));
+      await user.click(screen.getByRole('button', { name: /Delete selected/ }));
+      await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+      await waitFor(() =>
+        expect(useDashboardStore.getState().notification).toMatchObject({ severity: 'warning' }),
+      );
+      // Only the successfully-deleted row is dropped.
+      const remaining = useDashboardStore.getState().activeExpectations;
+      expect(remaining.map((e) => e.key)).toEqual(['exp-b']);
+    });
+  });
 });
