@@ -4,12 +4,29 @@
 
 Every **independent session** — the primary interactive session, any
 parallel Claude/opencode window, and every long autonomous run — works
-inside its **own dedicated git worktree** on a **local-only branch**,
-not the main checkout. Start in a worktree (via `/worktree`) at session
-start. **This holds even when the session makes no changes** —
-read-only investigation, analysis, and review work in a worktree too;
-the rule is *no work runs in the bare main checkout*, not *only
-change-making work is isolated*. Changes return to `master` only via a
+inside its **own dedicated, freshly-created git worktree** on a
+**local-only branch**, not the main checkout. Start in a worktree (via
+`/worktree`) at session start. **This holds even when the session makes
+no changes** — read-only investigation, analysis, and review work in a
+worktree too; the rule is *no work runs in the bare main checkout*, not
+*only change-making work is isolated*.
+
+**One session, one worktree — never reuse or adopt another session's.**
+Each independent session **creates its own new worktree** and works only
+there. A session **MUST NOT** start work in a worktree it did not create,
+even if one already exists. Two sessions sharing a single tree overwrite
+each other's uncommitted files and can `git rebase`/`reset` each other's
+commits away — this has actually happened: a shared tree silently dropped
+a committed, gate-passed unit that was only recovered from the reflog. The
+`.tmp/active-worktree` pointer is a **resume marker for the session that
+wrote it**, so it is safe to reuse *within the same session* (to resume
+after a restart), but a **pre-existing pointer left by a different session
+must never be treated as "already in worktree mode"** — verify it is
+*yours* (you created that worktree/branch this session). The per-session
+`SHORT_ID` embedded in the recorded path/branch is that ownership signal:
+a resuming session recognises the ID it generated, and anything else is
+another session's. If in doubt, create a fresh one — a unique per-session
+`SHORT_ID` keeps worktrees and branches from ever colliding. Changes return to `master` only via a
 gated **rebase + fast-forward** using `flock` to serialize concurrent
 rebases — **never a merge commit** (see *Linear History — No Merge Commits* below).
 Isolation-by-default is what lets concurrent sessions operate on the
@@ -282,9 +299,13 @@ be ranked.
 | Gate 4 (a gate 1–3 not a clean PASS, or user interjects) | Worktree preserved; merge halted; user keeps the diff to iterate |
 | flock timeout | Worktree preserved; agent reports lock holder; retry later |
 | Rebase conflict | Worktree preserved; agent attempts resolution or hands back to user |
+| Two sessions share one worktree (a session reused another's tree / stale `.tmp/active-worktree`) | Uncommitted work overwritten; one session's `rebase`/`reset` can drop the other's committed unit. **Recover from the reflog** (`git reflog`), re-`cherry-pick` the lost commit, re-verify. Prevent by creating a fresh per-session worktree and only resuming a pointer *this* session wrote (see *Rule*). |
 
 The invariant: **no failed merge ever destroys work**. The worktree is
-deleted only after a successful push.
+deleted only after a successful push. **Correlated invariant:** a session
+only ever operates in a worktree it created — reusing another session's
+tree is the one way in-flight or committed work *can* be lost, so it is
+prohibited (see *Rule*).
 
 ## What This Replaces (Partially)
 

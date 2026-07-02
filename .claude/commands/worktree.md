@@ -20,6 +20,6 @@ Follow the worktree workflow in `.opencode/rules/worktree-workflow.md`. This com
    - That worktree isolation is the **default** for an independent session: work proceeds inside the worktree, and `git status` / `git diff` is the primary signal.
    - To merge work back to master, run `/worktree-merge`, which runs the 4 verification gates and the locked rebase.
 
-If `.tmp/active-worktree` already exists, the session is already in worktree mode — report the existing path instead of creating a second one.
+If `.tmp/active-worktree` already exists, reuse it **only if this same session created it** (e.g. you are resuming after a restart) — then report that existing path instead of creating a second one. **If the pointer may belong to a different concurrent session (you did not create that worktree in this session), do NOT adopt it** — create a fresh worktree (new `SHORT_ID`) with your own branch instead, because two sessions sharing one tree overwrite each other's uncommitted work and can rebase away each other's commits. When ownership is uncertain, create a fresh worktree. See `.opencode/rules/worktree-workflow.md` → *Rule* (One session, one worktree — never reuse or adopt another session's).
 
 If the user provided additional instructions: $ARGUMENTS
