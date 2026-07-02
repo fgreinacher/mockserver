@@ -1,5 +1,22 @@
 # Release Component: mockserver-testcontainers (PHP)
 
+> **Status: AUTOMATED (pending one-time mirror-repo provisioning).** Wired into
+> the release pipeline as the `tc-php` component
+> (`scripts/release/release.sh` `ALL_COMPONENTS`, a `soft_fail` step in
+> `.buildkite/release-pipeline.yml`, and a soft check in
+> `scripts/release/components/verify.sh`).
+>
+> **Prerequisites (one-time, see `PUBLISHING.md`):**
+> 1. Create the public mirror repo `mock-server/mockserver-testcontainers-php`.
+> 2. Submit it on Packagist.
+> 3. Add the Packagist webhook to the **mirror** repo (not the monorepo).
+>
+> Until the mirror repo exists and is reachable, the component skips gracefully
+> (exit 0) — it never blocks the release. Pushes use the release
+> `mockserver-release/github-token` via the F-BK-03-safe `http.extraheader`
+> (`configure_git_for_push`), cleared on every exit path; no token is ever
+> written to disk.
+
 ## `scripts/release/components/tc-php.sh`
 
 Publishes the module to Packagist via a subtree-split mirror repo, mirroring
@@ -8,6 +25,12 @@ at `mockserver-testcontainers/php/` is split to a mirror repo whose root is the
 package. The default image tag is derived at runtime from the installed
 `mock-server/mockserver-client` version, so no source constant needs a `sed`
 bump for the image.
+
+The reference snippet below is illustrative; the shipped script also validates
+`composer.json`, graceful-skips until the mirror repo is provisioned, runs the
+`git subtree split` inside the pinned `$MAVEN_IMAGE` (the release-agent host git
+lacks the `subtree` subcommand), wraps each push in `retry`, and tolerates
+Packagist indexing lag with a `:warning:`.
 
 ```bash
 #!/usr/bin/env bash
@@ -32,11 +55,13 @@ curl -sf "https://repo.packagist.org/p2/mock-server/mockserver-testcontainers.js
   | grep -q "\"version\":\"${RELEASE_VERSION}\""
 ```
 
-## Registration
+## Registration (done)
 
-Add `tc-php` to the `COMPONENTS` list in `scripts/release/release.sh`, a verify
-entry in `scripts/release/components/verify.sh`, and a publish step in
+`tc-php` is registered in the `ALL_COMPONENTS` list in
+`scripts/release/release.sh`, has a soft verify entry in
+`scripts/release/components/verify.sh`, and a `soft_fail` publish step in
 `.buildkite/release-pipeline.yml` (mirroring the `client-php` step). These
-pipeline/orchestration files, plus the one-time Packagist mirror-repo + webhook
-setup, are control-plane changes and require gated review. See `PUBLISHING.md`.
+pipeline/orchestration files were changed under gated review. The one-time
+Packagist mirror-repo + webhook setup is still required before the first real
+publish — see `PUBLISHING.md`.
 ```

@@ -89,6 +89,8 @@ Versioned Site and Update Version References run first (sequentially), then the 
 | npm — mockserver-client-node | https://www.npmjs.com/package/mockserver-client-node |
 | PyPI | https://pypi.org/project/mockserver-client/ |
 | RubyGems | https://rubygems.org/gems/mockserver-client |
+| RubyGems — testcontainers-mockserver (soft) | https://rubygems.org/gems/testcontainers-mockserver |
+| Packagist — mockserver-testcontainers (PHP, soft) | https://packagist.org/packages/mock-server/mockserver-testcontainers |
 | GitHub Release | https://github.com/mock-server/mockserver/releases |
 | Helm chart | https://www.mock-server.com/index.yaml — should list the new version |
 | Versioned docs site (major/minor only) | `https://<release-version-with-dash>.mock-server.com` — e.g. `6-1.mock-server.com` |
@@ -208,7 +210,11 @@ scripts/release/
     ├── chocolatey.sh             # Chocolatey package (Windows — community.chocolatey.org)
     ├── homebrew.sh               # Homebrew tap formula (macOS/Linux — mock-server/homebrew-tap)
     ├── sdkman.sh                 # SDKMAN! Vendor API (all platforms)
-    └── asdf.sh                   # asdf/mise plugin repo sync + discoverability check
+    ├── asdf.sh                   # asdf/mise plugin repo sync + discoverability check
+    ├── client-{go,dotnet,rust,php}.sh   # polyglot MockServer client publishers (soft_fail)
+    ├── tc-{node,python,dotnet,go,rust}.sh  # Testcontainers module publishers (soft_fail)
+    ├── tc-ruby.sh                # Testcontainers module -> RubyGems (self-bumps version.rb)
+    └── tc-php.sh                 # Testcontainers module -> Packagist (subtree-split mirror)
 
 .buildkite/scripts/
 ├── release-runner.sh             # Buildkite adapter (meta-data → env vars)
@@ -335,6 +341,8 @@ The release pipeline writes every version-bearing file in the repo, so contribut
 | `npm` | `npm install`, grunt build | `git push tag`, `npm publish` (uses `--dry-run`) |
 | `pypi` | `python -m build`, `twine check` | `twine upload` |
 | `rubygems` | `gem build` | `gem push` |
+| `tc-ruby` | `gem build` (self-bumps `version.rb`) | `gem push` (skips if `mockserver-build/rubygems` secret absent) |
+| `tc-php` | Validate `composer.json` | subtree split + push to `mock-server/mockserver-testcontainers-php` mirror (skips if mirror repo not provisioned) |
 | `helm` | `helm lint`, `helm package` | `helm push` to `oci://ghcr.io/mock-server/charts`, S3 upload, commit/push |
 | `javadoc` | `mvn javadoc:aggregate` | S3 sync |
 | `website` | `bundle install`, `jekyll build` | S3 sync, CloudFront invalidation |

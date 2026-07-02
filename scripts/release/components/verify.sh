@@ -443,6 +443,34 @@ check_http_soft "testcontainers-mockserver $V on crates.io" \
   "https://crates.io/api/v1/crates/testcontainers-mockserver/${V}" "200"
 
 log_info ""
+log_info "== testcontainers-mockserver (RubyGems, soft) =="
+# `any(...)` over the versions array; `|| true` keeps it soft — a jq miss under
+# set -euo pipefail would otherwise abort the whole verify run.
+tc_ruby_check=$(curl -sS --connect-timeout 10 --max-time 30 \
+  "https://rubygems.org/api/v1/versions/testcontainers-mockserver.json" 2>/dev/null \
+  | jq -e "any(.[]?; .number == \"$V\")" 2>/dev/null || true)
+if [[ "$tc_ruby_check" == "true" ]]; then
+  log_info "  PASS  testcontainers-mockserver $V on RubyGems"
+else
+  log_info "  WARN  testcontainers-mockserver $V not (yet) on RubyGems [soft]"
+  SOFT_FAILS+=("testcontainers-mockserver (RubyGems)")
+fi
+
+log_info ""
+log_info "== mockserver-testcontainers (PHP, Packagist, soft) =="
+# Soft + pending mirror-repo provisioning: publishes via a subtree-split mirror
+# repo (mock-server/mockserver-testcontainers-php). `|| true` keeps it soft.
+tc_php_check=$(curl -sS --connect-timeout 10 --max-time 30 \
+  "https://packagist.org/packages/mock-server/mockserver-testcontainers.json" 2>/dev/null \
+  | jq -e ".package.versions[\"${V}\"]" 2>/dev/null || true)
+if [[ -n "$tc_php_check" && "$tc_php_check" != "null" ]]; then
+  log_info "  PASS  mockserver-testcontainers (PHP) $V on Packagist"
+else
+  log_info "  WARN  mockserver-testcontainers (PHP) $V not (yet) on Packagist [soft — webhook pending or mirror repo not provisioned]"
+  SOFT_FAILS+=("mockserver-testcontainers (PHP, Packagist)")
+fi
+
+log_info ""
 log_info "== VS Code extension (soft — Marketplace indexing may lag) =="
 check_http_soft "mockserver VS Code extension" \
   "https://marketplace.visualstudio.com/items?itemName=mockserver.mockserver"

@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automated release publishing for the Ruby and PHP Testcontainers modules.** The `mockserver-testcontainers/ruby`
+  and `mockserver-testcontainers/php` modules now publish automatically as two new `soft_fail` release-pipeline
+  components. `tc-ruby` (`scripts/release/components/tc-ruby.sh`) self-bumps the gem `version.rb`, builds inside the
+  pinned Ruby image and `gem push`es `testcontainers-mockserver` to RubyGems (credential from the existing
+  `mockserver-build/rubygems` secret; skips gracefully if absent). `tc-php` (`scripts/release/components/tc-php.sh`)
+  subtree-splits the module and pushes `master` + a version tag to the `mock-server/mockserver-testcontainers-php`
+  Packagist mirror repo, mirroring the PHP-client publish; it skips gracefully until that mirror repo is provisioned
+  (one-time setup — see `mockserver-testcontainers/php/PUBLISHING.md`). Both support `--dry-run`, are release-type
+  gated (`full`/`post-maven`), and have soft post-release verification checks. See
+  `docs/operations/release-process.md`.
+
 - **Go client: `jwt`/`allOf` matchers, a `/v7` module path, and a bundled Testcontainers client.** The Go
   client (`mockserver-client-go`) gains typed `jwt` request-matcher and `allOf` body-matcher builders (matching
   the other client libraries). Its module path now carries the required Semantic Import Versioning suffix —

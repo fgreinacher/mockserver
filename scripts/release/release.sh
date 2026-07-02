@@ -48,6 +48,8 @@ ALL_COMPONENTS=(
   tc-dotnet
   tc-go
   tc-rust
+  tc-ruby
+  tc-php
   vscode
   jetbrains
 )

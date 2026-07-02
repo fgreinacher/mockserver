@@ -240,6 +240,18 @@ steps:
         timeout_in_minutes: 15
         agents: { queue: "release" }
 
+      - label: ":gem: TC Ruby"
+        command: ".buildkite/scripts/release-runner.sh tc-ruby"
+        soft_fail: true
+        timeout_in_minutes: 10
+        agents: { queue: "release" }
+
+      - label: ":php: TC PHP"
+        command: ".buildkite/scripts/release-runner.sh tc-php"
+        soft_fail: true
+        timeout_in_minutes: 10
+        agents: { queue: "release" }
+
       - label: ":vs_code: VS Code Extension"
         command: ".buildkite/scripts/release-runner.sh vscode"
         soft_fail: true

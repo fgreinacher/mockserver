@@ -1,12 +1,28 @@
 # Release Component: testcontainers-mockserver (Ruby)
 
+> **Status: AUTOMATED.** Wired into the release pipeline as the `tc-ruby`
+> component (`scripts/release/release.sh` `ALL_COMPONENTS`, a `soft_fail` step in
+> `.buildkite/release-pipeline.yml`, and a soft check in
+> `scripts/release/components/verify.sh`).
+>
+> **Prerequisite:** the RubyGems API key at `mockserver-build/rubygems`
+> (key `api_key`) — the SAME secret the `rubygems.sh` client-gem publish already
+> uses, so no new secret is needed. If the secret is genuinely absent the
+> component skips gracefully (exit 0) rather than failing the release.
+
 ## `scripts/release/components/tc-ruby.sh`
 
 Publishes the gem to RubyGems, mirroring `tc-python.sh` (PyPI) and `rubygems.sh`
 (the MockServer Ruby client). The gem version is bumped in
-`lib/testcontainers/mockserver/version.rb`; the default image tag is derived at
-runtime from the `mockserver-client` gem version, so no source constant needs a
-`sed` bump for the image.
+`lib/testcontainers/mockserver/version.rb` **by this component itself**
+(`update-version-references.sh` bumps only the *client* gem's `version.rb`); the
+default image tag is derived at runtime from the `mockserver-client` gem version,
+so no source constant needs a `sed` bump for the image.
+
+The reference snippet below is illustrative; the shipped script also self-bumps
+`version.rb`, guards the version, is idempotent against an already-published
+version, builds/pushes inside the pinned `$RUBY_IMAGE`, and passes the API key
+via `-e` (never in the logged command body).
 
 ```bash
 #!/usr/bin/env bash
@@ -41,9 +57,11 @@ curl -sf "https://rubygems.org/api/v1/versions/testcontainers-mockserver.json" \
   | ruby -rjson -e "exit(JSON.parse(STDIN.read).any? { |v| v['number'] == ENV['RELEASE_VERSION'] } ? 0 : 1)"
 ```
 
-## Registration
+## Registration (done)
 
-Add `tc-ruby` to the `COMPONENTS` list in `scripts/release/release.sh`, a
-verify entry in `scripts/release/components/verify.sh`, and a publish step in
+`tc-ruby` is registered in the `ALL_COMPONENTS` list in
+`scripts/release/release.sh`, has a soft verify entry in
+`scripts/release/components/verify.sh`, and a `soft_fail` publish step in
 `.buildkite/release-pipeline.yml` (mirroring the `tc-python` step). These
-pipeline/orchestration files are control-plane changes and require gated review.
+pipeline/orchestration files are control-plane changes and were made under gated
+review.
