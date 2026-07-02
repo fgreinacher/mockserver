@@ -17,6 +17,8 @@ import org.mockserver.async.asyncapi.AsyncApiChannel;
 import org.mockserver.async.asyncapi.AsyncApiParser;
 import org.mockserver.async.asyncapi.AsyncApiSpec;
 import org.mockserver.async.publish.AmqpMessagePublisher;
+import org.mockserver.async.subscribe.AmqpMessageSubscriber;
+import org.mockserver.async.subscribe.RecordedMessage;
 import org.testcontainers.containers.RabbitMQContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -136,6 +138,73 @@ public class AmqpLiveBrokerIntegrationTest {
         String received = basicGet(queue);
         assertThat("orchestrator-published example should land on the queue",
             received, is("{\"hello\":\"world\"}"));
+    }
+
+    /**
+     * Subscribe/record path (queue-based channel): the MockServer subscriber declares
+     * and consumes the queue; a message published to it is recorded for verification.
+     */
+    @Test
+    public void subscriberShouldRecordFromQueueBoundChannel() throws Exception {
+        String queue = "live-sub-orders-queue";
+        AmqpBinding binding = new AmqpBinding(
+            AmqpBinding.ChannelType.QUEUE, null, null, true, queue, true, null);
+        AsyncApiSpec spec = specWithChannel("orders", binding);
+
+        AmqpMessageSubscriber subscriber = new AmqpMessageSubscriber(amqpUri, spec, 100);
+        subscriber.subscribe("orders");
+
+        // publish after the subscriber is consuming
+        AmqpMessagePublisher publisher = new AmqpMessagePublisher(amqpUri, spec);
+        publisher.publish("orders", "{\"orderId\":7}");
+        publisher.close();
+
+        List<RecordedMessage> messages = List.of();
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            messages = subscriber.getRecordedMessages("orders");
+            if (!messages.isEmpty()) break;
+            Thread.sleep(200);
+        }
+
+        assertThat("subscriber should record the published message", messages.size(), greaterThanOrEqualTo(1));
+        assertThat(messages.get(0).getChannel(), is("orders"));
+        assertThat(messages.get(0).getPayload(), is("{\"orderId\":7}"));
+
+        subscriber.close();
+    }
+
+    /**
+     * Subscribe/record path (exchange/routing-key channel): the subscriber declares
+     * the exchange, binds a private queue on the routing key, and records a routed message.
+     */
+    @Test
+    public void subscriberShouldRecordFromExchangeRoutingKeyChannel() throws Exception {
+        String exchange = "live-sub-events";
+        String channelName = "user.created";
+        AmqpBinding binding = new AmqpBinding(
+            AmqpBinding.ChannelType.ROUTING_KEY, exchange, "topic", true, null, true, null);
+        AsyncApiSpec spec = specWithChannel(channelName, binding);
+
+        AmqpMessageSubscriber subscriber = new AmqpMessageSubscriber(amqpUri, spec, 100);
+        subscriber.subscribe(channelName);
+
+        AmqpMessagePublisher publisher = new AmqpMessagePublisher(amqpUri, spec);
+        publisher.publish(channelName, "{\"user\":\"bob\"}");
+        publisher.close();
+
+        List<RecordedMessage> messages = List.of();
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            messages = subscriber.getRecordedMessages(channelName);
+            if (!messages.isEmpty()) break;
+            Thread.sleep(200);
+        }
+
+        assertThat("subscriber should record the routed message", messages.size(), greaterThanOrEqualTo(1));
+        assertThat(messages.get(0).getPayload(), is("{\"user\":\"bob\"}"));
+
+        subscriber.close();
     }
 
     // ---- helpers ----

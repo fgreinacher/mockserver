@@ -4,7 +4,11 @@
 
 The `mockserver-async` module provides **AsyncAPI-driven message-broker mocking** for Kafka, MQTT, and AMQP 0.9.1 (RabbitMQ). Given an AsyncAPI 2.x or 3.x specification document, it parses the channels and message definitions, generates schema-validated example payloads, publishes them to a message broker, and can subscribe to channels to record incoming messages for verification.
 
-> **AMQP scope:** AMQP support is **publish-side** — MockServer publishes the configured/example messages to a RabbitMQ broker, deriving the exchange and routing key from each channel's `bindings.amqp` definition. AMQP consumer/subscriber recording is deferred (Kafka and MQTT support both publish and subscribe).
+> **Publish + subscribe on all three brokers:** Kafka, MQTT, and AMQP/RabbitMQ each support both publishing example messages **and** subscribing to record incoming messages for verification.
+>
+> **Kafka value formats:** JSON (default) and **Avro in the Confluent Schema Registry wire format** (magic byte + schema id + Avro binary), with a registry-backed mode (schemas registered/resolved against a configured Schema Registry URL) and a registry-less mode (fixed schema id + inline schema). Protobuf is deferred.
+>
+> **MQTT protocol versions:** MQTT 3.1.1 (default) and **MQTT 5** (`mqttProtocolVersion: 5`), the latter adding user-property (header) delivery that v3 cannot carry.
 
 ## Architecture
 
@@ -54,12 +58,21 @@ The control-plane uses an **SPI/registry pattern** (Option A from the design spe
 | `PublishOptions` | `o.m.async.publish` | Immutable carrier for per-message publish-time options: Kafka key, MQTT qos, MQTT retain, message headers (e.g. correlation ID) |
 | `MessagePublisher` | `o.m.async.publish` | Interface: `publish(channel, payload)`, `publish(channel, key, payload, headers)`, `publish(channel, payload, options)`, `close()` |
 | `KafkaMessagePublisher` | `o.m.async.publish` | Wraps `KafkaProducer`; supports keys and headers |
-| `MqttMessagePublisher` | `o.m.async.publish` | Wraps Paho `MqttClient`; supports configurable QoS (0/1/2) and binary payloads |
+| `MqttMessagePublisher` | `o.m.async.publish` | Wraps Paho **v3** `MqttClient`; supports configurable QoS (0/1/2) and binary payloads |
+| `Mqtt5MessagePublisher` | `o.m.async.publish` | Wraps Paho **v5** `MqttClient`; QoS/retain/binary as v3 plus MQTT 5 user properties (headers) from `PublishOptions.getHeaders()` |
+| `KafkaAvroMessagePublisher` | `o.m.async.publish` | Wraps `KafkaProducer<String,byte[]>`; encodes JSON payloads to Confluent-wire-format Avro (magic byte + schema id + Avro binary); registry-backed or registry-less schema id |
 | `AmqpMessagePublisher` | `o.m.async.publish` | Wraps the RabbitMQ `com.rabbitmq.client.Channel`; derives the exchange + routing key from each channel's `AmqpBinding`, declares the exchange/queue idempotently, and emits headers (e.g. correlation IDs) as AMQP message properties |
 | `AmqpBinding` | `o.m.async.asyncapi` | Immutable model of the AsyncAPI AMQP channel binding (`is`, exchange name/type/durable, queue name/durable, routing key) |
 | `MessageSubscriber` | `o.m.async.subscribe` | Interface: `subscribe(channel)`, `unsubscribe(channel)`, `getRecordedMessages()`, `close()` |
 | `KafkaMessageSubscriber` | `o.m.async.subscribe` | Wraps `KafkaConsumer` with background poll loop; all consumer access confined to the poll thread via a queued-ops pattern; records messages in bounded stores |
-| `MqttMessageSubscriber` | `o.m.async.subscribe` | Wraps Paho `MqttClient` callback; records messages in bounded stores |
+| `KafkaAvroMessageSubscriber` | `o.m.async.subscribe` | Wraps `KafkaConsumer<String,byte[]>`; strips the Confluent wire-format header, resolves the schema (registry by id, or inline), and decodes Avro binary to JSON before recording; falls back to raw string for non-Avro bytes |
+| `MqttMessageSubscriber` | `o.m.async.subscribe` | Wraps Paho **v3** `MqttClient` callback; records messages in bounded stores |
+| `Mqtt5MessageSubscriber` | `o.m.async.subscribe` | Wraps Paho **v5** `MqttClient` callback; records MQTT 5 user properties as message headers |
+| `AmqpMessageSubscriber` | `o.m.async.subscribe` | Consumes from RabbitMQ; resolves the queue from the channel's `AmqpBinding` (queue-based: the named queue; routingKey-based: declares the exchange + a private queue bound on the routing key); records message-property headers |
+| `ConfluentWireFormat` | `o.m.async.serde` | Encodes/decodes the Confluent wire-format header (magic byte `0x00` + 4-byte big-endian schema id + payload); codec-agnostic and broker-free |
+| `AvroPayloadCodec` | `o.m.async.serde` | Converts payloads between JSON text and Avro binary via Apache Avro `GenericDatum` reader/writer (no code generation, no Confluent serde stack) |
+| `SchemaRegistryClient` | `o.m.async.serde` | Minimal Confluent Schema Registry REST client over the JDK `HttpClient`: `getSchemaById(id)` and `register(subject, schema)`, both cached |
+| `Mqtt5SecurityOptions` | `o.m.async.security` | Builds an MQTT v5 `MqttConnectionOptions` from `MqttSecurity` (username/password/SSL) — the v5 counterpart of `MqttSecurityOptions` |
 | `BoundedMessageStore` | `o.m.async.subscribe` | Thread-safe, bounded FIFO store for `RecordedMessage` instances (default 1000 per channel); evicts oldest when full |
 | `RecordedMessage` | `o.m.async.subscribe` | Immutable record: channel, key, payload, headers, timestamp |
 | `AsyncApiMockOrchestrator` | `o.m.async` | Publishes examples once (`publishAll()`) or on a schedule (`startPublishing(interval)` / `stop()`) |
@@ -82,10 +95,15 @@ Broker configuration options (`brokerConfig`):
 | `mqttBrokerUrl` | string | null | MQTT broker URL (e.g. `tcp://localhost:1883`) |
 | `mqttClientId` | string | `mockserver-mqtt-pub/sub` | MQTT client ID prefix |
 | `mqttQos` | int | 1 | MQTT QoS level (0, 1, or 2) |
+| `mqttProtocolVersion` | int | 3 | MQTT protocol version: `3` (3.1.1) or `5` (adds user-property/header delivery) |
 | `amqpUri` | string | null | AMQP (RabbitMQ) connection URI (e.g. `amqp://guest:guest@localhost:5672/`) |
+| `kafkaValueFormat` | string | `json` | Kafka value serialization: `json` or `avro` (Confluent wire format) |
+| `kafkaSchemaRegistryUrl` | string | null | Confluent Schema Registry URL (Avro only); when present, schema ids are registered on publish and resolved by id on consume |
+| `avroSchema` | string \| object | null | Inline Avro schema (Avro only): the schema used to encode published payloads and to decode consumed payloads in registry-less mode. May be a JSON string or an inline JSON object |
+| `avroSchemaId` | int | 1 | Fixed schema id embedded in published messages in registry-less mode (ignored when a registry URL is set) |
 | `publishOnLoad` | boolean | true | Publish examples immediately on load |
 | `publishIntervalMillis` | long | 0 | Schedule periodic publishing (0 = disabled) |
-| `consume` | boolean | false | Enable consumer/subscriber for each channel |
+| `consume` | boolean | false | Enable consumer/subscriber for each channel (Kafka, MQTT, and AMQP) |
 | `kafkaSecurity` | object | null | Kafka SASL/SSL security config (see [Broker Security](#broker-security)) |
 | `mqttSecurity` | object | null | MQTT username/password/SSL security config (see [Broker Security](#broker-security)) |
 
@@ -254,7 +272,9 @@ When an AsyncAPI spec is loaded via `PUT /mockserver/asyncapi`, the control plan
 
 ## Consumer/Subscriber Mocking
 
-MockServer can **subscribe** to Kafka topics and MQTT topics to record incoming messages, mirroring how HTTP requests are recorded for verification. Subscribers are created when `consume: true` is set in the broker config.
+MockServer can **subscribe** to Kafka topics, MQTT topics, and AMQP queues/exchanges to record incoming messages, mirroring how HTTP requests are recorded for verification. Subscribers are created when `consume: true` is set in the broker config.
+
+**AMQP subscribe:** the queue to consume from is derived from the channel's `AmqpBinding`, mirroring the publisher's destination resolution: a queue-based channel (or a channel with no binding) consumes the named queue directly; a routingKey-based channel declares the exchange, declares a private (server-named, exclusive, auto-delete) queue, and binds it to the exchange on the routing key. AMQP message-property headers are recorded as the `RecordedMessage` headers.
 
 Recorded messages include:
 - Channel/topic name
@@ -271,6 +291,40 @@ Recorded messages are stored in a **bounded** `BoundedMessageStore` per channel 
 - **Kafka**: `KafkaMessagePublisher.publish(channel, key, payload, headers)` supports configurable record keys and arbitrary headers
 - **MQTT**: `MqttMessagePublisher` supports configurable QoS (0, 1, or 2) and binary payloads via `publishBytes()`
 - **Kafka Consumer**: `KafkaMessageSubscriber` records message keys and headers from consumed records
+
+## Kafka Avro / Confluent Schema Registry
+
+Set `kafkaValueFormat: "avro"` to have MockServer publish and consume Kafka messages in the **Confluent Schema Registry wire format** (`[0x00][schemaId:4][Avro binary]`) so real Confluent Avro producers/consumers interoperate with the mock.
+
+```mermaid
+flowchart LR
+    J["JSON example\n(from spec)"] --> C["AvroPayloadCodec\njsonToAvro"]
+    C --> W["ConfluentWireFormat\nencode(schemaId, avro)"]
+    W --> K["Kafka topic\n(byte[] value)"]
+    K --> D["ConfluentWireFormat\ndecode"]
+    D --> R["resolve schema\n(registry by id / inline)"]
+    R --> A["AvroPayloadCodec\navroToJson"]
+    A --> M["RecordedMessage\n(JSON payload)"]
+```
+
+**Design decision — Apache Avro, not the Confluent serde stack.** The Confluent `kafka-avro-serializer`/`kafka-schema-registry-client` artifacts are under the Confluent Community License and pull in a heavy dependency tree. MockServer instead uses **Apache Avro** (Apache 2.0) for the JSON&lt;-&gt;binary codec (`AvroPayloadCodec`), a hand-rolled 5-byte framing (`ConfluentWireFormat`), and a minimal JDK-`HttpClient` Schema Registry REST client (`SchemaRegistryClient`). This keeps licensing clean and dependencies small while remaining byte-compatible with Confluent producers/consumers.
+
+**Two modes:**
+
+| Mode | Trigger | Publish schema id | Consume schema resolution |
+|------|---------|-------------------|---------------------------|
+| Registry-backed | `kafkaSchemaRegistryUrl` set | schema registered under `<topic>-value`, returned id embedded | fetched by embedded id via `GET /schemas/ids/{id}` (cached) |
+| Registry-less | no `kafkaSchemaRegistryUrl` | fixed `avroSchemaId` (default 1) embedded | the inline `avroSchema` (id ignored) |
+
+Both modes require an `avroSchema` (inline) for the **publish** path (encoding needs a schema) and for **registry-less consume** (decoding without a registry needs the inline schema). Consumed bytes that are not wire-format-framed, or that fail to decode, are recorded as their raw UTF-8 string rather than dropped. Because the recorded payload is JSON, the existing `PUT /mockserver/asyncapi/verify` substring / JSON-path checks work unchanged against Avro messages.
+
+**JSON encoding note:** Avro's JSON representation is stricter than plain JSON for union-typed (nullable/optional) fields, which need the `{"fieldType": value}` form. Flat records of primitive fields — the common case for AsyncAPI example payloads — map straight across.
+
+## MQTT Protocol Version (3.1.1 and 5)
+
+`mqttProtocolVersion` selects the Paho client: `3` (default, `MqttMessagePublisher`/`MqttMessageSubscriber`, Paho `mqttv3`) or `5` (`Mqtt5MessagePublisher`/`Mqtt5MessageSubscriber`, Paho `mqttv5`). QoS, retain, and binary payloads behave identically across versions. The v5 advantage is **user properties**: `PublishOptions.getHeaders()` (e.g. header-location correlation IDs) are delivered as MQTT 5 user properties on publish and recorded as `RecordedMessage` headers on consume — neither of which MQTT 3 can carry. Security (`mqttSecurity`: username/password/SSL) applies to both versions via `MqttSecurityOptions` (v3) / `Mqtt5SecurityOptions` (v5).
+
+> **Paho v5 subscribe caveat:** Paho `mqttv5` 1.2.5's `MqttClient.subscribe(topic, qos, listener)` overload self-recurses (StackOverflow). `Mqtt5MessageSubscriber` deliberately uses the safe 2-arg `subscribe(topic, qos)` together with a `setCallback(...)` message callback, and the live tests observe messages through that subscriber rather than a per-subscription listener.
 
 ## AsyncAPI Channel Bindings
 
@@ -448,8 +502,10 @@ The `mockserver-async` module is wired into the running server:
 | `jackson-databind` | (parent-managed) | JSON parsing and generation |
 | `jackson-dataformat-yaml` | (parent-managed) | YAML parsing |
 | `kafka-clients` | 3.9.2 | Kafka producer and consumer |
-| `org.eclipse.paho.client.mqttv3` | 1.2.5 | MQTT client (publish and subscribe) |
-| `com.rabbitmq:amqp-client` | 5.28.0 | AMQP 0.9.1 (RabbitMQ) client (publish) |
+| `org.eclipse.paho.client.mqttv3` | 1.2.5 | MQTT 3.1.1 client (publish and subscribe) |
+| `org.eclipse.paho.mqttv5.client` | 1.2.5 | MQTT 5 client (publish and subscribe) |
+| `org.apache.avro:avro` | 1.12.0 | Avro JSON&lt;-&gt;binary codec for the Kafka Confluent wire format (Apache 2.0 — avoids the Confluent Community License serde stack) |
+| `com.rabbitmq:amqp-client` | 5.28.0 | AMQP 0.9.1 (RabbitMQ) client (publish and subscribe) |
 | `mockserver-core` | (optional) | SPI interface, JSON Schema validator, shared utilities |
 
 ## Tests
@@ -482,7 +538,18 @@ The `mockserver-async` module is wired into the running server:
 | `AmqpMessagePublisherTest` | AMQP destination derivation and publishing via a mocked RabbitMQ `Channel` (no broker): exchange/queue/routing-key resolution, idempotent declare, header properties, close |
 | `KafkaLiveBrokerIntegrationTest` | Docker-gated (Testcontainers): publish/consume via real Kafka, subscriber recording, orchestrator end-to-end |
 | `MqttLiveBrokerIntegrationTest` | Docker-gated (Testcontainers): publish/receive via real Mosquitto, subscriber recording, orchestrator end-to-end, round-trip |
-| `AmqpLiveBrokerIntegrationTest` | Docker-gated (Testcontainers): publish to a real RabbitMQ broker — queue-bound channel, exchange + routing-key channel, orchestrator end-to-end from a parsed spec |
+| `AmqpMessageSubscriberTest` | AMQP subscribe with a mocked RabbitMQ `Channel` (no broker): queue resolution (queue-based, exchange/routing-key, no-binding), `basicConsume` registration, DeliverCallback recording, header extraction, unsubscribe cancel, bounded eviction |
+| `Mqtt5MessagePublisherTest` | MQTT 5 publish with a mocked v5 client: QoS/retain, binary payloads, user-property (header) delivery, invalid-QoS guard |
+| `Mqtt5MessageSubscriberTest` | MQTT 5 subscribe with a mocked v5 client: recording, user-properties-as-headers, disconnect health, bounded eviction |
+| `Mqtt5SecurityOptionsTest` | `Mqtt5SecurityOptions.buildConnectOptions()`: username/password, SSL properties, null/empty security, blank-field skipping |
+| `ConfluentWireFormatTest` | Wire-format framing: encode/decode round-trip, magic-byte + big-endian schema id layout, detection, empty payload, error cases |
+| `AvroPayloadCodecTest` | Avro JSON&lt;-&gt;binary round-trip, type preservation, distinct encodings, schema-mismatch error |
+| `SchemaRegistryClientTest` | Schema Registry REST client with a stubbed `HttpClient`: get-by-id, register, caching, non-200 handling, blank-URL guard |
+| `KafkaAvroMessagePublisherTest` | Confluent framing via a mocked producer: registry-less fixed id, registry id, key/headers, missing-schema and schema-mismatch errors |
+| `AsyncApiControlPlaneParityConfigTest` | `parseBrokerConfig` of the parity fields: MQTT protocol version, Kafka Avro value format, Schema Registry URL, inline Avro schema (string or object) |
+| `AmqpLiveBrokerIntegrationTest` | Docker-gated (Testcontainers): publish **and subscribe/record** against a real RabbitMQ broker — queue-bound channel, exchange + routing-key channel, orchestrator end-to-end from a parsed spec |
+| `Mqtt5LiveBrokerIntegrationTest` | Docker-gated (Testcontainers/Mosquitto): MQTT 5 publish/receive, user-property round-trip, subscriber recording, adapter round-trip |
+| `KafkaAvroLiveBrokerIntegrationTest` | Docker-gated (Testcontainers/Kafka): registry-less Confluent-framed Avro publish readable by a plain byte[] consumer, and end-to-end round-trip through the MockServer Avro publisher/subscriber |
 
 ## Configuration Properties (Async Defaults)
 
@@ -520,5 +587,7 @@ client.verifyAsyncMessage("{\"channel\":\"orders\",\"count\":{\"atLeast\":1}}");
 The following items are **not yet implemented**:
 
 - **Advanced AsyncAPI bindings (remaining)**: Kafka topic-config bindings (partitions, replicas) and v3 operation-level MQTT binding navigation are not yet implemented. MQTT qos/retain, Kafka message key, and AMQP exchange/queue/routing-key bindings are supported (see [AsyncAPI Channel Bindings](#asyncapi-channel-bindings))
-- **AMQP consumer/subscriber recording**: AMQP support is publish-side only. Subscribing to AMQP queues to record incoming messages for verification (as Kafka/MQTT do) is deferred. Operation/message-level AMQP bindings (`cc`, `deliveryMode`, etc.) and queue/exchange lifecycle hints (`autoDelete`, `exclusive`, `vhost`) are also deferred (see [AMQP Channel Bindings](#amqp-channel-bindings))
+- **Kafka Protobuf value format**: the Confluent wire-format framing ([`ConfluentWireFormat`](#kafka-avro--confluent-schema-registry)) is codec-agnostic, but only the **Avro** codec is wired up. Protobuf (which needs a `.proto`/descriptor to build `DynamicMessage`) is deferred. Avro (registry-backed and registry-less) is fully supported for publish and subscribe/verify
+- **AMQP binding edge cases**: operation/message-level AMQP bindings (`cc`, `deliveryMode`, etc.) and queue/exchange lifecycle hints (`autoDelete`, `exclusive`, `vhost`) are deferred (see [AMQP Channel Bindings](#amqp-channel-bindings)). AMQP publish **and** subscribe/verify are both supported
+- **Schema Registry authentication (basic auth / API keys)**: not yet supported — registry-backed mode works against unauthenticated registries only
 - **Cross-protocol correlation linking (F15)**: correlating messages across protocols (e.g. HTTP request to Kafka response) is out of scope; each message's correlation ID is self-contained

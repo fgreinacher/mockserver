@@ -13,13 +13,19 @@ import org.mockserver.async.asyncapi.AsyncApiMessage;
 import org.mockserver.async.asyncapi.AsyncApiParser;
 import org.mockserver.async.asyncapi.AsyncApiSpec;
 import org.mockserver.async.publish.AmqpMessagePublisher;
+import org.mockserver.async.publish.KafkaAvroMessagePublisher;
 import org.mockserver.async.publish.KafkaMessagePublisher;
 import org.mockserver.async.publish.MessagePublisher;
+import org.mockserver.async.publish.Mqtt5MessagePublisher;
 import org.mockserver.async.publish.MqttMessagePublisher;
+import org.mockserver.async.serde.SchemaRegistryClient;
 import org.mockserver.async.security.KafkaSecurity;
 import org.mockserver.async.security.MqttSecurity;
+import org.mockserver.async.subscribe.AmqpMessageSubscriber;
+import org.mockserver.async.subscribe.KafkaAvroMessageSubscriber;
 import org.mockserver.async.subscribe.KafkaMessageSubscriber;
 import org.mockserver.async.subscribe.MessageSubscriber;
+import org.mockserver.async.subscribe.Mqtt5MessageSubscriber;
 import org.mockserver.async.subscribe.MqttMessageSubscriber;
 import org.mockserver.async.subscribe.RecordedMessage;
 import org.mockserver.async.validation.AsyncApiSchemaValidator;
@@ -148,8 +154,14 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
         int maxRecordedMessages = ConfigurationProperties.asyncRecordedMessageMaxEntries();
 
         if (brokerConfig.kafkaBootstrapServers != null) {
-            MessagePublisher publisher = new KafkaMessagePublisher(
-                brokerConfig.kafkaBootstrapServers, brokerConfig.kafkaSecurity);
+            boolean avro = "avro".equals(brokerConfig.kafkaValueFormat);
+            SchemaRegistryClient registryClient = (avro && brokerConfig.kafkaSchemaRegistryUrl != null)
+                ? new SchemaRegistryClient(brokerConfig.kafkaSchemaRegistryUrl) : null;
+
+            MessagePublisher publisher = avro
+                ? new KafkaAvroMessagePublisher(brokerConfig.kafkaBootstrapServers, brokerConfig.kafkaSecurity,
+                    brokerConfig.avroSchema, registryClient, brokerConfig.avroSchemaId)
+                : new KafkaMessagePublisher(brokerConfig.kafkaBootstrapServers, brokerConfig.kafkaSecurity);
             activePublishers.add(publisher);
 
             AsyncApiMockOrchestrator orchestrator = new AsyncApiMockOrchestrator(spec, publisher, generator);
@@ -168,9 +180,11 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
             if (brokerConfig.consume) {
                 String groupId = brokerConfig.kafkaGroupId != null
                     ? brokerConfig.kafkaGroupId : "mockserver-async-consumer";
-                KafkaMessageSubscriber subscriber = new KafkaMessageSubscriber(
-                    brokerConfig.kafkaBootstrapServers, groupId, maxRecordedMessages,
-                    brokerConfig.kafkaSecurity);
+                MessageSubscriber subscriber = avro
+                    ? new KafkaAvroMessageSubscriber(brokerConfig.kafkaBootstrapServers, groupId,
+                        maxRecordedMessages, brokerConfig.kafkaSecurity, registryClient, brokerConfig.avroSchema)
+                    : new KafkaMessageSubscriber(brokerConfig.kafkaBootstrapServers, groupId,
+                        maxRecordedMessages, brokerConfig.kafkaSecurity);
                 activeSubscribers.add(subscriber);
                 for (AsyncApiChannel channel : spec.getChannels()) {
                     subscriber.subscribe(channel.getName());
@@ -191,15 +205,26 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
             if (brokerConfig.publishIntervalMillis > 0) {
                 orchestrator.startPublishing(brokerConfig.publishIntervalMillis);
             }
-            // AMQP consumer/subscriber mocking is deferred (publish-side only for now).
+
+            // Create subscriber if consume is enabled
+            if (brokerConfig.consume) {
+                AmqpMessageSubscriber subscriber = new AmqpMessageSubscriber(
+                    brokerConfig.amqpUri, spec, maxRecordedMessages);
+                activeSubscribers.add(subscriber);
+                for (AsyncApiChannel channel : spec.getChannels()) {
+                    subscriber.subscribe(channel.getName());
+                }
+            }
         }
 
         if (brokerConfig.mqttBrokerUrl != null) {
             String pubClientId = brokerConfig.mqttClientId != null
                 ? brokerConfig.mqttClientId + "-pub" : "mockserver-mqtt-pub";
             int qos = brokerConfig.mqttQos >= 0 ? brokerConfig.mqttQos : 1;
-            MessagePublisher publisher = new MqttMessagePublisher(
-                brokerConfig.mqttBrokerUrl, pubClientId, qos, brokerConfig.mqttSecurity);
+            boolean mqtt5 = brokerConfig.mqttProtocolVersion == 5;
+            MessagePublisher publisher = mqtt5
+                ? new Mqtt5MessagePublisher(brokerConfig.mqttBrokerUrl, pubClientId, qos, brokerConfig.mqttSecurity)
+                : new MqttMessagePublisher(brokerConfig.mqttBrokerUrl, pubClientId, qos, brokerConfig.mqttSecurity);
             activePublishers.add(publisher);
 
             AsyncApiMockOrchestrator orchestrator = new AsyncApiMockOrchestrator(spec, publisher, generator);
@@ -216,9 +241,11 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
             if (brokerConfig.consume) {
                 String subClientId = brokerConfig.mqttClientId != null
                     ? brokerConfig.mqttClientId + "-sub" : "mockserver-mqtt-sub";
-                MqttMessageSubscriber subscriber = new MqttMessageSubscriber(
-                    brokerConfig.mqttBrokerUrl, subClientId, qos, maxRecordedMessages,
-                    brokerConfig.mqttSecurity);
+                MessageSubscriber subscriber = mqtt5
+                    ? new Mqtt5MessageSubscriber(brokerConfig.mqttBrokerUrl, subClientId, qos,
+                        maxRecordedMessages, brokerConfig.mqttSecurity)
+                    : new MqttMessageSubscriber(brokerConfig.mqttBrokerUrl, subClientId, qos,
+                        maxRecordedMessages, brokerConfig.mqttSecurity);
                 activeSubscribers.add(subscriber);
                 for (AsyncApiChannel channel : spec.getChannels()) {
                     subscriber.subscribe(channel.getName());
@@ -604,8 +631,29 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
             config.consume = boolOrDefault(node, "consume", false);
             config.publishIntervalMillis = longOrDefault(node, "publishIntervalMillis", 0);
             config.mqttQos = intOrDefault(node, "mqttQos", 1);
+            config.mqttProtocolVersion = intOrDefault(node, "mqttProtocolVersion", 3);
+            if (config.mqttProtocolVersion != 3 && config.mqttProtocolVersion != 5) {
+                throw new IllegalArgumentException("Unsupported 'mqttProtocolVersion' value "
+                    + config.mqttProtocolVersion + " — allowed values are 3 or 5");
+            }
             config.kafkaSecurity = parseKafkaSecurity(node.get("kafkaSecurity"));
             config.mqttSecurity = parseMqttSecurity(node.get("mqttSecurity"));
+            String valueFormat = textOrNull(node, "kafkaValueFormat");
+            if (valueFormat != null) {
+                String normalisedFormat = valueFormat.toLowerCase();
+                if ("protobuf".equals(normalisedFormat)) {
+                    throw new IllegalArgumentException("Unsupported 'kafkaValueFormat' value '"
+                        + valueFormat + "' — protobuf is not yet supported; allowed values are json or avro");
+                }
+                if (!"json".equals(normalisedFormat) && !"avro".equals(normalisedFormat)) {
+                    throw new IllegalArgumentException("Unsupported 'kafkaValueFormat' value '"
+                        + valueFormat + "' — allowed values are json or avro");
+                }
+                config.kafkaValueFormat = normalisedFormat;
+            }
+            config.kafkaSchemaRegistryUrl = textOrNull(node, "kafkaSchemaRegistryUrl");
+            config.avroSchema = avroSchemaOrNull(node.get("avroSchema"));
+            config.avroSchemaId = intOrDefault(node, "avroSchemaId", 1);
         }
         // Fall back to ConfigurationProperties defaults when request values are absent
         if (config.kafkaBootstrapServers == null) {
@@ -716,6 +764,29 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
         return (child != null && child.isTextual()) ? child.asText() : null;
     }
 
+    /**
+     * An Avro schema may be supplied either as a JSON string or as an inline JSON
+     * object. Return the Avro schema JSON text in either case, or null when absent.
+     */
+    private static String avroSchemaOrNull(JsonNode child) {
+        if (child == null || child.isNull()) {
+            return null;
+        }
+        if (child.isTextual()) {
+            String text = child.asText();
+            return text.isBlank() ? null : text;
+        }
+        if (child.isObject()) {
+            try {
+                return MAPPER.writeValueAsString(child);
+            } catch (Exception e) {
+                LOG.warn("Failed to serialize inline avroSchema object: {}", e.getMessage());
+                return null;
+            }
+        }
+        return null;
+    }
+
     private static boolean boolOrDefault(JsonNode node, String field, boolean defaultValue) {
         JsonNode child = node.get(field);
         return (child != null && child.isBoolean()) ? child.asBoolean() : defaultValue;
@@ -754,8 +825,17 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
         boolean consume = false;
         long publishIntervalMillis = 0;
         int mqttQos = 1;
+        int mqttProtocolVersion = 3;
         KafkaSecurity kafkaSecurity;
         MqttSecurity mqttSecurity;
+        // Kafka value serialization: "json" (default) or "avro" (Confluent wire format)
+        String kafkaValueFormat = "json";
+        // Confluent Schema Registry URL; when present, schema ids are registered/resolved against it
+        String kafkaSchemaRegistryUrl;
+        // Inline Avro schema JSON (registry-less mode, or the schema to register on publish)
+        String avroSchema;
+        // Fixed Avro schema id used to frame published messages in registry-less mode
+        int avroSchemaId = 1;
 
         static BrokerConfig defaultConfig() {
             return new BrokerConfig();

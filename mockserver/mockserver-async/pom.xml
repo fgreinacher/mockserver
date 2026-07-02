@@ -44,11 +44,26 @@
             <version>3.9.2</version>
         </dependency>
 
-        <!-- mqtt -->
+        <!-- mqtt v3 -->
         <dependency>
             <groupId>org.eclipse.paho</groupId>
             <artifactId>org.eclipse.paho.client.mqttv3</artifactId>
             <version>1.2.5</version>
+        </dependency>
+
+        <!-- mqtt v5 -->
+        <dependency>
+            <groupId>org.eclipse.paho</groupId>
+            <artifactId>org.eclipse.paho.mqttv5.client</artifactId>
+            <version>1.2.5</version>
+        </dependency>
+
+        <!-- avro (Kafka Confluent wire-format serde; Apache 2.0 licensed — avoids the
+             Confluent Community License serde stack, see docs/code/async-messaging.md) -->
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+            <version>1.12.0</version>
         </dependency>
 
         <!-- amqp (RabbitMQ 0.9.1) -->

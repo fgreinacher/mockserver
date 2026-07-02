@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **AsyncAPI broker mocking — Kafka Avro/Confluent Schema Registry, AMQP subscribe/verify, and MQTT 5.** The
+  `mockserver-async` module gains three enterprise-broker parity features, all driven from the existing
+  `PUT /mockserver/asyncapi` `brokerConfig`:
+  - **Kafka Avro in the Confluent Schema Registry wire format.** Set `kafkaValueFormat: "avro"` to publish and
+    consume Kafka messages framed as `magic byte + schema id + Avro binary`, byte-compatible with real Confluent
+    Avro producers/consumers. Two modes: **registry-backed** (`kafkaSchemaRegistryUrl` — the schema is registered
+    under `<topic>-value` on publish and resolved by id on consume) and **registry-less** (an inline `avroSchema`
+    plus a fixed `avroSchemaId`). Consumed Avro is decoded back to JSON so `.../asyncapi/verify` substring and
+    JSON-path checks work unchanged. Implemented with **Apache Avro** (Apache 2.0) plus a hand-rolled 5-byte
+    framing and a minimal JDK-`HttpClient` Schema Registry REST client — deliberately avoiding the
+    Confluent Community License serde stack. Protobuf is deferred.
+  - **AMQP (RabbitMQ) subscribe/verify.** AMQP is no longer publish-only: with `consume: true`, MockServer now
+    subscribes to and records AMQP messages for verification, mirroring Kafka/MQTT. The queue is derived from the
+    channel's `bindings.amqp` (queue-based consumes the named queue; routingKey-based declares the exchange and
+    binds a private queue on the routing key).
+  - **MQTT 5.** `mqttProtocolVersion: 5` selects the Paho v5 client for publish and subscribe (default `3`/3.1.1);
+    v5 additionally delivers message headers (e.g. correlation IDs) as MQTT 5 user properties on publish and
+    records them as headers on consume — which MQTT 3 cannot carry.
+
+  New Docker-gated live-broker tests (Kafka, RabbitMQ, Mosquitto) plus non-Docker serde/wire-format unit tests
+  cover all three. See [docs/code/async-messaging.md](docs/code/async-messaging.md).
+
 - **Mock OpenAI Realtime & Gemini Live voice APIs over WebSocket — new `RealtimeMockBuilder`.** MockServer can
   now mock the two dominant realtime (voice) LLM protocols so agents/apps that use them can be tested offline,
   with no real API and no audio hardware. A new pure event codec pair in `mockserver-core`
