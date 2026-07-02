@@ -113,6 +113,77 @@ public class Http3ConnectUdpIntegrationTest {
     }
 
     @Test
+    public void shouldRelayWhenTargetIsInAllowlist() throws Exception {
+        int echoPort = startUdpEchoServer();
+
+        int udpPort = findAvailableUdpPort();
+        Configuration config = configuration()
+            .http3Port(udpPort)
+            .http3ConnectUdpEnabled(true)
+            // host-only allowlist entry permits the loopback echo target on any port
+            .http3ConnectUdpAllowedTargets("127.0.0.1");
+
+        mockServer = new MockServer(config, 0);
+
+        int http3Port = mockServer.getHttp3Port();
+        Assume.assumeTrue("HTTP/3 server did not start", http3Port > 0);
+
+        String testPayload = "hello-allowlisted-relay";
+        String[] result = sendConnectUdpAndRelay(http3Port, "127.0.0.1:" + echoPort, testPayload);
+
+        assertThat("status should be 200 for an allowlisted target", result[0], is("200"));
+        assertThat("echoed datagram should match sent payload", result[1], is(testPayload));
+    }
+
+    @Test
+    public void shouldRejectConnectUdpWhenTargetNotInAllowlist() throws Exception {
+        int echoPort = startUdpEchoServer();
+
+        int udpPort = findAvailableUdpPort();
+        Configuration config = configuration()
+            .http3Port(udpPort)
+            .http3ConnectUdpEnabled(true)
+            // only a different target is permitted, so the echo target must be refused
+            .http3ConnectUdpAllowedTargets("allowed.example.com:443");
+
+        mockServer = new MockServer(config, 0);
+
+        int http3Port = mockServer.getHttp3Port();
+        Assume.assumeTrue("HTTP/3 server did not start", http3Port > 0);
+
+        String[] result = sendConnectUdpRequest(http3Port, "127.0.0.1:" + echoPort);
+        assertThat("status should be 403 for a non-allowlisted target", result[0], is("403"));
+        assertThat("body should be the generic refusal (no internal detail leaked)",
+            result[1], containsString("CONNECT-UDP target not permitted"));
+        assertThat("body must NOT leak the allowlist property name",
+            result[1], not(containsString("http3ConnectUdpAllowedTargets")));
+    }
+
+    @Test
+    public void shouldRejectConnectUdpToPrivateNetworkWhenSsrfBlockingEnabled() throws Exception {
+        int echoPort = startUdpEchoServer();
+
+        int udpPort = findAvailableUdpPort();
+        Configuration config = configuration()
+            .http3Port(udpPort)
+            .http3ConnectUdpEnabled(true)
+            // reuse the forward-proxy SSRF block; loopback is a blocked private address
+            .forwardProxyBlockPrivateNetworks(true);
+
+        mockServer = new MockServer(config, 0);
+
+        int http3Port = mockServer.getHttp3Port();
+        Assume.assumeTrue("HTTP/3 server did not start", http3Port > 0);
+
+        String[] result = sendConnectUdpRequest(http3Port, "127.0.0.1:" + echoPort);
+        assertThat("status should be 403 for a blocked loopback target", result[0], is("403"));
+        assertThat("body should be the generic refusal (no internal host/reason leaked)",
+            result[1], containsString("CONNECT-UDP target not permitted"));
+        assertThat("body must NOT leak the blocked host",
+            result[1], not(containsString("127.0.0.1")));
+    }
+
+    @Test
     public void shouldRejectConnectUdpWithInvalidAuthority() throws Exception {
         int udpPort = findAvailableUdpPort();
         Configuration config = configuration()

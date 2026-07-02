@@ -211,6 +211,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Long http3InitialMaxStreamsBidirectional;
     private Long http3QpackMaxTableCapacity;
     private Boolean http3ConnectUdpEnabled;
+    private String http3ConnectUdpAllowedTargets;
     private Long http3AltSvcMaxAge;
     private Boolean http3AdvertiseAltSvc;
     private Boolean useNativeTransport;
@@ -506,6 +507,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.http3InitialMaxStreamsBidirectional = configuration.http3InitialMaxStreamsBidirectional();
             this.http3QpackMaxTableCapacity = configuration.http3QpackMaxTableCapacity();
             this.http3ConnectUdpEnabled = configuration.http3ConnectUdpEnabled();
+            this.http3ConnectUdpAllowedTargets = configuration.http3ConnectUdpAllowedTargets();
             this.http3AltSvcMaxAge = configuration.http3AltSvcMaxAge();
             this.http3AdvertiseAltSvc = configuration.http3AdvertiseAltSvc();
             this.useNativeTransport = configuration.useNativeTransport();
@@ -848,6 +850,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.http3InitialMaxStreamsBidirectional(http3InitialMaxStreamsBidirectional);
         configuration.http3QpackMaxTableCapacity(http3QpackMaxTableCapacity);
         configuration.http3ConnectUdpEnabled(http3ConnectUdpEnabled);
+        configuration.http3ConnectUdpAllowedTargets(http3ConnectUdpAllowedTargets);
         configuration.http3AltSvcMaxAge(http3AltSvcMaxAge);
         configuration.http3AdvertiseAltSvc(http3AdvertiseAltSvc);
         configuration.useNativeTransport(useNativeTransport);
@@ -1460,6 +1463,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (http3ConnectUdpEnabled != null) {
             target.http3ConnectUdpEnabled(http3ConnectUdpEnabled);
+        }
+        if (http3ConnectUdpAllowedTargets != null) {
+            target.http3ConnectUdpAllowedTargets(http3ConnectUdpAllowedTargets);
         }
         if (http3AltSvcMaxAge != null) {
             target.http3AltSvcMaxAge(http3AltSvcMaxAge);
@@ -3291,6 +3297,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setHttp3ConnectUdpEnabled(Boolean http3ConnectUdpEnabled) {
         this.http3ConnectUdpEnabled = http3ConnectUdpEnabled;
+        return this;
+    }
+
+    public String getHttp3ConnectUdpAllowedTargets() {
+        return http3ConnectUdpAllowedTargets;
+    }
+
+    public ConfigurationDTO setHttp3ConnectUdpAllowedTargets(String http3ConnectUdpAllowedTargets) {
+        this.http3ConnectUdpAllowedTargets = http3ConnectUdpAllowedTargets;
         return this;
     }
 

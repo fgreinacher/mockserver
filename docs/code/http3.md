@@ -51,7 +51,8 @@ has zero impact on the existing TCP/HTTP server.
 | `Http3MockServerHandler` | `mockserver-netty` | Per-stream handler: accumulates HTTP/3 frames, converts to HttpRequest, routes through the shared pipeline |
 | `Http3RequestBridge` | `mockserver-netty` | Pure conversion helpers: HTTP/3 frames to/from HttpRequest/HttpResponse |
 | `Http3ResponseWriter` | `mockserver-netty` | ResponseWriter subclass that serialises HttpResponse as HTTP/3 frames |
-| `Http3ConnectUdpHandler` | `mockserver-netty` | CONNECT-UDP (MASQUE, RFC 9298) relay; intercepts extended CONNECT requests with `:protocol=connect-udp` when `http3ConnectUdpEnabled=true`; opens a UDP channel to the target authority and relays datagrams bidirectionally |
+| `Http3ConnectUdpHandler` | `mockserver-netty` | CONNECT-UDP (MASQUE, RFC 9298) relay; intercepts extended CONNECT requests with `:protocol=connect-udp` when `http3ConnectUdpEnabled=true`; opens a UDP channel to the target authority and relays datagrams bidirectionally. Destination-restricted by `http3ConnectUdpAllowedTargets` (allowlist) and `forwardProxyBlockPrivateNetworks` (SSRF block) |
+| `SourceAddressQuicTokenHandler` | `mockserver-netty` | Source-address-validating QUIC retry token handler (HMAC-SHA256 over client IP + dcid); replaces Netty's forgeable `InsecureQuicTokenHandler` to mitigate address-spoofing / amplification |
 | `GrpcHttp3Adapter` | `mockserver-netty` | Pure helper: detects gRPC content-type, decodes gRPC framing to JSON (reusing `GrpcFrameCodec` + `GrpcProtoDescriptorStore`), builds H3 HEADERS/DATA frames for gRPC responses with correct trailing HEADERS framing |
 | `Http3GrpcResponseWriter` | `mockserver-netty` | `ResponseWriter` subclass that writes gRPC responses over H3 with initial HEADERS + DATA + trailing HEADERS (grpc-status) framing; also implements `GrpcStreamResponseWriter` for server-streaming responses |
 | `Http3GrpcBidiStreamHandler` | `mockserver-netty` | Drives true bidirectional gRPC streaming over a single full-duplex QUIC stream (HTTP/3 analogue of `GrpcBidiStreamHandler`); driven incrementally by `Http3MockServerHandler` |
@@ -279,6 +280,9 @@ declarations are needed -- they resolve automatically.
   relays DATA frame payloads as UDP datagrams bidirectionally, and tears down on
   stream close/error. Normal HTTP/3 requests pass through unchanged. The server
   advertises `SETTINGS_ENABLE_CONNECT_PROTOCOL=1` (RFC 9220) when the flag is on.
+  The relay destination is restricted by the `http3ConnectUdpAllowedTargets`
+  allowlist and (when enabled) the `forwardProxyBlockPrivateNetworks` SSRF block —
+  see Risks. Rejected targets receive a `403` and no datagrams are relayed.
 - Integration-tested CONNECT-UDP relay (in-JVM QUIC client + local UDP echo server,
   verifies round-trip datagram relay through the tunnel)
 - **gRPC unary over HTTP/3**: gRPC unary requests (content-type `application/grpc`,
@@ -451,21 +455,46 @@ bidi-streaming) work over HTTP/3, matching the TCP (HTTP/1.1 and HTTP/2) path.
   mainline Netty 4.2, but the HTTP/3 API may still evolve in future 4.2.x releases.
 - **Netty version coupling**: the HTTP/3 codec version is now aligned with the
   project's `${netty.version}` (4.2.15.Final). Version updates are automatic.
-- **InsecureQuicTokenHandler**: the QUIC server uses `InsecureQuicTokenHandler`
-  which performs no source-address validation (no Retry token). This is acceptable
-  for a test/mock tool but means the server does not protect against address
-  spoofing or QUIC amplification (a forged-source Initial packet can elicit a
-  response up to `initialMaxData`). A production-exposed deployment would need a
-  source-address-validating (stateless-retry) token handler. Tracked as a known
-  limitation; not changed here to avoid an untested change to the QUIC handshake.
-- **CONNECT-UDP is an open UDP relay (SSRF)**: when `http3ConnectUdpEnabled=true`
-  (default `false`), `Http3ConnectUdpHandler` relays datagrams to **any** target
-  authority the client names, with no allowlist — including private networks,
-  loopback, and cloud metadata endpoints (e.g. 169.254.169.254). This is an
-  SSRF-equivalent capability and is intended for controlled test environments
-  only. Keep it disabled unless needed, and never expose a CONNECT-UDP–enabled
-  HTTP/3 port to untrusted clients. (A future `http3ConnectUdpAllowedTargets`
-  allowlist could constrain destinations.)
+- **QUIC source-address validation (retry tokens)**: the QUIC server codec uses a
+  source-address-validating token handler (`SourceAddressQuicTokenHandler`) rather
+  than Netty's `InsecureQuicTokenHandler`. The insecure handler writes the client
+  address into the retry token in plaintext with no cryptographic protection, so an
+  attacker can trivially forge a token that embeds a spoofed address and pass
+  validation — defeating stateless retry and re-enabling QUIC address-spoofing /
+  amplification (a forged-source Initial can elicit a response up to `initialMaxData`).
+  `SourceAddressQuicTokenHandler` instead binds the client IP into a keyed HMAC-SHA256
+  (per-server random secret): the token is source-address bound (a token minted for
+  address A does not validate for B) and unforgeable (without the secret no valid
+  token can be produced), so the only way to obtain a valid token is to complete a
+  Retry round-trip, which requires actually receiving the Retry at the claimed source
+  address. Correct for both IPv4 and IPv6 peers. The secret lives for the lifetime of
+  one `Http3Server` start.
+- **CONNECT-UDP relay is destination-restricted (SSRF mitigation)**: when
+  `http3ConnectUdpEnabled=true` (default `false`), `Http3ConnectUdpHandler` applies two
+  checks before establishing a tunnel:
+  - **Allowlist** — the `http3ConnectUdpAllowedTargets` property (comma-separated
+    `host` or `host:port` entries; IPv6 literals bracketed, e.g. `[::1]:53`). When
+    **non-empty**, only targets matching an entry (exact, case-insensitive host; an
+    entry without a port matches any port) may be relayed; everything else is refused
+    with `403` and no datagrams flow. When empty (the default) the allowlist is not
+    enforced.
+  - **Private-network block** — the relay honours the same
+    `forwardProxyBlockPrivateNetworks` policy the forward proxy uses (via
+    `InetAddressValidator`): when that flag is enabled, a CONNECT-UDP target resolving
+    to a loopback, link-local, RFC 1918 / RFC 4193 private, wildcard, or cloud-metadata
+    address (e.g. `169.254.169.254`) is refused with `403`. The authority is resolved
+    exactly **once**; the *same* resolved `InetAddress` is both validated and connected
+    (and an unresolvable target is refused), so there is no DNS-rebinding / TOCTOU
+    window where the checked address and the connected address could differ.
+
+  Refusals return a **generic** `403` body (`"CONNECT-UDP target not permitted"`) —
+  identical for allowlist misses, private-network blocks, and unresolvable targets — so
+  the relay cannot be used as a recon oracle to probe which internal hosts exist; the
+  specific reason and host are logged server-side only. With both controls at their
+  defaults (empty allowlist, `forwardProxyBlockPrivateNetworks=false`) the relay is
+  unrestricted, so existing experimental users are unaffected unless they opt in. It
+  remains intended for controlled test environments; never expose a CONNECT-UDP–enabled
+  HTTP/3 port to untrusted clients.
 - **Request body size cap**: HTTP/3 request bodies are accumulated up to
   `maxRequestBodySize` (default 10 MiB), matching the HTTP/1.1 and HTTP/2 paths;
   a request exceeding the cap is rejected (413 / stream shutdown) rather than

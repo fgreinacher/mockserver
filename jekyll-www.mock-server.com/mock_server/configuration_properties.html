@@ -562,7 +562,7 @@ mockserver.enableCORSForAllResponses=true</code></pre>
 <button id="button_configuration_http3_connect_udp_enabled" class="accordion title"><strong>HTTP/3 CONNECT-UDP (MASQUE) Enabled</strong></button>
 <div class="panel title">
     <p><strong>Experimental.</strong> Enable the CONNECT-UDP (MASQUE, RFC 9298) forward proxy on the HTTP/3 server. When enabled, the server advertises <span class="inline_code">SETTINGS_ENABLE_CONNECT_PROTOCOL</span> (RFC 9220) and extended-CONNECT requests with <span class="inline_code">:protocol=connect-udp</span> are relayed: MockServer opens a UDP socket to the target authority and forwards datagrams in both directions, so an HTTP/3 client can tunnel UDP through MockServer. Normal (non-CONNECT) HTTP/3 requests are unaffected regardless of this setting.</p>
-    <p><strong>Security &mdash; this is an open UDP relay.</strong> When enabled there is no restriction on the relay target, so a client can reach any UDP host:port reachable from MockServer (including private networks, loopback, and cloud metadata endpoints such as 169.254.169.254). This is intended for controlled test environments only &mdash; leave it disabled (the default) and do not expose a CONNECT-UDP&ndash;enabled HTTP/3 port to untrusted clients.</p>
+    <p><strong>Security &mdash; restrict the relay target.</strong> By default the relay can reach any UDP host:port reachable from MockServer (including private networks, loopback, and cloud metadata endpoints such as 169.254.169.254), so it is intended for controlled test environments only. To constrain it, set <span class="inline_code">http3ConnectUdpAllowedTargets</span> (an allowlist) and/or enable <span class="inline_code">forwardProxyBlockPrivateNetworks</span> (which now also blocks private/loopback/metadata CONNECT-UDP targets, exactly as it does for forwarded requests). Even so, leave CONNECT-UDP disabled (the default) unless needed and do not expose a CONNECT-UDP&ndash;enabled HTTP/3 port to untrusted clients.</p>
     <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">false</span></p>
     <p>Java Code:</p>
     <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.http3ConnectUdpEnabled(boolean enabled)</code></pre>
@@ -574,6 +574,23 @@ mockserver.enableCORSForAllResponses=true</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">mockserver.http3ConnectUdpEnabled=...</code></pre>
     <p>Example:</p>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.http3ConnectUdpEnabled="true"</code></pre>
+</div>
+
+<button id="button_configuration_http3_connect_udp_allowed_targets" class="accordion title"><strong>HTTP/3 CONNECT-UDP (MASQUE) Allowed Targets</strong></button>
+<div class="panel title">
+    <p><strong>Experimental.</strong> Restrict which targets the HTTP/3 CONNECT-UDP (MASQUE) relay may reach, as a comma-separated allowlist of <span class="inline_code">host</span> or <span class="inline_code">host:port</span> entries (bracket IPv6 literals, e.g. <span class="inline_code">[::1]:53</span>). Matching is exact and case-insensitive; an entry without a port permits the host on any port. Only relevant when <span class="inline_code">http3ConnectUdpEnabled</span> is <span class="inline_code">true</span>.</p>
+    <p>When empty (the default) the allowlist is not enforced and the relay may reach any target (still subject to <span class="inline_code">forwardProxyBlockPrivateNetworks</span>). When set, a CONNECT-UDP request to a target that does not match any entry is refused with <span class="inline_code">403</span> and no datagrams are relayed &mdash; use this to limit the relay's SSRF exposure to a known set of destinations.</p>
+    <p>Type: <span class="keyword">string</span> Default: <span class="this_value">"" (not enforced)</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.http3ConnectUdpAllowedTargets(String allowedTargets)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.http3ConnectUdpAllowedTargets=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_HTTP3_CONNECT_UDP_ALLOWED_TARGETS=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.http3ConnectUdpAllowedTargets=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.http3ConnectUdpAllowedTargets="dns.example.com:53,[::1]:9090"</code></pre>
 </div>
 
 <button id="button_configuration_max_socket_timeout" class="accordion title"><strong>Maximum Socket Timeout In Millis</strong></button>

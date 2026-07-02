@@ -10,7 +10,6 @@ import io.netty.handler.codec.http3.DefaultHttp3SettingsFrame;
 import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.http3.Http3ServerConnectionHandler;
 import io.netty.handler.codec.http3.Http3SettingsFrame;
-import io.netty.handler.codec.quic.InsecureQuicTokenHandler;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicSslContextBuilder;
@@ -165,7 +164,11 @@ public class Http3Server {
                 .initialMaxStreamDataBidirectionalLocal(initialMaxStreamDataBidi)
                 .initialMaxStreamDataBidirectionalRemote(initialMaxStreamDataBidi)
                 .initialMaxStreamsBidirectional(initialMaxStreamsBidi)
-                .tokenHandler(InsecureQuicTokenHandler.INSTANCE)
+                // source-address-validating (stateless-retry) token handler: binds the
+                // client address into a keyed HMAC so a forged-source Initial packet cannot
+                // obtain a valid retry token, mitigating QUIC address-spoofing / amplification.
+                // Replaces Netty's InsecureQuicTokenHandler (plaintext, forgeable token).
+                .tokenHandler(new SourceAddressQuicTokenHandler())
                 .handler(new ChannelInitializer<QuicChannel>() {
                     @Override
                     protected void initChannel(QuicChannel ch) {
@@ -183,7 +186,7 @@ public class Http3Server {
                                 protected void initChannel(QuicStreamChannel streamCh) {
                                     if (httpState != null && httpActionHandler != null && configuration != null) {
                                         if (connectUdpEnabled) {
-                                            streamCh.pipeline().addLast(new Http3ConnectUdpHandler());
+                                            streamCh.pipeline().addLast(new Http3ConnectUdpHandler(configuration));
                                         }
                                         streamCh.pipeline().addLast(new Http3MockServerHandler(
                                             configuration, mockServerLogger, httpState, httpActionHandler, sharedMetrics,

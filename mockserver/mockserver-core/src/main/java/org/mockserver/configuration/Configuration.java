@@ -97,6 +97,7 @@ public class Configuration {
     private Long http3InitialMaxStreamsBidirectional;
     private Long http3QpackMaxTableCapacity;
     private Boolean http3ConnectUdpEnabled;
+    private String http3ConnectUdpAllowedTargets;
     private Long http3AltSvcMaxAge;
     private Boolean http3AdvertiseAltSvc;
     private Map<String, String> logLevelOverrides;
@@ -1440,6 +1441,18 @@ public class Configuration {
 
     public Configuration http3ConnectUdpEnabled(Boolean http3ConnectUdpEnabled) {
         this.http3ConnectUdpEnabled = http3ConnectUdpEnabled;
+        return this;
+    }
+
+    public String http3ConnectUdpAllowedTargets() {
+        if (http3ConnectUdpAllowedTargets == null) {
+            return ConfigurationProperties.http3ConnectUdpAllowedTargets();
+        }
+        return http3ConnectUdpAllowedTargets;
+    }
+
+    public Configuration http3ConnectUdpAllowedTargets(String http3ConnectUdpAllowedTargets) {
+        this.http3ConnectUdpAllowedTargets = http3ConnectUdpAllowedTargets;
         return this;
     }
 

@@ -6,6 +6,9 @@ import org.junit.Test;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.Assert.assertThrows;
@@ -130,6 +133,49 @@ public class InetAddressValidatorTest {
     public void shouldTreatBlankHostAsNoOp() {
         // ambiguous input should not raise — caller will surface its own error
         InetAddressValidator.validateForwardTarget(enabled, "");
-        InetAddressValidator.validateForwardTarget(enabled, null);
+        InetAddressValidator.validateForwardTarget(enabled, (String) null);
+    }
+
+    // ---- InetAddress overload (validate the SAME resolved address that is connected) ----
+
+    @Test
+    public void shouldBlockLoopbackInetAddressWhenEnabled() throws UnknownHostException {
+        InetAddress loopback = InetAddress.getByName("127.0.0.1");
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> InetAddressValidator.validateForwardTarget(enabled, loopback));
+        assertThat(ex.getMessage(), containsString("loopback"));
+    }
+
+    @Test
+    public void shouldBlockCloudMetadataInetAddressWhenEnabled() throws UnknownHostException {
+        InetAddress metadata = InetAddress.getByName("169.254.169.254");
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> InetAddressValidator.validateForwardTarget(enabled, metadata));
+        assertThat(ex.getMessage(), containsString("metadata"));
+    }
+
+    @Test
+    public void shouldBlockRfc1918InetAddressWhenEnabled() throws UnknownHostException {
+        InetAddress priv = InetAddress.getByName("10.1.2.3");
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+            () -> InetAddressValidator.validateForwardTarget(enabled, priv));
+        assertThat(ex.getMessage(), containsString("private"));
+    }
+
+    @Test
+    public void shouldAllowPublicInetAddressWhenEnabled() throws UnknownHostException {
+        // literal public address so no DNS dependency; must not throw
+        InetAddressValidator.validateForwardTarget(enabled, InetAddress.getByName("8.8.8.8"));
+    }
+
+    @Test
+    public void shouldBeNoOpForInetAddressOverloadWhenDisabled() throws UnknownHostException {
+        // even a loopback address passes when the feature is disabled
+        InetAddressValidator.validateForwardTarget(disabled, InetAddress.getByName("127.0.0.1"));
+    }
+
+    @Test
+    public void shouldTreatNullInetAddressAsNoOp() {
+        InetAddressValidator.validateForwardTarget(enabled, (InetAddress) null);
     }
 }

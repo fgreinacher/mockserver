@@ -6,9 +6,14 @@ import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3DataFrame;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 import org.junit.Test;
+import org.mockserver.configuration.Configuration;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.mockserver.configuration.Configuration.configuration;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
@@ -164,6 +169,142 @@ public class Http3ConnectUdpHandlerTest {
         responseBody.release();
 
         channel.finish();
+    }
+
+    // ---- allowlist + SSRF rejection tests (EmbeddedChannel, no native QUIC needed) ----
+
+    @Test
+    public void shouldRejectConnectUdpTargetNotInAllowlist() {
+        Configuration config = configuration()
+            .http3ConnectUdpAllowedTargets("allowed.example.com:443");
+        EmbeddedChannel channel = new EmbeddedChannel(new Http3ConnectUdpHandler(config));
+
+        DefaultHttp3HeadersFrame connectHeaders = new DefaultHttp3HeadersFrame();
+        connectHeaders.headers().method("CONNECT");
+        connectHeaders.headers().protocol("connect-udp");
+        connectHeaders.headers().authority("other.example.com:443");
+
+        channel.writeInbound(connectHeaders);
+
+        Http3HeadersFrame responseHeaders = channel.readOutbound();
+        assertNotNull("should write error response headers", responseHeaders);
+        assertThat("status should be 403 for a non-allowlisted target",
+            responseHeaders.headers().status().toString(), is("403"));
+
+        Http3DataFrame responseBody = channel.readOutbound();
+        assertNotNull("should write error body", responseBody);
+        String allowlistBody = responseBody.content().toString(StandardCharsets.UTF_8);
+        assertThat("body should be the generic refusal (no internal detail leaked)",
+            allowlistBody, containsString("CONNECT-UDP target not permitted"));
+        assertThat("body must NOT leak the allowlist property name or target host",
+            allowlistBody, not(anyOf(containsString("http3ConnectUdpAllowedTargets"), containsString("other.example.com"))));
+        responseBody.release();
+
+        channel.finish();
+    }
+
+    @Test
+    public void shouldRejectUnresolvableConnectUdpTarget() {
+        EmbeddedChannel channel = new EmbeddedChannel(new Http3ConnectUdpHandler(configuration()));
+
+        DefaultHttp3HeadersFrame connectHeaders = new DefaultHttp3HeadersFrame();
+        connectHeaders.headers().method("CONNECT");
+        connectHeaders.headers().protocol("connect-udp");
+        // .invalid is a reserved TLD (RFC 6761) that never resolves
+        connectHeaders.headers().authority("nonexistent.invalid:443");
+
+        channel.writeInbound(connectHeaders);
+
+        Http3HeadersFrame responseHeaders = channel.readOutbound();
+        assertNotNull("should write error response headers", responseHeaders);
+        assertThat("status should be 403 for an unresolvable target",
+            responseHeaders.headers().status().toString(), is("403"));
+
+        Http3DataFrame responseBody = channel.readOutbound();
+        assertNotNull("should write error body", responseBody);
+        assertThat("body should be the generic refusal",
+            responseBody.content().toString(StandardCharsets.UTF_8),
+            containsString("CONNECT-UDP target not permitted"));
+        responseBody.release();
+
+        channel.finish();
+    }
+
+    @Test
+    public void shouldRejectConnectUdpToLoopbackWhenSsrfBlockingEnabled() {
+        Configuration config = configuration()
+            .forwardProxyBlockPrivateNetworks(true);
+        EmbeddedChannel channel = new EmbeddedChannel(new Http3ConnectUdpHandler(config));
+
+        DefaultHttp3HeadersFrame connectHeaders = new DefaultHttp3HeadersFrame();
+        connectHeaders.headers().method("CONNECT");
+        connectHeaders.headers().protocol("connect-udp");
+        connectHeaders.headers().authority("127.0.0.1:53");
+
+        channel.writeInbound(connectHeaders);
+
+        Http3HeadersFrame responseHeaders = channel.readOutbound();
+        assertNotNull("should write error response headers", responseHeaders);
+        assertThat("status should be 403 for a blocked loopback target",
+            responseHeaders.headers().status().toString(), is("403"));
+
+        Http3DataFrame responseBody = channel.readOutbound();
+        assertNotNull("should write error body", responseBody);
+        String ssrfBody = responseBody.content().toString(StandardCharsets.UTF_8);
+        assertThat("body should be the generic refusal (identical to the allowlist refusal)",
+            ssrfBody, containsString("CONNECT-UDP target not permitted"));
+        assertThat("body must NOT leak the blocked host or reason",
+            ssrfBody, not(anyOf(containsString("127.0.0.1"), containsString("loopback"), containsString("blocked"))));
+        responseBody.release();
+
+        channel.finish();
+    }
+
+    // ---- matchesAllowlist tests ----
+
+    @Test
+    public void shouldMatchExactHostAndPort() {
+        assertTrue(Http3ConnectUdpHandler.matchesAllowlist("api.example.com:443", "api.example.com", 443));
+    }
+
+    @Test
+    public void shouldMatchHostEntryOnAnyPort() {
+        assertTrue(Http3ConnectUdpHandler.matchesAllowlist("api.example.com", "api.example.com", 8080));
+    }
+
+    @Test
+    public void shouldMatchCaseInsensitively() {
+        assertTrue(Http3ConnectUdpHandler.matchesAllowlist("API.Example.COM:443", "api.example.com", 443));
+    }
+
+    @Test
+    public void shouldNotMatchWhenPortDiffers() {
+        assertFalse(Http3ConnectUdpHandler.matchesAllowlist("api.example.com:443", "api.example.com", 8443));
+    }
+
+    @Test
+    public void shouldNotMatchWhenHostDiffers() {
+        assertFalse(Http3ConnectUdpHandler.matchesAllowlist("api.example.com:443", "evil.example.com", 443));
+    }
+
+    @Test
+    public void shouldMatchOneOfSeveralCommaSeparatedEntries() {
+        String allowlist = "a.example.com:53, b.example.com, [::1]:9090";
+        assertTrue(Http3ConnectUdpHandler.matchesAllowlist(allowlist, "b.example.com", 12345));
+        assertTrue(Http3ConnectUdpHandler.matchesAllowlist(allowlist, "a.example.com", 53));
+        assertFalse(Http3ConnectUdpHandler.matchesAllowlist(allowlist, "a.example.com", 54));
+    }
+
+    @Test
+    public void shouldMatchBracketedIpv6EntryWithPort() {
+        assertTrue(Http3ConnectUdpHandler.matchesAllowlist("[::1]:9090", "::1", 9090));
+        assertFalse(Http3ConnectUdpHandler.matchesAllowlist("[::1]:9090", "::1", 9091));
+    }
+
+    @Test
+    public void shouldIgnoreBlankEntries() {
+        assertTrue(Http3ConnectUdpHandler.matchesAllowlist(" , api.example.com:443 , ", "api.example.com", 443));
+        assertFalse(Http3ConnectUdpHandler.matchesAllowlist(" , , ", "api.example.com", 443));
     }
 
     // ---- parseAuthority tests ----

@@ -37,10 +37,7 @@ public final class InetAddressValidator {
      * @param host          target host (may be a name or literal address)
      */
     public static void validateForwardTarget(Configuration configuration, String host) {
-        boolean enabled = configuration != null
-            ? Boolean.TRUE.equals(configuration.forwardProxyBlockPrivateNetworks())
-            : ConfigurationProperties.forwardProxyBlockPrivateNetworks();
-        if (!enabled) {
+        if (!isEnabled(configuration)) {
             return;
         }
         if (isBlank(host)) {
@@ -54,6 +51,34 @@ public final class InetAddressValidator {
             throw new IllegalArgumentException("Forward target host \"" + host + "\" could not be resolved", e);
         }
         rejectIfBlocked(host, address);
+    }
+
+    /**
+     * Validate an <strong>already-resolved</strong> forward/relay target. Runs the
+     * identical block checks as {@link #validateForwardTarget(Configuration, String)}
+     * but on a concrete {@link InetAddress} rather than re-resolving a host string.
+     * This lets a caller validate and then connect to the <em>same</em> resolved
+     * address, closing the DNS-rebinding / TOCTOU window where a hostname could
+     * resolve to a benign address for the check and an internal address for the
+     * connect. No-op when the feature is disabled.
+     *
+     * @param configuration MockServer configuration (may be null to fall back to global properties)
+     * @param address       the concrete resolved target address (null is treated as nothing to check)
+     */
+    public static void validateForwardTarget(Configuration configuration, InetAddress address) {
+        if (!isEnabled(configuration)) {
+            return;
+        }
+        if (address == null) {
+            return;
+        }
+        rejectIfBlocked(address.getHostAddress(), address);
+    }
+
+    private static boolean isEnabled(Configuration configuration) {
+        return configuration != null
+            ? Boolean.TRUE.equals(configuration.forwardProxyBlockPrivateNetworks())
+            : ConfigurationProperties.forwardProxyBlockPrivateNetworks();
     }
 
     private static void rejectIfBlocked(String requestedHost, InetAddress address) {

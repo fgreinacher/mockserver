@@ -14,11 +14,17 @@ import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3DataFrame;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import org.mockserver.configuration.Configuration;
+import org.mockserver.proxyconfiguration.InetAddressValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
+
+import static org.apache.commons.lang3.StringUtils.isBlank;
 
 /**
  * HTTP/3 CONNECT-UDP (MASQUE, RFC 9298) relay handler.
@@ -54,6 +60,21 @@ import java.nio.charset.StandardCharsets;
  * the next handler in the pipeline (the mock handler) -- MockServer is not a
  * TCP forward proxy.
  * <p>
+ * <strong>Destination restriction (SSRF mitigation):</strong> before a tunnel is
+ * established the requested target is subjected to two checks:
+ * <ol>
+ *   <li>an optional allowlist ({@code http3ConnectUdpAllowedTargets}) — when
+ *       non-empty, only targets whose {@code host} or {@code host:port} matches an
+ *       allowlist entry may be relayed; everything else is refused with 403;</li>
+ *   <li>the same private-network / metadata block the forward proxy uses
+ *       ({@code forwardProxyBlockPrivateNetworks} via {@link InetAddressValidator})
+ *       — when enabled, a target resolving to a loopback, link-local, RFC 1918 /
+ *       RFC 4193 private, wildcard, or cloud-metadata address is refused with 403.</li>
+ * </ol>
+ * With an empty allowlist and {@code forwardProxyBlockPrivateNetworks=false}
+ * (both defaults) behaviour is unchanged — the relay is unrestricted — so existing
+ * experimental users are unaffected unless they opt in to a restriction.
+ * <p>
  * <strong>Framing note:</strong> a production MASQUE proxy would use the HTTP
  * Datagram / Capsule Protocol (RFC 9297) framing. This implementation uses a
  * simplified 1:1 DATA-frame-to-UDP-datagram mapping which is sufficient for
@@ -69,6 +90,15 @@ public class Http3ConnectUdpHandler extends ChannelInboundHandlerAdapter {
     private static final Logger LOG = LoggerFactory.getLogger(Http3ConnectUdpHandler.class);
 
     /**
+     * MockServer configuration used to resolve the CONNECT-UDP allowlist
+     * ({@code http3ConnectUdpAllowedTargets}) and the SSRF private-network block
+     * ({@code forwardProxyBlockPrivateNetworks}). May be null in legacy/test
+     * constructions, in which case no allowlist is enforced and the SSRF block
+     * falls back to the global {@code ConfigurationProperties} (default off).
+     */
+    private final Configuration configuration;
+
+    /**
      * The UDP channel connected to the relay target. Null until a CONNECT-UDP
      * tunnel is established. Volatile because the channel may be closed from
      * a different thread (e.g. event loop vs handler removal).
@@ -81,6 +111,22 @@ public class Http3ConnectUdpHandler extends ChannelInboundHandlerAdapter {
      * handler is transparent and passes everything through.
      */
     private boolean tunnelEstablished;
+
+    /**
+     * Legacy/test constructor: no configuration, so no allowlist is enforced and
+     * the SSRF block falls back to global {@code ConfigurationProperties} (default off).
+     */
+    public Http3ConnectUdpHandler() {
+        this(null);
+    }
+
+    /**
+     * @param configuration the MockServer configuration used to resolve the
+     *                      CONNECT-UDP allowlist and the SSRF private-network block
+     */
+    public Http3ConnectUdpHandler(Configuration configuration) {
+        this.configuration = configuration;
+    }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -128,7 +174,45 @@ public class Http3ConnectUdpHandler extends ChannelInboundHandlerAdapter {
             return;
         }
 
-        LOG.info("CONNECT-UDP tunnel requested to {} -- establishing UDP relay", targetAddress);
+        // the raw host string as supplied by the client (no brackets), used only for
+        // the allowlist match; the SSRF block and the connect both use the single
+        // resolved address below so they can never diverge (DNS-rebinding / TOCTOU)
+        String targetHost = targetAddress.getHostString();
+        int targetPort = targetAddress.getPort();
+
+        // (1) allowlist: when configured non-empty, only listed targets may be relayed
+        String allowedTargets = configuration != null ? configuration.http3ConnectUdpAllowedTargets() : null;
+        if (!isBlank(allowedTargets) && !matchesAllowlist(allowedTargets, targetHost, targetPort)) {
+            sendTargetNotPermitted(ctx, "not in http3ConnectUdpAllowedTargets: " + authority);
+            return;
+        }
+
+        // Resolve the authority host EXACTLY ONCE. parseAuthority already resolved it
+        // when constructing the InetSocketAddress; if it could not be resolved we must
+        // reject rather than proceed, otherwise we could validate one address and
+        // connect to another. Never re-resolve the host string after this point.
+        if (targetAddress.isUnresolved() || targetAddress.getAddress() == null) {
+            sendTargetNotPermitted(ctx, "unresolved CONNECT-UDP target: " + authority);
+            return;
+        }
+        InetAddress resolvedTarget = targetAddress.getAddress();
+
+        // (2) SSRF private-network block: reuse the forward-proxy policy on the SAME
+        // resolved address we will connect to, so a target resolving to loopback /
+        // RFC1918 / link-local / ULA / wildcard / metadata is refused when
+        // forwardProxyBlockPrivateNetworks is enabled (no-op when disabled)
+        try {
+            InetAddressValidator.validateForwardTarget(configuration, resolvedTarget);
+        } catch (IllegalArgumentException e) {
+            sendTargetNotPermitted(ctx, "SSRF block for " + authority + ": " + e.getMessage());
+            return;
+        }
+
+        // Connect to the exact validated InetAddress (wrapping it in a fresh
+        // InetSocketAddress does NOT re-resolve), guaranteeing validated == connected.
+        InetSocketAddress connectAddress = new InetSocketAddress(resolvedTarget, targetPort);
+
+        LOG.info("CONNECT-UDP tunnel requested to {} -- establishing UDP relay", connectAddress);
 
         // Open a UDP channel connected to the target.
         // Reuse the parent channel's event loop group for the UDP socket.
@@ -140,27 +224,23 @@ public class Http3ConnectUdpHandler extends ChannelInboundHandlerAdapter {
         ChannelFuture bindFuture = udpBootstrap.bind(0);
         bindFuture.addListener(future -> {
             if (!future.isSuccess()) {
-                LOG.error("Failed to bind UDP channel for CONNECT-UDP relay to {}",
-                    targetAddress, future.cause());
-                sendErrorResponse(ctx, "502", "Failed to establish UDP relay: " + future.cause().getMessage());
+                sendRelayUnavailable(ctx, "bind failed for " + connectAddress, future.cause());
                 return;
             }
 
             Channel boundChannel = bindFuture.channel();
-            ChannelFuture connectFuture = boundChannel.connect(targetAddress);
+            ChannelFuture connectFuture = boundChannel.connect(connectAddress);
             connectFuture.addListener(connFuture -> {
                 if (!connFuture.isSuccess()) {
-                    LOG.error("Failed to connect UDP channel to {} for CONNECT-UDP relay",
-                        targetAddress, connFuture.cause());
                     boundChannel.close();
-                    sendErrorResponse(ctx, "502", "Failed to connect UDP relay: " + connFuture.cause().getMessage());
+                    sendRelayUnavailable(ctx, "connect failed for " + connectAddress, connFuture.cause());
                     return;
                 }
 
                 this.udpChannel = boundChannel;
                 this.tunnelEstablished = true;
 
-                LOG.info("CONNECT-UDP tunnel established to {} -- relaying datagrams", targetAddress);
+                LOG.info("CONNECT-UDP tunnel established to {} -- relaying datagrams", connectAddress);
 
                 // Respond 200 OK to the client to indicate the tunnel is up
                 DefaultHttp3HeadersFrame responseHeaders = new DefaultHttp3HeadersFrame();
@@ -197,11 +277,41 @@ public class Http3ConnectUdpHandler extends ChannelInboundHandlerAdapter {
     }
 
     /**
-     * Send an error response and close the QUIC stream.
+     * Refuse a CONNECT-UDP target with a <strong>generic</strong> 403 body. The
+     * specific reason (allowlist miss vs SSRF block vs unresolved, and which host)
+     * is logged server-side only, so the client cannot use the relay as a recon
+     * oracle to probe which internal hosts exist or are blocked. Both the allowlist
+     * and SSRF paths return the identical body so they are indistinguishable.
+     */
+    private void sendTargetNotPermitted(ChannelHandlerContext ctx, String serverSideReason) {
+        LOG.warn("CONNECT-UDP target refused ({})", serverSideReason);
+        writeErrorResponse(ctx, "403", "CONNECT-UDP target not permitted");
+    }
+
+    /**
+     * Report a relay setup failure (UDP bind/connect) with a generic 502 body,
+     * logging the concrete cause server-side only.
+     */
+    private void sendRelayUnavailable(ChannelHandlerContext ctx, String serverSideReason, Throwable cause) {
+        LOG.error("CONNECT-UDP relay unavailable ({})", serverSideReason, cause);
+        writeErrorResponse(ctx, "502", "CONNECT-UDP relay unavailable");
+    }
+
+    /**
+     * Send an error response and close the QUIC stream. The {@code message} is
+     * returned to the client verbatim, so this must only be used for non-sensitive
+     * messages that describe the client's own malformed request (e.g. a missing or
+     * malformed {@code :authority}) -- never to echo internal host/topology detail.
      */
     private void sendErrorResponse(ChannelHandlerContext ctx, String status, String message) {
         LOG.warn("CONNECT-UDP error: {} -- {}", status, message);
+        writeErrorResponse(ctx, status, message);
+    }
 
+    /**
+     * Write an HTTP/3 error response (headers + JSON body) and shut down the stream.
+     */
+    private void writeErrorResponse(ChannelHandlerContext ctx, String status, String message) {
         String body = "{\"error\":\"" + escapeJsonString(message) + "\"}";
         byte[] bodyBytes = body.getBytes(StandardCharsets.UTF_8);
 
@@ -214,6 +324,73 @@ public class Http3ConnectUdpHandler extends ChannelInboundHandlerAdapter {
         ctx.write(responseHeaders);
         ctx.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(bodyBytes)))
             .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+    }
+
+    /**
+     * Determine whether a target {@code host}/{@code port} is permitted by a
+     * comma-separated allowlist of {@code host} or {@code host:port} entries.
+     * <p>
+     * Matching is by exact, case-insensitive host equality. An entry without a
+     * port matches the host on any port; an entry with a port matches only that
+     * host and port. IPv6 literals must be bracketed in both the entry and (per
+     * RFC 3986) the request authority, e.g. {@code [::1]:53}. Blank entries are
+     * ignored. An entirely blank allowlist is treated as "not enforced" by the
+     * caller (this method is only invoked for a non-blank allowlist).
+     *
+     * @return true if at least one allowlist entry matches the target
+     */
+    static boolean matchesAllowlist(String allowedTargetsCsv, String host, int port) {
+        if (allowedTargetsCsv == null || host == null) {
+            return false;
+        }
+        String target = host.toLowerCase(Locale.ROOT);
+        for (String raw : allowedTargetsCsv.split(",")) {
+            String entry = raw.trim();
+            if (entry.isEmpty()) {
+                continue;
+            }
+            String entryHost;
+            Integer entryPort;
+            if (entry.startsWith("[")) {
+                // [ipv6] or [ipv6]:port
+                int closeBracket = entry.indexOf(']');
+                if (closeBracket < 0) {
+                    continue;
+                }
+                entryHost = entry.substring(1, closeBracket);
+                if (closeBracket + 1 < entry.length() && entry.charAt(closeBracket + 1) == ':') {
+                    entryPort = parsePort(entry.substring(closeBracket + 2));
+                    if (entryPort == null) {
+                        continue;
+                    }
+                } else {
+                    entryPort = null;
+                }
+            } else {
+                int lastColon = entry.lastIndexOf(':');
+                Integer maybePort = lastColon >= 0 ? parsePort(entry.substring(lastColon + 1)) : null;
+                if (maybePort != null) {
+                    entryHost = entry.substring(0, lastColon);
+                    entryPort = maybePort;
+                } else {
+                    entryHost = entry;
+                    entryPort = null;
+                }
+            }
+            if (entryHost.equalsIgnoreCase(target) && (entryPort == null || entryPort == port)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static Integer parsePort(String value) {
+        try {
+            int p = Integer.parseInt(value.trim());
+            return (p > 0 && p <= 65535) ? p : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /**

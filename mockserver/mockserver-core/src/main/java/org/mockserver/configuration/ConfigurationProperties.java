@@ -248,6 +248,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_HTTP3_INITIAL_MAX_STREAMS_BIDIRECTIONAL = "mockserver.http3InitialMaxStreamsBidirectional";
     private static final String MOCKSERVER_HTTP3_QPACK_MAX_TABLE_CAPACITY = "mockserver.http3QpackMaxTableCapacity";
     private static final String MOCKSERVER_HTTP3_CONNECT_UDP_ENABLED = "mockserver.http3ConnectUdpEnabled";
+    private static final String MOCKSERVER_HTTP3_CONNECT_UDP_ALLOWED_TARGETS = "mockserver.http3ConnectUdpAllowedTargets";
     private static final String MOCKSERVER_HTTP3_ALT_SVC_MAX_AGE = "mockserver.http3AltSvcMaxAge";
     private static final String MOCKSERVER_HTTP3_ADVERTISE_ALT_SVC = "mockserver.http3AdvertiseAltSvc";
 
@@ -1388,6 +1389,27 @@ public class ConfigurationProperties {
 
     public static void http3ConnectUdpEnabled(boolean enabled) {
         setProperty(MOCKSERVER_HTTP3_CONNECT_UDP_ENABLED, "" + enabled);
+    }
+
+    /**
+     * Allowlist of targets the HTTP/3 CONNECT-UDP (MASQUE) relay may reach, as a
+     * comma-separated list of {@code host} or {@code host:port} entries (IPv6 literals
+     * bracketed, e.g. {@code [::1]:53}). Matching is exact and case-insensitive; an
+     * entry without a port permits the host on any port. Only relevant when
+     * {@code http3ConnectUdpEnabled=true}.
+     * <p>
+     * When <strong>empty</strong> (the default) the allowlist is not enforced and the
+     * relay may reach any target (subject to {@code forwardProxyBlockPrivateNetworks}).
+     * When <strong>non-empty</strong>, a CONNECT-UDP request to a target that does not
+     * match any entry is refused (403) and no datagrams are relayed. This constrains the
+     * relay's SSRF exposure. Default: "" (not enforced).
+     */
+    public static String http3ConnectUdpAllowedTargets() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_HTTP3_CONNECT_UDP_ALLOWED_TARGETS, "MOCKSERVER_HTTP3_CONNECT_UDP_ALLOWED_TARGETS", "");
+    }
+
+    public static void http3ConnectUdpAllowedTargets(String allowedTargets) {
+        setProperty(MOCKSERVER_HTTP3_CONNECT_UDP_ALLOWED_TARGETS, allowedTargets);
     }
 
     /**
