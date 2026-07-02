@@ -2,8 +2,6 @@ import { useMemo, useState, useCallback, useRef, memo } from 'react';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
-import TextField from '@mui/material/TextField';
-import InputAdornment from '@mui/material/InputAdornment';
 import Chip from '@mui/material/Chip';
 import Tabs from '@mui/material/Tabs';
 import Tab from '@mui/material/Tab';
@@ -20,21 +18,30 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
-import SearchIcon from '@mui/icons-material/Search';
 import SaveAltIcon from '@mui/icons-material/SaveAlt';
 import ReplayIcon from '@mui/icons-material/Replay';
+import TerminalIcon from '@mui/icons-material/Terminal';
+import HelpOutlinedIcon from '@mui/icons-material/HelpOutlined';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import CheckIcon from '@mui/icons-material/Check';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import ChecklistIcon from '@mui/icons-material/Checklist';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
 import { useDashboardStore } from '../store';
 import { useConnectionParams } from '../hooks/useConnectionParams';
 import { useDragResize } from '../hooks/useDragResize';
+import { useDebugMismatchContext } from '../hooks/DebugMismatchContext';
+import { useGenerateStubContext } from '../hooks/GenerateStubContext';
 import JsonViewer from './JsonViewer';
 import ErrorBoundary from './ErrorBoundary';
 import ConfirmDialog from './ConfirmDialog';
 import CaptureAsMockDialog from './CaptureAsMockDialog';
 import DiffRequestsDialog from './DiffRequestsDialog';
+import ExplainUnmatchedDialog from './ExplainUnmatchedDialog';
+import OperatorSearchField from './OperatorSearchField';
+import CopyButton from './CopyButton';
 import { clearLoggedRequest, requestDefinitionOf } from '../lib/traffic';
+import { parseSearchTerm, matchesItemSearch } from '../lib/searchMatcher';
 import LlmUsageDetail from './LlmUsageDetail';
 import {
   AnthropicConversationView,
@@ -391,7 +398,28 @@ function cachedSearchText(value: Record<string, unknown>): string {
 }
 
 function matchesSearch(item: JsonListItem, summary: TrafficSummary, term: string): boolean {
-  const lower = term.toLowerCase();
+  // Honour the shared search operators (status:/method:/path:/`/regex/`) via
+  // lib/searchMatcher.ts so Traffic behaves the same as the dashboard panels.
+  const parsed = parseSearchTerm(term);
+
+  // Every field operator must match (AND semantics). Delegate to the shared
+  // matcher with an operator-only query so the comparison logic stays in one place.
+  if (parsed.operators.length > 0) {
+    const operatorQuery = parsed.operators
+      .map((op) => `${op.field}:${op.comparator ?? ''}${op.expr}`)
+      .join(' ');
+    if (!matchesItemSearch(item.value, operatorQuery)) return false;
+  }
+
+  // No free text left → the operators alone decide the match.
+  if (parsed.text.length === 0) return true;
+
+  // Free text: a `/regex/` term and the shared searchable fields are handled by
+  // the shared matcher; fall back to the richer local index (summary-derived
+  // fields plus decoded request/response body text, incl. base64 bodies).
+  if (matchesItemSearch(item.value, parsed.text)) return true;
+
+  const lower = parsed.text.toLowerCase();
   const parts = [
     summary.host,
     summary.method,
@@ -402,6 +430,120 @@ function matchesSearch(item: JsonListItem, summary: TrafficSummary, term: string
   ].filter(Boolean);
   if (parts.some((p) => p!.toLowerCase().includes(lower))) return true;
   return cachedSearchText(item.value).includes(lower);
+}
+
+// ---------------------------------------------------------------------------
+// Unmatched detection + "copy as curl"
+// ---------------------------------------------------------------------------
+
+/**
+ * True when a captured response indicates the request matched no expectation.
+ * MockServer answers an unmatched request with `404 Not Found`, so a recorded
+ * (non-proxied) request carrying that response reached no mock. Proxied requests
+ * are excluded by the caller since their 404 comes from the real upstream.
+ */
+export function isUnmatchedResponse(value: Record<string, unknown>): boolean {
+  const res = value['httpResponse'];
+  if (!res || typeof res !== 'object' || Array.isArray(res)) return false;
+  const r = res as Record<string, unknown>;
+  if (r['statusCode'] !== 404) return false;
+  const rp = r['reasonPhrase'];
+  return typeof rp === 'string' && rp.trim().toLowerCase() === 'not found';
+}
+
+/** Single-quote a string for a POSIX shell, escaping embedded single quotes. */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Flatten MockServer-format headers ([{name,values}] or {name:[values]}) into [name, value] pairs. */
+function headerPairs(headers: unknown): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  if (Array.isArray(headers)) {
+    for (const h of headers) {
+      if (h && typeof h === 'object' && !Array.isArray(h)) {
+        const name = (h as Record<string, unknown>)['name'];
+        const values = (h as Record<string, unknown>)['values'];
+        if (typeof name === 'string' && Array.isArray(values)) {
+          for (const v of values) out.push([name, String(v)]);
+        }
+      }
+    }
+  } else if (headers && typeof headers === 'object') {
+    for (const [k, v] of Object.entries(headers as Record<string, unknown>)) {
+      if (Array.isArray(v)) for (const x of v) out.push([k, String(x)]);
+      else if (typeof v === 'string') out.push([k, v]);
+    }
+  }
+  return out;
+}
+
+/** Read the Host header value from either header shape. */
+function hostFromHeaders(headers: unknown): string {
+  for (const [name, value] of headerPairs(headers)) {
+    if (name.toLowerCase() === 'host') return value;
+  }
+  return '';
+}
+
+/** Build a `?a=1&b=2` query string from MockServer-format query parameters. */
+function queryStringForCurl(params: unknown): string {
+  const pairs: string[] = [];
+  if (Array.isArray(params)) {
+    for (const p of params) {
+      if (p && typeof p === 'object') {
+        const name = (p as Record<string, unknown>)['name'];
+        const values = (p as Record<string, unknown>)['values'];
+        if (typeof name === 'string' && Array.isArray(values)) {
+          for (const v of values) pairs.push(`${encodeURIComponent(name)}=${encodeURIComponent(String(v))}`);
+        }
+      }
+    }
+  } else if (params && typeof params === 'object') {
+    for (const [k, v] of Object.entries(params as Record<string, unknown>)) {
+      if (Array.isArray(v)) for (const x of v) pairs.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(x))}`);
+      else if (typeof v === 'string') pairs.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+    }
+  }
+  return pairs.length > 0 ? `?${pairs.join('&')}` : '';
+}
+
+/**
+ * Build a `curl` command that re-issues the captured request against its original
+ * upstream target, so a user can reproduce it from a terminal. Secret headers are
+ * masked (consistent with the Raw JSON / Diff views) — substitute a real
+ * credential before running. Returns an empty string when there is no request.
+ */
+export function buildRequestCurl(value: Record<string, unknown>, summary: TrafficSummary): string {
+  const masked = maskSecretsInValue(value);
+  const req = masked['httpRequest'];
+  if (!req || typeof req !== 'object' || Array.isArray(req)) return '';
+  const r = req as Record<string, unknown>;
+
+  const method = typeof r['method'] === 'string' && r['method'] ? (r['method'] as string) : 'GET';
+  const scheme = r['secure'] === true ? 'https' : 'http';
+  const host = hostFromHeaders(r['headers']) || summary.host || 'localhost';
+  const path = typeof r['path'] === 'string' ? (r['path'] as string) : '/';
+  const query = path.includes('?') ? '' : queryStringForCurl(r['queryStringParameters']);
+  const url = `${scheme}://${host}${path}${query}`;
+
+  const lines = [`curl -X ${shellQuote(method)} ${shellQuote(url)}`];
+  for (const [name, val] of headerPairs(r['headers'])) {
+    const lower = name.toLowerCase();
+    // Host is carried in the URL; Content-Length is recomputed by curl.
+    if (lower === 'host' || lower === 'content-length') continue;
+    lines.push(`  -H ${shellQuote(`${name}: ${val}`)}`);
+  }
+
+  const body = extractBodyContent(r['body']);
+  const bodyStr = typeof body === 'string'
+    ? body
+    : body != null
+      ? (() => { try { return JSON.stringify(body); } catch { return ''; } })()
+      : '';
+  if (bodyStr) lines.push(`  --data-raw ${shellQuote(bodyStr)}`);
+
+  return lines.join(' \\\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,6 +1240,114 @@ interface DetailPaneProps {
   scriptedTurns: ScriptedTurn[];
   onCaptureAsMock?: () => void;
   onReplay?: () => void;
+  /** When true, this entry matched no expectation — show mismatch-debugging actions. */
+  unmatched?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Detail-pane action buttons — shared across the generic and tabbed layouts so
+// both header rows offer the same actions (Copy as curl, Why?, Generate Stub,
+// Replay, Capture as mock) in the same order and style.
+// ---------------------------------------------------------------------------
+
+interface DetailActionsProps {
+  item: JsonListItem;
+  summary: TrafficSummary;
+  canCapture: boolean;
+  unmatched: boolean;
+  onCaptureAsMock?: () => void;
+  onReplay?: () => void;
+}
+
+const detailActionSx = {
+  fontSize: '0.7rem',
+  textTransform: 'none',
+  whiteSpace: 'nowrap',
+  flexShrink: 0,
+  mr: 0.5,
+} as const;
+
+function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, onReplay }: DetailActionsProps) {
+  const debugMismatch = useDebugMismatchContext();
+  const generateStub = useGenerateStubContext();
+  const [curlCopied, setCurlCopied] = useState(false);
+
+  const httpRequest = useMemo(() => {
+    const req = item.value['httpRequest'];
+    return req && typeof req === 'object' && !Array.isArray(req)
+      ? (req as Record<string, unknown>)
+      : null;
+  }, [item.value]);
+
+  const handleCopyCurl = useCallback(async () => {
+    const curl = buildRequestCurl(item.value, summary);
+    if (!curl) return;
+    try {
+      await navigator.clipboard.writeText(curl);
+      setCurlCopied(true);
+      setTimeout(() => setCurlCopied(false), 1500);
+    } catch {
+      // Clipboard denied (insecure context / permissions) — silently no-op,
+      // consistent with the shared CopyButton's failure handling.
+    }
+  }, [item.value, summary]);
+
+  return (
+    <>
+      {unmatched && debugMismatch && httpRequest && (
+        <Button
+          size="small"
+          color="warning"
+          startIcon={<HelpOutlinedIcon sx={{ fontSize: '0.875rem' }} />}
+          onClick={() => { void debugMismatch(httpRequest); }}
+          sx={detailActionSx}
+        >
+          Why Didn't This Match?
+        </Button>
+      )}
+      {unmatched && generateStub && httpRequest && (
+        <Button
+          size="small"
+          color="info"
+          startIcon={<AutoFixHighIcon sx={{ fontSize: '0.875rem' }} />}
+          onClick={() => { void generateStub(httpRequest); }}
+          sx={detailActionSx}
+        >
+          Generate Stub
+        </Button>
+      )}
+      {httpRequest && (
+        <Button
+          size="small"
+          startIcon={curlCopied ? <CheckIcon sx={{ fontSize: '0.875rem' }} /> : <TerminalIcon sx={{ fontSize: '0.875rem' }} />}
+          onClick={() => { void handleCopyCurl(); }}
+          sx={detailActionSx}
+        >
+          {curlCopied ? 'Copied!' : 'Copy as curl'}
+        </Button>
+      )}
+      {onReplay && (
+        <Button
+          size="small"
+          startIcon={<ReplayIcon sx={{ fontSize: '0.875rem' }} />}
+          onClick={onReplay}
+          sx={detailActionSx}
+        >
+          Replay
+        </Button>
+      )}
+      {canCapture && onCaptureAsMock && (
+        <Button
+          size="small"
+          startIcon={<SaveAltIcon sx={{ fontSize: '0.875rem' }} />}
+          onClick={onCaptureAsMock}
+          sx={detailActionSx}
+        >
+          Capture as mock
+        </Button>
+      )}
+    </>
+  );
 }
 
 /** Build the tab list dynamically from the traffic kind. */
@@ -1121,7 +1371,7 @@ function buildTabs(parsed: ParsedTraffic, hasScriptedTurns: boolean): string[] {
   }
 }
 
-function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay }: DetailPaneProps) {
+function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, unmatched = false }: DetailPaneProps) {
   const tabs = buildTabs(summary.parsed, scriptedTurns.length > 0);
   const [detailTab, setDetailTab] = useState(0);
   const canCapture = isCapturableTraffic(summary.parsed);
@@ -1145,26 +1395,14 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay }:
           <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, fontSize: '0.75rem', flexGrow: 1 }}>
             Raw JSON
           </Typography>
-          {onReplay && (
-            <Button
-              size="small"
-              startIcon={<ReplayIcon sx={{ fontSize: '0.875rem' }} />}
-              onClick={onReplay}
-              sx={{ fontSize: '0.7rem', textTransform: 'none', whiteSpace: 'nowrap', flexShrink: 0, mr: 0.5 }}
-            >
-              Replay
-            </Button>
-          )}
-          {canCapture && onCaptureAsMock && (
-            <Button
-              size="small"
-              startIcon={<SaveAltIcon sx={{ fontSize: '0.875rem' }} />}
-              onClick={onCaptureAsMock}
-              sx={{ fontSize: '0.7rem', textTransform: 'none', whiteSpace: 'nowrap', flexShrink: 0 }}
-            >
-              Capture as mock
-            </Button>
-          )}
+          <DetailActions
+            item={item}
+            summary={summary}
+            canCapture={canCapture}
+            unmatched={unmatched}
+            onCaptureAsMock={onCaptureAsMock}
+            onReplay={onReplay}
+          />
         </Box>
         <Divider />
         <Box sx={{ flex: 1, overflowY: 'auto', p: 1 }}>
@@ -1194,26 +1432,14 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay }:
             <Tab key={label} label={label} />
           ))}
         </Tabs>
-        {onReplay && (
-          <Button
-            size="small"
-            startIcon={<ReplayIcon sx={{ fontSize: '0.875rem' }} />}
-            onClick={onReplay}
-            sx={{ mr: 0.5, fontSize: '0.7rem', textTransform: 'none', whiteSpace: 'nowrap', flexShrink: 0 }}
-          >
-            Replay
-          </Button>
-        )}
-        {canCapture && onCaptureAsMock && (
-          <Button
-            size="small"
-            startIcon={<SaveAltIcon sx={{ fontSize: '0.875rem' }} />}
-            onClick={onCaptureAsMock}
-            sx={{ mr: 0.5, fontSize: '0.7rem', textTransform: 'none', whiteSpace: 'nowrap', flexShrink: 0 }}
-          >
-            Capture as mock
-          </Button>
-        )}
+        <DetailActions
+          item={item}
+          summary={summary}
+          canCapture={canCapture}
+          unmatched={unmatched}
+          onCaptureAsMock={onCaptureAsMock}
+          onReplay={onReplay}
+        />
       </Box>
       <Divider />
       <Box sx={{ flex: 1, overflowY: 'auto', p: 1, minHeight: 0 }}>
@@ -1314,6 +1540,7 @@ export default function TrafficInspector() {
 
   const [captureDialogOpen, setCaptureDialogOpen] = useState(false);
   const [replayDialogOpen, setReplayDialogOpen] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
 
   // Compare mode: pick two requests from the list and diff them field-by-field via the shared
   // DiffRequestsDialog (PUT /mockserver/diff). compareKeys holds the (max two) selected item keys.
@@ -1375,10 +1602,20 @@ export default function TrafficInspector() {
     () => [...proxiedRequests, ...recordedRequests],
     [proxiedRequests, recordedRequests],
   );
+  // Keep the proxied-then-recorded order (matching `allRequests`) and tag each row
+  // with whether it matched no expectation. Only recorded (non-proxied) requests
+  // can be "unmatched" — a proxied 404 comes from the real upstream, not MockServer.
   const summaries = useMemo(
-    () => allRequests.map((item) => ({ item, summary: cachedSummarize(item.value) })),
-    [allRequests],
+    () => [
+      ...proxiedRequests.map((item) => ({ item, summary: cachedSummarize(item.value), unmatched: false })),
+      ...recordedRequests.map((item) => ({ item, summary: cachedSummarize(item.value), unmatched: isUnmatchedResponse(item.value) })),
+    ],
+    [proxiedRequests, recordedRequests],
   );
+
+  // Count of captured requests that matched no expectation, surfaced as a header
+  // badge that opens the Explain-Unmatched dialog.
+  const unmatchedCount = useMemo(() => summaries.filter((s) => s.unmatched).length, [summaries]);
 
   // Filter by search
   const filtered = useMemo(
@@ -1578,27 +1815,22 @@ export default function TrafficInspector() {
               sx={{ height: 18, fontSize: '0.65rem', '& .MuiChip-label': { px: 0.75 } }}
             />
           )}
-          <TextField
+          {unmatchedCount > 0 && (
+            <Tooltip title="Show why these requests didn't match any expectation">
+              <Chip
+                label={`${unmatchedCount > 999 ? '999+' : unmatchedCount} unmatched`}
+                color="warning"
+                size="small"
+                onClick={() => setExplainOpen(true)}
+                sx={{ height: 18, fontSize: '0.65rem', cursor: 'pointer', '& .MuiChip-label': { px: 0.75 } }}
+              />
+            </Tooltip>
+          )}
+          <OperatorSearchField
             id="traffic-inspector-search"
-            size="small"
-            placeholder="Search..."
             value={trafficSearch}
-            onChange={(e) => setTrafficSearch(e.target.value)}
-            slotProps={{
-              input: {
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon fontSize="small" />
-                  </InputAdornment>
-                ),
-              },
-            }}
-            sx={{
-              ml: 'auto',
-              maxWidth: 200,
-              '& .MuiInputBase-root': { height: 28, fontSize: '0.75rem' },
-              '& .MuiSvgIcon-root': { fontSize: '0.875rem' },
-            }}
+            onChange={setTrafficSearch}
+            maxWidth={200}
           />
           <Tooltip title="Pick two requests to diff field-by-field">
             <ToggleButton
@@ -1666,9 +1898,40 @@ export default function TrafficInspector() {
         </Box>
         <Box sx={{ flex: 1, overflowY: 'auto', bgcolor: 'background.default' }}>
           {filtered.length === 0 ? (
-            <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
-              {allRequests.length === 0 ? 'No captured requests yet' : 'No matching requests'}
-            </Typography>
+            allRequests.length === 0 ? (
+              <Box sx={{ p: 2, textAlign: 'center', color: 'text.secondary' }}>
+                <Typography variant="body2" sx={{ mb: 1 }}>No traffic captured yet.</Typography>
+                <Typography variant="caption" component="div" sx={{ mb: 1 }}>
+                  Send a request through MockServer — as a proxy or to a mock — and it appears here. For example:
+                </Typography>
+                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, maxWidth: '100%' }}>
+                  <Box
+                    component="code"
+                    sx={{
+                      fontFamily: monospaceFontFamily,
+                      fontSize: '0.72rem',
+                      px: 1,
+                      py: 0.5,
+                      bgcolor: 'action.hover',
+                      borderRadius: 1,
+                      overflowX: 'auto',
+                      textAlign: 'left',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {`curl -x http://${connectionParams.host}:${connectionParams.port} http://example.com`}
+                  </Box>
+                  <CopyButton text={`curl -x http://${connectionParams.host}:${connectionParams.port} http://example.com`} />
+                </Box>
+                <Typography variant="caption" component="div" sx={{ mt: 1 }}>
+                  New to proxying? See the Get Started tab for proxy setup.
+                </Typography>
+              </Box>
+            ) : (
+              <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
+                No matching requests
+              </Typography>
+            )
           ) : (
             filtered.map(({ item, summary }, index) => (
               <TrafficRow
@@ -1740,6 +2003,7 @@ export default function TrafficInspector() {
               scriptedTurns={scriptedTurns}
               onCaptureAsMock={() => setCaptureDialogOpen(true)}
               onReplay={() => setReplayDialogOpen(true)}
+              unmatched={selectedEntry.unmatched}
             />
           </ErrorBoundary>
         </Paper>
@@ -1779,6 +2043,14 @@ export default function TrafficInspector() {
           initialActual={compareJson[1] ?? ''}
         />
       )}
+
+      {/* Explain unmatched dialog — opened from the "N unmatched" header badge.
+          Queries PUT /mockserver/explainUnmatched for the closest expectations. */}
+      <ExplainUnmatchedDialog
+        open={explainOpen}
+        onClose={() => setExplainOpen(false)}
+        connectionParams={connectionParams}
+      />
 
       <ConfirmDialog
         open={bulkClearConfirm}

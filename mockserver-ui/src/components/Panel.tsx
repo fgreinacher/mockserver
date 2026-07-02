@@ -2,43 +2,10 @@ import { useRef, useEffect, type ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
-import TextField from '@mui/material/TextField';
 import Chip from '@mui/material/Chip';
-import InputAdornment from '@mui/material/InputAdornment';
-import Tooltip from '@mui/material/Tooltip';
-import SearchIcon from '@mui/icons-material/Search';
-import HelpOutlinedIcon from '@mui/icons-material/HelpOutlined';
 import { useDashboardStore } from '../store';
 import { transitions } from '../theme';
-
-// Hint shown in the search box. Surfaces the otherwise-hidden operators that
-// lib/searchMatcher.ts already supports so users can discover them in passing;
-// the full reference lives in the adjacent help tooltip (SEARCH_HELP).
-const SEARCH_PLACEHOLDER = 'Search — try status:>=400, method:POST, path:/api/*, /regex/';
-
-// Operator reference for the search box. Kept in sync with the operators
-// implemented in lib/searchMatcher.ts: KNOWN_FIELDS = status, method, path,
-// plus a /regex/ free-text form. Field operators are ANDed with free text.
-const SEARCH_HELP = (
-  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, py: 0.25, maxWidth: 320 }}>
-    <Typography variant="caption" sx={{ fontWeight: 600 }}>Search operators</Typography>
-    <Typography variant="caption">
-      status:&gt;=400 — response status (comparators &gt;= &lt;= &gt; &lt; =)
-    </Typography>
-    <Typography variant="caption">
-      method:POST — request method (case-insensitive)
-    </Typography>
-    <Typography variant="caption">
-      path:/api/* — request path glob (* = any characters)
-    </Typography>
-    <Typography variant="caption">
-      /regex/ — free-text regular expression (optional flags, defaults to case-insensitive)
-    </Typography>
-    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-      Plain text matches anywhere; operators combine with AND.
-    </Typography>
-  </Box>
-);
+import OperatorSearchField from './OperatorSearchField';
 
 interface PanelProps {
   title: string;
@@ -130,37 +97,11 @@ export default function Panel({
             {headerActions}
           </Box>
         )}
-        <TextField
+        <OperatorSearchField
           id={`${title.toLowerCase().replace(/\s+/g, '-')}-search`}
-          size="small"
-          placeholder={SEARCH_PLACEHOLDER}
           value={searchValue}
-          onChange={(e) => onSearchChange(e.target.value)}
+          onChange={onSearchChange}
           inputRef={searchInputRef}
-          slotProps={{
-            htmlInput: { 'aria-label': 'Search' },
-            input: {
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon fontSize="small" />
-                </InputAdornment>
-              ),
-              endAdornment: (
-                <InputAdornment position="end">
-                  <Tooltip title={SEARCH_HELP} arrow>
-                    <HelpOutlinedIcon
-                      fontSize="small"
-                      role="img"
-                      aria-label="Search operator help"
-                      tabIndex={0}
-                      sx={{ color: 'text.secondary', cursor: 'help' }}
-                    />
-                  </Tooltip>
-                </InputAdornment>
-              ),
-            },
-          }}
-          sx={{ ml: 'auto', maxWidth: 240, '& .MuiInputBase-root': { height: 28, typography: 'subtitle2', fontWeight: 400 }, '& .MuiSvgIcon-root': { fontSize: '0.875rem' } }}
         />
       </Box>
       <Box

@@ -7,8 +7,12 @@ import TrafficInspector, {
   maskSecretValue,
   maskSecretsInValue,
   mcpErrorInfo,
+  isUnmatchedResponse,
+  buildRequestCurl,
 } from '../components/TrafficInspector';
-import type { McpParsed } from '../lib/llmTraffic';
+import { summarizeTraffic, type McpParsed } from '../lib/llmTraffic';
+import { DebugMismatchContext } from '../hooks/DebugMismatchContext';
+import { GenerateStubContext } from '../hooks/GenerateStubContext';
 import { useDashboardStore } from '../store';
 import * as trafficLib from '../lib/traffic';
 
@@ -16,6 +20,21 @@ function renderTrafficInspector() {
   return render(
     <ThemeProvider theme={buildTheme('dark')}>
       <TrafficInspector />
+    </ThemeProvider>,
+  );
+}
+
+function renderWithMismatchContexts(
+  debugMismatch: (r: Record<string, unknown>) => Promise<void>,
+  generateStub: (r: Record<string, unknown>) => Promise<void>,
+) {
+  return render(
+    <ThemeProvider theme={buildTheme('dark')}>
+      <DebugMismatchContext.Provider value={debugMismatch}>
+        <GenerateStubContext.Provider value={generateStub}>
+          <TrafficInspector />
+        </GenerateStubContext.Provider>
+      </DebugMismatchContext.Provider>
     </ThemeProvider>,
   );
 }
@@ -816,7 +835,7 @@ describe('TrafficInspector — search filtering', () => {
     expect(screen.getByText(/\/api\/users/)).toBeInTheDocument();
     expect(screen.getByText(/\/api\/orders/)).toBeInTheDocument();
 
-    const search = screen.getByPlaceholderText('Search...');
+    const search = screen.getByRole('textbox', { name: 'Search' });
     await user.type(search, 'orders');
 
     expect(screen.queryByText(/\/api\/users/)).not.toBeInTheDocument();
@@ -827,7 +846,7 @@ describe('TrafficInspector — search filtering', () => {
     const user = userEvent.setup();
     renderTrafficInspector();
 
-    const search = screen.getByPlaceholderText('Search...');
+    const search = screen.getByRole('textbox', { name: 'Search' });
     // "WIDGET-42" only appears inside the response body, exercising the cached
     // JSON.stringify fallback rather than the field-level match.
     await user.type(search, 'widget-42');
@@ -840,7 +859,7 @@ describe('TrafficInspector — search filtering', () => {
     const user = userEvent.setup();
     renderTrafficInspector();
 
-    const search = screen.getByPlaceholderText('Search...');
+    const search = screen.getByRole('textbox', { name: 'Search' });
     await user.type(search, 'nonexistent-term-xyz');
 
     expect(screen.getByText('No matching requests')).toBeInTheDocument();
@@ -1040,7 +1059,7 @@ describe('TrafficInspector — search indexes decoded BINARY body text', () => {
     });
 
     renderTrafficInspector();
-    const search = screen.getByPlaceholderText('Search...');
+    const search = screen.getByRole('textbox', { name: 'Search' });
     await user.type(search, 'pineapple-token');
 
     expect(screen.getByText(/\/api\/binary/)).toBeInTheDocument();
@@ -1146,5 +1165,245 @@ describe('TrafficInspector — bulk select + clear', () => {
     await user.click(screen.getByRole('button', { name: /Select requests/i }));
     expect(screen.queryByRole('button', { name: /Diff \(/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Clear \(0\)/ })).toBeDisabled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Copy as curl — buildRequestCurl pure helper
+// ---------------------------------------------------------------------------
+
+describe('buildRequestCurl', () => {
+  it('reproduces the captured request against its original target', () => {
+    const value = {
+      httpRequest: {
+        method: 'POST',
+        path: '/v1/chat',
+        secure: true,
+        headers: [
+          { name: 'Host', values: ['api.example.com'] },
+          { name: 'Content-Type', values: ['application/json'] },
+          { name: 'Authorization', values: ['Bearer sk-secret-1234'] },
+        ],
+        queryStringParameters: [{ name: 'q', values: ['1'] }],
+        body: { type: 'STRING', string: '{"hello":"world"}' },
+      },
+      httpResponse: { statusCode: 200 },
+    };
+
+    const curl = buildRequestCurl(value, summarizeTraffic(value));
+
+    // Method + full URL (scheme from `secure`, host from the Host header, query appended).
+    expect(curl).toContain("curl -X 'POST' 'https://api.example.com/v1/chat?q=1'");
+    // Non-secret header carried through.
+    expect(curl).toContain("-H 'Content-Type: application/json'");
+    // Body carried through as --data-raw.
+    expect(curl).toContain(`--data-raw '{"hello":"world"}'`);
+    // Host header is not duplicated (it is in the URL).
+    expect(curl).not.toMatch(/-H 'Host:/i);
+    // Secret header value is masked, not leaked verbatim.
+    expect(curl).toContain('1234');
+    expect(curl).not.toContain('sk-secret-1234');
+  });
+
+  it('defaults method to GET and http scheme, and omits the body when absent', () => {
+    const value = {
+      httpRequest: {
+        path: '/api/ping',
+        headers: [{ name: 'host', values: ['svc.local'] }],
+      },
+      httpResponse: { statusCode: 200 },
+    };
+    const curl = buildRequestCurl(value, summarizeTraffic(value));
+    expect(curl).toContain("curl -X 'GET' 'http://svc.local/api/ping'");
+    expect(curl).not.toContain('--data-raw');
+  });
+
+  it('returns an empty string when there is no request', () => {
+    const value = { httpResponse: { statusCode: 200 } };
+    expect(buildRequestCurl(value, summarizeTraffic(value))).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unmatched detection
+// ---------------------------------------------------------------------------
+
+describe('isUnmatchedResponse', () => {
+  it('is true for a 404 Not Found response', () => {
+    expect(isUnmatchedResponse({ httpResponse: { statusCode: 404, reasonPhrase: 'Not Found' } })).toBe(true);
+    // reasonPhrase comparison is case-insensitive.
+    expect(isUnmatchedResponse({ httpResponse: { statusCode: 404, reasonPhrase: 'not found' } })).toBe(true);
+  });
+
+  it('is false for a matched response or a 404 without the Not Found phrase', () => {
+    expect(isUnmatchedResponse({ httpResponse: { statusCode: 200, reasonPhrase: 'OK' } })).toBe(false);
+    expect(isUnmatchedResponse({ httpResponse: { statusCode: 404 } })).toBe(false);
+    expect(isUnmatchedResponse({})).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Operator-aware search in TrafficInspector
+// ---------------------------------------------------------------------------
+
+describe('TrafficInspector — operator search', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      recordedRequests: [
+        {
+          key: 'ok',
+          value: {
+            httpRequest: { method: 'GET', path: '/api/ok', headers: [{ name: 'host', values: ['example.com'] }] },
+            httpResponse: { statusCode: 200 },
+          },
+        },
+        {
+          key: 'err',
+          value: {
+            httpRequest: { method: 'POST', path: '/api/err', headers: [{ name: 'host', values: ['example.com'] }] },
+            httpResponse: { statusCode: 500 },
+          },
+        },
+      ],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+    });
+  });
+
+  it('filters by status comparator operator', async () => {
+    const user = userEvent.setup();
+    renderTrafficInspector();
+
+    expect(screen.getByText(/\/api\/ok/)).toBeInTheDocument();
+    expect(screen.getByText(/\/api\/err/)).toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox', { name: 'Search' }), 'status:>=400');
+
+    expect(screen.queryByText(/\/api\/ok/)).not.toBeInTheDocument();
+    expect(screen.getByText(/\/api\/err/)).toBeInTheDocument();
+  });
+
+  it('filters by method operator', async () => {
+    const user = userEvent.setup();
+    renderTrafficInspector();
+
+    await user.type(screen.getByRole('textbox', { name: 'Search' }), 'method:POST');
+
+    expect(screen.queryByText(/\/api\/ok/)).not.toBeInTheDocument();
+    expect(screen.getByText(/\/api\/err/)).toBeInTheDocument();
+  });
+
+  it('filters by path glob operator', async () => {
+    const user = userEvent.setup();
+    renderTrafficInspector();
+
+    await user.type(screen.getByRole('textbox', { name: 'Search' }), 'path:/api/o*');
+
+    expect(screen.getByText(/\/api\/ok/)).toBeInTheDocument();
+    expect(screen.queryByText(/\/api\/err/)).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unmatched badge + mismatch-debugging actions
+// ---------------------------------------------------------------------------
+
+describe('TrafficInspector — unmatched requests', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      recordedRequests: [
+        {
+          key: 'missed',
+          value: {
+            httpRequest: { method: 'GET', path: '/missing', headers: [{ name: 'host', values: ['localhost'] }] },
+            httpResponse: { statusCode: 404, reasonPhrase: 'Not Found' },
+          },
+        },
+        {
+          key: 'hit',
+          value: {
+            httpRequest: { method: 'GET', path: '/found', headers: [{ name: 'host', values: ['localhost'] }] },
+            httpResponse: { statusCode: 200, reasonPhrase: 'OK' },
+          },
+        },
+      ],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+    });
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it('shows an "N unmatched" badge that opens the Explain Unmatched dialog', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ unmatchedRequests: [] }),
+    }));
+
+    renderTrafficInspector();
+
+    const badge = screen.getByText('1 unmatched');
+    expect(badge).toBeInTheDocument();
+
+    await user.click(badge);
+    expect(await screen.findByText('Explain Unmatched Requests')).toBeInTheDocument();
+  });
+
+  it('offers "Why Didn\'t This Match?" and "Generate Stub" on an unmatched detail pane', async () => {
+    const user = userEvent.setup();
+    const debugMismatch = vi.fn().mockResolvedValue(undefined);
+    const generateStub = vi.fn().mockResolvedValue(undefined);
+
+    renderWithMismatchContexts(debugMismatch, generateStub);
+
+    await user.click(screen.getByText(/\/missing/));
+
+    const whyButton = screen.getByRole('button', { name: /Why Didn't This Match/i });
+    expect(whyButton).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Generate Stub/i })).toBeInTheDocument();
+
+    await user.click(whyButton);
+    expect(debugMismatch).toHaveBeenCalledTimes(1);
+    expect(debugMismatch.mock.calls[0]![0]).toMatchObject({ method: 'GET', path: '/missing' });
+  });
+
+  it('does not offer mismatch actions on a matched request', async () => {
+    const user = userEvent.setup();
+    const debugMismatch = vi.fn().mockResolvedValue(undefined);
+    const generateStub = vi.fn().mockResolvedValue(undefined);
+
+    renderWithMismatchContexts(debugMismatch, generateStub);
+
+    await user.click(screen.getByText(/\/found/));
+
+    expect(screen.queryByRole('button', { name: /Why Didn't This Match/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Generate Stub/i })).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Actionable empty state
+// ---------------------------------------------------------------------------
+
+describe('TrafficInspector — empty state', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      recordedRequests: [],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+    });
+  });
+
+  it('shows guidance with a copyable proxy curl example when no traffic exists', () => {
+    renderTrafficInspector();
+    expect(screen.getByText('No traffic captured yet.')).toBeInTheDocument();
+    expect(screen.getByText(/curl -x http:\/\/.+ http:\/\/example\.com/)).toBeInTheDocument();
+    expect(screen.getByText(/Get Started tab/i)).toBeInTheDocument();
   });
 });
