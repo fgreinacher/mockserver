@@ -120,6 +120,57 @@ describe('OnboardingPanel', () => {
     // The dialog should appear (OpenApiImportDialog renders with a dialog title)
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
+
+  it('shows a copyable curl one-liner targeting the connection host:port', () => {
+    renderPanel();
+    // Built from the same connection params the WebSocket uses (host 127.0.0.1, port 1080).
+    expect(screen.getByText('curl http://127.0.0.1:1080/some/path')).toBeInTheDocument();
+  });
+
+  it('shows the proxy setup snippet with the server host:port and a CA setup link', () => {
+    renderPanel();
+    expect(screen.getByText('export HTTPS_PROXY=http://127.0.0.1:1080')).toBeInTheDocument();
+    const caLink = screen.getByRole('link', { name: /open the proxy setup details/i });
+    expect(caLink).toHaveAttribute('href', 'http://127.0.0.1:1080/mockserver/proxyConfiguration');
+  });
+
+  it('navigates to the composer from the Create Your First Mock CTA', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('button', { name: /Create Your First Mock/i }));
+    expect(useDashboardStore.getState().view).toBe('composer');
+  });
+
+  it('navigates to the composer from the Mocking tile Create Mock button', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('button', { name: /^Create Mock$/i }));
+    expect(useDashboardStore.getState().view).toBe('composer');
+  });
+
+  it('does not show the returning-user banner when the server has no state', () => {
+    renderPanel();
+    expect(screen.queryByRole('button', { name: /Open Dashboard/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the returning-user banner only when there are active mocks or recorded requests', async () => {
+    useDashboardStore.setState({
+      activeExpectations: [{ key: 'exp1', value: { httpRequest: { path: '/a' } } }],
+      recordedRequests: [
+        { key: 'rec1', value: { path: '/b' } },
+        { key: 'rec2', value: { path: '/c' } },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    expect(screen.getByText(/This server has 1 active mock and 2 recorded requests/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Open Dashboard/i }));
+    expect(useDashboardStore.getState().view).toBe('dashboard');
+  });
 });
 
 describe('OnboardingPanel default-selection logic', () => {
