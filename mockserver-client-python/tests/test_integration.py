@@ -116,6 +116,44 @@ class TestRequestMatching:
         resp = json.loads(body)
         assert resp["result"] == "created"
 
+    def test_post_with_regex_body_matches_as_regex(
+        self, mockserver_client, mockserver_host, mockserver_port
+    ):
+        # Body.regex(".*admin.*") must match against the server as a REGEX, not a
+        # literal STRING body. A body that merely *contains* "admin" (but is not
+        # equal to the literal pattern text) must match. This is the exact bug that
+        # the old {"type": "REGEX", "string": ...} wire form silently reintroduced.
+        mockserver_client.when(
+            HttpRequest(
+                method="POST",
+                path="/api/regex",
+                body=Body.regex(".*admin.*"),
+            )
+        ).respond(
+            HttpResponse(status_code=200, body="matched-as-regex")
+        )
+
+        # Contains "admin" -> regex matches.
+        status, body = self._make_request(
+            mockserver_host,
+            mockserver_port,
+            "POST",
+            "/api/regex",
+            body="super-admin-user",
+        )
+        assert status == 200
+        assert body == "matched-as-regex"
+
+        # Does not contain "admin" -> regex does not match (no expectation, 404).
+        status, _ = self._make_request(
+            mockserver_host,
+            mockserver_port,
+            "POST",
+            "/api/regex",
+            body="ordinary-user",
+        )
+        assert status == 404
+
     def test_custom_status_code(self, mockserver_client, mockserver_host, mockserver_port):
         mockserver_client.when(
             HttpRequest(method="DELETE", path="/api/resource")

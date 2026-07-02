@@ -568,9 +568,9 @@ class GraphQLBody:
 @dataclass
 class RegexBody:
     # Serialises to {"type": "REGEX", "regex": <value>} — the field name MockServer
-    # expects for a regex body matcher (unlike Body.regex which uses the legacy
-    # "string" field). Use this for ALL_OF sub-bodies and anywhere the exact wire
-    # shape matters.
+    # expects for a regex body matcher. Use this for ALL_OF sub-bodies and anywhere
+    # the exact wire shape matters. Body.regex(...) is a convenience factory that
+    # returns an instance of this class.
     regex: str = ""
     not_body: bool = False
     optional: bool = False
@@ -636,8 +636,11 @@ def _body_json(value: Any) -> Body:
     return Body(type="JSON", json=value)
 
 
-def _body_regex(value: str) -> Body:
-    return Body(type="REGEX", string=value)
+def _body_regex(value: str) -> RegexBody:
+    # Emits {"type": "REGEX", "regex": <value>} — the wire form MockServer's
+    # BodyDTODeserializer parses as a regex matcher. (Emitting a "string" key
+    # instead makes the server treat it as a literal STRING body.)
+    return RegexBody(regex=value)
 
 
 def _body_exact(value: str) -> Body:
@@ -670,10 +673,6 @@ Body.graphql = staticmethod(_body_graphql)
 Body.file = staticmethod(_body_file)
 
 
-def _body_regex_match(value: str) -> RegexBody:
-    return RegexBody(regex=value)
-
-
 def _body_all_of(*bodies) -> AllOfBody:
     # Accept either all_of(body1, body2, ...) or all_of([body1, body2, ...]).
     if len(bodies) == 1 and isinstance(bodies[0], (list, tuple)):
@@ -681,7 +680,6 @@ def _body_all_of(*bodies) -> AllOfBody:
     return AllOfBody(body_all_of=list(bodies))
 
 
-Body.regex_match = staticmethod(_body_regex_match)
 Body.all_of = staticmethod(_body_all_of)
 
 

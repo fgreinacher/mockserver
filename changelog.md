@@ -600,6 +600,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the Python client's `Body.regex(...)` factory producing a literal-string match instead of a real
+  regex matcher. It previously emitted the wire form `{"type": "REGEX", "string": <value>}`; MockServer's
+  `BodyDTODeserializer` treats a `string` value-key as a `STRING` body (overriding the `type` field), so
+  `Body.regex(".*admin.*")` was silently deserialised to a `StringBody` and only matched the literal text
+  `.*admin.*`, never as a regex. It now emits the schema-correct `{"type": "REGEX", "regex": <value>}` (the
+  same object as the existing `RegexBody`), so a request body that merely *contains* the pattern matches as
+  intended. (The parallel `Body.regex_match(...)` helper introduced in the same unreleased cycle has been
+  removed as redundant — use the now-correct `Body.regex(...)`.)
+
 - Fixed `JAVASCRIPT` response/forward templates silently degrading when the optional GraalJS engine
   (`org.graalvm.polyglot:polyglot` + `js`) is absent from the classpath — as it is in the standard netty
   jar-with-dependencies and Docker image. Previously such a template logged an error and returned an empty

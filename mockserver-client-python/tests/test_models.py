@@ -404,9 +404,14 @@ class TestBody:
         assert b.json == [1, 2, 3]
 
     def test_regex_factory(self):
+        # Body.regex must emit the canonical {"type": "REGEX", "regex": ...} wire
+        # form so the server parses it as a regex matcher, not a literal STRING body.
         b = Body.regex("^/api/.*")
-        assert b.type == "REGEX"
-        assert b.string == "^/api/.*"
+        assert isinstance(b, RegexBody)
+        assert b.regex == "^/api/.*"
+        assert b.to_dict() == {"type": "REGEX", "regex": "^/api/.*"}
+        # Guard against regressing to the old broken shape.
+        assert "string" not in b.to_dict()
 
     def test_exact_factory(self):
         b = Body.exact("exact match")
