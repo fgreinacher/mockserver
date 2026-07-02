@@ -3,8 +3,10 @@ package com.mockserver.jetbrains
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessHandlerFactory
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.progress.ProgressIndicator
-import com.intellij.openapi.util.ShutDownTracker
+import com.intellij.openapi.util.Disposer
 import com.intellij.util.io.Decompressor
 import java.io.File
 import java.net.URI
@@ -192,7 +194,7 @@ object MockServerBinary {
     // Registered exactly once (across all starts) so IDE shutdown terminates a
     // bundle-launched MockServer instead of orphaning it (which would hold the port
     // and, since [handler] is lost on restart, leave it unstoppable from the IDE).
-    private val shutdownHookRegistered = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val shutdownCleanupRegistered = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** True when a bundle-launched MockServer is running in this IDE session. */
     fun isRunning(): Boolean = handler?.let { !it.isProcessTerminated } ?: false
@@ -219,10 +221,19 @@ object MockServerBinary {
     }
 
     private fun registerShutdownCleanup() {
-        if (shutdownHookRegistered.compareAndSet(false, true)) {
-            ShutDownTracker.getInstance().registerShutdownTask {
-                handler?.let { if (!it.isProcessTerminated) it.destroyProcess() }
-            }
+        if (shutdownCleanupRegistered.compareAndSet(false, true)) {
+            // Register an application-scoped Disposable (public API) so closing the IDE
+            // terminates a bundle-launched MockServer instead of orphaning it. The
+            // application is a Disposable (via ComponentManager) and is disposed on IDE
+            // shutdown, mirroring the Disposer.register(...) lifecycle wiring the
+            // tool-window factories use. This replaces ShutDownTracker.registerShutdownTask,
+            // which is @ApiStatus.Internal.
+            Disposer.register(
+                ApplicationManager.getApplication(),
+                Disposable {
+                    handler?.let { if (!it.isProcessTerminated) it.destroyProcess() }
+                },
+            )
         }
     }
 
@@ -292,9 +303,9 @@ object MockServerBinary {
         // contains the mockserver-<version>-<os>-<arch>/ top-level directory).
         cachedBundleDir(cacheDir, version, target).deleteRecursively()
         if (target.os == "windows") {
-            Decompressor.Zip(archive).extract(cacheDir)
+            Decompressor.Zip(archive.toPath()).extract(cacheDir.toPath())
         } else {
-            Decompressor.Tar(archive).extract(cacheDir)
+            Decompressor.Tar(archive.toPath()).extract(cacheDir.toPath())
             // Decompressor may not restore the exec bit; re-assert it on the launcher.
             cachedLauncher(cacheDir, version, target).setExecutable(true, false)
         }

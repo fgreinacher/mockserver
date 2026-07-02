@@ -657,14 +657,21 @@ function extractArchive(archivePath: string, destDir: string, os: bundle.BundleO
     return new Promise((resolve, reject) => {
         let cmd: string;
         let args: string[];
+        let env = process.env;
         if (os === "windows") {
+            // Pass the paths through the environment and read them back as `$env:...`
+            // inside the script, so no path is ever concatenated into the command
+            // string — this removes the shell-injection surface entirely (a path with
+            // a quote or `;` cannot break out) rather than relying on quoting.
             cmd = "powershell.exe";
             args = [
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${destDir}' -Force`,
+                "Expand-Archive -LiteralPath $env:MOCKSERVER_ARCHIVE_PATH " +
+                    "-DestinationPath $env:MOCKSERVER_DEST_DIR -Force",
             ];
+            env = { ...process.env, MOCKSERVER_ARCHIVE_PATH: archivePath, MOCKSERVER_DEST_DIR: destDir };
         } else {
             // Guard against tar-slip before extracting: list the entries and reject any
             // absolute or `..`-escaping path. (The archive is our own checksum-verified
@@ -682,7 +689,7 @@ function extractArchive(archivePath: string, destDir: string, os: bundle.BundleO
             cmd = "tar";
             args = ["-xzf", archivePath, "-C", destDir];
         }
-        execFile(cmd, args, (error, _stdout, stderr) => {
+        execFile(cmd, args, { env }, (error, _stdout, stderr) => {
             if (error) {
                 reject(new Error(`Failed to extract bundle: ${stderr || error.message}`));
                 return;
