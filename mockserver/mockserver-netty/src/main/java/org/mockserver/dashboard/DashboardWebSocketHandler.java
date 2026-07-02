@@ -25,6 +25,7 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.log.MockServerEventLog;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.mappers.FullHttpRequestToMockServerHttpRequest;
 import org.mockserver.mock.HttpState;
 import org.mockserver.mock.RequestMatchers;
 import org.mockserver.mock.listeners.MockServerLogListener;
@@ -35,6 +36,7 @@ import org.mockserver.model.OpenAPIDefinition;
 import org.mockserver.model.RequestDefinition;
 import org.mockserver.serialization.HttpRequestSerializer;
 import org.mockserver.serialization.ObjectMapperFactory;
+import org.mockserver.socket.tls.SniHandler;
 import org.mockserver.serialization.model.ExpectationDTO;
 import org.slf4j.event.Level;
 
@@ -44,6 +46,7 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static com.google.common.net.HttpHeaders.HOST;
+import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
@@ -159,6 +162,11 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                         );
                     }
                     ctx.channel().writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_IMPLEMENTED, Unpooled.EMPTY_BUFFER));
+                } else if (!webSocketUpgradeAuthenticated(ctx, (FullHttpRequest) msg)) {
+                    // control-plane auth is configured and this upgrade did not present valid
+                    // credentials (or the principal lacks the required role): the rejection
+                    // response has already been written, so do NOT upgrade — otherwise the
+                    // dashboard would push all captured traffic to an unauthenticated client.
                 } else {
                     upgradeChannel(ctx, (FullHttpRequest) msg);
                     ctx.channel().attr(CHANNEL_UPGRADED_FOR_UI_WEB_SOCKET).set(true);
@@ -181,6 +189,60 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     @Override
     public void channelReadComplete(ChannelHandlerContext ctx) {
         ctx.flush();
+    }
+
+    /**
+     * Gate the dashboard UI WebSocket upgrade with the SAME control-plane authentication /
+     * authorization as {@code /mockserver/configuration} and the dashboard HTTP surface.
+     * <p>
+     * When no control-plane authentication handler is configured (the default) this returns
+     * {@code true} immediately without touching the request, so the open-dashboard behaviour is
+     * unchanged. When one IS configured it maps the raw Netty upgrade request (with any mTLS
+     * client certificates from the channel) to a MockServer request and asks the shared core gate
+     * for a decision; on a non-ALLOWED outcome it writes a raw {@code 401}/{@code 403} handshake
+     * response and closes the connection, returning {@code false} so the caller does not upgrade.
+     * The upgrade is a read, so a read-only control-plane role is permitted to view the dashboard.
+     */
+    private boolean webSocketUpgradeAuthenticated(final ChannelHandlerContext ctx, FullHttpRequest httpRequest) {
+        if (httpState.getControlPlaneAuthenticationHandler() == null) {
+            // No control-plane authentication configured: preserve the default open dashboard.
+            return true;
+        }
+        HttpRequest mockServerRequest = new FullHttpRequestToMockServerHttpRequest(
+            httpState.getConfiguration(),
+            mockServerLogger,
+            sslEnabledUpstream,
+            SniHandler.retrieveClientCertificates(mockServerLogger, ctx),
+            ctx.channel().localAddress() instanceof java.net.InetSocketAddress
+                ? ((java.net.InetSocketAddress) ctx.channel().localAddress()).getPort()
+                : null
+        ).mapFullHttpRequestToMockServerRequest(
+            httpRequest,
+            null,
+            ctx.channel().localAddress(),
+            ctx.channel().remoteAddress(),
+            SniHandler.getALPNProtocol(mockServerLogger, ctx)
+        );
+        HttpState.ControlPlaneAuthDecision decision = httpState.evaluateControlPlaneAuthentication(mockServerRequest);
+        if (decision.isAllowed()) {
+            return true;
+        }
+        HttpResponseStatus status = decision.outcome() == HttpState.ControlPlaneAuthOutcome.FORBIDDEN
+            ? HttpResponseStatus.FORBIDDEN
+            : HttpResponseStatus.UNAUTHORIZED;
+        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setType(AUTHENTICATION_FAILED)
+                    .setLogLevel(Level.INFO)
+                    .setMessageFormat("dashboard UI web socket upgrade rejected with status {} - control plane authentication required")
+                    .setArguments(status.code())
+            );
+        }
+        DefaultFullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status, Unpooled.EMPTY_BUFFER);
+        response.headers().set(CONTENT_LENGTH, 0);
+        ctx.channel().writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        return false;
     }
 
     private void upgradeChannel(final ChannelHandlerContext ctx, FullHttpRequest httpRequest) {

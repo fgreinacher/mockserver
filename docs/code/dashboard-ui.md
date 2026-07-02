@@ -65,6 +65,7 @@ sequenceDiagram
     B->>PU: GET /_mockserver_ui_websocket (Upgrade: websocket)
     PU->>DWSH: channelRead() detects upgrade URI
 
+    Note over DWSH: If control-plane auth configured: evaluate the SAME gate as /configuration. On UNAUTHENTICATED/FORBIDDEN reply 401/403 and do NOT upgrade.
     DWSH->>DWSH: upgradeChannel()
     Note over DWSH: 1. WebSocket handshake 2. Register in clientRegistry 3. Register as log listener 4. Register as matcher listener 5. Start throttle scheduler (1/sec)
 
@@ -83,6 +84,15 @@ sequenceDiagram
     DWSH->>DWSH: Store filter, trigger sendUpdate()
     DWSH-->>B: Filtered JSON data
 ```
+
+### Authentication
+
+The dashboard exposes all captured traffic (request/response bodies included), so both the dashboard HTTP surface (`GET /mockserver/dashboard*`, served in `HttpRequestHandler`) and the UI WebSocket upgrade (`/_mockserver_ui_websocket`, handled in `DashboardWebSocketHandler`) go through the **same control-plane authentication/authorization gate** as `PUT /mockserver/configuration` — `HttpState.controlPlaneRequestAuthenticated(...)` for the HTTP path and its non-writing sibling `HttpState.evaluateControlPlaneAuthentication(...)` for the WebSocket path (the WebSocket must render a raw HTTP handshake rejection, not a MockServer `HttpResponse`).
+
+- **Default (no control-plane authentication configured):** the gate returns `ALLOWED`, so the dashboard stays open exactly as before — this is non-breaking.
+- **Control-plane auth enabled (mTLS / JWT / OIDC):** an unauthenticated caller gets `401`; an authenticated caller whose scopes map to no role gets `403`. The dashboard is a **read** (`GET`), so a read-only control-plane role (`controlPlaneScopeMapping`) can view it.
+- **Health/lifecycle unaffected:** `/status` and `/ready` remain reachable without credentials (and `/bind` / `/stop` keep their own gate).
+- **Browser limitation:** a browser cannot attach a bearer token to a WebSocket, so a token/OIDC-authenticated dashboard must be served through an authenticating reverse proxy (or use mutual TLS). The SPA's `useWebSocket` hook probes `GET /mockserver/dashboard` on a failed upgrade and, on `401`/`403`, shows an actionable "dashboard requires authentication" message instead of the generic "server unreachable" banner.
 
 ### 3. Real-Time Updates
 

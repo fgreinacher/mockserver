@@ -32,10 +32,38 @@ export function useWebSocket(params: ConnectionParams) {
   const reconnectCountRef = useRef(0);
   const lastFilterRef = useRef<RequestFilter>({});
   const connectRef = useRef<(filter: RequestFilter) => void>(() => {});
+  // Set when a dashboard HTTP probe returns 401/403 (control-plane auth is enabled but this
+  // client is unauthenticated). Suppresses the generic "server down" banner so the actionable
+  // auth-required message is shown instead. Cleared on a successful open.
+  const authRequiredRef = useRef(false);
 
   const applyMessage = useDashboardStore((s) => s.applyMessage);
   const setConnectionStatus = useDashboardStore((s) => s.setConnectionStatus);
   const setError = useDashboardStore((s) => s.setError);
+
+  const probeAuthRequired = useCallback(async () => {
+    // The browser WebSocket API does not expose the handshake HTTP status: a rejected upgrade
+    // (401/403 when control-plane auth is enabled) and an unreachable server both surface as an
+    // abnormal close / onerror with no readable status. Probe the dashboard HTTP endpoint — which
+    // is gated by the SAME control-plane auth as the WebSocket upgrade — to tell the two apart and
+    // show an actionable auth-required message instead of the misleading "server down" banner.
+    try {
+      const base = buildBaseUrl(params);
+      const response = await fetch(`${base}/mockserver/dashboard`, { method: 'GET' });
+      if (response.status === 401 || response.status === 403) {
+        authRequiredRef.current = true;
+        setError(
+          `Dashboard requires authentication (HTTP ${response.status}) on ${params.host}:${params.port}. ` +
+            `Control-plane authentication is enabled. Browsers cannot attach a bearer token to a WebSocket, so serve ` +
+            `the dashboard through an authenticating proxy that adds the Authorization header (or use mutual TLS).`,
+        );
+        return;
+      }
+      authRequiredRef.current = false;
+    } catch {
+      // Ignore probe failures — fall back to the generic connection-lost handling below.
+    }
+  }, [params, setError]);
 
   const scheduleReconnect = useCallback(
     (filter: RequestFilter) => {
@@ -46,7 +74,9 @@ export function useWebSocket(params: ConnectionParams) {
       // Surface the banner early (after the 2nd failed attempt, ~a few seconds) so a user pointed
       // at the wrong server isn't left guessing. Include the host/port so the cause is actionable —
       // they come from the ?host=/?port= URL params. onopen resets the counter and clears the error.
-      if (reconnectCountRef.current === 2) {
+      // Suppressed when a probe has determined the failure is an auth rejection, so the auth-required
+      // message (set by probeAuthRequired) is not clobbered by the generic banner.
+      if (reconnectCountRef.current === 2 && !authRequiredRef.current) {
         setError(`Connection lost to ${params.host}:${params.port} — retrying automatically. Check the server is running and the host/port (?host=&port= in the URL) are correct.`);
       }
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
@@ -79,6 +109,7 @@ export function useWebSocket(params: ConnectionParams) {
 
       ws.onopen = () => {
         reconnectCountRef.current = 0;
+        authRequiredRef.current = false;
         setConnectionStatus('connected');
         setError(null);
         ws.send(JSON.stringify(filter));
@@ -96,6 +127,9 @@ export function useWebSocket(params: ConnectionParams) {
       ws.onclose = () => {
         setConnectionStatus('disconnected');
         socketRef.current = null;
+        // Fire-and-forget: distinguish an auth rejection from a down server so the right message
+        // is shown. Never blocks or defers the reconnect (probe failures are swallowed internally).
+        void probeAuthRequired();
         scheduleReconnect(filter);
       };
 
@@ -103,7 +137,7 @@ export function useWebSocket(params: ConnectionParams) {
         setConnectionStatus('error');
       };
     },
-    [params, applyMessage, setConnectionStatus, setError, scheduleReconnect],
+    [params, applyMessage, setConnectionStatus, setError, scheduleReconnect, probeAuthRequired],
   );
 
   useEffect(() => {

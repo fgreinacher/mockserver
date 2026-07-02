@@ -68,7 +68,8 @@ sitemap:
 
 <p><strong>Important limitations:</strong></p>
 <ul>
-    <li>The endpoints <code>/mockserver/bind</code>, <code>/mockserver/stop</code>, and <code>/mockserver/status</code> are <strong>neither authenticated nor authorized</strong> — they are always reachable.</li>
+    <li>The health/lifecycle probes <code>/mockserver/status</code> and <code>/mockserver/ready</code> are <strong>neither authenticated nor authorized</strong> — they are always reachable so health-check infrastructure never needs credentials. (<code>/mockserver/bind</code> and <code>/mockserver/stop</code> <em>are</em> authenticated when control-plane authentication is enabled.)</li>
+    <li>The <a href="/mock_server/mockserver_ui.html">dashboard</a> (<code>/mockserver/dashboard</code>) and its live UI WebSocket require the <strong>same control-plane authentication</strong> as every other control-plane endpoint when it is enabled — otherwise anyone with network reach could read all captured traffic. The dashboard is a read, so a <code>read</code>-only role may view it. When no control-plane authentication is configured (the default) the dashboard stays open. Because a browser cannot attach a bearer token to a WebSocket, a token/OIDC-authenticated dashboard must be served through an authenticating reverse proxy (or use mutual TLS).</li>
     <li>MockServer's own <a href="/mock_server/ai_mcp_setup.html">MCP control plane</a> (<code>/mockserver/mcp</code>) is authenticated (the bearer token is validated), but per-tool authorization is <strong>not yet enforced</strong>. Treat any authenticated MCP session as <code>mutate</code>-capable.</li>
 </ul>
 

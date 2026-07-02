@@ -350,6 +350,18 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
 
                 } else if (request.getMethod().getValue().equals("GET") && request.getPath().getValue().startsWith(PATH_PREFIX + "/dashboard")) {
 
+                    // The dashboard streams all captured traffic (request/response bodies included),
+                    // so it must take the SAME control-plane authn + authorization + audit decision as
+                    // /configuration and the operations dispatched through HttpState.handle — otherwise
+                    // anyone with network reach reads the live traffic even when control-plane auth is
+                    // enabled. Route through the shared core gate FIRST and return on false (the gate
+                    // writes the 401/403 via the ResponseWriter, which completes the in-flight token).
+                    // It is a GET (a READ), so a read-only control-plane role may view it. Default (no
+                    // control-plane auth configured) is unchanged: the gate returns true and the
+                    // dashboard stays open with no credentials.
+                    if (!httpState.controlPlaneRequestAuthenticated(request, responseWriter)) {
+                        return;
+                    }
                     // Direct ctx write inside the handler bypasses NettyResponseWriter, so complete
                     // the in-flight token explicitly to keep the graceful-shutdown drain unblocked.
                     completeInFlight(inFlightRequest);

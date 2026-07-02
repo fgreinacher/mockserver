@@ -5545,6 +5545,82 @@ public class HttpState {
      * dispatched through {@link #handle} already call this internally.
      */
     public boolean controlPlaneRequestAuthenticated(HttpRequest request, ResponseWriter responseWriter) {
+        ControlPlaneAuthDecision decision = evaluateControlPlaneAuthentication(request);
+        switch (decision.outcome()) {
+            case ALLOWED:
+                return true;
+            case FORBIDDEN:
+                // verified principal, but its scopes/groups do not grant a role that
+                // satisfies the operation's required role: deny with a generic 403. The
+                // detail (granted vs required role) is logged server-side only so the
+                // authorization policy is not disclosed to the client.
+                responseWriter.writeResponse(request, FORBIDDEN, "Forbidden for control plane", MediaType.create("text", "plain").toString());
+                return false;
+            case UNAUTHENTICATED:
+            default:
+                String message = decision.clientSafeMessage() != null
+                    ? "Unauthorized for control plane - " + decision.clientSafeMessage()
+                    : "Unauthorized for control plane";
+                responseWriter.writeResponse(request, UNAUTHORIZED, message, MediaType.create("text", "plain").toString());
+                return false;
+        }
+    }
+
+    /**
+     * The outcome of the control-plane authn + authz decision.
+     * <ul>
+     *   <li>{@code ALLOWED} — proceed (this is the value returned when no control-plane
+     *       authentication is configured, so default behaviour is unchanged).</li>
+     *   <li>{@code UNAUTHENTICATED} — no/invalid credentials → 401-equivalent.</li>
+     *   <li>{@code FORBIDDEN} — verified principal lacks the required role → 403-equivalent.</li>
+     * </ul>
+     */
+    public enum ControlPlaneAuthOutcome {ALLOWED, UNAUTHENTICATED, FORBIDDEN}
+
+    /**
+     * The decision of {@link #evaluateControlPlaneAuthentication(HttpRequest)}: an
+     * {@link ControlPlaneAuthOutcome} plus, for the UNAUTHENTICATED case, an optional
+     * client-safe message (only when the authentication handler produced one; the OIDC
+     * path deliberately withholds detail from the client).
+     */
+    public static final class ControlPlaneAuthDecision {
+        private static final ControlPlaneAuthDecision ALLOWED = new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.ALLOWED, null);
+        private static final ControlPlaneAuthDecision FORBIDDEN = new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.FORBIDDEN, null);
+        private final ControlPlaneAuthOutcome outcome;
+        private final String clientSafeMessage;
+
+        private ControlPlaneAuthDecision(ControlPlaneAuthOutcome outcome, String clientSafeMessage) {
+            this.outcome = outcome;
+            this.clientSafeMessage = clientSafeMessage;
+        }
+
+        public ControlPlaneAuthOutcome outcome() {
+            return outcome;
+        }
+
+        public String clientSafeMessage() {
+            return clientSafeMessage;
+        }
+
+        public boolean isAllowed() {
+            return outcome == ControlPlaneAuthOutcome.ALLOWED;
+        }
+    }
+
+    /**
+     * Non-writing control-plane authn + authz decision, shared by
+     * {@link #controlPlaneRequestAuthenticated(HttpRequest, ResponseWriter)} (which renders
+     * a MockServer {@link HttpResponse}) and by control-plane choke points that must render
+     * their own transport-specific rejection — notably the dashboard UI WebSocket upgrade,
+     * which replies with a raw HTTP handshake response rather than a MockServer response.
+     * <p>
+     * Identical authn + authz + audit semantics to {@link #controlPlaneRequestAuthenticated}:
+     * when no control-plane authentication handler is configured (the default) it returns
+     * {@code ALLOWED} so behaviour is unchanged; when one is configured it enforces the SAME
+     * authentication and (when enabled) Wave-2 authorization, records the SAME audit entry,
+     * and logs the OIDC failure reason server-side only.
+     */
+    public ControlPlaneAuthDecision evaluateControlPlaneAuthentication(HttpRequest request) {
         try {
             org.mockserver.authentication.AuthenticationResult authenticationResult =
                 controlPlaneAuthenticationHandler == null
@@ -5552,37 +5628,29 @@ public class HttpState {
                     : controlPlaneAuthenticationHandler.authenticate(request);
             if (authenticationResult.isAuthenticated()) {
                 if (configuration.controlPlaneAuthorizationEnabled() && !controlPlaneAuthorized(request, authenticationResult)) {
-                    // verified principal, but its scopes/groups do not grant a role that
-                    // satisfies the operation's required role: deny with a generic 403 and
-                    // record the denial. The detail (granted vs required role) is logged
-                    // server-side only so authorization policy is not disclosed to the client.
                     recordAudit(request, authenticationResult, "FORBIDDEN");
-                    responseWriter.writeResponse(request, FORBIDDEN, "Forbidden for control plane", MediaType.create("text", "plain").toString());
-                    return false;
+                    return ControlPlaneAuthDecision.FORBIDDEN;
                 }
                 recordAudit(request, authenticationResult, "AUTHORIZED");
-                return true;
+                return ControlPlaneAuthDecision.ALLOWED;
             }
         } catch (AuthenticationException authenticationException) {
             if (authenticationException.isClientSafeMessage()) {
-                responseWriter.writeResponse(request, UNAUTHORIZED, "Unauthorized for control plane - " + authenticationException.getMessage(), MediaType.create("text", "plain").toString());
-            } else {
-                // OIDC path: log the detailed reason server-side only and return a generic
-                // body so the expected issuer/audience/scopes are not disclosed to the client.
-                mockServerLogger.logEvent(
-                    new org.mockserver.log.model.LogEntry()
-                        .setLogLevel(org.slf4j.event.Level.INFO)
-                        .setHttpRequest(request)
-                        .setMessageFormat("control plane request failed authentication:{}")
-                        .setArguments(authenticationException.getMessage())
-                        .setThrowable(authenticationException)
-                );
-                responseWriter.writeResponse(request, UNAUTHORIZED, "Unauthorized for control plane", MediaType.create("text", "plain").toString());
+                return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, authenticationException.getMessage());
             }
-            return false;
+            // OIDC path: log the detailed reason server-side only and withhold detail from
+            // the client so the expected issuer/audience/scopes are not disclosed.
+            mockServerLogger.logEvent(
+                new org.mockserver.log.model.LogEntry()
+                    .setLogLevel(org.slf4j.event.Level.INFO)
+                    .setHttpRequest(request)
+                    .setMessageFormat("control plane request failed authentication:{}")
+                    .setArguments(authenticationException.getMessage())
+                    .setThrowable(authenticationException)
+            );
+            return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null);
         }
-        responseWriter.writeResponse(request, UNAUTHORIZED, "Unauthorized for control plane", MediaType.create("text", "plain").toString());
-        return false;
+        return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null);
     }
 
     /**

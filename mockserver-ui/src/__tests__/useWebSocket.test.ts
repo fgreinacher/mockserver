@@ -198,6 +198,52 @@ describe('useWebSocket', () => {
     expect(useDashboardStore.getState().connectionStatus).toBe('disconnected');
   });
 
+  it('shows an auth-required message when the dashboard probe returns 401 on close', async () => {
+    // A rejected WebSocket upgrade surfaces only as an abnormal close (the browser hides the
+    // handshake status), so the hook probes the dashboard HTTP endpoint to detect control-plane
+    // auth and show an actionable message rather than the generic "server down" banner.
+    const fetchMock = vi.fn().mockResolvedValue({ status: 401 } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useWebSocket(defaultParams));
+    act(() => {
+      result.current.connect({});
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0]!.close();
+      // let the fire-and-forget probe promise resolve
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/mockserver/dashboard'),
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(useDashboardStore.getState().error).toContain('requires authentication');
+    expect(useDashboardStore.getState().error).toContain('401');
+  });
+
+  it('treats a 403 dashboard probe as auth-required', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 403 } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useWebSocket(defaultParams));
+    act(() => {
+      result.current.connect({});
+    });
+
+    await act(async () => {
+      MockWebSocket.instances[0]!.close();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(useDashboardStore.getState().error).toContain('requires authentication');
+    expect(useDashboardStore.getState().error).toContain('403');
+  });
+
   it('disconnect while still connecting defers close until the socket opens', () => {
     // Closing a CONNECTING socket triggers the browser's "WebSocket is closed before the
     // connection is established" warning (seen under React StrictMode's dev double-mount), so the
