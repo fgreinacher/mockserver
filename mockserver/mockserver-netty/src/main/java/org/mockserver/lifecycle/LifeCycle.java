@@ -549,6 +549,77 @@ public abstract class LifeCycle implements Stoppable {
             );
         }
         logProxySetup(ports);
+        startupWarmup(ports);
+    }
+
+    /**
+     * Pay the one-off "first request" cost in the background so the first real request a caller (or a
+     * readiness poll such as Testcontainers) makes is fast.
+     * <p>
+     * The very first request handled by a freshly started server is a few hundred milliseconds slower
+     * than every subsequent one because the request-handling path (Netty HTTP codec, Jackson
+     * serialisation, response writers) is only loaded/initialised lazily on first use. We exercise that
+     * path once, off the start-up thread, by sending a single plain-HTTP {@code PUT /mockserver/status}
+     * to the first bound port over loopback. {@code /status} is a control-plane endpoint that answers
+     * without touching the mock-matching or recorded-request paths, so it does NOT create any log
+     * events, recorded requests, or verification-visible state.
+     * <p>
+     * Fail-soft by design: this must never delay port binding (it runs on a daemon thread started after
+     * bind), never throw, and never leak a hanging thread (short connect/read timeouts). Any failure is
+     * swallowed at TRACE — warm-up is a pure latency optimisation, so a failure to warm up is not an
+     * error. Gated by {@code startupWarmup} (default true).
+     */
+    private void startupWarmup(List<Integer> ports) {
+        if (configuration == null || !Boolean.TRUE.equals(configuration.startupWarmup())) {
+            return;
+        }
+        if (ports == null || ports.isEmpty() || ports.get(0) == null || ports.get(0) <= 0) {
+            return;
+        }
+        final int port = ports.get(0);
+        Thread warmupThread = new Thread(() -> {
+            java.net.HttpURLConnection connection = null;
+            try {
+                // Plain HTTP against the first bound port — MockServer uses unified protocol detection,
+                // so /status answers over plain HTTP on any port (including TLS-capable ports). If that
+                // assumption ever fails to hold in a given environment the fail-soft catch below covers
+                // it: the only cost is that this instance is not warmed up.
+                java.net.URL url = new java.net.URL("http", "127.0.0.1", port, "/mockserver/status");
+                connection = (java.net.HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("PUT");
+                connection.setConnectTimeout(2000);
+                connection.setReadTimeout(2000);
+                connection.setDoOutput(false);
+                connection.connect();
+                // Read and discard the response body to exercise the full write path and free the socket.
+                try (java.io.InputStream inputStream = connection.getResponseCode() < 400
+                    ? connection.getInputStream()
+                    : connection.getErrorStream()) {
+                    if (inputStream != null) {
+                        byte[] buffer = new byte[4096];
+                        while (inputStream.read(buffer) != -1) {
+                            // drain
+                        }
+                    }
+                }
+            } catch (Throwable throwable) {
+                if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setType(SERVER_CONFIGURATION)
+                            .setLogLevel(TRACE)
+                            .setMessageFormat("exception during start-up warm-up request (ignored):{}")
+                            .setThrowable(throwable)
+                    );
+                }
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+            }
+        }, "MockServer-startup-warmup");
+        warmupThread.setDaemon(true);
+        warmupThread.start();
     }
 
     /**

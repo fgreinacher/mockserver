@@ -62,6 +62,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Integer maxHeaderSize;
     private Integer maxChunkSize;
     private Boolean useSemicolonAsQueryParameterSeparator;
+    private Boolean startupWarmup;
     private Boolean assumeAllRequestsAreHttp;
 
     private Boolean forwardBinaryRequestsWithoutWaitingForResponse;
@@ -350,6 +351,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.maxHeaderSize = configuration.maxHeaderSize();
             this.maxChunkSize = configuration.maxChunkSize();
             this.useSemicolonAsQueryParameterSeparator = configuration.useSemicolonAsQueryParameterSeparator();
+            this.startupWarmup = configuration.startupWarmup();
             this.assumeAllRequestsAreHttp = configuration.assumeAllRequestsAreHttp();
 
             this.forwardBinaryRequestsWithoutWaitingForResponse = configuration.forwardBinaryRequestsWithoutWaitingForResponse();
@@ -692,6 +694,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.maxHeaderSize(maxHeaderSize);
         configuration.maxChunkSize(maxChunkSize);
         configuration.useSemicolonAsQueryParameterSeparator(useSemicolonAsQueryParameterSeparator);
+        configuration.startupWarmup(startupWarmup);
         configuration.assumeAllRequestsAreHttp(assumeAllRequestsAreHttp);
 
         configuration.forwardBinaryRequestsWithoutWaitingForResponse(forwardBinaryRequestsWithoutWaitingForResponse);
@@ -1075,6 +1078,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (useSemicolonAsQueryParameterSeparator != null) {
             target.useSemicolonAsQueryParameterSeparator(useSemicolonAsQueryParameterSeparator);
+        }
+        if (startupWarmup != null) {
+            target.startupWarmup(startupWarmup);
         }
         if (assumeAllRequestsAreHttp != null) {
             target.assumeAllRequestsAreHttp(assumeAllRequestsAreHttp);
@@ -2109,6 +2115,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setUseSemicolonAsQueryParameterSeparator(Boolean useSemicolonAsQueryParameterSeparator) {
         this.useSemicolonAsQueryParameterSeparator = useSemicolonAsQueryParameterSeparator;
+        return this;
+    }
+
+    public Boolean getStartupWarmup() {
+        return startupWarmup;
+    }
+
+    public ConfigurationDTO setStartupWarmup(Boolean startupWarmup) {
+        this.startupWarmup = startupWarmup;
         return this;
     }
 

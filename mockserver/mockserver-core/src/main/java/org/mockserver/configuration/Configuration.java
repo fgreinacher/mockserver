@@ -169,6 +169,7 @@ public class Configuration {
     private Integer controlPlaneAuditMaxEntries;
     private Boolean controlPlaneAuditReads;
     private Boolean useSemicolonAsQueryParameterSeparator;
+    private Boolean startupWarmup;
     private Boolean assumeAllRequestsAreHttp;
     private Boolean http2Enabled;
 
@@ -2618,6 +2619,27 @@ public class Configuration {
      */
     public Configuration useSemicolonAsQueryParameterSeparator(Boolean useSemicolonAsQueryParameterSeparator) {
         this.useSemicolonAsQueryParameterSeparator = useSemicolonAsQueryParameterSeparator;
+        return this;
+    }
+
+    public Boolean startupWarmup() {
+        if (startupWarmup == null) {
+            return ConfigurationProperties.startupWarmup();
+        }
+        return startupWarmup;
+    }
+
+    /**
+     * If true (the default) MockServer sends itself a single warm-up request immediately after it starts listening, on a background thread.
+     * <p>
+     * The very first request handled by a freshly started MockServer is noticeably slower than every request after it (typically a few hundred milliseconds) because the request-handling code (the HTTP codec, JSON serialisation and response writers) is only loaded and initialised when it is first used. The warm-up request pays that one-off cost in the background so the first request from your test or application is fast.
+     * <p>
+     * The warm-up runs in the background and never delays start up. Disable it (set to false) only if you want to avoid the single extra loopback request during start up — for example in a tightly locked-down environment where MockServer must not connect to itself.
+     *
+     * @param startupWarmup true (the default) to send a background warm-up request after start up
+     */
+    public Configuration startupWarmup(Boolean startupWarmup) {
+        this.startupWarmup = startupWarmup;
         return this;
     }
 

@@ -1542,6 +1542,32 @@ public class ConfigurationTest {
     }
 
     @Test
+    public void shouldSetAndGetStartupWarmup() {
+        boolean original = ConfigurationProperties.startupWarmup();
+        try {
+            // then - default value
+            assertThat(configuration.startupWarmup(), equalTo(true));
+
+            // when - system property setter
+            ConfigurationProperties.startupWarmup(false);
+
+            // then - system property getter
+            assertThat(ConfigurationProperties.startupWarmup(), equalTo(false));
+            assertThat(System.getProperty("mockserver.startupWarmup"), equalTo("false"));
+            assertThat(configuration.startupWarmup(), equalTo(false));
+            ConfigurationProperties.startupWarmup(original);
+
+            // when - setter
+            configuration.startupWarmup(false);
+
+            // then - getter
+            assertThat(configuration.startupWarmup(), equalTo(false));
+        } finally {
+            ConfigurationProperties.startupWarmup(original);
+        }
+    }
+
+    @Test
     public void shouldSetAndGetAssumeAllRequestsAreHttp() {
         boolean original = ConfigurationProperties.assumeAllRequestsAreHttp();
         try {

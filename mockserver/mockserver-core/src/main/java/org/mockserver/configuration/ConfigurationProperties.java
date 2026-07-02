@@ -219,6 +219,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_REDACT_SECRETS_IN_LOG = "mockserver.redactSecretsInLog";
     private static final String MOCKSERVER_LLM_COST_BUDGET_USD = "mockserver.llmCostBudgetUsd";
     private static final String MOCKSERVER_USE_SEMICOLON_AS_QUERY_PARAMETER_SEPARATOR = "mockserver.useSemicolonAsQueryParameterSeparator";
+    private static final String MOCKSERVER_STARTUP_WARMUP = "mockserver.startupWarmup";
     private static final String MOCKSERVER_ASSUME_ALL_REQUESTS_ARE_HTTP = "mockserver.assumeAllRequestsAreHttp";
     private static final String MOCKSERVER_HTTP2_ENABLED = "mockserver.http2Enabled";
 
@@ -3472,6 +3473,23 @@ public class ConfigurationProperties {
 
     public static boolean useSemicolonAsQueryParameterSeparator() {
         return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_USE_SEMICOLON_AS_QUERY_PARAMETER_SEPARATOR, "MOCKSERVER_USE_SEMICOLON_AS_QUERY_PARAMETER_SEPARATOR", "true"));
+    }
+
+    /**
+     * If true (the default) MockServer sends itself a single warm-up request immediately after it starts listening, on a background thread.
+     * <p>
+     * The very first request handled by a freshly started MockServer is noticeably slower than every request after it (typically a few hundred milliseconds) because the request-handling code (the HTTP codec, JSON serialisation and response writers) is only loaded and initialised when it is first used. The warm-up request pays that one-off cost in the background so the first request from your test or application is fast.
+     * <p>
+     * The warm-up runs in the background and never delays start up. Disable it (set to false) only if you want to avoid the single extra loopback request during start up — for example in a tightly locked-down environment where MockServer must not connect to itself.
+     *
+     * @param enable true (the default) to send a background warm-up request after start up
+     */
+    public static void startupWarmup(boolean enable) {
+        setProperty(MOCKSERVER_STARTUP_WARMUP, "" + enable);
+    }
+
+    public static boolean startupWarmup() {
+        return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_STARTUP_WARMUP, "MOCKSERVER_STARTUP_WARMUP", "true"));
     }
 
     /**

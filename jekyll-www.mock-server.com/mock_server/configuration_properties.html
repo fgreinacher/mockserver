@@ -925,6 +925,24 @@ mockserver.enableCORSForAllResponses=true</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.useSemicolonAsQueryParameterSeparator="false"</code></pre>
 </div>
 
+<button id="button_configuration_startup_warmup" class="accordion title"><strong>Startup Warmup</strong></button>
+<div class="panel title">
+    <p>If true (the default) MockServer sends itself a single warm-up request in the background immediately after it starts listening.</p>
+    <p>The very first request handled by a freshly started MockServer is noticeably slower than every request after it (typically a few hundred milliseconds) because the code that handles requests is only loaded and initialised the first time it is used. The warm-up request pays that one-off cost in the background so the first request from your test or application &mdash; including a readiness poll such as Testcontainers &mdash; is fast.</p>
+    <p>The warm-up runs on a background thread and never delays start up. Leave it enabled unless you want to avoid the single extra loopback request during start up, for example in a tightly locked-down environment where MockServer must not connect to itself.</p>
+    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">true</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.startupWarmup(boolean enable)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.startupWarmup=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_STARTUP_WARMUP=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.startupWarmup=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.startupWarmup="false"</code></pre>
+</div>
+
 <button id="button_configuration_assume_all_requests_are_http" class="accordion title"><strong>Assume All Requests Are HTTP</strong></button>
 <div class="panel title">
     <p>If false requests are assumed as binary if the method isn't one of "GET", "POST", "PUT", "HEAD", "OPTIONS", "PATCH", "DELETE", "TRACE" or "CONNECT"</p>
