@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Experimental JDK 25 AOT-cache Docker image variant (Project Leyden) for ~2x faster container startup.**
+  New `docker/aot/Dockerfile` builds a MockServer image on a jlink-trimmed Temurin 25 runtime with an
+  ahead-of-time cache (JEP 483/514) baked in via a training run at image build time. Measured time-to-ready
+  roughly halves versus the standard image (~0.35 s vs ~0.7–0.8 s from `docker run` to a 200 from
+  `PUT /mockserver/status`) with identical behaviour — it is the real HotSpot JVM, so 100% feature parity.
+  Published from this release as opt-in `X.Y.Z-aot` / `latest-aot` tags (Docker Hub + ECR Public),
+  error-isolated in the release pipeline like the clustered image, and selectable from the MockServer
+  Testcontainers module via `new MockServerContainer(MockServerContainer.aotImage())`. The Testcontainers
+  documentation now explains the fast-test hierarchy (suite-scoped container + `reset()`, in-process
+  MockServer for Java tests) and the runtime-level options evaluated (AppCDS, AOT cache, GraalVM native
+  image) with measured figures and the reasons native-image is not supported. (relates to #2385)
+
 - **Mock-drift detection master switch and sampling.** New `driftDetectionEnabled` (boolean, default `true`) turns
   mock-drift analysis of forwarded responses on or off, and `driftSampleRate` (double `0.0`–`1.0`, default `1.0`)
   analyses only a sampled fraction of forwarded responses. Both defaults preserve the previous always-on behaviour;

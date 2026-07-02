@@ -173,6 +173,25 @@ class MockServerContainerConfigTest {
     }
 
     @Test
+    void aotImageHasAotSuffixAndIsCompatible() {
+        DockerImageName aot = MockServerContainer.aotImage();
+        // The tag must select the -aot variant.
+        assertThat(aot.getVersionPart(), endsWith("-aot"));
+        // It must be recognised as a compatible substitute for the base image (so the
+        // MockServerContainer(DockerImageName) constructor's assertCompatibleWith passes). We do
+        // NOT start a container here — the -aot tag is not published until the next release.
+        aot.assertCompatibleWith(DockerImageName.parse("mockserver/mockserver"));
+        assertThat(aot.asCanonicalNameString(), startsWith("mockserver/mockserver:"));
+    }
+
+    @Test
+    void aotImageTagDerivesFromDefaultImage() {
+        // aotImage() is just the default resolved image tag with -aot appended.
+        String defaultTag = MockServerContainer.resolveDefaultImage().getVersionPart();
+        assertThat(MockServerContainer.aotImage().getVersionPart(), is(defaultTag + "-aot"));
+    }
+
+    @Test
     void incompatibleImageIsRejected() {
         DockerImageName incompatible = DockerImageName.parse("postgres:15");
         org.junit.jupiter.api.Assertions.assertThrows(

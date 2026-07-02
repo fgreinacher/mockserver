@@ -69,6 +69,10 @@ log_info "Using JAR: $SHADED_JAR"
 cp "$SHADED_JAR" docker/local/mockserver-netty-jar-with-dependencies.jar
 cp "$SHADED_JAR" docker/graaljs/mockserver-netty-jar-with-dependencies.jar
 cp "$SHADED_JAR" docker/clustered/mockserver-netty-jar-with-dependencies.jar
+# The experimental -aot variant consumes the shaded jar from its build context via
+# `--build-arg source=copy` (its `copy` stage COPYs mockserver-netty-jar-with-dependencies.jar),
+# so it needs the same staged copy as graaljs/clustered.
+cp "$SHADED_JAR" docker/aot/mockserver-netty-jar-with-dependencies.jar
 
 # Stage a CA bundle into the build contexts whose alpine stages COPY it in and
 # (when non-empty) trust it before `apk add`, so builds behind a corporate
@@ -77,9 +81,13 @@ cp "$SHADED_JAR" docker/clustered/mockserver-netty-jar-with-dependencies.jar
 # fallbacks). docker/local + docker/webhook are single-stage and do NOT COPY a
 # bundle, so they are excluded. Remove any stale bundle first so the helper
 # always writes a fresh one (matching the prior unconditional-overwrite).
-rm -f docker/graaljs/ca-bundle.pem docker/clustered/ca-bundle.pem
+rm -f docker/graaljs/ca-bundle.pem docker/clustered/ca-bundle.pem docker/aot/ca-bundle.pem
 "$REPO_ROOT/docker/ensure-ca-bundle.sh" docker/graaljs >/dev/null
 "$REPO_ROOT/docker/ensure-ca-bundle.sh" docker/clustered >/dev/null
+# The aot Dockerfile's `download` stage COPYs ca-bundle.pem, but under `source=copy` that stage
+# is never built by BuildKit. Stage the bundle anyway for consistency (and so the file exists if
+# the download stage is ever built) — empty in CI is a no-op.
+"$REPO_ROOT/docker/ensure-ca-bundle.sh" docker/aot >/dev/null
 
 # ---- Resolve Infinispan clustered-state libs for the -clustered image ------
 # Use Maven to resolve the transitive runtime dependencies of the
@@ -303,6 +311,20 @@ if is_dry_run; then
     --tag "${ECR_REPO}:latest-graaljs" \
     docker/graaljs
 
+  # Experimental JDK 25 AOT-cache variant (opt-in -aot tags). source=copy consumes the staged
+  # shaded jar; no dashboard-analytics build args (the aot Dockerfile does not declare them).
+  # Hard-fail here is intentional (asymmetric with the soft-fail release path): build defects
+  # should surface in the dry-run rather than being silently skipped at release time.
+  docker build \
+    --build-arg source=copy \
+    --tag "mockserver/mockserver:$FULL_TAG-aot" \
+    --tag "mockserver/mockserver:$SHORT_TAG-aot" \
+    --tag "mockserver/mockserver:latest-aot" \
+    --tag "${ECR_REPO}:$FULL_TAG-aot" \
+    --tag "${ECR_REPO}:$SHORT_TAG-aot" \
+    --tag "${ECR_REPO}:latest-aot" \
+    docker/aot
+
   if [[ "$BUILD_CLUSTERED" == "true" ]]; then
     docker build \
       --tag "mockserver/mockserver:clustered-$FULL_TAG" \
@@ -357,6 +379,33 @@ else
     --tag "${ECR_REPO}:$SHORT_TAG-graaljs" \
     --tag "${ECR_REPO}:latest-graaljs" \
     docker/graaljs
+
+  # ---- Experimental JDK 25 AOT-cache variant (opt-in -aot tags) --------------
+  # SOFT-fail (non-fatal): unlike the clustered image, an -aot build/push failure must NOT abort
+  # the release — the main + graaljs images are already published by this point, and -aot is an
+  # experimental opt-in surface. The arm64 training run executes under QEMU emulation (the AOT
+  # cache is arch-specific, so each platform trains its own during the build) and is the most
+  # likely failure point; wrapping the whole build in `if ! ...` swallows any non-zero exit so a
+  # failure degrades to "no -aot tags this release" rather than a failed release. No
+  # dashboard-analytics build args: the aot Dockerfile does not declare them. source=copy consumes
+  # the staged shaded jar (its download stage — which would COPY ca-bundle.pem — is not built).
+  echo "--- :docker: Building and pushing experimental -aot image variant (non-fatal)"
+  AOT_PUBLISHED=false
+  if docker buildx build \
+    --platform "linux/amd64,linux/arm64" \
+    --push \
+    --build-arg source=copy \
+    --tag "mockserver/mockserver:$FULL_TAG-aot" \
+    --tag "mockserver/mockserver:$SHORT_TAG-aot" \
+    --tag "mockserver/mockserver:latest-aot" \
+    --tag "${ECR_REPO}:$FULL_TAG-aot" \
+    --tag "${ECR_REPO}:$SHORT_TAG-aot" \
+    --tag "${ECR_REPO}:latest-aot" \
+    docker/aot; then
+    AOT_PUBLISHED=true
+  else
+    log_info "WARNING: -aot image build failed — skipping (non-fatal; likely the arm64 QEMU training run)"
+  fi
 
   if [[ "$BUILD_CLUSTERED" == "true" ]]; then
     # HARD-fail with retry: a transient registry blip is retried, but a real
@@ -537,6 +586,16 @@ else
       images_to_sign+=(
         "mockserver/mockserver:clustered-$FULL_TAG"
         "${ECR_REPO}:clustered-$FULL_TAG"
+      )
+    fi
+    # The experimental -aot variant is soft-fail at build time, but once its tags ARE published
+    # they carry the same "release images are cosign-signed" guarantee as every other variant, so
+    # sign them whenever the build succeeded. Signing shares the key/registries with the images
+    # above, so this adds no meaningful abort risk beyond what the mandatory images already carry.
+    if [[ "${AOT_PUBLISHED:-false}" == "true" ]]; then
+      images_to_sign+=(
+        "mockserver/mockserver:$FULL_TAG-aot"
+        "${ECR_REPO}:$FULL_TAG-aot"
       )
     fi
     if [[ "$BUILD_WEBHOOK" == "true" ]]; then

@@ -287,4 +287,33 @@ public class MockServerContainer extends GenericContainer<MockServerContainer> {
             "image to the MockServerContainer(DockerImageName) constructor for reproducible builds.", IMAGE_NAME);
         return DockerImageName.parse(IMAGE_NAME + ":latest");
     }
+
+    /**
+     * Returns the default resolved image with {@code -aot} appended to its tag, selecting the
+     * experimental JDK 25 AOT-cache image variant.
+     * <p>
+     * This variant bakes a Project Leyden ahead-of-time cache (JEP 483/514) into the image via a
+     * training run at build time, roughly halving container time-to-ready versus the standard image
+     * while remaining the real HotSpot JVM (100% feature parity — unlike GraalVM native-image). The
+     * {@code -aot} tags are published as an opt-in variant (like {@code -graaljs}) to Docker Hub and
+     * ECR Public from the next release.
+     * <p>
+     * Usage:
+     * <pre>{@code
+     * try (MockServerContainer container = new MockServerContainer(MockServerContainer.aotImage())) {
+     *     container.start();
+     *     // ...
+     * }
+     * }</pre>
+     * The returned image uses the same tag as the default image (resolved once at class-load time
+     * by {@link #resolveDefaultImage()}), so it stays in lockstep with the client jar version
+     * (or {@code latest-aot} when the version cannot be resolved).
+     *
+     * @return the default resolved image with {@code -aot} appended to its tag, compatible with
+     * {@code mockserver/mockserver}
+     */
+    public static DockerImageName aotImage() {
+        return DockerImageName.parse(IMAGE_NAME + ":" + DEFAULT_IMAGE.getVersionPart() + "-aot")
+            .asCompatibleSubstituteFor(IMAGE_NAME);
+    }
 }
