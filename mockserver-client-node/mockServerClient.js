@@ -2062,6 +2062,38 @@ var mockServerClient;
         };
 
         // -------------------------------------------------------------------
+        // Drift detection
+        // -------------------------------------------------------------------
+        /**
+         * Retrieve the recorded mock drift report (GET /mockserver/drift).
+         * The report is of the form {count: <n>, drifts: [ ... ]}, where each
+         * entry describes a difference detected between a mock's configured
+         * response and the live upstream response for the same request.
+         *
+         * @return promise resolving to the parsed drift report object
+         */
+        var retrieveDrift = function () {
+            return {
+                then: function (sucess, error) {
+                    makeGetRequest(host, port, "/mockserver/drift")
+                        .then(function (result) {
+                            sucess(result.body ? JSON.parse(result.body) : {});
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Clear all recorded mock drift (PUT /mockserver/drift/clear).
+         *
+         * @return a promise that is resolved once the drift is cleared
+         */
+        var clearDrift = function () {
+            return makeRequest(host, port, "/mockserver/drift/clear");
+        };
+
+        // -------------------------------------------------------------------
         // Pact (import / export / verify)
         // -------------------------------------------------------------------
         /**
@@ -3246,6 +3278,8 @@ var mockServerClient;
             scrapeMetrics: scrapeMetrics,
             retrieveConfiguration: retrieveConfiguration,
             updateConfiguration: updateConfiguration,
+            retrieveDrift: retrieveDrift,
+            clearDrift: clearDrift,
             pactImport: pactImport,
             pactExport: pactExport,
             pactVerify: pactVerify,

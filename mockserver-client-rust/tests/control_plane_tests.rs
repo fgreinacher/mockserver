@@ -215,6 +215,30 @@ fn test_update_configuration() {
 }
 
 // ---------------------------------------------------------------------------
+// Drift detection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_retrieve_drift() {
+    let (client, rx) = stub(200, r#"{"count":1,"drifts":[{"path":"/foo"}]}"#);
+    let out = client.retrieve_drift().unwrap();
+    let cap = rx.recv().unwrap();
+    assert_eq!(cap.method, "GET");
+    assert_eq!(cap.url, "/mockserver/drift");
+    assert!(out.contains("\"count\":1"));
+    assert!(out.contains("drifts"));
+}
+
+#[test]
+fn test_clear_drift() {
+    let (client, rx) = stub(200, r#"{"status":"cleared"}"#);
+    client.clear_drift().unwrap();
+    let cap = rx.recv().unwrap();
+    assert_eq!(cap.method, "PUT");
+    assert_eq!(cap.url, "/mockserver/drift/clear");
+}
+
+// ---------------------------------------------------------------------------
 // Pact
 // ---------------------------------------------------------------------------
 

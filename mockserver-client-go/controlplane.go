@@ -161,6 +161,48 @@ func (c *Client) UpdateConfiguration(configJSON string) (string, error) {
 }
 
 // -----------------------------------------------------------------------------
+// Drift detection
+//    GET /mockserver/drift        (recorded mock drift report)
+//    PUT /mockserver/drift/clear  (clear recorded drift)
+// -----------------------------------------------------------------------------
+
+// RetrieveDrift returns the recorded mock drift report as a parsed map of the
+// form {"count": <n>, "drifts": [ ... ]}, where each entry describes a
+// difference detected between a mock's configured response and the live
+// upstream response for the same request. Mirrors the Java client
+// retrieveDrift(). Sends GET /mockserver/drift. When no drift has been recorded
+// the returned map is empty.
+func (c *Client) RetrieveDrift() (map[string]interface{}, error) {
+	respBody, statusCode, err := c.doRequest("GET", "/mockserver/drift", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode >= 400 {
+		return nil, fmt.Errorf("mockserver: retrieve drift failed (status %d): %s", statusCode, string(respBody))
+	}
+	result := map[string]interface{}{}
+	if len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, fmt.Errorf("mockserver: unmarshal drift: %w", err)
+		}
+	}
+	return result, nil
+}
+
+// ClearDrift clears all recorded mock drift. Mirrors the Java client
+// clearDrift(). Sends PUT /mockserver/drift/clear.
+func (c *Client) ClearDrift() error {
+	respBody, statusCode, err := c.doRequest("PUT", "/mockserver/drift/clear", nil, nil)
+	if err != nil {
+		return err
+	}
+	if statusCode >= 400 {
+		return fmt.Errorf("mockserver: clear drift failed (status %d): %s", statusCode, string(respBody))
+	}
+	return nil
+}
+
+// -----------------------------------------------------------------------------
 // 4. Pact (import / export / verify)
 //    PUT /mockserver/pact/import   import a Pact contract
 //    PUT /mockserver/pact          export a generated Pact contract

@@ -1803,6 +1803,49 @@ public sealed class MockServerClient : IDisposable
     }
 
     // -------------------------------------------------------------------
+    // Drift detection
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Retrieve the recorded mock drift report (GET /mockserver/drift). Returns the
+    /// serialized report JSON body, of the form
+    /// <c>{"count": &lt;n&gt;, "drifts": [ ... ]}</c>, where each entry describes a
+    /// difference detected between a mock's configured response and the live upstream
+    /// response for the same request.
+    /// </summary>
+    public string RetrieveDrift()
+        => RetrieveDriftAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Retrieve the recorded mock drift report (async). See <see cref="RetrieveDrift"/>.
+    /// </summary>
+    public async Task<string> RetrieveDriftAsync()
+    {
+        var (statusCode, body) = await GetAsync("/mockserver/drift").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to retrieve drift (HTTP {statusCode}): {body}");
+        return body ?? "";
+    }
+
+    /// <summary>
+    /// Clear all recorded mock drift (PUT /mockserver/drift/clear).
+    /// </summary>
+    public void ClearDrift()
+        => ClearDriftAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Clear all recorded mock drift (async). See <see cref="ClearDrift"/>.
+    /// </summary>
+    public async Task ClearDriftAsync()
+    {
+        var (statusCode, body) = await PutAsync("/mockserver/drift/clear", "").ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to clear drift (HTTP {statusCode}): {body}");
+    }
+
+    // -------------------------------------------------------------------
     // Pact (import / export / verify)
     // -------------------------------------------------------------------
 

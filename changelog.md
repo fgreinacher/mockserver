@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed mock-drift client methods across all 8 client libraries.** Each client now exposes a typed wrapper
+  for the drift-detection control plane — `retrieveDrift()` (`GET /mockserver/drift`, returns the parsed
+  `{ count, drifts }` report) and `clearDrift()` (`PUT /mockserver/drift/clear`) — so programmatic users no
+  longer have to hand-roll raw HTTP. Added to the Java (`retrieveDrift`/`clearDrift`), Node
+  (`retrieveDrift`/`clearDrift`), Python (`retrieve_drift`/`clear_drift`), Ruby (`retrieve_drift`/`clear_drift`),
+  Go (`RetrieveDrift`/`ClearDrift`), .NET (`RetrieveDrift`/`ClearDrift` + async variants), Rust
+  (`retrieve_drift`/`clear_drift`) and PHP (`retrieveDrift`/`clearDrift`) clients, each following that client's
+  existing control-plane conventions, with mocked-transport unit tests. The drift-detection documentation now
+  shows client-library tabs alongside the REST examples.
+
 - **Experimental JDK 25 AOT-cache Docker image variant (Project Leyden) for ~2x faster container startup.**
   New `docker/aot/Dockerfile` builds a MockServer image on a jlink-trimmed Temurin 25 runtime with an
   ahead-of-time cache (JEP 483/514) baked in via a training run at image build time. Measured time-to-ready

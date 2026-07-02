@@ -224,6 +224,17 @@ class MockServerClient:
         """
         return self._run(self._async_client.update_configuration(config_json))
 
+    def retrieve_drift(self) -> dict:
+        """Retrieve the recorded mock drift report
+        (``GET /mockserver/drift``); returns a dict of the form
+        ``{"count": <n>, "drifts": [ ... ]}``.
+        """
+        return self._run(self._async_client.retrieve_drift())
+
+    def clear_drift(self) -> None:
+        """Clear all recorded mock drift (``PUT /mockserver/drift/clear``)."""
+        return self._run(self._async_client.clear_drift())
+
     def pact_import(self, pact_json: str) -> str:
         """Import a Pact v3 contract as expectations; returns the upserted
         expectations JSON (``PUT /mockserver/pact/import``).

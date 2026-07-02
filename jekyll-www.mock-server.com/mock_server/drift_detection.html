@@ -101,11 +101,108 @@ keywords: mock drift detection, stub validation, proxy mode, schema drift, contr
 
 <p>The <code>limit</code> parameter applies only to unfiltered queries (most-recent-first). When you filter by <code>expectationId</code>, <strong>all</strong> matching records are returned and <code>limit</code> is ignored.</p>
 
+<h3>Using a client library</h3>
+
+<p>Each client library exposes a typed method that retrieves the drift report and returns the parsed <code>{ count, drifts }</code> result (or the raw report JSON, matching how that client returns other control-plane results):</p>
+
+<button class="accordion inner">Java</button>
+<div class="panel">
+    <pre class="prettyprint lang-java code"><code class="code">String driftReport = new MockServerClient("localhost", 1080).retrieveDrift();</code></pre>
+</div>
+<button class="accordion inner">JavaScript</button>
+<div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).retrieveDrift().then(
+    function (report) { console.log(report.count + " drift(s)", report.drifts); },
+    function (error) { console.log(error); }
+);</code></pre>
+</div>
+<button class="accordion inner">Python</button>
+<div class="panel">
+    <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient
+
+report = MockServerClient("localhost", 1080).retrieve_drift()
+print(report["count"], report["drifts"])</code></pre>
+</div>
+<button class="accordion inner">Ruby</button>
+<div class="panel">
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+report = MockServer::Client.new('localhost', 1080).retrieve_drift
+puts report['count']</code></pre>
+</div>
+<button class="accordion inner">Go</button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">client := mockserver.New("localhost", 1080)
+report, err := client.RetrieveDrift()</code></pre>
+</div>
+<button class="accordion inner">C#</button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">var client = new MockServerClient("localhost", 1080);
+string driftReport = client.RetrieveDrift();</code></pre>
+</div>
+<button class="accordion inner">Rust</button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">let client = ClientBuilder::new("localhost", 1080).build()?;
+let drift_report = client.retrieve_drift()?;</code></pre>
+</div>
+<button class="accordion inner">PHP</button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">$client = new \MockServer\MockServerClient('localhost', 1080);
+$driftReport = $client->retrieveDrift();</code></pre>
+</div>
+
 <h2 id="clearing">Clearing drift records</h2>
 
 <p>To clear all recorded drifts:</p>
 
 <pre class="prettyprint code"><code class="code">curl -X PUT http://localhost:1080/mockserver/drift/clear</code></pre>
+
+<h3>Using a client library</h3>
+
+<p>Each client library exposes a typed method that clears all recorded drift:</p>
+
+<button class="accordion inner">Java</button>
+<div class="panel">
+    <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080).clearDrift();</code></pre>
+</div>
+<button class="accordion inner">JavaScript</button>
+<div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).clearDrift();</code></pre>
+</div>
+<button class="accordion inner">Python</button>
+<div class="panel">
+    <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient
+
+MockServerClient("localhost", 1080).clear_drift()</code></pre>
+</div>
+<button class="accordion inner">Ruby</button>
+<div class="panel">
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+MockServer::Client.new('localhost', 1080).clear_drift</code></pre>
+</div>
+<button class="accordion inner">Go</button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">client := mockserver.New("localhost", 1080)
+err := client.ClearDrift()</code></pre>
+</div>
+<button class="accordion inner">C#</button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">var client = new MockServerClient("localhost", 1080);
+client.ClearDrift();</code></pre>
+</div>
+<button class="accordion inner">Rust</button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">let client = ClientBuilder::new("localhost", 1080).build()?;
+client.clear_drift()?;</code></pre>
+</div>
+<button class="accordion inner">PHP</button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">$client = new \MockServer\MockServerClient('localhost', 1080);
+$client->clearDrift();</code></pre>
+</div>
 
 <p>Drift records are also cleared automatically when MockServer is reset via <code>PUT /mockserver/reset</code>.</p>
 

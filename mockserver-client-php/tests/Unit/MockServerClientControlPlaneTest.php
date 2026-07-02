@@ -236,6 +236,40 @@ class MockServerClientControlPlaneTest extends TestCase
     }
 
     // -----------------------------------------------------------------
+    // Drift detection
+    // -----------------------------------------------------------------
+
+    public function testRetrieveDriftSendsGetAndReturnsReport(): void
+    {
+        $history = [];
+        $report = '{"count":1,"drifts":[{"path":"/foo"}]}';
+        $client = $this->createClientWithMock([
+            new Response(200, [], $report),
+        ], $history);
+
+        $result = $client->retrieveDrift();
+
+        $request = $history[0]['request'];
+        $this->assertSame('GET', $request->getMethod());
+        $this->assertSame('/mockserver/drift', $request->getUri()->getPath());
+        $this->assertSame($report, $result);
+    }
+
+    public function testClearDriftSendsPut(): void
+    {
+        $history = [];
+        $client = $this->createClientWithMock([
+            new Response(200, [], '{"status":"cleared"}'),
+        ], $history);
+
+        $client->clearDrift();
+
+        $request = $history[0]['request'];
+        $this->assertSame('PUT', $request->getMethod());
+        $this->assertSame('/mockserver/drift/clear', $request->getUri()->getPath());
+    }
+
+    // -----------------------------------------------------------------
     // Pact
     // -----------------------------------------------------------------
 

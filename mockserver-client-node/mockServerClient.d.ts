@@ -348,6 +348,15 @@ export interface MockServerClient {
     updateConfiguration(configuration: object | string): Promise<any>;
 
     /**
+     * Retrieve the recorded mock drift report (GET /mockserver/drift). Resolves
+     * to the parsed report of the form { count: number, drifts: any[] }.
+     */
+    retrieveDrift(): Promise<{ count: number, drifts: any[] }>;
+
+    /** Clear all recorded mock drift (PUT /mockserver/drift/clear). */
+    clearDrift(): Promise<RequestResponse>;
+
+    /**
      * Import a Pact v3 contract as expectations (PUT /mockserver/pact/import).
      * Resolves to the array of upserted expectations.
      */

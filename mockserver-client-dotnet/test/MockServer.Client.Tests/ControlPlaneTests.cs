@@ -173,6 +173,34 @@ public class ControlPlaneTests
         act.Should().Throw<MockServerClientException>().WithMessage("*Invalid configuration*");
     }
 
+    // ---------------- Drift detection ----------------
+
+    [Fact]
+    public void RetrieveDrift_GetsDriftReport()
+    {
+        var (client, handler) = CreateClient();
+        handler.ResponseBody = "{\"count\":1,\"drifts\":[{\"path\":\"/foo\"}]}";
+
+        var body = client.RetrieveDrift();
+
+        handler.LastRequest!.Method.Should().Be(HttpMethod.Get);
+        handler.LastRequest!.RequestUri!.PathAndQuery.Should().Be("/mockserver/drift");
+        body.Should().Contain("\"count\":1");
+        body.Should().Contain("drifts");
+    }
+
+    [Fact]
+    public void ClearDrift_PutsToDriftClear()
+    {
+        var (client, handler) = CreateClient();
+        handler.ResponseBody = "{\"status\":\"cleared\"}";
+
+        client.ClearDrift();
+
+        handler.LastRequest!.Method.Should().Be(HttpMethod.Put);
+        handler.LastRequest!.RequestUri!.PathAndQuery.Should().Be("/mockserver/drift/clear");
+    }
+
     // ---------------- Pact ----------------
 
     [Fact]

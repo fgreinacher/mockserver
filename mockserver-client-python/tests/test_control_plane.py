@@ -127,6 +127,37 @@ class TestConfiguration:
 
 
 # ---------------------------------------------------------------------------
+# Drift detection
+# ---------------------------------------------------------------------------
+
+
+class TestDrift:
+    def test_retrieve_drift(self, control_plane_server):
+        ControlPlaneHandler.response_body = json.dumps(
+            {"count": 1, "drifts": [{"path": "/foo", "driftType": "STATUS_CODE"}]}
+        )
+        with MockServerClient("127.0.0.1", control_plane_server) as client:
+            result = client.retrieve_drift()
+            assert ControlPlaneHandler.last_method == "GET"
+            assert ControlPlaneHandler.last_path == "/mockserver/drift"
+            assert result["count"] == 1
+            assert result["drifts"][0]["path"] == "/foo"
+
+    def test_retrieve_drift_empty(self, control_plane_server):
+        ControlPlaneHandler.response_body = ""
+        with MockServerClient("127.0.0.1", control_plane_server) as client:
+            result = client.retrieve_drift()
+            assert result == {}
+
+    def test_clear_drift(self, control_plane_server):
+        ControlPlaneHandler.response_body = '{"status":"cleared"}'
+        with MockServerClient("127.0.0.1", control_plane_server) as client:
+            client.clear_drift()
+            assert ControlPlaneHandler.last_method == "PUT"
+            assert ControlPlaneHandler.last_path == "/mockserver/drift/clear"
+
+
+# ---------------------------------------------------------------------------
 # Pact
 # ---------------------------------------------------------------------------
 

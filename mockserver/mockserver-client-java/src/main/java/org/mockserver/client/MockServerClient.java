@@ -2575,6 +2575,44 @@ public class MockServerClient implements Stoppable {
     }
 
     // -------------------------------------------------------------------
+    // Drift detection
+    // -------------------------------------------------------------------
+
+    /**
+     * Retrieve the recorded mock drift report. Wraps {@code GET /mockserver/drift}.
+     * <p>
+     * The report is returned as a JSON string of the form
+     * {@code {"count": <n>, "drifts": [ ... ]}}, where each entry describes a difference detected
+     * between a mock's configured response and the live upstream response for the same request.
+     *
+     * @return the drift report as a JSON string
+     */
+    public String retrieveDrift() {
+        HttpResponse httpResponse = sendRequest(
+            request()
+                .withMethod("GET")
+                .withPath(calculatePath("drift")),
+            false
+        );
+        return httpResponse != null ? httpResponse.getBodyAsString() : null;
+    }
+
+    /**
+     * Clear all recorded mock drift. Wraps {@code PUT /mockserver/drift/clear}.
+     *
+     * @return this MockServerClient
+     */
+    public MockServerClient clearDrift() {
+        sendRequest(
+            request()
+                .withMethod("PUT")
+                .withPath(calculatePath("drift/clear")),
+            true
+        );
+        return clientClass.cast(this);
+    }
+
+    // -------------------------------------------------------------------
     // File store
     // -------------------------------------------------------------------
 

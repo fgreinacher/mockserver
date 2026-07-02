@@ -230,6 +230,57 @@ func TestClient_UpdateConfiguration(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Drift detection
+// ---------------------------------------------------------------------------
+
+func TestClient_RetrieveDrift(t *testing.T) {
+	var cap captured
+	ts := cpStub(t, 200, `{"count":1,"drifts":[{"path":"/foo","driftType":"STATUS_CODE"}]}`, &cap)
+	defer ts.Close()
+
+	report, err := NewFromURL(ts.URL).RetrieveDrift()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap.method != "GET" || cap.path != "/mockserver/drift" {
+		t.Errorf("unexpected request %s %s", cap.method, cap.path)
+	}
+	if count, ok := report["count"].(float64); !ok || count != 1 {
+		t.Errorf("unexpected drift count %v", report["count"])
+	}
+	if _, ok := report["drifts"].([]interface{}); !ok {
+		t.Errorf("expected drifts array, got %v", report["drifts"])
+	}
+}
+
+func TestClient_RetrieveDrift_Empty(t *testing.T) {
+	var cap captured
+	ts := cpStub(t, 200, "", &cap)
+	defer ts.Close()
+
+	report, err := NewFromURL(ts.URL).RetrieveDrift()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report) != 0 {
+		t.Errorf("expected empty report, got %v", report)
+	}
+}
+
+func TestClient_ClearDrift(t *testing.T) {
+	var cap captured
+	ts := cpStub(t, 200, `{"status":"cleared"}`, &cap)
+	defer ts.Close()
+
+	if err := NewFromURL(ts.URL).ClearDrift(); err != nil {
+		t.Fatal(err)
+	}
+	if cap.method != "PUT" || cap.path != "/mockserver/drift/clear" {
+		t.Errorf("unexpected request %s %s", cap.method, cap.path)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // 4. Pact
 // ---------------------------------------------------------------------------
 

@@ -279,6 +279,39 @@ module MockServer
     end
 
     # -------------------------------------------------------------------
+    # Drift detection
+    # -------------------------------------------------------------------
+
+    # Retrieve the recorded mock drift report (GET /mockserver/drift).
+    #
+    # Returns the parsed report, a Hash of the form
+    # +{ "count" => <n>, "drifts" => [ ... ] }+, where each entry describes a
+    # difference detected between a mock's configured response and the live
+    # upstream response for the same request. When no drift has been recorded an
+    # empty Hash is returned.
+    #
+    # @return [Hash] the parsed drift report
+    def retrieve_drift
+      status, response_body = request('GET', '/mockserver/drift')
+      if status >= 400
+        raise Error, "Failed to retrieve drift (status=#{status}): #{response_body}"
+      end
+
+      response_body && !response_body.empty? ? JSON.parse(response_body) : {}
+    end
+
+    # Clear all recorded mock drift (PUT /mockserver/drift/clear).
+    # @return [nil]
+    def clear_drift
+      status, response_body = request('PUT', '/mockserver/drift/clear')
+      if status >= 400
+        raise Error, "Failed to clear drift (status=#{status}): #{response_body}"
+      end
+
+      nil
+    end
+
+    # -------------------------------------------------------------------
     # Pact (import / export / verify)
     # -------------------------------------------------------------------
 

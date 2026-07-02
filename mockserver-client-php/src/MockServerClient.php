@@ -1644,6 +1644,55 @@ class MockServerClient
     }
 
     // -----------------------------------------------------------------
+    // Drift detection
+    // -----------------------------------------------------------------
+
+    /**
+     * Retrieve the recorded mock drift report.
+     *
+     * Wraps {@code GET /mockserver/drift}; returns the serialized report JSON
+     * document verbatim, of the form
+     * {@code {"count": <n>, "drifts": [ ... ]}}, where each entry describes a
+     * difference detected between a mock's configured response and the live
+     * upstream response for the same request.
+     *
+     * @return string The drift report JSON document.
+     * @throws MockServerException On communication errors.
+     */
+    public function retrieveDrift(): string
+    {
+        $response = $this->get('/mockserver/drift');
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status >= 400) {
+            throw new MockServerException("Failed to retrieve drift (HTTP {$status}): {$responseBody}");
+        }
+
+        return $responseBody;
+    }
+
+    /**
+     * Clear all recorded mock drift.
+     *
+     * Wraps {@code PUT /mockserver/drift/clear}.
+     *
+     * @return void
+     * @throws MockServerException On communication errors.
+     */
+    public function clearDrift(): void
+    {
+        $response = $this->put('/mockserver/drift/clear', '');
+
+        $status = $response->getStatusCode();
+        if ($status >= 400) {
+            $responseBody = (string) $response->getBody();
+            throw new MockServerException("Failed to clear drift (HTTP {$status}): {$responseBody}");
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Pact (import / export / verify)
     // -----------------------------------------------------------------
 

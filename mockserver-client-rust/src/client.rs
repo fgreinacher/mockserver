@@ -1796,6 +1796,47 @@ impl MockServerClient {
     }
 
     // ------------------------------------------------------------------
+    // Drift detection
+    // ------------------------------------------------------------------
+
+    /// Retrieve the recorded mock drift report (`GET /mockserver/drift`).
+    ///
+    /// Returns the serialized report JSON, of the form
+    /// `{"count": <n>, "drifts": [ ... ]}`, where each entry describes a
+    /// difference detected between a mock's configured response and the live
+    /// upstream response for the same request.
+    pub fn retrieve_drift(&self) -> Result<String> {
+        let resp = self.http.get(self.url("/mockserver/drift")).send()?;
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    /// Clear all recorded mock drift (`PUT /mockserver/drift/clear`).
+    pub fn clear_drift(&self) -> Result<()> {
+        let resp = self
+            .http
+            .put(self.url("/mockserver/drift/clear"))
+            .header("Content-Type", "application/json")
+            .body("")
+            .send()?;
+
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(()),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Pact (import / export / verify)
     // ------------------------------------------------------------------
 

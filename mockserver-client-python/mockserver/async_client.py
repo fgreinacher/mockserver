@@ -383,6 +383,35 @@ class AsyncMockServerClient:
             )
         return response_body or ""
 
+    async def retrieve_drift(self) -> dict:
+        """Retrieve the recorded mock drift report.
+
+        Issues ``GET /mockserver/drift`` and returns the parsed report, a dict of
+        the form ``{"count": <n>, "drifts": [ ... ]}`` where each entry describes a
+        difference detected between a mock's configured response and the live
+        upstream response for the same request. When no drift has been recorded the
+        server returns an empty report (``{}``).
+        """
+        status, response_body = await self._request("GET", "/mockserver/drift")
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve drift (status={status}): {response_body}"
+            )
+        return json.loads(response_body) if response_body else {}
+
+    async def clear_drift(self) -> None:
+        """Clear all recorded mock drift.
+
+        Issues ``PUT /mockserver/drift/clear``.
+        """
+        status, response_body = await self._request(
+            "PUT", "/mockserver/drift/clear"
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to clear drift (status={status}): {response_body}"
+            )
+
     async def pact_import(self, pact_json: str) -> str:
         """Import a Pact v3 contract as expectations.
 

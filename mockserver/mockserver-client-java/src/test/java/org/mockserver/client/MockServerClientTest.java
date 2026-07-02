@@ -2437,6 +2437,44 @@ public class MockServerClientTest {
     }
 
     // -------------------------------------------------------------------
+    // Drift detection
+    // -------------------------------------------------------------------
+
+    @Test
+    public void shouldSendRetrieveDriftRequest() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(OK.code()).withBody("{\"count\":1,\"drifts\":[{\"path\":\"/foo\"}]}"));
+
+        // when
+        String result = mockServerClient.retrieveDrift();
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("GET"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/drift"));
+        assertThat(result, containsString("\"count\":1"));
+        assertThat(result, containsString("\"drifts\""));
+    }
+
+    @Test
+    public void shouldSendClearDriftRequest() {
+        // given
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(OK.code()).withBody("{\"status\":\"cleared\"}"));
+
+        // when
+        mockServerClient.clearDrift();
+
+        // then
+        verify(mockHttpClient, atLeastOnce()).sendRequest(httpRequestArgumentCaptor.capture(), anyLong(), any(TimeUnit.class), anyBoolean());
+        HttpRequest sent = httpRequestArgumentCaptor.getValue();
+        assertThat(sent.getMethod().getValue(), is("PUT"));
+        assertThat(sent.getPath().getValue(), is("/mockserver/drift/clear"));
+    }
+
+    // -------------------------------------------------------------------
     // File store
     // -------------------------------------------------------------------
 

@@ -97,6 +97,40 @@ RSpec.describe MockServer::Client do
   end
 
   # -------------------------------------------------------------------
+  # Drift detection
+  # -------------------------------------------------------------------
+  describe '#retrieve_drift' do
+    it 'sends GET /mockserver/drift and returns the parsed report' do
+      body = JSON.generate({ 'count' => 1, 'drifts' => [{ 'path' => '/foo' }] })
+      stub_request(:get, "#{base_url}/mockserver/drift")
+        .to_return(status: 200, body: body)
+
+      result = client.retrieve_drift
+      expect(result['count']).to eq(1)
+      expect(result['drifts'].first['path']).to eq('/foo')
+      expect(WebMock).to have_requested(:get, "#{base_url}/mockserver/drift")
+    end
+
+    it 'returns an empty Hash when the body is empty' do
+      stub_request(:get, "#{base_url}/mockserver/drift")
+        .to_return(status: 200, body: '')
+
+      expect(client.retrieve_drift).to eq({})
+    end
+  end
+
+  describe '#clear_drift' do
+    it 'sends PUT /mockserver/drift/clear' do
+      stub_request(:put, "#{base_url}/mockserver/drift/clear")
+        .to_return(status: 200, body: '{"status":"cleared"}')
+
+      client.clear_drift
+
+      expect(WebMock).to have_requested(:put, "#{base_url}/mockserver/drift/clear")
+    end
+  end
+
+  # -------------------------------------------------------------------
   # Pact (import / export / verify)
   # -------------------------------------------------------------------
   describe '#pact_import' do
