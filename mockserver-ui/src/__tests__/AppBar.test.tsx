@@ -197,6 +197,36 @@ describe('AppBar', () => {
     expect(screen.getByText('Mock SAML Provider')).toBeInTheDocument();
   });
 
+  it('opens the GraphQL import dialog from the tools menu', async () => {
+    const user = userEvent.setup();
+    renderAppBar();
+
+    const toolsButton = screen.getAllByRole('button').find(
+      (b) => b.getAttribute('aria-label') === 'Import / export tools',
+    );
+    expect(toolsButton).toBeDefined();
+    await user.click(toolsButton!);
+
+    await user.click(screen.getByText('Import GraphQL Schema…'));
+    // The dialog title appears once the GraphQL import dialog opens.
+    expect(screen.getByRole('heading', { name: 'Import GraphQL Schema' })).toBeInTheDocument();
+  });
+
+  it('opens the SCIM dialog from the tools menu', async () => {
+    const user = userEvent.setup();
+    renderAppBar();
+
+    const toolsButton = screen.getAllByRole('button').find(
+      (b) => b.getAttribute('aria-label') === 'Import / export tools',
+    );
+    expect(toolsButton).toBeDefined();
+    await user.click(toolsButton!);
+
+    await user.click(screen.getByText('Mock SCIM Provider…'));
+    // The dialog title appears once the SCIM dialog opens.
+    expect(screen.getByText('Mock SCIM Provider')).toBeInTheDocument();
+  });
+
   it('opens the baseline compare dialog from the tools menu', async () => {
     const user = userEvent.setup();
     renderAppBar();

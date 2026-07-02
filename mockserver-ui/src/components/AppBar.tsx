@@ -71,10 +71,12 @@ import {
 import { fetchHttp3Status, type Http3Status } from '../lib/http3Status';
 import { humanizeError } from '../lib/errorMessage';
 import WsdlImportDialog from './WsdlImportDialog';
+import GraphqlImportDialog from './GraphqlImportDialog';
 import OpenApiImportDialog from './OpenApiImportDialog';
 import PactExportDialog from './PactExportDialog';
 import OidcDialog from './OidcDialog';
 import SamlDialog from './SamlDialog';
+import ScimDialog from './ScimDialog';
 import AsyncApiDialog from './AsyncApiDialog';
 import CrudDialog from './CrudDialog';
 import FileStoreDialog from './FileStoreDialog';
@@ -330,8 +332,10 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
   const [oidcOpen, setOidcOpen] = useState(false);
   const [samlOpen, setSamlOpen] = useState(false);
+  const [scimOpen, setScimOpen] = useState(false);
   const [asyncApiOpen, setAsyncApiOpen] = useState(false);
   const [wsdlOpen, setWsdlOpen] = useState(false);
+  const [graphqlOpen, setGraphqlOpen] = useState(false);
   const [openApiOpen, setOpenApiOpen] = useState(false);
   const [pactOpen, setPactOpen] = useState(false);
   const [crudOpen, setCrudOpen] = useState(false);
@@ -718,6 +722,15 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
           </MenuItem>
           <MenuItem
             onClick={() => {
+              setGraphqlOpen(true);
+              setToolsAnchorEl(null);
+            }}
+          >
+            <ListItemIcon><UploadFileIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Import GraphQL Schema…</ListItemText>
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
               setPactOpen(true);
               setToolsAnchorEl(null);
             }}
@@ -742,6 +755,15 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
           >
             <ListItemIcon><VpnKeyIcon fontSize="small" /></ListItemIcon>
             <ListItemText>Mock SAML Provider…</ListItemText>
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              setScimOpen(true);
+              setToolsAnchorEl(null);
+            }}
+          >
+            <ListItemIcon><VpnKeyIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Mock SCIM Provider…</ListItemText>
           </MenuItem>
           <MenuItem
             onClick={() => {
@@ -800,6 +822,11 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
           onClose={() => setWsdlOpen(false)}
           connectionParams={connectionParams}
         />
+        <GraphqlImportDialog
+          open={graphqlOpen}
+          onClose={() => setGraphqlOpen(false)}
+          connectionParams={connectionParams}
+        />
         <PactExportDialog
           open={pactOpen}
           onClose={() => setPactOpen(false)}
@@ -813,6 +840,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
       <MatcherPlaygroundDialog open={playgroundOpen} onClose={() => setPlaygroundOpen(false)} />
       <OidcDialog open={oidcOpen} onClose={() => setOidcOpen(false)} connectionParams={connectionParams} />
       <SamlDialog open={samlOpen} onClose={() => setSamlOpen(false)} connectionParams={connectionParams} />
+      <ScimDialog open={scimOpen} onClose={() => setScimOpen(false)} connectionParams={connectionParams} />
       <AsyncApiDialog open={asyncApiOpen} onClose={() => setAsyncApiOpen(false)} connectionParams={connectionParams} />
       <CrudDialog open={crudOpen} onClose={() => setCrudOpen(false)} connectionParams={connectionParams} />
       <FileStoreDialog open={fileStoreOpen} onClose={() => setFileStoreOpen(false)} connectionParams={connectionParams} />
