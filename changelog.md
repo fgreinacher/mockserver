@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed client-library support for the `jwt` request matcher and `allOf` body matcher.** The two new
+  matchers are now first-class in the client libraries as well as the server: the OpenAPI spec, the generated
+  Node/TypeScript types (`jwt`, `Jwt`, and the `ALL_OF` / `bodyAllOf` body variant), and the Java model
+  (`request().withJwt(jwt()...)`, `withBody(allOf(...))`) all expose them, and every other client library can
+  send them over the REST wire format. Consumer docs gain Java and Node examples for both matchers.
+
 - **Automated package-manager release channels for the CLI (Homebrew, Scoop, winget, Chocolatey, SDKMAN!, asdf/mise).**
   Six new release-pipeline components (`scripts/release/components/{homebrew,scoop,winget,chocolatey,sdkman,asdf}.sh`)
   publish/update these channels automatically as a `soft_fail` group after the binary-bundle step, distributing the same

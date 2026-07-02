@@ -349,6 +349,50 @@ describe('mock server node client (no proxy)', { concurrency: 1 }, function () {
         assert.equal(r2.body, '{"name":"second_body"}');
     });
 
+    it('should match on jwt claims', async function () {
+        // A real (unverified) JWT: base64url(header).base64url(payload).signature
+        var b64url = function (obj) { return Buffer.from(JSON.stringify(obj)).toString('base64url'); };
+        var token = b64url({ alg: 'HS256', typ: 'JWT' }) + '.' + b64url({ sub: 'user-1', iss: 'my-issuer', scope: 'admin' }) + '.signature';
+
+        await client.mockAnyResponse({
+            'httpRequest': { 'path': '/somePath', 'jwt': { 'claims': { 'sub': 'user-1' }, 'issuer': 'my-issuer' } },
+            'httpResponse': { 'statusCode': 200, 'body': JSON.stringify({name: 'jwt_body'}) },
+            'times': { 'remainingTimes': 1, 'unlimited': false }
+        });
+
+        // wrong issuer -> no match
+        var wrongToken = b64url({ alg: 'HS256', typ: 'JWT' }) + '.' + b64url({ sub: 'user-1', iss: 'other-issuer' }) + '.signature';
+        await assert.rejects(sendRequest("GET", mockServerHost, mockServerPort, "/somePath", "", {'Authorization': 'Bearer ' + wrongToken}), function (err) { return err === "404 Not Found"; });
+
+        var r1 = await sendRequest("GET", mockServerHost, mockServerPort, "/somePath", "", {'Authorization': 'Bearer ' + token});
+        assert.equal(r1.statusCode, 200);
+        assert.equal(r1.body, '{"name":"jwt_body"}');
+    });
+
+    it('should match on ALL_OF body matcher', async function () {
+        await client.mockAnyResponse({
+            'httpRequest': {
+                'path': '/somePath',
+                'body': {
+                    'type': 'ALL_OF',
+                    'bodyAllOf': [
+                        { 'type': 'STRING', 'string': 'foo', 'subString': true },
+                        { 'type': 'STRING', 'string': 'bar', 'subString': true }
+                    ]
+                }
+            },
+            'httpResponse': { 'statusCode': 200, 'body': JSON.stringify({name: 'all_of_body'}) },
+            'times': { 'remainingTimes': 1, 'unlimited': false }
+        });
+
+        // only satisfies the first component -> no match
+        await assert.rejects(sendRequest("POST", mockServerHost, mockServerPort, "/somePath", "only foo here"), function (err) { return err === "404 Not Found"; });
+
+        var r1 = await sendRequest("POST", mockServerHost, mockServerPort, "/somePath", "x foo y bar z");
+        assert.equal(r1.statusCode, 200);
+        assert.equal(r1.body, '{"name":"all_of_body"}');
+    });
+
     it('should match on headers only', async function () {
         await client.mockAnyResponse({
             'httpRequest': { 'headers': [ { 'name': 'Allow', 'values': ['first'] } ] },

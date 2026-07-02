@@ -103,6 +103,25 @@ export interface HttpRequest {
   headers?: KeyToMultiValue;
   cookies?: KeyToValue;
   socketAddress?: SocketAddress;
+
+  /** JSON Web Token (JWT) request matcher */
+  jwt?: Jwt;
+}
+
+/**
+ * JSON Web Token (JWT) request matcher — decodes the token carried in a request header (no
+ * signature verification) and matches its claims
+ */
+export interface Jwt {
+  /** name of the request header carrying the JWT (default "authorization") */
+  header?: string;
+  /** authentication scheme prefix stripped from the header value before decoding (default "Bearer") */
+  scheme?: string;
+  /** claim-value criteria; each value may be an exact string, regex or "!"-negated form */
+  claims?: Record<string, StringOrJsonSchema>;
+  issuer?: StringOrJsonSchema;
+  audience?: StringOrJsonSchema;
+  algorithm?: StringOrJsonSchema;
 }
 
 export interface OpenAPIDefinition {
@@ -288,6 +307,7 @@ export type Body =
       not?: boolean;
       optional?: boolean;
     }
+  | { not?: boolean; optional?: boolean; type: "ALL_OF"; bodyAllOf: Body[] }
   | ({ not?: boolean; type?: "BINARY"; base64Bytes?: string; contentType?: string } & {
       not?: boolean;
       type?: "JSON";

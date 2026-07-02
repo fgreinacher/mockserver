@@ -10506,6 +10506,60 @@ curl_close($ch);</code></pre>
     <p>A criterion whose claim is absent from the token does not match. A <em>negated</em> criterion
         (for example <span class="inline_code">!admin</span>) against an absent claim, issuer, audience
         or algorithm matches — there is no value present to contradict it.</p>
+    <p>Every MockServer client library supports this matcher over the REST wire format; the typed
+        examples below show Java and Node.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/admin")
+            .withJwt(
+                // matches the claims of an (unverified) JWT read from the
+                // authorization header with a Bearer prefix by default
+                jwt()
+                    .withClaim("sub", "user-1")
+                    .withClaim("scope", ".*admin.*")
+                    .withIssuer("https://issuer.example.com")
+                    .withAudience("my-api")
+                    .withAlgorithm("RS256")
+            )
+    )
+    .respond(
+        response()
+            .withBody("some_response_body")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">Node</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/admin",
+        "jwt": {
+            // matches the claims of an (unverified) JWT read from the
+            // authorization header with a Bearer prefix by default
+            "claims": {
+                "sub": "user-1",
+                "scope": ".*admin.*"
+            },
+            "issuer": "https://issuer.example.com",
+            "audience": "my-api",
+            "algorithm": "RS256"
+        }
+    },
+    "httpResponse": {
+        "body": "some_response_body"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
@@ -10536,6 +10590,56 @@ curl_close($ch);</code></pre>
         <span class="inline_code">REGEX</span> matcher simultaneously. Each component keeps its own
         semantics (including its own <span class="inline_code">not</span> flag); the composite matches
         only when every component matches.</p>
+    <p>Every MockServer client library supports this matcher over the REST wire format; the typed
+        examples below show Java and Node.</p>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/orders")
+            .withBody(
+                // matches only when the body satisfies every component matcher
+                allOf(
+                    jsonPath("$.name"),
+                    jsonSchema("{ \"type\": \"object\", \"required\": [ \"age\" ] }"),
+                    regex(".*value.*")
+                )
+            )
+    )
+    .respond(
+        response()
+            .withBody("some_response_body")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">Node</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/orders",
+        "body": {
+            // matches only when the body satisfies every component matcher
+            "type": "ALL_OF",
+            "bodyAllOf": [
+                { "type": "JSON_PATH", "jsonPath": "$.name" },
+                { "type": "JSON_SCHEMA", "jsonSchema": "{ \"type\": \"object\", \"required\": [ \"age\" ] }" },
+                { "type": "REGEX", "regex": ".*value.*" }
+            ]
+        }
+    },
+    "httpResponse": {
+        "body": "some_response_body"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+    </div>
     <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{

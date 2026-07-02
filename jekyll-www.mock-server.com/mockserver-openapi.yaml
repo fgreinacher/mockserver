@@ -3733,6 +3733,30 @@ components:
           $ref: "#/components/schemas/SocketAddress"
         protocol:
           $ref: "#/components/schemas/Protocol"
+        jwt:
+          $ref: "#/components/schemas/Jwt"
+    Jwt:
+      description: "JSON Web Token (JWT) request matcher — decodes the token carried in a request header (no signature verification) and matches its claims"
+      type: object
+      additionalProperties: false
+      properties:
+        header:
+          description: "name of the request header carrying the JWT (default 'authorization')"
+          type: string
+        scheme:
+          description: "authentication scheme prefix stripped from the header value before decoding (default 'Bearer')"
+          type: string
+        claims:
+          description: "claim-value criteria; each value may be an exact string, regex or '!'-negated form"
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/StringOrJsonSchema"
+        issuer:
+          $ref: "#/components/schemas/StringOrJsonSchema"
+        audience:
+          $ref: "#/components/schemas/StringOrJsonSchema"
+        algorithm:
+          $ref: "#/components/schemas/StringOrJsonSchema"
     OpenAPIDefinition:
       description: "open api or swagger request matcher"
       type: object
@@ -4321,6 +4345,23 @@ components:
                 - XPATH
             xpath:
               type: string
+        - type: object
+          description: "all-of body matcher — matches only when every one of its component body matchers matches the same request body"
+          additionalProperties: false
+          required:
+            - bodyAllOf
+          properties:
+            not:
+              type: boolean
+            optional:
+              type: boolean
+            type:
+              enum:
+                - ALL_OF
+            bodyAllOf:
+              type: array
+              items:
+                $ref: "#/components/schemas/Body"
     BodyWithContentType:
       description: "response body"
       anyOf:
