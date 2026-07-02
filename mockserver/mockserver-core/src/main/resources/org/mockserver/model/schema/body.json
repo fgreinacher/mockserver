@@ -389,6 +389,32 @@
           "type": "string"
         }
       }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "not": {
+          "type": "boolean"
+        },
+        "optional": {
+          "type": "boolean"
+        },
+        "type": {
+          "enum": [
+            "ALL_OF"
+          ]
+        },
+        "bodyAllOf": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/body"
+          }
+        }
+      },
+      "required": [
+        "bodyAllOf"
+      ]
     }
   ]
 }

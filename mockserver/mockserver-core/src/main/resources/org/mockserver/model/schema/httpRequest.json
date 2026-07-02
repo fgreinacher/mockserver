@@ -86,6 +86,33 @@
           "$ref": "#/definitions/stringOrJsonSchema"
         }
       }
+    },
+    "jwt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "header": {
+          "type": "string"
+        },
+        "scheme": {
+          "type": "string"
+        },
+        "claims": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/stringOrJsonSchema"
+          }
+        },
+        "issuer": {
+          "$ref": "#/definitions/stringOrJsonSchema"
+        },
+        "audience": {
+          "$ref": "#/definitions/stringOrJsonSchema"
+        },
+        "algorithm": {
+          "$ref": "#/definitions/stringOrJsonSchema"
+        }
+      }
     }
   },
   "definitions": {

@@ -88,6 +88,19 @@ public class BodyMatcherBuilder {
                     WasmBody wasmBody = (WasmBody) body;
                     bodyMatcher = new WasmBodyMatcher(wasmBody.getModuleName());
                     break;
+                case ALL_OF:
+                    AllOfBody allOfBody = (AllOfBody) body;
+                    java.util.List<BodyMatcher> childMatchers = new java.util.ArrayList<>();
+                    if (allOfBody.getValue() != null) {
+                        for (Body child : allOfBody.getValue()) {
+                            BodyMatcher childMatcher = buildBodyMatcher(configuration, mockServerLogger, child, controlPlaneMatcher);
+                            if (childMatcher != null) {
+                                childMatchers.add(childMatcher);
+                            }
+                        }
+                    }
+                    bodyMatcher = new AllOfBodyMatcher(childMatchers);
+                    break;
             }
             if (body.isNot()) {
                 //noinspection ConstantConditions

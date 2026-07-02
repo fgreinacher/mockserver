@@ -25,6 +25,7 @@ public class HttpRequestDTO extends RequestDefinitionDTO implements DTO<HttpRequ
     private Protocol protocol;
     private List<X509Certificate> clientCertificateChain;
     private ClientCertificate clientCertificate;
+    private Jwt jwt;
     private SocketAddress socketAddress;
     private String localAddress;
     private String remoteAddress;
@@ -50,6 +51,7 @@ public class HttpRequestDTO extends RequestDefinitionDTO implements DTO<HttpRequ
             protocol = httpRequest.getProtocol();
             clientCertificateChain = httpRequest.getClientCertificateChain();
             clientCertificate = httpRequest.getClientCertificate();
+            jwt = httpRequest.getJwt();
             socketAddress = httpRequest.getSocketAddress();
             localAddress = httpRequest.getLocalAddress();
             remoteAddress = httpRequest.getRemoteAddress();
@@ -72,6 +74,7 @@ public class HttpRequestDTO extends RequestDefinitionDTO implements DTO<HttpRequ
             .withKeepAlive(keepAlive)
             .withClientCertificateChain(clientCertificateChain)
             .withClientCertificate(clientCertificate)
+            .withJwt(jwt)
             .withSocketAddress(socketAddress)
             .withLocalAddress(localAddress)
             .withRemoteAddress(remoteAddress)
@@ -201,6 +204,15 @@ public class HttpRequestDTO extends RequestDefinitionDTO implements DTO<HttpRequ
 
     public HttpRequestDTO setClientCertificate(ClientCertificate clientCertificate) {
         this.clientCertificate = clientCertificate;
+        return this;
+    }
+
+    public Jwt getJwt() {
+        return jwt;
+    }
+
+    public HttpRequestDTO setJwt(Jwt jwt) {
+        this.jwt = jwt;
         return this;
     }
 

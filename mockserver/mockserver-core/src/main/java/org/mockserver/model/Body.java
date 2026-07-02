@@ -72,6 +72,7 @@ public abstract class Body<T> extends Not {
         FILE,
         WASM,
         MULTIPART,
+        ALL_OF,
     }
 
     @Override

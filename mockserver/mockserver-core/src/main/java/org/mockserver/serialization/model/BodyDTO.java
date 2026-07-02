@@ -60,6 +60,8 @@ public abstract class BodyDTO extends NotDTO implements DTO<Body<?>> {
             result = new FileBodyDTO(fileBody, fileBody.getNot());
         } else if (body instanceof WasmBody wasmBody) {
             result = new WasmBodyDTO(wasmBody, wasmBody.getNot());
+        } else if (body instanceof AllOfBody allOfBody) {
+            result = new AllOfBodyDTO(allOfBody, allOfBody.getNot());
         }
 
         if (result != null) {

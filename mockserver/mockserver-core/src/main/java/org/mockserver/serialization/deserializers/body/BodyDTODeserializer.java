@@ -105,6 +105,7 @@ public class BodyDTODeserializer extends StdDeserializer<BodyDTO> {
         @SuppressWarnings("unchecked")
         List<String> fieldsFieldValue = null;
         String schemaFieldValue = null;
+        List<BodyDTO> allOfBodies = null;
         if (currentToken == JsonToken.START_OBJECT) {
             @SuppressWarnings("unchecked") Map<Object, Object> body = (Map<Object, Object>) ctxt.readValue(jsonParser, Map.class);
             for (Map.Entry<Object, Object> entry : body.entrySet()) {
@@ -383,6 +384,20 @@ public class BodyDTODeserializer extends StdDeserializer<BodyDTO> {
                         type = Body.Type.MULTIPART;
                         multipartPartContentTypes = objectMapper.readValue(objectWriter.writeValueAsString(entry.getValue()), Parameters.class);
                     }
+                    if (key.equalsIgnoreCase("bodyAllOf") && (entry.getValue() instanceof List || entry.getValue() instanceof Object[])) {
+                        type = Body.Type.ALL_OF;
+                        allOfBodies = new java.util.ArrayList<>();
+                        // the configured ObjectMapper deserialises JSON arrays as Object[] (not List)
+                        List<?> elements = entry.getValue() instanceof Object[]
+                            ? java.util.Arrays.asList((Object[]) entry.getValue())
+                            : (List<?>) entry.getValue();
+                        for (Object element : elements) {
+                            BodyDTO childBody = objectMapper.readValue(objectWriter.writeValueAsString(element), BodyDTO.class);
+                            if (childBody != null) {
+                                allOfBodies.add(childBody);
+                            }
+                        }
+                    }
                 }
             }
             if (type != null) {
@@ -483,6 +498,9 @@ public class BodyDTODeserializer extends StdDeserializer<BodyDTO> {
                         break;
                     case WASM:
                         result = new WasmBodyDTO(new WasmBody(valueJsonValue), not);
+                        break;
+                    case ALL_OF:
+                        result = new AllOfBodyDTO(allOfBodies, not);
                         break;
                 }
             } else if (body.size() > 0) {

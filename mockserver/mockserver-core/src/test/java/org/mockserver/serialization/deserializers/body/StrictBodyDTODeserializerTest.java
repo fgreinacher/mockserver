@@ -2181,4 +2181,93 @@ public class StrictBodyDTODeserializerTest {
             )));
     }
 
+    @Test
+    public void shouldParseJsonWithAllOfBody() throws IOException {
+        // given
+        String json = ("{" + NEW_LINE +
+            "    \"httpRequest\": {" + NEW_LINE +
+            "        \"body\" : {" + NEW_LINE +
+            "            \"type\" : \"ALL_OF\"," + NEW_LINE +
+            "            \"bodyAllOf\" : [ {" + NEW_LINE +
+            "                    \"type\" : \"REGEX\"," + NEW_LINE +
+            "                    \"regex\" : \"some[a-z]*\"" + NEW_LINE +
+            "                }, {" + NEW_LINE +
+            "                    \"type\" : \"STRING\"," + NEW_LINE +
+            "                    \"string\" : \"some_value\"" + NEW_LINE +
+            "            } ]" + NEW_LINE +
+            "        }" + NEW_LINE +
+            "    }" + NEW_LINE +
+            "}");
+
+        // when
+        ExpectationDTO expectationDTO = objectMapper.readValue(json, ExpectationDTO.class);
+
+        // then
+        assertThat( expectationDTO, is(new ExpectationDTO()
+            .setHttpRequest(
+                new HttpRequestDTO()
+                    .setBody(new AllOfBodyDTO(java.util.Arrays.asList(
+                        new RegexBodyDTO(new RegexBody("some[a-z]*")),
+                        new StringBodyDTO(new StringBody("some_value"))
+                    ), null))
+            )));
+    }
+
+    @Test
+    public void shouldParseJsonWithAllOfBodyWithNot() throws IOException {
+        // given
+        String json = ("{" + NEW_LINE +
+            "    \"httpRequest\": {" + NEW_LINE +
+            "        \"body\" : {" + NEW_LINE +
+            "            \"not\" : true," + NEW_LINE +
+            "            \"type\" : \"ALL_OF\"," + NEW_LINE +
+            "            \"bodyAllOf\" : [ {" + NEW_LINE +
+            "                    \"type\" : \"REGEX\"," + NEW_LINE +
+            "                    \"regex\" : \"some[a-z]*\"" + NEW_LINE +
+            "                }, {" + NEW_LINE +
+            "                    \"type\" : \"STRING\"," + NEW_LINE +
+            "                    \"string\" : \"some_value\"" + NEW_LINE +
+            "            } ]" + NEW_LINE +
+            "        }" + NEW_LINE +
+            "    }" + NEW_LINE +
+            "}");
+
+        // when
+        ExpectationDTO expectationDTO = objectMapper.readValue(json, ExpectationDTO.class);
+
+        // then
+        assertThat( expectationDTO, is(new ExpectationDTO()
+            .setHttpRequest(
+                new HttpRequestDTO()
+                    .setBody(new AllOfBodyDTO(java.util.Arrays.asList(
+                        new RegexBodyDTO(new RegexBody("some[a-z]*")),
+                        new StringBodyDTO(new StringBody("some_value"))
+                    ), true))
+            )));
+    }
+
+    @Test
+    public void shouldRoundTripAllOfBodyThroughStrictDeserializer() throws IOException {
+        // given - a body serialised by the standard object mapper (as happens on the control plane)
+        AllOfBodyDTO allOfBody = new AllOfBodyDTO(java.util.Arrays.asList(
+            new RegexBodyDTO(new RegexBody("some[a-z]*")),
+            new StringBodyDTO(new StringBody("some_value"))
+        ), null);
+        String serialisedBody = ObjectMapperFactory.createObjectMapper().writeValueAsString(allOfBody);
+        String json = ("{" + NEW_LINE +
+            "    \"httpRequest\": {" + NEW_LINE +
+            "        \"body\" : " + serialisedBody + NEW_LINE +
+            "    }" + NEW_LINE +
+            "}");
+
+        // when - re-parsed through the strict deserializer
+        ExpectationDTO expectationDTO = objectMapper.readValue(json, ExpectationDTO.class);
+
+        // then
+        assertThat( expectationDTO, is(new ExpectationDTO()
+            .setHttpRequest(
+                new HttpRequestDTO().setBody(allOfBody)
+            )));
+    }
+
 }

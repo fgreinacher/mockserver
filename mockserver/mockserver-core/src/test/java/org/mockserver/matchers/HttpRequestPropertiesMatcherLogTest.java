@@ -398,6 +398,7 @@ public class HttpRequestPropertiesMatcherLogTest {
                     "  " + NEW_LINE +
                     "  protocol matched" + NEW_LINE +
                     "  clientCertificate matched" + NEW_LINE +
+                    "  jwt matched" + NEW_LINE +
                     NEW_LINE
             ));
         } finally {
@@ -523,6 +524,7 @@ public class HttpRequestPropertiesMatcherLogTest {
                     "  " + NEW_LINE +
                     "  protocol matched" + NEW_LINE +
                     "  clientCertificate matched" + NEW_LINE +
+                    "  jwt matched" + NEW_LINE +
                     NEW_LINE
             ));
         } finally {
@@ -659,6 +661,7 @@ public class HttpRequestPropertiesMatcherLogTest {
                     "  secure matched" + NEW_LINE +
                     "  protocol matched" + NEW_LINE +
                     "  clientCertificate matched" + NEW_LINE +
+                    "  jwt matched" + NEW_LINE +
                     NEW_LINE +
                     "------------------------------------" + NEW_LINE +
                     LOG_DATE_FORMAT.format(new Date(EpochService.currentTimeMillis())) + " - request:" + NEW_LINE +
@@ -693,6 +696,7 @@ public class HttpRequestPropertiesMatcherLogTest {
                     "  secure matched" + NEW_LINE +
                     "  protocol matched" + NEW_LINE +
                     "  clientCertificate matched" + NEW_LINE +
+                    "  jwt matched" + NEW_LINE +
                     NEW_LINE
             ));
         } finally {
@@ -760,6 +764,7 @@ public class HttpRequestPropertiesMatcherLogTest {
                     "  secure matched" + NEW_LINE +
                     "  protocol matched" + NEW_LINE +
                     "  clientCertificate matched" + NEW_LINE +
+                    "  jwt matched" + NEW_LINE +
                     NEW_LINE +
                     "------------------------------------" + NEW_LINE +
                     LOG_DATE_FORMAT.format(new Date(EpochService.currentTimeMillis())) + " - request:" + NEW_LINE +
@@ -804,6 +809,7 @@ public class HttpRequestPropertiesMatcherLogTest {
                     "  secure matched" + NEW_LINE +
                     "  protocol matched" + NEW_LINE +
                     "  clientCertificate matched" + NEW_LINE +
+                    "  jwt matched" + NEW_LINE +
                     NEW_LINE
             ));
         } finally {

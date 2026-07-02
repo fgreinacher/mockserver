@@ -121,6 +121,87 @@ public class HttpRequestSerializerTest {
     }
 
     @Test
+    public void shouldRoundTripJwtMatcher() throws Exception {
+        java.util.Map<String, org.mockserver.model.NottableString> claims = new java.util.LinkedHashMap<>();
+        claims.put("sub", org.mockserver.model.NottableString.string("user-1"));
+        claims.put("scope", org.mockserver.model.NottableString.string(".*admin.*"));
+        org.mockserver.model.HttpRequest request = request()
+            .withJwt(
+                org.mockserver.model.Jwt.jwt()
+                    .withHeader("x-access-token")
+                    .withScheme("Token")
+                    .withClaims(claims)
+                    .withIssuer("https://issuer.example.com")
+                    .withAudience(org.mockserver.model.NottableString.not("other-api"))
+                    .withAlgorithm("RS256")
+            );
+        String json = objectMapper.writeValueAsString(request);
+        org.mockserver.serialization.model.HttpRequestDTO parsedDTO =
+            (org.mockserver.serialization.model.HttpRequestDTO) ObjectMapperFactory.createObjectMapper()
+                .readValue(json, org.mockserver.serialization.model.RequestDefinitionDTO.class);
+        assertThat(parsedDTO.buildObject().getJwt(), is(request.getJwt()));
+    }
+
+    @Test
+    public void shouldSerializeJwtMatcher() throws JsonProcessingException {
+        assertThat(objectMapper.writeValueAsString(
+                request()
+                    .withMethod("GET")
+                    .withJwt(
+                        org.mockserver.model.Jwt.jwt()
+                            .withClaim("sub", "user-1")
+                            .withIssuer("my-issuer")
+                    )
+            ),
+            is("{" + NEW_LINE +
+                "  \"method\" : \"GET\"," + NEW_LINE +
+                "  \"jwt\" : {" + NEW_LINE +
+                "    \"claims\" : {" + NEW_LINE +
+                "      \"sub\" : \"user-1\"" + NEW_LINE +
+                "    }," + NEW_LINE +
+                "    \"issuer\" : \"my-issuer\"" + NEW_LINE +
+                "  }" + NEW_LINE +
+                "}"));
+    }
+
+    @Test
+    public void shouldRoundTripAllOfBodyMatcher() throws Exception {
+        org.mockserver.model.HttpRequest request = request()
+            .withBody(org.mockserver.model.AllOfBody.allOf(
+                org.mockserver.model.JsonPathBody.jsonPath("$.name"),
+                org.mockserver.model.RegexBody.regex(".*value.*")
+            ));
+        String json = objectMapper.writeValueAsString(request);
+        org.mockserver.serialization.model.HttpRequestDTO parsedDTO =
+            (org.mockserver.serialization.model.HttpRequestDTO) ObjectMapperFactory.createObjectMapper()
+                .readValue(json, org.mockserver.serialization.model.RequestDefinitionDTO.class);
+        assertThat(parsedDTO.buildObject().getBody(), is(request.getBody()));
+    }
+
+    @Test
+    public void shouldSerializeAllOfBodyMatcher() throws JsonProcessingException {
+        assertThat(objectMapper.writeValueAsString(
+                request()
+                    .withBody(org.mockserver.model.AllOfBody.allOf(
+                        org.mockserver.model.JsonPathBody.jsonPath("$.name"),
+                        org.mockserver.model.RegexBody.regex(".*value.*")
+                    ))
+            ),
+            is("{" + NEW_LINE +
+                "  \"body\" : {" + NEW_LINE +
+                "    \"type\" : \"ALL_OF\"," + NEW_LINE +
+                "    \"bodyAllOf\" : [ {" + NEW_LINE +
+                "      \"type\" : \"JSON_PATH\"," + NEW_LINE +
+                "      \"jsonPath\" : \"$.name\"" + NEW_LINE +
+                "    }, {" + NEW_LINE +
+                "      \"type\" : \"REGEX\"," + NEW_LINE +
+                "      \"regex\" : \".*value.*\"" + NEW_LINE +
+                "    } ]" + NEW_LINE +
+                "  }" + NEW_LINE +
+                "}"));
+    }
+
+    @Test
     public void shouldReturnJsontWithJsonBodyInToString() throws JsonProcessingException {
         assertThat(objectMapper.writeValueAsString(request()
                 .withMethod("GET")

@@ -102,6 +102,7 @@ public class StrictBodyDTODeserializer extends StdDeserializer<BodyDTO> {
         SelectionSetMatchType selectionSetMatchTypeFieldValue = null;
         @SuppressWarnings("unchecked")
         java.util.List<String> fieldsFieldValue = null;
+        java.util.List<BodyDTO> allOfBodies = null;
         if (currentToken == JsonToken.START_OBJECT) {
             @SuppressWarnings("unchecked") Map<Object, Object> body = (Map<Object, Object>) ctxt.readValue(jsonParser, Map.class);
             for (Map.Entry<Object, Object> entry : body.entrySet()) {
@@ -395,6 +396,26 @@ public class StrictBodyDTODeserializer extends StdDeserializer<BodyDTO> {
                         }
                         namespacePrefixes = objectMapper.readValue(objectWriter.writeValueAsString(entry.getValue()), new TypeReference<Map<String, String>>(){});
                     }
+                    if (key.equalsIgnoreCase("bodyAllOf") && (entry.getValue() instanceof java.util.List || entry.getValue() instanceof Object[])) {
+                        if (objectMapper == null) {
+                            objectMapper = ObjectMapperFactory.createObjectMapper();
+                        }
+                        if (objectWriter == null) {
+                            objectWriter = objectMapper.writerWithDefaultPrettyPrinter();
+                        }
+                        type = Body.Type.ALL_OF;
+                        allOfBodies = new java.util.ArrayList<>();
+                        // the configured ObjectMapper deserialises JSON arrays as Object[] (not List)
+                        java.util.List<?> elements = entry.getValue() instanceof Object[]
+                            ? java.util.Arrays.asList((Object[]) entry.getValue())
+                            : (java.util.List<?>) entry.getValue();
+                        for (Object element : elements) {
+                            BodyDTO childBody = objectMapper.readValue(objectWriter.writeValueAsString(element), BodyDTO.class);
+                            if (childBody != null) {
+                                allOfBodies.add(childBody);
+                            }
+                        }
+                    }
 
                 }
             }
@@ -489,6 +510,9 @@ public class StrictBodyDTODeserializer extends StdDeserializer<BodyDTO> {
                         break;
                     case WASM:
                         result = new WasmBodyDTO(new WasmBody(valueJsonValue), not);
+                        break;
+                    case ALL_OF:
+                        result = new AllOfBodyDTO(allOfBodies, not);
                         break;
                 }
             }

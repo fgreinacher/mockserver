@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Match requests by the claims inside a JWT (`jwt` request matcher).** An expectation can now route on a
+  JSON Web Token carried in a request header — `withJwt(jwt().withClaim("sub", "user-1").withClaim("scope",
+  ".*admin.*"))` matches only requests whose bearer token carries those claims (each claim value is an exact
+  string or a regex, with `!` negation supported). Convenience fields `issuer` (`iss`), `audience` (`aud`,
+  string or array) and `algorithm` (JOSE header `alg`) are provided, and the header name (default
+  `authorization`) and scheme prefix (default `Bearer`) are configurable. The token's `header.payload` is
+  decoded with base64url + JSON and **its signature is deliberately not verified** — this is request matching
+  for test routing, not authentication (the control-plane JWT auth stack is unchanged). A request with no such
+  header, or a malformed token, simply does not match (it never raises an error). Exposed on `HttpRequest` and
+  through the JSON wire format (`"jwt": { "claims": { ... }, "issuer": "...", "audience": "...", "algorithm":
+  "..." }`) and JSON schema. (Java server + JSON wire format; typed client-library wrappers to follow.)
+
+- **Compose several body matchers that must all match (`ALL_OF` body / `allOf`).** A request body can now be
+  matched against several body matchers at once, where every one must match the same body — for example
+  `withBody(allOf(jsonPath("$.name"), jsonSchema(schema), regex(".*value.*")))`. This reuses the existing body
+  matcher implementations without changing any of their semantics; each component keeps its own `not` flag and
+  the composite honours its own `not` (negate the whole conjunction) and `optional` flags. Serialised as
+  `{"type":"ALL_OF","bodyAllOf":[ ... ]}` and accepted wherever a body matcher is accepted. (Java server + JSON
+  wire format; typed client-library wrappers to follow.)
+
 - **Fluent `MockServerClient.builder()`.** The Java client gains a discoverable fluent builder that
   covers every existing construction dimension in one place — `host` (default `localhost`), `port`
   (default `1080`), `contextPath`, `Configuration`/`ClientConfiguration`, `portFuture`, plus TLS

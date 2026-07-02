@@ -10490,3 +10490,75 @@ curl_close($ch);</code></pre>
         <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
     </div>
 </div>
+<button id="button_match_request_by_jwt_claims" class="accordion">match request by JWT claims</button>
+<div class="panel">
+    <p>Match a request by the claims inside a JSON Web Token (JWT) carried in a request header (the
+        <span class="inline_code">authorization</span> header with a <span class="inline_code">Bearer </span>
+        prefix by default). Each claim value may be an exact string or a regular expression, and the
+        convenience fields <span class="inline_code">issuer</span>, <span class="inline_code">audience</span>
+        and <span class="inline_code">algorithm</span> match the <span class="inline_code">iss</span> /
+        <span class="inline_code">aud</span> claims and the JOSE header <span class="inline_code">alg</span>
+        respectively.</p>
+    <p><strong>The token signature is NOT verified</strong> — this is request matching for test routing,
+        not authentication. A request with no such header, or a malformed token, simply does not match
+        (it never causes an error). To read the token from a different header or with a different scheme
+        prefix, set <span class="inline_code">header</span> and <span class="inline_code">scheme</span>.</p>
+    <p>A criterion whose claim is absent from the token does not match. A <em>negated</em> criterion
+        (for example <span class="inline_code">!admin</span>) against an absent claim, issuer, audience
+        or algorithm matches — there is no value present to contradict it.</p>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest" : {
+    "path" : "/admin",
+    "jwt" : {
+      "claims" : {
+        "sub" : "user-1",
+        "scope" : ".*admin.*"
+      },
+      "issuer" : "https://issuer.example.com",
+      "audience" : "my-api",
+      "algorithm" : "RS256"
+    }
+  },
+  "httpResponse" : {
+    "body" : "some_response_body"
+  }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+<button id="button_match_request_by_body_all_of" class="accordion">match request by body matching all of several matchers</button>
+<div class="panel">
+    <p>Match a request body against several body matchers at once, where <strong>all</strong> of them
+        must match the same body. For example a JSON body can be required to satisfy a
+        <span class="inline_code">JSON_PATH</span>, a <span class="inline_code">JSON_SCHEMA</span> and a
+        <span class="inline_code">REGEX</span> matcher simultaneously. Each component keeps its own
+        semantics (including its own <span class="inline_code">not</span> flag); the composite matches
+        only when every component matches.</p>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest" : {
+    "path" : "/orders",
+    "body" : {
+      "type" : "ALL_OF",
+      "bodyAllOf" : [ {
+        "type" : "JSON_PATH",
+        "jsonPath" : "$.name"
+      }, {
+        "type" : "JSON_SCHEMA",
+        "jsonSchema" : "{ \"type\": \"object\", \"required\": [ \"age\" ] }"
+      }, {
+        "type" : "REGEX",
+        "regex" : ".*value.*"
+      } ]
+    }
+  },
+  "httpResponse" : {
+    "body" : "some_response_body"
+  }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>

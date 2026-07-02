@@ -147,6 +147,24 @@ public class BodyMatching {
         boolean actualBodyAbsent = actual.getBodyAsString() == null;
         if (templateBodyOptional != null && templateBodyOptional && actualBodyAbsent) {
             bodyMatches = true;
+        } else if (bodyMatcher instanceof AllOfBodyMatcher allOf) {
+            // composite: every component body matcher must match the same body. Each component is
+            // dispatched recursively through this same helper so it sees the body representation and
+            // JSON decoder it needs. The whole conjunction honours the composite's own "not" flag.
+            boolean allMatch = true;
+            for (BodyMatcher child : allOf.getMatchers()) {
+                if (child == null) {
+                    continue;
+                }
+                // suppress per-component diagnostics when the conjunction is negated (a failing
+                // component is the expected/passing case, so recording it would be misleading)
+                boolean childMatches = bodyMatches(child, null, actual, allOf.not ? null : context, jsonSchemaBodyParser, mockServerLogger);
+                if (!childMatches) {
+                    allMatch = false;
+                    break;
+                }
+            }
+            bodyMatches = allOf.not != allMatch;
         } else if (bodyMatcher instanceof MultipartMatcher) {
             // multipart/form-data field-level matcher: needs both the raw body bytes and the
             // Content-Type header (which carries the boundary) to decode the parts

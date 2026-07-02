@@ -16,12 +16,14 @@ import org.mockserver.serialization.deserializers.collections.ParametersDeserial
 import org.mockserver.serialization.deserializers.condition.TimeToLiveDTODeserializer;
 import org.mockserver.serialization.deserializers.condition.VerificationTimesDTODeserializer;
 import org.mockserver.serialization.deserializers.certificate.ClientCertificateDeserializer;
+import org.mockserver.serialization.deserializers.jwt.JwtDeserializer;
 import org.mockserver.serialization.deserializers.expectation.OpenAPIExpectationDTODeserializer;
 import org.mockserver.serialization.deserializers.request.RequestDefinitionDTODeserializer;
 import org.mockserver.serialization.deserializers.string.NottableStringDeserializer;
 import org.mockserver.serialization.serializers.body.*;
 import org.mockserver.serialization.serializers.certificate.CertificateSerializer;
 import org.mockserver.serialization.serializers.certificate.ClientCertificateSerializer;
+import org.mockserver.serialization.serializers.jwt.JwtSerializer;
 import org.mockserver.serialization.serializers.collections.CookiesSerializer;
 import org.mockserver.serialization.serializers.collections.HeadersSerializer;
 import org.mockserver.serialization.serializers.collections.ParametersSerializer;
@@ -229,6 +231,8 @@ public class ObjectMapperFactory {
             new NottableStringDeserializer(),
             // client certificate matching criteria
             new ClientCertificateDeserializer(),
+            // jwt matching criteria
+            new JwtDeserializer(),
             // key and multivalue
             new HeadersDeserializer(),
             new ParametersDeserializer(),
@@ -293,6 +297,8 @@ public class ObjectMapperFactory {
             new JsonRpcBodyDTOSerializer(),
             new GraphQLBodySerializer(),
             new GraphQLBodyDTOSerializer(),
+            new AllOfBodySerializer(),
+            new AllOfBodyDTOSerializer(),
             new LogEntryBodySerializer(),
             new LogEntryBodyDTOSerializer(),
             // condition
@@ -312,6 +318,7 @@ public class ObjectMapperFactory {
             new X509CertificateSerializer(),
             new CertificateSerializer(),
             new ClientCertificateSerializer(),
+            new JwtSerializer(),
             // log
             new org.mockserver.serialization.serializers.log.LogEntrySerializer(),
             // matcher

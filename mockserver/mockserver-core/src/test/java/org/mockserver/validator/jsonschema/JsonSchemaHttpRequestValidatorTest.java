@@ -80,6 +80,43 @@ public class JsonSchemaHttpRequestValidatorTest {
     }
 
     @Test
+    public void shouldValidateValidRequestWithJwtMatcher() {
+        // when
+        assertThat(jsonSchemaValidator.isValid("{" + NEW_LINE +
+            "  \"path\" : \"/orders\"," + NEW_LINE +
+            "  \"jwt\" : {" + NEW_LINE +
+            "    \"header\" : \"authorization\"," + NEW_LINE +
+            "    \"scheme\" : \"Bearer\"," + NEW_LINE +
+            "    \"claims\" : {" + NEW_LINE +
+            "      \"sub\" : \"user-1\"," + NEW_LINE +
+            "      \"scope\" : \".*admin.*\"" + NEW_LINE +
+            "    }," + NEW_LINE +
+            "    \"issuer\" : \"https://issuer.example.com\"," + NEW_LINE +
+            "    \"audience\" : { \"not\" : true, \"value\" : \"other-api\" }," + NEW_LINE +
+            "    \"algorithm\" : \"RS256\"" + NEW_LINE +
+            "  }" + NEW_LINE +
+            "}"), is(""));
+    }
+
+    @Test
+    public void shouldValidateValidRequestWithAllOfBodyMatcher() {
+        // when
+        assertThat(jsonSchemaValidator.isValid("{" + NEW_LINE +
+            "  \"path\" : \"/orders\"," + NEW_LINE +
+            "  \"body\" : {" + NEW_LINE +
+            "    \"type\" : \"ALL_OF\"," + NEW_LINE +
+            "    \"bodyAllOf\" : [ {" + NEW_LINE +
+            "      \"type\" : \"JSON_PATH\"," + NEW_LINE +
+            "      \"jsonPath\" : \"$.name\"" + NEW_LINE +
+            "    }, {" + NEW_LINE +
+            "      \"type\" : \"REGEX\"," + NEW_LINE +
+            "      \"regex\" : \".*value.*\"" + NEW_LINE +
+            "    } ]" + NEW_LINE +
+            "  }" + NEW_LINE +
+            "}"), is(""));
+    }
+
+    @Test
     public void shouldValidateValidCompleteRequestWithBinaryBody() {
         // when
         assertThat(jsonSchemaValidator.isValid(new HttpRequestSerializer(new MockServerLogger()).serialize(

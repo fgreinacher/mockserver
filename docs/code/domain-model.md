@@ -37,6 +37,7 @@ classDiagram
         +socketAddress: SocketAddress
         +clientCertificateChain: List~X509Certificate~
         +clientCertificate: ClientCertificate
+        +jwt: Jwt
     }
     class OpenAPIDefinition {
         +specUrlOrPayload: String
@@ -80,6 +81,33 @@ classDiagram
   request that presents no certificate chain. Mismatches are reported through `MatchDifference` under the
   `clientCertificate` field so `explainUnmatched` / `debugMismatch` explain them. This is **matching only**
   and does not change mTLS authentication (`MTLSAuthenticationHandler`).
+
+`HttpRequest` also carries a **`jwt`** (`Jwt`) matcher — expectation criteria for a JSON Web Token
+carried in a request header:
+
+- **`jwt`** (`Jwt`, `org.mockserver.model`) matches a request by the claims inside a JWT read from a
+  header (default `authorization`, `Bearer ` prefix). `JwtMatcher` (`org.mockserver.matchers`) reads the
+  header named by `Jwt.header`, strips the `Jwt.scheme` prefix (case-insensitive), base64url + JSON
+  decodes the token's `header.payload` segments, and matches:
+
+  | Criterion | Type | Matched against |
+  |-----------|------|-----------------|
+  | `claims` | `Map<String, NottableString>` | each entry asserts a payload claim's value (exact / regex / `!` negation); an array claim matches if any element matches; an absent claim never matches a positive criterion but matches a negated one vacuously (same De Morgan semantics for `issuer` / `audience` / `algorithm`) |
+  | `issuer` | `NottableString` | convenience for the `iss` claim |
+  | `audience` | `NottableString` | convenience for the `aud` claim (string or array) |
+  | `algorithm` | `NottableString` | convenience for the JOSE header `alg` field |
+  | `header` | `String` | request header the token is read from (default `authorization`) |
+  | `scheme` | `String` | prefix stripped before decoding (default `Bearer`; blank ⇒ raw token) |
+
+  **No signature verification is performed** — this is request matching for test routing, not
+  authentication (the control-plane JWT auth stack under `authentication/` is a separate concern and is
+  untouched). A malformed or absent token never matches a non-blank criterion and never surfaces an
+  exception. A blank `Jwt` matches every request. Mismatches are reported through `MatchDifference` under
+  the `jwt` field; the diagnostic message can include decoded JWT payload claim values (`found:…`), which
+  is consistent with the token-bearing `Authorization` header already appearing in request logs — the JWT
+  is not treated as a secret by this matcher. Wired through `HttpRequest.jwt` → `HttpRequestDTO`/`RequestDefinitionDTODeserializer`
+  → `JwtSerializer`/`JwtDeserializer` (registered in `ObjectMapperFactory`) and the `jwt` block of the
+  `httpRequest` JSON schema.
 
 ### Action Types
 
@@ -305,6 +333,7 @@ classDiagram
     Body <|-- XPathBody
     Body <|-- ParameterBody
     Body <|-- GraphQLBody
+    Body <|-- AllOfBody
 
     BodyWithContentType <|-- StringBody
     BodyWithContentType <|-- JsonBody
@@ -313,7 +342,17 @@ classDiagram
     BodyWithContentType <|-- FileBody
 ```
 
-Body `Type` enum: `BINARY`, `FILE`, `JSON`, `JSON_SCHEMA`, `JSON_PATH`, `PARAMETERS`, `REGEX`, `STRING`, `XML`, `XML_SCHEMA`, `XPATH`, `JSON_RPC`, `GRAPHQL`, `LOG_EVENT`
+Body `Type` enum: `BINARY`, `FILE`, `JSON`, `JSON_SCHEMA`, `JSON_PATH`, `PARAMETERS`, `REGEX`, `STRING`, `XML`, `XML_SCHEMA`, `XPATH`, `JSON_RPC`, `GRAPHQL`, `LOG_EVENT`, `WASM`, `MULTIPART`, `ALL_OF`
+
+#### AllOfBody (Composite Body Matcher)
+
+`AllOfBody` (`org.mockserver.model`, type `ALL_OF`) is a composite request-body matcher that matches only when **all** of its component body matchers match the *same* request body — e.g. a body required to satisfy a `jsonPath`, a `jsonSchema` and a `regex` matcher at once. It composes the existing matcher implementations without changing any of their individual semantics.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bodyAllOf` | `List<Body>` | the component body matchers; every one must match. An empty list matches any body |
+
+Static factories: `AllOfBody.allOf(Body...)`, `AllOfBody.allOf(List<Body>)`. Each component keeps its own `not` flag; the composite honours its own `not` (negate the whole conjunction) and `optional` (an absent body matches) flags. `BodyMatcherBuilder` builds an `AllOfBodyMatcher` holding the component `BodyMatcher`s, and `BodyMatching` performs the per-component dispatch (so each component sees the body representation and JSON decoder it needs). Serialised via `AllOfBodyDTO` / `AllOfBodySerializer` / `AllOfBodyDTOSerializer` and the `ALL_OF` alternative of the `body` JSON schema; the wire form is `{"type":"ALL_OF","bodyAllOf":[ ... ]}`.
 
 #### FileBody
 
@@ -687,6 +726,8 @@ classDiagram
     BodyMatcher <|-- MultiValueMapMatcher
     BodyMatcher <|-- HashMapMatcher
     BodyMatcher <|-- BooleanMatcher
+    BodyMatcher <|-- AllOfBodyMatcher
+    AllOfBodyMatcher --> BodyMatcher : composes (all must match)
 
     AbstractHttpRequestMatcher <|-- HttpRequestPropertiesMatcher
     AbstractHttpRequestMatcher <|-- HttpRequestsPropertiesMatcher
@@ -752,7 +793,7 @@ For `OpenAPIDefinition` request definitions, this matcher parses an OpenAPI spec
 
 Collects per-field match failure details for debugging. Fields correspond to HTTP request properties:
 
-`METHOD`, `PATH`, `PATH_PARAMETERS`, `QUERY_PARAMETERS`, `COOKIES`, `HEADERS`, `BODY`, `SECURE`, `PROTOCOL`, `KEEP_ALIVE`, `OPERATION`, `OPENAPI`, `DNS_NAME`, `DNS_TYPE`, `DNS_CLASS`, `BINARY_BODY`
+`METHOD`, `PATH`, `PATH_PARAMETERS`, `QUERY_PARAMETERS`, `COOKIES`, `HEADERS`, `BODY`, `SECURE`, `PROTOCOL`, `CLIENT_CERTIFICATE`, `JWT`, `KEEP_ALIVE`, `OPERATION`, `OPENAPI`, `DNS_NAME`, `DNS_TYPE`, `DNS_CLASS`, `BINARY_BODY`
 
 The "matched X/Y fields" closest-match log uses the total field count. OpenAPI fields (`OPERATION`, `OPENAPI`) are unused by non-OpenAPI matchers but still counted, which is imprecise but consistent.
 
