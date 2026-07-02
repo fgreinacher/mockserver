@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mock OpenAI Realtime & Gemini Live voice APIs over WebSocket — new `RealtimeMockBuilder`.** MockServer can
+  now mock the two dominant realtime (voice) LLM protocols so agents/apps that use them can be tested offline,
+  with no real API and no audio hardware. A new pure event codec pair in `mockserver-core`
+  (`org.mockserver.llm.realtime.OpenAiRealtimeCodec` / `GeminiLiveCodec`) generates the provider-correct
+  WebSocket event stream for one scripted assistant turn, and the Java client `RealtimeMockBuilder`
+  (`org.mockserver.client`) wires it into a standard `httpWebSocketResponse` expectation — an initial pushed
+  `session.created` plus per-incoming-frame matchers — so **no new action type, DTO, or JSON schema** is
+  required (exactly as A2A streaming reuses `httpSseResponse`). **OpenAI Realtime** (GA 2025 event protocol,
+  `wss://.../v1/realtime`): pushes `session.created` on connect, acknowledges `session.update` and
+  `conversation.item.create`, and answers each `response.create` with the full lifecycle — `response.created`
+  → `response.output_item.added` → `response.content_part.added` → per-token
+  `response.output_audio_transcript.delta` + `response.output_audio.delta` (audio modality) or
+  `response.output_text.delta` (text modality) → the matching `*.done` markers → `response.done` with usage.
+  **Gemini Live** (`BidiGenerateContent`): answers `setup` → `setupComplete` and each `clientContent` turn with
+  a streamed `serverContent` chunk sequence + `generationComplete`/`turnComplete` carrying `usageMetadata`.
+  Streaming timing follows a deterministic `tokensPerSecond` / time-to-first-token model; audio bytes are opaque
+  silence placeholders (the fidelity target is the event protocol, not audio DSP). Deferred protocol corners
+  (server VAD / input-audio-buffer events, function-call output items, Gemini `toolCall`/`realtimeInput`, etc.)
+  are documented in `docs/code/ai-protocol-mocking.md` rather than half-implemented.
+
 - **Prometheus `_total` counters for the five monotonic metrics (correct `rate()`/`increase()`).** The five
   genuinely-monotonic counts — `requests_received_count`, `expectations_not_matched_count`,
   `response_expectations_matched_count`, `forward_expectations_matched_count`, and `llm_chaos_injected_count` —

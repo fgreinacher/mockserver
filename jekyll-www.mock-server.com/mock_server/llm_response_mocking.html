@@ -82,6 +82,7 @@ curl -s -X PUT http://localhost:1080/mockserver/expectation \
     <li><a href="#cost_budget">Cost budget</a></li>
     <li><a href="#moderation">Moderation, content filter &amp; refusal</a></li>
     <li><a href="#chaos">Chaos / fault injection</a></li>
+    <li><a href="#realtime_voice">Realtime voice APIs (OpenAI Realtime, Gemini Live)</a></li>
     <li><a href="#java_client">Streaming &mdash; client examples (all languages)</a></li>
 </ul>
 
@@ -773,6 +774,67 @@ curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
 <p>
     Each unique isolation key value creates an independent conversation state machine, so multiple agents
     can run conversations in parallel without interfering with each other.
+</p>
+
+<a id="realtime_voice" class="anchor" href="#realtime_voice">&nbsp;</a>
+<h2>Realtime Voice APIs (OpenAI Realtime, Gemini Live)</h2>
+
+<p>
+    The realtime <em>voice</em> APIs &mdash; the <strong>OpenAI Realtime API</strong> and the
+    <strong>Google Gemini Live API</strong> &mdash; are not ordinary HTTP calls: the client opens a
+    <strong>WebSocket</strong> and exchanges a stream of JSON events. MockServer can mock both so you can test an
+    agent or app that uses them completely offline, with no real API, no cost, and no audio hardware. The mock
+    replies to the client&rsquo;s control messages with the provider-correct event stream for one scripted spoken
+    turn (transcript deltas, audio-byte deltas, and a final usage/done event).
+</p>
+
+<p>
+    Point your realtime SDK at MockServer&rsquo;s WebSocket URL (e.g. <span class="inline_code">ws://localhost:1080/v1/realtime</span>)
+    instead of the real provider. Audio bytes in the mocked stream are short silence placeholders &mdash; the aim
+    is to reproduce the <strong>event protocol</strong> faithfully (so your event-handling code is exercised), not
+    to synthesise real speech. This is a Java-client feature (<span class="inline_code">RealtimeMockBuilder</span>);
+    the same scripted turn answers every request on the connection.
+</p>
+
+<button class="accordion"><strong>OpenAI Realtime &mdash; Java Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.client.RealtimeMockBuilder.openAiRealtime;
+import static org.mockserver.llm.realtime.RealtimeTurn.realtimeTurn;
+
+// Mock a spoken response over ws://localhost:1080/v1/realtime
+openAiRealtime()
+    .withModel("gpt-realtime")
+    .respondingWith(
+        realtimeTurn("The capital of France is Paris.")
+            .withInputTokens(20)
+            .withOutputTokens(7)
+    )
+    .applyTo(mockServerClient);
+
+// On connect the mock pushes session.created; it acknowledges session.update and
+// conversation.item.create, and answers each response.create with the full event
+// lifecycle ending in response.done (with usage).</code></pre></div>
+
+<button class="accordion"><strong>Gemini Live &mdash; Java Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.client.RealtimeMockBuilder.geminiLive;
+
+// Mock a Gemini Live BidiGenerateContent session
+geminiLive()
+    .respondingWith("Bonjour le monde")
+    .applyTo(mockServerClient);
+
+// The mock answers the client's setup message with setupComplete, then answers each
+// clientContent turn with a streamed serverContent chunk sequence, generationComplete,
+// and a final turnComplete carrying usageMetadata.</code></pre></div>
+
+<p>
+    Use <span class="inline_code">.withModality(RealtimeModality.TEXT)</span> for a text-only response,
+    <span class="inline_code">.withTokensPerSecond(...)</span> / <span class="inline_code">.withTimeToFirstToken(...)</span>
+    to control streaming timing, and <span class="inline_code">.respondingWith(realtimeTurn(...))</span> to set an
+    explicit transcript, synthetic audio bytes, or token usage. Protocol corners that are intentionally not mocked
+    yet (server voice-activity-detection events, tool/function calls, input-audio transcription) are listed in the
+    developer documentation.
 </p>
 
 <a id="cost_budget" class="anchor" href="#cost_budget">&nbsp;</a>

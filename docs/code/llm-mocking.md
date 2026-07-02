@@ -56,6 +56,18 @@ Currently registered codecs:
 
 `MISTRAL`, `XAI` (Grok), `DEEPSEEK`, `GROQ`, and `OPENROUTER` expose the OpenAI Chat Completions wire format on their own hosts. Their codecs extend `OpenAiCompatibleChatCodec` (which delegates every encode/decode to `OpenAiChatCompletionsCodec`, exactly like `AzureOpenAiCodec`) and their runtime clients extend `OpenAiLlmClient` (overriding only `provider()` and `defaultBaseUrl()`). Because the path is the shared `/chat/completions`, the **host** is the only distinguishing signal: `LlmProviderSniffer` (live forward/proxy path) and `ProviderDetector` (offline AUTO detection) map `api.mistral.ai`→`MISTRAL`, `api.x.ai`→`XAI`, `api.deepseek.com`→`DEEPSEEK`, `api.groq.com`→`GROQ`, `openrouter.ai`→`OPENROUTER`. This means proxy observability records traffic to these gateways as LLM (provider-correct GenAI spans + cost metrics) instead of dropping it as non-LLM. Pricing rows in `LlmPricing` are marked **approximate** (`isApproximate()`); OpenRouter routes vendor-prefixed model ids (`openai/…`, `anthropic/…`, `google/…`, `mistral*/…`, `x-ai/…`, `deepseek/…`) to the underlying vendor's table. Their wire shape is byte-identical to the `openai` golden fixtures, so they are covered by `OpenAiCompatibleProviderCodecTest` rather than dedicated golden files.
 
+## Realtime voice APIs (OpenAI Realtime, Gemini Live)
+
+The realtime (voice) protocols — **OpenAI Realtime** (GA 2025) and **Gemini Live** (`BidiGenerateContent`) — are a
+bidirectional **WebSocket event stream**, not a single HTTP request/response body, so they are a sibling feature to
+the `httpLlmResponse` codecs rather than part of them. They live in `org.mockserver.llm.realtime`
+(`OpenAiRealtimeCodec` / `GeminiLiveCodec`, pure event codecs) with their own `RealtimeProvider` enum
+(`OPENAI_REALTIME`, `GEMINI_LIVE`) kept **separate** from the HTTP `Provider` enum, and are wired through the
+`httpWebSocketResponse` action via the Java client `RealtimeMockBuilder`. Mapping the realtime providers onto the
+HTTP `Provider` enum (for pricing / sniffer / detector / proxy-observability parity) is **deferred**. See
+[ai-protocol-mocking.md → Realtime Voice API Mocking](ai-protocol-mocking.md#realtime-voice-api-mocking-openai-realtime-gemini-live)
+for the architecture, the event coverage matrix, and usage.
+
 ## OpenAI Responses API server-side state
 
 The Responses API is stateful in a way Chat Completions and Anthropic Messages are not: a client may send only the new turn's `input` plus a `previous_response_id`, and the server reconstructs the full conversation from the prior turn. `OpenAiResponsesStore` (`org.mockserver.llm`) is the process-wide registry that models this, so agents that chain turns via `previous_response_id` run against the mock.

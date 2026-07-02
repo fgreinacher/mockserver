@@ -184,6 +184,110 @@ mockServerClient.when(
 );
 ```
 
+## Realtime Voice API Mocking (OpenAI Realtime, Gemini Live)
+
+### Outcome
+
+MockServer mocks the two dominant realtime (voice) LLM protocols — the **OpenAI Realtime API** (GA 2025 event
+protocol) and the **Google Gemini Live API** (`BidiGenerateContent`) — so an agent/app that speaks them can be
+tested fully offline, with no real API and no audio hardware. It is a thin layer over the existing WebSocket mock
+primitive: **no new `Action.Type`, DTO, or JSON schema**. A pure event codec generates the provider-correct event
+JSON; the Java client `RealtimeMockBuilder` wires that into a single `httpWebSocketResponse` expectation (initial
+pushed frame + per-incoming-frame matchers), exactly as A2A streaming reuses `httpSseResponse`.
+
+```mermaid
+flowchart LR
+    Builder["RealtimeMockBuilder\n(client-java)"] --> Codec["OpenAiRealtimeCodec /\nGeminiLiveCodec\n(core, pure)"]
+    Codec --> WS["HttpWebSocketResponse\nmessages + matchers"]
+    WS --> Handler["HttpWebSocketResponseActionHandler\n+ BidirectionalWebSocketFrameHandler"]
+    Handler --> Client["Realtime SDK client"]
+```
+
+### Components
+
+| Class | Module | Package | Purpose |
+|-------|--------|---------|---------|
+| `RealtimeProvider` | core | `org.mockserver.llm.realtime` | `OPENAI_REALTIME` / `GEMINI_LIVE` (separate from the HTTP `Provider` enum) |
+| `RealtimeModality` | core | `org.mockserver.llm.realtime` | `AUDIO` (transcript + audio deltas) or `TEXT` |
+| `RealtimeTurn` | core | `org.mockserver.llm.realtime` | Provider-neutral scripted assistant turn (text, audio transcript, audio bytes, usage) — the realtime analogue of `Completion` |
+| `RealtimeStreamingPhysics` | core | `org.mockserver.llm.realtime` | Deterministic `tokensPerSecond` + time-to-first-token timing (jitter-free WS analogue of `StreamingPhysics`) |
+| `RealtimeEvent` | core | `org.mockserver.llm.realtime` | One rendered event frame `{json, delayMillis}` |
+| `OpenAiRealtimeCodec` | core | `org.mockserver.llm.realtime` | Pure OpenAI Realtime event codec |
+| `GeminiLiveCodec` | core | `org.mockserver.llm.realtime` | Pure Gemini Live event codec |
+| `RealtimeMockBuilder` | client-java | `org.mockserver.client` | Builds the `httpWebSocketResponse` expectation |
+
+### How the flow maps onto the WebSocket primitive
+
+The realtime session is inherently request-driven, which is exactly what the WebSocket mock's `matchers` model
+(incoming frame → scripted `responses`) provides, plus one connect-time push (`messages`):
+
+- **OpenAI** — `session.created` is pushed on connect (`messages`); matchers answer `session.update` →
+  `session.updated`, `conversation.item.create` → `conversation.item.created`, and `response.create` → the full
+  scripted response event sequence.
+- **Gemini** — nothing is pushed on connect; matchers answer `setup` → `setupComplete` and `clientContent` → the
+  scripted `serverContent` chunk stream. Matchers use a DOTALL regex on the distinctive top-level key (`"setup"`,
+  `"clientContent"`) / OpenAI `"type"` value.
+
+Because the bidirectional matcher schedules a match's response frames **concurrently** (each with a delay relative
+to the match instant), the builder converts the codec's per-event gaps into **monotonically-increasing cumulative
+absolute** delays (`RealtimeMockBuilder.toMessages`, `MIN_STEP_MILLIS` floor) so the event stream stays strictly
+ordered. The same script answers every matching frame, so a client that repeats `response.create` /
+`clientContent` receives the scripted turn each time. `closeConnection` is `false` — the client owns disconnect.
+
+### Protocol coverage matrix (event type → status)
+
+**OpenAI Realtime (server events)**
+
+| Event | Status |
+|-------|--------|
+| `session.created` (connect push) | ✅ mocked |
+| `session.updated` (← `session.update`) | ✅ mocked |
+| `conversation.item.created` (← `conversation.item.create`) | ✅ mocked |
+| `response.created` | ✅ mocked |
+| `response.output_item.added` | ✅ mocked |
+| `response.content_part.added` | ✅ mocked |
+| `response.output_audio_transcript.delta` / `.done` | ✅ mocked (AUDIO) |
+| `response.output_audio.delta` / `.done` | ✅ mocked (AUDIO, silence placeholder bytes) |
+| `response.output_text.delta` / `.done` | ✅ mocked (TEXT) |
+| `response.content_part.done`, `response.output_item.done` | ✅ mocked |
+| `response.done` (with `usage`) | ✅ mocked |
+| `input_audio_buffer.*` / server VAD (`speech_started`/`stopped`) | ⛔ deferred |
+| `conversation.item.input_audio_transcription.*` | ⛔ deferred |
+| function-call output items, `rate_limits.updated`, `error` | ⛔ deferred |
+
+**Gemini Live (server messages)**
+
+| Message | Status |
+|---------|--------|
+| `setupComplete` (← `setup`) | ✅ mocked |
+| `serverContent.modelTurn` text parts (← `clientContent`) | ✅ mocked (TEXT) |
+| `serverContent.modelTurn` `inlineData` audio + `outputTranscription` | ✅ mocked (AUDIO, silence placeholder bytes) |
+| `serverContent.generationComplete` / `turnComplete` | ✅ mocked |
+| `usageMetadata` | ✅ mocked |
+| `realtimeInput` / `realtimeInputAcknowledgement` | ⛔ deferred |
+| `toolCall` / `toolCallCancellation` / `toolResponse` | ⛔ deferred |
+| `goAway`, `sessionResumptionUpdate`, `interrupted` | ⛔ deferred |
+
+Audio bytes are opaque silence placeholders — the fidelity target is the **event protocol**, not audio DSP.
+
+### Usage
+
+```java
+import static org.mockserver.llm.realtime.RealtimeTurn.realtimeTurn;
+
+// OpenAI Realtime — point the SDK at ws://localhost:1080/v1/realtime
+RealtimeMockBuilder.openAiRealtime()
+    .withModel("gpt-realtime")
+    .respondingWith(realtimeTurn("The capital of France is Paris.")
+        .withInputTokens(20).withOutputTokens(7))
+    .applyTo(mockServerClient);
+
+// Gemini Live
+RealtimeMockBuilder.geminiLive()
+    .respondingWith("Bonjour le monde")
+    .applyTo(mockServerClient);
+```
+
 ## MCP Mock Builder
 
 ### Purpose
@@ -708,7 +812,8 @@ All overrides are cleared on `HttpState.reset()`. An empty `service` string sets
 | `GrpcStreamResponseActionHandler` | `mockserver-core` | `org.mockserver.mock.action.http` |
 | `GrpcStreamMessageDTO`, `GrpcStreamResponseDTO` | `mockserver-core` | `org.mockserver.serialization.model` |
 | `GrpcToHttpRequestHandler`, `GrpcToHttpResponseHandler` | `mockserver-netty` | `org.mockserver.netty.grpc` |
-| `McpMockBuilder`, `A2aMockBuilder` | `mockserver-client-java` | `org.mockserver.client` |
+| `McpMockBuilder`, `A2aMockBuilder`, `RealtimeMockBuilder` | `mockserver-client-java` | `org.mockserver.client` |
+| `RealtimeProvider`, `RealtimeModality`, `RealtimeTurn`, `RealtimeStreamingPhysics`, `RealtimeEvent`, `OpenAiRealtimeCodec`, `GeminiLiveCodec` | `mockserver-core` | `org.mockserver.llm.realtime` |
 
 ## Test Coverage
 
@@ -733,6 +838,10 @@ All overrides are cleared on `HttpState.reset()`. An empty `service` string sets
 | `HttpWebSocketResponseDTOTest` | core | 5 | Unit |
 | `ForwardChainExpectationTest` | client-java | 10 | Unit |
 | `WebSocketMockingIntegrationTest` | netty | 6 | Integration |
+| `OpenAiRealtimeCodecTest` | core | 11 | Unit |
+| `GeminiLiveCodecTest` | core | 6 | Unit |
+| `RealtimeMockBuilderTest` | client-java | 4 | Unit |
+| `RealtimeMockingIntegrationTest` | netty | 3 | Integration |
 | `GrpcFrameCodecTest` | core | 6 | Unit |
 | `GrpcJsonMessageConverterTest` | core | 7 | Unit |
 | `GrpcProtoDescriptorStoreTest` | core | 7 | Unit |
