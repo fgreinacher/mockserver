@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAI Responses API server-side state — `previous_response_id` chaining, `store`, and
+  `GET /v1/responses/{id}`.** MockServer's Responses API mock (`OPENAI_RESPONSES`) is no longer stateless:
+  each issued `POST /v1/responses` response is recorded (by default; honours the request's `store` flag) in a
+  new process-wide `OpenAiResponsesStore`, so agents that chain turns via `previous_response_id` — sending only
+  the new turn plus the prior response id — now run against the mock. `OpenAiResponsesCodec.decode` prepends the
+  stored prior conversation when a request carries a `previous_response_id`, so conversation matchers and usage
+  inference see the full dialogue, and `GET /v1/responses/{id}` returns the stored response body. The store is
+  bounded (LRU), cleared on server reset, and fully back-compatible — a request with no `previous_response_id`
+  and the default `store:true` behaves exactly as before (it only additionally records the response).
+
+- **OpenAI-compatible provider aliases: Mistral, xAI (Grok), DeepSeek, Groq, and OpenRouter.** Five new
+  `Provider` values whose codecs and runtime clients delegate to the OpenAI Chat Completions implementations
+  (exactly as `AZURE_OPENAI` does), distinguished by host (`api.mistral.ai`, `api.x.ai`, `api.deepseek.com`,
+  `api.groq.com`, `openrouter.ai`) in both `LlmProviderSniffer` and `ProviderDetector`. Proxy observability now
+  classifies traffic to these gateways as LLM (with provider-correct GenAI spans and cost metrics) instead of
+  dropping it as non-LLM. Approximate, clearly-flagged pricing rows were added for each in `LlmPricing`
+  (OpenRouter routes vendor-prefixed model ids such as `openai/gpt-4o` to the underlying vendor's table).
+
 - **Chaos experiment composition: recurring runs, staged TCP/lifecycle faults, steady-state pre-check, and
   history.** The `ChaosExperimentOrchestrator` now composes fault primitives beyond a single one-shot HTTP run,
   all as new optional fields that default to the previous behaviour:

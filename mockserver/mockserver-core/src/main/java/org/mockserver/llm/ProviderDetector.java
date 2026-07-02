@@ -66,6 +66,14 @@ public final class ProviderDetector {
         if (request == null) {
             return Optional.empty();
         }
+        // Host is checked first for the OpenAI-chat-compatible providers only. Their
+        // path is the shared /chat/completions, so path-based detection cannot tell them
+        // apart from OpenAI — the host is the only distinguishing signal. All other
+        // providers continue to be detected purely by path (behaviour unchanged).
+        Optional<Provider> fromHost = detectFromHost(extractHost(request));
+        if (fromHost.isPresent()) {
+            return fromHost;
+        }
         String path = request.getPath() != null ? request.getPath().getValue() : null;
         if (path != null) {
             Optional<Provider> fromPath = detectFromPath(path);
@@ -74,6 +82,58 @@ public final class ProviderDetector {
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * Detect an OpenAI-chat-compatible provider from a target host. Only the five
+     * OpenAI-compatible hosts are recognised here; every other provider is detected
+     * by path via {@link #detectFromPath}. Returns empty for any other (or null) host.
+     */
+    public static Optional<Provider> detectFromHost(String host) {
+        if (host == null || host.isEmpty()) {
+            return Optional.empty();
+        }
+        switch (host.toLowerCase()) {
+            case "api.mistral.ai":
+                return Optional.of(Provider.MISTRAL);
+            case "api.x.ai":
+                return Optional.of(Provider.XAI);
+            case "api.deepseek.com":
+                return Optional.of(Provider.DEEPSEEK);
+            case "api.groq.com":
+                return Optional.of(Provider.GROQ);
+            case "openrouter.ai":
+                return Optional.of(Provider.OPENROUTER);
+            default:
+                return Optional.empty();
+        }
+    }
+
+    /**
+     * Extract the target host from a request: the socket-address host (set on the
+     * forward/proxy path) if present, else the {@code Host} header. Any trailing port
+     * is stripped. Returns {@code null} when no host is available.
+     */
+    private static String extractHost(HttpRequest request) {
+        String host = null;
+        if (request.getSocketAddress() != null
+            && request.getSocketAddress().getHost() != null
+            && !request.getSocketAddress().getHost().isEmpty()) {
+            host = request.getSocketAddress().getHost();
+        } else {
+            String hostHeader = request.getFirstHeader("Host");
+            if (hostHeader != null && !hostHeader.isEmpty()) {
+                host = hostHeader;
+            }
+        }
+        if (host == null) {
+            return null;
+        }
+        int colon = host.lastIndexOf(':');
+        if (colon > 0 && !host.startsWith("[")) {
+            host = host.substring(0, colon);
+        }
+        return host;
     }
 
     /**

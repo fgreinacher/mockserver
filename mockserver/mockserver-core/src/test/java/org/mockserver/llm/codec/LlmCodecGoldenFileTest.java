@@ -80,6 +80,19 @@ public class LlmCodecGoldenFileTest {
         Collections.unmodifiableSet(EnumSet.of(Provider.COHERE, Provider.VOYAGE));
 
     /**
+     * OpenAI-chat-compatible alias providers (Mistral, xAI/Grok, DeepSeek, Groq,
+     * OpenRouter). Their codecs delegate to {@code OpenAiChatCompletionsCodec}, so
+     * their wire shape is byte-identical to the {@code openai} fixtures already
+     * asserted here — dedicated golden files would be pure duplicates. They are
+     * instead exercised by {@code OpenAiCompatibleProviderCodecTest}, which proves
+     * each alias produces exactly the OpenAI codec's output. Excluded from golden
+     * coverage the same way as the rerank-only providers.
+     */
+    private static final Set<Provider> OPENAI_COMPATIBLE_ALIAS_PROVIDERS =
+        Collections.unmodifiableSet(EnumSet.of(
+            Provider.MISTRAL, Provider.XAI, Provider.DEEPSEEK, Provider.GROQ, Provider.OPENROUTER));
+
+    /**
      * Map Provider enum to fixture directory name.
      */
     private static final Map<Provider, String> PROVIDER_DIR_NAMES;
@@ -167,6 +180,12 @@ public class LlmCodecGoldenFileTest {
             ProviderCodec codec = optCodec.get();
             if (RERANK_ONLY_PROVIDERS.contains(provider)) {
                 // Rerank-only providers have no chat encode/streaming path by design.
+                continue;
+            }
+            if (OPENAI_COMPATIBLE_ALIAS_PROVIDERS.contains(provider)) {
+                // OpenAI-chat-compatible aliases delegate to OpenAiChatCompletionsCodec —
+                // identical wire shape to the openai fixtures; covered by
+                // OpenAiCompatibleProviderCodecTest instead of duplicate golden files.
                 continue;
             }
             String dirName = PROVIDER_DIR_NAMES.get(provider);

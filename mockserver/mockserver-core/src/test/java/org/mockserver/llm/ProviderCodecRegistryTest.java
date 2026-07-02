@@ -81,15 +81,17 @@ public class ProviderCodecRegistryTest {
     public void shouldHandleConcurrentRegistration() throws InterruptedException {
         // given
         ProviderCodecRegistry registry = new ProviderCodecRegistry();
-        int threadCount = 10;
-        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        // one concurrent registration task per provider, so every provider is registered
+        // exactly once (the final assertion checks all providers are present).
+        Provider[] providers = Provider.values();
+        int threadCount = providers.length;
+        ExecutorService executor = Executors.newFixedThreadPool(Math.min(threadCount, 10));
         CountDownLatch latch = new CountDownLatch(threadCount);
         List<Exception> exceptions = new ArrayList<>();
 
         // when - register different providers concurrently
-        Provider[] providers = Provider.values();
         for (int i = 0; i < threadCount; i++) {
-            Provider provider = providers[i % providers.length];
+            Provider provider = providers[i];
             String version = "v" + i;
             executor.submit(() -> {
                 try {
@@ -124,8 +126,9 @@ public class ProviderCodecRegistryTest {
         // when
         List<String> names = registry.supportedProviderNames();
 
-        // then — all 9 providers should be registered (7 chat + 2 rerank-only)
-        assertThat(names, hasSize(9));
+        // then — all 14 providers should be registered (7 chat + 2 rerank-only + 5
+        // OpenAI-chat-compatible aliases)
+        assertThat(names, hasSize(14));
         assertThat(names, containsInAnyOrder(
             "ANTHROPIC",
             "OPENAI",
@@ -135,7 +138,12 @@ public class ProviderCodecRegistryTest {
             "AZURE_OPENAI",
             "OLLAMA",
             "COHERE",
-            "VOYAGE"
+            "VOYAGE",
+            "MISTRAL",
+            "XAI",
+            "DEEPSEEK",
+            "GROQ",
+            "OPENROUTER"
         ));
     }
 

@@ -143,6 +143,49 @@ public final class LlmPricing {
     // Ollama is always free (local models).
     private static final PricingEntry OLLAMA_PRICING = new PricingEntry(0.0, 0.0);
 
+    // --- OpenAI-chat-compatible providers ---
+    // These are public list prices for OpenAI-compatible providers, captured 2026-06.
+    // They are marked APPROXIMATE (isApproximate() == true) because these providers
+    // revise prices frequently and MockServer does not verify them per-release — treat
+    // any derived cost as an estimate, not an invoice. More-specific prefixes come
+    // first so the prefix walk resolves the right tier.
+    private static final List<Map.Entry<String, PricingEntry>> MISTRAL_PRICING = Arrays.asList(
+        // mistral.ai/pricing (approx). mistral-large ~ flagship, mistral-small ~ cheap tier.
+        entry("mistral-large", new PricingEntry(2.0, 6.0, true)),
+        entry("mistral-medium", new PricingEntry(0.4, 2.0, true)),
+        entry("mistral-small", new PricingEntry(0.1, 0.3, true)),
+        entry("codestral", new PricingEntry(0.3, 0.9, true)),
+        entry("ministral-8b", new PricingEntry(0.1, 0.1, true)),
+        entry("ministral-3b", new PricingEntry(0.04, 0.04, true)),
+        entry("open-mistral-nemo", new PricingEntry(0.15, 0.15, true))
+    );
+
+    private static final List<Map.Entry<String, PricingEntry>> XAI_PRICING = Arrays.asList(
+        // x.ai/api (approx). grok-3-mini before grok-3 in the prefix walk.
+        entry("grok-4", new PricingEntry(3.0, 15.0, true)),
+        entry("grok-3-mini", new PricingEntry(0.3, 0.5, true)),
+        entry("grok-3", new PricingEntry(3.0, 15.0, true)),
+        entry("grok-2", new PricingEntry(2.0, 10.0, true)),
+        entry("grok-beta", new PricingEntry(5.0, 15.0, true))
+    );
+
+    private static final List<Map.Entry<String, PricingEntry>> DEEPSEEK_PRICING = Arrays.asList(
+        // deepseek.com/pricing (approx). deepseek-reasoner (R1) vs deepseek-chat (V3).
+        entry("deepseek-reasoner", new PricingEntry(0.55, 2.19, true)),
+        entry("deepseek-chat", new PricingEntry(0.27, 1.1, true))
+    );
+
+    private static final List<Map.Entry<String, PricingEntry>> GROQ_PRICING = Arrays.asList(
+        // groq.com/pricing (approx) — Groq serves open-weight models at its own rates.
+        // llama-3.3-70b / llama-3.1-8b before the generic llama fallbacks.
+        entry("llama-3.3-70b", new PricingEntry(0.59, 0.79, true)),
+        entry("llama-3.1-8b", new PricingEntry(0.05, 0.08, true)),
+        entry("llama-3.1-70b", new PricingEntry(0.59, 0.79, true)),
+        entry("llama-3.1-405b", new PricingEntry(1.79, 1.79, true)),
+        entry("mixtral-8x7b", new PricingEntry(0.24, 0.24, true)),
+        entry("gemma2-9b", new PricingEntry(0.2, 0.2, true))
+    );
+
     private LlmPricing() {
     }
 
@@ -187,6 +230,55 @@ public final class LlmPricing {
                 return findPricing(GEMINI_PRICING, model);
             case OLLAMA:
                 return OLLAMA_PRICING;
+            case MISTRAL:
+                return findPricing(MISTRAL_PRICING, model);
+            case XAI:
+                return findPricing(XAI_PRICING, model);
+            case DEEPSEEK:
+                return findPricing(DEEPSEEK_PRICING, model);
+            case GROQ:
+                return findPricing(GROQ_PRICING, model);
+            case OPENROUTER:
+                // OpenRouter fronts many upstream models with vendor-prefixed ids
+                // (e.g. "openai/gpt-4o", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro").
+                // Route to the underlying vendor's table by stripping the prefix, so the
+                // pass-through price is approximated. Unknown/unprefixed ids resolve to null.
+                return openRouterPricing(model);
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * Approximate OpenRouter pricing by routing a vendor-prefixed model id
+     * ({@code <vendor>/<model>}) to the underlying vendor's pricing table. Returns
+     * {@code null} for an unrecognised vendor prefix or a bare (unprefixed) id.
+     */
+    private static PricingEntry openRouterPricing(String model) {
+        if (model == null) {
+            return null;
+        }
+        int slash = model.indexOf('/');
+        if (slash <= 0 || slash == model.length() - 1) {
+            return null;
+        }
+        String vendor = model.substring(0, slash).toLowerCase();
+        String rest = model.substring(slash + 1);
+        switch (vendor) {
+            case "openai":
+                return findPricing(OPENAI_PRICING, rest);
+            case "anthropic":
+                return findPricing(ANTHROPIC_PRICING, rest);
+            case "google":
+                return findPricing(GEMINI_PRICING, rest);
+            case "mistralai":
+            case "mistral":
+                return findPricing(MISTRAL_PRICING, rest);
+            case "x-ai":
+            case "xai":
+                return findPricing(XAI_PRICING, rest);
+            case "deepseek":
+                return findPricing(DEEPSEEK_PRICING, rest);
             default:
                 return null;
         }
@@ -237,8 +329,17 @@ public final class LlmPricing {
                 return OPENAI_PRICING;
             case GEMINI:
                 return GEMINI_PRICING;
+            case MISTRAL:
+                return MISTRAL_PRICING;
+            case XAI:
+                return XAI_PRICING;
+            case DEEPSEEK:
+                return DEEPSEEK_PRICING;
+            case GROQ:
+                return GROQ_PRICING;
             default:
-                // AZURE_OPENAI (deployment names), OLLAMA (flat free), unknown.
+                // AZURE_OPENAI (deployment names), OLLAMA (flat free), OPENROUTER
+                // (per-model pass-through, no single table), unknown.
                 return null;
         }
     }

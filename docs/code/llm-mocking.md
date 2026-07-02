@@ -46,6 +46,34 @@ Currently registered codecs:
 | OLLAMA | `OllamaCodec` | Complete (chat + embeddings; see security audit for NDJSON wire-format limitation) |
 | COHERE | `CohereCodec` | Rerank only (`/v1/rerank`) |
 | VOYAGE | `VoyageCodec` | Rerank only (`/v1/rerank`) |
+| MISTRAL | `MistralCodec` | Complete (delegates to `OpenAiChatCompletionsCodec`) |
+| XAI | `XaiCodec` | Complete (delegates to `OpenAiChatCompletionsCodec`) |
+| DEEPSEEK | `DeepSeekCodec` | Complete (delegates to `OpenAiChatCompletionsCodec`) |
+| GROQ | `GroqCodec` | Complete (delegates to `OpenAiChatCompletionsCodec`) |
+| OPENROUTER | `OpenRouterCodec` | Complete (delegates to `OpenAiChatCompletionsCodec`) |
+
+### OpenAI-compatible provider aliases
+
+`MISTRAL`, `XAI` (Grok), `DEEPSEEK`, `GROQ`, and `OPENROUTER` expose the OpenAI Chat Completions wire format on their own hosts. Their codecs extend `OpenAiCompatibleChatCodec` (which delegates every encode/decode to `OpenAiChatCompletionsCodec`, exactly like `AzureOpenAiCodec`) and their runtime clients extend `OpenAiLlmClient` (overriding only `provider()` and `defaultBaseUrl()`). Because the path is the shared `/chat/completions`, the **host** is the only distinguishing signal: `LlmProviderSniffer` (live forward/proxy path) and `ProviderDetector` (offline AUTO detection) map `api.mistral.ai`→`MISTRAL`, `api.x.ai`→`XAI`, `api.deepseek.com`→`DEEPSEEK`, `api.groq.com`→`GROQ`, `openrouter.ai`→`OPENROUTER`. This means proxy observability records traffic to these gateways as LLM (provider-correct GenAI spans + cost metrics) instead of dropping it as non-LLM. Pricing rows in `LlmPricing` are marked **approximate** (`isApproximate()`); OpenRouter routes vendor-prefixed model ids (`openai/…`, `anthropic/…`, `google/…`, `mistral*/…`, `x-ai/…`, `deepseek/…`) to the underlying vendor's table. Their wire shape is byte-identical to the `openai` golden fixtures, so they are covered by `OpenAiCompatibleProviderCodecTest` rather than dedicated golden files.
+
+## OpenAI Responses API server-side state
+
+The Responses API is stateful in a way Chat Completions and Anthropic Messages are not: a client may send only the new turn's `input` plus a `previous_response_id`, and the server reconstructs the full conversation from the prior turn. `OpenAiResponsesStore` (`org.mockserver.llm`) is the process-wide registry that models this, so agents that chain turns via `previous_response_id` run against the mock.
+
+```mermaid
+flowchart LR
+    T1["POST /v1/responses\ninput: hello"] --> ENC1["encode → resp_A"]
+    ENC1 --> STORE1["store resp_A\n[user hello, assistant hi]"]
+    T2["POST /v1/responses\ninput: and then?\nprevious_response_id: resp_A"] --> DEC["decode prepends resp_A\n[user hello, assistant hi, user and then?]"]
+    STORE1 -.-> DEC
+    GET["GET /v1/responses/resp_A"] --> STORE1
+```
+
+- **Recording** — `HttpLlmResponseActionHandler` calls `OpenAiResponsesStore.recordIfStored(...)` after encoding an `OPENAI_RESPONSES` completion. It honours the request's `store` flag (default `true`; `store:false` skips recording) and stores, keyed by the issued `resp_…` id, the fully-chained decode of the request plus this turn's assistant output — so a later turn referencing this id reconstructs the entire dialogue.
+- **Chaining** — `OpenAiResponsesCodec.decode` calls `OpenAiResponsesStore.priorMessagesFor(body)`; when the request carries a `previous_response_id` whose response is stored, the prior conversation is prepended to the current turn's messages, so conversation matchers and usage inference see the whole dialogue.
+- **Retrieval** — `GET /v1/responses/{id}` is served from the store by `HttpActionHandler` (on the otherwise-404 path, so user expectations always win) via `OpenAiResponsesStore.retrievalResponseOrNull(request)`, returning the stored body verbatim; an unknown id falls through to normal handling.
+
+The store is bounded (LRU, 10k) and cleared on `HttpState.reset()`. It is fail-soft — recording never affects the served response — and fully back-compatible: a request with no `previous_response_id` and the default `store:true` behaves exactly as before.
 
 ## Streaming Physics
 
@@ -397,6 +425,11 @@ classDiagram
         OLLAMA
         COHERE
         VOYAGE
+        MISTRAL
+        XAI
+        DEEPSEEK
+        GROQ
+        OPENROUTER
     }
     class ConversationPredicates {
         +turnIndex: Integer

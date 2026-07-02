@@ -290,6 +290,27 @@ public class HttpActionHandler {
 
         } else {
 
+            // OpenAI Responses API server-side state: serve GET /v1/responses/{id} from the
+            // store of previously-issued responses. Only reached when nothing else matched and
+            // the server is not proxying, so user-configured expectations always win; a request
+            // for an unknown id returns null here and falls through to the normal 404 path.
+            HttpResponse storedResponse = org.mockserver.llm.OpenAiResponsesStore.getInstance()
+                .retrievalResponseOrNull(request);
+            if (storedResponse != null) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(EXPECTATION_RESPONSE)
+                        .setLogLevel(Level.INFO)
+                        .setCorrelationId(request.getLogCorrelationId())
+                        .setHttpRequest(request)
+                        .setHttpResponse(storedResponse)
+                        .setMessageFormat("returning stored OpenAI Responses API response for request:{}")
+                        .setArguments(request)
+                );
+                responseWriter.writeResponse(request, storedResponse, false);
+                return;
+            }
+
             // breakpoint: REQUEST-phase pause on the unmatched-404 path — lets a registered matcher
             // pause / modify / abort even though nothing matched and the server is not proxying.
             if (attemptRequestBreakpoint(request, synchronous, responseWriter, null,

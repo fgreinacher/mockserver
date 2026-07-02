@@ -24,9 +24,18 @@ public class OpenAiLlmClient extends AbstractLlmClient {
         return Provider.OPENAI;
     }
 
+    /**
+     * The default base URL used when the backend does not supply one. OpenAI-compatible
+     * subclasses (Mistral, xAI, DeepSeek, Groq, OpenRouter) override this to point at
+     * their own host while inheriting the identical request/response wire format.
+     */
+    protected String defaultBaseUrl() {
+        return DEFAULT_BASE_URL;
+    }
+
     @Override
     public HttpRequest buildCompletionRequest(LlmBackend backend, ParsedConversation prompt) {
-        String baseUrl = resolveBaseUrl(backend, DEFAULT_BASE_URL);
+        String baseUrl = resolveBaseUrl(backend, defaultBaseUrl());
         ObjectNode body = OBJECT_MAPPER.createObjectNode();
         body.put("model", resolveModel(backend, DEFAULT_MODEL));
         body.put("temperature", 0);

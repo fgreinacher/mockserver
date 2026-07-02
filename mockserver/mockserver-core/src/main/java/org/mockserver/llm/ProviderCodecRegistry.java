@@ -4,11 +4,16 @@ import org.mockserver.llm.codec.AnthropicCodec;
 import org.mockserver.llm.codec.AzureOpenAiCodec;
 import org.mockserver.llm.codec.BedrockCodec;
 import org.mockserver.llm.codec.CohereCodec;
+import org.mockserver.llm.codec.DeepSeekCodec;
 import org.mockserver.llm.codec.GeminiCodec;
+import org.mockserver.llm.codec.GroqCodec;
+import org.mockserver.llm.codec.MistralCodec;
 import org.mockserver.llm.codec.OllamaCodec;
 import org.mockserver.llm.codec.OpenAiChatCompletionsCodec;
 import org.mockserver.llm.codec.OpenAiResponsesCodec;
+import org.mockserver.llm.codec.OpenRouterCodec;
 import org.mockserver.llm.codec.VoyageCodec;
+import org.mockserver.llm.codec.XaiCodec;
 import org.mockserver.model.Provider;
 
 import java.util.ArrayList;
@@ -32,6 +37,12 @@ public class ProviderCodecRegistry {
         INSTANCE.register(new OllamaCodec());
         INSTANCE.register(new CohereCodec());
         INSTANCE.register(new VoyageCodec());
+        // OpenAI-chat-compatible aliases (delegate to OpenAiChatCompletionsCodec)
+        INSTANCE.register(new MistralCodec());
+        INSTANCE.register(new XaiCodec());
+        INSTANCE.register(new DeepSeekCodec());
+        INSTANCE.register(new GroqCodec());
+        INSTANCE.register(new OpenRouterCodec());
     }
 
     private final ConcurrentHashMap<Provider, ProviderCodec> codecs = new ConcurrentHashMap<>();

@@ -347,6 +347,26 @@ public final class LlmProviderSniffer {
         if (lowerHost.equals("api.voyageai.com")) {
             return Optional.of(Provider.VOYAGE);
         }
+        // OpenAI-chat-compatible providers — identical Chat Completions wire format on
+        // their own host, so the host is the only distinguishing signal (path is the
+        // shared /chat/completions). Classifying them here means proxy observability
+        // records their traffic as LLM (with provider-correct pricing) instead of
+        // dropping it as non-LLM.
+        if (lowerHost.equals("api.mistral.ai")) {
+            return Optional.of(Provider.MISTRAL);
+        }
+        if (lowerHost.equals("api.x.ai")) {
+            return Optional.of(Provider.XAI);
+        }
+        if (lowerHost.equals("api.deepseek.com")) {
+            return Optional.of(Provider.DEEPSEEK);
+        }
+        if (lowerHost.equals("api.groq.com")) {
+            return Optional.of(Provider.GROQ);
+        }
+        if (lowerHost.equals("openrouter.ai")) {
+            return Optional.of(Provider.OPENROUTER);
+        }
         if (isBedrockHost(lowerHost)) {
             return Optional.of(Provider.BEDROCK);
         }

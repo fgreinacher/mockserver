@@ -7,6 +7,7 @@ import org.mockserver.llm.LlmErrorBodies;
 import org.mockserver.llm.LlmErrorBody;
 import org.mockserver.llm.LlmQuotaRegistry;
 import org.mockserver.llm.LlmRateLimitHeaders;
+import org.mockserver.llm.OpenAiResponsesStore;
 import org.mockserver.llm.ParsedConversation;
 import org.mockserver.llm.ProviderCodec;
 import org.mockserver.llm.ProviderCodecRegistry;
@@ -119,6 +120,7 @@ public class HttpLlmResponseActionHandler {
                 applyRateLimitHeaders(encoded, provider, false, httpLlmResponse.getChaos());
                 org.mockserver.telemetry.GenAiSpans.recordCompletion(provider, model, completion);
                 HttpActionHandler.recordLlmUsageMetrics(provider, model, completion);
+                recordOpenAiResponsesStateIfApplicable(provider, codecInstance, request, completion, encoded);
                 return encoded;
             }
 
@@ -167,6 +169,33 @@ public class HttpLlmResponseActionHandler {
                 .withStatusCode(502)
                 .withBody("{\"error\":\"llm codec encode failed\",\"provider\":\"" + provider.name() + "\"}");
         }
+    }
+
+    /**
+     * For a served {@link Provider#OPENAI_RESPONSES} completion, record the issued
+     * response in {@link OpenAiResponsesStore} so it can be chained (via a later request's
+     * {@code previous_response_id}) or retrieved ({@code GET /v1/responses/{id}}). No-op
+     * for every other provider and when the request sets {@code store:false}. Fail-soft
+     * (any error is swallowed inside the store) so it can never affect the served response.
+     */
+    private void recordOpenAiResponsesStateIfApplicable(Provider provider, ProviderCodec codec,
+                                                        HttpRequest request, Completion completion,
+                                                        HttpResponse encoded) {
+        if (provider != Provider.OPENAI_RESPONSES) {
+            return;
+        }
+        String requestBody = request != null ? request.getBodyAsString() : null;
+        // decode() returns the fully-chained conversation (prior turns already prepended
+        // when the request carried a previous_response_id), so the stored record captures
+        // the entire dialogue as of this turn.
+        ParsedConversation chained;
+        try {
+            chained = codec.decode(request);
+        } catch (Exception e) {
+            chained = ParsedConversation.empty();
+        }
+        OpenAiResponsesStore.getInstance().recordIfStored(
+            requestBody, chained, completion, encoded.getBodyAsString());
     }
 
     static final String STRUCTURED_OUTPUT_INVALID_HEADER = "x-mockserver-structured-output-invalid";

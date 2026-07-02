@@ -27,6 +27,12 @@ public class LlmClientRegistry {
         INSTANCE.register(new AnthropicLlmClient());
         INSTANCE.register(new GeminiLlmClient());
         INSTANCE.register(new BedrockLlmClient());
+        // OpenAI-chat-compatible aliases (delegate parsing to OpenAiLlmClient)
+        INSTANCE.register(new MistralLlmClient());
+        INSTANCE.register(new XaiLlmClient());
+        INSTANCE.register(new DeepSeekLlmClient());
+        INSTANCE.register(new GroqLlmClient());
+        INSTANCE.register(new OpenRouterLlmClient());
     }
 
     private final ConcurrentHashMap<Provider, LlmClient> clients = new ConcurrentHashMap<>();

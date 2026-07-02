@@ -174,7 +174,7 @@ public class HttpLlmResponseTest {
     @Test
     public void shouldCoverAllProviderEnumValues() {
         // verify all provider enum values exist
-        assertThat(Provider.values().length, is(9));
+        assertThat(Provider.values().length, is(14));
         assertThat(Provider.valueOf("ANTHROPIC"), is(Provider.ANTHROPIC));
         assertThat(Provider.valueOf("OPENAI"), is(Provider.OPENAI));
         assertThat(Provider.valueOf("OPENAI_RESPONSES"), is(Provider.OPENAI_RESPONSES));
@@ -184,5 +184,10 @@ public class HttpLlmResponseTest {
         assertThat(Provider.valueOf("OLLAMA"), is(Provider.OLLAMA));
         assertThat(Provider.valueOf("COHERE"), is(Provider.COHERE));
         assertThat(Provider.valueOf("VOYAGE"), is(Provider.VOYAGE));
+        assertThat(Provider.valueOf("MISTRAL"), is(Provider.MISTRAL));
+        assertThat(Provider.valueOf("XAI"), is(Provider.XAI));
+        assertThat(Provider.valueOf("DEEPSEEK"), is(Provider.DEEPSEEK));
+        assertThat(Provider.valueOf("GROQ"), is(Provider.GROQ));
+        assertThat(Provider.valueOf("OPENROUTER"), is(Provider.OPENROUTER));
     }
 }
