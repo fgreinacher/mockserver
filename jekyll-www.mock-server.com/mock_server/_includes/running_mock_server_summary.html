@@ -34,7 +34,9 @@ brew install mockserver && mockserver run -p <span class="numeric_literal">1080<
 	<li>as a shared, <a href="/mock_server/centralized_deployment.html"><strong>centralised deployment</strong></a> across multiple teams or CI pipelines &mdash; another good option when several projects share one running MockServer</li>
 </ul>
 
-<p>To simplify configuration all versions (except the deployable WAR) use a single port to support the control plane and data plane in HTTP, HTTPS or SOCKS.</p>
+<p>To simplify configuration, all versions (except the deployable WAR) use a single port to support the control plane and data plane in HTTP, HTTPS or SOCKS.</p>
+
+<p><strong>Keeping tests fast:</strong> for the patterns that keep test suites quick — one container per suite with <span class="inline_code">reset()</span> between tests, container reuse, memory limits, and in-process alternatives for JVM tests — see <a href="/mock_server/fast_tests.html">Fast Tests: Startup Time, Memory and Reuse</a>.</p>
 
 <h3>MockServer is available in the following formats:</h3>
 
