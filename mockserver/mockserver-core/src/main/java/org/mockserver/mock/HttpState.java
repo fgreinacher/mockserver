@@ -2814,6 +2814,12 @@ public class HttpState {
                 }
                 return true;
             }
+            if (request.matches("GET", PATH_PREFIX + "/chaosExperiment/history", "/chaosExperiment/history")) {
+                if (controlPlaneRequestAuthenticated(request, responseWriter)) {
+                    responseWriter.writeResponse(request, withDashboardCORS(request, handleChaosExperimentHistoryGet()), true);
+                }
+                return true;
+            }
             if (request.matches("GET", PATH_PREFIX + "/chaosExperiment", "/chaosExperiment")) {
                 if (controlPlaneRequestAuthenticated(request, responseWriter)) {
                     responseWriter.writeResponse(request, withDashboardCORS(request, handleChaosExperimentGet()), true);
@@ -3572,6 +3578,27 @@ public class HttpState {
         } catch (Exception e) {
             return response().withStatusCode(BAD_REQUEST.code())
                 .withBody("{\"error\":\"failed to get chaos experiment status\"}", MediaType.JSON_UTF_8);
+        }
+    }
+
+    private HttpResponse handleChaosExperimentHistoryGet() {
+        com.fasterxml.jackson.databind.ObjectMapper objectMapper = ObjectMapperFactory.createObjectMapper();
+        try {
+            org.mockserver.mock.action.http.ChaosExperimentOrchestrator orchestrator =
+                org.mockserver.mock.action.http.ChaosExperimentOrchestrator.getInstance();
+            java.util.List<org.mockserver.mock.action.http.ChaosExperimentOrchestrator.ExperimentHistoryEntry> entries =
+                orchestrator.getHistory(org.mockserver.mock.action.http.ChaosExperimentOrchestrator.MAX_HISTORY);
+            com.fasterxml.jackson.databind.node.ObjectNode result = objectMapper.createObjectNode();
+            result.put("count", entries.size());
+            com.fasterxml.jackson.databind.node.ArrayNode historyArray = result.putArray("history");
+            for (org.mockserver.mock.action.http.ChaosExperimentOrchestrator.ExperimentHistoryEntry entry : entries) {
+                historyArray.add(entry.toJson());
+            }
+            return response().withStatusCode(OK.code())
+                .withBody(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(result), MediaType.JSON_UTF_8);
+        } catch (Exception e) {
+            return response().withStatusCode(BAD_REQUEST.code())
+                .withBody("{\"error\":\"failed to get chaos experiment history\"}", MediaType.JSON_UTF_8);
         }
     }
 

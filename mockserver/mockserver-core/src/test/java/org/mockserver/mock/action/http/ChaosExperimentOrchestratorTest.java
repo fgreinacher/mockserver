@@ -6,6 +6,7 @@ import org.junit.Test;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.metrics.Metrics;
 import org.mockserver.model.HttpChaosProfile;
+import org.mockserver.model.TcpChaosProfile;
 import org.mockserver.slo.SloCriteria;
 import org.mockserver.slo.SloObjective;
 import org.mockserver.slo.SloSampleStore;
@@ -51,6 +52,7 @@ public class ChaosExperimentOrchestratorTest {
         });
         orchestrator = new ChaosExperimentOrchestrator(clock::get, scheduler);
         ServiceChaosRegistry.getInstance().reset();
+        TcpChaosRegistry.getInstance().reset();
         ChaosAutoHaltMonitor.getInstance().reset();
         SloSampleStore.getInstance().reset();
         Metrics.resetAdditionalMetricsForTesting();
@@ -74,6 +76,7 @@ public class ChaosExperimentOrchestratorTest {
             Thread.currentThread().interrupt();
         }
         ServiceChaosRegistry.getInstance().reset();
+        TcpChaosRegistry.getInstance().reset();
         ChaosAutoHaltMonitor.getInstance().reset();
         SloSampleStore.getInstance().reset();
         Metrics.resetAdditionalMetricsForTesting();
@@ -1092,5 +1095,348 @@ public class ChaosExperimentOrchestratorTest {
         // then - the experiment is not halted and remains running
         assertThat(halted, is(false));
         assertThat(orchestrator.getStatus().status, is("running"));
+    }
+
+    // --- T1.4 #1: Recurring cron experiments ---
+
+    @Test
+    public void shouldReArmRecurringCronExperimentForNextOccurrence() {
+        // given - clock at 2026-06-20T10:17:30 (local); a "0 11 * * *" recurring cron.
+        long base = java.time.ZonedDateTime.of(2026, 6, 20, 10, 17, 30, 0, java.time.ZoneId.systemDefault())
+            .toInstant().toEpochMilli();
+        clock.set(base);
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        ChaosExperimentOrchestrator.ExperimentDefinition def =
+            new ChaosExperimentOrchestrator.ExperimentDefinition(
+                "nightly-error-storm", Arrays.asList(stage0), false, 0L, "0 11 * * *", null, true, 0L);
+
+        // when - started, it is scheduled for the first cron boundary (42m30s away)
+        String error = orchestrator.start(def);
+        assertThat(error, is(nullValue()));
+        assertThat(orchestrator.getStatus().status, is("scheduled"));
+        assertThat(orchestrator.getStatus().startRemainingMillis, is(2_550_000L));
+
+        // when - the first cron boundary arrives and the run begins
+        clock.addAndGet(2_550_000L);
+        orchestrator.triggerScheduledStartNow();
+        assertThat(orchestrator.getStatus().status, is("running"));
+        assertThat(ServiceChaosRegistry.getInstance().get("api.svc"), is(notNullValue()));
+
+        // when - the single stage completes: a one-shot experiment would go terminal, but a
+        // recurring experiment re-arms for the NEXT cron occurrence (all driven by the clock).
+        clock.addAndGet(5000L);
+        orchestrator.advanceNow();
+
+        // then - the completed run is retained in history and the experiment is scheduled again
+        assertThat("chaos cleared between recurring runs",
+            ServiceChaosRegistry.getInstance().entries().isEmpty(), is(true));
+        assertThat("re-armed for the next occurrence", orchestrator.getStatus().status, is("scheduled"));
+        assertThat("next occurrence is a positive delay away",
+            orchestrator.getStatus().startRemainingMillis, greaterThan(0L));
+        java.util.List<ChaosExperimentOrchestrator.ExperimentHistoryEntry> history = orchestrator.getHistory(10);
+        assertThat(history.size(), is(1));
+        assertThat(history.get(0).status, is("completed"));
+        assertThat(history.get(0).name, is("nightly-error-storm"));
+
+        // when - the next cron boundary arrives, the second run begins
+        clock.addAndGet(orchestrator.getStatus().startRemainingMillis);
+        orchestrator.triggerScheduledStartNow();
+
+        // then - the experiment runs again (recurrence), chaos re-applied
+        assertThat(orchestrator.getStatus().status, is("running"));
+        assertThat(ServiceChaosRegistry.getInstance().get("api.svc"), is(notNullValue()));
+    }
+
+    @Test
+    public void shouldRejectRecurringWithoutCronSchedule() {
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        String error = orchestrator.start(new ChaosExperimentOrchestrator.ExperimentDefinition(
+            "recurring-no-cron", Arrays.asList(stage0), false, 0L, null, null, true, 0L));
+        assertThat(error, is("'recurring' requires a 'cronSchedule' to re-arm from"));
+    }
+
+    @Test
+    public void shouldRoundTripRecurringFlagThroughJson() throws Exception {
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        ChaosExperimentOrchestrator.ExperimentDefinition original =
+            new ChaosExperimentOrchestrator.ExperimentDefinition(
+                "recurring-json", Arrays.asList(stage0), false, 0L, "0 2 * * *", null, true, 0L);
+
+        com.fasterxml.jackson.databind.node.ObjectNode json = original.toJson();
+        assertThat(json.get("recurring").asBoolean(), is(true));
+        ChaosExperimentOrchestrator.ExperimentDefinition restored =
+            ChaosExperimentOrchestrator.ExperimentDefinition.fromJson(json);
+        assertThat(restored.recurring, is(true));
+        assertThat(restored.cronSchedule, is("0 2 * * *"));
+
+        // default (non-recurring) omits the field
+        ChaosExperimentOrchestrator.ExperimentDefinition oneShot =
+            new ChaosExperimentOrchestrator.ExperimentDefinition("one-shot", Arrays.asList(stage0), false);
+        assertThat(oneShot.toJson().has("recurring"), is(false));
+    }
+
+    // --- T1.4 #2: TCP / lifecycle faults staged in an experiment ---
+
+    @Test
+    public void shouldApplyAndResetStagedTcpProfiles() {
+        // given - a stage that stages ONLY a TCP (connection-lifecycle) fault
+        Map<String, TcpChaosProfile> tcpProfiles = new LinkedHashMap<>();
+        tcpProfiles.put("tcp.svc", TcpChaosProfile.tcpChaosProfile().withResetPeer(true));
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            60_000L, Collections.emptyMap(), tcpProfiles);
+        ChaosExperimentOrchestrator.ExperimentDefinition def =
+            new ChaosExperimentOrchestrator.ExperimentDefinition("tcp-exp", Arrays.asList(stage0), false);
+
+        // when
+        String error = orchestrator.start(def);
+
+        // then - the TCP profile is applied to the TcpChaosRegistry; HTTP registry untouched
+        assertThat(error, is(nullValue()));
+        assertThat(TcpChaosRegistry.getInstance().get("tcp.svc"), is(notNullValue()));
+        assertThat(TcpChaosRegistry.getInstance().get("tcp.svc").getResetPeer(), is(true));
+        assertThat(ServiceChaosRegistry.getInstance().entries().isEmpty(), is(true));
+
+        // when - the experiment is stopped
+        orchestrator.stop();
+
+        // then - the staged TCP chaos is cleared
+        assertThat("staged TCP chaos cleared on stop",
+            TcpChaosRegistry.getInstance().entries().isEmpty(), is(true));
+    }
+
+    @Test
+    public void shouldClearPreviousStageTcpProfilesOnAdvance() {
+        // given - stage 0 TCP-faults tcp0.svc, stage 1 TCP-faults tcp1.svc
+        Map<String, TcpChaosProfile> tcp0 = new LinkedHashMap<>();
+        tcp0.put("tcp0.svc", TcpChaosProfile.tcpChaosProfile().withResetPeer(true));
+        Map<String, TcpChaosProfile> tcp1 = new LinkedHashMap<>();
+        tcp1.put("tcp1.svc", TcpChaosProfile.tcpChaosProfile().withDown(true));
+        ChaosExperimentOrchestrator.Stage stage0 =
+            new ChaosExperimentOrchestrator.Stage(5000L, Collections.emptyMap(), tcp0);
+        ChaosExperimentOrchestrator.Stage stage1 =
+            new ChaosExperimentOrchestrator.Stage(5000L, Collections.emptyMap(), tcp1);
+        ChaosExperimentOrchestrator.ExperimentDefinition def =
+            new ChaosExperimentOrchestrator.ExperimentDefinition("tcp-advance",
+                Arrays.asList(stage0, stage1), false);
+
+        orchestrator.start(def);
+        assertThat(TcpChaosRegistry.getInstance().get("tcp0.svc"), is(notNullValue()));
+        assertThat(TcpChaosRegistry.getInstance().get("tcp1.svc"), is(nullValue()));
+
+        // when
+        clock.addAndGet(5000L);
+        orchestrator.advanceNow();
+
+        // then - stage 0's TCP profile is cleared, stage 1's applied
+        assertThat(TcpChaosRegistry.getInstance().get("tcp0.svc"), is(nullValue()));
+        assertThat(TcpChaosRegistry.getInstance().get("tcp1.svc"), is(notNullValue()));
+    }
+
+    @Test
+    public void shouldHaltTcpOnlyExperimentWhenRegistryClearedByAutoHalt() {
+        // given - a TCP-only experiment
+        Map<String, TcpChaosProfile> tcpProfiles = new LinkedHashMap<>();
+        tcpProfiles.put("tcp.svc", TcpChaosProfile.tcpChaosProfile().withResetPeer(true));
+        ChaosExperimentOrchestrator.Stage stage0 =
+            new ChaosExperimentOrchestrator.Stage(60_000L, Collections.emptyMap(), tcpProfiles);
+        ChaosExperimentOrchestrator.Stage stage1 =
+            new ChaosExperimentOrchestrator.Stage(30_000L, Collections.emptyMap(), tcpProfiles);
+        orchestrator.start(new ChaosExperimentOrchestrator.ExperimentDefinition(
+            "tcp-autohalt", Arrays.asList(stage0, stage1), false));
+
+        // when - auto-halt clears the TCP registry, then a stage advance is attempted
+        TcpChaosRegistry.getInstance().reset();
+        clock.addAndGet(60_000L);
+        orchestrator.advanceNow();
+
+        // then - the empty TCP registry is detected as an auto-halt
+        assertThat(orchestrator.getStatus().status, is("halted_by_auto_halt"));
+    }
+
+    @Test
+    public void shouldRoundTripTcpProfilesThroughJson() throws Exception {
+        Map<String, TcpChaosProfile> tcpProfiles = new LinkedHashMap<>();
+        tcpProfiles.put("tcp.svc", TcpChaosProfile.tcpChaosProfile().withLatencyMs(250L));
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)), tcpProfiles);
+        ChaosExperimentOrchestrator.ExperimentDefinition original =
+            new ChaosExperimentOrchestrator.ExperimentDefinition("tcp-json", Arrays.asList(stage0), false);
+
+        com.fasterxml.jackson.databind.node.ObjectNode json = original.toJson();
+        assertThat(json.get("stages").get(0).has("tcpProfiles"), is(true));
+        ChaosExperimentOrchestrator.ExperimentDefinition restored =
+            ChaosExperimentOrchestrator.ExperimentDefinition.fromJson(json);
+        assertThat(restored.stages.get(0).tcpProfiles.get("tcp.svc").getLatencyMs(), is(250L));
+        assertThat(restored.stages.get(0).profiles.get("api.svc").getErrorStatus(), is(503));
+        assertThat(restored.usesTcpProfiles(), is(true));
+    }
+
+    @Test
+    public void shouldAcceptStageWithOnlyTcpProfiles() {
+        // validation: a stage with tcpProfiles but no HTTP profiles is valid
+        Map<String, TcpChaosProfile> tcpProfiles = new LinkedHashMap<>();
+        tcpProfiles.put("tcp.svc", TcpChaosProfile.tcpChaosProfile().withResetPeer(true));
+        ChaosExperimentOrchestrator.Stage stage0 =
+            new ChaosExperimentOrchestrator.Stage(5000L, Collections.emptyMap(), tcpProfiles);
+        String error = orchestrator.start(new ChaosExperimentOrchestrator.ExperimentDefinition(
+            "tcp-only-valid", Arrays.asList(stage0), false));
+        assertThat(error, is(nullValue()));
+    }
+
+    // --- T1.4 #3: Steady-state baseline pre-check ---
+
+    @Test
+    public void shouldRefuseToStartWhenBaselineUnhealthy() {
+        // given - a high error rate already present in the pre-experiment baseline window
+        // baseline window is [now - 10000, now] = [0, 10000] with clock at 10_000
+        SloSampleStore.getInstance().record(2000L, 50L, true, Scope.FORWARD, "api.svc");
+        SloSampleStore.getInstance().record(3000L, 50L, true, Scope.FORWARD, "api.svc");
+        SloSampleStore.getInstance().record(4000L, 50L, true, Scope.FORWARD, "api.svc");
+        SloSampleStore.getInstance().record(5000L, 50L, false, Scope.FORWARD, "api.svc");
+
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        ChaosExperimentOrchestrator.ExperimentDefinition def =
+            new ChaosExperimentOrchestrator.ExperimentDefinition(
+                "baseline-unhealthy", Arrays.asList(stage0), false, 0L, null, errorRateBelow(0.5), false, 10_000L);
+
+        // when
+        String error = orchestrator.start(def);
+
+        // then - refused to start; no chaos applied; terminal status + verdict queryable
+        assertThat(error, containsString("aborted_baseline_unhealthy"));
+        assertThat("no chaos applied when baseline unhealthy",
+            ServiceChaosRegistry.getInstance().entries().isEmpty(), is(true));
+        ChaosExperimentOrchestrator.ExperimentStatus status = orchestrator.getStatus();
+        assertThat(status.status, is("aborted_baseline_unhealthy"));
+        assertThat(status.experimentVerdict, is(notNullValue()));
+        assertThat(status.experimentVerdict.getResult(), is(SloVerdict.Result.FAIL));
+        // and the aborted attempt is recorded in history
+        assertThat(orchestrator.getHistory(10).get(0).status, is("aborted_baseline_unhealthy"));
+    }
+
+    @Test
+    public void shouldStartWhenBaselineHealthy() {
+        // given - a clean baseline window (all successful)
+        SloSampleStore.getInstance().record(2000L, 50L, false, Scope.FORWARD, "api.svc");
+        SloSampleStore.getInstance().record(3000L, 50L, false, Scope.FORWARD, "api.svc");
+
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        ChaosExperimentOrchestrator.ExperimentDefinition def =
+            new ChaosExperimentOrchestrator.ExperimentDefinition(
+                "baseline-healthy", Arrays.asList(stage0), false, 0L, null, errorRateBelow(0.5), false, 10_000L);
+
+        // when
+        String error = orchestrator.start(def);
+
+        // then - the baseline held, so the experiment starts normally
+        assertThat(error, is(nullValue()));
+        assertThat(orchestrator.getStatus().status, is("running"));
+        assertThat(ServiceChaosRegistry.getInstance().get("api.svc"), is(notNullValue()));
+    }
+
+    @Test
+    public void shouldRefuseToStartWhenBaselineInconclusive() {
+        // given - NO samples in the baseline window; an error-rate objective over an empty
+        // window is INCONCLUSIVE, so the steady state is not proven healthy -> refuse
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        ChaosExperimentOrchestrator.ExperimentDefinition def =
+            new ChaosExperimentOrchestrator.ExperimentDefinition(
+                "baseline-inconclusive", Arrays.asList(stage0), false, 0L, null, errorRateBelow(0.5), false, 10_000L);
+
+        String error = orchestrator.start(def);
+        assertThat(error, containsString("aborted_baseline_unhealthy"));
+        assertThat(orchestrator.getStatus().experimentVerdict.getResult(), is(SloVerdict.Result.INCONCLUSIVE));
+    }
+
+    @Test
+    public void shouldRejectBaselineWindowWithoutSloCriteria() {
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        String error = orchestrator.start(new ChaosExperimentOrchestrator.ExperimentDefinition(
+            "baseline-no-slo", Arrays.asList(stage0), false, 0L, null, null, false, 10_000L));
+        assertThat(error, is("'baselineWindowMillis' requires 'sloCriteria' to evaluate the steady state against"));
+    }
+
+    @Test
+    public void shouldRoundTripBaselineWindowThroughJson() throws Exception {
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        ChaosExperimentOrchestrator.ExperimentDefinition original =
+            new ChaosExperimentOrchestrator.ExperimentDefinition(
+                "baseline-json", Arrays.asList(stage0), false, 0L, null, errorRateBelow(0.5), false, 20_000L);
+
+        com.fasterxml.jackson.databind.node.ObjectNode json = original.toJson();
+        assertThat(json.get("baselineWindowMillis").asLong(), is(20_000L));
+        ChaosExperimentOrchestrator.ExperimentDefinition restored =
+            ChaosExperimentOrchestrator.ExperimentDefinition.fromJson(json);
+        assertThat(restored.baselineWindowMillis, is(20_000L));
+
+        // default omits the field
+        ChaosExperimentOrchestrator.ExperimentDefinition noBaseline =
+            new ChaosExperimentOrchestrator.ExperimentDefinition("no-baseline", Arrays.asList(stage0), false);
+        assertThat(noBaseline.toJson().has("baselineWindowMillis"), is(false));
+    }
+
+    // --- T1.4 #4: Bounded experiment history ---
+
+    @Test
+    public void shouldRetainBoundedHistoryNewestFirst() {
+        // given - more experiments than the ring holds, each started then stopped
+        int total = ChaosExperimentOrchestrator.MAX_HISTORY + 5;
+        for (int i = 0; i < total; i++) {
+            ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+                60_000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+            orchestrator.start(new ChaosExperimentOrchestrator.ExperimentDefinition(
+                "h-" + i, Arrays.asList(stage0), false));
+            orchestrator.stop();
+        }
+
+        // then - the ring is capped at MAX_HISTORY, newest first, oldest evicted
+        java.util.List<ChaosExperimentOrchestrator.ExperimentHistoryEntry> history = orchestrator.getHistory(1000);
+        assertThat(history.size(), is(ChaosExperimentOrchestrator.MAX_HISTORY));
+        assertThat("newest first", history.get(0).name, is("h-" + (total - 1)));
+        assertThat("each terminated run recorded its status", history.get(0).status, is("stopped"));
+        // the oldest surviving entry is total - MAX_HISTORY (earlier ones were evicted)
+        assertThat(history.get(history.size() - 1).name, is("h-" + (total - ChaosExperimentOrchestrator.MAX_HISTORY)));
+    }
+
+    @Test
+    public void shouldExposeHistoryEntryAsJsonWithVerdict() {
+        // given - an experiment with an SLO that completes with a verdict
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            5000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        orchestrator.start(new ChaosExperimentOrchestrator.ExperimentDefinition(
+            "hist-verdict", Arrays.asList(stage0), false, 0L, null, errorRateBelow(0.5)));
+        SloSampleStore.getInstance().record(clock.get() + 100L, 50L, false, Scope.FORWARD, "api.svc");
+        clock.addAndGet(5000L);
+        orchestrator.advanceNow();
+
+        // then - the history entry serialises name/status/verdict/terminatedAtMillis
+        ChaosExperimentOrchestrator.ExperimentHistoryEntry entry = orchestrator.getHistory(10).get(0);
+        com.fasterxml.jackson.databind.node.ObjectNode json = entry.toJson();
+        assertThat(json.get("name").asText(), is("hist-verdict"));
+        assertThat(json.get("status").asText(), is("completed"));
+        assertThat(json.has("terminatedAtMillis"), is(true));
+        assertThat(json.has("verdict"), is(true));
+        assertThat(json.get("verdict").get("result").asText(), is("PASS"));
+    }
+
+    @Test
+    public void shouldClearHistoryOnReset() {
+        ChaosExperimentOrchestrator.Stage stage0 = new ChaosExperimentOrchestrator.Stage(
+            60_000L, profileMap("api.svc", httpChaosProfile().withErrorStatus(503)));
+        orchestrator.start(new ChaosExperimentOrchestrator.ExperimentDefinition(
+            "hist-reset", Arrays.asList(stage0), false));
+        orchestrator.stop();
+        assertThat(orchestrator.getHistory(10).size(), is(1));
+
+        orchestrator.reset();
+        assertThat(orchestrator.getHistory(10).isEmpty(), is(true));
     }
 }

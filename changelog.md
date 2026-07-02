@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Chaos experiment composition: recurring runs, staged TCP/lifecycle faults, steady-state pre-check, and
+  history.** The `ChaosExperimentOrchestrator` now composes fault primitives beyond a single one-shot HTTP run,
+  all as new optional fields that default to the previous behaviour:
+  (1) **Recurring cron experiments** — set `"recurring": true` alongside a `cronSchedule` and, after each clean
+  completion, the experiment records the run and re-arms itself for the next cron occurrence (e.g. a
+  `"nightly-error-storm"` on `"0 2 * * *"`) instead of going terminal after one run; a stop, auto-halt, or SLO
+  breach still ends it for good.
+  (2) **Staged TCP / connection-lifecycle faults** — a stage may carry a `tcpProfiles` map (host →
+  `TcpChaosProfile`) applied/reset with the same discipline as HTTP `profiles`, so transport-level faults
+  (RST, GOAWAY, latency, bandwidth, preemption) get the same auto-halt and stage progression; a stage is valid
+  with HTTP profiles, TCP profiles, or both.
+  (3) **Steady-state baseline pre-check** — with an `sloCriteria`, an optional `baselineWindowMillis` evaluates
+  the SLO over the pre-experiment lookback window before applying stage 0 and refuses to start
+  (`aborted_baseline_unhealthy`, verdict attached) if the steady state does not already hold, instead of running
+  and blaming the experiment.
+  (4) **Bounded experiment history** — every terminal transition (including each recurring run and a
+  baseline-refused start) is appended to a bounded ring (last 50, newest first) exposed at
+  `GET /mockserver/chaosExperiment/history` for recurring-run trails and CI trend dashboards. The new
+  `recurring`, `tcpProfiles`, and `baselineWindowMillis` fields round-trip through the experiment definition JSON.
+
 - **Typed mock-drift client methods across all 8 client libraries.** Each client now exposes a typed wrapper
   for the drift-detection control plane — `retrieveDrift()` (`GET /mockserver/drift`, returns the parsed
   `{ count, drifts }` report) and `clearDrift()` (`PUT /mockserver/drift/clear`) — so programmatic users no

@@ -3957,7 +3957,7 @@ new MockServerClient("localhost", 1080)
     ]
   }'</code></pre>
 
-<p>This experiment waits until the next 02:00 (server local time), then injects 503s into <code class="inline code">payments.svc</code> for 10 minutes &mdash; useful for rehearsing an off-peak incident without staying up to trigger it.</p>
+<p>This experiment waits until the next 02:00 (server local time), then injects 503s into <code class="inline code">payments.svc</code> for 10 minutes &mdash; useful for rehearsing an off-peak incident without staying up to trigger it. By default a cron experiment runs <strong>once</strong> at the next matching time and then goes terminal. To make it run <strong>every</strong> matching time, add <code class="inline code">"recurring": true</code> alongside the <code class="inline code">cronSchedule</code>: after each run completes, MockServer records the run in the <a href="#chaos_experiment_history">experiment history</a> and re-arms itself for the next cron occurrence. A recurring experiment only re-arms after a clean completion &mdash; an explicit <code class="inline code">DELETE</code>, an auto-halt, or an SLO breach ends it for good. (Without a <code class="inline code">cronSchedule</code>, <code class="inline code">recurring</code> is rejected &mdash; there is nothing to re-arm from.)</p>
 
 <h3>Asserting an SLO during the experiment (pass/fail verdict)</h3>
 
@@ -3990,14 +3990,61 @@ new MockServerClient("localhost", 1080)
 # {"name":"payments-resilience-check","status":"completed", ... ,
 #  "experimentVerdict":{"result":"PASS","objectiveResults":[ ... ]}}</code></pre>
 
+<h3>Staging TCP / connection-lifecycle faults</h3>
+
+<p>A stage can also carry <strong>TCP-layer</strong> faults &mdash; connection drops, RST, HTTP/2 GOAWAY, latency, bandwidth throttling and the other <a href="#tcp_chaos">TCP chaos</a> primitives &mdash; alongside (or instead of) the HTTP <code class="inline code">profiles</code>. Add a <code class="inline code">tcpProfiles</code> map (host &rarr; TCP chaos profile) to any stage; it is applied and reset with exactly the same discipline as <code class="inline code">profiles</code> at each stage boundary. A stage is valid with HTTP profiles, TCP profiles, or both, so you can compose transport-level and application-level faults into one timeline. Only an experiment that actually uses <code class="inline code">tcpProfiles</code> takes ownership of the TCP chaos registry &mdash; a purely HTTP experiment leaves any manually-registered TCP chaos untouched.</p>
+
+<pre class="code"><code class="code">curl -sf -X PUT http://mockserver:1080/mockserver/chaosExperiment \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "transport-then-app-faults",
+    "stages": [
+      {"durationMillis": 60000, "tcpProfiles": {"payments.svc": {"latencyMs": 250}}},
+      {"durationMillis": 60000, "tcpProfiles": {"payments.svc": {"resetPeer": true}}},
+      {"durationMillis": 60000, "profiles":    {"payments.svc": {"errorStatus": 503}}}
+    ]
+  }'</code></pre>
+
+<h3>Steady-state baseline pre-check</h3>
+
+<p>When you attach an <code class="inline code">sloCriteria</code>, you can also ask MockServer to confirm the system is <em>already healthy</em> before it injects any chaos, so a pre-existing problem is not mistaken for the experiment's effect. Add a <code class="inline code">baselineWindowMillis</code>: before applying stage 0, MockServer evaluates the same <code class="inline code">sloCriteria</code> over the preceding <code class="inline code">baselineWindowMillis</code> of recorded traffic. If that steady state does not already hold (the baseline verdict is <code class="inline code">FAIL</code> or <code class="inline code">INCONCLUSIVE</code>), the experiment <strong>refuses to start</strong> &mdash; the <code class="inline code">PUT</code> returns <code class="inline code">400</code> with <code class="inline code">aborted_baseline_unhealthy</code>, and a <code class="inline code">GET</code> reports that terminal status with the failing baseline verdict attached. Omit <code class="inline code">baselineWindowMillis</code> (the default) to skip the pre-check.</p>
+
+<pre class="code"><code class="code">curl -sf -X PUT http://mockserver:1080/mockserver/chaosExperiment \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "payments-resilience-check",
+    "baselineWindowMillis": 60000,
+    "stages": [
+      {"durationMillis": 120000, "profiles": {"payments.svc": {"errorStatus": 503, "errorProbability": 0.2}}}
+    ],
+    "sloCriteria": {
+      "minimumSampleCount": 20,
+      "objectives": [{"sli": "ERROR_RATE", "comparator": "LESS_THAN", "threshold": 0.25}]
+    }
+  }'</code></pre>
+
+<a id="chaos_experiment_history" class="anchor" href="#chaos_experiment_history">&nbsp;</a>
+
+<h3>Experiment history</h3>
+
+<p>MockServer keeps a bounded ring of the most recent terminated experiments (the last 50, newest first), retrieved with <code class="inline code">GET /mockserver/chaosExperiment/history</code>. Each record has the experiment <code class="inline code">name</code>, its terminal <code class="inline code">status</code>, when it ended (<code class="inline code">terminatedAtMillis</code>) and its <code class="inline code">verdict</code> (when it carried an <code class="inline code">sloCriteria</code>). This is what lets a <code class="inline code">recurring</code> nightly experiment leave a trail of per-run verdicts, and gives a CI trend dashboard something to chart. The history is cleared on server reset.</p>
+
+<pre class="code"><code class="code">curl -sf http://mockserver:1080/mockserver/chaosExperiment/history
+# -> {"count":2,"history":[
+#      {"name":"nightly-error-storm","status":"completed","terminatedAtMillis":...,
+#       "verdict":{"result":"PASS", ...}},
+#      {"name":"nightly-error-storm","status":"halted_by_slo_breach","terminatedAtMillis":...,
+#       "verdict":{"result":"FAIL", ...}}]}</code></pre>
+
 <h3>Safety limits</h3>
 
 <ul>
     <li><strong>Maximum 50 stages</strong> per experiment</li>
     <li><strong>Maximum 24 hours</strong> per stage duration</li>
+    <li><strong>Maximum 24 hours</strong> for a <code class="inline code">baselineWindowMillis</code> pre-check window</li>
     <li><strong>Maximum 7 days</strong> for a deferred <code class="inline code">startDelayMillis</code></li>
     <li><strong>Only one experiment at a time</strong> &mdash; starting a new experiment stops the previous one</li>
-    <li><strong>Auto-halt integration</strong> &mdash; if the <a href="#chaos_auto_halt">auto-halt circuit-breaker</a> fires while an experiment is running, the experiment stops immediately (status: <code class="inline code">halted_by_auto_halt</code>)</li>
+    <li><strong>Auto-halt integration</strong> &mdash; if the <a href="#chaos_auto_halt">auto-halt circuit-breaker</a> fires while an experiment is running, the experiment stops immediately (status: <code class="inline code">halted_by_auto_halt</code>); auto-halt clears both HTTP and TCP chaos</li>
     <li><strong>SLO-breach halt</strong> &mdash; for an experiment with <code class="inline code">sloCriteria</code>, breaching an objective mid-run stops it immediately (status: <code class="inline code">halted_by_slo_breach</code>, verdict <code class="inline code">FAIL</code>)</li>
 </ul>
 
@@ -4010,7 +4057,7 @@ new MockServerClient("localhost", 1080)
 #     "totalStages":3,"stageElapsedMillis":15000,"stageRemainingMillis":45000,
 #     "loopIteration":0,"totalElapsedMillis":75000,"experiment":{...}}</code></pre>
 
-<p>The <code class="inline code">status</code> field is one of: <code class="inline code">scheduled</code> (a delayed/cron start is pending &mdash; the status also carries <code class="inline code">startRemainingMillis</code>), <code class="inline code">running</code>, <code class="inline code">completed</code>, <code class="inline code">stopped</code>, <code class="inline code">halted_by_auto_halt</code>, or <code class="inline code">halted_by_slo_breach</code>. For an experiment that carried an <code class="inline code">sloCriteria</code>, the status also includes an <code class="inline code">experimentVerdict</code> (<code class="inline code">PASS</code> / <code class="inline code">FAIL</code> / <code class="inline code">INCONCLUSIVE</code>) once the experiment ends.</p>
+<p>The <code class="inline code">status</code> field is one of: <code class="inline code">scheduled</code> (a delayed/cron start &mdash; or a <code class="inline code">recurring</code> experiment's next occurrence &mdash; is pending, so the status also carries <code class="inline code">startRemainingMillis</code>), <code class="inline code">running</code>, <code class="inline code">completed</code>, <code class="inline code">stopped</code>, <code class="inline code">halted_by_auto_halt</code>, <code class="inline code">halted_by_slo_breach</code>, or <code class="inline code">aborted_baseline_unhealthy</code> (a <code class="inline code">baselineWindowMillis</code> pre-check refused the start). For an experiment that carried an <code class="inline code">sloCriteria</code>, the status also includes an <code class="inline code">experimentVerdict</code> (<code class="inline code">PASS</code> / <code class="inline code">FAIL</code> / <code class="inline code">INCONCLUSIVE</code>) once the experiment ends. Past runs are available at <code class="inline code">GET /mockserver/chaosExperiment/history</code> (see <a href="#chaos_experiment_history">Experiment history</a>).</p>
 
 <h3>Stopping</h3>
 

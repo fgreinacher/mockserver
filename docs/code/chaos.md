@@ -48,12 +48,23 @@ breach is detected without waiting for the next stage advance.
 
 | Endpoint | Action |
 |----------|--------|
-| `PUT /mockserver/chaosExperiment` | Start (or replace) an experiment. Body: experiment definition JSON. Returns 200 + current status, or 400 on validation error. |
+| `PUT /mockserver/chaosExperiment` | Start (or replace) an experiment. Body: experiment definition JSON. Returns 200 + current status, or 400 on a validation error or a refused start (`aborted_baseline_unhealthy`). |
 | `GET /mockserver/chaosExperiment` | Return current experiment status (JSON). Returns 200 with status or 404 when no experiment has run since last reset. |
+| `GET /mockserver/chaosExperiment/history` | Return the bounded ring of the most recent terminated experiments (newest first): `{"count": N, "history": [ { name, status, terminatedAtMillis, verdict? }, ... ]}`. Retains up to `MAX_HISTORY` (50) records; cleared on server reset. |
 | `DELETE /mockserver/chaosExperiment` | Stop the running experiment, clear chaos, return 204. Idempotent. |
 
-All three endpoints go through `controlPlaneRequestAuthenticated()` (mTLS / JWT if
-configured). Implemented in `HttpState.handleChaosExperimentPut/Get/Delete()`.
+All endpoints go through `controlPlaneRequestAuthenticated()` (mTLS / JWT if
+configured). Implemented in `HttpState.handleChaosExperimentPut/Get/History/Delete()`.
+
+### Composition features (T1.4)
+
+The orchestration layer composes the fault primitives beyond a single one-shot HTTP run:
+
+| Field | Default | Effect |
+|-------|---------|--------|
+| `recurring` (boolean, top-level) | `false` | With a `cronSchedule` set, the experiment re-arms itself for the next cron occurrence after it **completes naturally** (retaining per-run verdict history), instead of terminating after one run — e.g. a `"nightly-error-storm"` on `"0 2 * * *"`. Requires `cronSchedule` (rejected otherwise). A `stop`, an auto-halt, or an SLO breach do **not** re-arm. |
+| `stages[].tcpProfiles` (map host → `TcpChaosProfile`) | absent | Stages TCP / connection-lifecycle faults (latency, RST, GOAWAY, bandwidth, preemption, …) into `TcpChaosRegistry` with the same apply/reset discipline as HTTP `profiles`. A stage is valid with HTTP profiles, TCP profiles, or both. Only an experiment that uses TCP profiles takes exclusive ownership of `TcpChaosRegistry` (an HTTP-only experiment never touches it). Auto-halt clears both registries, and the stage-boundary auto-halt check now considers whichever registries the stage populated. |
+| `baselineWindowMillis` (long, top-level) | `0` (off) | With `sloCriteria` set, evaluates the SLO over the pre-experiment lookback window `[now - baselineWindowMillis, now]` **before** applying stage 0. If the steady state does not already hold (verdict not `PASS`), the experiment **refuses to start** with terminal status `aborted_baseline_unhealthy` and the baseline verdict attached, rather than running and blaming the experiment. Requires `sloCriteria`. |
 
 ## Saved Profile Library (ADV3)
 
@@ -194,17 +205,21 @@ is omitted entirely otherwise.
 | `status` value | Meaning |
 |---------------|---------|
 | `starting` | Experiment object created; stage 0 not yet applied |
-| `scheduled` | A deferred start (`startDelayMillis`/`cronSchedule`) is pending; no chaos applied yet. The status carries `startRemainingMillis` (ms until stage 0). |
+| `scheduled` | A deferred start (`startDelayMillis`/`cronSchedule`), or a `recurring` experiment re-armed for its next cron occurrence, is pending; no chaos applied yet. The status carries `startRemainingMillis` (ms until stage 0). |
 | `running` | A stage is active |
-| `completed` | All stages ran and `loop=false` |
+| `completed` | All stages ran and `loop=false` (a `recurring` experiment records this in history, then re-arms) |
 | `stopped` | Stopped via `DELETE /mockserver/chaosExperiment` or replaced by a new `PUT` |
 | `halted_by_auto_halt` | Stopped by the C1 raw-volume circuit-breaker (see below) |
 | `halted_by_slo_breach` | Stopped because the experiment's `sloCriteria` was breached mid-run (see [SLO Assertion & Verdict](#slo-assertion--verdict)) |
+| `aborted_baseline_unhealthy` | Refused to start because the `baselineWindowMillis` steady-state pre-check found the SLO did not already hold (verdict `FAIL`/`INCONCLUSIVE`) |
 
 After an experiment terminates (any terminal status), `lastTerminatedStatus` and
 `lastTerminatedVerdict` are retained so that a subsequent `GET` can report the
 outcome (and verdict) even after `current` is nulled. Both are cleared only by
-`HttpState.reset()`.
+`HttpState.reset()`. Every terminal transition (including each `recurring` run and
+a baseline-refused start) also appends one record to the bounded history ring
+exposed at `GET /mockserver/chaosExperiment/history` (last `MAX_HISTORY` = 50,
+newest first), for recurring-run and CI trend inspection.
 
 ## SLO Assertion & Verdict
 

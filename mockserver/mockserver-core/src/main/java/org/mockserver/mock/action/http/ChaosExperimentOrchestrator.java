@@ -5,9 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.mockserver.model.HttpChaosProfile;
+import org.mockserver.model.TcpChaosProfile;
 import org.mockserver.serialization.ObjectMapperFactory;
 import org.mockserver.serialization.model.HttpChaosProfileDTO;
 import org.mockserver.serialization.model.SloCriteriaDTO;
+import org.mockserver.serialization.model.TcpChaosProfileDTO;
 import org.mockserver.slo.SloCriteria;
 import org.mockserver.slo.SloEvaluator;
 import org.mockserver.slo.SloVerdict;
@@ -16,8 +18,10 @@ import org.mockserver.time.TimeService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
@@ -74,6 +78,8 @@ public class ChaosExperimentOrchestrator {
     static final long MAX_START_DELAY_MILLIS = 7L * 24 * 60 * 60 * 1000;
     /** Interval between live SLO-breach probes for an experiment with {@code sloCriteria}. */
     static final long SLO_PROBE_INTERVAL_MILLIS = 1000L;
+    /** Maximum number of terminated-experiment records retained in the bounded history ring. */
+    public static final int MAX_HISTORY = 50;
 
     private static final ChaosExperimentOrchestrator INSTANCE = new ChaosExperimentOrchestrator(
         TimeService::currentTimeMillis,
@@ -97,6 +103,12 @@ public class ChaosExperimentOrchestrator {
     /** Terminal SLO verdict of the last experiment after it detaches from {@link #current}.
      *  {@code null} when the last experiment had no {@code sloCriteria}. */
     private volatile SloVerdict lastTerminatedVerdict;
+    /** Bounded LRU ring of terminated-experiment records (oldest evicted first), exposed at
+     *  {@code GET /chaosExperiment/history}. Every terminal transition (completed / stopped /
+     *  halted_by_auto_halt / halted_by_slo_breach / aborted_baseline_unhealthy) appends one
+     *  entry; each recurring run appends its own. Follows the {@code DriftStore} LRU-ring pattern. */
+    private final Deque<ExperimentHistoryEntry> history = new ArrayDeque<>();
+    private final Object historyLock = new Object();
 
     ChaosExperimentOrchestrator(LongSupplier clock, ScheduledExecutorService scheduler) {
         this(clock, scheduler, new SloEvaluator());
@@ -123,6 +135,28 @@ public class ChaosExperimentOrchestrator {
         if (error != null) {
             return error;
         }
+
+        // Steady-state baseline pre-check: before disturbing anything (including a
+        // currently-running experiment), assert the experiment's sloCriteria over the
+        // pre-experiment lookback window. If the steady state does not already hold,
+        // refuse to start so a pre-existing problem is not mistaken for the experiment's
+        // effect. Reported as terminal status "aborted_baseline_unhealthy" (queryable via
+        // GET /chaosExperiment and recorded in history), and returned to the caller.
+        if (definition.baselineWindowMillis > 0 && definition.sloCriteria != null) {
+            long baselineNow = clock.getAsLong();
+            SloVerdict baseline = evaluateBaseline(definition, baselineNow);
+            if (baseline == null || baseline.getResult() != SloVerdict.Result.PASS) {
+                SloVerdict.Result result = baseline != null ? baseline.getResult() : null;
+                lastTerminatedStatus = "aborted_baseline_unhealthy";
+                lastTerminatedVerdict = baseline;
+                recordHistory(definition.name, "aborted_baseline_unhealthy", baseline, baselineNow);
+                LOG.warn("chaos experiment '{}' refused to start: steady-state baseline unhealthy "
+                    + "over {} ms window (verdict {})", definition.name, definition.baselineWindowMillis, result);
+                return "aborted_baseline_unhealthy: steady-state SLO did not hold over the "
+                    + definition.baselineWindowMillis + " ms baseline window (verdict " + result + ")";
+            }
+        }
+
         // Stop any existing experiment
         stopInternal(false);
 
@@ -229,6 +263,9 @@ public class ChaosExperimentOrchestrator {
         stopInternal(false);
         lastTerminatedStatus = null;
         lastTerminatedVerdict = null;
+        synchronized (historyLock) {
+            history.clear();
+        }
     }
 
     /**
@@ -296,10 +333,12 @@ public class ChaosExperimentOrchestrator {
             }
             cancelProbe(exp);
             exp.status = autoHalted ? "halted_by_auto_halt" : "stopped";
+            exp.endedAtMillis = clock.getAsLong();
             finalizeVerdict(exp, autoHalted);
             lastTerminatedStatus = exp.status;
-            // Clear chaos from the registry
-            ServiceChaosRegistry.getInstance().reset();
+            // Clear chaos from the registries this experiment owned
+            clearChaos(exp);
+            recordHistory(exp);
             LOG.info("chaos experiment '{}' {}", exp.definition.name, exp.status);
         }
     }
@@ -317,6 +356,17 @@ public class ChaosExperimentOrchestrator {
         for (Map.Entry<String, HttpChaosProfile> entry : stage.profiles.entrySet()) {
             registry.put(entry.getKey(), entry.getValue());
         }
+
+        // Stage TCP / connection-lifecycle faults with the same discipline as HTTP profiles.
+        // Only experiments that actually use TCP profiles take exclusive ownership of the
+        // TcpChaosRegistry — an HTTP-only experiment never touches it (back-compatible).
+        if (experiment.definition.usesTcpProfiles()) {
+            TcpChaosRegistry tcpRegistry = TcpChaosRegistry.getInstance();
+            tcpRegistry.reset();
+            for (Map.Entry<String, TcpChaosProfile> entry : stage.tcpProfiles.entrySet()) {
+                tcpRegistry.put(entry.getKey(), entry.getValue());
+            }
+        }
     }
 
     private void scheduleNextStage(RunningExperiment experiment, int currentStageIndex) {
@@ -333,17 +383,21 @@ public class ChaosExperimentOrchestrator {
             return;
         }
 
-        // C1 auto-halt integration: if the registry was cleared by auto-halt
-        // (or a manual reset) while this stage was running, stop the experiment.
-        // Note: a running experiment takes exclusive ownership of ServiceChaosRegistry —
-        // manual service-chaos registrations are overwritten at the next stage advance.
-        if (ServiceChaosRegistry.getInstance().entries().isEmpty() && experiment.status.equals("running")) {
+        // C1 auto-halt integration: if the chaos this stage applied was cleared by auto-halt
+        // (or a manual reset) while this stage was running, stop the experiment. Auto-halt
+        // resets BOTH the ServiceChaosRegistry and the TcpChaosRegistry, so a stage that
+        // applied HTTP and/or TCP faults is considered halted only when everything it applied
+        // is now gone. Note: a running experiment takes exclusive ownership of the registries
+        // it uses — manual chaos registrations are overwritten at the next stage advance.
+        if (experiment.status.equals("running") && stageChaosCleared(experiment)) {
             LOG.warn("chaos experiment '{}' halted by auto-halt safety circuit-breaker at stage {}",
                 experiment.definition.name, experiment.currentStageIndex);
             cancelProbe(experiment);
             experiment.status = "halted_by_auto_halt";
+            experiment.endedAtMillis = clock.getAsLong();
             finalizeVerdict(experiment, true);
             lastTerminatedStatus = experiment.status;
+            recordHistory(experiment);
             current.compareAndSet(experiment, null);
             return;
         }
@@ -370,12 +424,21 @@ public class ChaosExperimentOrchestrator {
                 // Experiment complete
                 cancelProbe(experiment);
                 experiment.status = "completed";
+                experiment.endedAtMillis = clock.getAsLong();
                 finalizeVerdict(experiment, false);
                 lastTerminatedStatus = experiment.status;
-                ServiceChaosRegistry.getInstance().reset();
-                current.compareAndSet(experiment, null);
+                clearChaos(experiment);
+                recordHistory(experiment);
                 LOG.info("chaos experiment '{}' completed after {} stage(s)",
                     experiment.definition.name, experiment.definition.stages.size());
+                // Recurring cron experiment: re-arm from this terminal transition for the next
+                // cron occurrence, retaining per-run verdict history. A one-shot experiment (the
+                // default) simply detaches from current.
+                if (experiment.definition.recurring && hasCron(experiment.definition)) {
+                    rearmForNextOccurrence(experiment);
+                } else {
+                    current.compareAndSet(experiment, null);
+                }
             }
         } else {
             // Advance to next stage
@@ -475,7 +538,8 @@ public class ChaosExperimentOrchestrator {
         experiment.experimentVerdict = verdict;
         lastTerminatedStatus = experiment.status;
         lastTerminatedVerdict = verdict;
-        ServiceChaosRegistry.getInstance().reset();
+        clearChaos(experiment);
+        recordHistory(experiment);
         return true;
     }
 
@@ -529,6 +593,118 @@ public class ChaosExperimentOrchestrator {
         return sloEvaluator.evaluate(scoped);
     }
 
+    /**
+     * Clears the chaos this experiment owned. The {@link ServiceChaosRegistry} is always
+     * reset (existing behaviour); the {@link TcpChaosRegistry} is reset only when the
+     * experiment actually staged TCP profiles, so an HTTP-only experiment never disturbs
+     * manually-registered TCP chaos (back-compatible).
+     */
+    private void clearChaos(RunningExperiment experiment) {
+        ServiceChaosRegistry.getInstance().reset();
+        if (experiment.definition.usesTcpProfiles()) {
+            TcpChaosRegistry.getInstance().reset();
+        }
+    }
+
+    /**
+     * Returns {@code true} when everything the current stage applied has been cleared from
+     * under the experiment (the auto-halt / manual-reset condition). A stage that applied
+     * HTTP faults requires an empty {@link ServiceChaosRegistry}; a stage that applied TCP
+     * faults requires an empty {@link TcpChaosRegistry}; a stage applying both requires both
+     * empty. This preserves the pre-existing HTTP-only semantics exactly while letting a
+     * TCP-only stage detect its own auto-halt.
+     */
+    private boolean stageChaosCleared(RunningExperiment experiment) {
+        Stage stage = experiment.currentStageIndex < experiment.definition.stages.size()
+            ? experiment.definition.stages.get(experiment.currentStageIndex) : null;
+        if (stage == null) {
+            return false;
+        }
+        boolean stageHadHttp = !stage.profiles.isEmpty();
+        boolean stageHadTcp = !stage.tcpProfiles.isEmpty();
+        if (!stageHadHttp && !stageHadTcp) {
+            return false;
+        }
+        boolean httpCleared = !stageHadHttp || ServiceChaosRegistry.getInstance().entries().isEmpty();
+        boolean tcpCleared = !stageHadTcp || TcpChaosRegistry.getInstance().entries().isEmpty();
+        return httpCleared && tcpCleared;
+    }
+
+    /**
+     * Evaluates the experiment's {@code sloCriteria} over the pre-experiment steady-state
+     * lookback window {@code [now - baselineWindowMillis, now]} via an EXPLICIT window. Used
+     * only by the baseline pre-check. Never {@code null} here — callers guard on a non-null
+     * {@code sloCriteria}.
+     */
+    private SloVerdict evaluateBaseline(ExperimentDefinition definition, long now) {
+        SloCriteria criteria = definition.sloCriteria;
+        SloCriteria scoped = new SloCriteria()
+            .withName(criteria.getName())
+            .withObjectives(criteria.getObjectives())
+            .withUpstreamHosts(criteria.getUpstreamHosts())
+            .withWindow(SloWindow.explicit(now - definition.baselineWindowMillis, now))
+            .withMinimumSampleCount(criteria.getMinimumSampleCount());
+        return sloEvaluator.evaluate(scoped);
+    }
+
+    /**
+     * Re-arms a completed recurring experiment for its next cron occurrence, replacing the
+     * finished run in {@link #current} with a fresh {@link RunningExperiment} in the
+     * {@code "scheduled"} state. Per-run verdict history is already retained via
+     * {@link #recordHistory(RunningExperiment)} at completion.
+     */
+    private void rearmForNextOccurrence(RunningExperiment finished) {
+        long now = clock.getAsLong();
+        long delay = CronSchedule.parse(finished.definition.cronSchedule).millisUntilNext(now);
+        if (delay <= 0) {
+            // Defensive: a cron that validated as satisfiable should always yield a positive
+            // delay; if it somehow does not, stop cleanly rather than busy-loop.
+            current.compareAndSet(finished, null);
+            LOG.info("chaos experiment '{}' recurring: no further cron occurrence, stopping",
+                finished.definition.name);
+            return;
+        }
+        RunningExperiment next = new RunningExperiment(finished.definition, now);
+        next.recurrenceIteration = finished.recurrenceIteration + 1;
+        if (current.compareAndSet(finished, next)) {
+            next.status = "scheduled";
+            scheduleStart(next, delay);
+            LOG.info("chaos experiment '{}' recurring: re-armed for the next cron occurrence in {} ms (run #{})",
+                finished.definition.name, delay, next.recurrenceIteration);
+        }
+    }
+
+    /** Appends a terminated-experiment record for a running experiment to the bounded ring. */
+    private void recordHistory(RunningExperiment experiment) {
+        long ended = experiment.endedAtMillis > 0 ? experiment.endedAtMillis : clock.getAsLong();
+        recordHistory(experiment.definition.name, experiment.status, experiment.experimentVerdict, ended);
+    }
+
+    /** Appends a terminated-experiment record to the bounded ring (oldest evicted first). */
+    private void recordHistory(String name, String status, SloVerdict verdict, long terminatedAtMillis) {
+        synchronized (historyLock) {
+            if (history.size() >= MAX_HISTORY) {
+                history.pollFirst();
+            }
+            history.addLast(new ExperimentHistoryEntry(name, status, verdict, terminatedAtMillis));
+        }
+    }
+
+    /**
+     * Returns up to {@code limit} most-recently-terminated experiment records, newest first.
+     * Exposed via {@code GET /chaosExperiment/history}.
+     */
+    public List<ExperimentHistoryEntry> getHistory(int limit) {
+        synchronized (historyLock) {
+            List<ExperimentHistoryEntry> result = new ArrayList<>();
+            java.util.Iterator<ExperimentHistoryEntry> it = history.descendingIterator();
+            while (it.hasNext() && result.size() < limit) {
+                result.add(it.next());
+            }
+            return result;
+        }
+    }
+
     private String validate(ExperimentDefinition definition) {
         if (definition == null) {
             return "'experiment' is required";
@@ -544,6 +720,18 @@ public class ChaosExperimentOrchestrator {
         }
         if (definition.startDelayMillis < 0) {
             return "'startDelayMillis' must be >= 0";
+        }
+        if (definition.baselineWindowMillis < 0) {
+            return "'baselineWindowMillis' must be >= 0";
+        }
+        if (definition.baselineWindowMillis > MAX_STAGE_DURATION_MILLIS) {
+            return "'baselineWindowMillis' exceeds maximum of " + MAX_STAGE_DURATION_MILLIS + " ms (24h)";
+        }
+        if (definition.baselineWindowMillis > 0 && definition.sloCriteria == null) {
+            return "'baselineWindowMillis' requires 'sloCriteria' to evaluate the steady state against";
+        }
+        if (definition.recurring && !hasCron(definition)) {
+            return "'recurring' requires a 'cronSchedule' to re-arm from";
         }
         if (definition.startDelayMillis > MAX_START_DELAY_MILLIS) {
             return "'startDelayMillis' exceeds maximum of " + MAX_START_DELAY_MILLIS + " ms (7 days)";
@@ -571,11 +759,17 @@ public class ChaosExperimentOrchestrator {
             if (stage.durationMillis > MAX_STAGE_DURATION_MILLIS) {
                 return "stage[" + i + "].durationMillis exceeds maximum of " + MAX_STAGE_DURATION_MILLIS + " ms (24h)";
             }
-            if (stage.profiles == null || stage.profiles.isEmpty()) {
+            boolean noHttp = stage.profiles == null || stage.profiles.isEmpty();
+            boolean noTcp = stage.tcpProfiles == null || stage.tcpProfiles.isEmpty();
+            if (noHttp && noTcp) {
                 return "stage[" + i + "] must have at least one host/profile entry";
             }
         }
         return null;
+    }
+
+    private static boolean hasCron(ExperimentDefinition definition) {
+        return definition.cronSchedule != null && !definition.cronSchedule.isBlank();
     }
 
     // -- Data classes --
@@ -601,6 +795,21 @@ public class ChaosExperimentOrchestrator {
          * experiment terminates.
          */
         public final SloCriteria sloCriteria;
+        /**
+         * When {@code true} and a {@code cronSchedule} is set, the experiment re-arms itself for
+         * the next cron occurrence after it completes naturally (retaining per-run verdict
+         * history), rather than terminating after a single run. Default {@code false} = the
+         * pre-existing one-shot behaviour. Ignored (rejected at validation) without a cron.
+         */
+        public final boolean recurring;
+        /**
+         * When {@code > 0} (and {@code sloCriteria} is set), the orchestrator evaluates the SLO
+         * over the pre-experiment lookback window {@code [now - baselineWindowMillis, now]} before
+         * applying stage 0. If the steady state does not already hold (verdict not PASS) the
+         * experiment refuses to start ({@code aborted_baseline_unhealthy}). Default {@code 0} =
+         * no baseline pre-check (pre-existing behaviour).
+         */
+        public final long baselineWindowMillis;
 
         public ExperimentDefinition(String name, List<Stage> stages, boolean loop) {
             this(name, stages, loop, 0L, null, null);
@@ -613,12 +822,30 @@ public class ChaosExperimentOrchestrator {
 
         public ExperimentDefinition(String name, List<Stage> stages, boolean loop,
                                     long startDelayMillis, String cronSchedule, SloCriteria sloCriteria) {
+            this(name, stages, loop, startDelayMillis, cronSchedule, sloCriteria, false, 0L);
+        }
+
+        public ExperimentDefinition(String name, List<Stage> stages, boolean loop,
+                                    long startDelayMillis, String cronSchedule, SloCriteria sloCriteria,
+                                    boolean recurring, long baselineWindowMillis) {
             this.name = name;
             this.stages = stages != null ? Collections.unmodifiableList(new ArrayList<>(stages)) : Collections.emptyList();
             this.loop = loop;
             this.startDelayMillis = startDelayMillis;
             this.cronSchedule = cronSchedule;
             this.sloCriteria = sloCriteria;
+            this.recurring = recurring;
+            this.baselineWindowMillis = baselineWindowMillis;
+        }
+
+        /** {@code true} when any stage stages one or more TCP chaos profiles. */
+        public boolean usesTcpProfiles() {
+            for (Stage stage : stages) {
+                if (!stage.tcpProfiles.isEmpty()) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**
@@ -628,7 +855,9 @@ public class ChaosExperimentOrchestrator {
             ObjectMapper mapper = ObjectMapperFactory.createObjectMapper();
             String name = node.path("name").asText(null);
             boolean loop = node.path("loop").asBoolean(false);
+            boolean recurring = node.path("recurring").asBoolean(false);
             long startDelayMillis = node.path("startDelayMillis").asLong(0);
+            long baselineWindowMillis = node.path("baselineWindowMillis").asLong(0);
             JsonNode cronNode = node.path("cronSchedule");
             String cronSchedule = cronNode.isTextual() ? cronNode.asText() : null;
             List<Stage> stages = new ArrayList<>();
@@ -651,7 +880,22 @@ public class ChaosExperimentOrchestrator {
                             }
                         }
                     }
-                    stages.add(new Stage(durationMillis, profiles));
+                    Map<String, TcpChaosProfile> tcpProfiles = new java.util.LinkedHashMap<>();
+                    JsonNode tcpProfilesNode = stageNode.path("tcpProfiles");
+                    if (tcpProfilesNode.isObject()) {
+                        var fields = tcpProfilesNode.fields();
+                        while (fields.hasNext()) {
+                            var entry = fields.next();
+                            try {
+                                TcpChaosProfileDTO dto = mapper.treeToValue(entry.getValue(), TcpChaosProfileDTO.class);
+                                tcpProfiles.put(entry.getKey(), dto.buildObject());
+                            } catch (Exception e) {
+                                throw new IllegalArgumentException(
+                                    "invalid TCP chaos profile for host '" + entry.getKey() + "': " + e.getMessage(), e);
+                            }
+                        }
+                    }
+                    stages.add(new Stage(durationMillis, profiles, tcpProfiles));
                 }
             }
             SloCriteria sloCriteria = null;
@@ -664,7 +908,8 @@ public class ChaosExperimentOrchestrator {
                     throw new IllegalArgumentException("invalid sloCriteria: " + e.getMessage(), e);
                 }
             }
-            return new ExperimentDefinition(name, stages, loop, startDelayMillis, cronSchedule, sloCriteria);
+            return new ExperimentDefinition(name, stages, loop, startDelayMillis, cronSchedule, sloCriteria,
+                recurring, baselineWindowMillis);
         }
 
         /**
@@ -675,8 +920,14 @@ public class ChaosExperimentOrchestrator {
             ObjectNode node = mapper.createObjectNode();
             node.put("name", name);
             node.put("loop", loop);
+            if (recurring) {
+                node.put("recurring", true);
+            }
             if (startDelayMillis > 0) {
                 node.put("startDelayMillis", startDelayMillis);
+            }
+            if (baselineWindowMillis > 0) {
+                node.put("baselineWindowMillis", baselineWindowMillis);
             }
             if (cronSchedule != null && !cronSchedule.isBlank()) {
                 node.put("cronSchedule", cronSchedule);
@@ -689,6 +940,12 @@ public class ChaosExperimentOrchestrator {
                 for (Map.Entry<String, HttpChaosProfile> entry : stage.profiles.entrySet()) {
                     profilesNode.set(entry.getKey(), mapper.valueToTree(new HttpChaosProfileDTO(entry.getValue())));
                 }
+                if (!stage.tcpProfiles.isEmpty()) {
+                    ObjectNode tcpProfilesNode = stageNode.putObject("tcpProfiles");
+                    for (Map.Entry<String, TcpChaosProfile> entry : stage.tcpProfiles.entrySet()) {
+                        tcpProfilesNode.set(entry.getKey(), mapper.valueToTree(new TcpChaosProfileDTO(entry.getValue())));
+                    }
+                }
                 stagesArray.add(stageNode);
             }
             if (sloCriteria != null) {
@@ -699,16 +956,27 @@ public class ChaosExperimentOrchestrator {
     }
 
     /**
-     * A single stage: profiles to apply to specific hosts for a duration.
+     * A single stage: HTTP and/or TCP chaos profiles to apply to specific hosts for a duration.
+     * A stage may carry HTTP profiles ({@link ServiceChaosRegistry}), TCP / connection-lifecycle
+     * profiles ({@link TcpChaosRegistry}), or both; at least one entry across the two is required.
      */
     public static class Stage {
         public final long durationMillis;
         public final Map<String, HttpChaosProfile> profiles;
+        public final Map<String, TcpChaosProfile> tcpProfiles;
 
         public Stage(long durationMillis, Map<String, HttpChaosProfile> profiles) {
+            this(durationMillis, profiles, null);
+        }
+
+        public Stage(long durationMillis, Map<String, HttpChaosProfile> profiles,
+                     Map<String, TcpChaosProfile> tcpProfiles) {
             this.durationMillis = durationMillis;
             this.profiles = profiles != null
                 ? Collections.unmodifiableMap(new java.util.LinkedHashMap<>(profiles))
+                : Collections.emptyMap();
+            this.tcpProfiles = tcpProfiles != null
+                ? Collections.unmodifiableMap(new java.util.LinkedHashMap<>(tcpProfiles))
                 : Collections.emptyMap();
         }
     }
@@ -804,12 +1072,46 @@ public class ChaosExperimentOrchestrator {
         /** Terminal SLO verdict over the experiment window; {@code null} until finalized
          *  (and always {@code null} when the experiment has no {@code sloCriteria}). */
         volatile SloVerdict experimentVerdict;
+        /** 0 for the first run; incremented each time a recurring experiment re-arms. */
+        volatile int recurrenceIteration;
 
         RunningExperiment(ExperimentDefinition definition, long startedAtMillis) {
             this.definition = definition;
             this.startedAtMillis = startedAtMillis;
             this.status = "starting";
             this.loopIteration = 0;
+        }
+    }
+
+    /**
+     * An immutable record of a terminated experiment, retained in the bounded history ring and
+     * exposed at {@code GET /chaosExperiment/history}. Captures the experiment name, its terminal
+     * status, the terminal SLO verdict (if any), and when it terminated.
+     */
+    public static final class ExperimentHistoryEntry {
+        public final String name;
+        public final String status;
+        /** Terminal SLO verdict; {@code null} when the experiment had no {@code sloCriteria}. */
+        public final SloVerdict verdict;
+        public final long terminatedAtMillis;
+
+        ExperimentHistoryEntry(String name, String status, SloVerdict verdict, long terminatedAtMillis) {
+            this.name = name;
+            this.status = status;
+            this.verdict = verdict;
+            this.terminatedAtMillis = terminatedAtMillis;
+        }
+
+        public ObjectNode toJson() {
+            ObjectMapper mapper = ObjectMapperFactory.createObjectMapper();
+            ObjectNode node = mapper.createObjectNode();
+            node.put("name", name);
+            node.put("status", status);
+            node.put("terminatedAtMillis", terminatedAtMillis);
+            if (verdict != null) {
+                node.set("verdict", mapper.valueToTree(verdict));
+            }
+            return node;
         }
     }
 }
