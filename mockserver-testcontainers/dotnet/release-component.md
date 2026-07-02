@@ -12,13 +12,11 @@ set -euo pipefail
 COMPONENT_DIR="mockserver-testcontainers/dotnet"
 VERSION="${RELEASE_VERSION:?RELEASE_VERSION must be set}"
 
-# Update version in Directory.Build.props
+# Update version in Directory.Build.props only. The default image tag is derived
+# at runtime from the assembly informational version (which is set from
+# MockServerVersion), so no source-constant edit is required.
 sed -i "s|<MockServerVersion>.*</MockServerVersion>|<MockServerVersion>${VERSION}</MockServerVersion>|" \
   "${COMPONENT_DIR}/Directory.Build.props"
-
-# Also update the DefaultVersion constant in the source
-sed -i "s|public const string DefaultVersion = \".*\"|public const string DefaultVersion = \"${VERSION}\"|" \
-  "${COMPONENT_DIR}/src/Testcontainers.MockServer/MockServerContainer.cs"
 
 # Build, test, pack, push
 cd "${COMPONENT_DIR}"

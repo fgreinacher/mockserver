@@ -175,14 +175,45 @@ class TestUrlShaping:
         assert called_with == [9090]
 
 
-class TestVersionPinning:
-    """Tests that verify the version is correctly pinned."""
+class TestVersionDerivation:
+    """Tests that verify the default image tag is derived, not hard-pinned."""
 
-    def test_default_tag_matches_release_version(self):
-        """The default tag must match the current MockServer release."""
-        assert _DEFAULT_TAG == "mockserver-7.0.0"
+    def test_default_tag_derives_from_client_or_latest(self):
+        """The default tag derives from the client version, or falls back to latest."""
+        # Either 'mockserver-<version>' (client installed) or 'latest' (fallback).
+        assert _DEFAULT_TAG == "latest" or _DEFAULT_TAG.startswith("mockserver-")
 
-    def test_module_version(self):
-        """The package version must match the MockServer release."""
-        import testcontainers_mockserver
-        assert testcontainers_mockserver.__version__ == "7.0.0"
+    def test_default_tag_helper_falls_back_to_latest(self, monkeypatch):
+        """When the client package is absent, the tag falls back to 'latest'."""
+        from importlib import metadata
+
+        from testcontainers_mockserver import container as container_module
+
+        def _raise(_name):
+            raise metadata.PackageNotFoundError
+
+        monkeypatch.setattr(container_module.metadata, "version", _raise)
+        assert container_module._default_tag() == "latest"
+
+
+class TestGetClient:
+    """Tests for the get_client convenience helper."""
+
+    def test_get_client_returns_configured_client(self):
+        """get_client returns a MockServerClient pointed at the mapped host/port."""
+        from mockserver import MockServerClient
+
+        container = MockServerContainer()
+        container.get_container_host_ip = lambda: "127.0.0.1"
+        container.get_exposed_port = lambda port: 49152
+
+        client = container.get_client()
+        assert isinstance(client, MockServerClient)
+
+    def test_get_client_is_cached(self):
+        """get_client caches the client across calls."""
+        container = MockServerContainer()
+        container.get_container_host_ip = lambda: "127.0.0.1"
+        container.get_exposed_port = lambda port: 49152
+
+        assert container.get_client() is container.get_client()

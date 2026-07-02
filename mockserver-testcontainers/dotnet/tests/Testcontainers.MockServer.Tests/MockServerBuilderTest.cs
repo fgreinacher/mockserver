@@ -12,10 +12,8 @@ public class MockServerBuilderTest
     [Fact]
     public void DefaultImageUsesCorrectRepository()
     {
-        // The default image should be mockserver/mockserver with a version-pinned tag.
-        var expectedImage = $"mockserver/mockserver:mockserver-{MockServerContainer.DefaultVersion}";
         MockServerBuilder.MockServerImage.Should().Be("mockserver/mockserver");
-        MockServerBuilder.DefaultTag.Should().Be($"mockserver-{MockServerContainer.DefaultVersion}");
+        MockServerContainer.ImageName.Should().Be("mockserver/mockserver");
     }
 
     [Fact]
@@ -26,10 +24,15 @@ public class MockServerBuilderTest
     }
 
     [Fact]
-    public void DefaultVersionMatchesExpected()
+    public void DefaultImageIsDerivedNotHardPinned()
     {
-        // The version should be derived from the MockServer release (stripped -SNAPSHOT).
-        MockServerContainer.DefaultVersion.Should().Be("7.0.0");
+        // The tag derives from the package version ("mockserver-<version>") or falls
+        // back to ":latest" — never a hard-coded stale version.
+        MockServerContainer.DefaultImage.Should().StartWith("mockserver/mockserver:");
+        MockServerBuilder.DefaultImage.Should().Be(MockServerContainer.DefaultImage);
+
+        var tag = MockServerContainer.DefaultImage.Split(':')[1];
+        (tag == "latest" || tag.StartsWith("mockserver-")).Should().BeTrue();
     }
 
     [Fact]

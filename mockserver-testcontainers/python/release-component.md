@@ -9,12 +9,11 @@ set -euo pipefail
 COMPONENT_DIR="mockserver-testcontainers/python"
 VERSION="${RELEASE_VERSION:?RELEASE_VERSION must be set}"
 
-# Update version in pyproject.toml and __init__.py
+# Update version in pyproject.toml only. __version__ is read from the installed
+# package metadata, and the default image tag is derived at runtime from the
+# installed mockserver-client version — neither needs a source-constant bump.
 sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" "${COMPONENT_DIR}/pyproject.toml"
-sed -i.bak "s/^__version__ = \".*\"/__version__ = \"${VERSION}\"/" "${COMPONENT_DIR}/src/testcontainers_mockserver/__init__.py"
-# Update the default Docker image tag
-sed -i.bak "s/_DEFAULT_TAG = \"mockserver-.*\"/_DEFAULT_TAG = \"mockserver-${VERSION}\"/" "${COMPONENT_DIR}/src/testcontainers_mockserver/container.py"
-rm -f "${COMPONENT_DIR}"/**/*.bak
+rm -f "${COMPONENT_DIR}"/**/*.bak "${COMPONENT_DIR}"/*.bak
 
 # Build
 (cd "${COMPONENT_DIR}" && python -m build)

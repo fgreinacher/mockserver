@@ -12,17 +12,13 @@ set -euo pipefail
 RELEASE_VERSION="${RELEASE_VERSION:?RELEASE_VERSION must be set}"
 MODULE_TAG="mockserver-testcontainers/go/v${RELEASE_VERSION}"
 
-# Update the DefaultImage constant to the release version
-sed -i.bak "s|mockserver/mockserver:mockserver-[0-9.]*|mockserver/mockserver:mockserver-${RELEASE_VERSION}|g" \
-  mockserver-testcontainers/go/mockserver.go
-rm -f mockserver-testcontainers/go/mockserver.go.bak
+# No source edit needed: DefaultImage is derived at init from this module's own
+# resolved version in the build info (falling back to :latest).
 
 # Verify the module builds
 (cd mockserver-testcontainers/go && go vet ./... && go test -run 'TestURL|TestDefault' ./...)
 
-# Tag and push
-git add mockserver-testcontainers/go/mockserver.go
-git commit -m "release(testcontainers-go): bump DefaultImage to ${RELEASE_VERSION}"
+# Tag and push (the proxy indexes the tagged module on first fetch)
 git tag "${MODULE_TAG}"
 git push origin "${MODULE_TAG}"
 

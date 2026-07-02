@@ -60,6 +60,7 @@ var response = await httpClient.GetStringAsync($"{url}/hello");
 
 | Method | Returns |
 |--------|---------|
+| `GetClient()` | A cached, ready-wired `MockServer.Client.MockServerClient` pointed at the mapped host/port |
 | `GetUrl()` | HTTP endpoint: `http://host:port` |
 | `GetSecureUrl()` | HTTPS endpoint: `https://host:port` |
 | `GetConnectionString()` | `host:port` |

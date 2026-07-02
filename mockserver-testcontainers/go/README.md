@@ -75,10 +75,28 @@ Returns the HTTP base URL (e.g. `"http://localhost:32769"`).
 
 Returns the mapped host port for the MockServer container port 1080.
 
-### Constants
+### Constants and variables
 
 - `DefaultPort` — `"1080/tcp"`
-- `DefaultImage` — `"mockserver/mockserver:mockserver-7.3.0"`
+- `DefaultImageName` — `"mockserver/mockserver"`
+- `DefaultImage` — a package variable derived at init from the `mockserver-client-go`
+  dependency version in the build info (`mockserver/mockserver:mockserver-<version>`),
+  falling back to `:latest` when the version cannot be resolved.
+
+### Obtaining a client
+
+Construct a `mockserver-client-go` client from the container's mapped host and port:
+
+```go
+host, _ := ctr.Host(ctx)
+port, _ := ctr.ServerPort(ctx)
+client := mockserver.New(host, port)
+```
+
+A bundled `Client()` helper is intentionally not provided: `mockserver-client-go` is published
+at v7.x without a `/v7` module-path suffix, so it can only be consumed via a local `replace`
+directive — depending on it here would make this module itself unresolvable for downstream
+`go get`.
 
 ## Build and Test
 

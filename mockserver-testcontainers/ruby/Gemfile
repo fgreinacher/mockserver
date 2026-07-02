@@ -1,0 +1,11 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+gemspec
+
+# During in-repo development and CI the MockServer Ruby client is resolved from
+# the sibling monorepo directory rather than RubyGems, so the testcontainers
+# module always tests against the current client. Published gem consumers get
+# the released "mockserver-client" gem via the gemspec runtime dependency.
+gem "mockserver-client", path: "../../mockserver-client-ruby"

@@ -37,8 +37,10 @@ use testcontainers::core::ports::ContainerPort;
 use testcontainers::core::WaitFor;
 use testcontainers::Image;
 
-/// The default MockServer version matching this crate release.
-pub const MOCKSERVER_VERSION: &str = "7.0.0";
+/// The default MockServer version, derived from this crate's own version
+/// (`CARGO_PKG_VERSION`) so the default image tag stays in lockstep with the
+/// crate release without a hand-maintained constant.
+pub const MOCKSERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The Docker image name on Docker Hub.
 const IMAGE_NAME: &str = "mockserver/mockserver";
@@ -188,6 +190,54 @@ pub async fn async_base_url(container: &testcontainers::ContainerAsync<MockServe
     format!("http://{host}:{port}")
 }
 
+/// Returns a [`MockServerClient`](mockserver_client::MockServerClient) connected to a running
+/// MockServer container (sync). Mirrors the Java module's `getClient()`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use testcontainers::runners::SyncRunner;
+/// use testcontainers_mockserver::MockServer;
+///
+/// let container = MockServer::default().start().unwrap();
+/// let client = testcontainers_mockserver::client(&container).unwrap();
+/// // client.when(...).respond(...);
+/// ```
+pub fn client(
+    container: &testcontainers::Container<MockServer>,
+) -> mockserver_client::Result<mockserver_client::MockServerClient> {
+    let host = container
+        .get_host()
+        .expect("MockServer container host should be resolvable");
+    let port = container
+        .get_host_port_ipv4(DEFAULT_PORT)
+        .expect("MockServer port 1080 should be mapped");
+    mockserver_client::ClientBuilder::new(host.to_string(), port).build()
+}
+
+/// Returns a [`MockServerClient`](mockserver_client::MockServerClient) connected to a running
+/// MockServer container (async). The client itself is synchronous; only the host/port
+/// resolution is awaited.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use testcontainers::runners::AsyncRunner;
+/// use testcontainers_mockserver::MockServer;
+///
+/// # async fn example() {
+/// let container = MockServer::default().start().await.unwrap();
+/// let client = testcontainers_mockserver::async_client(&container).await.unwrap();
+/// # }
+/// ```
+pub async fn async_client(
+    container: &testcontainers::ContainerAsync<MockServer>,
+) -> mockserver_client::Result<mockserver_client::MockServerClient> {
+    let host = container.get_host().await.unwrap();
+    let port = container.get_host_port_ipv4(DEFAULT_PORT).await.unwrap();
+    mockserver_client::ClientBuilder::new(host.to_string(), port).build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +377,20 @@ mod tests {
         assert_eq!(resp.status().as_u16(), 200);
         let body = resp.text().await.unwrap();
         assert_eq!(body, "world");
+    }
+
+    #[test]
+    #[ignore = "requires a running Docker daemon"]
+    fn client_helper_connects_to_container() {
+        use testcontainers::runners::SyncRunner;
+
+        let container = MockServer::default()
+            .start()
+            .expect("Failed to start MockServer container");
+
+        // The client() helper returns a MockServerClient wired to the mapped
+        // host/port; a control-plane reset proves it reaches the container.
+        let client = client(&container).expect("client() should build a connected client");
+        client.reset().expect("reset should succeed against the running container");
     }
 }

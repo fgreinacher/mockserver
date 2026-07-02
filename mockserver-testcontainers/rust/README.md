@@ -56,6 +56,22 @@ async fn test_with_mockserver_async() {
 }
 ```
 
+### Wired client
+
+`client(&container)` (sync) and `async_client(&container).await` return a ready-wired
+[`mockserver-client`](https://crates.io/crates/mockserver-client) `MockServerClient`
+pointed at the container's mapped host/port — the Rust analogue of the Java module's
+`getClient()`:
+
+```rust
+use testcontainers::runners::SyncRunner;
+use testcontainers_mockserver::MockServer;
+
+let container = MockServer::default().start().unwrap();
+let client = testcontainers_mockserver::client(&container).unwrap();
+// client.when(...).respond(...);
+```
+
 ### Configuration
 
 ```rust

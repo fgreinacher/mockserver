@@ -1,7 +1,7 @@
 ---
 title: Testcontainers
 shortTitle: Testcontainers
-description: Run MockServer in your tests with Testcontainers — official modules for Java, .NET, Node.js, Python, Rust and Go start a throwaway MockServer container automatically.
+description: Run MockServer in your tests with Testcontainers — official modules for Java, .NET, Node.js, Python, Rust, Go, Ruby and PHP start a throwaway MockServer container automatically.
 layout: page
 pageOrder: 5
 section: 'Getting Started'
@@ -12,7 +12,9 @@ sitemap:
   lastmod: 2026-07-02T09:00:00+01:00
 ---
 
-<p>MockServer publishes official <a href="https://testcontainers.com">Testcontainers</a> modules for six languages. Each module starts the official <span class="inline_code">mockserver/mockserver</span> Docker container, waits for it to be ready, and provides connection helpers (host, port, base URL). The container is started and stopped automatically by the test run — no manual server management is needed.</p>
+<p>MockServer publishes official <a href="https://testcontainers.com">Testcontainers</a> modules for eight languages. Each module starts the official <span class="inline_code">mockserver/mockserver</span> Docker container, waits for it to be ready, and provides connection helpers (host, port, base URL) plus — for every language except Go — a ready-wired MockServer client. The container is started and stopped automatically by the test run — no manual server management is needed.</p>
+
+<p><strong>Version-matched image:</strong> every module derives its default image tag from the MockServer client version, so the container image stays in lockstep with the client library (falling back to the mutable <span class="inline_code">latest</span> tag when the version cannot be resolved). Pass an explicit image to any module to pin a specific version.</p>
 
 <p><strong>Keeping tests fast:</strong> for the patterns that keep container-based suites quick — one container per suite with <span class="inline_code">reset()</span> between tests, container reuse, memory limits, and in-process alternatives for JVM tests — see <a href="/mock_server/fast_tests.html">Fast Tests: Startup Time, Memory and Reuse</a>.</p>
 
@@ -54,6 +56,16 @@ sitemap:
         <td><a href="#go-testcontainers">Go</a></td>
         <td><span class="inline_code">github.com/mock-server/mockserver-monorepo/mockserver-testcontainers/go</span></td>
         <td><span class="inline_code">go get github.com/mock-server/mockserver-monorepo/mockserver-testcontainers/go</span></td>
+    </tr>
+    <tr>
+        <td><a href="#ruby-testcontainers">Ruby</a></td>
+        <td><span class="inline_code">testcontainers-mockserver</span> (RubyGems)</td>
+        <td><span class="inline_code">gem install testcontainers-mockserver</span></td>
+    </tr>
+    <tr>
+        <td><a href="#php-testcontainers">PHP</a></td>
+        <td><span class="inline_code">mock-server/mockserver-testcontainers</span> (Packagist)</td>
+        <td><span class="inline_code">composer require --dev mock-server/mockserver-testcontainers</span></td>
     </tr>
     </tbody>
 </table>
@@ -202,7 +214,7 @@ var response = await httpClient.GetStringAsync($"{url}/hello");
 
 <p>Use <span class="inline_code">GetUrl()</span> for the HTTP base URL, <span class="inline_code">GetSecureUrl()</span> for HTTPS, and <span class="inline_code">GetConnectionString()</span> for <span class="inline_code">host:port</span>.</p>
 
-<p>The example above drives MockServer over its REST API; or point the <a href="/mock_server/mockserver_clients.html#dotnet-mockserver-client"><span class="inline_code">MockServer.Client</span></a> package at the container URL for a typed fluent API instead.</p>
+<p>The example above drives MockServer over its REST API; or call <span class="inline_code">container.GetClient()</span> for a ready-wired <a href="/mock_server/mockserver_clients.html#dotnet-mockserver-client"><span class="inline_code">MockServer.Client</span></a> with a typed fluent API (the package is a transitive dependency).</p>
 
 </div>
 
@@ -268,7 +280,7 @@ await container.stop();</code></pre>
 
 <p><span class="inline_code">MockServerContainer.start(options?)</span> accepts an optional <span class="inline_code">image</span>, <span class="inline_code">serverPort</span>, and <span class="inline_code">env</span> map. The started container exposes <span class="inline_code">getUrl()</span>, <span class="inline_code">getEndpoint()</span> (alias), <span class="inline_code">getSecureEndpoint()</span>, <span class="inline_code">getHost()</span>, and <span class="inline_code">getPort()</span>.</p>
 
-<p>The example above drives MockServer over its REST API; or point the <a href="/mock_server/mockserver_clients.html#javascript-mockserver-client"><span class="inline_code">mockserver-client</span></a> package at the container URL for a typed fluent API instead.</p>
+<p>The example above drives MockServer over its REST API; or call <span class="inline_code">container.getClient()</span> for a ready-wired <a href="/mock_server/mockserver_clients.html#javascript-mockserver-client"><span class="inline_code">mockserver-client</span></a> with a typed fluent API (the package is a dependency of this module).</p>
 
 </div>
 
@@ -308,7 +320,7 @@ with MockServerContainer() as mockserver:
 
 <p>The container is automatically stopped when the <span class="inline_code">with</span> block exits. Helpers <span class="inline_code">get_url()</span>, <span class="inline_code">get_secure_url()</span>, <span class="inline_code">get_host()</span>, and <span class="inline_code">get_port()</span> expose the connection details.</p>
 
-<p>The example above drives MockServer over its REST API; or point the <a href="/mock_server/mockserver_clients.html#python-mockserver-client"><span class="inline_code">mockserver</span></a> package at the container URL for a typed fluent API instead.</p>
+<p>The example above drives MockServer over its REST API; or call <span class="inline_code">mockserver.get_client()</span> for a ready-wired <a href="/mock_server/mockserver_clients.html#python-mockserver-client"><span class="inline_code">mockserver</span></a> client with a typed fluent API (the <span class="inline_code">mockserver-client</span> package is a dependency of this module).</p>
 
 </div>
 
@@ -391,7 +403,7 @@ async fn test_with_mockserver_async() {
     // ... use base_url with an async HTTP client
 }</code></pre>
 
-<p>The examples above drive MockServer over its REST API; or point the <a href="/mock_server/mockserver_clients.html#rust-mockserver-client"><span class="inline_code">mockserver-client</span></a> crate at the container base URL for a typed fluent API instead.</p>
+<p>The examples above drive MockServer over its REST API; or call <span class="inline_code">testcontainers_mockserver::client(&amp;container)</span> (or <span class="inline_code">async_client</span>) for a ready-wired <a href="/mock_server/mockserver_clients.html#rust-mockserver-client"><span class="inline_code">mockserver-client</span></a> with a typed fluent API (the crate is a dependency of this module).</p>
 
 </div>
 
@@ -470,7 +482,122 @@ func Example() {
 
 <p><span class="inline_code">mockserver.Run(ctx, image, opts...)</span> accepts optional <span class="inline_code">testcontainers.ContainerCustomizer</span> values. The container waits for <span class="inline_code">/mockserver/status</span> to return HTTP 200 before <span class="inline_code">Run</span> returns. Use <span class="inline_code">ctr.URL(ctx)</span> for the HTTP base URL and <span class="inline_code">ctr.ServerPort(ctx)</span> for the mapped port.</p>
 
-<p>The example above drives MockServer over its REST API; or point the <a href="/mock_server/mockserver_clients.html#go-mockserver-client"><span class="inline_code">mockserver-client-go</span></a> package at the container URL for a typed fluent API instead.</p>
+<p>The example above drives MockServer over its REST API; or construct a <a href="/mock_server/mockserver_clients.html#go-mockserver-client"><span class="inline_code">mockserver-client-go</span></a> client from the container's mapped host and port — <span class="inline_code">mockserver.New(host, port)</span> using <span class="inline_code">ctr.Host(ctx)</span> and <span class="inline_code">ctr.ServerPort(ctx)</span> — for a typed fluent API.</p>
+
+</div>
+
+<a id="ruby-testcontainers" class="anchor" href="#ruby-testcontainers">&nbsp;</a>
+
+<h2>Ruby</h2>
+
+<p>The <span class="inline_code">testcontainers-mockserver</span> gem integrates with the <a href="https://github.com/testcontainers/testcontainers-ruby">Testcontainers for Ruby</a> library. It starts a <span class="inline_code">mockserver/mockserver</span> container, waits for readiness, and exposes connection helpers plus a ready-wired <a href="/mock_server/mockserver_clients.html#ruby-mockserver-client"><span class="inline_code">mockserver-client</span></a> instance.</p>
+
+<button id="button_ruby_dependency" class="accordion title"><strong>Add The Dependency</strong></button>
+<div class="panel">
+
+<pre class="prettyprint lang-ruby code"><code class="code"># Gemfile
+gem "testcontainers-mockserver", group: :test</code></pre>
+
+<p>Requires Ruby &gt;= 3.0 and Docker.</p>
+
+</div>
+
+<button id="button_ruby_usage" class="accordion title"><strong>Basic Usage</strong></button>
+<div class="panel">
+
+<pre class="prettyprint lang-ruby code"><code class="code">require "testcontainers/mockserver"
+
+container = Testcontainers::MockServerContainer.new.start
+
+# A ready-wired MockServer client pointed at the mapped host/port
+client = container.client
+client
+  .when(MockServer::HttpRequest.request(path: "/hello"))
+  .respond(MockServer::HttpResponse.response(status_code: 200, body: "world"))
+
+# Point the system under test at the container endpoint
+container.endpoint        # => "http://localhost:49152"
+
+container.stop            # also closes the cached client</code></pre>
+
+<p>Helpers <span class="inline_code">client</span> (a wired <span class="inline_code">MockServer::Client</span>), <span class="inline_code">endpoint</span> / <span class="inline_code">secure_endpoint</span> (HTTP / HTTPS on the same port), <span class="inline_code">server_port</span>, and <span class="inline_code">host</span> expose the connection details. The block form <span class="inline_code">MockServerContainer.new.use { |c| ... }</span> auto-stops the container.</p>
+
+</div>
+
+<button id="button_ruby_configuration" class="accordion title"><strong>Configuration Helpers</strong></button>
+<div class="panel">
+
+<table>
+    <thead>
+    <tr><th>Method</th><th>What it does</th></tr>
+    </thead>
+    <tbody>
+    <tr><td><span class="inline_code">with_server_port(port)</span></td><td>Override the listen port inside the container.</td></tr>
+    <tr><td><span class="inline_code">with_log_level(level)</span></td><td>Set <span class="inline_code">MOCKSERVER_LOG_LEVEL</span>.</td></tr>
+    <tr><td><span class="inline_code">with_property(key, value)</span></td><td>Set any MockServer environment variable.</td></tr>
+    <tr><td><span class="inline_code">with_initialization_json(path)</span></td><td>Mount a startup expectations JSON file loaded at container start.</td></tr>
+    </tbody>
+</table>
+
+</div>
+
+<a id="php-testcontainers" class="anchor" href="#php-testcontainers">&nbsp;</a>
+
+<h2>PHP</h2>
+
+<p>The <span class="inline_code">mock-server/mockserver-testcontainers</span> package integrates with the <a href="https://github.com/testcontainers/testcontainers-php">Testcontainers for PHP</a> library. It starts a <span class="inline_code">mockserver/mockserver</span> container, waits for readiness, and exposes connection helpers plus a ready-wired <a href="/mock_server/mockserver_clients.html#php-mockserver-client"><span class="inline_code">mock-server/mockserver-client</span></a> instance.</p>
+
+<button id="button_php_dependency" class="accordion title"><strong>Add The Dependency</strong></button>
+<div class="panel">
+
+<pre class="prettyprint lang-sh code"><code class="code">composer require --dev mock-server/mockserver-testcontainers</code></pre>
+
+<p>Requires PHP &gt;= 8.1 and Docker.</p>
+
+</div>
+
+<button id="button_php_usage" class="accordion title"><strong>Basic Usage</strong></button>
+<div class="panel">
+
+<pre class="prettyprint lang-php code"><code class="code">use MockServer\Testcontainers\MockServerContainer;
+use MockServer\HttpRequest;
+use MockServer\HttpResponse;
+
+$container = (new MockServerContainer())->start();
+
+// A ready-wired MockServer client pointed at the mapped host/port.
+// (getMockServerClient() is the PHP analogue of Java's getClient() — the
+// inherited getClient() name is reserved by Testcontainers for the Docker client.)
+$client = $container->getMockServerClient();
+$client
+    ->when(HttpRequest::request()->method('GET')->path('/hello'))
+    ->respond(HttpResponse::response()->statusCode(200)->body('world'));
+
+// Point the system under test at the container endpoint
+$container->getEndpoint();   // "http://localhost:49152"
+
+$container->stop();</code></pre>
+
+<p>Use <span class="inline_code">getEndpoint()</span> / <span class="inline_code">getSecureEndpoint()</span> for the HTTP / HTTPS base URL, <span class="inline_code">getServerPort()</span> for the mapped port, and <span class="inline_code">getMockServerClient()</span> for the wired client.</p>
+
+</div>
+
+<button id="button_php_configuration" class="accordion title"><strong>Configuration Helpers</strong></button>
+<div class="panel">
+
+<table>
+    <thead>
+    <tr><th>Method</th><th>What it does</th></tr>
+    </thead>
+    <tbody>
+    <tr><td><span class="inline_code">withServerPort(int)</span></td><td>Override the listen port inside the container.</td></tr>
+    <tr><td><span class="inline_code">withLogLevel(string)</span></td><td>Set <span class="inline_code">MOCKSERVER_LOG_LEVEL</span>.</td></tr>
+    <tr><td><span class="inline_code">withMockServerProperty(key, value)</span></td><td>Set any MockServer configuration property by its env-var name.</td></tr>
+    <tr><td><span class="inline_code">withInitializationJson(path)</span></td><td>Copy a startup expectations JSON file into the container and load it at start.</td></tr>
+    </tbody>
+</table>
+
+<p>Standard Testcontainers <span class="inline_code">GenericContainer</span> helpers (<span class="inline_code">withNetwork</span>, <span class="inline_code">withEnvironment</span>, …) are also available via inheritance.</p>
 
 </div>
 

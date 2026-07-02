@@ -1,0 +1,36 @@
+{
+    "name": "mock-server/mockserver-testcontainers",
+    "description": "Testcontainers module for MockServer — starts a mockserver/mockserver Docker container, waits for readiness, and exposes connection helpers plus a ready-wired MockServer client.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "keywords": ["testcontainers", "mockserver", "mock", "testing", "http", "docker", "integration-testing"],
+    "homepage": "https://www.mock-server.com",
+    "authors": [
+        {
+            "name": "James D Bloom",
+            "email": "jamesdbloom@gmail.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.1",
+        "testcontainers/testcontainers": "^1.0",
+        "mock-server/mockserver-client": ">=5.15"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0 || ^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "MockServer\\Testcontainers\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "MockServer\\Testcontainers\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}

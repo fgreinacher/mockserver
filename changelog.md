@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Testcontainers modules for Ruby and PHP, plus a wired client on every polyglot module.** MockServer now
+  ships official Testcontainers modules for **eight** languages — Ruby (`testcontainers-mockserver`, RubyGems)
+  and PHP (`mock-server/mockserver-testcontainers`, Packagist) join the existing Java, .NET, Node.js, Python,
+  Rust and Go modules. Both new modules start the `mockserver/mockserver` image, wait for
+  `PUT /mockserver/status` → 200, and expose connection helpers (`endpoint` / `getEndpoint`, `secure_endpoint`,
+  `server_port`, `host`).
+  - **A wired client on every module.** Each polyglot container now returns a ready-wired MockServer client
+    pointed at the mapped host/port, mirroring the Java module's `getClient()`: `get_client` (Python, Ruby),
+    `getClient()` (Node, .NET), `getMockServerClient()` (PHP — the inherited Testcontainers `getClient()` is
+    reserved for the Docker client), and `client()` / `async_client()` (Rust). The language's MockServer client
+    is now a dependency of its Testcontainers module. (Go instead documents constructing the client from
+    `ctr.Host(ctx)` / `ctr.ServerPort(ctx)` via `mockserver.New(host, port)`: `mockserver-client-go` is
+    published at v7.x without a `/v7` module-path suffix, so bundling it would make the Go Testcontainers module
+    itself unresolvable for downstream `go get`.)
+  - **Version-matched default image, no more hard-pinned tags.** Every module now derives its default image tag
+    (`mockserver-<version>`) from the MockServer client version — or, for Go, from the module's own version —
+    falling back to the mutable `latest` tag when the version cannot be resolved, mirroring the Java module,
+    instead of a hard-coded tag that goes stale.
+
 - **WASM response shaping (host ABI v3).** WASM custom-rule modules can now compute the response, not just
   match the request. A module that exports an optional `shape_response(i32 ptr, i32 len) -> i64` function is
   invoked after a match with a JSON envelope `{version:3, request:{…v2 request…}, response:{statusCode,

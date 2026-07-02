@@ -63,6 +63,7 @@ Static factory that creates and starts a MockServer container. Returns a `Starte
 | `getHost()` | `string` | Container host |
 | `getPort()` | `number` | Mapped port on the host |
 | `getMappedPort(port)` | `number` | Mapped port for a specific internal port |
+| `getClient()` | `unknown` | A cached, ready-wired `mockserver-client` pointed at the mapped host/port (untyped — the client ships no TS types) |
 | `stop()` | `Promise<void>` | Stops and removes the container |
 
 ## Build

@@ -42,6 +42,7 @@ with MockServerContainer() as mockserver:
 
 | Method | Returns | Description |
 |--------|---------|-------------|
+| `get_client()` | `MockServerClient` | A cached, ready-wired `mockserver` client pointed at the mapped host/port |
 | `get_url()` | `str` | HTTP base URL (e.g. `http://localhost:49152`) |
 | `get_secure_url()` | `str` | HTTPS base URL (same port, `https://` scheme) |
 | `get_host()` | `str` | Mapped host IP |

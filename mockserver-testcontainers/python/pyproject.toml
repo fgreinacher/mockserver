@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "testcontainers>=4.0.0",
+    "mockserver-client>=5.15",
 ]
 
 [project.optional-dependencies]

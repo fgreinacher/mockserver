@@ -8,7 +8,7 @@ methods for the mapped host, port, and URL.
 
 from __future__ import annotations
 
-from typing import Optional
+from importlib import metadata
 
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import HttpWaitStrategy
@@ -20,8 +20,23 @@ MOCKSERVER_PORT = 1080
 #: Default Docker image name for MockServer.
 _IMAGE_NAME = "mockserver/mockserver"
 
-#: Default image tag, pinned to the current MockServer release version.
-_DEFAULT_TAG = "mockserver-7.0.0"
+
+def _default_tag() -> str:
+    """Derive the default image tag from the installed MockServer client version.
+
+    Mirrors the Java module: the tag is ``mockserver-<client-version>`` so the
+    container image stays in lockstep with the ``mockserver-client`` package.
+    Falls back to ``latest`` when the client version cannot be resolved (e.g. the
+    client is not installed), matching the Java ``:latest`` fallback.
+    """
+    try:
+        return "mockserver-" + metadata.version("mockserver-client")
+    except metadata.PackageNotFoundError:
+        return "latest"
+
+
+#: Default image tag, derived from the installed MockServer client version.
+_DEFAULT_TAG = _default_tag()
 
 
 class MockServerContainer(DockerContainer):
@@ -58,6 +73,7 @@ class MockServerContainer(DockerContainer):
     ) -> None:
         super().__init__(image=image, **kwargs)
         self._port = port
+        self._client = None
         self.with_exposed_ports(self._port)
         self.with_env("SERVER_PORT", str(self._port))
 
@@ -99,6 +115,21 @@ class MockServerContainer(DockerContainer):
     def get_secure_url(self) -> str:
         """Return the HTTPS base URL for MockServer (same port, different scheme)."""
         return f"https://{self.get_host()}:{self.get_port()}"
+
+    def get_client(self):
+        """Return a ``MockServerClient`` connected to this container.
+
+        The client is created lazily on first call and cached. Mirrors the Java
+        module's ``getClient()``. Requires the ``mockserver-client`` package,
+        which is declared as a dependency of this module.
+
+        :returns: a ``mockserver.MockServerClient`` pointed at the mapped host/port
+        """
+        if self._client is None:
+            from mockserver import MockServerClient
+
+            self._client = MockServerClient(self.get_host(), self.get_port())
+        return self._client
 
     # ------------------------------------------------------------------
     # Configuration helpers (fluent)

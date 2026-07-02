@@ -12,13 +12,13 @@ public sealed class MockServerBuilder
     /// <summary>
     /// The default MockServer Docker image name.
     /// </summary>
-    public const string MockServerImage = "mockserver/mockserver";
+    public const string MockServerImage = MockServerContainer.ImageName;
 
     /// <summary>
-    /// The default MockServer Docker image tag, derived from the current MockServer release version.
-    /// The tag format is "mockserver-{version}" matching the Docker Hub tagging convention.
+    /// The default fully-qualified MockServer Docker image, derived from the package version
+    /// (see <see cref="MockServerContainer.DefaultImage" />) so it stays in lockstep with the release.
     /// </summary>
-    public const string DefaultTag = "mockserver-" + MockServerContainer.DefaultVersion;
+    public static string DefaultImage => MockServerContainer.DefaultImage;
 
     /// <summary>
     /// The default MockServer port. MockServer serves HTTP, HTTPS, SOCKS, and HTTP CONNECT
@@ -77,7 +77,7 @@ public sealed class MockServerBuilder
     protected override MockServerBuilder Init()
     {
         return base.Init()
-            .WithImage($"{MockServerImage}:{DefaultTag}")
+            .WithImage(MockServerContainer.DefaultImage)
             .WithPortBinding(MockServerPort, true)
             .WithEnvironment("SERVER_PORT", MockServerPort.ToString())
             .WithWaitStrategy(Wait.ForUnixContainer()

@@ -120,6 +120,21 @@ public sealed class MockServerContainerTest : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task GetClientReturnsWiredClient()
+    {
+        Skip.IfNot(_dockerAvailable, "Docker is not available");
+
+        // GetClient() returns a MockServerClient wired to the mapped host/port; a
+        // control-plane reset proves it reaches the container.
+        var client = _container.GetClient();
+        client.Should().NotBeNull();
+        await client.ResetAsync();
+
+        // The client is cached across calls.
+        _container.GetClient().Should().BeSameAs(client);
+    }
+
+    [SkippableFact]
     public async Task ResetClearsExpectations()
     {
         Skip.IfNot(_dockerAvailable, "Docker is not available");

@@ -86,6 +86,22 @@ describe("MockServerContainer (unit)", () => {
       expect(mock.stop).toHaveBeenCalledTimes(1);
     });
 
+    it("getClient() returns a mockserver-client wired to the mapped host/port", () => {
+      const mock = createMockStartedContainer("localhost", { 1080: 32789 });
+      const started = new StartedMockServerContainer(mock, 1080);
+      const client = started.getClient();
+      // The mockserver-client factory returns a truthy client object exposing
+      // the fluent control-plane API (e.g. mockAnyResponse / reset).
+      expect(client).toBeTruthy();
+      expect(typeof (client as any).reset).toBe("function");
+    });
+
+    it("getClient() caches the client across calls", () => {
+      const mock = createMockStartedContainer("localhost", { 1080: 32789 });
+      const started = new StartedMockServerContainer(mock, 1080);
+      expect(started.getClient()).toBe(started.getClient());
+    });
+
     it("handles non-standard hosts (CI environments)", () => {
       const mock = createMockStartedContainer("docker.internal", { 1080: 8080 });
       const started = new StartedMockServerContainer(mock, 1080);

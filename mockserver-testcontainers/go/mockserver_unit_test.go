@@ -1,6 +1,7 @@
 package mockserver
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/docker/go-connections/nat"
@@ -62,9 +63,26 @@ func TestDefaultImageContainsMockServer(t *testing.T) {
 	if DefaultImage == "" {
 		t.Error("DefaultImage should not be empty")
 	}
-	// Must reference the mockserver/mockserver image
-	expected := "mockserver/mockserver:mockserver-7.0.0"
-	if DefaultImage != expected {
-		t.Errorf("DefaultImage = %q, want %q", DefaultImage, expected)
+	// Must reference the mockserver/mockserver image with a derived tag: either
+	// "mockserver-<version>" (client version resolved from build info) or the
+	// ":latest" fallback (in-module tests / local replace directive).
+	prefix := DefaultImageName + ":"
+	if !strings.HasPrefix(DefaultImage, prefix) {
+		t.Errorf("DefaultImage = %q, want prefix %q", DefaultImage, prefix)
+	}
+	tag := strings.TrimPrefix(DefaultImage, prefix)
+	if tag != "latest" && !strings.HasPrefix(tag, "mockserver-") {
+		t.Errorf("DefaultImage tag = %q, want %q or a mockserver-<version> tag", tag, "latest")
+	}
+}
+
+func TestDefaultTagHelper(t *testing.T) {
+	if got := isReleaseVersion("7.3.0"); !got {
+		t.Errorf("isReleaseVersion(7.3.0) = false, want true")
+	}
+	for _, v := range []string{"", "7.3", "v7.3.0", "7.3.0-SNAPSHOT", "0.0.0-20240101000000-abcdef"} {
+		if isReleaseVersion(v) {
+			t.Errorf("isReleaseVersion(%q) = true, want false", v)
+		}
 	}
 }

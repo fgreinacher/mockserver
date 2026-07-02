@@ -9,9 +9,10 @@ set -euo pipefail
 RELEASE_VERSION="${RELEASE_VERSION:?}"
 CRATE_DIR="mockserver-testcontainers/rust"
 
-# Update version in Cargo.toml and source constant
+# Update the version in Cargo.toml only. MOCKSERVER_VERSION is defined as
+# env!("CARGO_PKG_VERSION"), so it follows the Cargo.toml bump automatically —
+# no source-constant edit is required.
 sed -i "s/^version = .*/version = \"${RELEASE_VERSION}\"/" "${CRATE_DIR}/Cargo.toml"
-sed -i "s/pub const MOCKSERVER_VERSION: &str = .*/pub const MOCKSERVER_VERSION: \&str = \"${RELEASE_VERSION}\";/" "${CRATE_DIR}/src/lib.rs"
 
 # Retrieve token
 CARGO_TOKEN=$(aws secretsmanager get-secret-value \

@@ -34,12 +34,11 @@ automatically on first fetch after a valid semver tag exists on the repository.
 
 ## Version Bumping
 
-When releasing a new MockServer version, update the `DefaultImage` constant in
-`mockserver.go` to reference the new tag:
-
-```go
-DefaultImage = "mockserver/mockserver:mockserver-X.Y.Z"
-```
+No source edit is required. `DefaultImage` is derived at init from this module's
+own resolved version in the build info, so tagging the release
+(`mockserver-testcontainers/go/vX.Y.Z`) is sufficient; the default image tag
+follows automatically (falling back to `:latest` when the version cannot be
+resolved, e.g. in-module tests).
 
 ## Verification
 

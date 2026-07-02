@@ -12,10 +12,25 @@ const DEFAULT_PORT = 1080;
 const DEFAULT_IMAGE = "mockserver/mockserver";
 
 /**
- * Default image tag — pinned to the repo's current release version.
+ * Default image tag, derived from the installed `mockserver-client` version so
+ * the container image stays in lockstep with the client (mirroring the Java
+ * module). Falls back to `latest` when the client version cannot be resolved.
  * The tag format used by the official image is `mockserver-<version>`.
  */
-const DEFAULT_TAG = "mockserver-7.0.0";
+function defaultTag(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const version = require("mockserver-client/package.json").version as string;
+    if (version) {
+      return `mockserver-${version}`;
+    }
+  } catch {
+    // mockserver-client not resolvable — fall back to the mutable latest tag
+  }
+  return "latest";
+}
+
+const DEFAULT_TAG = defaultTag();
 
 /**
  * Options for configuring the MockServerContainer.
@@ -116,6 +131,7 @@ export class MockServerContainer {
 export class StartedMockServerContainer {
   private readonly container: StartedTestContainer;
   private readonly serverPort: number;
+  private client: unknown;
 
   /** @internal */
   constructor(container: StartedTestContainer, serverPort: number) {
@@ -169,6 +185,24 @@ export class StartedMockServerContainer {
    */
   getMappedPort(containerPort: number): number {
     return this.container.getMappedPort(containerPort);
+  }
+
+  /**
+   * Returns a `mockserver-client` instance connected to this container,
+   * created lazily on first call and cached. Mirrors the Java module's
+   * `getClient()`. Requires the `mockserver-client` package, which is declared
+   * as a dependency of this module.
+   *
+   * The client is untyped (the `mockserver-client` package ships no TypeScript
+   * types), so the return type is `unknown` — cast it at the call site.
+   */
+  getClient(): unknown {
+    if (this.client === undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { mockServerClient } = require("mockserver-client");
+      this.client = mockServerClient(this.getHost(), this.getPort());
+    }
+    return this.client;
   }
 
   /**
