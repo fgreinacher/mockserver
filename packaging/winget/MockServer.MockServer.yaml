@@ -1,11 +1,12 @@
-# winget manifest — singleton format (combined version + defaultLocale + installer)
-# Submitted to https://github.com/microsoft/winget-pkgs via PR.
+# winget manifest — singleton format (combined version + defaultLocale + installer).
+# Submitted to https://github.com/microsoft/winget-pkgs via PR (wingetcreate).
 #
-# TODO(cli-release): Replace all placeholder URLs and SHA256 once the CLI's
-# GitHub Releases artifact naming is finalized.
+# Publishes the self-contained MockServer CLI bundle (a zip that carries its own
+# trimmed Java runtime, so no separate JVM install is required). winget treats it
+# as a `zip` installer whose nested `portable` launcher (bin\mockserver.bat) is
+# exposed on PATH as `mockserver`.
 
 PackageIdentifier: MockServer.MockServer
-# TODO(cli-release): Update to actual release version
 PackageVersion: "${VERSION}"
 PackageLocale: en-US
 Publisher: MockServer
@@ -31,24 +32,14 @@ Moniker: mockserver
 ManifestType: singleton
 ManifestVersion: 1.9.0
 Installers:
-  # TODO(cli-release): Confirm architecture variants and binary naming convention.
-  # The installer type assumes a standalone .exe (not an MSI/MSIX) — adjust if
-  # the CLI ships as an MSI or MSIX bundle instead.
+  # Only x64 Windows bundles are published today (build-all-bundles.sh targets
+  # windows/x86_64). Add an arm64 entry here if/when a windows/aarch64 bundle is
+  # added to the release.
   - Architecture: x64
-    InstallerType: exe
-    # TODO(cli-release): Replace with actual GitHub Releases download URL
-    InstallerUrl: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-windows-x64.exe
-    # TODO(cli-release): Replace with actual SHA256 of the windows-x64 binary
-    InstallerSha256: "${SHA256_WINDOWS_X64}"
-    InstallerSwitches:
-      Silent: --silent
-      SilentWithProgress: --silent
-  - Architecture: arm64
-    InstallerType: exe
-    # TODO(cli-release): Replace with actual GitHub Releases download URL
-    InstallerUrl: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-windows-arm64.exe
-    # TODO(cli-release): Replace with actual SHA256 of the windows-arm64 binary
-    InstallerSha256: "${SHA256_WINDOWS_ARM64}"
-    InstallerSwitches:
-      Silent: --silent
-      SilentWithProgress: --silent
+    InstallerType: zip
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: mockserver-${VERSION}-windows-x86_64\bin\mockserver.bat
+        PortableCommandAlias: mockserver
+    InstallerUrl: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-${VERSION}-windows-x86_64.zip
+    InstallerSha256: "${SHA256_WINDOWS_X86_64}"

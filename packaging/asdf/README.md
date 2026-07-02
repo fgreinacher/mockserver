@@ -38,36 +38,33 @@ the scripts are synced to the plugin repo.
 
 ## Publishing a new version
 
-No release-time action is needed for asdf/mise. The plugin scripts query
-GitHub Releases dynamically, so publishing a new GitHub Release with the
-CLI binaries automatically makes it available to all asdf/mise users.
+No per-release publish step is needed. The plugin `bin/` scripts query GitHub
+Releases dynamically — once the GitHub Release for a version exists, asdf/mise
+users can immediately install it.
 
-The release component script `scripts/release/components/asdf.sh` simply
-verifies that the plugin scripts are in sync with the plugin repository
-and that the new version is discoverable.
+The release component script `scripts/release/components/asdf.sh` keeps the
+plugin repo (`mock-server/asdf-mockserver`) in sync with `packaging/asdf/bin/`
+and verifies the new release is discoverable. See
+[release-component.md](release-component.md) for prerequisites.
 
 ### One-time setup
 
 1. Create the `mock-server/asdf-mockserver` repository on GitHub.
 2. Push the `bin/` scripts from this directory.
-3. Register the plugin in the asdf plugin index:
-   https://github.com/asdf-vm/asdf-plugins (submit a PR adding `mockserver`).
+3. Submit a PR to the asdf plugin index:
+   https://github.com/asdf-vm/asdf-plugins (add a `mockserver` entry).
 
 ## Supported platforms
 
-| OS | Architecture | Binary name |
-|----|-------------|-------------|
-| Linux | x86_64 | `mockserver-linux-x64` |
-| Linux | aarch64 | `mockserver-linux-arm64` |
-| macOS | x86_64 | `mockserver-darwin-x64` |
-| macOS | arm64 | `mockserver-darwin-arm64` |
-| Windows | x86_64 | `mockserver-windows-x64.exe` |
+The `bin/download` script resolves the bundle for the current OS and architecture:
 
-## Finalisation blockers
+| OS | Architecture | Bundle archive |
+|----|-------------|----------------|
+| Linux | x86_64 | `mockserver-<version>-linux-x86_64.tar.gz` |
+| Linux | aarch64 | `mockserver-<version>-linux-aarch64.tar.gz` |
+| macOS | x86_64 | `mockserver-<version>-darwin-x86_64.tar.gz` |
+| macOS | arm64 | `mockserver-<version>-darwin-aarch64.tar.gz` |
+| Windows | x86_64 | `mockserver-<version>-windows-x86_64.zip` |
 
-This plugin finalises once:
-1. The CLI's GitHub Releases artifact naming is fixed.
-2. The `mock-server/asdf-mockserver` repository is created.
-3. The plugin is registered in the asdf plugin index.
-
-All `TODO(cli-release):` markers in the `bin/` scripts must be resolved.
+Each bundle is a self-contained archive — it includes a trimmed JVM, so no
+separate Java installation is required.

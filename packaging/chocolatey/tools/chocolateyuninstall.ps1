@@ -1,10 +1,7 @@
-# Chocolatey uninstall script for MockServer CLI
+# Chocolatey uninstall script for MockServer CLI.
 
 $ErrorActionPreference = 'Stop'
 
+# Remove the PATH shim. The extracted bundle under lib\mockserver\tools\ is
+# removed by Chocolatey itself when the package is uninstalled.
 Uninstall-BinFile -Name 'mockserver'
-
-$binaryPath = Join-Path $env:ChocolateyInstall "lib\mockserver\tools\mockserver.exe"
-if (Test-Path $binaryPath) {
-    Remove-Item $binaryPath -Force
-}

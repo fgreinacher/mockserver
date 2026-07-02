@@ -3,13 +3,13 @@
   Chocolatey package specification for MockServer CLI.
   Submitted to https://community.chocolatey.org/packages via `choco push`.
 
-  TODO(cli-release): Replace ${VERSION} once the CLI release version is known.
+  ${VERSION} is substituted with the release version by
+  scripts/release/components/chocolatey.sh at publish time.
 -->
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <!-- The id must be lowercase and match the directory name on chocolatey.org -->
     <id>mockserver</id>
-    <!-- TODO(cli-release): Set to actual release version -->
     <version>${VERSION}</version>
     <title>MockServer</title>
     <authors>James D Bloom</authors>

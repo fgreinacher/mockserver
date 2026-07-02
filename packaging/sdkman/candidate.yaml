@@ -1,11 +1,13 @@
-# SDKMAN! candidate metadata for MockServer CLI
+# SDKMAN! candidate metadata for MockServer CLI.
 #
-# SDKMAN! does not use a file-based manifest — candidates are registered
-# and updated via the SDKMAN! Vendor API (https://sdkman.io/vendors).
-# This file documents the candidate configuration for reference.
+# SDKMAN! does not use a file-based manifest — candidates are registered and
+# updated via the SDKMAN! Vendor API (https://sdkman.io/vendors). This file
+# documents the candidate configuration for reference; the actual registration
+# is performed by scripts/release/components/sdkman.sh.
 #
-# TODO(cli-release): Replace all placeholder URLs once the CLI's GitHub
-# Releases artifact naming is finalised.
+# The URLs point at the self-contained MockServer bundles (each carries its own
+# trimmed Java runtime — no separate JVM install required). SDKMAN unpacks the
+# archive and puts its `bin/` on PATH, exposing the `mockserver` launcher.
 
 candidate: mockserver
 name: MockServer
@@ -15,21 +17,19 @@ distribution: PLATFORM_SPECIFIC
 
 # Platform mappings — SDKMAN uses these identifiers:
 #   LINUX_64, LINUX_ARM64, MAC_OSX, MAC_ARM64, WINDOWS_64
-#
-# TODO(cli-release): Confirm binary names and which platforms are supported
 platforms:
   LINUX_64:
-    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-linux-x64
-    checksum: ${SHA256_LINUX_X64}
+    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-${VERSION}-linux-x86_64.tar.gz
+    checksum: ${SHA256_LINUX_X86_64}
   LINUX_ARM64:
-    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-linux-arm64
-    checksum: ${SHA256_LINUX_ARM64}
+    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-${VERSION}-linux-aarch64.tar.gz
+    checksum: ${SHA256_LINUX_AARCH64}
   MAC_OSX:
-    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-darwin-x64
-    checksum: ${SHA256_DARWIN_X64}
+    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-${VERSION}-darwin-x86_64.tar.gz
+    checksum: ${SHA256_DARWIN_X86_64}
   MAC_ARM64:
-    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-darwin-arm64
-    checksum: ${SHA256_DARWIN_ARM64}
+    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-${VERSION}-darwin-aarch64.tar.gz
+    checksum: ${SHA256_DARWIN_AARCH64}
   WINDOWS_64:
-    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-windows-x64.exe
-    checksum: ${SHA256_WINDOWS_X64}
+    url: https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-${VERSION}-windows-x86_64.zip
+    checksum: ${SHA256_WINDOWS_X86_64}

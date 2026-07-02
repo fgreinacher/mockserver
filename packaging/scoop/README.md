@@ -27,20 +27,21 @@ a single `checksums.txt`), adjust the hash URL pattern accordingly.
 
 ## Publishing a new version
 
+Publishing is automated — see [release-component.md](release-component.md) for
+how it works and the prerequisites to activate the channel.
+
 The release component script `scripts/release/components/scoop.sh`:
 
-1. Downloads binaries, computes SHA256.
-2. Updates `mockserver.json` with the new version, URLs, and hashes.
+1. Fetches the SHA256 of `mockserver-<version>-windows-x86_64.zip` from its
+   `.sha256` sidecar on the GitHub Release.
+2. Renders `mockserver.json` with the new version and checksum.
 3. Pushes the updated manifest to the `mock-server/scoop-mockserver` bucket repo.
-
-Since autoupdate is configured, the only manual step after the initial setup is
-ensuring the bucket repo exists and the release script has push access.
 
 ### Prerequisites
 
 - A GitHub token with push access to `mock-server/scoop-mockserver` (stored in
   `mockserver-release/github-token`)
-- The bucket repository must exist on GitHub
+- The `mock-server/scoop-mockserver` bucket repository must exist on GitHub
 
 ### Manual fallback
 
@@ -52,10 +53,3 @@ cd scoop-mockserver
 git commit -am "mockserver <VERSION>"
 git push
 ```
-
-## Finalisation blockers
-
-This manifest finalises once the CLI's GitHub Releases artifact naming is fixed.
-All `TODO(cli-release):` markers in the JSON must be resolved, and the
-`.sha256` sidecar assumption must be verified or the `autoupdate.hash` block
-adjusted.

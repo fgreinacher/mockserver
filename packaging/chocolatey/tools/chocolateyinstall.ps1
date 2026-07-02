@@ -1,45 +1,34 @@
-# Chocolatey install script for MockServer CLI
+# Chocolatey install script for MockServer CLI.
 #
-# TODO(cli-release): Replace placeholder URLs and checksums once the CLI's
-# GitHub Releases artifact naming is finalised.
+# Downloads and unpacks the self-contained MockServer bundle (a zip that carries
+# its own trimmed Java runtime — no separate JVM install required) and shims the
+# `mockserver` launcher onto PATH.
 
 $ErrorActionPreference = 'Stop'
 
 $packageName = 'mockserver'
-# TODO(cli-release): Replace with actual release version
 $version = $env:ChocolateyPackageVersion
+$toolsDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
-# Determine architecture
-$is64bit = [System.Environment]::Is64BitOperatingSystem
-$isArm = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64
-
-if ($isArm) {
-    $arch = 'arm64'
-} elseif ($is64bit) {
-    $arch = 'x64'
-} else {
-    throw "MockServer CLI does not support 32-bit Windows"
+# Only x64 Windows bundles are published today (build-all-bundles.sh targets
+# windows/x86_64). MockServer requires a 64-bit OS.
+if (-not [System.Environment]::Is64BitOperatingSystem) {
+    throw "MockServer CLI requires a 64-bit version of Windows"
 }
 
-# TODO(cli-release): Confirm binary naming convention
-$url = "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-$version/mockserver-windows-$arch.exe"
-
-# TODO(cli-release): Replace with actual checksums
-$checksums = @{
-    'x64'   = '${SHA256_WINDOWS_X64}'
-    'arm64' = '${SHA256_WINDOWS_ARM64}'
-}
+$url = "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-$version/mockserver-$version-windows-x86_64.zip"
 
 $packageArgs = @{
     packageName    = $packageName
-    fileFullPath   = Join-Path $env:ChocolateyInstall "lib\$packageName\tools\mockserver.exe"
+    unzipLocation  = $toolsDir
     url64bit       = $url
-    checksum64     = $checksums[$arch]
+    checksum64     = '${SHA256_WINDOWS_X86_64}'
     checksumType64 = 'sha256'
 }
 
-# Download the binary directly (it's a standalone native executable, not an installer)
-Get-ChocolateyWebFile @packageArgs
+# Download + verify checksum + extract the bundle under the package's tools dir.
+Install-ChocolateyZipPackage @packageArgs
 
-# Create a shim so `mockserver` is on PATH
-Install-BinFile -Name 'mockserver' -Path $packageArgs.fileFullPath
+# The zip expands to a single top directory; shim its launcher as `mockserver`.
+$launcher = Join-Path $toolsDir "mockserver-$version-windows-x86_64\bin\mockserver.bat"
+Install-BinFile -Name 'mockserver' -Path $launcher

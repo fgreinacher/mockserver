@@ -1,7 +1,8 @@
 # winget -- MockServer CLI
 
-winget is the Windows Package Manager. MockServer publishes native CLI binaries
-as a winget package under the identifier `MockServer.MockServer`.
+winget is the Windows Package Manager. MockServer publishes the CLI as a
+winget package under the identifier `MockServer.MockServer`, installing the
+self-contained Windows bundle (includes a trimmed JVM — no separate Java required).
 
 ## How it works
 
@@ -18,18 +19,20 @@ manifest. The `wingetcreate` CLI automates this.
 
 ## Publishing a new version
 
-The release component script `scripts/release/components/winget.sh` automates
-the process:
+Publishing is automated — see [release-component.md](release-component.md) for
+how it works and the prerequisites to activate the channel.
 
-1. Download the release binaries from GitHub Releases.
-2. Compute SHA256 hashes.
-3. Run `wingetcreate update` to generate an updated manifest.
-4. Submit a PR to `microsoft/winget-pkgs` via `wingetcreate submit`.
+The release component script `scripts/release/components/winget.sh`:
+
+1. Fetches the SHA256 of `mockserver-<version>-windows-x86_64.zip` from its
+   `.sha256` sidecar on the GitHub Release.
+2. Renders `MockServer.MockServer.yaml` with the new version and checksum.
+3. Calls `wingetcreate update` to submit a PR to `microsoft/winget-pkgs`.
 
 ### Prerequisites
 
-- `wingetcreate` CLI (or run in the Docker image `wingetcreate`)
-- A GitHub personal access token with `public_repo` scope (stored in
+- `wingetcreate` CLI (Windows-only; the step is skipped on non-Windows agents)
+- A GitHub PAT with `public_repo` scope (stored in
   `mockserver-release/winget-github-token` in AWS Secrets Manager)
 
 ### Manual fallback
@@ -37,19 +40,12 @@ the process:
 ```bash
 wingetcreate update MockServer.MockServer \
   --version <VERSION> \
-  --urls https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-<VERSION>/mockserver-windows-x64.exe \
-         https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-<VERSION>/mockserver-windows-arm64.exe \
+  --urls https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-<VERSION>/mockserver-<VERSION>-windows-x86_64.zip \
   --submit --token <GITHUB_PAT>
 ```
 
 ## Manifest format
 
 The `MockServer.MockServer.yaml` file in this directory is the template/reference
-manifest. It uses the winget singleton format (v1.9.0) and includes both x64
-and arm64 installer entries.
-
-## Finalisation blockers
-
-This manifest finalises once the CLI's GitHub Releases artifact naming is fixed.
-All `TODO(cli-release):` markers in the YAML must be resolved before the first
-submission.
+manifest. It uses the winget singleton format (v1.9.0) with a single x64 installer
+entry pointing at the self-contained bundle archive.

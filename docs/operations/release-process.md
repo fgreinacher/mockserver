@@ -93,11 +93,17 @@ Versioned Site and Update Version References run first (sequentially), then the 
 | Helm chart | https://www.mock-server.com/index.yaml — should list the new version |
 | Versioned docs site (major/minor only) | `https://<release-version-with-dash>.mock-server.com` — e.g. `6-1.mock-server.com` |
 | Website | https://www.mock-server.com — version pin in the footer should match |
-| Homebrew (a few hours later — bumped by BrewTestBot) | https://formulae.brew.sh/api/formula/mockserver.json → `.versions.stable` should equal `<release-version>` |
+| Homebrew/homebrew-core (a few hours later — bumped by BrewTestBot) | https://formulae.brew.sh/api/formula/mockserver.json → `.versions.stable` should equal `<release-version>` |
+| Homebrew tap (`mock-server/tap`) | `brew info mock-server/tap/mockserver` — version should equal `<release-version>` |
+| Scoop | `scoop bucket add mockserver https://github.com/mock-server/scoop-mockserver && scoop info mockserver` — or view `mockserver.json` directly in the bucket repo |
+| winget | https://github.com/microsoft/winget-pkgs/tree/master/manifests/m/MockServer/MockServer — PR for `<release-version>` should appear, or `winget show MockServer.MockServer` after it merges |
+| Chocolatey | https://community.chocolatey.org/packages/mockserver — `<release-version>` should appear (moderation may take hours to days) |
+| SDKMAN! | `sdk list mockserver` — `<release-version>` should be listed and marked as default |
+| asdf / mise | `asdf list all mockserver` — `<release-version>` should appear |
 
-### 9. Homebrew — fully automated, no action required
+### 9. Homebrew homebrew-core — fully automated, no action required
 
-The `mockserver` formula in `Homebrew/homebrew-core` is bumped automatically by **BrewTestBot** (Homebrew's own automation account). The chain:
+The `mockserver` formula in `Homebrew/homebrew-core` is bumped automatically by **BrewTestBot** (Homebrew's own automation account). This is a JAR-based formula that depends on an OpenJDK installation. A separate, complementary Homebrew tap formula (`mock-server/tap/mockserver`) installs the self-contained bundle instead — it is handled by §12 below. The chain for homebrew-core:
 
 1. The Maven release publishes a `mockserver-netty-<version>-brew-tar.tar` artifact to Maven Central (built and signed by `maven-central.sh`'s `-P release` profile, same lifecycle as the regular jars).
 2. The Homebrew formula has a `livecheck` block pointing at Maven Search (`https://search.maven.org/remotecontent?filepath=org/mock-server/mockserver-netty/maven-metadata.xml`). BrewTestBot's scheduled livecheck picks up the new version, computes the URL + SHA256, and opens a PR against `Homebrew/homebrew-core`.
@@ -131,7 +137,35 @@ committed collections are out of sync with the spec. Validate locally with
 `python3 scripts/collections/test_collections.py` (starts a MockServer in Docker and fires every
 example).
 
-### 11. Announce (optional)
+### 11. Package-manager channels — automated, soft_fail
+
+Six CLI distribution channels publish the **self-contained jlink bundles** uploaded
+by the `binary` component. They run in the `:package: Package Managers` Buildkite
+group (after the Binary Bundles step) as `soft_fail` steps — a channel failure
+never blocks the release. Each channel also skips itself gracefully when its
+prerequisite is not yet configured.
+
+| Channel | Activation prerequisite | Details |
+|---|---|---|
+| Homebrew tap | `github.com/mock-server/homebrew-tap` exists + `mockserver-release/github-token` has write access | Renders `Formula/mockserver.rb` from four darwin/linux checksums and pushes to the tap repo. Distinct from homebrew-core (§9). |
+| Scoop | `github.com/mock-server/scoop-mockserver` exists + `mockserver-release/github-token` has write access | Renders `mockserver.json` from the Windows bundle checksum and pushes to the bucket repo. Windows only. |
+| winget | `mockserver-release/winget-github-token` set + `wingetcreate` on a Windows agent | Renders manifest and opens a PR on `microsoft/winget-pkgs`. Windows only. |
+| Chocolatey | `mockserver-release/chocolatey-api-key` set + `choco` on a Windows/mono agent | Renders nuspec + install script, packs `.nupkg`, pushes to `community.chocolatey.org`. Windows only. Moderation may take hours to days. |
+| SDKMAN! | `mockserver-release/sdkman-vendor` set (`consumer-key` + `consumer-token`) + `mockserver` registered as a candidate (one-time) | Calls Vendor API to register all five platforms, set default, and announce. |
+| asdf / mise | `github.com/mock-server/asdf-mockserver` exists + `mockserver-release/github-token` has write access + plugin registered in asdf index (one-time) | Syncs `packaging/asdf/bin/` to the plugin repo; no per-release artifact push needed. |
+
+Each channel's full prerequisites and manual fallback are documented in
+`packaging/<channel>/release-component.md`.
+
+**Local dry-run for any channel:**
+
+```bash
+RELEASE_VERSION=99.99.0 ./scripts/release/components/<name>.sh --dry-run
+```
+
+Renders the manifest with a placeholder checksum and skips all external writes.
+
+### 12. Announce (optional)
 
 If this is a notable release, post to:
 
@@ -167,7 +201,14 @@ scripts/release/
     ├── schema.sh                 # JSON Schema
     ├── swaggerhub.sh             # OpenAPI spec to SwaggerHub
     ├── github.sh                 # GitHub Release
-    └── versioned-site.sh         # X-Y.mock-server.com Terraform
+    ├── binary.sh                 # per-platform jlink bundles (GitHub Release assets)
+    ├── versioned-site.sh         # X-Y.mock-server.com Terraform
+    ├── scoop.sh                  # Scoop bucket (Windows — mock-server/scoop-mockserver)
+    ├── winget.sh                 # winget PR (Windows — microsoft/winget-pkgs)
+    ├── chocolatey.sh             # Chocolatey package (Windows — community.chocolatey.org)
+    ├── homebrew.sh               # Homebrew tap formula (macOS/Linux — mock-server/homebrew-tap)
+    ├── sdkman.sh                 # SDKMAN! Vendor API (all platforms)
+    └── asdf.sh                   # asdf/mise plugin repo sync + discoverability check
 
 .buildkite/scripts/
 ├── release-runner.sh             # Buildkite adapter (meta-data → env vars)
@@ -303,6 +344,13 @@ The release pipeline writes every version-bearing file in the repo, so contribut
 | `versioned-site` | `terraform plan` | `terraform apply`, S3 mirror |
 | `update-version-references` | Show diff of version-reference rewrite | git push |
 | `finalize` | Show pom version-bump diff | git push, mvn deploy snapshot |
+| `binary` | Build all five platform jlink bundles | `gh release upload` (asset push to GitHub Release) |
+| `scoop` | Fetch checksum, render manifest, print it | Push to `mock-server/scoop-mockserver` bucket repo |
+| `winget` | Fetch checksum, render manifest, print it | `wingetcreate` PR submission to `microsoft/winget-pkgs` |
+| `chocolatey` | Fetch checksum, render nuspec + install script, print them | `choco pack` + `choco push` |
+| `homebrew` | Fetch four checksums, render formula, print it | Push `Formula/mockserver.rb` to `mock-server/homebrew-tap` |
+| `sdkman` | Print the five Vendor API calls that would be made | `POST /release` × 5, `PUT /default`, `POST /announce` |
+| `asdf` | Report what would be synced/verified; skip clone and push | Clone `mock-server/asdf-mockserver`, sync `bin/`, push if drifted; check release discoverability |
 
 ## Pinned Docker images
 

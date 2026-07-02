@@ -27,67 +27,33 @@ the SDKMAN! team:
    token) which are stored in AWS Secrets Manager at
    `mockserver-release/sdkman-vendor`.
 
-### Platform binaries
+### Platform bundles
 
-SDKMAN! supports platform-specific distributions. The release script registers
-download URLs for each platform:
+SDKMAN! supports platform-specific distributions. The release component registers
+download URLs for each of the five self-contained bundle archives:
 
-| SDKMAN! Platform | Binary |
-|------------------|--------|
-| `LINUX_64` | `mockserver-linux-x64` |
-| `LINUX_ARM64` | `mockserver-linux-arm64` |
-| `MAC_OSX` | `mockserver-darwin-x64` |
-| `MAC_ARM64` | `mockserver-darwin-arm64` |
-| `WINDOWS_64` | `mockserver-windows-x64.exe` |
+| SDKMAN! platform | Bundle archive |
+|---|---|
+| `LINUX_64` | `mockserver-<version>-linux-x86_64.tar.gz` |
+| `LINUX_ARM64` | `mockserver-<version>-linux-aarch64.tar.gz` |
+| `MAC_OSX` | `mockserver-<version>-darwin-x86_64.tar.gz` |
+| `MAC_ARM64` | `mockserver-<version>-darwin-aarch64.tar.gz` |
+| `WINDOWS_64` | `mockserver-<version>-windows-x86_64.zip` |
 
-SDKMAN! expects the download URL to point to a `.zip` archive containing the
-binary. If the CLI release publishes bare binaries, the release script wraps
-each in a zip first.
+Each archive includes a trimmed JVM — no separate Java installation is required.
+SDKMAN! installs the bundle and adds its `bin/` to `PATH`.
 
 ## Publishing a new version
 
+Publishing is automated — see [release-component.md](release-component.md) for
+how it works and the prerequisites to activate the channel.
+
 The release component script `scripts/release/components/sdkman.sh`:
 
-1. Calls `POST /release` on the Vendor API to register the new version with
-   download URLs for each platform.
+1. Calls `POST /release` on the Vendor API for each of the five platforms.
 2. Calls `PUT /default` to set the new version as the default.
-3. Calls `POST /announce` to broadcast the release.
+3. Calls `POST /announce/struct` to broadcast the release.
 
 ### Manual fallback
 
-```bash
-# Register a new version
-curl -X POST https://vendors.sdkman.io/release \
-  -H "Consumer-Key: $SDKMAN_KEY" \
-  -H "Consumer-Token: $SDKMAN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "candidate": "mockserver",
-    "version": "<VERSION>",
-    "platform": "LINUX_64",
-    "url": "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-<VERSION>/mockserver-linux-x64.zip"
-  }'
-
-# Set as default
-curl -X PUT https://vendors.sdkman.io/default \
-  -H "Consumer-Key: $SDKMAN_KEY" \
-  -H "Consumer-Token: $SDKMAN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"candidate": "mockserver", "version": "<VERSION>"}'
-
-# Announce
-curl -X POST https://vendors.sdkman.io/announce/struct \
-  -H "Consumer-Key: $SDKMAN_KEY" \
-  -H "Consumer-Token: $SDKMAN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"candidate": "mockserver", "version": "<VERSION>", "hashtag": "mockserver"}'
-```
-
-## Finalisation blockers
-
-This candidate configuration finalises once:
-1. The CLI's GitHub Releases artifact naming is fixed.
-2. The `mockserver` candidate is registered with SDKMAN! (one-time).
-3. Vendor API credentials are stored in AWS Secrets Manager.
-
-All `TODO(cli-release):` markers in `candidate.yaml` must be resolved.
+See [release-component.md](release-component.md) for the full `curl` commands.

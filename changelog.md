@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automated package-manager release channels for the CLI (Homebrew, Scoop, winget, Chocolatey, SDKMAN!, asdf/mise).**
+  Six new release-pipeline components (`scripts/release/components/{homebrew,scoop,winget,chocolatey,sdkman,asdf}.sh`)
+  publish/update these channels automatically as a `soft_fail` group after the binary-bundle step, distributing the same
+  self-contained jlink bundles (`mockserver-<version>-<os>-<arch>.tar.gz`/`.zip`, each carrying its own trimmed Java
+  runtime) that the `binary` component uploads to the GitHub Release. A new tap formula (`mock-server/homebrew-tap`,
+  `brew install mock-server/tap/mockserver`) is added — complementary to, and separate from, the JAR-based homebrew-core
+  formula (still bumped by BrewTestBot). Each channel renders its manifest from the real published bundle checksums,
+  supports `--dry-run`, and **skips itself gracefully** (never breaking the release) when its target repo or API secret is
+  not yet configured. See `packaging/<channel>/release-component.md` and `docs/operations/release-process.md`.
+
 - **WebSocket proxy passthrough + frame recording.** MockServer can now proxy WebSocket connections through to a real
   upstream server, not just mock them. When a WebSocket upgrade request (`GET` + `Upgrade: websocket`) arrives in proxy
   mode and no WebSocket mock expectation matches — or it matches a plain `FORWARD` expectation — MockServer completes

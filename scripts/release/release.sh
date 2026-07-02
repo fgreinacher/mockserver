@@ -32,6 +32,12 @@ ALL_COMPONENTS=(
   rubygems
   github
   binary
+  scoop
+  winget
+  chocolatey
+  homebrew
+  sdkman
+  asdf
   mcp
   client-go
   client-dotnet

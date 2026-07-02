@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Installs a downloaded MockServer CLI binary.
+# Installs a downloaded MockServer CLI bundle.
 # Called by asdf/mise with ASDF_INSTALL_TYPE, ASDF_INSTALL_VERSION,
 # ASDF_INSTALL_PATH, and ASDF_DOWNLOAD_PATH set.
+#
+# The bundle is self-contained (bin/, lib/, runtime/). We copy the whole tree
+# into ASDF_INSTALL_PATH; asdf adds ASDF_INSTALL_PATH/bin to PATH, so the
+# `mockserver` launcher resolves its sibling runtime/ and lib/ directories.
 
 set -euo pipefail
 
@@ -20,8 +24,12 @@ if [[ -z "${ASDF_DOWNLOAD_PATH:-}" ]]; then
   exit 1
 fi
 
-mkdir -p "$ASDF_INSTALL_PATH/bin"
-cp "$ASDF_DOWNLOAD_PATH/mockserver" "$ASDF_INSTALL_PATH/bin/mockserver"
-chmod +x "$ASDF_INSTALL_PATH/bin/mockserver"
+mkdir -p "$ASDF_INSTALL_PATH"
+cp -R "$ASDF_DOWNLOAD_PATH/." "$ASDF_INSTALL_PATH/"
 
-echo "MockServer CLI ${ASDF_INSTALL_VERSION} installed to ${ASDF_INSTALL_PATH}/bin/mockserver"
+# Ensure the POSIX launcher is executable (the .bat variant is used on Windows).
+if [[ -f "$ASDF_INSTALL_PATH/bin/mockserver" ]]; then
+  chmod +x "$ASDF_INSTALL_PATH/bin/mockserver"
+fi
+
+echo "MockServer CLI ${ASDF_INSTALL_VERSION} installed to ${ASDF_INSTALL_PATH}/bin"

@@ -1,34 +1,34 @@
 {
     "version": "${VERSION}",
-    "description": "MockServer — mock, proxy & record HTTP(S), gRPC, and more",
+    "description": "MockServer — mock, proxy & record HTTP(S), gRPC, and more (self-contained, bundles its own Java runtime)",
     "homepage": "https://www.mock-server.com",
     "license": "Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-windows-x64.exe#/mockserver.exe",
-            "hash": "${SHA256_WINDOWS_X64}"
-        },
-        "arm64": {
-            "url": "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-windows-arm64.exe#/mockserver.exe",
-            "hash": "${SHA256_WINDOWS_ARM64}"
+            "url": "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-${VERSION}/mockserver-${VERSION}-windows-x86_64.zip",
+            "hash": "${SHA256_WINDOWS_X86_64}",
+            "extract_dir": "mockserver-${VERSION}-windows-x86_64"
         }
     },
-    "bin": "mockserver.exe",
+    "bin": [
+        [
+            "bin\\mockserver.bat",
+            "mockserver"
+        ]
+    ],
     "checkver": {
-        "github": "https://github.com/mock-server/mockserver-monorepo"
+        "github": "https://github.com/mock-server/mockserver-monorepo",
+        "regex": "mockserver-([\\d.]+)"
     },
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-$version/mockserver-windows-x64.exe#/mockserver.exe"
-            },
-            "arm64": {
-                "url": "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-$version/mockserver-windows-arm64.exe#/mockserver.exe"
+                "url": "https://github.com/mock-server/mockserver-monorepo/releases/download/mockserver-$version/mockserver-$version-windows-x86_64.zip",
+                "extract_dir": "mockserver-$version-windows-x86_64"
             }
         },
         "hash": {
             "url": "$url.sha256"
         }
-    },
-    "_comment": "TODO(cli-release): Replace all placeholder URLs, hashes, and version once the CLI GitHub Releases artifact naming is finalised. The autoupdate.hash.url assumes a .sha256 sidecar file is published alongside each binary — adjust if the release uses a different checksum scheme."
+    }
 }
