@@ -67,10 +67,30 @@ sitemap:
             <td><span class="inline_code">pact</span></td>
             <td>Force Pact v3 contract parsing</td>
         </tr>
+        <tr>
+            <td><span class="inline_code">format</span></td>
+            <td><span class="inline_code">recording</span></td>
+            <td>Reload a persisted recorded-traffic NDJSON archive (see <a href="#recording_reimport">Reloading Recorded Traffic</a>). Unlike the other formats this does not create expectations — it re-loads recorded request/response pairs so they are retrievable like live in-memory recordings. Must be specified explicitly (NDJSON is never auto-detected).</td>
+        </tr>
     </tbody>
 </table>
 
 <p>If auto-detection fails and no <span class="inline_code">format</span> parameter is provided, MockServer returns <span class="inline_code">400 Bad Request</span> with a message suggesting you specify the format explicitly.</p>
+
+<a id="recording_reimport" class="anchor" href="#recording_reimport">&nbsp;</a>
+
+<h3>Reloading Recorded Traffic</h3>
+
+<p>When <a href="/mock_server/configuration_properties.html"><span class="inline_code">persistRecordedRequestsToDisk</span></a> is enabled, MockServer appends every recorded exchange (both proxied and mocked request/response pairs) to a durable NDJSON archive at <span class="inline_code">persistedRecordedRequestsPath</span>. That archive outlives in-memory log eviction and restarts. Reload it with <span class="inline_code">format=recording</span> so the exchanges become retrievable exactly like live recordings via <span class="inline_code">PUT /mockserver/retrieve?type=REQUEST_RESPONSES</span>:</p>
+
+<pre class="prettyprint code"><code class="code"># reload the archive at the configured persistedRecordedRequestsPath
+curl -v -X PUT "http://localhost:1080/mockserver/import?format=recording&amp;source=disk"
+
+# or supply an archive file in the request body
+curl -v -X PUT "http://localhost:1080/mockserver/import?format=recording" \
+    --data-binary @recordedRequests.ndjson</code></pre>
+
+<p>Reload is idempotent — reloaded exchanges are not written back to the archive, so reloading the same file never grows it. Sensitive-data redaction (below) applies to <span class="inline_code">recording</span> imports too.</p>
 
 <p><strong>Insomnia is not a supported import format</strong> &mdash; the only recognised formats are <span class="inline_code">har</span>, <span class="inline_code">postman</span>, and <span class="inline_code">pact</span>. Export from Insomnia as HAR, or convert to a Postman collection, then import that instead.</p>
 

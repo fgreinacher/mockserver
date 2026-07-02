@@ -484,6 +484,22 @@ ls -lh "$CAPTURE_DIR/"
     </tbody>
 </table>
 
+<h3>Reloading the NDJSON Archive</h3>
+
+<p>The <code class="code inline">recordedRequests.ndjson</code> archive is durable: it captures every recorded exchange — both proxied/forwarded and mocked responses — and survives ring-buffer eviction (when the in-memory log fills up under <code class="code inline">maxLogEntries</code> / <code class="code inline">maxEventLogSizeInBytes</code>) and MockServer restarts. To make an archived session queryable again — retrievable exactly like live in-memory recordings — reload it with the <code class="code inline">import</code> endpoint using <code class="code inline">format=recording</code>:</p>
+
+<pre class="prettyprint code"><code class="code"># reload the archive MockServer is already configured to persist (reads persistedRecordedRequestsPath)
+curl -X PUT "http://localhost:1080/mockserver/import?format=recording&amp;source=disk"
+
+# or reload a specific archive file supplied in the request body
+curl -X PUT "http://localhost:1080/mockserver/import?format=recording" \
+    --data-binary @recordedRequests.ndjson
+
+# then retrieve the reloaded exchanges like any other recording
+curl -X PUT "http://localhost:1080/mockserver/retrieve?type=REQUEST_RESPONSES&amp;format=JSON"</code></pre>
+
+<p>Re-import is idempotent — reloaded exchanges are <strong>not</strong> written back to the archive, so reloading the same file does not grow it. As with HAR and Postman import, sensitive data is masked by default; add <code class="code inline">&amp;redactSensitiveData=false</code> to keep values verbatim.</p>
+
 <h3>Running on a Remote Machine</h3>
 
 <p>Run the script directly on the remote host via SSH or as a CI job step — no local display or browser is needed. After it completes, copy the capture directory back:</p>

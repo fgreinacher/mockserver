@@ -26,6 +26,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockserver.configuration.Configuration.configuration;
+import static org.mockserver.log.model.LogEntry.LogMessageType.EXPECTATION_RESPONSE;
 import static org.mockserver.log.model.LogEntry.LogMessageType.FORWARDED_REQUEST;
 import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
@@ -90,5 +91,49 @@ public class RecordedRequestsPersistenceWiringTest {
         assertThat(persisted.getHttpRequest().getPath().getValue(), is("/api/wired"));
         assertThat(persisted.getHttpRequest().getMethod().getValue(), is("GET"));
         assertThat(persisted.getHttpResponse().getBodyAsString(), is("wired-response"));
+    }
+
+    @Test(timeout = 30000)
+    public void shouldPersistBothForwardedAndMockedExchanges() throws Exception {
+        // given a real HttpState configured to persist recorded requests
+        File persistedFile = File.createTempFile("persistedRecordedRequestsBoth", ".ndjson");
+        persistedFile.deleteOnExit();
+        Configuration configuration = configuration()
+            .persistRecordedRequestsToDisk(true)
+            .persistedRecordedRequestsPath(persistedFile.getAbsolutePath());
+        MockServerLogger logger = new MockServerLogger(configuration, RecordedRequestsPersistenceWiringTest.class);
+
+        Scheduler scheduler = mock(Scheduler.class);
+        schedulerExecutor = Executors.newScheduledThreadPool(2);
+        when(scheduler.getExecutorService()).thenReturn(schedulerExecutor);
+
+        HttpState httpState = new HttpState(configuration, logger, scheduler);
+
+        // when a FORWARDED (proxied) and an EXPECTATION_RESPONSE (mocked) exchange flow through
+        httpState.log(new LogEntry()
+            .setType(FORWARDED_REQUEST)
+            .setHttpRequest(request("/api/forwarded").withMethod("GET"))
+            .setHttpResponse(response().withStatusCode(200).withBody("forwarded")));
+        httpState.log(new LogEntry()
+            .setType(EXPECTATION_RESPONSE)
+            .setHttpRequest(request("/api/mocked").withMethod("GET"))
+            .setHttpResponse(response().withStatusCode(200).withBody("mocked")));
+
+        // deterministic barrier: a retrieve published after the entries only completes once both
+        // have been fully processed (append+flush runs before add())
+        CompletableFuture<List<RequestDefinition>> processed = new CompletableFuture<>();
+        httpState.getMockServerLog().retrieveRequests(request("/api/mocked"), processed::complete);
+        assertThat(processed.get(10, SECONDS), notNullValue());
+
+        // then — BOTH exchanges are on disk (not just the forwarded one)
+        HttpRequestAndHttpResponseSerializer serializer = new HttpRequestAndHttpResponseSerializer(logger);
+        List<String> lines = Files.readAllLines(persistedFile.toPath(), StandardCharsets.UTF_8);
+        assertThat(lines.size(), is(2));
+        HttpRequestAndHttpResponse first = serializer.deserialize(lines.get(0));
+        HttpRequestAndHttpResponse second = serializer.deserialize(lines.get(1));
+        assertThat(first.getHttpRequest().getPath().getValue(), is("/api/forwarded"));
+        assertThat(first.getHttpResponse().getBodyAsString(), is("forwarded"));
+        assertThat(second.getHttpRequest().getPath().getValue(), is("/api/mocked"));
+        assertThat(second.getHttpResponse().getBodyAsString(), is("mocked"));
     }
 }

@@ -2040,50 +2040,78 @@ public class HttpState {
 
                 if (controlPlaneRequestAuthenticated(request, responseWriter)) {
                     try {
-                        String requestBody = request.getBodyAsJsonOrXmlString();
-                        if (requestBody == null || requestBody.trim().isEmpty()) {
-                            throw new IllegalArgumentException("import request body is required — must be a HAR, Postman collection or Pact contract JSON document");
-                        }
                         String formatParam = request.getFirstQueryStringParameter("format");
                         org.mockserver.imports.ImportRedaction.Options redactionOptions = buildImportRedactionOptions(request);
-                        List<Expectation> importedExpectations;
-                        if ("har".equalsIgnoreCase(formatParam)) {
-                            importedExpectations = new org.mockserver.imports.HarImporter().importExpectations(requestBody, redactionOptions);
-                        } else if ("postman".equalsIgnoreCase(formatParam)) {
-                            importedExpectations = new org.mockserver.imports.PostmanCollectionImporter().importExpectations(requestBody, redactionOptions);
-                        } else if ("pact".equalsIgnoreCase(formatParam)) {
-                            importedExpectations = new org.mockserver.mock.pact.PactImporter().importExpectations(requestBody, redactionOptions);
-                        } else if (formatParam != null && !formatParam.isEmpty()) {
-                            throw new IllegalArgumentException("unsupported import format: " + formatParam + " (supported formats: har, postman, pact)");
-                        } else {
-                            // Auto-detect format from JSON structure
-                            com.fasterxml.jackson.databind.JsonNode rootNode = ObjectMapperFactory.createObjectMapper().readTree(requestBody);
-                            if (!rootNode.path("log").path("entries").isMissingNode()) {
-                                importedExpectations = new org.mockserver.imports.HarImporter().importExpectations(requestBody, redactionOptions);
-                            } else if (!rootNode.path("info").isMissingNode() && !rootNode.path("item").isMissingNode()) {
-                                importedExpectations = new org.mockserver.imports.PostmanCollectionImporter().importExpectations(requestBody, redactionOptions);
-                            } else if (!rootNode.path("interactions").isMissingNode() && rootNode.path("interactions").isArray()) {
-                                importedExpectations = new org.mockserver.mock.pact.PactImporter().importExpectations(requestBody, redactionOptions);
-                            } else {
-                                throw new IllegalArgumentException("unable to auto-detect import format — use ?format=har, ?format=postman or ?format=pact query parameter");
+
+                        // Recorded-traffic re-import: reload a persisted NDJSON archive of recorded
+                        // request/response pairs back into the event log so they are retrievable like
+                        // in-memory recordings. Unlike the expectation importers below this reads NDJSON
+                        // (one HttpRequestAndHttpResponse per line) and can source it from disk via
+                        // ?source=disk (or when the body is empty), reading the configured
+                        // persistedRecordedRequestsPath.
+                        if ("recording".equalsIgnoreCase(formatParam)) {
+                            String sourceParam = request.getFirstQueryStringParameter("source");
+                            String ndjson = request.getBodyAsJsonOrXmlString();
+                            boolean fromDisk = "disk".equalsIgnoreCase(sourceParam) || ndjson == null || ndjson.trim().isEmpty();
+                            if (fromDisk) {
+                                java.nio.file.Path archivePath = java.nio.file.Paths.get(configuration.persistedRecordedRequestsPath());
+                                if (!java.nio.file.Files.exists(archivePath)) {
+                                    throw new IllegalArgumentException("no persisted recorded requests archive found at " + archivePath.toAbsolutePath() + " (set mockserver.persistedRecordedRequestsPath or supply the archive in the request body)");
+                                }
+                                ndjson = new String(java.nio.file.Files.readAllBytes(archivePath), java.nio.charset.StandardCharsets.UTF_8);
                             }
+                            List<org.mockserver.model.HttpRequestAndHttpResponse> pairs =
+                                new org.mockserver.imports.RecordedTrafficImporter(mockServerLogger).importRecordedTraffic(ndjson, redactionOptions);
+                            for (org.mockserver.model.HttpRequestAndHttpResponse pair : pairs) {
+                                mockServerLog.importRecordedRequestResponse(pair.getHttpRequest(), pair.getHttpResponse());
+                            }
+                            responseWriter.writeResponse(request, response()
+                                .withStatusCode(CREATED.code())
+                                .withBody(new org.mockserver.serialization.HttpRequestAndHttpResponseSerializer(mockServerLogger).serialize(pairs), MediaType.JSON_UTF_8), true);
+                        } else {
+                            String requestBody = request.getBodyAsJsonOrXmlString();
+                            if (requestBody == null || requestBody.trim().isEmpty()) {
+                                throw new IllegalArgumentException("import request body is required — must be a HAR, Postman collection or Pact contract JSON document");
+                            }
+                            List<Expectation> importedExpectations;
+                            if ("har".equalsIgnoreCase(formatParam)) {
+                                importedExpectations = new org.mockserver.imports.HarImporter().importExpectations(requestBody, redactionOptions);
+                            } else if ("postman".equalsIgnoreCase(formatParam)) {
+                                importedExpectations = new org.mockserver.imports.PostmanCollectionImporter().importExpectations(requestBody, redactionOptions);
+                            } else if ("pact".equalsIgnoreCase(formatParam)) {
+                                importedExpectations = new org.mockserver.mock.pact.PactImporter().importExpectations(requestBody, redactionOptions);
+                            } else if (formatParam != null && !formatParam.isEmpty()) {
+                                throw new IllegalArgumentException("unsupported import format: " + formatParam + " (supported formats: har, postman, pact, recording)");
+                            } else {
+                                // Auto-detect format from JSON structure
+                                com.fasterxml.jackson.databind.JsonNode rootNode = ObjectMapperFactory.createObjectMapper().readTree(requestBody);
+                                if (!rootNode.path("log").path("entries").isMissingNode()) {
+                                    importedExpectations = new org.mockserver.imports.HarImporter().importExpectations(requestBody, redactionOptions);
+                                } else if (!rootNode.path("info").isMissingNode() && !rootNode.path("item").isMissingNode()) {
+                                    importedExpectations = new org.mockserver.imports.PostmanCollectionImporter().importExpectations(requestBody, redactionOptions);
+                                } else if (!rootNode.path("interactions").isMissingNode() && rootNode.path("interactions").isArray()) {
+                                    importedExpectations = new org.mockserver.mock.pact.PactImporter().importExpectations(requestBody, redactionOptions);
+                                } else {
+                                    throw new IllegalArgumentException("unable to auto-detect import format — use ?format=har, ?format=postman, ?format=pact or ?format=recording query parameter");
+                                }
+                            }
+                            // Optional consolidation of imported exchanges (e.g. a HAR that
+                            // captured the same endpoint many times) into reusable mocks —
+                            // ?consolidate=true collapses by request shape into unlimited-times
+                            // expectations (sequencing differing responses); ?parameterize=true
+                            // additionally generalises volatile path/query/header/body values.
+                            if ("true".equalsIgnoreCase(request.getFirstQueryStringParameter("consolidate"))
+                                || "true".equalsIgnoreCase(request.getFirstQueryStringParameter("parameterize"))) {
+                                boolean parameterizeImport = "true".equalsIgnoreCase(request.getFirstQueryStringParameter("parameterize"));
+                                importedExpectations = RecordedExpectationPostProcessor.consolidate(importedExpectations, parameterizeImport);
+                            }
+                            List<Expectation> upsertedExpectations = add(
+                                importedExpectations.toArray(new Expectation[0])
+                            );
+                            responseWriter.writeResponse(request, response()
+                                .withStatusCode(CREATED.code())
+                                .withBody(getExpectationSerializer().serialize(upsertedExpectations), MediaType.JSON_UTF_8), true);
                         }
-                        // Optional consolidation of imported exchanges (e.g. a HAR that
-                        // captured the same endpoint many times) into reusable mocks —
-                        // ?consolidate=true collapses by request shape into unlimited-times
-                        // expectations (sequencing differing responses); ?parameterize=true
-                        // additionally generalises volatile path/query/header/body values.
-                        if ("true".equalsIgnoreCase(request.getFirstQueryStringParameter("consolidate"))
-                            || "true".equalsIgnoreCase(request.getFirstQueryStringParameter("parameterize"))) {
-                            boolean parameterizeImport = "true".equalsIgnoreCase(request.getFirstQueryStringParameter("parameterize"));
-                            importedExpectations = RecordedExpectationPostProcessor.consolidate(importedExpectations, parameterizeImport);
-                        }
-                        List<Expectation> upsertedExpectations = add(
-                            importedExpectations.toArray(new Expectation[0])
-                        );
-                        responseWriter.writeResponse(request, response()
-                            .withStatusCode(CREATED.code())
-                            .withBody(getExpectationSerializer().serialize(upsertedExpectations), MediaType.JSON_UTF_8), true);
                     } catch (IllegalArgumentException iae) {
                         mockServerLogger.logEvent(
                             new LogEntry()

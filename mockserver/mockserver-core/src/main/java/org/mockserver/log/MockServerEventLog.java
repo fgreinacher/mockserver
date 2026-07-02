@@ -159,8 +159,9 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     // request/response body that was truncated by maxLoggedBodyBytes; its value is the original
     // (pre-truncation) body length in bytes.
     private static final String TRUNCATED_BODY_HEADER = "x-mockserver-body-truncated";
-    // Optional per-entry hook invoked (off the matching/forwarding path) for each FORWARDED_REQUEST
-    // log entry, used to persist recorded requests to disk. Null when disk persistence is disabled.
+    // Optional per-entry hook invoked (off the matching/forwarding path) for each recorded exchange
+    // (FORWARDED_REQUEST or EXPECTATION_RESPONSE) log entry, used to persist recorded requests to
+    // disk. Null when disk persistence is disabled.
     private Consumer<LogEntry> recordedRequestConsumer;
 
     public MockServerEventLog(Configuration configuration, MockServerLogger mockServerLogger, Scheduler scheduler, boolean asynchronousEventProcessing) {
@@ -274,13 +275,37 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     }
 
     /**
-     * Register a hook invoked once per FORWARDED_REQUEST log entry, off the request-matching /
-     * forwarding hot path, so a recorded proxied exchange can be persisted to disk without coupling
-     * file I/O into this class. The hook receives the entry with FULL (un-truncated) bodies because
-     * {@link #processLogEntry} invokes it BEFORE applying {@code maxLoggedBodyBytes} truncation.
+     * Register a hook invoked once per recorded exchange (FORWARDED_REQUEST or EXPECTATION_RESPONSE)
+     * log entry, off the request-matching / forwarding hot path, so a recorded proxied or mocked
+     * exchange can be persisted to disk without coupling file I/O into this class. The hook receives
+     * the entry with FULL (un-truncated) bodies because {@link #processLogEntry} invokes it BEFORE
+     * applying {@code maxLoggedBodyBytes} truncation.
      */
     public void setRecordedRequestConsumer(Consumer<LogEntry> recordedRequestConsumer) {
         this.recordedRequestConsumer = recordedRequestConsumer;
+    }
+
+    /**
+     * Re-inject a recorded request/response pair loaded from a persisted NDJSON archive back into the
+     * live event log so it is retrievable exactly like an in-memory recording (via
+     * {@code retrieveRecordedRequests} / {@code retrieveRequestResponses} and the derived export
+     * formats). The entry is logged as a FORWARDED_REQUEST and marked
+     * {@link LogEntry#setSkipRecordedRequestPersistence(boolean)} so re-loading an archive is
+     * idempotent and never appends the same exchanges back to the (possibly same) file.
+     */
+    public void importRecordedRequestResponse(HttpRequest httpRequest, HttpResponse httpResponse) {
+        if (httpRequest == null) {
+            return;
+        }
+        add(new LogEntry()
+            .setType(FORWARDED_REQUEST)
+            .setLogLevel(Level.INFO)
+            .setHttpRequest(httpRequest)
+            .setHttpResponse(httpResponse)
+            .setExpectation(httpRequest, httpResponse)
+            .setSkipRecordedRequestPersistence(true)
+            .setMessageFormat("re-imported recorded request:{}and response:{}from persisted archive")
+            .setArguments(httpRequest, httpResponse));
     }
 
     private void processLogEntry(LogEntry logEntry) {
@@ -288,7 +313,13 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         // Disk capture runs FIRST so persisted recorded requests keep full fidelity even when
         // maxLoggedBodyBytes truncates the in-memory copy below. (Recommended combo: disk-capture ON
         // with maxLoggedBodyBytes=0, so memory is bounded by the byte budget and disk is complete.)
-        if (recordedRequestConsumer != null && logEntry.getType() == FORWARDED_REQUEST) {
+        // Both mocked (EXPECTATION_RESPONSE) and forwarded/proxied (FORWARDED_REQUEST) exchanges are
+        // captured, so the archive is a complete record of served traffic, not proxy traffic only.
+        // Entries injected by the re-import path carry skipRecordedRequestPersistence=true so reloading
+        // an archive never appends the same exchanges back to the (possibly same) file.
+        if (recordedRequestConsumer != null
+            && !logEntry.isSkipRecordedRequestPersistence()
+            && (logEntry.getType() == FORWARDED_REQUEST || logEntry.getType() == EXPECTATION_RESPONSE)) {
             recordedRequestConsumer.accept(logEntry);
         }
         // Secondary memory valve: cap the body bytes retained per entry. Builds NEW copies (never

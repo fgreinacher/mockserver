@@ -90,6 +90,11 @@ public class LogEntry implements EventTranslator<LogEntry> {
     private Throwable throwable;
     private Runnable consumer;
     private boolean deleted = false;
+    // Transient marker set on entries injected back into the log by the recorded-traffic re-import
+    // path ({@code PUT /mockserver/import?format=recording}). It tells MockServerEventLog.processLogEntry
+    // NOT to hand the entry to the recorded-request disk consumer, so re-loading an archive does not
+    // append the same exchanges back to the (possibly same) NDJSON file and grow it without bound.
+    private transient boolean skipRecordedRequestPersistence = false;
 
     private String messageFormat;
     private String message;
@@ -174,6 +179,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         throwable = null;
         consumer = null;
         deleted = false;
+        skipRecordedRequestPersistence = false;
         messageFormat = null;
         message = null;
         arguments = null;
@@ -482,6 +488,16 @@ public class LogEntry implements EventTranslator<LogEntry> {
         return this;
     }
 
+    @JsonIgnore
+    public boolean isSkipRecordedRequestPersistence() {
+        return skipRecordedRequestPersistence;
+    }
+
+    public LogEntry setSkipRecordedRequestPersistence(boolean skipRecordedRequestPersistence) {
+        this.skipRecordedRequestPersistence = skipRecordedRequestPersistence;
+        return this;
+    }
+
     public String getMessageFormat() {
         return messageFormat;
     }
@@ -675,7 +691,8 @@ public class LogEntry implements EventTranslator<LogEntry> {
             .setBecause(getBecause())
             .setThrowable(getThrowable())
             .setConsumer(getConsumer())
-            .setDeleted(isDeleted());
+            .setDeleted(isDeleted())
+            .setSkipRecordedRequestPersistence(isSkipRecordedRequestPersistence());
     }
 
     @Override
@@ -698,7 +715,8 @@ public class LogEntry implements EventTranslator<LogEntry> {
             .setBecause(getBecause())
             .setThrowable(getThrowable())
             .setConsumer(getConsumer())
-            .setDeleted(isDeleted());
+            .setDeleted(isDeleted())
+            .setSkipRecordedRequestPersistence(isSkipRecordedRequestPersistence());
         clear();
     }
 

@@ -2,6 +2,9 @@ package org.mockserver.imports;
 
 import org.mockserver.fixture.FixtureRedactor;
 import org.mockserver.mock.Expectation;
+import org.mockserver.model.HttpRequest;
+import org.mockserver.model.HttpRequestAndHttpResponse;
+import org.mockserver.model.RequestDefinition;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -142,6 +145,53 @@ public class ImportRedaction {
             if (original.getId() != null) {
                 masked.withId(original.getId());
             }
+            result.add(masked);
+        }
+        return result;
+    }
+
+    /**
+     * Redact recorded request/response pairs (loaded from a persisted NDJSON archive by
+     * {@link RecordedTrafficImporter}) according to {@code options}, using the same sensitive-header
+     * and body-field masking as {@link #redact(List, Options)}. When redaction is disabled the input
+     * list is returned unchanged; otherwise a new list of redacted pairs is returned. This is a
+     * defence-in-depth re-mask on the import side — the persist side already redacts on write when
+     * {@code mockserver.redactSecretsInLog} is on, and re-masking an already-masked value is a no-op.
+     *
+     * @param pairs   recorded request/response pairs (may be null or empty)
+     * @param options redaction options; defaults to enabled if {@code null}
+     * @return the redacted (or original, when disabled) pairs
+     */
+    public static List<HttpRequestAndHttpResponse> redactRecordedTraffic(List<HttpRequestAndHttpResponse> pairs, Options options) {
+        if (pairs == null || pairs.isEmpty()) {
+            return pairs;
+        }
+        Options effectiveOptions = options != null ? options : Options.enabled();
+        if (!effectiveOptions.isEnabled()) {
+            return pairs;
+        }
+
+        Set<String> sensitiveHeaders = new LinkedHashSet<>(FixtureRedactor.defaultSensitiveHeaders());
+        sensitiveHeaders.addAll(effectiveOptions.additionalSensitiveHeaders());
+
+        Set<String> sensitiveBodyFields = new LinkedHashSet<>(DEFAULT_SENSITIVE_BODY_FIELDS);
+        sensitiveBodyFields.addAll(effectiveOptions.additionalSensitiveBodyFields());
+
+        FixtureRedactor redactor = new FixtureRedactor(sensitiveHeaders, sensitiveBodyFields);
+
+        List<HttpRequestAndHttpResponse> result = new ArrayList<>(pairs.size());
+        for (HttpRequestAndHttpResponse pair : pairs) {
+            if (pair == null) {
+                continue;
+            }
+            HttpRequestAndHttpResponse masked = new HttpRequestAndHttpResponse();
+            RequestDefinition redactedRequest = redactor.redactRequestDefinition(pair.getHttpRequest());
+            if (redactedRequest instanceof HttpRequest) {
+                masked.withHttpRequest((HttpRequest) redactedRequest);
+            } else {
+                masked.withHttpRequest(pair.getHttpRequest());
+            }
+            masked.withHttpResponse(redactor.redactResponseObject(pair.getHttpResponse()));
             result.add(masked);
         }
         return result;
