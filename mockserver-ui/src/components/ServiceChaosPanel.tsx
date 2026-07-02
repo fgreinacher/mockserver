@@ -76,14 +76,23 @@ import {
   saveChaosProfile,
   applyChaosProfile,
   deleteChaosProfile,
+  getExperimentHistory,
   formatDuration,
   type ExperimentDefinitionDTO,
   type ExperimentStageDTO,
   type ExperimentStatusDTO,
+  type ExperimentHistoryEntryDTO,
   type SloVerdictDTO,
   type SloObjectiveResultDTO,
   type SloResult,
 } from '../lib/chaosExperiment';
+import {
+  getPreemption,
+  startPreemption,
+  clearPreemption,
+  type PreemptionMode,
+  type PreemptionStatusDTO,
+} from '../lib/preemption';
 import AddIcon from '@mui/icons-material/Add';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
@@ -522,6 +531,32 @@ function servingStatusColor(status: ServingStatus): 'success' | 'error' | 'defau
   }
 }
 
+// --- Preemption simulation form state ---
+
+const PREEMPTION_MODES: PreemptionMode[] = ['both', 'reject503', 'goaway'];
+
+interface PreemptionFormState {
+  mode: PreemptionMode;
+  drainMs: string;
+  ttlMs: string;
+}
+
+const EMPTY_PREEMPTION_FORM: PreemptionFormState = { mode: 'both', drainMs: '', ttlMs: '' };
+
+/** Map a terminal experiment-history status to a MUI Chip colour. */
+function historyStatusColor(status: string): ChipColor {
+  switch (status) {
+    case 'completed':
+      return 'success';
+    case 'halted_by_auto_halt':
+    case 'halted_by_slo_breach':
+    case 'aborted_baseline_unhealthy':
+      return 'error';
+    default:
+      return 'default';
+  }
+}
+
 export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPanelProps) {
   const [data, setData] = useState<ServiceChaosResponse>({ services: {} });
   const [polledAt, setPolledAt] = useState(0);
@@ -575,6 +610,13 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
   const [grpcChaosPolledAt, setGrpcChaosPolledAt] = useState(0);
   const [grpcChaosForm, setGrpcChaosForm] = useState<GrpcChaosFormState>(EMPTY_GRPC_CHAOS_FORM);
 
+  // Preemption-simulation state
+  const [preemptionExpanded, setPreemptionExpanded] = useState(false);
+  const [preemptionData, setPreemptionData] = useState<PreemptionStatusDTO>({
+    state: 'inactive', inFlight: 0, drainRemainingMillis: 0,
+  });
+  const [preemptionForm, setPreemptionForm] = useState<PreemptionFormState>(EMPTY_PREEMPTION_FORM);
+
   // --- Auto-halt state (effects below, after `refresh` is declared) ---
   const [autoHaltEnabled, setAutoHaltEnabled] = useState<boolean | null>(null);
   const [autoHaltThreshold, setAutoHaltThreshold] = useState<string>('');
@@ -603,6 +645,13 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
   const [savedProfiles, setSavedProfiles] = useState<string[]>([]);
   const [profilesTick, setProfilesTick] = useState(0);
   const refreshProfiles = useCallback(() => setProfilesTick((t) => t + 1), []);
+
+  // --- Experiment history state (fetched on expand, not continuously polled) ---
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [historyData, setHistoryData] = useState<ExperimentHistoryEntryDTO[]>([]);
+  const [historyTick, setHistoryTick] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const refreshHistory = useCallback(() => setHistoryTick((t) => t + 1), []);
 
   // --- Registry / TCP / gRPC-fault / experiment polling ---
   // Migrated from hand-rolled setTimeout loops to the shared usePolling hook so a
@@ -654,6 +703,19 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
     enabled: grpcPanelExpanded && grpcFaultExpanded,
   });
 
+  // Preemption state polls only while its section is expanded (like TCP/gRPC); a
+  // one-shot fetch on mount / refresh (effect below) keeps the collapsed header
+  // badge current. Both write the same state.
+  const preemptionPoll = usePolling<PreemptionStatusDTO>({
+    fetcher: async (signal) => {
+      const result = await getPreemption(connectionParams, signal);
+      setPreemptionData(result);
+      return result;
+    },
+    intervalMs: POLL_INTERVAL_MS,
+    enabled: preemptionExpanded,
+  });
+
   // Experiment status always polls: faster (2s) while an experiment runs with the
   // section open, the normal 4s while open and idle, and slow (10s) while collapsed.
   const isExperimentRunning = experimentStatus?.status === 'running' || experimentStatus?.status === 'starting';
@@ -675,6 +737,7 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
   const { refresh: refreshTcpPoll } = tcpPoll;
   const { refresh: refreshGrpcChaosPoll } = grpcChaosPoll;
   const { refresh: refreshExperimentPoll } = experimentPoll;
+  const { refresh: refreshPreemptionPoll } = preemptionPoll;
 
   const refresh = useCallback(() => {
     // Re-trigger the refreshTick-keyed fetches (config, saved profiles, the
@@ -684,7 +747,8 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
     refreshTcpPoll();
     refreshGrpcChaosPoll();
     refreshExperimentPoll();
-  }, [refreshChaosPoll, refreshTcpPoll, refreshGrpcChaosPoll, refreshExperimentPoll]);
+    refreshPreemptionPoll();
+  }, [refreshChaosPoll, refreshTcpPoll, refreshGrpcChaosPoll, refreshExperimentPoll, refreshPreemptionPoll]);
 
   // --- Auto-halt configuration fetch + apply ---
   useEffect(() => {
@@ -802,6 +866,23 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
     };
   }, [connectionParams, refreshTick]);
 
+  // One-shot preemption fetch on mount / refresh so the collapsed header badge
+  // shows the real state. Live updates while expanded are driven by
+  // `preemptionPoll` above.
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    void getPreemption(connectionParams, controller.signal)
+      .then((result) => {
+        if (!cancelled) setPreemptionData(result);
+      })
+      .catch(() => { /* header badge is best-effort */ });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [connectionParams, refreshTick]);
+
   // ADV3: load saved chaos profile names while the experiments section is open.
   useEffect(() => {
     if (!experimentsExpanded) return;
@@ -820,6 +901,29 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
       controller.abort();
     };
   }, [connectionParams, experimentsExpanded, profilesTick]);
+
+  // Load experiment history when the History sub-section is open (fetched on
+  // expand and on an explicit refresh — not continuously polled).
+  useEffect(() => {
+    if (!experimentsExpanded || !historyExpanded) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    void (async () => {
+      if (!cancelled) setHistoryLoading(true);
+      try {
+        const entries = await getExperimentHistory(connectionParams, controller.signal);
+        if (!cancelled) setHistoryData(entries);
+      } catch {
+        // ignore — history is best-effort in the UI
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [connectionParams, experimentsExpanded, historyExpanded, historyTick]);
 
   const hosts = useMemo(() => Object.keys(data.services).sort(), [data.services]);
 
@@ -1049,6 +1153,40 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
       setGrpcChaosForm(EMPTY_GRPC_CHAOS_FORM);
     });
   }, [connectionParams, grpcChaosForm, runAction]);
+
+  // --- Preemption-simulation handlers ---
+
+  const preemptionActive = preemptionData.state !== 'inactive';
+
+  const setPreemptionField = (field: 'drainMs' | 'ttlMs') => (e: ChangeEvent<HTMLInputElement>) =>
+    setPreemptionForm((prev) => ({ ...prev, [field]: e.target.value }));
+
+  const handleStartPreemption = useCallback(() => {
+    const drainMs = num(preemptionForm.drainMs);
+    if (drainMs != null && (!Number.isInteger(drainMs) || drainMs < 1)) {
+      setActionError({ message: 'Drain must be a whole number of milliseconds >= 1' });
+      return;
+    }
+    const ttlMs = num(preemptionForm.ttlMs);
+    if (ttlMs != null && (!Number.isInteger(ttlMs) || ttlMs < 1)) {
+      setActionError({ message: 'TTL must be a whole number of milliseconds >= 1' });
+      return;
+    }
+    const request: { mode: PreemptionMode; drainMillis?: number; ttlMillis?: number } = {
+      mode: preemptionForm.mode,
+    };
+    if (drainMs != null) request.drainMillis = drainMs;
+    if (ttlMs != null) request.ttlMillis = ttlMs;
+    void runAction(async () => {
+      await startPreemption(connectionParams, request);
+    });
+  }, [connectionParams, preemptionForm, runAction]);
+
+  const handleClearPreemption = useCallback(() => {
+    void runAction(async () => {
+      await clearPreemption(connectionParams);
+    });
+  }, [connectionParams, runAction]);
 
   // --- Chaos Experiment handlers ---
 
@@ -1916,6 +2054,102 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
         </Collapse>
       </Paper>
 
+      {/* Preemption Simulation */}
+      <Paper variant="outlined" sx={{ p: 1.25, mb: 1.5 }}>
+        <Box
+          sx={{ display: 'flex', alignItems: 'center', gap: 1, cursor: 'pointer' }}
+          onClick={() => setPreemptionExpanded((v) => !v)}
+        >
+          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+            Preemption Simulation
+          </Typography>
+          <Chip
+            size="small"
+            label={preemptionData.state}
+            color={preemptionActive ? 'warning' : 'default'}
+            variant="outlined"
+          />
+          <Box sx={{ flex: 1 }} />
+          <Tooltip title="Uncordon: clear the preemption simulation">
+            <span>
+              <Button
+                size="small"
+                color="error"
+                startIcon={<DeleteSweepIcon fontSize="small" />}
+                disabled={busy || !preemptionActive}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleClearPreemption();
+                }}
+              >
+                Clear Preemption
+              </Button>
+            </span>
+          </Tooltip>
+          <IconButton size="small" aria-label={preemptionExpanded ? 'Collapse preemption' : 'Expand preemption'}>
+            {preemptionExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+          </IconButton>
+        </Box>
+        <Collapse in={preemptionExpanded} unmountOnExit>
+          <Box sx={{ mt: 1 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Simulate a Kubernetes node drain or Spot reclamation: the server cordons itself,
+              turning away new exchanges with a 503 and/or signalling HTTP/2 clients to drain via
+              GOAWAY, while in-flight requests finish. Add a TTL to auto-uncordon after a bounded
+              window (a dead-man&apos;s switch). This is a simulation only — it never stops the server.
+            </Typography>
+
+            {/* Current preemption state */}
+            <Paper variant="outlined" sx={{ p: 1, mb: 1 }}>
+              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                  Current State
+                </Typography>
+                <Chip size="small" label={preemptionData.state} color={preemptionActive ? 'warning' : 'default'} />
+                {preemptionData.mode && (
+                  <Typography variant="body2" color="text.secondary">
+                    mode {preemptionData.mode}
+                  </Typography>
+                )}
+                <Typography variant="body2" color="text.secondary">
+                  {preemptionData.inFlight} in-flight
+                </Typography>
+                {preemptionData.state === 'draining' && (
+                  <Typography variant="body2" color="text.secondary">
+                    drain remaining {formatDuration(preemptionData.drainRemainingMillis)}
+                  </Typography>
+                )}
+              </Box>
+            </Paper>
+
+            {/* Start form */}
+            <Paper variant="outlined" sx={{ p: 1 }}>
+              <Typography variant="caption" color="text.secondary">Start a preemption simulation</Typography>
+              <Box sx={{ ...CHAOS_GRID, mt: 0.75 }}>
+                <Select
+                  size="small"
+                  value={preemptionForm.mode}
+                  onChange={(e) => setPreemptionForm((prev) => ({ ...prev, mode: e.target.value as PreemptionMode }))}
+                  inputProps={{ 'aria-label': 'Preemption mode' }}
+                  fullWidth
+                >
+                  {PREEMPTION_MODES.map((m) => (
+                    <MenuItem key={m} value={m}>{m}</MenuItem>
+                  ))}
+                </Select>
+                <TextField size="small" label="Drain ms" placeholder="30000" value={preemptionForm.drainMs} onChange={setPreemptionField('drainMs')} fullWidth />
+                <TextField size="small" label="TTL ms" placeholder="60000" value={preemptionForm.ttlMs} onChange={setPreemptionField('ttlMs')} fullWidth />
+              </Box>
+              <Box sx={{ display: 'flex', mt: 0.5 }}>
+                <Button variant="contained" size="small" disabled={busy} onClick={handleStartPreemption} sx={{ ml: 'auto' }}>
+                  Start Preemption
+                </Button>
+              </Box>
+            </Paper>
+          </Box>
+        </Collapse>
+      </Paper>
+
       <ConfirmDialog
         open={confirm !== null}
         title={confirm?.title ?? ''}
@@ -2194,6 +2428,91 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
                   </Box>
                 )}
               </Box>
+            </Paper>
+
+            {/* Experiment history (fetched on expand, not continuously polled) */}
+            <Paper variant="outlined" sx={{ p: 1, mt: 1 }}>
+              <Box
+                sx={{ display: 'flex', alignItems: 'center', gap: 1, cursor: 'pointer' }}
+                onClick={() => setHistoryExpanded((v) => !v)}
+              >
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                  History
+                </Typography>
+                {historyData.length > 0 && (
+                  <Chip size="small" label={`${historyData.length} run${historyData.length === 1 ? '' : 's'}`} variant="outlined" />
+                )}
+                <Box sx={{ flex: 1 }} />
+                <Tooltip title="Refresh history">
+                  <span>
+                    <IconButton
+                      size="small"
+                      aria-label="Refresh history"
+                      disabled={historyLoading}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // Ensure the section is open, then force a re-fetch. Opening the
+                        // section already fetches; the tick covers the already-open case.
+                        if (!historyExpanded) setHistoryExpanded(true);
+                        else refreshHistory();
+                      }}
+                    >
+                      <RefreshIcon fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <IconButton size="small" aria-label={historyExpanded ? 'Collapse history' : 'Expand history'}>
+                  {historyExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+                </IconButton>
+              </Box>
+              <Collapse in={historyExpanded} unmountOnExit>
+                <Box sx={{ mt: 1 }}>
+                  {historyData.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">
+                      {historyLoading ? 'Loading history…' : 'No past experiment runs.'}
+                    </Typography>
+                  ) : (
+                    <TableContainer>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Name</TableCell>
+                            <TableCell>Status</TableCell>
+                            <TableCell>Verdict</TableCell>
+                            <TableCell align="right">Terminated</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {historyData.map((entry, idx) => (
+                            <TableRow key={idx}>
+                              <TableCell>
+                                <Typography variant="body2" sx={{ fontWeight: 600 }}>{entry.name}</Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Chip
+                                  size="small"
+                                  label={entry.status.replace(/_/g, ' ')}
+                                  color={historyStatusColor(entry.status)}
+                                />
+                              </TableCell>
+                              <TableCell>
+                                {entry.verdict
+                                  ? <Chip size="small" color={sloResultColor(entry.verdict.result)} label={entry.verdict.result} />
+                                  : <Typography variant="caption" color="text.secondary">—</Typography>}
+                              </TableCell>
+                              <TableCell align="right">
+                                <Typography variant="caption" color="text.secondary">
+                                  {new Date(entry.terminatedAtMillis).toLocaleString()}
+                                </Typography>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </Box>
+              </Collapse>
             </Paper>
           </Box>
         </Collapse>

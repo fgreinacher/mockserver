@@ -158,6 +158,40 @@ export async function stopChaosExperiment(
   await ensureOk(res);
 }
 
+// --- Experiment history ---
+//
+// GET /mockserver/chaosExperiment/history returns the bounded ring of the most
+// recent terminated experiments (newest first). Each entry records the name,
+// terminal status, termination time, and — when the experiment carried
+// sloCriteria — the terminal SLO verdict.
+
+/** One terminated-experiment record from GET /mockserver/chaosExperiment/history. */
+export interface ExperimentHistoryEntryDTO {
+  name: string;
+  /** Terminal status, e.g. "completed", "stopped", "halted_by_auto_halt". */
+  status: string;
+  terminatedAtMillis: number;
+  /** Terminal SLO verdict; present only when the experiment carried sloCriteria. */
+  verdict?: SloVerdictDTO;
+}
+
+/** Response envelope for GET /mockserver/chaosExperiment/history. */
+export interface ExperimentHistoryDTO {
+  count: number;
+  history: ExperimentHistoryEntryDTO[];
+}
+
+/** Fetch the bounded ring of past experiment runs (GET), newest first. */
+export async function getExperimentHistory(
+  params: ConnectionParams,
+  signal?: AbortSignal,
+): Promise<ExperimentHistoryEntryDTO[]> {
+  const res = await fetch(`${endpoint(params)}/history`, { signal });
+  await ensureOk(res);
+  const body = (await res.json()) as Partial<ExperimentHistoryDTO>;
+  return Array.isArray(body.history) ? body.history : [];
+}
+
 // --- ADV3: saved chaos profile library ---
 //
 // A "profile" is a saved experiment definition (the same shape as

@@ -1052,4 +1052,216 @@ describe('ServiceChaosPanel', () => {
     // No verdict → no SLO Verdict block at all
     expect(screen.queryByText('SLO Verdict')).not.toBeInTheDocument();
   });
+
+  // --- Preemption simulation + experiment history tests ---
+
+  function okJson(value: unknown) {
+    return { ok: true, status: 200, statusText: 'ok', json: async () => value };
+  }
+
+  interface FetchCall {
+    url: string;
+    method: string;
+    body?: Record<string, unknown>;
+  }
+
+  /**
+   * Stub every chaos-panel endpoint with the preemption state, experiment
+   * history, and experiment status the test needs; all other on-mount fetches
+   * are served empty-but-valid. Returns the recorded fetch calls for assertion.
+   */
+  function stubChaos(opts: {
+    preemption?: Record<string, unknown>;
+    history?: unknown[];
+    experimentStatus?: Record<string, unknown>;
+  } = {}) {
+    const calls: FetchCall[] = [];
+    const preemption = opts.preemption ?? { state: 'inactive', inFlight: 0, drainRemainingMillis: 0 };
+    const history = opts.history ?? [];
+    const experimentStatus = opts.experimentStatus ?? { status: 'none' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        const method = init?.method ?? 'GET';
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
+        calls.push({ url: u, method, body });
+        if (u.includes('/preemption')) {
+          if (method === 'DELETE') return okJson({ state: 'inactive' });
+          return okJson(preemption);
+        }
+        if (u.includes('/chaosExperiment/history')) {
+          return okJson({ count: history.length, history });
+        }
+        if (u.includes('/chaosExperiment')) {
+          if (method === 'PUT') return okJson({ status: 'started' });
+          if (method === 'DELETE') return okJson({ status: 'stopped' });
+          return okJson(experimentStatus);
+        }
+        if (u.includes('/grpc/health')) return okJson({});
+        if (u.includes('/tcpChaos')) return okJson({ hosts: {} });
+        if (u.includes('/grpcChaos')) return okJson({ services: {} });
+        return okJson({ services: {} });
+      }),
+    );
+    return { calls };
+  }
+
+  it('shows the Preemption card collapsed with an inactive badge by default', async () => {
+    stubChaos();
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Preemption Simulation')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Expand preemption' })).toBeInTheDocument();
+    // The header badge reflects the GET state.
+    expect(screen.getByText('inactive')).toBeInTheDocument();
+    // Clear is disabled while inactive.
+    expect(screen.getByRole('button', { name: /Clear Preemption/ })).toBeDisabled();
+  });
+
+  it('renders the live preemption state from the GET response', async () => {
+    stubChaos({ preemption: { state: 'draining', inFlight: 3, drainRemainingMillis: 15000, mode: 'both' } });
+    const user = userEvent.setup({ delay: null });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    // Header badge shows the cordoned state.
+    await waitFor(() => expect(screen.getByText('draining')).toBeInTheDocument());
+    // Clear is enabled while cordoned.
+    expect(screen.getByRole('button', { name: /Clear Preemption/ })).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: 'Expand preemption' }));
+    // Expanded current-state detail: in-flight count, mode and drain remaining.
+    await waitFor(() => expect(screen.getByText('3 in-flight')).toBeInTheDocument());
+    expect(screen.getByText('mode both')).toBeInTheDocument();
+    expect(screen.getByText(/drain remaining/)).toBeInTheDocument();
+  });
+
+  it('starts a preemption with the right payload (mode default both + drain + ttl)', async () => {
+    const { calls } = stubChaos();
+    const user = userEvent.setup({ delay: null });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Preemption Simulation')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Expand preemption' }));
+    await waitFor(() => expect(screen.getByText('Start a preemption simulation')).toBeInTheDocument());
+
+    // Scope to the preemption start form ("TTL ms" also exists in the HTTP form).
+    const startForm = screen.getByText('Start a preemption simulation').closest('.MuiPaper-root') as HTMLElement;
+    await user.type(within(startForm).getByLabelText('Drain ms'), '30000');
+    await user.type(within(startForm).getByLabelText('TTL ms'), '60000');
+    await user.click(screen.getByRole('button', { name: /Start Preemption/ }));
+
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/preemption') && c.method === 'PUT')).toBe(true));
+    const put = calls.find((c) => c.url.includes('/preemption') && c.method === 'PUT');
+    expect(put?.body).toEqual({ mode: 'both', drainMillis: 30000, ttlMillis: 60000 });
+  });
+
+  it('sends DELETE to /preemption when Clear Preemption is clicked', async () => {
+    const { calls } = stubChaos({ preemption: { state: 'draining', inFlight: 1, drainRemainingMillis: 5000, mode: 'reject503' } });
+    const user = userEvent.setup({ delay: null });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /Clear Preemption/ })).toBeEnabled());
+
+    await user.click(screen.getByRole('button', { name: /Clear Preemption/ }));
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/preemption') && c.method === 'DELETE')).toBe(true));
+  });
+
+  it('surfaces the error envelope when starting a preemption fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const u = String(url);
+        const method = init?.method ?? 'GET';
+        if (u.includes('/preemption') && method === 'PUT') {
+          return { ok: false, status: 400, statusText: 'Bad Request', json: async () => ({ error: 'invalid preemption request: bad mode' }) };
+        }
+        if (u.includes('/preemption')) return okJson({ state: 'inactive', inFlight: 0, drainRemainingMillis: 0 });
+        if (u.includes('/chaosExperiment/history')) return okJson({ count: 0, history: [] });
+        if (u.includes('/chaosExperiment')) return okJson({ status: 'none' });
+        if (u.includes('/grpc/health')) return okJson({});
+        if (u.includes('/tcpChaos')) return okJson({ hosts: {} });
+        if (u.includes('/grpcChaos')) return okJson({ services: {} });
+        return okJson({ services: {} });
+      }),
+    );
+    const user = userEvent.setup({ delay: null });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Preemption Simulation')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Expand preemption' }));
+    await waitFor(() => expect(screen.getByText('Start a preemption simulation')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /Start Preemption/ }));
+
+    expect(await screen.findByText(/invalid preemption request/)).toBeInTheDocument();
+  });
+
+  it('validates drain must be a whole number >= 1 before starting a preemption', async () => {
+    const { calls } = stubChaos();
+    const user = userEvent.setup({ delay: null });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Preemption Simulation')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Expand preemption' }));
+    await waitFor(() => expect(screen.getByText('Start a preemption simulation')).toBeInTheDocument());
+    const startForm = screen.getByText('Start a preemption simulation').closest('.MuiPaper-root') as HTMLElement;
+    await user.type(within(startForm).getByLabelText('Drain ms'), '0');
+    await user.click(screen.getByRole('button', { name: /Start Preemption/ }));
+
+    expect(await screen.findByText(/Drain must be a whole number/)).toBeInTheDocument();
+    expect(calls.some((c) => c.url.includes('/preemption') && c.method === 'PUT')).toBe(false);
+  });
+
+  it('fetches and renders experiment history when the History section expands', async () => {
+    const { calls } = stubChaos({
+      history: [
+        { name: 'nightly-error-storm', status: 'completed', terminatedAtMillis: 1_700_000_000_000, verdict: { result: 'PASS', windowFromEpochMillis: 0, windowToEpochMillis: 1, sampleCount: 5, objectiveResults: [] } },
+        { name: 'latency-probe', status: 'halted_by_slo_breach', terminatedAtMillis: 1_700_000_100_000 },
+      ],
+    });
+    const user = userEvent.setup({ delay: null });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Experiments')).toBeInTheDocument());
+
+    // No history GET until the section is opened.
+    expect(calls.some((c) => c.url.includes('/chaosExperiment/history'))).toBe(false);
+
+    await user.click(screen.getByRole('button', { name: 'Expand experiments' }));
+    await waitFor(() => expect(screen.getByText('History')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Expand history' }));
+
+    // History GET fires on expand, and the rows render from the fixture.
+    await waitFor(() => expect(screen.getByText('nightly-error-storm')).toBeInTheDocument());
+    expect(calls.some((c) => c.url.includes('/chaosExperiment/history'))).toBe(true);
+    expect(screen.getByText('latency-probe')).toBeInTheDocument();
+    expect(screen.getByText('completed')).toBeInTheDocument();
+    expect(screen.getByText('halted by slo breach')).toBeInTheDocument();
+    // The verdict chip from the first entry.
+    expect(screen.getByText('PASS')).toBeInTheDocument();
+  });
+
+  it('refetches history when the Refresh history button is clicked', async () => {
+    const { calls } = stubChaos({
+      history: [{ name: 'run-a', status: 'stopped', terminatedAtMillis: 1_700_000_000_000 }],
+    });
+    const user = userEvent.setup({ delay: null });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Experiments')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Expand experiments' }));
+    await user.click(screen.getByRole('button', { name: 'Expand history' }));
+    await waitFor(() => expect(screen.getByText('run-a')).toBeInTheDocument());
+
+    const before = calls.filter((c) => c.url.includes('/chaosExperiment/history')).length;
+    await user.click(screen.getByRole('button', { name: 'Refresh history' }));
+    await waitFor(() => expect(calls.filter((c) => c.url.includes('/chaosExperiment/history')).length).toBeGreaterThan(before));
+  });
+
+  it('shows an empty state when there is no experiment history', async () => {
+    stubChaos({ history: [] });
+    const user = userEvent.setup({ delay: null });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Experiments')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Expand experiments' }));
+    await user.click(screen.getByRole('button', { name: 'Expand history' }));
+    await waitFor(() => expect(screen.getByText('No past experiment runs.')).toBeInTheDocument());
+  });
 });
