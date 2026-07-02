@@ -159,6 +159,27 @@ const proxiedRequestsCache: ReconcileCache = new Map();
  * entry is unchanged we return — and keep cached — the previous reference and
  * its string; when it changes we cache the new string. Keys absent from `next`
  * are pruned so the cache cannot grow unbounded.
+ *
+ * ARRAY identity (L1): when the reconciled result is element-for-element
+ * identical to `prev` (same references, same order, same length) we return the
+ * ORIGINAL `prev` array rather than the freshly-mapped copy. The server re-sends
+ * the full list roughly once a second even when nothing has changed; without
+ * this, every push replaced all four array identities and re-rendered every
+ * subscribed panel (and invalidated every `useMemo([array])` downstream) for no
+ * visible change. Returning `prev` lets a Zustand selector on the array short-
+ * circuit the whole subtree. The cache is left untouched in this case because it
+ * is already valid for the preserved references.
+ *
+ * Serialization cost (L2): the dominant cost is `JSON.stringify(n)` on each new
+ * entry, which is irreducible for a structural change-detection compare without
+ * a protocol change (the server would have to send a per-entry hash/version) —
+ * explicitly out of scope. The only safe, clear pre-`stringify` discriminator
+ * across these heterogeneous entry shapes is reference identity, so we check
+ * `p === n` FIRST and reuse the cached string for that reference instead of
+ * re-serializing it. No speculative field-level discriminator is added: the
+ * measured throughput win comes from L1 (skipping re-renders on idle re-pushes),
+ * not from trying to eliminate a stringify that is genuinely needed whenever an
+ * entry's content actually differs.
  */
 function reconcileByKey<T extends { key: string }>(prev: T[], next: T[], cache: ReconcileCache): T[] {
   if (next.length === 0) {
@@ -172,18 +193,27 @@ function reconcileByKey<T extends { key: string }>(prev: T[], next: T[], cache: 
   }
   const prevByKey = new Map(prev.map((p) => [p.key, p] as const));
   const nextCache: ReconcileCache = new Map();
-  const result = next.map((n) => {
+  // Tracks whether the reconciled array diverges from `prev` in any position
+  // (different length, a new/changed entry, or a reorder). Stays false only when
+  // every element is the SAME reference at the SAME index as in `prev`.
+  let changed = next.length !== prev.length;
+  const result = next.map((n, i) => {
     const p = prevByKey.get(n.key);
     if (!p) {
+      changed = true;
       nextCache.set(n.key, { ref: n, str: JSON.stringify(n) });
       return n;
     }
-    const nStr = JSON.stringify(n);
     if (p === n) {
-      // Same reference already held; no identity to preserve, but keep it cached.
-      nextCache.set(n.key, { ref: n, str: nStr });
+      // Same reference already held — reuse its cached string (only when it was
+      // recorded for THIS reference) instead of re-serializing an unchanged entry.
+      const cached = cache.get(n.key);
+      const str = cached && cached.ref === n ? cached.str : JSON.stringify(n);
+      nextCache.set(n.key, { ref: n, str });
+      if (prev[i] !== n) changed = true; // same ref but reordered
       return n;
     }
+    const nStr = JSON.stringify(n);
     // Trust the cached string only when it was recorded for *this* reference;
     // otherwise (cold/stale cache after a direct setState) re-serialize `p`.
     const cached = cache.get(n.key);
@@ -191,11 +221,19 @@ function reconcileByKey<T extends { key: string }>(prev: T[], next: T[], cache: 
     if (pStr === nStr) {
       // Semantically unchanged — preserve the previous reference and its string.
       nextCache.set(n.key, { ref: p, str: pStr });
+      if (prev[i] !== p) changed = true; // preserved ref but reordered
       return p;
     }
+    changed = true;
     nextCache.set(n.key, { ref: n, str: nStr });
     return n;
   });
+  if (!changed) {
+    // Element-for-element identical to `prev`: keep the previous array identity
+    // so subscribed panels skip re-rendering. The existing cache already holds
+    // valid { ref, str } entries for these preserved references, so leave it.
+    return prev;
+  }
   cache.clear();
   for (const [k, v] of nextCache) cache.set(k, v);
   return result;

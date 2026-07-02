@@ -11,7 +11,7 @@
  */
 
 import type { JsonListItem } from '../types';
-import { parseTraffic, type ParsedTraffic } from './llmTraffic';
+import { cachedParseTraffic, type ParsedTraffic } from './llmTraffic';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -249,7 +249,7 @@ export function groupBySession(
 
   for (let i = 0; i < proxiedRequests.length; i++) {
     const item = proxiedRequests[i]!;
-    const parsed = parseTraffic(item.value);
+    const parsed = cachedParseTraffic(item.value);
 
     // Only consider LLM traffic
     if (!isLlmKind(parsed.kind)) continue;

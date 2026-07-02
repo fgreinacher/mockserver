@@ -153,6 +153,33 @@ export default function JsonEditor({
     }
   }, [configureJsonDefaults]);
 
+  // On unmount, remove THIS editor's schema entry from the shared, GLOBAL monaco
+  // jsonDefaults. `configureJsonDefaults` appends an entry per mounted editor but
+  // never removed it on unmount, so entries accumulated across Composer open/close
+  // cycles (each open mounts a fresh JsonEditor with a new modelUri). `modelUri`
+  // is stable for the lifetime of an instance, so this effect's cleanup runs only
+  // on unmount.
+  useEffect(() => {
+    return () => {
+      const monacoInstance = monacoRef.current;
+      const jsonLang = (monacoInstance?.languages as { json?: { jsonDefaults?: JsonLanguageDefaults } } | undefined)?.json;
+      if (!jsonLang?.jsonDefaults) return;
+      const defaults = jsonLang.jsonDefaults;
+      const existing = defaults.diagnosticsOptions.schemas ?? [];
+      const withoutThis = existing.filter(
+        (s: JsonSchemaEntry) => s.fileMatch?.[0] !== modelUri && s.uri !== modelUri,
+      );
+      // Only rewrite when this mount actually contributed an entry.
+      if (withoutThis.length !== existing.length) {
+        defaults.setDiagnosticsOptions({
+          validate: true,
+          allowComments: false,
+          schemas: withoutThis,
+        });
+      }
+    };
+  }, [modelUri]);
+
   const handleChange: OnChange = useCallback(
     (next) => {
       onChange(next ?? '');

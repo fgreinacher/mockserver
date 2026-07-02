@@ -143,3 +143,45 @@ describe('matchesItemSearch — regex and field operators', () => {
     expect(matchesItemSearch(item, '/[unclosed/')).toBe(false);
   });
 });
+
+describe('deep-search fallback cache (C2)', () => {
+  it('matches nested values via the JSON fallback and stays correct across repeated calls', () => {
+    const value = { httpRequest: { path: '/x' }, deep: { nested: { secret: 'alpha-token' } } };
+    // 'alpha-token' is not an extracted field, so it only matches via the JSON fallback.
+    expect(matchesItemSearch(value, 'alpha-token')).toBe(true);
+    // Repeated calls (as happen on every keystroke / push) stay correct.
+    expect(matchesItemSearch(value, 'alpha-token')).toBe(true);
+    expect(matchesItemSearch(value, 'not-present')).toBe(false);
+  });
+
+  it('evaluates a new object identity independently (correct after content changes)', () => {
+    const before = { httpRequest: { path: '/x' }, deep: { v: 'red' } };
+    expect(matchesItemSearch(before, 'red')).toBe(true);
+    expect(matchesItemSearch(before, 'green')).toBe(false);
+    // A changed item arrives as a NEW reference (reconcileByKey) — it must be
+    // evaluated fresh, not served from the previous object's cached text.
+    const after = { httpRequest: { path: '/x' }, deep: { v: 'green' } };
+    expect(matchesItemSearch(after, 'green')).toBe(true);
+    expect(matchesItemSearch(after, 'red')).toBe(false);
+  });
+
+  it('caches the deep text on the object reference (same identity reuses it)', () => {
+    // The WeakMap is keyed on the object reference; the store preserves that
+    // reference only while content is unchanged, so caching on identity is safe.
+    // Mutating the SAME reference in place (which the store never does for a
+    // changed item) is expected to hit the cached text — this documents the
+    // identity-keyed contract rather than a supported mutation path.
+    const value: Record<string, unknown> = { httpRequest: { path: '/x' }, deep: { v: 'first' } };
+    expect(matchesItemSearch(value, 'first')).toBe(true);
+    (value.deep as Record<string, unknown>).v = 'second';
+    // Same reference → served from cache → still matches the original text.
+    expect(matchesItemSearch(value, 'first')).toBe(true);
+  });
+
+  it('matches log messages via the JSON fallback', () => {
+    const message = { key: 'k1', value: { extra: { detail: 'buried-log-value' } } };
+    expect(matchesLogSearch(message, 'buried-log-value')).toBe(true);
+    expect(matchesLogSearch(message, 'buried-log-value')).toBe(true);
+    expect(matchesLogSearch(message, 'absent')).toBe(false);
+  });
+});

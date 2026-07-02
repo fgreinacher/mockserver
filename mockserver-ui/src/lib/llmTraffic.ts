@@ -1228,6 +1228,33 @@ export function parseTraffic(value: Record<string, unknown>): ParsedTraffic {
 }
 
 /**
+ * Per-object parse cache for {@link parseTraffic}.
+ *
+ * `parseTraffic` fully classifies a request/response pair and, for streamed
+ * responses, reassembles the entire SSE body and base64-decodes binary bodies —
+ * expensive to re-run for every captured request on every ~1/sec WebSocket push
+ * (and every render that groups or summarises traffic). The store's
+ * `reconcileByKey` preserves each unchanged item's `value` reference across
+ * pushes, so a WeakMap keyed on that reference returns the previously-parsed
+ * result until the underlying object actually changes — a changed item is
+ * delivered as a fresh reference and so misses the cache and re-parses. The
+ * WeakMap lets entries be collected once the item object is unreachable.
+ *
+ * This mirrors the `summaryCache` / `searchTextCache` pattern already used in
+ * TrafficInspector, and is shared by `summarizeTraffic` here and by the Trace
+ * view's session grouping so both reuse a single parse per item.
+ */
+const parseTrafficCache = new WeakMap<Record<string, unknown>, ParsedTraffic>();
+
+export function cachedParseTraffic(value: Record<string, unknown>): ParsedTraffic {
+  const hit = parseTrafficCache.get(value);
+  if (hit !== undefined) return hit;
+  const parsed = parseTraffic(value);
+  parseTrafficCache.set(value, parsed);
+  return parsed;
+}
+
+/**
  * Extract the actual body content from MockServer's body representation.
  * MockServer bodies can be:
  * - A plain string
@@ -1285,7 +1312,7 @@ export function summarizeTraffic(value: Record<string, unknown>): TrafficSummary
     }
   }
 
-  const parsed = parseTraffic(value);
+  const parsed = cachedParseTraffic(value);
 
   // Extract per-request timing from the forwarded response (if present)
   let timing: RequestTiming | null = null;

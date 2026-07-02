@@ -52,15 +52,22 @@ class MockWebSocket {
   }
 }
 
+/** Force document.hidden for the visibility-gating tests (jsdom defaults to false). */
+function setHidden(hidden: boolean): void {
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+}
+
 describe('useWebSocket', () => {
   const defaultParams = { host: 'localhost', port: '1080', secure: false };
 
   beforeEach(() => {
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
+    setHidden(false);
     useDashboardStore.setState({
       connectionStatus: 'disconnected',
       error: null,
+      errorSource: null,
       logMessages: [],
       activeExpectations: [],
       recordedRequests: [],
@@ -70,6 +77,7 @@ describe('useWebSocket', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    setHidden(false);
   });
 
   it('connects to the correct WebSocket URL', () => {
@@ -265,5 +273,122 @@ describe('useWebSocket', () => {
       ws.simulateOpen();
     });
     expect(ws.closed).toBe(true);
+  });
+
+  describe('hidden-tab message buffering', () => {
+    it('buffers messages while hidden and applies only the newest on visible', () => {
+      const { result } = renderHook(() => useWebSocket(defaultParams));
+      act(() => {
+        result.current.connect({});
+      });
+      act(() => {
+        MockWebSocket.instances[0]!.simulateOpen();
+      });
+
+      setHidden(true);
+
+      // Two full-state pushes arrive while hidden — neither touches the store.
+      act(() => {
+        MockWebSocket.instances[0]!.simulateMessage({
+          logMessages: [{ key: 'l1', value: {} }],
+          activeExpectations: [],
+          recordedRequests: [],
+          proxiedRequests: [],
+        });
+        MockWebSocket.instances[0]!.simulateMessage({
+          logMessages: [{ key: 'l2', value: {} }, { key: 'l3', value: {} }],
+          activeExpectations: [],
+          recordedRequests: [],
+          proxiedRequests: [],
+        });
+      });
+      expect(useDashboardStore.getState().logMessages).toHaveLength(0);
+      // The socket stays open while hidden — no reconnect churn.
+      expect(MockWebSocket.instances).toHaveLength(1);
+      expect(MockWebSocket.instances[0]!.closed).toBe(false);
+
+      // Becoming visible replays only the NEWEST buffered message (full state).
+      act(() => {
+        setHidden(false);
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(useDashboardStore.getState().logMessages).toHaveLength(2);
+    });
+
+    it('applies a buffered error-only message with push semantics on visible', () => {
+      const { result } = renderHook(() => useWebSocket(defaultParams));
+      act(() => {
+        result.current.connect({});
+      });
+      act(() => {
+        MockWebSocket.instances[0]!.simulateOpen();
+      });
+
+      setHidden(true);
+      act(() => {
+        MockWebSocket.instances[0]!.simulateMessage({ error: 'invalid filter' });
+      });
+      // Not applied while hidden.
+      expect(useDashboardStore.getState().error).toBeNull();
+
+      act(() => {
+        setHidden(false);
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(useDashboardStore.getState().error).toBe('invalid filter');
+      // Applied late, it still carries push semantics so a later clean push clears it.
+      expect(useDashboardStore.getState().errorSource).toBe('push');
+    });
+
+    it('does nothing on visible when no message was buffered', () => {
+      const { result } = renderHook(() => useWebSocket(defaultParams));
+      act(() => {
+        result.current.connect({});
+      });
+      act(() => {
+        MockWebSocket.instances[0]!.simulateOpen();
+      });
+
+      act(() => {
+        setHidden(false);
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(useDashboardStore.getState().logMessages).toHaveLength(0);
+      expect(useDashboardStore.getState().error).toBeNull();
+    });
+
+    it('processes messages live once the tab is visible again', () => {
+      const { result } = renderHook(() => useWebSocket(defaultParams));
+      act(() => {
+        result.current.connect({});
+      });
+      act(() => {
+        MockWebSocket.instances[0]!.simulateOpen();
+      });
+
+      setHidden(true);
+      act(() => {
+        MockWebSocket.instances[0]!.simulateMessage({
+          logMessages: [{ key: 'stale', value: {} }],
+          activeExpectations: [],
+          recordedRequests: [],
+          proxiedRequests: [],
+        });
+      });
+      act(() => {
+        setHidden(false);
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      // A subsequent live message applies immediately (no buffering).
+      act(() => {
+        MockWebSocket.instances[0]!.simulateMessage({
+          logMessages: [{ key: 'a', value: {} }, { key: 'b', value: {} }, { key: 'c', value: {} }],
+          activeExpectations: [],
+          recordedRequests: [],
+          proxiedRequests: [],
+        });
+      });
+      expect(useDashboardStore.getState().logMessages).toHaveLength(3);
+    });
   });
 });

@@ -256,6 +256,30 @@ function matchesOperator(value: Record<string, unknown>, op: FieldOperator): boo
 }
 
 /**
+ * Per-object JSON-text cache for the deep-search fallback.
+ *
+ * `matchesItemSearch` / `matchesLogSearch` fall back to `JSON.stringify(obj)`
+ * for nested values the field extractor misses. Without a cache that ran once
+ * per row on every keystroke AND on every ~1/sec WebSocket push while a search
+ * term is active. The store's `reconcileByKey` preserves each unchanged item's
+ * object reference across pushes, so a WeakMap keyed on that reference serializes
+ * each item at most once until its content actually changes (a changed item is
+ * delivered as a fresh reference and re-serializes). Mirrors TrafficInspector's
+ * `searchTextCache`. The raw (non-lowercased) JSON is stored because
+ * `makeTextPredicate` applies its own case handling (a regex term may be
+ * case-sensitive).
+ */
+const searchTextCache = new WeakMap<object, string>();
+
+function cachedJsonText(obj: object): string {
+  const hit = searchTextCache.get(obj);
+  if (hit !== undefined) return hit;
+  const text = JSON.stringify(obj);
+  searchTextCache.set(obj, text);
+  return text;
+}
+
+/**
  * Check if a generic item matches a search term by comparing against
  * extracted searchable fields. Field operators (`status:>=400`, `method:POST`,
  * `path:/api/*`) are ANDed together with the free-text portion. Free text falls
@@ -278,7 +302,7 @@ export function matchesItemSearch(value: Record<string, unknown>, term: string):
   const fields = extractSearchableFields(value);
   if (fields.some((f) => pred(f))) return true;
   // Fallback to full JSON for deep nested values the field extractor misses
-  return pred(JSON.stringify(value));
+  return pred(cachedJsonText(value));
 }
 
 /**
@@ -310,5 +334,5 @@ export function matchesLogSearch(
     }
   }
   // Fallback to JSON stringify
-  return pred(JSON.stringify(message));
+  return pred(cachedJsonText(message));
 }

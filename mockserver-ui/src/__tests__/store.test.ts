@@ -170,6 +170,86 @@ describe('DashboardStore', () => {
   });
 
   describe('reconcileByKey identity preservation', () => {
+    it('preserves the ARRAY identity for an identical push (no re-render churn)', () => {
+      const message: WebSocketMessage = {
+        logMessages: [{ key: 'l1', value: { messageParts: [] } }],
+        activeExpectations: [{ key: 'e1', value: { httpRequest: { path: '/a' } } }],
+        recordedRequests: [{ key: 'r1', value: { path: '/r' } }],
+        proxiedRequests: [{ key: 'p1', value: { path: '/p' } }],
+      };
+      // First push establishes the reconciled arrays.
+      useDashboardStore.getState().applyMessage(message);
+      const first = useDashboardStore.getState();
+      const firstLogs = first.logMessages;
+      const firstExpectations = first.activeExpectations;
+      const firstReceived = first.recordedRequests;
+      const firstProxied = first.proxiedRequests;
+
+      // A second, brand-new-but-semantically-identical push (the server re-sends
+      // the full list ~1/sec even when nothing changed).
+      useDashboardStore.getState().applyMessage({
+        logMessages: [{ key: 'l1', value: { messageParts: [] } }],
+        activeExpectations: [{ key: 'e1', value: { httpRequest: { path: '/a' } } }],
+        recordedRequests: [{ key: 'r1', value: { path: '/r' } }],
+        proxiedRequests: [{ key: 'p1', value: { path: '/p' } }],
+      });
+      const second = useDashboardStore.getState();
+
+      // The four array identities are preserved so a Zustand array selector can
+      // short-circuit and no subscribed panel re-renders.
+      expect(second.logMessages).toBe(firstLogs);
+      expect(second.activeExpectations).toBe(firstExpectations);
+      expect(second.recordedRequests).toBe(firstReceived);
+      expect(second.proxiedRequests).toBe(firstProxied);
+    });
+
+    it('returns a NEW array identity when any item changes', () => {
+      useDashboardStore.getState().applyMessage({
+        logMessages: [],
+        activeExpectations: [{ key: 'e1', value: { v: 1 } }],
+        recordedRequests: [],
+        proxiedRequests: [],
+      });
+      const before = useDashboardStore.getState().activeExpectations;
+
+      useDashboardStore.getState().applyMessage({
+        logMessages: [],
+        activeExpectations: [{ key: 'e1', value: { v: 2 } }],
+        recordedRequests: [],
+        proxiedRequests: [],
+      });
+      const after = useDashboardStore.getState().activeExpectations;
+      expect(after).not.toBe(before);
+    });
+
+    it('returns a NEW array identity when items are reordered', () => {
+      useDashboardStore.getState().applyMessage({
+        logMessages: [],
+        activeExpectations: [
+          { key: 'a', value: { v: 1 } },
+          { key: 'b', value: { v: 1 } },
+        ],
+        recordedRequests: [],
+        proxiedRequests: [],
+      });
+      const before = useDashboardStore.getState().activeExpectations;
+
+      // Same items, opposite order — a reorder is a change even though every
+      // item is individually unchanged.
+      useDashboardStore.getState().applyMessage({
+        logMessages: [],
+        activeExpectations: [
+          { key: 'b', value: { v: 1 } },
+          { key: 'a', value: { v: 1 } },
+        ],
+        recordedRequests: [],
+        proxiedRequests: [],
+      });
+      const after = useDashboardStore.getState().activeExpectations;
+      expect(after).not.toBe(before);
+      expect(after.map((i) => i.key)).toEqual(['b', 'a']);
+    });
+
     it('keeps the previous object reference for an unchanged item across pushes', () => {
       // First push establishes the references.
       useDashboardStore.getState().applyMessage({

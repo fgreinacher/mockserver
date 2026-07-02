@@ -32,6 +32,11 @@ export function useWebSocket(params: ConnectionParams) {
   const reconnectCountRef = useRef(0);
   const lastFilterRef = useRef<RequestFilter>({});
   const connectRef = useRef<(filter: RequestFilter) => void>(() => {});
+  // While the tab is hidden we don't parse/reconcile/re-render on every ~1/sec
+  // push — we stash only the NEWEST raw message here (each push is full state)
+  // and replay it when the tab becomes visible again. The socket stays open so
+  // the server keeps us current without reconnect churn. `null` = nothing buffered.
+  const hiddenMessageRef = useRef<string | null>(null);
   // Set when a dashboard HTTP probe returns 401/403 (control-plane auth is enabled but this
   // client is unauthenticated). Suppresses the generic "server down" banner so the actionable
   // auth-required message is shown instead. Cleared on a successful open.
@@ -40,6 +45,22 @@ export function useWebSocket(params: ConnectionParams) {
   const applyMessage = useDashboardStore((s) => s.applyMessage);
   const setConnectionStatus = useDashboardStore((s) => s.setConnectionStatus);
   const setError = useDashboardStore((s) => s.setError);
+
+  // Parse + apply a raw WebSocket payload. Shared by the live onmessage path and
+  // the deferred visibility-resume path so error/parse-failure and the store's
+  // errorSource semantics behave identically whether a message is applied live
+  // or replayed late.
+  const applyRawMessage = useCallback(
+    (raw: string) => {
+      try {
+        const data = JSON.parse(raw) as WebSocketMessage;
+        applyMessage(data);
+      } catch {
+        setError('Failed to parse WebSocket message');
+      }
+    },
+    [applyMessage, setError],
+  );
 
   const probeAuthRequired = useCallback(async () => {
     // The browser WebSocket API does not expose the handshake HTTP status: a rejected upgrade
@@ -120,12 +141,16 @@ export function useWebSocket(params: ConnectionParams) {
       };
 
       ws.onmessage = (event: MessageEvent) => {
-        try {
-          const data = JSON.parse(event.data as string) as WebSocketMessage;
-          applyMessage(data);
-        } catch {
-          setError('Failed to parse WebSocket message');
+        const raw = event.data as string;
+        // Hidden tab: buffer only the newest payload and skip all work until the
+        // tab is shown again (a background dashboard otherwise parses/reconciles/
+        // re-renders 1/sec forever). onopen/onclose/onerror are NOT gated, so the
+        // connection banner still updates correctly while hidden.
+        if (typeof document !== 'undefined' && document.hidden) {
+          hiddenMessageRef.current = raw;
+          return;
         }
+        applyRawMessage(raw);
       };
 
       ws.onclose = () => {
@@ -141,12 +166,31 @@ export function useWebSocket(params: ConnectionParams) {
         setConnectionStatus('error');
       };
     },
-    [params, applyMessage, setConnectionStatus, setError, scheduleReconnect, probeAuthRequired],
+    [params, applyRawMessage, setConnectionStatus, setError, scheduleReconnect, probeAuthRequired],
   );
 
   useEffect(() => {
     connectRef.current = connect;
   }, [connect]);
+
+  // When the tab becomes visible again, replay the newest message buffered while
+  // it was hidden so the panels are current immediately (rather than waiting for
+  // the next ~1/sec push). Applying it goes through the same path as a live
+  // message, so a buffered error-only payload and errorSource semantics behave
+  // identically to a live one.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisibilityChange = (): void => {
+      if (document.hidden) return;
+      const buffered = hiddenMessageRef.current;
+      if (buffered !== null) {
+        hiddenMessageRef.current = null;
+        applyRawMessage(buffered);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [applyRawMessage]);
 
   const sendFilter = useCallback(
     (filter: RequestFilter) => {
@@ -170,6 +214,9 @@ export function useWebSocket(params: ConnectionParams) {
       closeWebSocket(socketRef.current);
       socketRef.current = null;
     }
+    // Drop any message buffered while hidden so it can't be replayed after an
+    // intentional disconnect.
+    hiddenMessageRef.current = null;
     setConnectionStatus('disconnected');
   }, [setConnectionStatus]);
 

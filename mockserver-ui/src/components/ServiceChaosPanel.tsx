@@ -28,6 +28,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import RestoreIcon from '@mui/icons-material/Restore';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
+import { usePolling } from '../hooks/usePolling';
 import {
   fetchServiceChaos,
   registerServiceChaos,
@@ -582,7 +583,6 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
   // --- Chaos Experiments state ---
   const [experimentsExpanded, setExperimentsExpanded] = useState(false);
   const [experimentStatus, setExperimentStatus] = useState<ExperimentStatusDTO | null>(null);
-  const experimentStatusRef = useRef<ExperimentStatusDTO | null>(null);
   const [expName, setExpName] = useState('');
   const [expLoop, setExpLoop] = useState(false);
   const stageIdCounter = useRef(1);
@@ -604,7 +604,87 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
   const [profilesTick, setProfilesTick] = useState(0);
   const refreshProfiles = useCallback(() => setProfilesTick((t) => t + 1), []);
 
-  const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
+  // --- Registry / TCP / gRPC-fault / experiment polling ---
+  // Migrated from hand-rolled setTimeout loops to the shared usePolling hook so a
+  // hidden/background tab stops polling (and re-parsing/re-rendering) entirely and
+  // resumes with an immediate poll when shown again. usePolling is used purely as
+  // the scheduler (with its built-in visibility gating); each fetcher writes the
+  // existing component state exactly as the old loops did — an async fetcher body,
+  // not a synchronous setState-in-effect — so the rest of the component and its
+  // TTL-countdown timestamps are unchanged. The hasAnyTtl-gated 1s tick (below)
+  // is left as-is.
+  const chaosPoll = usePolling<ServiceChaosResponse>({
+    fetcher: async (signal) => {
+      try {
+        const response = await fetchServiceChaos(connectionParams, signal);
+        setData(response);
+        setPolledAt(Date.now());
+        setLoadError(null);
+        return response;
+      } catch (e) {
+        if (!signal.aborted) setLoadError(e instanceof Error ? e.message : String(e));
+        throw e; // let usePolling schedule the next poll
+      }
+    },
+    intervalMs: POLL_INTERVAL_MS,
+  });
+
+  // TCP and gRPC-fault chaos poll only while their section is expanded; the
+  // one-shot fetches on mount / refresh (effects below) still populate the
+  // collapsed header counts. Both the poll and the one-shot write the same state.
+  const tcpPoll = usePolling<TcpChaosResponse>({
+    fetcher: async (signal) => {
+      const result = await fetchTcpChaos(connectionParams, signal);
+      setTcpData(result);
+      setTcpPolledAt(Date.now());
+      return result;
+    },
+    intervalMs: POLL_INTERVAL_MS,
+    enabled: tcpExpanded,
+  });
+
+  const grpcChaosPoll = usePolling<GrpcChaosResponse>({
+    fetcher: async (signal) => {
+      const result = await fetchGrpcChaos(connectionParams, signal);
+      setGrpcChaosData(result);
+      setGrpcChaosPolledAt(Date.now());
+      return result;
+    },
+    intervalMs: POLL_INTERVAL_MS,
+    enabled: grpcPanelExpanded && grpcFaultExpanded,
+  });
+
+  // Experiment status always polls: faster (2s) while an experiment runs with the
+  // section open, the normal 4s while open and idle, and slow (10s) while collapsed.
+  const isExperimentRunning = experimentStatus?.status === 'running' || experimentStatus?.status === 'starting';
+  const experimentIntervalMs = experimentsExpanded
+    ? (isExperimentRunning ? 2000 : POLL_INTERVAL_MS)
+    : 10000;
+  const experimentPoll = usePolling<ExperimentStatusDTO>({
+    fetcher: async (signal) => {
+      const status = await getChaosExperimentStatus(connectionParams, signal);
+      setExperimentStatus(status);
+      return status;
+    },
+    intervalMs: experimentIntervalMs,
+  });
+
+  // usePolling's refresh is a stable callback; destructure so the combined
+  // refresh below has stable deps (no per-render identity churn).
+  const { refresh: refreshChaosPoll } = chaosPoll;
+  const { refresh: refreshTcpPoll } = tcpPoll;
+  const { refresh: refreshGrpcChaosPoll } = grpcChaosPoll;
+  const { refresh: refreshExperimentPoll } = experimentPoll;
+
+  const refresh = useCallback(() => {
+    // Re-trigger the refreshTick-keyed fetches (config, saved profiles, the
+    // one-shot header-count fetches) AND force each poll to re-run immediately.
+    setRefreshTick((t) => t + 1);
+    refreshChaosPoll();
+    refreshTcpPoll();
+    refreshGrpcChaosPoll();
+    refreshExperimentPoll();
+  }, [refreshChaosPoll, refreshTcpPoll, refreshGrpcChaosPoll, refreshExperimentPoll]);
 
   // --- Auto-halt configuration fetch + apply ---
   useEffect(() => {
@@ -630,35 +710,6 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
       setActionError(humanizeError(e));
     }
   }, [connectionParams, refresh]);
-
-  // Poll the registry on an interval.
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    async function poll(): Promise<void> {
-      try {
-        const response = await fetchServiceChaos(connectionParams, controller.signal);
-        if (cancelled) return;
-        setData(response);
-        setPolledAt(Date.now());
-        setLoadError(null);
-      } catch (e) {
-        if (cancelled || controller.signal.aborted) return;
-        setLoadError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
-      }
-    }
-
-    void poll();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (timer) clearTimeout(timer);
-    };
-  }, [connectionParams, refreshTick]);
 
   // Whether any active registration (HTTP service, TCP host, or gRPC service)
   // actually carries a TTL/expiry to count down. The `ttlRemainingMillis` maps
@@ -712,97 +763,44 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
     };
   }, [connectionParams, grpcPanelExpanded, grpcHealthExpanded, refreshTick]);
 
-  // Fetch TCP chaos on mount (so the collapsed header chip shows the real count),
-  // then keep polling only while the section is expanded.
+  // One-shot TCP chaos fetch on mount / refresh so the collapsed header chip shows
+  // the real count. Live updates while expanded are driven by `tcpPoll` above.
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    async function poll(): Promise<void> {
-      try {
-        const result = await fetchTcpChaos(connectionParams, controller.signal);
+    void fetchTcpChaos(connectionParams, controller.signal)
+      .then((result) => {
         if (!cancelled) {
           setTcpData(result);
           setTcpPolledAt(Date.now());
         }
-      } catch {
-        // ignore
-      } finally {
-        if (!cancelled && tcpExpanded) timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
-      }
-    }
-
-    void poll();
+      })
+      .catch(() => { /* header count is best-effort */ });
     return () => {
       cancelled = true;
       controller.abort();
-      if (timer) clearTimeout(timer);
     };
-  }, [connectionParams, tcpExpanded, refreshTick]);
+  }, [connectionParams, refreshTick]);
 
-  // Fetch gRPC fault injection chaos on mount (so the collapsed header chip shows the real count),
-  // then keep polling only while the gRPC panel + fault sub-section are expanded.
+  // One-shot gRPC fault-injection chaos fetch on mount / refresh so the collapsed
+  // header chip shows the real count. Live updates while the gRPC panel + fault
+  // sub-section are expanded are driven by `grpcChaosPoll` above.
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    async function poll(): Promise<void> {
-      try {
-        const result = await fetchGrpcChaos(connectionParams, controller.signal);
+    void fetchGrpcChaos(connectionParams, controller.signal)
+      .then((result) => {
         if (!cancelled) {
           setGrpcChaosData(result);
           setGrpcChaosPolledAt(Date.now());
         }
-      } catch {
-        // ignore
-      } finally {
-        if (!cancelled && grpcPanelExpanded && grpcFaultExpanded) timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
-      }
-    }
-
-    void poll();
+      })
+      .catch(() => { /* header count is best-effort */ });
     return () => {
       cancelled = true;
       controller.abort();
-      if (timer) clearTimeout(timer);
     };
-  }, [connectionParams, grpcPanelExpanded, grpcFaultExpanded, refreshTick]);
-
-  // Poll chaos experiment status on mount and while the experiments section is
-  // expanded. Poll more frequently (2s) while a running experiment is active.
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    async function poll(): Promise<void> {
-      try {
-        const status = await getChaosExperimentStatus(connectionParams, controller.signal);
-        if (!cancelled) {
-          experimentStatusRef.current = status;
-          setExperimentStatus(status);
-        }
-      } catch {
-        // ignore
-      } finally {
-        if (!cancelled) {
-          const latest = experimentStatusRef.current;
-          const isRunning = latest?.status === 'running' || latest?.status === 'starting';
-          const interval = isRunning ? 2000 : POLL_INTERVAL_MS;
-          timer = setTimeout(() => void poll(), experimentsExpanded ? interval : 10000);
-        }
-      }
-    }
-
-    void poll();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (timer) clearTimeout(timer);
-    };
-  }, [connectionParams, experimentsExpanded, refreshTick]);
+  }, [connectionParams, refreshTick]);
 
   // ADV3: load saved chaos profile names while the experiments section is open.
   useEffect(() => {

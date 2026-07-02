@@ -22,9 +22,24 @@ type EditorMockProps = {
 // diagnostics callback.
 let lastOnValidate: ((markers: Marker[]) => void) | undefined;
 
+// A functional jsonDefaults stub whose setDiagnosticsOptions actually mutates the
+// backing `schemas` array, so tests can assert per-editor schema registration and
+// its removal on unmount (M1p) rather than just that the setter was called.
+type SchemaEntry = { uri?: string; fileMatch?: string[]; schema?: unknown };
 const monacoStub = {
-  languages: { json: { jsonDefaults: { diagnosticsOptions: { schemas: [] }, setDiagnosticsOptions: vi.fn() } } },
+  languages: {
+    json: {
+      jsonDefaults: {
+        diagnosticsOptions: { schemas: [] as SchemaEntry[] },
+        setDiagnosticsOptions(opts: { schemas?: SchemaEntry[] }) {
+          monacoStub.languages.json.jsonDefaults.diagnosticsOptions.schemas = opts.schemas ?? [];
+        },
+      },
+    },
+  },
 };
+
+const registeredSchemas = () => monacoStub.languages.json.jsonDefaults.diagnosticsOptions.schemas;
 
 vi.mock('@monaco-editor/react', () => ({
   loader: { config: vi.fn() },
@@ -65,6 +80,7 @@ function renderEditor(props: Partial<React.ComponentProps<typeof JsonEditor>> = 
 describe('JsonEditor', () => {
   beforeEach(() => {
     lastOnValidate = undefined;
+    monacoStub.languages.json.jsonDefaults.diagnosticsOptions.schemas = [];
   });
 
   it('renders the editor with the supplied value and language', () => {
@@ -114,5 +130,41 @@ describe('JsonEditor', () => {
     // 2 problems counted (the severity-1 hint is filtered out).
     expect(errors).toHaveTextContent('2 problems');
     expect(errors).toHaveTextContent('Missing property "name"');
+  });
+
+  describe('global monaco schema registration (M1p)', () => {
+    const renderWithSchema = () =>
+      render(
+        <ThemeProvider theme={buildTheme('light')}>
+          <JsonEditor value="{}" onChange={vi.fn()} language="json" schema={{ type: 'object' }} />
+        </ThemeProvider>,
+      );
+
+    it('registers a schema entry on mount and removes it on unmount', () => {
+      expect(registeredSchemas()).toHaveLength(0);
+      const { unmount } = renderWithSchema();
+      expect(registeredSchemas()).toHaveLength(1);
+      unmount();
+      expect(registeredSchemas()).toHaveLength(0);
+    });
+
+    it('does not accumulate entries across repeated mount/unmount cycles', () => {
+      for (let i = 0; i < 3; i++) {
+        const { unmount } = renderWithSchema();
+        expect(registeredSchemas()).toHaveLength(1);
+        unmount();
+        expect(registeredSchemas()).toHaveLength(0);
+      }
+    });
+
+    it('removes only the unmounted editor’s entry when several are mounted', () => {
+      const a = renderWithSchema();
+      const b = renderWithSchema();
+      expect(registeredSchemas()).toHaveLength(2);
+      a.unmount();
+      expect(registeredSchemas()).toHaveLength(1);
+      b.unmount();
+      expect(registeredSchemas()).toHaveLength(0);
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseTraffic,
+  cachedParseTraffic,
   parseSseStream,
   summarizeTraffic,
   getModelLabel,
@@ -2474,5 +2475,44 @@ describe('groupConversationTurns', () => {
 
   it('handles an empty input list', () => {
     expect(groupConversationTurns([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cachedParseTraffic (C1) — per-object parse cache
+// ---------------------------------------------------------------------------
+
+describe('cachedParseTraffic', () => {
+  const anthropicValue = () => ({
+    httpRequest: {
+      path: '/v1/messages',
+      headers: { host: ['api.anthropic.com'] },
+      body: { type: 'JSON', json: { model: 'claude-3-5-sonnet', messages: [{ role: 'user', content: 'hi' }] } },
+    },
+    httpResponse: {
+      body: { type: 'JSON', json: { type: 'message', model: 'claude-3-5-sonnet', stop_reason: 'end_turn', content: [{ type: 'text', text: 'hello' }], usage: { input_tokens: 5, output_tokens: 3 } } },
+    },
+  });
+
+  it('returns the SAME result instance for the same object reference', () => {
+    const value = anthropicValue();
+    const a = cachedParseTraffic(value);
+    const b = cachedParseTraffic(value);
+    expect(b).toBe(a);
+  });
+
+  it('returns a result equal to an uncached parseTraffic', () => {
+    const value = anthropicValue();
+    expect(cachedParseTraffic(value)).toEqual(parseTraffic(value));
+  });
+
+  it('re-parses (fresh result) for a new object identity with identical content', () => {
+    const first = cachedParseTraffic(anthropicValue());
+    const second = cachedParseTraffic(anthropicValue()); // new reference
+    // Distinct instances (cache is keyed on identity) but structurally equal —
+    // a changed item is delivered by the store as a fresh reference, so a new
+    // identity correctly bypasses the stale cache entry.
+    expect(second).not.toBe(first);
+    expect(second).toEqual(first);
   });
 });
