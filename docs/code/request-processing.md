@@ -322,6 +322,31 @@ The `create_expectations_from_recorded_traffic` MCP tool converts `FORWARDED_REQ
 
 Unlike the raw MCP tool (a verbatim 1:1 dump — 50 hits to `GET /users/123` become 50 brittle `Times.once()` expectations), `consolidate()` collapses exchanges by request shape into a single `Times.unlimited()` expectation, infers `/users/{id}` path parameters from varying id segments, strips volatile request headers (reusing `HarImporter.volatileRequestHeaders()`), and sequences differing responses for the same request shape into one `ResponseMode.SEQUENTIAL` multi-response expectation. The same engine is exposed on the retrieve path (`?type=RECORDED_EXPECTATIONS&consolidate=true[&parameterize=true]`) and on HAR import (`?format=har&consolidate=true`); see [event-system.md → Record &rarr; Mock](event-system.md#record--mock-consolidation-promotion-har-import) for the full model. Default retrieve output (no query parameter, config flag off) is unchanged.
 
+### Migration Importers (WireMock / Mountebank / Mockoon)
+
+**Outcome.** `PUT /mockserver/import` converts a competitor mock tool's stub definitions into MockServer expectations in one request, so a team can migrate off a stagnating tool without hand-rewriting stubs. Three formats join the existing HAR/Postman/Pact importers, each selected by `?format=` or auto-detected from the JSON shape, and each surfacing a **structured warning per unmappable construct** so nothing is silently dropped.
+
+| `?format=` | Importer (`org.mockserver.imports`) | Source shape (auto-detect key) |
+|-----------|-------------------------------------|--------------------------------|
+| `wiremock` | `WireMockImporter` | single stub, `mappings[]`, or bare array (`mappings`, `request.urlPath/urlPattern`, `response.jsonBody/fault`) |
+| `mountebank` | `MountebankImporter` | imposter, `imposters[]`, or bare array (`imposters`, or `protocol`+`stubs`) |
+| `mockoon` | `MockoonImporter` | environment export (`routes[]`) |
+
+```mermaid
+flowchart LR
+    BODY["import body\n(?format or auto-detect)"] --> IMP["WireMock / Mountebank / Mockoon\nImporter.importExpectations()"]
+    IMP --> RES["ImportResult\nexpectations + warnings"]
+    RES --> RED["ImportRedaction\n.redactPreservingActions()"]
+    RED --> ADD["HttpState.add()"]
+    ADD --> BODYOUT["201 body\n{ expectations, warnings }"]
+```
+
+**Model.** Each importer returns an `ImportResult` (`List<Expectation>` + `List<ImportWarning>`); an `ImportWarning` carries `item` (source locator, e.g. `stub[2]`), `construct` (the foreign construct), and `detail`. The three new formats return their result body as `{ "expectations": [...], "warnings": [...] }` (the legacy HAR/Postman/Pact formats keep returning a bare expectation array). `HttpState` handles all six formats in the same `PUT /mockserver/import` branch.
+
+**Redaction.** The migration importers redact through `ImportRedaction.redactPreservingActions(...)` rather than the shared `ImportRedaction.redact(...)`. The wholesale `redact(...)` (used by HAR/Postman) rebuilds each expectation through `FixtureRedactor.redact(...)`, which only carries over *response* actions and resets `Times`/`TimeToLive` — lossy for the migration importers, which also emit `httpForward` (proxy), `httpError` (fault), sequential/random multi-responses, and `Times` (Mountebank `repeat`). `redactPreservingActions(...)` redacts the request and each response individually via the granular `FixtureRedactor.redactRequestDefinition`/`redactResponseObject` clones and re-attaches them to a rebuilt expectation that keeps the original action type, `Times`, `TimeToLive`, priority, id, scenario state, and response mode.
+
+**Coverage & boundaries.** The mappings are documented per importer in the Javadoc of each class and in the [Importing Expectations](https://www.mock-server.com/mock_server/importing_expectations.html) consumer page. Notable boundaries reported as warnings rather than dropped: WireMock `matchesXPath`/`equalToXml`, `delayDistribution`, response `transformers`; Mountebank `tcp`/`smtp` imposters, `and`/`or`/`not` compound predicates, JavaScript `inject`; Mockoon `crud` route type, cookie/path rule targets, `null`/`empty_array` rule operators, and `OR`-combined rules (only the first rule maps).
+
 ### LLM Record/Replay (MCP)
 
 The `record_llm_fixtures` MCP tool extends the record-to-expectations workflow for LLM/MCP traffic. After retrieving `RECORDED_EXPECTATIONS`, it applies two additional processing steps:

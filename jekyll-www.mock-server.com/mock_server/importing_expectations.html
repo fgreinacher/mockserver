@@ -1,7 +1,7 @@
 ---
-title: Importing Expectations from HAR, Postman & Pact
-description: Import expectations into MockServer from HAR (HTTP Archive), Postman Collection, or Pact v3 contract files via a single PUT /mockserver/import request, with format auto-detection.
-shortTitle: Import HAR / Postman / Pact
+title: Importing Expectations from HAR, Postman, Pact, WireMock, Mountebank & Mockoon
+description: Import expectations into MockServer from HAR (HTTP Archive), Postman Collection, Pact v3 contract, WireMock stub, Mountebank imposter, or Mockoon environment files via a single PUT /mockserver/import request, with format auto-detection.
+shortTitle: Import & Migrate
 layout: page
 pageOrder: 6
 section: 'Creating Mocks'
@@ -12,7 +12,7 @@ sitemap:
   lastmod: 2026-06-17T00:00:00+00:00
 ---
 
-<p>MockServer can import expectations directly from <strong>HAR (HTTP Archive)</strong> files, <strong>Postman Collection v2.x</strong> files, and <strong>Pact v3 consumer contracts</strong>. This lets you record real HTTP traffic, reuse existing collections, or bootstrap stubs from a published contract without writing expectations by hand.</p>
+<p>MockServer can import expectations directly from <strong>HAR (HTTP Archive)</strong> files, <strong>Postman Collection v2.x</strong> files, <strong>Pact v3 consumer contracts</strong>, and &mdash; to migrate off another mock tool &mdash; <strong>WireMock</strong> stub mappings, <strong>Mountebank</strong> imposters, and <strong>Mockoon</strong> environments. This lets you record real HTTP traffic, reuse existing collections, bootstrap stubs from a published contract, or move your whole existing mock suite into MockServer without rewriting stubs by hand.</p>
 
 <p><strong>Note:</strong> import is a server-side REST operation — all clients import by calling <span class="inline_code">PUT /mockserver/import</span> directly with the document as the request body. The examples below use <span class="inline_code">curl</span>; any HTTP client (or the language client's raw request method) sends the same request.</p>
 
@@ -22,6 +22,7 @@ sitemap:
     <li><strong>Migrate existing collections</strong> &mdash; teams with an existing Postman collection can import their saved example responses into MockServer</li>
     <li><strong>Bootstrap mocks quickly</strong> &mdash; import a HAR from staging traffic to get a working mock in seconds, then fine-tune individual expectations as needed</li>
     <li><strong>Replay a Pact contract</strong> &mdash; import a Pact v3 consumer contract to create a stub provider that satisfies the contract without standing up the real service</li>
+    <li><strong>Migrate off another mock tool</strong> &mdash; convert an existing WireMock, Mountebank, or Mockoon stub suite into MockServer expectations in one request, with a warning for every construct that could not be mapped 1:1</li>
 </ul>
 
 <a id="import_endpoint" class="anchor" href="#import_endpoint">&nbsp;</a>
@@ -39,6 +40,9 @@ sitemap:
     <li>If the body contains <span class="inline_code">log.entries</span>, it is treated as HAR</li>
     <li>If the body contains <span class="inline_code">info</span> and <span class="inline_code">item</span>, it is treated as a Postman Collection</li>
     <li>If the body contains a top-level <span class="inline_code">interactions</span> array, it is treated as a Pact v3 contract</li>
+    <li>If the body contains a <span class="inline_code">mappings</span> array (or a stub with <span class="inline_code">request.urlPath</span>/<span class="inline_code">urlPattern</span> or a <span class="inline_code">response.fault</span>/<span class="inline_code">jsonBody</span>), it is treated as WireMock stubs</li>
+    <li>If the body contains an <span class="inline_code">imposters</span> array (or <span class="inline_code">protocol</span> + <span class="inline_code">stubs</span>), it is treated as Mountebank imposters</li>
+    <li>If the body contains a top-level <span class="inline_code">routes</span> array, it is treated as a Mockoon environment</li>
 </ul>
 
 <p>You can also override auto-detection with the <span class="inline_code">format</span> query parameter:</p>
@@ -69,6 +73,21 @@ sitemap:
         </tr>
         <tr>
             <td><span class="inline_code">format</span></td>
+            <td><span class="inline_code">wiremock</span></td>
+            <td>Force WireMock stub-mapping parsing (see <a href="#migration_importers">Migrating from WireMock, Mountebank &amp; Mockoon</a>)</td>
+        </tr>
+        <tr>
+            <td><span class="inline_code">format</span></td>
+            <td><span class="inline_code">mountebank</span></td>
+            <td>Force Mountebank imposter parsing</td>
+        </tr>
+        <tr>
+            <td><span class="inline_code">format</span></td>
+            <td><span class="inline_code">mockoon</span></td>
+            <td>Force Mockoon environment parsing</td>
+        </tr>
+        <tr>
+            <td><span class="inline_code">format</span></td>
             <td><span class="inline_code">recording</span></td>
             <td>Reload a persisted recorded-traffic NDJSON archive (see <a href="#recording_reimport">Reloading Recorded Traffic</a>). Unlike the other formats this does not create expectations — it re-loads recorded request/response pairs so they are retrievable like live in-memory recordings. Must be specified explicitly (NDJSON is never auto-detected).</td>
         </tr>
@@ -96,7 +115,62 @@ curl -v -X PUT "http://localhost:1080/mockserver/import?format=recording" \
 
 <p><strong>Note:</strong> reloaded exchanges are recorded as <em>forwarded</em> requests, so an originally-mocked exchange counts as forwarded if you later verify by disposition (forwarded vs mocked). This is an accepted limitation of the initial version.</p>
 
-<p><strong>Insomnia is not a supported import format</strong> &mdash; the only recognised formats are <span class="inline_code">har</span>, <span class="inline_code">postman</span>, and <span class="inline_code">pact</span>. Export from Insomnia as HAR, or convert to a Postman collection, then import that instead.</p>
+<p><strong>Insomnia is not a supported import format</strong> &mdash; the recognised expectation formats are <span class="inline_code">har</span>, <span class="inline_code">postman</span>, <span class="inline_code">pact</span>, <span class="inline_code">wiremock</span>, <span class="inline_code">mountebank</span>, and <span class="inline_code">mockoon</span>. Export from Insomnia as HAR, or convert to a Postman collection, then import that instead.</p>
+
+<a id="migration_importers" class="anchor" href="#migration_importers">&nbsp;</a>
+
+<h2>Migrating from WireMock, Mountebank &amp; Mockoon</h2>
+
+<p>Moving off another mock tool? Send its stub definitions to <span class="inline_code">PUT /mockserver/import</span> and MockServer converts them into expectations in one shot. Because these tools have constructs with no exact MockServer equivalent, the response body for these three formats is a JSON object with <strong>both</strong> the imported expectations <strong>and</strong> a list of structured warnings &mdash; every construct that could not be mapped 1:1 produces a warning instead of being silently dropped:</p>
+
+<pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/import?format=wiremock" \
+    --data-binary @wiremock-mappings.json
+
+# 201 Created
+# {
+#   "expectations": [ ... ],
+#   "warnings": [
+#     { "item": "stub[3]", "construct": "bodyPatterns.matchesXPath",
+#       "detail": "XML/XPath body matching is not mapped by this importer" }
+#   ]
+# }</code></pre>
+
+<p>Each warning has an <span class="inline_code">item</span> (which source stub/route it came from), a <span class="inline_code">construct</span> (the foreign feature), and a <span class="inline_code">detail</span> explaining what happened. Review the warnings after a migration and add any missing matchers by hand. Secret redaction (below) applies to these imports too.</p>
+
+<a id="import_wiremock" class="anchor" href="#import_wiremock">&nbsp;</a>
+
+<h3>WireMock stub mappings</h3>
+
+<p>Accepts a single stub object, a <span class="inline_code">{ "mappings": [ ... ] }</span> export (from <span class="inline_code">GET /__admin/mappings</span> or a <span class="inline_code">mappings/</span> directory), or a bare JSON array. Mapping:</p>
+<ul>
+    <li><strong>Request</strong> &mdash; <span class="inline_code">method</span>, <span class="inline_code">urlPath</span> (exact), <span class="inline_code">urlPathPattern</span>/<span class="inline_code">urlPattern</span> (regex path), <span class="inline_code">url</span> (path + query); <span class="inline_code">queryParameters</span> and <span class="inline_code">headers</span> predicates (<span class="inline_code">equalTo</span>, <span class="inline_code">matches</span>, <span class="inline_code">contains</span>); <span class="inline_code">bodyPatterns</span> (<span class="inline_code">equalToJson</span>, <span class="inline_code">matchesJsonPath</span>, <span class="inline_code">contains</span>, <span class="inline_code">matches</span>, <span class="inline_code">equalTo</span>).</li>
+    <li><strong>Response</strong> &mdash; <span class="inline_code">status</span>, <span class="inline_code">headers</span>, <span class="inline_code">body</span>/<span class="inline_code">base64Body</span>/<span class="inline_code">jsonBody</span>, <span class="inline_code">fixedDelayMilliseconds</span> (delay). A <span class="inline_code">fault</span> becomes a connection-drop error; a <span class="inline_code">proxyBaseUrl</span> response becomes a forward to that host.</li>
+    <li><strong>Scenarios &amp; priority</strong> &mdash; WireMock scenarios (<span class="inline_code">scenarioName</span>/<span class="inline_code">requiredScenarioState</span>/<span class="inline_code">newScenarioState</span>) map straight onto MockServer scenarios; <span class="inline_code">priority</span> is inverted (WireMock 1 = highest).</li>
+</ul>
+<p><em>Warned, not mapped:</em> <span class="inline_code">matchesXPath</span>/<span class="inline_code">equalToXml</span> body matching, random <span class="inline_code">delayDistribution</span>, response templating <span class="inline_code">transformers</span>, and <span class="inline_code">bodyFileName</span> references.</p>
+
+<a id="import_mountebank" class="anchor" href="#import_mountebank">&nbsp;</a>
+
+<h3>Mountebank imposters</h3>
+
+<p>Accepts a single imposter, a <span class="inline_code">{ "imposters": [ ... ] }</span> config, or a bare array. Only <span class="inline_code">http</span>/<span class="inline_code">https</span> imposters are imported &mdash; <span class="inline_code">tcp</span>/<span class="inline_code">smtp</span> imposters are skipped with a warning. Mapping:</p>
+<ul>
+    <li><strong>Predicates</strong> &mdash; <span class="inline_code">equals</span>, <span class="inline_code">deepEquals</span>, <span class="inline_code">contains</span>, <span class="inline_code">matches</span>, <span class="inline_code">exists</span>, <span class="inline_code">startsWith</span>, <span class="inline_code">endsWith</span> over <span class="inline_code">method</span>/<span class="inline_code">path</span>/<span class="inline_code">query</span>/<span class="inline_code">headers</span>/<span class="inline_code">body</span> become request matchers (all predicates in a stub are combined).</li>
+    <li><strong>Responses</strong> &mdash; <span class="inline_code">is</span> becomes a response, <span class="inline_code">proxy</span> becomes a forward, <span class="inline_code">fault</span> becomes a connection-drop error. <span class="inline_code">_behaviors.wait</span> becomes a delay and <span class="inline_code">_behaviors.repeat</span> becomes a repeat count. Several <span class="inline_code">is</span> responses in one stub become a single cycling response.</li>
+</ul>
+<p><em>Warned, not mapped:</em> <span class="inline_code">tcp</span>/<span class="inline_code">smtp</span> imposters, compound <span class="inline_code">and</span>/<span class="inline_code">or</span>/<span class="inline_code">not</span> predicates, JavaScript <span class="inline_code">inject</span>, and post-processing behaviours (<span class="inline_code">decorate</span>/<span class="inline_code">copy</span>/<span class="inline_code">lookup</span>/<span class="inline_code">shellTransform</span>).</p>
+
+<a id="import_mockoon" class="anchor" href="#import_mockoon">&nbsp;</a>
+
+<h3>Mockoon environments</h3>
+
+<p>Import a Mockoon environment export (a JSON file with a top-level <span class="inline_code">routes</span> array). Mapping:</p>
+<ul>
+    <li><strong>Route</strong> &mdash; <span class="inline_code">method</span> and <span class="inline_code">endpoint</span> become the request matcher; Express-style <span class="inline_code">:param</span> segments become single-segment wildcards.</li>
+    <li><strong>Response</strong> &mdash; <span class="inline_code">statusCode</span>, <span class="inline_code">headers</span>, <span class="inline_code">body</span>, and <span class="inline_code">latency</span> (delay). Response <span class="inline_code">rules</span> (query/header/body targets) become extra request matchers, with descending priority so the route's response order is preserved and the <span class="inline_code">default</span> response acts as a catch-all.</li>
+    <li><strong>Response mode</strong> &mdash; <span class="inline_code">SEQUENTIAL</span> and <span class="inline_code">RANDOM</span> map to the matching MockServer cycling response mode.</li>
+</ul>
+<p><em>Warned, not mapped:</em> the <span class="inline_code">crud</span> route type, cookie/path rule targets, the <span class="inline_code">null</span>/<span class="inline_code">empty_array</span> rule operators, <span class="inline_code">OR</span>-combined rules (only the first rule maps), file-backed bodies, data buckets, and Handlebars <span class="inline_code">{{...}}</span> templating (served verbatim).</p>
 
 <a id="import_redaction" class="anchor" href="#import_redaction">&nbsp;</a>
 

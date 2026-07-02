@@ -1,9 +1,12 @@
 package org.mockserver.imports;
 
 import org.mockserver.fixture.FixtureRedactor;
+import org.mockserver.matchers.TimeToLive;
+import org.mockserver.matchers.Times;
 import org.mockserver.mock.Expectation;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpRequestAndHttpResponse;
+import org.mockserver.model.HttpResponse;
 import org.mockserver.model.RequestDefinition;
 
 import java.util.ArrayList;
@@ -146,6 +149,84 @@ public class ImportRedaction {
                 masked.withId(original.getId());
             }
             result.add(masked);
+        }
+        return result;
+    }
+
+    /**
+     * Redact expectations produced by a migration importer ({@link WireMockImporter},
+     * {@link MountebankImporter}, {@link MockoonImporter}) <strong>while preserving the action
+     * type and matching constraints</strong>.
+     *
+     * <p>{@link #redact(List, Options)} delegates to {@link FixtureRedactor#redact(Expectation[])},
+     * which only carries over response actions and rebuilds each expectation with default
+     * {@code Times}/{@code TimeToLive} — fine for HAR/Postman (single static responses) but lossy
+     * for the migration importers, which also emit {@code httpForward} (proxy), {@code httpError}
+     * (fault), sequential/random multi-responses and {@code Times} constraints ({@code repeat}).
+     * This method redacts the request and each response individually (via the granular
+     * {@link FixtureRedactor#redactRequestDefinition}/{@link FixtureRedactor#redactResponseObject}
+     * clones) and re-attaches them to a rebuilt expectation that keeps the original action type,
+     * {@code Times}, {@code TimeToLive}, priority, id, scenario state and response mode.
+     *
+     * @param expectations expectations produced by a migration importer (may be empty)
+     * @param options      redaction options; defaults to enabled if {@code null}
+     * @return the redacted (or original, when disabled) expectations
+     */
+    public static List<Expectation> redactPreservingActions(List<Expectation> expectations, Options options) {
+        if (expectations == null || expectations.isEmpty()) {
+            return expectations;
+        }
+        Options effectiveOptions = options != null ? options : Options.enabled();
+        if (!effectiveOptions.isEnabled()) {
+            return expectations;
+        }
+
+        Set<String> sensitiveHeaders = new LinkedHashSet<>(FixtureRedactor.defaultSensitiveHeaders());
+        sensitiveHeaders.addAll(effectiveOptions.additionalSensitiveHeaders());
+        Set<String> sensitiveBodyFields = new LinkedHashSet<>(DEFAULT_SENSITIVE_BODY_FIELDS);
+        sensitiveBodyFields.addAll(effectiveOptions.additionalSensitiveBodyFields());
+        FixtureRedactor redactor = new FixtureRedactor(sensitiveHeaders, sensitiveBodyFields);
+
+        List<Expectation> result = new ArrayList<>(expectations.size());
+        for (Expectation source : expectations) {
+            result.add(redactPreservingAction(source, redactor));
+        }
+        return result;
+    }
+
+    private static Expectation redactPreservingAction(Expectation source, FixtureRedactor redactor) {
+        RequestDefinition redactedRequest = redactor.redactRequestDefinition(source.getHttpRequest());
+
+        Expectation result = new Expectation(
+            redactedRequest,
+            source.getTimes() != null ? source.getTimes() : Times.unlimited(),
+            source.getTimeToLive() != null ? source.getTimeToLive() : TimeToLive.unlimited(),
+            source.getPriority()
+        );
+        if (source.getId() != null) {
+            result.withId(source.getId());
+        }
+        result
+            .withScenarioName(source.getScenarioName())
+            .withScenarioState(source.getScenarioState())
+            .withNewScenarioState(source.getNewScenarioState());
+
+        List<HttpResponse> responses = source.getHttpResponses();
+        if (responses != null && !responses.isEmpty()) {
+            List<HttpResponse> redactedResponses = new ArrayList<>(responses.size());
+            for (HttpResponse response : responses) {
+                redactedResponses.add(redactor.redactResponseObject(response));
+            }
+            result.thenRespond(redactedResponses);
+            if (source.getResponseMode() != null) {
+                result.withResponseMode(source.getResponseMode());
+            }
+        } else if (source.getHttpResponse() != null) {
+            result.thenRespond(redactor.redactResponseObject(source.getHttpResponse()));
+        } else if (source.getHttpForward() != null) {
+            result.thenForward(source.getHttpForward());
+        } else if (source.getHttpError() != null) {
+            result.thenError(source.getHttpError());
         }
         return result;
     }

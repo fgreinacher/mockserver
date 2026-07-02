@@ -232,4 +232,69 @@ public class RecordToMockHttpStateTest {
         assertThat(created.size(), is(1));
         assertThat(created.get(0).getHttpRequest().toString(), containsString("/widgets/{id}"));
     }
+
+    // ----- migration importers (WireMock / Mountebank / Mockoon) -------------
+
+    private static com.fasterxml.jackson.databind.JsonNode parseImportBody(String body) throws Exception {
+        return org.mockserver.serialization.ObjectMapperFactory.createObjectMapper().readTree(body);
+    }
+
+    @Test
+    public void shouldImportWireMockStubWithStructuredWarnings() throws Exception {
+        HttpState httpState = newHttpState();
+        String wiremock = "{\"mappings\":[{"
+            + "\"request\":{\"method\":\"GET\",\"urlPath\":\"/api/thing\","
+            + "\"bodyPatterns\":[{\"matchesXPath\":\"//x\"}]},"
+            + "\"response\":{\"status\":200,\"body\":\"ok\"}}]}";
+
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+        httpState.handle(request("/mockserver/import").withMethod("PUT")
+            .withQueryStringParameter("format", "wiremock").withBody(wiremock), responseWriter, false);
+
+        assertThat(responseWriter.response.getStatusCode(), is(201));
+        com.fasterxml.jackson.databind.JsonNode body = parseImportBody(responseWriter.response.getBodyAsString());
+        assertThat(body.path("expectations").isArray(), is(true));
+        assertThat(body.path("expectations").size(), is(1));
+        // the matchesXPath body pattern must surface as a structured warning, not a silent drop
+        assertThat(body.path("warnings").isArray(), is(true));
+        assertThat(body.path("warnings").size(), is(not(0)));
+        assertThat(body.path("warnings").toString(), containsString("matchesXPath"));
+        // imported expectation is active
+        assertThat(httpState.firstMatchingExpectation(request("/api/thing").withMethod("GET")),
+            is(org.hamcrest.CoreMatchers.notNullValue()));
+    }
+
+    @Test
+    public void shouldAutoDetectMountebankImposter() throws Exception {
+        HttpState httpState = newHttpState();
+        String imposter = "{\"protocol\":\"http\",\"port\":4545,\"stubs\":[{"
+            + "\"predicates\":[{\"equals\":{\"method\":\"GET\",\"path\":\"/mb\"}}],"
+            + "\"responses\":[{\"is\":{\"statusCode\":200,\"body\":\"mb\"}}]}]}";
+
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+        // no ?format — must auto-detect from protocol+stubs
+        httpState.handle(request("/mockserver/import").withMethod("PUT").withBody(imposter), responseWriter, false);
+
+        assertThat(responseWriter.response.getStatusCode(), is(201));
+        com.fasterxml.jackson.databind.JsonNode body = parseImportBody(responseWriter.response.getBodyAsString());
+        assertThat(body.path("expectations").size(), is(1));
+        assertThat(httpState.firstMatchingExpectation(request("/mb").withMethod("GET")),
+            is(org.hamcrest.CoreMatchers.notNullValue()));
+    }
+
+    @Test
+    public void shouldAutoDetectMockoonEnvironment() throws Exception {
+        HttpState httpState = newHttpState();
+        String environment = "{\"routes\":[{\"type\":\"http\",\"method\":\"get\",\"endpoint\":\"health\",\"uuid\":\"r1\","
+            + "\"responses\":[{\"statusCode\":200,\"body\":\"up\"}]}]}";
+
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+        httpState.handle(request("/mockserver/import").withMethod("PUT").withBody(environment), responseWriter, false);
+
+        assertThat(responseWriter.response.getStatusCode(), is(201));
+        com.fasterxml.jackson.databind.JsonNode body = parseImportBody(responseWriter.response.getBodyAsString());
+        assertThat(body.path("expectations").size(), is(1));
+        assertThat(httpState.firstMatchingExpectation(request("/health").withMethod("GET")),
+            is(org.hamcrest.CoreMatchers.notNullValue()));
+    }
 }

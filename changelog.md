@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Migration importers for WireMock, Mountebank and Mockoon.** Teams moving off another mock tool can now
+  convert their existing stubs into MockServer expectations in one shot through the existing
+  `PUT /mockserver/import` endpoint, via `?format=wiremock`, `?format=mountebank` or `?format=mockoon`
+  (all three are also auto-detected from the JSON structure when no `format` is supplied). Each importer maps
+  the foreign matcher/response model onto MockServer's:
+  - **WireMock** stub JSON (single stub, `mappings` array, or bare array) — `method`/`urlPath`/`urlPathPattern`/
+    `urlPattern`/`url`, `queryParameters`/`headers` predicates (`equalTo`/`matches`/`contains`), `bodyPatterns`
+    (`equalToJson`/`matchesJsonPath`/`contains`/`matches`/`equalTo`), response `status`/`headers`/`body`/
+    `base64Body`/`jsonBody`/`fixedDelayMilliseconds`, `fault` → connection error, `proxyBaseUrl` → forward,
+    WireMock scenarios → MockServer scenarios, and `priority` (inverted, since WireMock 1 = highest).
+  - **Mountebank** imposters (`http`/`https` only; `tcp`/`smtp` skipped with a warning) — `equals`/`deepEquals`/
+    `contains`/`matches`/`exists`/`startsWith`/`endsWith` predicates → matchers, `is` → response, `proxy` →
+    forward, `fault` → connection error, `_behaviors.wait` → delay, `_behaviors.repeat` → `Times`, and multiple
+    `is` responses → one cycling multi-response expectation.
+  - **Mockoon** environments — each `route` → expectation(s) with `:param` path segments converted to regex,
+    response `statusCode`/`headers`/`body` and `latency` → delay, response `rules` → matchers (with descending
+    priority so array order and the `default` catch-all are preserved), and `responseMode` `SEQUENTIAL`/`RANDOM`
+    → the matching MockServer response mode.
+
+  Every foreign construct with no faithful MockServer equivalent (TCP imposters, XPath/XML predicates, response
+  templating/transformers, compound `and`/`or`/`not` predicates, JavaScript `inject`, unsupported rule
+  operators, …) produces a **structured warning** in the response body — `{ "expectations": [...], "warnings":
+  [...] }` — rather than being silently dropped. Secret redaction is on by default (as for HAR/Postman/Pact
+  import). No new runtime dependencies (Jackson only). See `docs/code/request-processing.md` and the
+  [Importing Expectations](https://www.mock-server.com/mock_server/importing_expectations.html) page.
+
 - **AsyncAPI broker mocking — Kafka Avro/Confluent Schema Registry, AMQP subscribe/verify, and MQTT 5.** The
   `mockserver-async` module gains three enterprise-broker parity features, all driven from the existing
   `PUT /mockserver/asyncapi` `brokerConfig`:

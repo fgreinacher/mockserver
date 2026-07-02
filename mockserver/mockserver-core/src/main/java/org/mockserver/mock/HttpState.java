@@ -2143,17 +2143,33 @@ public class HttpState {
                         } else {
                             String requestBody = request.getBodyAsJsonOrXmlString();
                             if (requestBody == null || requestBody.trim().isEmpty()) {
-                                throw new IllegalArgumentException("import request body is required — must be a HAR, Postman collection or Pact contract JSON document");
+                                throw new IllegalArgumentException("import request body is required — must be a HAR, Postman collection, Pact contract, WireMock stub, Mountebank imposter or Mockoon environment JSON document");
                             }
                             List<Expectation> importedExpectations;
+                            // Migration importers (WireMock / Mountebank / Mockoon) return an ImportResult
+                            // carrying structured warnings for every foreign construct that could not be
+                            // faithfully mapped; when non-null the response body includes those warnings.
+                            List<org.mockserver.imports.ImportWarning> importWarnings = null;
                             if ("har".equalsIgnoreCase(formatParam)) {
                                 importedExpectations = new org.mockserver.imports.HarImporter().importExpectations(requestBody, redactionOptions);
                             } else if ("postman".equalsIgnoreCase(formatParam)) {
                                 importedExpectations = new org.mockserver.imports.PostmanCollectionImporter().importExpectations(requestBody, redactionOptions);
                             } else if ("pact".equalsIgnoreCase(formatParam)) {
                                 importedExpectations = new org.mockserver.mock.pact.PactImporter().importExpectations(requestBody, redactionOptions);
+                            } else if ("wiremock".equalsIgnoreCase(formatParam)) {
+                                org.mockserver.imports.ImportResult result = new org.mockserver.imports.WireMockImporter().importExpectations(requestBody, redactionOptions);
+                                importedExpectations = result.getExpectations();
+                                importWarnings = result.getWarnings();
+                            } else if ("mountebank".equalsIgnoreCase(formatParam)) {
+                                org.mockserver.imports.ImportResult result = new org.mockserver.imports.MountebankImporter().importExpectations(requestBody, redactionOptions);
+                                importedExpectations = result.getExpectations();
+                                importWarnings = result.getWarnings();
+                            } else if ("mockoon".equalsIgnoreCase(formatParam)) {
+                                org.mockserver.imports.ImportResult result = new org.mockserver.imports.MockoonImporter().importExpectations(requestBody, redactionOptions);
+                                importedExpectations = result.getExpectations();
+                                importWarnings = result.getWarnings();
                             } else if (formatParam != null && !formatParam.isEmpty()) {
-                                throw new IllegalArgumentException("unsupported import format: " + formatParam + " (supported formats: har, postman, pact, recording)");
+                                throw new IllegalArgumentException("unsupported import format: " + formatParam + " (supported formats: har, postman, pact, wiremock, mountebank, mockoon, recording)");
                             } else {
                                 // Auto-detect format from JSON structure
                                 com.fasterxml.jackson.databind.JsonNode rootNode = ObjectMapperFactory.createObjectMapper().readTree(requestBody);
@@ -2163,8 +2179,26 @@ public class HttpState {
                                     importedExpectations = new org.mockserver.imports.PostmanCollectionImporter().importExpectations(requestBody, redactionOptions);
                                 } else if (!rootNode.path("interactions").isMissingNode() && rootNode.path("interactions").isArray()) {
                                     importedExpectations = new org.mockserver.mock.pact.PactImporter().importExpectations(requestBody, redactionOptions);
+                                } else if (rootNode.path("mappings").isArray()
+                                    || rootNode.path("request").path("urlPath").isTextual()
+                                    || rootNode.path("request").path("urlPathPattern").isTextual()
+                                    || rootNode.path("request").path("urlPattern").isTextual()
+                                    || rootNode.path("response").path("jsonBody").isObject()
+                                    || rootNode.path("response").path("fault").isTextual()) {
+                                    org.mockserver.imports.ImportResult result = new org.mockserver.imports.WireMockImporter().importExpectations(requestBody, redactionOptions);
+                                    importedExpectations = result.getExpectations();
+                                    importWarnings = result.getWarnings();
+                                } else if (rootNode.path("imposters").isArray()
+                                    || (rootNode.path("protocol").isTextual() && rootNode.path("stubs").isArray())) {
+                                    org.mockserver.imports.ImportResult result = new org.mockserver.imports.MountebankImporter().importExpectations(requestBody, redactionOptions);
+                                    importedExpectations = result.getExpectations();
+                                    importWarnings = result.getWarnings();
+                                } else if (rootNode.path("routes").isArray()) {
+                                    org.mockserver.imports.ImportResult result = new org.mockserver.imports.MockoonImporter().importExpectations(requestBody, redactionOptions);
+                                    importedExpectations = result.getExpectations();
+                                    importWarnings = result.getWarnings();
                                 } else {
-                                    throw new IllegalArgumentException("unable to auto-detect import format — use ?format=har, ?format=postman, ?format=pact or ?format=recording query parameter");
+                                    throw new IllegalArgumentException("unable to auto-detect import format — use ?format=har, ?format=postman, ?format=pact, ?format=wiremock, ?format=mountebank, ?format=mockoon or ?format=recording query parameter");
                                 }
                             }
                             // Optional consolidation of imported exchanges (e.g. a HAR that
@@ -2180,9 +2214,21 @@ public class HttpState {
                             List<Expectation> upsertedExpectations = add(
                                 importedExpectations.toArray(new Expectation[0])
                             );
-                            responseWriter.writeResponse(request, response()
-                                .withStatusCode(CREATED.code())
-                                .withBody(getExpectationSerializer().serialize(upsertedExpectations), MediaType.JSON_UTF_8), true);
+                            if (importWarnings != null) {
+                                // Migration importer: return { "expectations": [...], "warnings": [...] }
+                                // so no unmapped foreign construct is ever silently dropped.
+                                com.fasterxml.jackson.databind.ObjectMapper importMapper = ObjectMapperFactory.createObjectMapper();
+                                com.fasterxml.jackson.databind.node.ObjectNode importBody = importMapper.createObjectNode();
+                                importBody.set("expectations", importMapper.readTree(getExpectationSerializer().serialize(upsertedExpectations)));
+                                importBody.set("warnings", importMapper.valueToTree(importWarnings));
+                                responseWriter.writeResponse(request, response()
+                                    .withStatusCode(CREATED.code())
+                                    .withBody(importMapper.writerWithDefaultPrettyPrinter().writeValueAsString(importBody), MediaType.JSON_UTF_8), true);
+                            } else {
+                                responseWriter.writeResponse(request, response()
+                                    .withStatusCode(CREATED.code())
+                                    .withBody(getExpectationSerializer().serialize(upsertedExpectations), MediaType.JSON_UTF_8), true);
+                            }
                         }
                     } catch (IllegalArgumentException iae) {
                         mockServerLogger.logEvent(
