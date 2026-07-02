@@ -34,6 +34,16 @@ public class X509Certificate extends ObjectWithJsonToString {
         return this;
     }
 
+    /**
+     * The DER (ASN.1) encoding of the certificate, captured when {@link #withCertificate} was
+     * called. Used to compute the certificate fingerprint for client-certificate expectation
+     * matching. Null when this instance was built without an underlying {@link Certificate}
+     * (e.g. deserialized from JSON, which carries only the distinguished-name/serial fields).
+     */
+    public byte[] getCertificateBytes() {
+        return certificateBytes;
+    }
+
     public String getIssuerDistinguishedName() {
         return issuerDistinguishedName;
     }

@@ -71,6 +71,21 @@
           }
         }
       }
+    },
+    "clientCertificate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subject": {
+          "$ref": "#/definitions/stringOrJsonSchema"
+        },
+        "issuer": {
+          "$ref": "#/definitions/stringOrJsonSchema"
+        },
+        "fingerprintSha256": {
+          "$ref": "#/definitions/stringOrJsonSchema"
+        }
+      }
     }
   },
   "definitions": {

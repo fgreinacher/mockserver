@@ -36,6 +36,7 @@ classDiagram
         +protocol: Protocol
         +socketAddress: SocketAddress
         +clientCertificateChain: List~X509Certificate~
+        +clientCertificate: ClientCertificate
     }
     class OpenAPIDefinition {
         +specUrlOrPayload: String
@@ -57,6 +58,28 @@ classDiagram
 ```
 
 `BinaryRequestDefinition` matches raw binary connections by byte content. `DnsRequestDefinition` matches DNS queries by name, record type, and record class.
+
+`HttpRequest` carries two distinct client-certificate fields that must not be confused:
+
+- **`clientCertificateChain`** (`List<X509Certificate>`) is the **actual** mTLS chain a request was
+  received with, captured from the TLS/QUIC handshake (see [tls-and-security.md](tls-and-security.md)).
+  It is populated on incoming requests and serialized on recorded requests; it is *not* a matcher.
+- **`clientCertificate`** (`ClientCertificate`) is the **expectation matching criteria** for that chain.
+  `ClientCertificateMatcher` (`org.mockserver.matchers`) matches it against the **leaf certificate**
+  (index `0` — the client's own certificate, per RFC 5246 / RFC 8446) of the request's
+  `clientCertificateChain`:
+
+  | Criterion | Nottable | Matched against (leaf certificate) |
+  |-----------|----------|-------------------------------------|
+  | `subject` | yes | Common Name, full subject Distinguished Name, or any Subject Alternative Name (DNS / IP / email / URI) — a match against any is a match |
+  | `issuer` | yes | issuer Common Name or full issuer Distinguished Name |
+  | `fingerprintSha256` | yes | SHA-256 fingerprint of the leaf's DER encoding; colons/whitespace stripped and compared case-insensitively so `AB:CD:...` == `abcd...` |
+
+  Each criterion is a `NottableString` (regex / `!` negation / optional). A blank criterion (no
+  `clientCertificate`, or every field blank) matches every request. A non-blank criterion never matches a
+  request that presents no certificate chain. Mismatches are reported through `MatchDifference` under the
+  `clientCertificate` field so `explainUnmatched` / `debugMismatch` explain them. This is **matching only**
+  and does not change mTLS authentication (`MTLSAuthenticationHandler`).
 
 ### Action Types
 

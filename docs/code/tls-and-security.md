@@ -178,7 +178,24 @@ A complete end-to-end mTLS example with self-generated certificates, Docker Comp
 
 When `tlsMutualAuthenticationRequired` is configured, `PortUnificationHandler` checks for TLS on the channel. If the connection is not TLS, it returns **426 Upgrade Required** and disconnects.
 
-Client certificates are extracted from the SSL session via `SniHandler.retrieveClientCertificates()` and stored as a channel attribute (`UPSTREAM_CLIENT_CERTIFICATES`).
+Client certificates are extracted from the SSL session via `SniHandler.retrieveClientCertificates()` and stored as a channel attribute (`UPSTREAM_CLIENT_CERTIFICATES`), then mapped onto the request's `clientCertificateChain` by `JDKCertificateToMockServerX509Certificate` (the same path is used for HTTP/3 — see [http3.md](http3.md)).
+
+### Matching Expectations on the Client Certificate
+
+Beyond authentication, an expectation can **match** on the presented client-certificate chain via the
+`clientCertificate` request matcher (`ClientCertificateMatcher`, `org.mockserver.matchers`). Matching is
+performed against the **leaf certificate** (index `0` — the client's own certificate) of the request's
+`clientCertificateChain`:
+
+- `subject` — leaf Common Name, full subject Distinguished Name, or any Subject Alternative Name.
+- `issuer` — leaf issuer Common Name or full issuer Distinguished Name.
+- `fingerprintSha256` — SHA-256 fingerprint of the leaf's DER encoding (colons/whitespace and case ignored).
+
+Each criterion is a `NottableString` (regex / `!` negation / optional). This is **matching only** — it does
+not perform or replace mTLS authentication (`MTLSAuthenticationHandler`, below), which independently
+validates the chain against the configured trust store. A non-blank `clientCertificate` criterion never
+matches a request that presented no client certificate. See
+[domain-model.md](domain-model.md) for the field table.
 
 ### Control Plane mTLS
 

@@ -39,6 +39,7 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
     private Protocol protocol = null;
     private Integer streamId = null;
     private List<X509Certificate> clientCertificateChain;
+    private ClientCertificate clientCertificate;
     private SocketAddress socketAddress;
     private String localAddress;
     private String remoteAddress;
@@ -265,6 +266,32 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
 
     public HttpRequest withClientCertificateChain(List<X509Certificate> clientCertificateChain) {
         this.clientCertificateChain = clientCertificateChain;
+        this.hashCode = 0;
+        return this;
+    }
+
+    /**
+     * The expectation criteria for matching the mutual-TLS client-certificate chain a request was
+     * received with. Matched against the leaf (client's own) certificate of
+     * {@link #getClientCertificateChain()}. Null (the default) matches any request regardless of
+     * whether it presented a client certificate.
+     *
+     * @see ClientCertificate
+     */
+    public ClientCertificate getClientCertificate() {
+        return clientCertificate;
+    }
+
+    /**
+     * Match only requests whose mutual-TLS client-certificate leaf matches the given criteria
+     * (subject CN / SAN / DN, issuer CN / DN, or SHA-256 fingerprint). A request presenting no
+     * client-certificate chain never matches a non-blank criterion.
+     *
+     * @param clientCertificate the client-certificate matching criteria
+     * @see ClientCertificate
+     */
+    public HttpRequest withClientCertificate(ClientCertificate clientCertificate) {
+        this.clientCertificate = clientCertificate;
         this.hashCode = 0;
         return this;
     }
@@ -1379,6 +1406,7 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
             .withProtocol(protocol)
             .withStreamId(streamId)
             .withClientCertificateChain(clientCertificateChain)
+            .withClientCertificate(clientCertificate)
             .withSocketAddress(socketAddress)
             .withLocalAddress(localAddress)
             .withRemoteAddress(remoteAddress);
@@ -1403,6 +1431,7 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
             .withProtocol(protocol)
             .withStreamId(streamId)
             .withClientCertificateChain(clientCertificateChain != null && !clientCertificateChain.isEmpty() ? clientCertificateChain.stream().map(X509Certificate::clone).collect(Collectors.toList()) : null)
+            .withClientCertificate(clientCertificate != null ? clientCertificate.clone() : null)
             .withSocketAddress(socketAddress)
             .withLocalAddress(localAddress)
             .withRemoteAddress(remoteAddress);
@@ -1498,6 +1527,7 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
             Objects.equals(protocol, that.protocol) &&
             Objects.equals(streamId, that.streamId) &&
             Objects.equals(clientCertificateChain, that.clientCertificateChain) &&
+            Objects.equals(clientCertificate, that.clientCertificate) &&
             Objects.equals(socketAddress, that.socketAddress) &&
             Objects.equals(localAddress, that.localAddress) &&
             Objects.equals(remoteAddress, that.remoteAddress);
@@ -1508,7 +1538,7 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
         // need to call isSecure because getter can change the hashcode
         isSecure();
         if (hashCode == 0) {
-            int computed = Objects.hash(super.hashCode(), method, path, pathParameters, queryStringParameters, body, headers, cookies, keepAlive, secure, respondBeforeBody, protocol, streamId, clientCertificateChain, socketAddress, localAddress, remoteAddress);
+            int computed = Objects.hash(super.hashCode(), method, path, pathParameters, queryStringParameters, body, headers, cookies, keepAlive, secure, respondBeforeBody, protocol, streamId, clientCertificateChain, clientCertificate, socketAddress, localAddress, remoteAddress);
             hashCode = computed != 0 ? computed : 1;
         }
         return hashCode;

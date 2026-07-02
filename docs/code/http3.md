@@ -360,10 +360,15 @@ declarations are needed -- they resolve automatically.
   path. Peer certificates are extracted from the `QuicChannel` `SSLEngine` session
   and plumbed into the `HttpRequest` via `withClientCertificateChain`. The chain is
   captured and serialized, so it is available for retrieval over HTTP/3 (the
-  serialized recorded request includes it); neither expectation matching nor
-  verification consider the certificate chain, because both route through
-  `HttpRequestPropertiesMatcher`, which does not reference `clientCertificateChain`.
-  When no client cert is presented, the request proceeds without a cert chain (no error).
+  serialized recorded request includes it). Expectations can also **match** on the
+  presented chain via the `clientCertificate` matcher (leaf-certificate subject /
+  issuer / SHA-256 fingerprint — see [domain-model.md](domain-model.md) and
+  [tls-and-security.md](tls-and-security.md)); because verification routes through the
+  same `HttpRequestPropertiesMatcher`, a `clientCertificate` criterion constrains
+  verification identically. This works over HTTP/3 with no H3-specific handling —
+  matching reads the already-captured `clientCertificateChain` regardless of transport.
+  When no client cert is presented, the request proceeds without a cert chain (no error),
+  and a non-blank `clientCertificate` criterion simply does not match.
 - **MCP (Model Context Protocol) over HTTP/3**: the MCP Streamable HTTP transport
   (`/mockserver/mcp`) works over HTTP/3 with the same behaviour as TCP, including
   JSON-RPC request/response, session management, tool calls, resource reads, batch

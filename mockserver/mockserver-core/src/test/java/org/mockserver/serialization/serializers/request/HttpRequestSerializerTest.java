@@ -83,6 +83,44 @@ public class HttpRequestSerializerTest {
     }
 
     @Test
+    public void shouldRoundTripClientCertificateMatcher() throws Exception {
+        org.mockserver.model.HttpRequest request = request()
+            .withClientCertificate(
+                org.mockserver.model.ClientCertificate.clientCertificate()
+                    .withSubject("my-client")
+                    .withIssuer(org.mockserver.model.NottableString.not(".*Other CA.*"))
+                    .withFingerprintSha256("abcd1234")
+            );
+        String json = objectMapper.writeValueAsString(request);
+        org.mockserver.serialization.model.HttpRequestDTO parsedDTO =
+            (org.mockserver.serialization.model.HttpRequestDTO) ObjectMapperFactory.createObjectMapper()
+                .readValue(json, org.mockserver.serialization.model.RequestDefinitionDTO.class);
+        assertThat(parsedDTO.buildObject().getClientCertificate(), is(request.getClientCertificate()));
+    }
+
+    @Test
+    public void shouldSerializeClientCertificateMatcher() throws JsonProcessingException {
+        assertThat(objectMapper.writeValueAsString(
+                request()
+                    .withMethod("GET")
+                    .withClientCertificate(
+                        org.mockserver.model.ClientCertificate.clientCertificate()
+                            .withSubject("my-client")
+                            .withIssuer("My CA")
+                            .withFingerprintSha256("ab:cd:ef")
+                    )
+            ),
+            is("{" + NEW_LINE +
+                "  \"method\" : \"GET\"," + NEW_LINE +
+                "  \"clientCertificate\" : {" + NEW_LINE +
+                "    \"subject\" : \"my-client\"," + NEW_LINE +
+                "    \"issuer\" : \"My CA\"," + NEW_LINE +
+                "    \"fingerprintSha256\" : \"ab:cd:ef\"" + NEW_LINE +
+                "  }" + NEW_LINE +
+                "}"));
+    }
+
+    @Test
     public void shouldReturnJsontWithJsonBodyInToString() throws JsonProcessingException {
         assertThat(objectMapper.writeValueAsString(request()
                 .withMethod("GET")

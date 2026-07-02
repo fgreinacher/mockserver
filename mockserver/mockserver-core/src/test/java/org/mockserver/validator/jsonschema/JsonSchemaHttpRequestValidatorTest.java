@@ -67,6 +67,19 @@ public class JsonSchemaHttpRequestValidatorTest {
     }
 
     @Test
+    public void shouldValidateValidRequestWithClientCertificateMatcher() {
+        // when
+        assertThat(jsonSchemaValidator.isValid("{" + NEW_LINE +
+            "  \"path\" : \"/orders\"," + NEW_LINE +
+            "  \"clientCertificate\" : {" + NEW_LINE +
+            "    \"subject\" : \"my-client\"," + NEW_LINE +
+            "    \"issuer\" : \".*Acme CA.*\"," + NEW_LINE +
+            "    \"fingerprintSha256\" : { \"not\" : true, \"value\" : \"abcd\" }" + NEW_LINE +
+            "  }" + NEW_LINE +
+            "}"), is(""));
+    }
+
+    @Test
     public void shouldValidateValidCompleteRequestWithBinaryBody() {
         // when
         assertThat(jsonSchemaValidator.isValid(new HttpRequestSerializer(new MockServerLogger()).serialize(
