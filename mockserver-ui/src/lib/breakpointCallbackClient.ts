@@ -97,6 +97,17 @@ export type PausedItem =
 /** Listener for paused items pushed over the callback WS. */
 export type PausedItemListener = (item: PausedItem) => void;
 
+/**
+ * A paused item as accumulated in the module-level store: the wire item plus a
+ * stable monotonic `key` (for React list identity and tiebreak sorting) and the
+ * client-side `receivedAt` arrival time (fallback sort key when the server does
+ * not send a request timestamp).
+ */
+export type StoredPausedItem = PausedItem & { key: number; receivedAt: number };
+
+/** Listener for changes to the accumulated paused-item store. */
+export type PausedItemsListener = (items: StoredPausedItem[]) => void;
+
 /** Connection state. */
 export type CallbackClientState = 'disconnected' | 'connecting' | 'connected';
 
@@ -134,12 +145,76 @@ function extractHeader(headers: Record<string, string[]> | undefined, name: stri
   return null;
 }
 
+/**
+ * Return a copy of the given headers with the correlation id set, WITHOUT
+ * mutating the original object — the header object is still referenced by the
+ * held paused item in React state, so mutating it in place would corrupt that
+ * state. Handles both the object form (`{name: [values]}`) and the list form
+ * (`[{name, values}]`) the wire format can use.
+ */
+function headersWithCorrelationId(
+  headers: unknown,
+  correlationId: string,
+): Record<string, string[]> | Array<{ name: string; values: string[] }> {
+  if (Array.isArray(headers)) {
+    const withoutExisting = (headers as Array<{ name?: unknown; values?: unknown }>).filter(
+      (h) => !(h && typeof h.name === 'string' && h.name.toLowerCase() === CORRELATION_ID_HEADER.toLowerCase()),
+    );
+    return [
+      ...(withoutExisting as Array<{ name: string; values: string[] }>),
+      { name: CORRELATION_ID_HEADER, values: [correlationId] },
+    ];
+  }
+  return { ...((headers as Record<string, string[]>) ?? {}), [CORRELATION_ID_HEADER]: [correlationId] };
+}
+
+/**
+ * UTF-8-safe Base64 encode. `btoa` operates on Latin-1 code units and throws
+ * `InvalidCharacterError` for any char > U+00FF (e.g. emoji, typographic
+ * quotes), so encode to UTF-8 bytes first. Used for stream-frame bodies, which
+ * are arbitrary UTF-8 text (LLM streams, etc.).
+ */
+export function utf8ToBase64(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]!);
+  }
+  return btoa(binary);
+}
+
+/**
+ * UTF-8-safe Base64 decode. `atob` yields Latin-1 code units, which mojibakes
+ * multi-byte UTF-8 sequences, so decode the raw bytes back through a UTF-8
+ * decoder. Throws if the input is not valid Base64.
+ *
+ * Text-only: the default `TextDecoder` replaces invalid UTF-8 byte sequences
+ * with U+FFFD, so a genuinely binary frame will NOT round-trip byte-for-byte
+ * through decode -> (unchanged) encode. This is intentional — the frame editor
+ * targets text streams (SSE / LLM output); binary frames are out of scope.
+ */
+export function base64ToUtf8(input: string): string {
+  const binary = atob(input);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 
 const RECONNECT_DELAY_MS = 3000;
-const MAX_RECONNECT_ATTEMPTS = 20;
+
+// Upper bound on accumulated paused items. A breakpoint matcher with a broad
+// pattern (e.g. path `.*`) pauses every exchange, and each held item retains a
+// full request/response/frame. Without a cap a busy server would grow the store
+// until the tab runs out of memory, so we drop the oldest items beyond this
+// bound (each dropped exchange remains paused server-side and auto-resolves via
+// the server's breakpoint timeout).
+const MAX_PAUSED_ITEMS = 500;
 
 export class BreakpointCallbackClient {
   private ws: WebSocket | null = null;
@@ -151,6 +226,15 @@ export class BreakpointCallbackClient {
 
   private pausedItemListener: PausedItemListener | null = null;
   private stateListener: StateListener | null = null;
+
+  // Module-level (client-owned) store of paused items. Accumulates regardless of
+  // whether the UI panel is mounted, so items pushed while the panel is unmounted
+  // (e.g. the user navigated to another tab) are retained and resolvable when the
+  // panel remounts and re-subscribes — the callback WS is an app-lifetime
+  // singleton but the panel's React state is not.
+  private pausedItems: StoredPausedItem[] = [];
+  private pausedItemsListeners = new Set<PausedItemsListener>();
+  private nextItemKey = 0;
 
   /** The server-assigned clientId; null until connected. */
   get clientId(): string | null { return this._clientId; }
@@ -166,6 +250,34 @@ export class BreakpointCallbackClient {
   /** Register a listener for connection state changes. */
   onStateChange(listener: StateListener): void {
     this.stateListener = listener;
+  }
+
+  /**
+   * Subscribe to the accumulated paused-item store. The listener is invoked
+   * immediately with the current items (so a freshly-mounted panel reflects
+   * anything buffered while it was unmounted) and again on every change. Returns
+   * an unsubscribe function.
+   */
+  subscribePausedItems(listener: PausedItemsListener): () => void {
+    this.pausedItemsListeners.add(listener);
+    listener(this.pausedItems);
+    return () => {
+      this.pausedItemsListeners.delete(listener);
+    };
+  }
+
+  /** Current snapshot of accumulated paused items. */
+  getPausedItems(): StoredPausedItem[] {
+    return this.pausedItems;
+  }
+
+  /** Remove a paused item from the store by its stable key (e.g. after resolving it). */
+  removePausedItem(key: number): void {
+    const next = this.pausedItems.filter((item) => item.key !== key);
+    if (next.length !== this.pausedItems.length) {
+      this.pausedItems = next;
+      this.notifyPausedItems();
+    }
   }
 
   /** Open the callback WS connection. Reconnects automatically on close. */
@@ -223,10 +335,8 @@ export class BreakpointCallbackClient {
   resolveRequest(correlationId: string, result: Record<string, unknown>): void {
     const isResponse = result.statusCode !== undefined;
     const type = isResponse ? TYPE_HTTP_RESPONSE : TYPE_HTTP_REQUEST;
-    // Ensure correlation id is echoed
-    const headers = (result.headers ?? {}) as Record<string, string[]>;
-    headers[CORRELATION_ID_HEADER] = [correlationId];
-    const payload = { ...result, headers };
+    // Copy (never mutate) the held item's headers when echoing the correlation id.
+    const payload = { ...result, headers: headersWithCorrelationId(result.headers, correlationId) };
     this.send({ type, value: JSON.stringify(payload) });
   }
 
@@ -237,9 +347,8 @@ export class BreakpointCallbackClient {
    * @param httpResponse The response to write to the downstream client.
    */
   resolveResponse(correlationId: string, httpResponse: Record<string, unknown>): void {
-    const headers = (httpResponse.headers ?? {}) as Record<string, string[]>;
-    headers[CORRELATION_ID_HEADER] = [correlationId];
-    const payload = { ...httpResponse, headers };
+    // Copy (never mutate) the held item's headers when echoing the correlation id.
+    const payload = { ...httpResponse, headers: headersWithCorrelationId(httpResponse.headers, correlationId) };
     this.send({ type: TYPE_HTTP_RESPONSE, value: JSON.stringify(payload) });
   }
 
@@ -308,7 +417,7 @@ export class BreakpointCallbackClient {
       const tsRaw = extractHeader(request.headers, REQUEST_TIMESTAMP_HEADER);
       const requestTimestamp = tsRaw != null ? Number(tsRaw) : null;
       if (correlationId) {
-        this.pausedItemListener?.({
+        this.dispatchPausedItem({
           phase: 'REQUEST',
           breakpointId,
           correlationId,
@@ -326,7 +435,7 @@ export class BreakpointCallbackClient {
       const tsRaw = extractHeader(pair.httpRequest?.headers, REQUEST_TIMESTAMP_HEADER);
       const requestTimestamp = tsRaw != null ? Number(tsRaw) : null;
       if (correlationId) {
-        this.pausedItemListener?.({
+        this.dispatchPausedItem({
           phase: 'RESPONSE',
           breakpointId,
           correlationId,
@@ -340,7 +449,7 @@ export class BreakpointCallbackClient {
 
     if (type === TYPE_PAUSED_FRAME) {
       const frame = JSON.parse(value) as PausedStreamFrame;
-      this.pausedItemListener?.({
+      this.dispatchPausedItem({
         phase: frame.phase === 'INBOUND_STREAM' ? 'INBOUND_STREAM' : 'RESPONSE_STREAM',
         breakpointId: frame.breakpointId ?? null,
         frame,
@@ -351,6 +460,34 @@ export class BreakpointCallbackClient {
     // Unknown type — ignore
   }
 
+  /**
+   * Fan a newly-arrived paused item out to the raw per-item listener (kept for
+   * back-compat) and accumulate it in the durable store (keyed + capped) so it
+   * survives the panel being unmounted.
+   */
+  private dispatchPausedItem(item: PausedItem): void {
+    this.pausedItemListener?.(item);
+    // receivedAt is captured once, at arrival, and never changes — it gives the
+    // lists a stable, monotonic fallback sort key.
+    const keyed: StoredPausedItem = { ...item, key: this.nextItemKey++, receivedAt: Date.now() };
+    const next = [...this.pausedItems, keyed];
+    this.pausedItems = next.length > MAX_PAUSED_ITEMS ? next.slice(next.length - MAX_PAUSED_ITEMS) : next;
+    this.notifyPausedItems();
+  }
+
+  private notifyPausedItems(): void {
+    for (const listener of this.pausedItemsListeners) {
+      listener(this.pausedItems);
+    }
+  }
+
+  private clearPausedItems(): void {
+    if (this.pausedItems.length > 0) {
+      this.pausedItems = [];
+      this.notifyPausedItems();
+    }
+  }
+
   private send(envelope: WsEnvelope): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(envelope));
@@ -358,9 +495,13 @@ export class BreakpointCallbackClient {
   }
 
   private scheduleReconnect(): void {
+    // Retry indefinitely with a capped backoff rather than permanently giving up
+    // after a fixed number of attempts. The callback WS is app-lifetime, so a
+    // server outage longer than a few attempts (a deploy/restart) must still
+    // reconnect automatically once it returns — otherwise breakpoints stay dead
+    // until the user re-enters the Breakpoints view. onopen resets the counter.
     this.reconnectAttempts++;
-    if (this.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) return;
-    const delay = RECONNECT_DELAY_MS * Math.min(this.reconnectAttempts, 5);
+    const delay = RECONNECT_DELAY_MS * Math.min(this.reconnectAttempts, 5); // capped at 15s
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this._connect();
@@ -370,6 +511,12 @@ export class BreakpointCallbackClient {
   private setState(state: CallbackClientState): void {
     if (this._state !== state) {
       this._state = state;
+      // Held items reference the previous clientId's correlationIds. On
+      // disconnect the server issues a fresh clientId on reconnect, so these can
+      // never be resolved again — drop them rather than leak stale items.
+      if (state === 'disconnected') {
+        this.clearPausedItems();
+      }
       this.stateListener?.(state);
     }
   }

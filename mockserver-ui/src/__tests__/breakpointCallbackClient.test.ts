@@ -583,4 +583,79 @@ describe('BreakpointCallbackClient', () => {
     }
     client.disconnect();
   });
+
+  // ---- L3: resolution must not mutate the held item's headers ----
+
+  it('does not mutate caller-supplied object-form headers when echoing the correlation id', () => {
+    const client = new BreakpointCallbackClient();
+    client.connect(params);
+    const ws = MockWebSocket.instances[0]!;
+    ws.simulateOpen();
+    ws.simulateMessage({
+      type: 'org.mockserver.serialization.model.WebSocketClientIdDTO',
+      value: JSON.stringify({ clientId: 'c1' }),
+    });
+
+    // This object is still referenced by React state in the real app; it must
+    // not be mutated in place.
+    const heldHeaders: Record<string, string[]> = { Existing: ['v'] };
+    client.resolveRequest('corr-x', { method: 'GET', headers: heldHeaders });
+
+    expect(heldHeaders).toEqual({ Existing: ['v'] });
+    expect(heldHeaders).not.toHaveProperty('WebSocketCorrelationId');
+
+    const inner = JSON.parse(JSON.parse(ws.sentMessages[0]!).value) as { headers: Record<string, string[]> };
+    expect(inner.headers.WebSocketCorrelationId).toEqual(['corr-x']);
+    expect(inner.headers.Existing).toEqual(['v']);
+    client.disconnect();
+  });
+
+  it('handles list-form headers without mutating them and echoes the correlation id', () => {
+    const client = new BreakpointCallbackClient();
+    client.connect(params);
+    const ws = MockWebSocket.instances[0]!;
+    ws.simulateOpen();
+    ws.simulateMessage({
+      type: 'org.mockserver.serialization.model.WebSocketClientIdDTO',
+      value: JSON.stringify({ clientId: 'c1' }),
+    });
+
+    const heldHeaders = [{ name: 'Existing', values: ['v'] }];
+    client.resolveResponse('corr-y', { statusCode: 200, headers: heldHeaders });
+
+    // Original list is untouched (no correlation-id entry appended in place).
+    expect(heldHeaders).toEqual([{ name: 'Existing', values: ['v'] }]);
+
+    const inner = JSON.parse(JSON.parse(ws.sentMessages[0]!).value) as {
+      headers: Array<{ name: string; values: string[] }>;
+    };
+    expect(Array.isArray(inner.headers)).toBe(true);
+    const corr = inner.headers.find((h) => h.name === 'WebSocketCorrelationId');
+    expect(corr?.values).toEqual(['corr-y']);
+    expect(inner.headers.find((h) => h.name === 'Existing')?.values).toEqual(['v']);
+    client.disconnect();
+  });
+
+  // ---- L2: reconnect indefinitely with capped backoff ----
+
+  it('keeps reconnecting past the old fixed attempt cap', () => {
+    vi.useFakeTimers();
+    try {
+      const client = new BreakpointCallbackClient();
+      client.connect(params);
+
+      // Drive many disconnect -> reconnect cycles. The pre-fix client gave up
+      // after 20 attempts (no further sockets); the fix retries indefinitely.
+      for (let i = 0; i < 25; i++) {
+        const ws = MockWebSocket.instances[MockWebSocket.instances.length - 1]!;
+        ws.simulateClose(); // onclose -> scheduleReconnect
+        vi.advanceTimersByTime(15000); // capped backoff -> _connect fires
+      }
+
+      expect(MockWebSocket.instances.length).toBeGreaterThan(21);
+      client.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -930,3 +930,193 @@ describe('BreakpointsPanel — "Set breakpoint" prefill from a log row', () => {
     expect(useDashboardStore.getState().pendingBreakpointPrefill).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// H1 — durable paused-item store: items pushed while the panel is unmounted
+// must survive and remain resolvable after the panel remounts.
+// ---------------------------------------------------------------------------
+
+describe('BreakpointsPanel — durable paused-item store (H1)', () => {
+  async function switchToExchangesTab() {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: /Live Exchanges/ }));
+  }
+
+  it('retains a request pushed while unmounted and can resolve it after remount', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200, json: async () => emptyMatchers,
+    })));
+
+    // Mount, connect the (singleton, app-lifetime) callback WS.
+    const first = renderPanel();
+    await waitFor(() => { expect(MockWebSocket.instances.length).toBeGreaterThan(0); });
+    const ws = connectCallbackWs();
+
+    // Navigate away: unmount the panel. The panel intentionally does NOT close
+    // the WS, so it stays connected and keeps receiving pushes.
+    first.unmount();
+
+    // A matcher fires while the panel is unmounted and the server pushes a
+    // paused request over the still-open callback WS.
+    ws.simulateMessage({
+      type: 'org.mockserver.model.HttpRequest',
+      value: JSON.stringify({
+        method: 'GET',
+        path: '/api/while-unmounted',
+        headers: {
+          'WebSocketCorrelationId': ['corr-unmounted'],
+          'X-MockServer-BreakpointId': ['bp-unmounted'],
+        },
+      }),
+    });
+
+    // Remount (navigate back). The item buffered while unmounted must be shown.
+    renderPanel();
+    await switchToExchangesTab();
+    await waitFor(() => {
+      expect(screen.getByText('/api/while-unmounted')).toBeInTheDocument();
+    });
+
+    // ...and it must still be resolvable — Continue sends the HttpRequest back
+    // over the WS with the original correlation id.
+    const continueBtn = screen
+      .getAllByRole('button')
+      .find((b) => b.getAttribute('aria-label')?.startsWith('Continue'));
+    expect(continueBtn).toBeDefined();
+    await user.click(continueBtn!);
+
+    const envelope = JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]!);
+    expect(envelope.type).toBe('org.mockserver.model.HttpRequest');
+    const inner = JSON.parse(envelope.value);
+    expect(inner.headers['WebSocketCorrelationId']).toEqual(['corr-unmounted']);
+
+    // Resolving removes it from the shared store, so the list is empty again.
+    await waitFor(() => {
+      expect(screen.getByText(/No paused exchanges/)).toBeInTheDocument();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M5 — UTF-8-safe stream-frame modify/inject (round-trip + surfaced failure)
+// ---------------------------------------------------------------------------
+
+describe('BreakpointsPanel — UTF-8-safe stream-frame editing (M5)', () => {
+  async function switchToStreamsTab() {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: /Live Streams/ }));
+  }
+
+  function pushFrame(ws: MockWebSocket, base64Body: string, correlationId: string) {
+    ws.simulateMessage({
+      type: 'org.mockserver.serialization.model.PausedStreamFrameDTO',
+      value: JSON.stringify({
+        correlationId,
+        streamId: 's-utf8',
+        sequenceNumber: 0,
+        direction: 'OUTBOUND',
+        phase: 'RESPONSE_STREAM',
+        body: base64Body,
+        breakpointId: 'bp-utf8',
+      }),
+    });
+  }
+
+  // Browser-typed base64 <-> UTF-8 oracle, independent of the code under test
+  // (no Node `Buffer`, which has no type in this project). Uses only the DOM lib
+  // globals `TextEncoder`/`TextDecoder` + `btoa`/`atob`.
+  function toBase64(s: string): string {
+    return btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+  }
+  function fromBase64(b64: string): string {
+    const binary = atob(b64);
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+
+  it('round-trips a non-ASCII frame body (emoji / typographic quotes) through modify', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200, json: async () => emptyMatchers,
+    })));
+
+    renderPanel();
+    await waitFor(() => { expect(MockWebSocket.instances.length).toBeGreaterThan(0); });
+    const ws = connectCallbackWs();
+
+    // Body with multi-byte UTF-8 that would mojibake under atob and throw under
+    // btoa (chars > U+00FF). Base64 is computed independently of the code under
+    // test (the toBase64 oracle above) to keep the assertion honest.
+    const original = 'héllo 🌍 — “smart quotes”';
+    pushFrame(ws, toBase64(original), 'frame-utf8');
+
+    await switchToStreamsTab();
+    await waitFor(() => { expect(screen.getByText('s-utf8')).toBeInTheDocument(); });
+
+    const modifyBtn = screen
+      .getAllByRole('button')
+      .find((b) => b.getAttribute('aria-label')?.startsWith('Modify'));
+    await user.click(modifyBtn!);
+    await waitFor(() => { expect(screen.getByText('Modify Stream Frame')).toBeInTheDocument(); });
+
+    // The dialog must show the correctly-decoded UTF-8 text, not mojibake.
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    expect(textarea.value).toBe(original);
+
+    // Submitting unchanged must send a MODIFY whose Base64 body decodes back to
+    // exactly the original text (no data loss, no thrown InvalidCharacterError).
+    const sendBtn = screen.getByRole('button', { name: /Send Modified Frame/ });
+    await user.click(sendBtn);
+
+    const envelope = JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]!);
+    expect(envelope.type).toBe('org.mockserver.serialization.model.StreamFrameDecisionDTO');
+    const inner = JSON.parse(envelope.value);
+    expect(inner.action).toBe('MODIFY');
+    expect(fromBase64(inner.body as string)).toBe(original);
+  });
+
+  it('surfaces an encoding failure in the dialog instead of silently doing nothing', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200, json: async () => emptyMatchers,
+    })));
+
+    renderPanel();
+    await waitFor(() => { expect(MockWebSocket.instances.length).toBeGreaterThan(0); });
+    const ws = connectCallbackWs();
+
+    pushFrame(ws, btoa('plain'), 'frame-fail');
+
+    await switchToStreamsTab();
+    await waitFor(() => { expect(screen.getByText('s-utf8')).toBeInTheDocument(); });
+
+    const modifyBtn = screen
+      .getAllByRole('button')
+      .find((b) => b.getAttribute('aria-label')?.startsWith('Modify'));
+    await user.click(modifyBtn!);
+    await waitFor(() => { expect(screen.getByText('Modify Stream Frame')).toBeInTheDocument(); });
+
+    const sentBefore = ws.sentMessages.length;
+
+    // Force the UTF-8 encode to throw (the historical btoa failure mode), then
+    // submit: the error must appear in the dialog and nothing must be sent.
+    class ThrowingTextEncoder {
+      encode(): Uint8Array { throw new Error('boom-encode'); }
+    }
+    vi.stubGlobal('TextEncoder', ThrowingTextEncoder);
+    try {
+      const textarea = screen.getByRole('textbox');
+      fireEvent.change(textarea, { target: { value: 'anything' } });
+      const sendBtn = screen.getByRole('button', { name: /Send Modified Frame/ });
+      await user.click(sendBtn);
+
+      await waitFor(() => { expect(screen.getByText('boom-encode')).toBeInTheDocument(); });
+      // Dialog stays open and no decision was sent over the WS.
+      expect(screen.getByText('Modify Stream Frame')).toBeInTheDocument();
+      expect(ws.sentMessages.length).toBe(sentBefore);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

@@ -47,7 +47,10 @@ import {
 } from '../lib/breakpoints';
 import {
   getBreakpointCallbackClient,
+  utf8ToBase64,
+  base64ToUtf8,
   type PausedItem,
+  type StoredPausedItem,
   type CallbackClientState,
   type PausedStreamFrame,
   type StreamFrameDecision,
@@ -90,16 +93,6 @@ function phaseChipColor(phase: string): 'default' | 'primary' | 'secondary' | 'i
   }
 }
 
-let nextItemKey = 0;
-
-// Upper bound on locally-held paused items. A breakpoint matcher with a broad
-// pattern (e.g. path `.*`) pauses every exchange, and each held item retains a
-// full request/response in React state. Without a cap a busy server would grow
-// this array until the tab runs out of memory, so we drop the oldest items
-// beyond this bound (each dropped exchange remains paused server-side and will
-// auto-resolve via the server's breakpoint timeout).
-const MAX_PAUSED_ITEMS = 500;
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -127,8 +120,11 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
   const [clientId, setClientId] = useState<string | null>(null);
   const clientRef = useRef(getBreakpointCallbackClient());
 
-  // -- Live paused items (from WS) --
-  const [pausedItems, setPausedItems] = useState<(PausedItem & { key: number; receivedAt: number })[]>([]);
+  // -- Live paused items (from the client-owned store) --
+  // The mount effect subscribes to the singleton client's store, which seeds
+  // this immediately with anything buffered while the panel was unmounted
+  // (navigated away) — so those items are shown on (re)mount, not lost.
+  const [pausedItems, setPausedItems] = useState<StoredPausedItem[]>([]);
 
   // -- Action state --
   const [busy, setBusy] = useState(false);
@@ -161,25 +157,16 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
     client.onStateChange((state) => {
       setWsState(state);
       setClientId(client.clientId);
-      if (state === 'disconnected') {
-        // Held items reference the previous clientId's correlationIds. On
-        // reconnect the server issues a fresh clientId, so these can never be
-        // resolved (continue/modify/abort) from the UI again — drop them rather
-        // than leak them into the list forever.
-        setPausedItems([]);
-      }
+      // NB: the paused-item store is cleared by the client itself on disconnect
+      // (held items reference the previous clientId and can no longer be
+      // resolved once a fresh clientId is issued on reconnect).
     });
 
-    client.onPausedItem((item) => {
-      // receivedAt is captured once, at arrival, and never changes — it gives the
-      // lists a stable, monotonic sort key so items keep a fixed position by the
-      // time their request/response/frame was received, instead of reshuffling.
-      const keyed = { ...item, key: nextItemKey++, receivedAt: Date.now() };
-      setPausedItems((prev) => {
-        const next = [...prev, keyed];
-        return next.length > MAX_PAUSED_ITEMS ? next.slice(next.length - MAX_PAUSED_ITEMS) : next;
-      });
-    });
+    // Subscribe to the client-owned paused-item store. This seeds immediately
+    // with anything buffered while the panel was unmounted (H1) and updates on
+    // every push/removal. Unsubscribe on unmount so the stale setState is not
+    // invoked, but leave the store (and its accumulation) intact.
+    const unsubscribePausedItems = client.subscribePausedItems(setPausedItems);
 
     // Seed from the singleton so a re-mount after a tab change immediately
     // reflects the live connection + clientId (connect() below is idempotent and
@@ -193,7 +180,8 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
     // app-lifetime singleton. Keeping it open across tab changes preserves the
     // server clientId and the breakpoint matchers registered under it, so
     // breakpoints stay active and registered when navigating away from and back
-    // to this tab.
+    // to this tab. Only the store subscription is torn down.
+    return unsubscribePausedItems;
   }, [connectionParams]);
 
   // -------------------------------------------------------------------------
@@ -362,7 +350,8 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
   // -------------------------------------------------------------------------
 
   const removeItem = useCallback((key: number) => {
-    setPausedItems((prev) => prev.filter((item) => item.key !== key));
+    // Remove from the client-owned store; the store subscription updates local state.
+    clientRef.current.removePausedItem(key);
   }, []);
 
   const handleContinueExchange = useCallback((item: PausedItem & { key: number }) => {
@@ -445,9 +434,10 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
   const openFrameModifyDialog = useCallback((item: PausedItem & { key: number }) => {
     setFrameModifyTarget(item);
     if (item.phase === 'RESPONSE_STREAM' || item.phase === 'INBOUND_STREAM') {
-      // Decode base64 body for display
+      // Decode base64 body for display (UTF-8-safe: atob alone mojibakes
+      // multi-byte UTF-8, e.g. emoji / typographic quotes in LLM streams).
       try {
-        setFrameModifyBody(atob(item.frame.body));
+        setFrameModifyBody(base64ToUtf8(item.frame.body));
       } catch {
         setFrameModifyBody(item.frame.body);
       }
@@ -462,10 +452,19 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
       return;
     }
     if (frameModifyTarget.phase !== 'RESPONSE_STREAM' && frameModifyTarget.phase !== 'INBOUND_STREAM') return;
+    // UTF-8-safe encode inside try/catch: surface any encoding failure in the
+    // dialog rather than throwing out of the onClick and leaving it silently open.
+    let encoded: string;
+    try {
+      encoded = utf8ToBase64(frameModifyBody);
+    } catch (e) {
+      setFrameModifyError(e instanceof Error ? e.message : 'Could not encode frame body');
+      return;
+    }
     resolveFrame(frameModifyTarget, {
       correlationId: frameModifyTarget.frame.correlationId,
       action: 'MODIFY',
-      body: btoa(frameModifyBody),
+      body: encoded,
     });
     setFrameModifyTarget(null);
   }, [frameModifyTarget, frameModifyBody, resolveFrame]);
@@ -483,10 +482,19 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
       return;
     }
     if (frameInjectTarget.phase !== 'RESPONSE_STREAM' && frameInjectTarget.phase !== 'INBOUND_STREAM') return;
+    // UTF-8-safe encode inside try/catch: surface any encoding failure in the
+    // dialog rather than throwing out of the onClick and leaving it silently open.
+    let encoded: string;
+    try {
+      encoded = utf8ToBase64(frameInjectBody);
+    } catch (e) {
+      setFrameInjectError(e instanceof Error ? e.message : 'Could not encode frame body');
+      return;
+    }
     resolveFrame(frameInjectTarget, {
       correlationId: frameInjectTarget.frame.correlationId,
       action: 'INJECT',
-      body: btoa(frameInjectBody),
+      body: encoded,
     });
     setFrameInjectTarget(null);
   }, [frameInjectTarget, frameInjectBody, resolveFrame]);
