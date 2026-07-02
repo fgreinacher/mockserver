@@ -473,88 +473,66 @@ public class StreamingProxyResponseIntegrationTest {
     }
 
     @Test
-    public void shouldFullyAggregateForForwardReplaceWithResponseOverride() throws Exception {
-        // When a FORWARD_REPLACE expectation has a response override, the upstream streaming
-        // response must be fully aggregated (not streamed) so the override can be applied.
-        // The upstream /sse endpoint sends text/event-stream chunked, but the override adds
-        // a custom header — the response should arrive with the override applied.
+    public void shouldStreamForwardReplaceWhenResponseOverrideIsHeaderOnly() throws Exception {
+        // A FORWARD_REPLACE with a HEADER-ONLY response override (adds a header, no body change) must
+        // NOT force the streaming upstream to be aggregated: the header is applied to the streamed
+        // response HEAD while the body chunks are relayed untouched. Decisive because the upstream
+        // /sse-long-pause withholds the late event for 1500ms — with aggregation the head would only
+        // arrive after that completion, whereas streaming relays the head + early event promptly.
         mockServerClient
-            .when(request().withPath("/sse"))
+            .when(request().withPath("/replace-header-only"))
             .forward(
                 forwardOverriddenRequest(
-                    request().withHeader("Host", "localhost:" + upstreamPort),
+                    request().withPath("/sse-long-pause").withHeader("Host", "localhost:" + upstreamPort),
                     response().withHeader("X-Custom-Override", "applied")
                 )
             );
 
-        List<String> receivedLines = new ArrayList<>();
-        try (Socket socket = new Socket("localhost", mockServerPort)) {
-            socket.setSoTimeout(15000);
-            OutputStream output = socket.getOutputStream();
-            output.write(("GET /sse HTTP/1.1\r\n" +
-                "Host: localhost:" + upstreamPort + "\r\n" +
-                "Connection: close\r\n" +
-                "\r\n").getBytes(StandardCharsets.UTF_8));
-            output.flush();
+        String req = "GET /replace-header-only HTTP/1.1\r\n" +
+            "Host: localhost:" + upstreamPort + "\r\n" +
+            "Connection: close\r\n\r\n";
+        TimedResponse r = sendAndMeasure(req, 15000);
 
-            BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                receivedLines.add(line);
-            }
-        }
-
-        String fullResponse = String.join("\n", receivedLines);
-        // The override header should be present (proves the response was fully aggregated
-        // and the override was applied)
+        assertThat("response should contain HTTP 200", r.body, containsString("200"));
+        // The override header must be applied to the streamed head.
         assertThat("response should contain the custom override header",
-            fullResponse, containsString("X-Custom-Override: applied"));
-        // The body should contain all SSE events (fully aggregated)
-        assertThat("response should contain event data",
-            fullResponse, containsString("data: event1"));
-        assertThat("response should contain HTTP 200", fullResponse, containsString("200"));
+            r.body, containsString("X-Custom-Override: applied"));
+        assertThat("should receive the early event", r.body, containsString("data: early"));
+        assertThat("should receive the late event", r.body, containsString("data: late"));
+        // The decisive assertion: the head is relayed promptly, proving streaming was preserved for
+        // the header-only override rather than aggregating until the 1500ms completion.
+        assertThat("head should arrive promptly (streaming preserved for header-only override)",
+            r.firstByteMs, lessThan(1000L));
     }
 
     @Test
-    public void shouldFullyAggregateSseForForwardReplaceWithResponseOverride() throws Exception {
-        // When a FORWARD_REPLACE expectation has a response override, even an SSE upstream
-        // that would normally be streamed must be fully aggregated so the override applies.
-        // Uses /sse to exercise the DISABLE_RESPONSE_STREAMING path for a genuinely
-        // streaming upstream.
+    public void shouldAggregateForForwardReplaceWhenResponseOverrideReplacesBody() throws Exception {
+        // A FORWARD_REPLACE whose response override REPLACES the body needs the full upstream body,
+        // so the streaming upstream must be aggregated (streaming disabled). Decisive: the head only
+        // arrives after the upstream's 1500ms completion, and the streamed events are discarded.
         mockServerClient
-            .when(request().withPath("/sse-override-test"))
+            .when(request().withPath("/replace-body"))
             .forward(
                 forwardOverriddenRequest(
-                    request()
-                        .withPath("/sse")
-                        .withHeader("Host", "localhost:" + upstreamPort),
-                    response().withHeader("X-Override-SSE", "yes")
+                    request().withPath("/sse-long-pause").withHeader("Host", "localhost:" + upstreamPort),
+                    response().withBody("replaced-body")
                 )
             );
 
-        List<String> receivedLines = new ArrayList<>();
-        try (Socket socket = new Socket("localhost", mockServerPort)) {
-            socket.setSoTimeout(15000);
-            OutputStream output = socket.getOutputStream();
-            output.write(("GET /sse-override-test HTTP/1.1\r\n" +
-                "Host: localhost:" + upstreamPort + "\r\n" +
-                "Connection: close\r\n" +
-                "\r\n").getBytes(StandardCharsets.UTF_8));
-            output.flush();
+        String req = "GET /replace-body HTTP/1.1\r\n" +
+            "Host: localhost:" + upstreamPort + "\r\n" +
+            "Connection: close\r\n\r\n";
+        TimedResponse r = sendAndMeasure(req, 15000);
 
-            BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                receivedLines.add(line);
-            }
-        }
-
-        String fullResponse = String.join("\n", receivedLines);
-        assertThat("response should contain override header",
-            fullResponse, containsString("X-Override-SSE: yes"));
-        assertThat("response should contain SSE event data",
-            fullResponse, containsString("data: event1"));
-        assertThat("response should contain HTTP 200", fullResponse, containsString("200"));
+        assertThat("response should contain HTTP 200", r.body, containsString("200"));
+        assertThat("override body should replace the streamed content",
+            r.body, containsString("replaced-body"));
+        assertThat("streamed events should be discarded by the body override",
+            r.body, not(containsString("data: early")));
+        // The decisive assertion: a body override forces aggregation, so the head only arrives after
+        // the upstream's 1500ms completion.
+        assertThat("body override forces aggregation (head arrives only after the 1500ms completion)",
+            r.firstByteMs, greaterThanOrEqualTo(1300L));
     }
 
     @Test

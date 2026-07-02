@@ -193,6 +193,9 @@ public class Http2StreamingProxyResponseIntegrationTest {
         forwardClient
             .when(request().withPath("/fallback"))
             .forward(forward().withHost("127.0.0.1").withPort(h1OnlyUpstreamPort).withScheme(HttpForward.Scheme.HTTPS));
+        forwardClient
+            .when(request().withPath("/sse-no-content-type"))
+            .forward(forward().withHost("127.0.0.1").withPort(h2UpstreamPort).withScheme(HttpForward.Scheme.HTTPS));
     }
 
     @AfterClass
@@ -253,8 +256,15 @@ public class Http2StreamingProxyResponseIntegrationTest {
                 ctx.writeAndFlush(new DefaultHttp2DataFrame(
                     Unpooled.copiedBuffer("{\"ok\":true}", StandardCharsets.UTF_8), true));
             } else {
+                // For /sse-no-content-type mimic the OpenAI Codex backend: an SSE stream with NO
+                // content-type at all. It can only be detected as streaming from the request's own
+                // intent (Accept: text/event-stream), exercising EXPECT_STREAMING_RESPONSE on the
+                // HTTP/2 upstream forward path.
+                boolean withContentType = !path.startsWith("/sse-no-content-type");
                 Http2Headers headers = new DefaultHttp2Headers().status("200");
-                headers.set("content-type", "text/event-stream");
+                if (withContentType) {
+                    headers.set("content-type", "text/event-stream");
+                }
                 headers.set("cache-control", "no-cache");
                 ctx.writeAndFlush(new DefaultHttp2HeadersFrame(headers, false));
                 ctx.writeAndFlush(new DefaultHttp2DataFrame(
@@ -294,8 +304,13 @@ public class Http2StreamingProxyResponseIntegrationTest {
     }
 
     private TimedResponse sendAndMeasure(String path) throws Exception {
+        return sendAndMeasure(path, "");
+    }
+
+    private TimedResponse sendAndMeasure(String path, String extraHeaders) throws Exception {
         String rawRequest = "GET " + path + " HTTP/1.1\r\n" +
             "Host: localhost\r\n" +
+            extraHeaders +
             "Connection: close\r\n\r\n";
         try (Socket socket = new Socket("localhost", forwardPort)) {
             socket.setSoTimeout(15000);
@@ -350,6 +365,32 @@ public class Http2StreamingProxyResponseIntegrationTest {
         assertThat("logged response should have a body", loggedResponse.getBody(), notNullValue());
         // The streamed SSE text must be captured as STRING, not BINARY.
         assertThat("SSE streaming body should be logged as STRING",
+            loggedResponse.getBody().getType(), is(Body.Type.STRING));
+        assertThat("logged body should contain the streamed SSE event text",
+            loggedResponse.getBodyAsString(), allOf(containsString("data: early"), containsString("data: late")));
+    }
+
+    @Test(timeout = 30000)
+    public void shouldStreamHttp2SseResponseWithNoContentTypeWhenRequestSignalsStreaming() throws Exception {
+        // The upstream sends an SSE stream with NO content-type; streaming can only be detected from
+        // the request's Accept: text/event-stream intent, threaded onto the HTTP/2 upstream forward
+        // channel as EXPECT_STREAMING_RESPONSE. Proves the content-type-less streaming parity on the
+        // HTTP/2 upstream forward path.
+        TimedResponse r = sendAndMeasure("/sse-no-content-type", "Accept: text/event-stream\r\n");
+
+        assertThat("response should contain HTTP 200", r.body, containsString("200"));
+        assertThat("should receive the early event", r.body, containsString("data: early"));
+        assertThat("should receive the late event", r.body, containsString("data: late"));
+        assertThat("head should arrive promptly (streamed), not after the 2s body delay",
+            r.firstByteMs, lessThan(1500L));
+
+        pollUntilTrue(() -> forwardClient.retrieveRecordedRequestsAndResponses(
+            request().withPath("/sse-no-content-type")).length >= 1);
+        LogEventRequestAndResponse[] recorded = forwardClient.retrieveRecordedRequestsAndResponses(
+            request().withPath("/sse-no-content-type"));
+        assertThat("should have recorded the request", recorded.length, greaterThanOrEqualTo(1));
+        HttpResponse loggedResponse = recorded[0].getHttpResponse();
+        assertThat("streamed body should be logged as STRING",
             loggedResponse.getBody().getType(), is(Body.Type.STRING));
         assertThat("logged body should contain the streamed SSE event text",
             loggedResponse.getBodyAsString(), allOf(containsString("data: early"), containsString("data: late")));

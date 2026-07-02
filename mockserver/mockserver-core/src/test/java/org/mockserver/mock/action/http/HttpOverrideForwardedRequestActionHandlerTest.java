@@ -87,6 +87,106 @@ public class HttpOverrideForwardedRequestActionHandlerTest {
     }
 
     @Test
+    public void shouldNotDisableStreamingForHeaderOnlyResponseOverride() throws Exception {
+        // A header-only response override (no body, no schema) can be applied to a streaming
+        // response HEAD while the body is relayed untouched, so streaming must NOT be disabled:
+        // the handler uses the non-disableStreaming httpClient overload (2-arg sendRequest).
+        CompletableFuture<HttpResponse> responseFuture = new CompletableFuture<>();
+        responseFuture.complete(response().withStatusCode(200).withBody("upstream"));
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), any())).thenReturn(responseFuture);
+
+        HttpForwardActionResult result = handler.handle(
+            forwardOverriddenRequest()
+                .withResponseOverride(response().withHeader("X-Trace", "abc")),
+            request("/somePath")
+        );
+
+        // the streaming (non-disableStreaming) overload was used
+        verify(mockHttpClient).sendRequest(any(HttpRequest.class), any());
+        verify(mockHttpClient, never()).sendRequest(any(HttpRequest.class), any(), anyLong(), anyBoolean());
+        // and the header override is still applied to the (aggregated, in this unit test) response
+        HttpResponse actualResponse = result.getHttpResponse().get();
+        assertThat(actualResponse.getFirstHeader("X-Trace"), is("abc"));
+        assertThat(actualResponse.getBodyAsString(), is("upstream"));
+    }
+
+    @Test
+    public void shouldNotDisableStreamingForHeaderOnlyResponseModifier() throws Exception {
+        // A response MODIFIER that only edits headers (no JSON body patch) is head-only, so streaming
+        // is preserved (2-arg sendRequest).
+        CompletableFuture<HttpResponse> responseFuture = new CompletableFuture<>();
+        responseFuture.complete(response().withStatusCode(200).withBody("upstream"));
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), any())).thenReturn(responseFuture);
+
+        handler.handle(
+            forwardOverriddenRequest()
+                .withResponseModifier(HttpResponseModifier.responseModifier()
+                    .withHeaders(java.util.Collections.singletonList(new Header("X-Add", "1")), java.util.Collections.emptyList(), java.util.Collections.emptyList())),
+            request("/somePath")
+        );
+
+        verify(mockHttpClient).sendRequest(any(HttpRequest.class), any());
+        verify(mockHttpClient, never()).sendRequest(any(HttpRequest.class), any(), anyLong(), anyBoolean());
+    }
+
+    @Test
+    public void shouldDisableStreamingWhenResponseModifierPatchesBody() throws Exception {
+        // A response modifier that patches the JSON body needs the full buffered body, so streaming
+        // must be disabled (4-arg sendRequest with disableStreaming=true).
+        CompletableFuture<HttpResponse> responseFuture = new CompletableFuture<>();
+        responseFuture.complete(response().withStatusCode(200).withBody("{\"a\":1}"));
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), any(), anyLong(), anyBoolean())).thenReturn(responseFuture);
+
+        handler.handle(
+            forwardOverriddenRequest()
+                .withResponseModifier(HttpResponseModifier.responseModifier()
+                    .withJsonMergePatch("{\"a\":2}")),
+            request("/somePath")
+        );
+
+        verify(mockHttpClient).sendRequest(any(HttpRequest.class), any(), anyLong(), eq(true));
+        verify(mockHttpClient, never()).sendRequest(any(HttpRequest.class), any());
+    }
+
+    @Test
+    public void shouldConservativelyDisableStreamingForConditionGatedBodyPatch() throws Exception {
+        // A body patch guarded by a condition may not run at runtime, but streaming is decided before
+        // the response arrives, so a body patch (conditional or not) conservatively disables streaming.
+        assertThat(HttpOverrideForwardedRequestActionHandler.isHeaderOnlyResponseModification(
+            forwardOverriddenRequest()
+                .withResponseModifier(HttpResponseModifier.responseModifier()
+                    .withCondition(new HttpResponseModifierCondition().withStatusCodeRange("2xx"))
+                    .withJsonMergePatch("{\"a\":2}"))
+        ), is(false));
+    }
+
+    @Test
+    public void shouldTreatChainOfHeaderOnlyModifiersAsHeaderOnly() throws Exception {
+        // A chain of header-only child modifiers is header-only. The wrapping modifier's OWN
+        // jsonPatch is ignored by applyTo() when a chain is present, so it does not count against
+        // header-only classification.
+        assertThat(HttpOverrideForwardedRequestActionHandler.isHeaderOnlyResponseModification(
+            forwardOverriddenRequest()
+                .withResponseModifier(HttpResponseModifier.responseModifier()
+                    .withJsonMergePatch("{\"ignored\":true}")
+                    .withModifiers(java.util.Collections.singletonList(
+                        HttpResponseModifier.responseModifier()
+                            .withHeaders(java.util.Collections.singletonList(new Header("X-Add", "1")), java.util.Collections.emptyList(), java.util.Collections.emptyList()))))
+        ), is(true));
+    }
+
+    @Test
+    public void shouldDisableStreamingForChainContainingBodyPatchModifier() throws Exception {
+        // A chain that contains a child which patches the body is body-affecting.
+        assertThat(HttpOverrideForwardedRequestActionHandler.isHeaderOnlyResponseModification(
+            forwardOverriddenRequest()
+                .withResponseModifier(HttpResponseModifier.responseModifier()
+                    .withModifiers(java.util.Collections.singletonList(
+                        HttpResponseModifier.responseModifier().withJsonMergePatch("{\"a\":2}"))))
+        ), is(false));
+    }
+
+    @Test
     public void shouldApplyResponseTemplateWithVelocity() throws Exception {
         CompletableFuture<HttpResponse> responseFuture = new CompletableFuture<>();
         responseFuture.complete(response().withStatusCode(200).withBody("upstream_body"));
