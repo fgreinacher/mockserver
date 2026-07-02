@@ -817,6 +817,8 @@
                         <exclude>**/BCKeyAndCertificateFactoryLazyProviderTest.java</exclude>
                         <!-- Resets the OpenAiResponsesState JVM-wide singleton via getInstance().reset() -->
                         <exclude>**/OpenAiResponsesStateTest.java</exclude>
+                        <!-- Mutates the global mockserver.fixtureBodyRedactFields ConfigurationProperties -->
+                        <exclude>**/LlmDatasetExporterTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -940,6 +942,7 @@
                                 <include>**/DriftDetectionConfigTest.java</include>
                                 <include>**/BCKeyAndCertificateFactoryLazyProviderTest.java</include>
                                 <include>**/OpenAiResponsesStateTest.java</include>
+                                <include>**/LlmDatasetExporterTest.java</include>
                             </includes>
                         </configuration>
                     </execution>
