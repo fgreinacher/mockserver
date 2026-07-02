@@ -19,22 +19,10 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import AppBar, { NAV_TAB_DESCRIPTIONS } from './components/AppBar';
 import FilterPanel from './components/FilterPanel';
 import DashboardGrid from './components/DashboardGrid';
-import TrafficInspector from './components/TrafficInspector';
-import SessionInspector from './components/SessionInspector';
-import LibraryView from './components/LibraryView';
-import ServiceChaosPanel from './components/ServiceChaosPanel';
-import DriftPanel from './components/DriftPanel';
-import SloPanel from './components/SloPanel';
-import VerificationView from './components/VerificationView';
-import AsyncApiPanel from './components/AsyncApiPanel';
-import GrpcServicesPanel from './components/GrpcServicesPanel';
-import BreakpointsPanel from './components/BreakpointsPanel';
-import ContractTestPanel from './components/ContractTestPanel';
-import ClusterPanel from './components/ClusterPanel';
-import OnboardingPanel from './components/OnboardingPanel';
 import DebugMismatchDialog from './components/DebugMismatchDialog';
 import GenerateStubDialog from './components/GenerateStubDialog';
 import ConfirmDialog from './components/ConfirmDialog';
+import ShortcutsDialog from './components/ShortcutsDialog';
 import ErrorBoundary from './components/ErrorBoundary';
 import AnalyticsBanner from './components/AnalyticsBanner';
 import LogPressureBanner from './components/LogPressureBanner';
@@ -62,6 +50,25 @@ const McpServerHealthPanel = lazy(() => import('./components/McpServerHealthPane
 // the Performance tab is opened, keeping it off the initial dashboard load.
 const LoadScenarioPanel = lazy(() => import('./components/LoadScenarioPanel'));
 
+// Per-view code splitting: every remaining top-level view is lazy-loaded too, so
+// only the shell (AppBar + FilterPanel + DashboardGrid) and the view the user is
+// actually looking at land in the initial chunk. Each is wrapped in its own
+// Suspense fallback below, following the pattern of the views above. DashboardGrid
+// stays eagerly imported as the primary data view rendered by the default shell.
+const OnboardingPanel = lazy(() => import('./components/OnboardingPanel'));
+const TrafficInspector = lazy(() => import('./components/TrafficInspector'));
+const SessionInspector = lazy(() => import('./components/SessionInspector'));
+const LibraryView = lazy(() => import('./components/LibraryView'));
+const ServiceChaosPanel = lazy(() => import('./components/ServiceChaosPanel'));
+const DriftPanel = lazy(() => import('./components/DriftPanel'));
+const SloPanel = lazy(() => import('./components/SloPanel'));
+const VerificationView = lazy(() => import('./components/VerificationView'));
+const AsyncApiPanel = lazy(() => import('./components/AsyncApiPanel'));
+const GrpcServicesPanel = lazy(() => import('./components/GrpcServicesPanel'));
+const BreakpointsPanel = lazy(() => import('./components/BreakpointsPanel'));
+const ContractTestPanel = lazy(() => import('./components/ContractTestPanel'));
+const ClusterPanel = lazy(() => import('./components/ClusterPanel'));
+
 // How long the WebSocket must stay down before the persistent connection-loss
 // banner appears. Brief reconnects (the common case under StrictMode remount or
 // a server restart) clear well before this, so the banner only nags on a real,
@@ -72,6 +79,7 @@ export default function App() {
   const themeMode = useDashboardStore((s) => s.themeMode);
   const view = useDashboardStore((s) => s.view);
   const error = useDashboardStore((s) => s.error);
+  const setError = useDashboardStore((s) => s.setError);
   const connectionStatus = useDashboardStore((s) => s.connectionStatus);
   const theme = useMemo(() => buildTheme(themeMode), [themeMode]);
 
@@ -188,6 +196,9 @@ export default function App() {
 
   const logSearchInputRef = useRef<HTMLInputElement>(null);
   const [clearLogsConfirm, setClearLogsConfirm] = useState(false);
+  // The keyboard-shortcuts help dialog is owned here so both the `?` shortcut and
+  // the AppBar keyboard-icon button open the same single instance.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const shortcutHandlers = useMemo(
     () => ({
@@ -199,6 +210,9 @@ export default function App() {
       },
       onToggleFilter: () => {
         useDashboardStore.getState().toggleFilterExpanded();
+      },
+      onShowShortcuts: () => {
+        setShortcutsOpen(true);
       },
     }),
     [],
@@ -229,6 +243,7 @@ export default function App() {
             onClearServer={handleClearServer}
             onClearLogs={handleClearLogs}
             onClearExpectations={handleClearExpectations}
+            onShowShortcuts={() => setShortcutsOpen(true)}
           />
           {NAV_TAB_DESCRIPTIONS[view] && (
             <Typography
@@ -274,7 +289,12 @@ export default function App() {
             <FilterPanel onFilterChange={handleFilterChange} />
           )}
           {error && (
-            <Alert severity="error" role="alert" sx={{ mx: 1, mt: 1, flexShrink: 0 }}>
+            <Alert
+              severity="error"
+              role="alert"
+              onClose={() => setError(null)}
+              sx={{ mx: 1, mt: 1, flexShrink: 0 }}
+            >
               {error}
             </Alert>
           )}
@@ -286,16 +306,32 @@ export default function App() {
             AppBar above stays OUTSIDE the boundary so navigation always works.
           */}
           <ErrorBoundary label="this view" resetKeys={[view]}>
-            {view === 'get-started' && <OnboardingPanel connectionParams={params} />}
+            {view === 'get-started' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading…</Box>}>
+                <OnboardingPanel connectionParams={params} />
+              </Suspense>
+            )}
             {view === 'dashboard' && <DashboardGrid />}
-            {view === 'traffic' && <TrafficInspector />}
-            {view === 'sessions' && <SessionInspector connectionParams={params} />}
+            {view === 'traffic' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading traffic…</Box>}>
+                <TrafficInspector />
+              </Suspense>
+            )}
+            {view === 'sessions' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading trace…</Box>}>
+                <SessionInspector connectionParams={params} />
+              </Suspense>
+            )}
             {view === 'composer' && (
               <Suspense fallback={<Box sx={{ p: 2 }}>Loading composer…</Box>}>
                 <ComposerView connectionParams={params} />
               </Suspense>
             )}
-            {view === 'library' && <LibraryView connectionParams={params} />}
+            {view === 'library' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading library…</Box>}>
+                <LibraryView connectionParams={params} />
+              </Suspense>
+            )}
             {view === 'metrics' && (
               <Suspense fallback={<Box sx={{ p: 2 }}>Loading metrics…</Box>}>
                 <MetricsView connectionParams={params} />
@@ -311,20 +347,56 @@ export default function App() {
                 <McpServerHealthPanel />
               </Suspense>
             )}
-            {view === 'chaos' && <ServiceChaosPanel connectionParams={params} />}
+            {view === 'chaos' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading chaos…</Box>}>
+                <ServiceChaosPanel connectionParams={params} />
+              </Suspense>
+            )}
             {view === 'performance' && (
               <Suspense fallback={<Box sx={{ p: 2 }}>Loading performance…</Box>}>
                 <LoadScenarioPanel connectionParams={params} />
               </Suspense>
             )}
-            {view === 'drift' && <DriftPanel connectionParams={params} />}
-            {view === 'verification' && <VerificationView connectionParams={params} />}
-            {view === 'slo' && <SloPanel connectionParams={params} />}
-            {view === 'async' && <AsyncApiPanel connectionParams={params} />}
-            {view === 'grpc' && <GrpcServicesPanel connectionParams={params} />}
-            {view === 'breakpoints' && <BreakpointsPanel connectionParams={params} />}
-            {view === 'contract' && <ContractTestPanel connectionParams={params} />}
-            {view === 'cluster' && <ClusterPanel connectionParams={params} />}
+            {view === 'drift' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading drift…</Box>}>
+                <DriftPanel connectionParams={params} />
+              </Suspense>
+            )}
+            {view === 'verification' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading verify…</Box>}>
+                <VerificationView connectionParams={params} />
+              </Suspense>
+            )}
+            {view === 'slo' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading SLO…</Box>}>
+                <SloPanel connectionParams={params} />
+              </Suspense>
+            )}
+            {view === 'async' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading async…</Box>}>
+                <AsyncApiPanel connectionParams={params} />
+              </Suspense>
+            )}
+            {view === 'grpc' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading gRPC…</Box>}>
+                <GrpcServicesPanel connectionParams={params} />
+              </Suspense>
+            )}
+            {view === 'breakpoints' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading breakpoints…</Box>}>
+                <BreakpointsPanel connectionParams={params} />
+              </Suspense>
+            )}
+            {view === 'contract' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading contract…</Box>}>
+                <ContractTestPanel connectionParams={params} />
+              </Suspense>
+            )}
+            {view === 'cluster' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading cluster…</Box>}>
+                <ClusterPanel connectionParams={params} />
+              </Suspense>
+            )}
           </ErrorBoundary>
         </Box>
         <Snackbar
@@ -361,6 +433,7 @@ export default function App() {
           onConfirm={() => { void clearServer('log'); }}
           onClose={() => setClearLogsConfirm(false)}
         />
+        <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       </SetBreakpointContext.Provider>
       </GenerateStubContext.Provider>
       </DebugMismatchContext.Provider>

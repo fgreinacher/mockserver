@@ -12,6 +12,7 @@ function renderAppBar(overrides = {}) {
     onClearServer: vi.fn().mockResolvedValue(undefined),
     onClearLogs: vi.fn().mockResolvedValue(undefined),
     onClearExpectations: vi.fn().mockResolvedValue(undefined),
+    onShowShortcuts: vi.fn(),
   };
   const props = { ...defaults, ...overrides };
   return {
@@ -47,6 +48,15 @@ describe('AppBar', () => {
     useDashboardStore.setState({ connectionStatus: 'error' });
     renderAppBar();
     expect(screen.getByText('error')).toBeInTheDocument();
+  });
+
+  it('exposes the server location (host:port) in the connection chip tooltip', async () => {
+    const user = userEvent.setup();
+    renderAppBar();
+    // The chip label stays "connected"; the tooltip finally says WHERE.
+    await user.hover(screen.getByText('connected'));
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent(/MockServer at https?:\/\/[^:]+:\d+/);
   });
 
   it('toggles theme when theme button is clicked', async () => {
@@ -101,7 +111,7 @@ describe('AppBar', () => {
     expect(mcpButton).not.toBeInTheDocument();
   });
 
-  it('calls onClearLogs when clear server logs is clicked', async () => {
+  it('confirms before clearing server logs from the menu', async () => {
     const user = userEvent.setup();
     const { props } = renderAppBar();
 
@@ -109,8 +119,14 @@ describe('AppBar', () => {
       (b) => b.querySelector('[data-testid="DeleteSweepIcon"]'),
     );
     await user.click(clearButton!);
+    // Clearing logs from the menu opens a confirmation dialog rather than firing
+    // immediately — matching the Cmd/Ctrl+Shift+L shortcut behaviour.
     await user.click(screen.getByText('Clear Server Logs'));
+    expect(props.onClearLogs).not.toHaveBeenCalled();
+    expect(screen.getByText('Clear server logs?')).toBeInTheDocument();
 
+    // Confirm in the dialog.
+    await user.click(screen.getByRole('button', { name: 'Clear logs' }));
     expect(props.onClearLogs).toHaveBeenCalledOnce();
     expect(props.onClearServer).not.toHaveBeenCalled();
   });
@@ -156,12 +172,14 @@ describe('AppBar', () => {
     expect(screen.queryByText(/^H3 :/)).not.toBeInTheDocument();
   });
 
-  it('opens the keyboard shortcuts dialog from the keyboard icon', async () => {
+  it('requests the keyboard shortcuts dialog from the keyboard icon', async () => {
     const user = userEvent.setup();
-    renderAppBar();
+    // The shortcuts dialog is now owned by App (shared with the `?` shortcut); the
+    // AppBar button just asks App to open it via onShowShortcuts.
+    const { props } = renderAppBar();
 
     await user.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }));
-    expect(screen.getByText('Focus the log search field')).toBeInTheDocument();
+    expect(props.onShowShortcuts).toHaveBeenCalledOnce();
   });
 
   it('opens the SAML dialog from the tools menu', async () => {

@@ -56,10 +56,11 @@ import type { ReactNode } from 'react';
 import BuildIcon from '@mui/icons-material/Build';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import DownloadIcon from '@mui/icons-material/Download';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useDashboardStore, type ViewMode } from '../store';
 import type { ConnectionStatus } from '../types';
 import { useConnectionParams } from '../hooks/useConnectionParams';
+import { usePolling } from '../hooks/usePolling';
 import {
   fetchMode,
   setMode as setServerMode,
@@ -74,7 +75,6 @@ import OpenApiImportDialog from './OpenApiImportDialog';
 import PactExportDialog from './PactExportDialog';
 import OidcDialog from './OidcDialog';
 import SamlDialog from './SamlDialog';
-import ShortcutsDialog from './ShortcutsDialog';
 import AsyncApiDialog from './AsyncApiDialog';
 import CrudDialog from './CrudDialog';
 import FileStoreDialog from './FileStoreDialog';
@@ -288,9 +288,11 @@ interface AppBarProps {
   onClearServer: () => Promise<void>;
   onClearLogs: () => Promise<void>;
   onClearExpectations: () => Promise<void>;
+  /** Open the app-owned keyboard-shortcuts help dialog (shared with the `?` shortcut). */
+  onShowShortcuts: () => void;
 }
 
-export default function AppBar({ onClearServer, onClearLogs, onClearExpectations }: AppBarProps) {
+export default function AppBar({ onClearServer, onClearLogs, onClearExpectations, onShowShortcuts }: AppBarProps) {
   const connectionStatus = useDashboardStore((s) => s.connectionStatus);
   const themeMode = useDashboardStore((s) => s.themeMode);
   const toggleTheme = useDashboardStore((s) => s.toggleThemeMode);
@@ -315,6 +317,9 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
   const activeGroupIds = new Set(groupsForView(view).map((g) => g.id));
 
   const connectionParams = useConnectionParams();
+  // Human-readable server location for the connection-status chip tooltip, so the
+  // chip finally says WHERE it is connected (host:port), not just "connected".
+  const serverUrl = `${connectionParams.secure ? 'https' : 'http'}://${connectionParams.host}:${connectionParams.port}${connectionParams.basePath ?? ''}`;
   const [mode, setModeState] = useState<MockServerMode | null>(null);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [modeTooltipOpen, setModeTooltipOpen] = useState(false);
@@ -325,7 +330,6 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
   const [playgroundOpen, setPlaygroundOpen] = useState(false);
   const [oidcOpen, setOidcOpen] = useState(false);
   const [samlOpen, setSamlOpen] = useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [asyncApiOpen, setAsyncApiOpen] = useState(false);
   const [wsdlOpen, setWsdlOpen] = useState(false);
   const [openApiOpen, setOpenApiOpen] = useState(false);
@@ -335,7 +339,6 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
   const [diffOpen, setDiffOpen] = useState(false);
   const [baselineOpen, setBaselineOpen] = useState(false);
   // Mode errors are now surfaced through the app-wide notification store.
-  const [http3Status, setHttp3Status] = useState<Http3Status | null>(null);
   const setNotification = useDashboardStore((s) => s.setNotification);
   // Confirmation for destructive actions (reset / bulk clear). Holds the pending action.
   const [confirm, setConfirm] = useState<{ title: string; message: string; confirmLabel: string; onConfirm: () => void } | null>(null);
@@ -352,25 +355,16 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
     return () => controller.abort();
   }, [connectionParams]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const poll = () => {
-      void fetchHttp3Status(connectionParams, controller.signal)
-        .then((status) => {
-          if (!controller.signal.aborted) setHttp3Status(status);
-        })
-        .catch(() => {
-          /* endpoint unavailable (older server or H3 not compiled in) */
-        });
-    };
-    poll();
-    // poll every 5 seconds so active connection count stays reasonably fresh
-    const interval = setInterval(poll, 5000);
-    return () => {
-      controller.abort();
-      clearInterval(interval);
-    };
-  }, [connectionParams]);
+  // Poll the HTTP/3 status every 5s so the active-connection count stays fresh.
+  // usePolling self-reschedules (no overlapping fetches), pauses while the tab is
+  // hidden, and aborts in-flight requests on unmount — important because the AppBar
+  // mounts on every view. A rejected fetch (older server, or H3 not compiled in)
+  // leaves `data` null so the chip stays hidden; the error is intentionally ignored.
+  const fetchHttp3 = useCallback(
+    (signal: AbortSignal) => fetchHttp3Status(connectionParams, signal),
+    [connectionParams],
+  );
+  const { data: http3Status } = usePolling<Http3Status>({ fetcher: fetchHttp3, intervalMs: 5000 });
 
   const handleModeChange = (event: SelectChangeEvent) => {
     const next = event.target.value as MockServerMode;
@@ -441,16 +435,18 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
         <Typography variant="h6" sx={{ fontWeight: 700, fontSize: '0.9rem' }}>
           MockServer
         </Typography>
-        <Chip
-          label={connectionStatus}
-          size="small"
-          color={statusColor(connectionStatus)}
-          variant="outlined"
-          sx={{
-            textTransform: 'capitalize',
-            ...statusChipPaletteSx(themeMode, connectionStatus),
-          }}
-        />
+        <Tooltip title={`MockServer at ${serverUrl}`}>
+          <Chip
+            label={connectionStatus}
+            size="small"
+            color={statusColor(connectionStatus)}
+            variant="outlined"
+            sx={{
+              textTransform: 'capitalize',
+              ...statusChipPaletteSx(themeMode, connectionStatus),
+            }}
+          />
+        </Tooltip>
         {http3Status?.enabled && (
           <Tooltip title={`HTTP/3 (QUIC) on UDP port ${http3Status.port} -- ${http3Status.activeConnections} active connection${http3Status.activeConnections === 1 ? '' : 's'}`}>
             <Chip
@@ -562,7 +558,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
         )}
         <Box sx={{ flex: compactNav ? 1 : '0 0 auto' }} />
         <Tooltip title="Keyboard shortcuts">
-          <IconButton size="small" color="inherit" onClick={() => setShortcutsOpen(true)} aria-label="Keyboard shortcuts">
+          <IconButton size="small" color="inherit" onClick={onShowShortcuts} aria-label="Keyboard shortcuts">
             <KeyboardIcon fontSize="small" />
           </IconButton>
         </Tooltip>
@@ -654,8 +650,13 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
         >
           <MenuItem
             onClick={() => {
-              void onClearLogs();
               setAnchorEl(null);
+              setConfirm({
+                title: 'Clear server logs?',
+                message: 'This removes all server log messages. Expectations and recorded requests are kept.',
+                confirmLabel: 'Clear logs',
+                onConfirm: () => { void onClearLogs(); },
+              });
             }}
           >
             <ListItemIcon><LayersClearIcon fontSize="small" /></ListItemIcon>
@@ -812,7 +813,6 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
       <MatcherPlaygroundDialog open={playgroundOpen} onClose={() => setPlaygroundOpen(false)} />
       <OidcDialog open={oidcOpen} onClose={() => setOidcOpen(false)} connectionParams={connectionParams} />
       <SamlDialog open={samlOpen} onClose={() => setSamlOpen(false)} connectionParams={connectionParams} />
-      <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <AsyncApiDialog open={asyncApiOpen} onClose={() => setAsyncApiOpen(false)} connectionParams={connectionParams} />
       <CrudDialog open={crudOpen} onClose={() => setCrudOpen(false)} connectionParams={connectionParams} />
       <FileStoreDialog open={fileStoreOpen} onClose={() => setFileStoreOpen(false)} connectionParams={connectionParams} />
