@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from mockserver.models import (
     AfterAction,
+    AllOfBody,
     BinaryResponse,
     Body,
     ConnectionOptions,
@@ -29,7 +32,10 @@ from mockserver.models import (
     HttpRequestAndHttpResponse,
     HttpResponse,
     HttpTemplate,
+    JsonPathBody,
+    Jwt,
     KeyToMultiValue,
+    RegexBody,
     OpenAPIDefinition,
     OpenAPIExpectation,
     Ports,
@@ -3601,3 +3607,146 @@ class TestCookieSerialization:
         req = HttpRequest.from_dict({"path": "/c", "cookies": {"session": "abc123"}})
         assert req.cookies[0].name == "session"
         assert req.cookies[0].values == ["abc123"]
+
+
+class TestJwt:
+    def test_full_matcher_serialisation(self):
+        req = (
+            HttpRequest.request("/secure")
+            .with_method("GET")
+            .with_jwt(
+                claims={
+                    "sub": "user-123",
+                    "role": "!admin",
+                    "email": "^.+@example.com$",
+                },
+                issuer="https://issuer.example.com",
+                audience="my-api",
+                algorithm="RS256",
+            )
+        )
+        assert req.to_dict() == {
+            "method": "GET",
+            "path": "/secure",
+            "jwt": {
+                "claims": {
+                    "sub": "user-123",
+                    "role": "!admin",
+                    "email": "^.+@example.com$",
+                },
+                "issuer": "https://issuer.example.com",
+                "audience": "my-api",
+                "algorithm": "RS256",
+            },
+        }
+
+    def test_json_matches_exact_wire_shape(self):
+        req = HttpRequest.request("/secure").with_jwt(
+            Jwt(
+                claims={"sub": "user-123", "role": "!admin", "email": "^.+@example.com$"},
+                issuer="https://issuer.example.com",
+                audience="my-api",
+                algorithm="RS256",
+                header="authorization",
+                scheme="Bearer",
+            )
+        )
+        assert json.dumps(req.to_dict()["jwt"], sort_keys=True) == json.dumps(
+            {
+                "claims": {
+                    "sub": "user-123",
+                    "role": "!admin",
+                    "email": "^.+@example.com$",
+                },
+                "issuer": "https://issuer.example.com",
+                "audience": "my-api",
+                "algorithm": "RS256",
+                "header": "authorization",
+                "scheme": "Bearer",
+            },
+            sort_keys=True,
+        )
+
+    def test_omits_unset_optionals(self):
+        jwt = Jwt(claims={"sub": "abc"})
+        assert jwt.to_dict() == {"claims": {"sub": "abc"}}
+
+    def test_round_trip(self):
+        original = {
+            "path": "/secure",
+            "jwt": {
+                "claims": {"sub": "user-123", "role": "!admin"},
+                "issuer": "https://issuer.example.com",
+                "audience": "my-api",
+                "algorithm": "RS256",
+            },
+        }
+        req = HttpRequest.from_dict(original)
+        assert isinstance(req.jwt, Jwt)
+        assert req.jwt.claims == {"sub": "user-123", "role": "!admin"}
+        assert req.jwt.issuer == "https://issuer.example.com"
+        assert req.to_dict() == original
+
+
+class TestAllOfBody:
+    def test_serialisation_json_path_and_regex(self):
+        body = AllOfBody(
+            body_all_of=[
+                JsonPathBody(json_path="$.name"),
+                RegexBody(regex=".*active.*"),
+            ]
+        )
+        assert body.to_dict() == {
+            "type": "ALL_OF",
+            "bodyAllOf": [
+                {"type": "JSON_PATH", "jsonPath": "$.name"},
+                {"type": "REGEX", "regex": ".*active.*"},
+            ],
+        }
+
+    def test_json_matches_exact_wire_shape(self):
+        body = Body.all_of(
+            JsonPathBody(json_path="$.name"),
+            RegexBody(regex=".*active.*"),
+        )
+        assert json.dumps(body.to_dict()) == (
+            '{"type": "ALL_OF", "bodyAllOf": ['
+            '{"type": "JSON_PATH", "jsonPath": "$.name"}, '
+            '{"type": "REGEX", "regex": ".*active.*"}]}'
+        )
+
+    def test_on_request_body(self):
+        req = HttpRequest.request("/api").with_body(
+            AllOfBody(
+                body_all_of=[
+                    JsonPathBody(json_path="$.name"),
+                    RegexBody(regex=".*active.*"),
+                ]
+            )
+        )
+        assert req.to_dict()["body"] == {
+            "type": "ALL_OF",
+            "bodyAllOf": [
+                {"type": "JSON_PATH", "jsonPath": "$.name"},
+                {"type": "REGEX", "regex": ".*active.*"},
+            ],
+        }
+
+    def test_accepts_raw_dict_sub_bodies(self):
+        body = AllOfBody(body_all_of=[{"type": "REGEX", "regex": "x"}])
+        assert body.to_dict() == {
+            "type": "ALL_OF",
+            "bodyAllOf": [{"type": "REGEX", "regex": "x"}],
+        }
+
+    def test_round_trip(self):
+        data = {
+            "type": "ALL_OF",
+            "bodyAllOf": [
+                {"type": "JSON_PATH", "jsonPath": "$.name"},
+                {"type": "REGEX", "regex": ".*active.*"},
+            ],
+        }
+        body = AllOfBody.from_dict(data)
+        assert isinstance(body, AllOfBody)
+        assert body.to_dict() == data

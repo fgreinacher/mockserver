@@ -103,7 +103,7 @@ module MockServer
   # Known Body type strings used to distinguish Body objects from plain hashes
   # during deserialization.
   BODY_TYPES = Set.new(%w[
-    STRING JSON REGEX XML BINARY JSON_SCHEMA JSON_PATH XPATH XML_SCHEMA JSON_RPC GRAPHQL FILE
+    STRING JSON REGEX XML BINARY JSON_SCHEMA JSON_PATH XPATH XML_SCHEMA JSON_RPC GRAPHQL FILE ALL_OF
   ]).freeze
 
   # -------------------------------------------------------------------
@@ -420,20 +420,25 @@ module MockServer
   end
 
   class Body
-    attr_accessor :type, :string, :json, :base64_bytes, :not_body, :content_type, :charset,
-                  :file_path, :template_type
+    attr_accessor :type, :string, :json, :regex, :json_path, :xpath, :base64_bytes,
+                  :not_body, :content_type, :charset, :file_path, :template_type, :body_all_of
 
-    def initialize(type: nil, string: nil, json: nil, base64_bytes: nil, not_body: nil,
-                   content_type: nil, charset: nil, file_path: nil, template_type: nil)
+    def initialize(type: nil, string: nil, json: nil, regex: nil, json_path: nil, xpath: nil,
+                   base64_bytes: nil, not_body: nil, content_type: nil, charset: nil,
+                   file_path: nil, template_type: nil, body_all_of: nil)
       @type = type
       @string = string
       @json = json
+      @regex = regex
+      @json_path = json_path
+      @xpath = xpath
       @base64_bytes = base64_bytes
       @not_body = not_body
       @content_type = content_type
       @charset = charset
       @file_path = file_path
       @template_type = template_type
+      @body_all_of = body_all_of
     end
 
     def to_h
@@ -441,28 +446,39 @@ module MockServer
       result['type']         = @type          unless @type.nil?
       result['string']       = @string        unless @string.nil?
       result['json']         = @json          unless @json.nil?
+      result['regex']        = @regex         unless @regex.nil?
+      result['jsonPath']     = @json_path     unless @json_path.nil?
+      result['xpath']        = @xpath         unless @xpath.nil?
       result['base64Bytes']  = @base64_bytes  unless @base64_bytes.nil?
       result['not']          = @not_body      unless @not_body.nil?
       result['contentType']  = @content_type  unless @content_type.nil?
       result['charset']      = @charset       unless @charset.nil?
       result['filePath']     = @file_path     unless @file_path.nil?
       result['templateType'] = @template_type unless @template_type.nil?
+      unless @body_all_of.nil?
+        result['bodyAllOf'] = @body_all_of.map { |b| MockServer.serialize_body(b) }
+      end
       result
     end
 
     def self.from_hash(data)
       return nil if data.nil?
 
+      all_of = data['bodyAllOf']
       new(
         type:          data['type'],
         string:        data['string'],
         json:          data['json'],
+        regex:         data['regex'],
+        json_path:     data['jsonPath'],
+        xpath:         data['xpath'],
         base64_bytes:  data['base64Bytes'],
         not_body:      data['not'],
         content_type:  data['contentType'],
         charset:       data['charset'],
         file_path:     data['filePath'],
-        template_type: data['templateType']
+        template_type: data['templateType'],
+        body_all_of:   all_of&.map { |b| MockServer.deserialize_body(b) }
       )
     end
 
@@ -475,7 +491,7 @@ module MockServer
     end
 
     def self.regex(value)
-      new(type: 'REGEX', string: value)
+      new(type: 'REGEX', regex: value)
     end
 
     def self.exact(value)
@@ -484,6 +500,22 @@ module MockServer
 
     def self.xml(value)
       new(type: 'XML', string: value)
+    end
+
+    # Combine several body matchers into a single ALL_OF matcher; all of the
+    # supplied sub-bodies must match the request body. Each sub-body is any
+    # existing body matcher (e.g. +Body.json_path+, +Body.regex+) and is
+    # serialised through the normal body-serialisation path.
+    def self.all_of(*bodies)
+      new(type: 'ALL_OF', body_all_of: bodies.flatten)
+    end
+
+    def self.json_path(value)
+      new(type: 'JSON_PATH', json_path: value)
+    end
+
+    def self.xpath(value)
+      new(type: 'XPATH', xpath: value)
     end
 
     def self.file(file_path, content_type: nil, template_type: nil)
@@ -595,14 +627,66 @@ module MockServer
     end
   end
 
+  # JWT (bearer-token) request matcher. Matches a request whose JWT — carried by
+  # default in the +Authorization: Bearer <token>+ header — satisfies every
+  # constraint below.
+  #
+  # +claims+ is a { claim-name => value } map where each value is an exact string
+  # or a regular expression; a leading +!+ negates the match (the NottableString
+  # convention shared across MockServer matchers). +issuer+, +audience+,
+  # +algorithm+, +header+ and +scheme+ are optional; unset keys are omitted.
+  class Jwt
+    attr_accessor :claims, :issuer, :audience, :algorithm, :header, :scheme
+
+    def initialize(claims: nil, issuer: nil, audience: nil, algorithm: nil, header: nil, scheme: nil)
+      @claims = claims
+      @issuer = issuer
+      @audience = audience
+      @algorithm = algorithm
+      @header = header
+      @scheme = scheme
+    end
+
+    def to_h
+      result = {}
+      result['claims']    = @claims    unless @claims.nil?
+      result['issuer']    = @issuer    unless @issuer.nil?
+      result['audience']  = @audience  unless @audience.nil?
+      result['algorithm'] = @algorithm unless @algorithm.nil?
+      result['header']    = @header    unless @header.nil?
+      result['scheme']    = @scheme    unless @scheme.nil?
+      result
+    end
+
+    def self.from_hash(data)
+      return nil if data.nil?
+
+      new(
+        claims:    data['claims'],
+        issuer:    data['issuer'],
+        audience:  data['audience'],
+        algorithm: data['algorithm'],
+        header:    data['header'],
+        scheme:    data['scheme']
+      )
+    end
+
+    def with_claim(name, value)
+      @claims ||= {}
+      @claims[name] = value
+      self
+    end
+  end
+
   class HttpRequest
     attr_accessor :method, :path, :query_string_parameters, :headers,
                   :cookies, :body, :secure, :keep_alive, :respond_before_body,
-                  :path_parameters, :socket_address
+                  :path_parameters, :socket_address, :jwt
 
     def initialize(method: nil, path: nil, query_string_parameters: nil, headers: nil,
                    cookies: nil, body: nil, secure: nil, keep_alive: nil,
-                   respond_before_body: nil, path_parameters: nil, socket_address: nil)
+                   respond_before_body: nil, path_parameters: nil, socket_address: nil,
+                   jwt: nil)
       @method = method
       @path = path
       @query_string_parameters = query_string_parameters
@@ -614,6 +698,7 @@ module MockServer
       @respond_before_body = respond_before_body
       @path_parameters = path_parameters
       @socket_address = socket_address
+      @jwt = jwt
     end
 
     def to_h
@@ -628,7 +713,8 @@ module MockServer
         'keepAlive'             => @keep_alive,
         'respondBeforeBody'     => @respond_before_body,
         'pathParameters'        => MockServer.serialize_key_multi_values(@path_parameters),
-        'socketAddress'         => @socket_address&.to_h
+        'socketAddress'         => @socket_address&.to_h,
+        'jwt'                   => @jwt&.to_h
       })
     end
 
@@ -646,7 +732,8 @@ module MockServer
         keep_alive:              data['keepAlive'],
         respond_before_body:     data['respondBeforeBody'],
         path_parameters:         MockServer.deserialize_key_multi_values(data['pathParameters']),
-        socket_address:          SocketAddress.from_hash(data['socketAddress'])
+        socket_address:          SocketAddress.from_hash(data['socketAddress']),
+        jwt:                     Jwt.from_hash(data['jwt'])
       )
     end
 
@@ -684,6 +771,11 @@ module MockServer
 
     def with_body(body)
       @body = body
+      self
+    end
+
+    def with_jwt(jwt)
+      @jwt = jwt
       self
     end
 

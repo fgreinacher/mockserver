@@ -226,6 +226,49 @@ println!("Listening on: {:?}", ports.ports);
 client.reset()?;
 ```
 
+### JWT and composite (ALL_OF) body matchers
+
+Match requests by the claims in a JSON Web Token, and combine several body
+matchers so that **all** of them must match.
+
+```rust
+use mockserver_client::*;
+
+// JWT matcher — claim values are exact-or-regex strings; a leading `!` negates.
+client.when(
+    HttpRequest::new()
+        .method("GET")
+        .path("/secure")
+        .jwt(
+            Jwt::new()
+                .claim("sub", "user-123")
+                .claim("role", "!admin")            // NOT admin
+                .claim("email", "^.+@example.com$") // regex
+                .issuer("https://issuer.example.com")
+                .audience("my-api")
+                .algorithm("RS256")
+                .header("authorization")            // optional (defaults to authorization)
+                .scheme("Bearer"),                  // optional scheme prefix
+        ),
+)
+.respond(HttpResponse::new().status_code(200))?;
+
+// ALL_OF body — every nested matcher must match.
+client.when(
+    HttpRequest::new()
+        .method("POST")
+        .path("/orders")
+        .body_value(Body::all_of(vec![
+            Body::json_path("$.name"),
+            Body::regex(".*active.*"),
+        ])),
+)
+.respond(HttpResponse::new().status_code(201))?;
+```
+
+The JWT matcher serialises under the request's `"jwt"` key, and the composite
+body serialises to `{"type":"ALL_OF","bodyAllOf":[ ... ]}`.
+
 ### Interactive Breakpoints
 
 Register breakpoint matchers to pause forwarded/proxied traffic at REQUEST, RESPONSE, RESPONSE_STREAM, or INBOUND_STREAM phases. A callback WebSocket connection is opened automatically.

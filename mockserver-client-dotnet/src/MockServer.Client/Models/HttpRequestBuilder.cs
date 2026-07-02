@@ -60,6 +60,25 @@ public sealed class HttpRequestBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets an <c>ALL_OF</c> body matcher — the request body must match every supplied
+    /// sub-matcher. Emits <c>{"type":"ALL_OF","bodyAllOf":[ ... ]}</c>.
+    /// </summary>
+    public HttpRequestBuilder WithAllOfBody(params BodyMatcher[] bodies)
+    {
+        _request.Body = new AllOfBody { BodyAllOf = bodies.Cast<object>().ToList() };
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a JWT request matcher, serialised under the request's <c>"jwt"</c> property.
+    /// </summary>
+    public HttpRequestBuilder WithJwt(Jwt jwt)
+    {
+        _request.Jwt = jwt;
+        return this;
+    }
+
     public HttpRequestBuilder WithSecure(bool secure)
     {
         _request.Secure = secure;

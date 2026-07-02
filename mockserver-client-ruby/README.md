@@ -85,7 +85,7 @@ client.close
 
 ## Models
 
-All 25 domain model classes are available under the `MockServer` module:
+All 26 domain model classes are available under the `MockServer` module:
 
 - `Delay`, `Times`, `TimeToLive`
 - `KeyToMultiValue`, `Body`, `SocketAddress`
@@ -98,6 +98,43 @@ All 25 domain model classes are available under the `MockServer` module:
 - `Verification`, `VerificationSequence`, `VerificationTimes`
 - `Ports`
 - `RequestDefinition` (alias for `HttpRequest`)
+- `Jwt` (JWT / bearer-token request matcher)
+
+## JWT and combined body matchers
+
+Match a request by the claims in its JWT (carried by default in the
+`Authorization: Bearer <token>` header). Each claim value is an exact string or a
+regular expression; a leading `!` negates it (the same NottableString convention
+used elsewhere in MockServer). `issuer`, `audience`, `algorithm`, `header` and
+`scheme` are optional.
+
+```ruby
+jwt = MockServer::Jwt.new(
+  claims: {
+    'sub'   => 'user-123',
+    'role'  => '!admin',            # must NOT be "admin"
+    'email' => '^.+@example.com$'   # regex
+  },
+  issuer:    'https://issuer.example.com',
+  audience:  'my-api',
+  algorithm: 'RS256'
+)
+
+request = MockServer::HttpRequest.new(method: 'GET', path: '/api')
+                                 .with_jwt(jwt)
+```
+
+Combine several body matchers with `Body.all_of` — the request body must satisfy
+**all** of them:
+
+```ruby
+body = MockServer::Body.all_of(
+  MockServer::Body.json_path('$.name'),   # => {"type":"JSON_PATH","jsonPath":"$.name"}
+  MockServer::Body.regex('.*active.*')    # => {"type":"REGEX","regex":".*active.*"}
+)
+
+request = MockServer::HttpRequest.new(method: 'POST', path: '/api').with_body(body)
+```
 
 ## LLM Mocking
 

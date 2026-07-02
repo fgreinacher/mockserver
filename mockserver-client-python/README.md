@@ -160,6 +160,63 @@ client.verify_sequence(
 client.verify_zero_interactions()
 ```
 
+## Request Matching
+
+### JWT matcher
+
+Match requests by the claims (and metadata) of a JWT carried in a header. Each
+claim value is exact-or-regex; prefix a value with `!` to negate it.
+
+```python
+from mockserver import HttpRequest, HttpResponse, Jwt
+
+client.when(
+    HttpRequest.request("/secure")
+        .with_method("GET")
+        .with_jwt(
+            claims={
+                "sub": "user-123",           # exact match
+                "email": "^.+@example.com$", # regex match
+                "role": "!admin",            # negated — matches any role except admin
+            },
+            issuer="https://issuer.example.com",
+            audience="my-api",
+            algorithm="RS256",
+            header="authorization",          # optional (defaults to Authorization)
+            scheme="Bearer",                 # optional token scheme
+        )
+).respond(
+    HttpResponse.response("granted", status_code=200)
+)
+
+# ...or pass a Jwt object directly:
+HttpRequest.request("/secure").with_jwt(Jwt(claims={"sub": "user-123"}))
+```
+
+### allOf body matcher
+
+Require a request body to satisfy **all** of several body matchers at once.
+
+```python
+from mockserver import AllOfBody, Body, JsonPathBody, RegexBody, HttpRequest
+
+client.when(
+    HttpRequest.request("/api/orders")
+        .with_method("POST")
+        .with_body(AllOfBody(body_all_of=[
+            JsonPathBody(json_path="$.name"),   # body has a name field
+            RegexBody(regex=".*active.*"),      # and mentions "active"
+        ]))
+).respond(
+    HttpResponse.response("ok")
+)
+
+# Shorthand factory:
+HttpRequest.request("/api/orders").with_body(
+    Body.all_of(JsonPathBody(json_path="$.name"), RegexBody(regex=".*active.*"))
+)
+```
+
 ## Retrieval
 
 ```python

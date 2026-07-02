@@ -1,5 +1,6 @@
 from mockserver.models import (
     AfterAction,
+    AllOfBody,
     BinaryResponse,
     Body,
     ConnectionOptions,
@@ -30,6 +31,7 @@ from mockserver.models import (
     HttpWebSocketResponse,
     JsonPathBody,
     JsonRpcBody,
+    Jwt,
     KeyToMultiValue,
     LoadCapture,
     LoadFeeder,
@@ -44,6 +46,7 @@ from mockserver.models import (
     OpenAPIDefinition,
     OpenAPIExpectation,
     Ports,
+    RegexBody,
     RequestDefinition,
     ResponseMode,
     SocketAddress,
@@ -119,6 +122,7 @@ from mockserver.launcher import (
 
 __all__ = [
     "AfterAction",
+    "AllOfBody",
     "AsyncMockServerClient",
     "BinaryResponse",
     "Body",
@@ -150,6 +154,7 @@ __all__ = [
     "HttpWebSocketResponse",
     "JsonPathBody",
     "JsonRpcBody",
+    "Jwt",
     "KeyToMultiValue",
     "LoadCapture",
     "LoadFeeder",
@@ -208,6 +213,7 @@ __all__ = [
     "OpenAPIDefinition",
     "OpenAPIExpectation",
     "Ports",
+    "RegexBody",
     "RequestDefinition",
     "ResponseMode",
     "SocketAddress",

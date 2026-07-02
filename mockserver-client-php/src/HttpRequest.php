@@ -29,6 +29,7 @@ class HttpRequest implements \JsonSerializable
     private ?bool $keepAlive = null;
     private ?bool $secure = null;
     private ?array $socketAddress = null;
+    private ?array $jwt = null;
 
     /**
      * Static factory for fluent construction.
@@ -137,6 +138,62 @@ class HttpRequest implements \JsonSerializable
         return $this;
     }
 
+    /**
+     * Build a JSON_PATH body matcher array (for composition, e.g. inside allOfBody()).
+     *
+     * @return array<string, string>
+     */
+    public static function jsonPathBody(string $jsonPath): array
+    {
+        return [
+            'type' => 'JSON_PATH',
+            'jsonPath' => $jsonPath,
+        ];
+    }
+
+    /**
+     * Build a REGEX body matcher array (for composition, e.g. inside allOfBody()).
+     *
+     * @return array<string, string>
+     */
+    public static function regexBody(string $regex): array
+    {
+        return [
+            'type' => 'REGEX',
+            'regex' => $regex,
+        ];
+    }
+
+    /**
+     * Set the request body to an ALL_OF matcher that requires every supplied
+     * sub-body matcher to match.
+     *
+     * Each sub-body is a typed body matcher array such as those produced by
+     * {@see jsonPathBody()} / {@see regexBody()}, or any other body matcher
+     * array (e.g. {@code ['type' => 'JSON', 'json' => '...']}).
+     *
+     * @param array<int, array<string, mixed>> $bodies list of body matcher arrays
+     */
+    public function allOfBody(array $bodies): self
+    {
+        $this->body = [
+            'type' => 'ALL_OF',
+            'bodyAllOf' => array_values($bodies),
+        ];
+        return $this;
+    }
+
+    /**
+     * Match the request against a JSON Web Token carried on the request.
+     *
+     * @param Jwt|array<string, mixed> $jwt a {@see Jwt} builder or a raw jwt matcher array
+     */
+    public function jwt(Jwt|array $jwt): self
+    {
+        $this->jwt = $jwt instanceof Jwt ? $jwt->toArray() : $jwt;
+        return $this;
+    }
+
     public function keepAlive(bool $keepAlive): self
     {
         $this->keepAlive = $keepAlive;
@@ -195,6 +252,14 @@ class HttpRequest implements \JsonSerializable
     }
 
     /**
+     * @return array<string, mixed>|null
+     */
+    public function getJwt(): ?array
+    {
+        return $this->jwt;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function jsonSerialize(): array
@@ -226,6 +291,9 @@ class HttpRequest implements \JsonSerializable
         }
         if ($this->body !== null) {
             $data['body'] = $this->body;
+        }
+        if ($this->jwt !== null) {
+            $data['jwt'] = $this->jwt;
         }
         if ($this->keepAlive !== null) {
             $data['keepAlive'] = $this->keepAlive;

@@ -174,6 +174,110 @@ class HttpRequestTest extends TestCase
         $this->assertSame($expected, $request->toArray());
     }
 
+    public function testJwtMatcher(): void
+    {
+        $request = HttpRequest::request()
+            ->method('GET')
+            ->path('/secure')
+            ->jwt(
+                \MockServer\Jwt::jwt()
+                    ->claim('sub', 'user-123')
+                    ->claim('role', '!admin')
+                    ->claim('email', '^.+@example.com$')
+                    ->issuer('https://issuer.example.com')
+                    ->audience('my-api')
+                    ->algorithm('RS256')
+            );
+
+        $expected = [
+            'method' => 'GET',
+            'path' => '/secure',
+            'jwt' => [
+                'claims' => [
+                    'sub' => 'user-123',
+                    'role' => '!admin',
+                    'email' => '^.+@example.com$',
+                ],
+                'issuer' => 'https://issuer.example.com',
+                'audience' => 'my-api',
+                'algorithm' => 'RS256',
+            ],
+        ];
+
+        $this->assertSame($expected, $request->toArray());
+    }
+
+    public function testJwtMatcherWithHeaderAndScheme(): void
+    {
+        $request = HttpRequest::request()
+            ->jwt(
+                \MockServer\Jwt::jwt()
+                    ->claims(['sub' => 'user-123', 'role' => '!admin', 'email' => '^.+@example.com$'])
+                    ->issuer('https://issuer.example.com')
+                    ->audience('my-api')
+                    ->algorithm('RS256')
+                    ->header('authorization')
+                    ->scheme('Bearer')
+            );
+
+        $json = json_encode($request, JSON_THROW_ON_ERROR);
+
+        $this->assertSame(
+            '{"jwt":{"claims":{"sub":"user-123","role":"!admin","email":"^.+@example.com$"},'
+            . '"issuer":"https:\/\/issuer.example.com","audience":"my-api","algorithm":"RS256",'
+            . '"header":"authorization","scheme":"Bearer"}}',
+            $json
+        );
+    }
+
+    public function testJwtMatcherFromArray(): void
+    {
+        $request = HttpRequest::request()
+            ->jwt(['claims' => ['sub' => 'user-123']]);
+
+        $this->assertSame(['jwt' => ['claims' => ['sub' => 'user-123']]], $request->toArray());
+    }
+
+    public function testAllOfBody(): void
+    {
+        $request = HttpRequest::request()
+            ->method('POST')
+            ->allOfBody([
+                HttpRequest::jsonPathBody('$.name'),
+                HttpRequest::regexBody('.*active.*'),
+            ]);
+
+        $expected = [
+            'method' => 'POST',
+            'body' => [
+                'type' => 'ALL_OF',
+                'bodyAllOf' => [
+                    ['type' => 'JSON_PATH', 'jsonPath' => '$.name'],
+                    ['type' => 'REGEX', 'regex' => '.*active.*'],
+                ],
+            ],
+        ];
+
+        $this->assertSame($expected, $request->toArray());
+    }
+
+    public function testAllOfBodyJsonSerialisation(): void
+    {
+        $request = HttpRequest::request()
+            ->allOfBody([
+                HttpRequest::jsonPathBody('$.name'),
+                HttpRequest::regexBody('.*active.*'),
+            ]);
+
+        $json = json_encode($request->toArray()['body'], JSON_THROW_ON_ERROR);
+
+        $this->assertSame(
+            '{"type":"ALL_OF","bodyAllOf":[{"type":"JSON_PATH","jsonPath":"$.name"},'
+            . '{"type":"REGEX","regex":".*active.*"}]}',
+            $json
+        );
+    }
+
     public function testJsonSerialize(): void
     {
         $request = HttpRequest::request()

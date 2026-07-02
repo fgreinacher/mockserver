@@ -82,6 +82,99 @@ fn test_request_json_body() {
     assert_eq!(parsed, serde_json::json!({"key": "value"}));
 }
 
+#[test]
+fn test_request_jwt_matcher() {
+    let req = HttpRequest::new().method("GET").path("/secure").jwt(
+        Jwt::new()
+            .claim("sub", "user-123")
+            .claim("role", "!admin")
+            .claim("email", "^.+@example.com$")
+            .issuer("https://issuer.example.com")
+            .audience("my-api")
+            .algorithm("RS256"),
+    );
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["method"], "GET");
+    assert_eq!(json["path"], "/secure");
+    // Claims map: exact, negated, and regex values are plain strings.
+    assert_eq!(
+        json["jwt"],
+        serde_json::json!({
+            "claims": {
+                "sub": "user-123",
+                "role": "!admin",
+                "email": "^.+@example.com$"
+            },
+            "issuer": "https://issuer.example.com",
+            "audience": "my-api",
+            "algorithm": "RS256"
+        })
+    );
+    // Unset optional fields must be omitted entirely.
+    assert!(json["jwt"].get("header").is_none());
+    assert!(json["jwt"].get("scheme").is_none());
+}
+
+#[test]
+fn test_request_jwt_full_wire_shape() {
+    let req = HttpRequest::new().jwt(
+        Jwt::new()
+            .claim("sub", "user-123")
+            .claim("role", "!admin")
+            .claim("email", "^.+@example.com$")
+            .issuer("https://issuer.example.com")
+            .audience("my-api")
+            .algorithm("RS256")
+            .header("authorization")
+            .scheme("Bearer"),
+    );
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "jwt": {
+                "claims": {
+                    "sub": "user-123",
+                    "role": "!admin",
+                    "email": "^.+@example.com$"
+                },
+                "issuer": "https://issuer.example.com",
+                "audience": "my-api",
+                "algorithm": "RS256",
+                "header": "authorization",
+                "scheme": "Bearer"
+            }
+        })
+    );
+}
+
+#[test]
+fn test_request_all_of_body() {
+    let req = HttpRequest::new().body_value(Body::all_of(vec![
+        Body::json_path("$.name"),
+        Body::regex(".*active.*"),
+    ]));
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(
+        json["body"],
+        serde_json::json!({
+            "type": "ALL_OF",
+            "bodyAllOf": [
+                { "type": "JSON_PATH", "jsonPath": "$.name" },
+                { "type": "REGEX", "regex": ".*active.*" }
+            ]
+        })
+    );
+}
+
+#[test]
+fn test_all_of_body_round_trips() {
+    let body = Body::all_of(vec![Body::json_path("$.id"), Body::regex("^ok$")]);
+    let value = serde_json::to_value(&body).unwrap();
+    let parsed: Body = serde_json::from_value(value).unwrap();
+    assert_eq!(parsed, body);
+}
+
 // ---------------------------------------------------------------------------
 // HttpResponse builder tests
 // ---------------------------------------------------------------------------

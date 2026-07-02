@@ -117,4 +117,74 @@ public class HttpRequestBuilderTests
         HttpRequest request = HttpRequest.Request().WithPath("/hello");
         request.Path.Should().Be("/hello");
     }
+
+    [Fact]
+    public void Request_WithJwt_SerializesToExactWireShape()
+    {
+        var request = HttpRequest.Request()
+            .WithPath("/secure")
+            .WithJwt(new Jwt
+            {
+                Claims = new Dictionary<string, string>
+                {
+                    ["sub"] = "user-123",
+                    ["role"] = "!admin",
+                    ["email"] = "^.+@example.com$"
+                },
+                Issuer = "https://issuer.example.com",
+                Audience = "my-api",
+                Algorithm = "RS256"
+            })
+            .Build();
+
+        var json = JsonSerializer.Serialize(request, JsonOptions);
+        var doc = JsonDocument.Parse(json);
+
+        var jwt = doc.RootElement.GetProperty("jwt");
+        var claims = jwt.GetProperty("claims");
+        claims.GetProperty("sub").GetString().Should().Be("user-123");
+        claims.GetProperty("role").GetString().Should().Be("!admin");
+        claims.GetProperty("email").GetString().Should().Be("^.+@example.com$");
+        jwt.GetProperty("issuer").GetString().Should().Be("https://issuer.example.com");
+        jwt.GetProperty("audience").GetString().Should().Be("my-api");
+        jwt.GetProperty("algorithm").GetString().Should().Be("RS256");
+        // unset optional properties are omitted
+        jwt.TryGetProperty("header", out _).Should().BeFalse();
+        jwt.TryGetProperty("scheme", out _).Should().BeFalse();
+
+        // exact serialised shape of the jwt object. System.Text.Json's default
+        // JavaScriptEncoder emits '+' as the + escape; the server decodes it back to '+'.
+        jwt.GetRawText().Should().Be(
+            "{\"claims\":{\"sub\":\"user-123\",\"role\":\"!admin\",\"email\":\"^.\\u002B@example.com$\"}," +
+            "\"issuer\":\"https://issuer.example.com\",\"audience\":\"my-api\",\"algorithm\":\"RS256\"}");
+    }
+
+    [Fact]
+    public void Request_WithAllOfBody_SerializesToExactWireShape()
+    {
+        var request = HttpRequest.Request()
+            .WithPath("/api")
+            .WithAllOfBody(
+                BodyMatcher.OfJsonPath("$.name"),
+                BodyMatcher.OfRegex(".*active.*"))
+            .Build();
+
+        var json = JsonSerializer.Serialize(request, JsonOptions);
+        var doc = JsonDocument.Parse(json);
+
+        var body = doc.RootElement.GetProperty("body");
+        body.GetProperty("type").GetString().Should().Be("ALL_OF");
+        var bodyAllOf = body.GetProperty("bodyAllOf");
+        bodyAllOf.GetArrayLength().Should().Be(2);
+        bodyAllOf[0].GetProperty("type").GetString().Should().Be("JSON_PATH");
+        bodyAllOf[0].GetProperty("jsonPath").GetString().Should().Be("$.name");
+        bodyAllOf[1].GetProperty("type").GetString().Should().Be("REGEX");
+        bodyAllOf[1].GetProperty("regex").GetString().Should().Be(".*active.*");
+
+        // exact serialised shape of the body object
+        body.GetRawText().Should().Be(
+            "{\"type\":\"ALL_OF\",\"bodyAllOf\":[" +
+            "{\"type\":\"JSON_PATH\",\"jsonPath\":\"$.name\"}," +
+            "{\"type\":\"REGEX\",\"regex\":\".*active.*\"}]}");
+    }
 }

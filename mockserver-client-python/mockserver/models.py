@@ -163,6 +163,13 @@ def _deserialize_body(data: Any) -> Body | JsonRpcBody | str | dict | None:
                 not_body=data.get("not", False),
                 optional=data.get("optional", False),
             )
+        if data.get("type") == "ALL_OF":
+            return AllOfBody.from_dict(data)
+        # A REGEX body carrying a "regex" field is the canonical MockServer wire
+        # form -> RegexBody. Legacy REGEX bodies that carry "string" fall through
+        # to the generic Body deserializer below (unchanged behaviour).
+        if data.get("type") == "REGEX" and "regex" in data:
+            return RegexBody.from_dict(data)
         if data.get("type") == "GRAPHQL":
             return GraphQLBody(
                 query=data.get("query", ""),
@@ -558,6 +565,69 @@ class GraphQLBody:
         return result
 
 
+@dataclass
+class RegexBody:
+    # Serialises to {"type": "REGEX", "regex": <value>} — the field name MockServer
+    # expects for a regex body matcher (unlike Body.regex which uses the legacy
+    # "string" field). Use this for ALL_OF sub-bodies and anywhere the exact wire
+    # shape matters.
+    regex: str = ""
+    not_body: bool = False
+    optional: bool = False
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.not_body:
+            result["not"] = True
+        if self.optional:
+            result["optional"] = True
+        result["type"] = "REGEX"
+        result["regex"] = self.regex
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> RegexBody:
+        if data is None:
+            return None
+        return cls(
+            regex=data.get("regex", ""),
+            not_body=bool(data.get("not", False)),
+            optional=bool(data.get("optional", False)),
+        )
+
+
+@dataclass
+class AllOfBody:
+    # Composite body matcher that requires ALL sub-bodies to match. Each sub-body is
+    # any existing body matcher (Body, JsonPathBody, RegexBody, GraphQLBody, a raw
+    # dict, ...) serialised via the same _serialize_body path.
+    # Serialises to {"type": "ALL_OF", "bodyAllOf": [ <body>, <body>, ... ]}.
+    body_all_of: list = field(default_factory=list)
+    not_body: bool = False
+    optional: bool = False
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.not_body:
+            result["not"] = True
+        if self.optional:
+            result["optional"] = True
+        result["type"] = "ALL_OF"
+        result["bodyAllOf"] = [_serialize_body(b) for b in self.body_all_of]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> AllOfBody:
+        if data is None:
+            return None
+        sub = data.get("bodyAllOf") or []
+        return cls(
+            body_all_of=[_deserialize_body(b) for b in sub],
+            not_body=bool(data.get("not", False)),
+            optional=bool(data.get("optional", False)),
+        )
+
+
 def _body_string(value: str) -> Body:
     return Body(type="STRING", string=value)
 
@@ -600,6 +670,21 @@ Body.graphql = staticmethod(_body_graphql)
 Body.file = staticmethod(_body_file)
 
 
+def _body_regex_match(value: str) -> RegexBody:
+    return RegexBody(regex=value)
+
+
+def _body_all_of(*bodies) -> AllOfBody:
+    # Accept either all_of(body1, body2, ...) or all_of([body1, body2, ...]).
+    if len(bodies) == 1 and isinstance(bodies[0], (list, tuple)):
+        return AllOfBody(body_all_of=list(bodies[0]))
+    return AllOfBody(body_all_of=list(bodies))
+
+
+Body.regex_match = staticmethod(_body_regex_match)
+Body.all_of = staticmethod(_body_all_of)
+
+
 @dataclass
 class SocketAddress:
     host: str | None = None
@@ -625,6 +710,46 @@ class SocketAddress:
 
 
 @dataclass
+class Jwt:
+    # JWT request matcher. ``claims`` is a map of claim-name -> exact-or-regex
+    # string; a leading "!" negates the match (NottableString convention). The
+    # remaining fields are optional and are omitted from the wire form when unset.
+    claims: dict = field(default_factory=dict)
+    issuer: str | None = None
+    audience: str | None = None
+    algorithm: str | None = None
+    header: str | None = None
+    scheme: str | None = None
+
+    def to_dict(self) -> dict:
+        result: dict = {"claims": dict(self.claims)}
+        if self.issuer is not None:
+            result["issuer"] = self.issuer
+        if self.audience is not None:
+            result["audience"] = self.audience
+        if self.algorithm is not None:
+            result["algorithm"] = self.algorithm
+        if self.header is not None:
+            result["header"] = self.header
+        if self.scheme is not None:
+            result["scheme"] = self.scheme
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Jwt:
+        if data is None:
+            return None
+        return cls(
+            claims=dict(data.get("claims") or {}),
+            issuer=data.get("issuer"),
+            audience=data.get("audience"),
+            algorithm=data.get("algorithm"),
+            header=data.get("header"),
+            scheme=data.get("scheme"),
+        )
+
+
+@dataclass
 class HttpRequest:
     method: str | None = None
     path: str | None = None
@@ -637,6 +762,7 @@ class HttpRequest:
     respond_before_body: bool | None = None
     path_parameters: list[KeyToMultiValue] | None = None
     socket_address: SocketAddress | None = None
+    jwt: Jwt | None = None
 
     def to_dict(self) -> dict:
         return _strip_none({
@@ -651,6 +777,7 @@ class HttpRequest:
             "respondBeforeBody": self.respond_before_body,
             "pathParameters": _serialize_key_multi_values(self.path_parameters),
             "socketAddress": self.socket_address.to_dict() if self.socket_address else None,
+            "jwt": self.jwt.to_dict() if self.jwt else None,
         })
 
     @classmethod
@@ -669,6 +796,7 @@ class HttpRequest:
             respond_before_body=data.get("respondBeforeBody"),
             path_parameters=_deserialize_key_multi_values(data.get("pathParameters")),
             socket_address=SocketAddress.from_dict(data.get("socketAddress")),
+            jwt=Jwt.from_dict(data.get("jwt")),
         )
 
     @staticmethod
@@ -703,6 +831,29 @@ class HttpRequest:
 
     def with_body(self, body: Body | str | dict) -> HttpRequest:
         self.body = body
+        return self
+
+    def with_jwt(
+        self,
+        jwt: Jwt | None = None,
+        *,
+        claims: dict | None = None,
+        issuer: str | None = None,
+        audience: str | None = None,
+        algorithm: str | None = None,
+        header: str | None = None,
+        scheme: str | None = None,
+    ) -> HttpRequest:
+        if jwt is None:
+            jwt = Jwt(
+                claims=dict(claims) if claims else {},
+                issuer=issuer,
+                audience=audience,
+                algorithm=algorithm,
+                header=header,
+                scheme=scheme,
+            )
+        self.jwt = jwt
         return self
 
     def with_secure(self, secure: bool) -> HttpRequest:

@@ -27,6 +27,14 @@ public sealed class HttpRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public object? Body { get; set; }
 
+    /// <summary>
+    /// JWT matcher applied to a bearer token on the request (typically the <c>Authorization</c>
+    /// header). Serialised under the <c>"jwt"</c> property alongside method/path/headers.
+    /// </summary>
+    [JsonPropertyName("jwt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Jwt? Jwt { get; set; }
+
     [JsonPropertyName("secure")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? Secure { get; set; }

@@ -86,6 +86,51 @@ $client->when(
 );
 ```
 
+### JWT Request Matcher
+
+Match a request by inspecting a JSON Web Token carried on it (by default the
+`authorization` header with a `Bearer` scheme). Each claim is matched by exact
+string or regular expression; a leading `!` negates the match for that claim.
+
+```php
+use MockServer\Jwt;
+
+$client->when(
+    HttpRequest::request()->method('GET')->path('/secure')
+        ->jwt(
+            Jwt::jwt()
+                ->claim('sub', 'user-123')          // exact match
+                ->claim('role', '!admin')           // negated match
+                ->claim('email', '^.+@example.com$') // regex match
+                ->issuer('https://issuer.example.com')
+                ->audience('my-api')
+                ->algorithm('RS256')
+                ->header('authorization')            // optional (default: authorization)
+                ->scheme('Bearer')                   // optional
+        )
+)->respond(
+    HttpResponse::response()->statusCode(200)
+);
+```
+
+### ALL_OF Body Matcher
+
+Require several body matchers to all match the same request body. Compose any
+typed body matcher arrays — `HttpRequest::jsonPathBody()` and
+`HttpRequest::regexBody()` are provided as convenient helpers.
+
+```php
+$client->when(
+    HttpRequest::request()->method('POST')->path('/api/data')
+        ->allOfBody([
+            HttpRequest::jsonPathBody('$.name'),
+            HttpRequest::regexBody('.*active.*'),
+        ])
+)->respond(
+    HttpResponse::response()->statusCode(200)
+);
+```
+
 ### Class Callbacks
 
 A **class callback** references a server-side class (already on MockServer's

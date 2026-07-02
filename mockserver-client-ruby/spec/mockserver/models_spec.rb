@@ -314,7 +314,56 @@ RSpec.describe 'MockServer models' do
       it '.regex creates REGEX body' do
         body = MockServer::Body.regex('.*test.*')
         expect(body.type).to eq('REGEX')
-        expect(body.string).to eq('.*test.*')
+        expect(body.regex).to eq('.*test.*')
+        expect(body.to_h).to eq({ 'type' => 'REGEX', 'regex' => '.*test.*' })
+      end
+
+      it '.json_path creates JSON_PATH body serialising to jsonPath' do
+        body = MockServer::Body.json_path('$.name')
+        expect(body.type).to eq('JSON_PATH')
+        expect(body.json_path).to eq('$.name')
+        expect(body.to_h).to eq({ 'type' => 'JSON_PATH', 'jsonPath' => '$.name' })
+      end
+
+      it '.xpath creates XPATH body serialising to xpath' do
+        body = MockServer::Body.xpath('/root/active')
+        expect(body.type).to eq('XPATH')
+        expect(body.to_h).to eq({ 'type' => 'XPATH', 'xpath' => '/root/active' })
+      end
+
+      it '.all_of combines sub-bodies under bodyAllOf' do
+        body = MockServer::Body.all_of(
+          MockServer::Body.json_path('$.name'),
+          MockServer::Body.regex('.*active.*')
+        )
+        expect(body.type).to eq('ALL_OF')
+        expect(body.to_h).to eq({
+          'type' => 'ALL_OF',
+          'bodyAllOf' => [
+            { 'type' => 'JSON_PATH', 'jsonPath' => '$.name' },
+            { 'type' => 'REGEX', 'regex' => '.*active.*' }
+          ]
+        })
+      end
+
+      it '.all_of round-trips through JSON' do
+        body = MockServer::Body.all_of(
+          MockServer::Body.json_path('$.name'),
+          MockServer::Body.regex('.*active.*')
+        )
+        json = JSON.generate(body.to_h)
+        expect(json).to eq(
+          '{"type":"ALL_OF","bodyAllOf":[' \
+          '{"type":"JSON_PATH","jsonPath":"$.name"},' \
+          '{"type":"REGEX","regex":".*active.*"}]}'
+        )
+        roundtrip = MockServer::Body.from_hash(JSON.parse(json))
+        expect(roundtrip.type).to eq('ALL_OF')
+        expect(roundtrip.body_all_of.length).to eq(2)
+        expect(roundtrip.body_all_of[0]).to be_a(MockServer::Body)
+        expect(roundtrip.body_all_of[0].json_path).to eq('$.name')
+        expect(roundtrip.body_all_of[1].regex).to eq('.*active.*')
+        expect(roundtrip.to_h).to eq(body.to_h)
       end
 
       it '.exact creates STRING body' do
@@ -508,6 +557,53 @@ RSpec.describe 'MockServer models' do
   end
 
   # -------------------------------------------------------------------
+  # Jwt
+  # -------------------------------------------------------------------
+  describe MockServer::Jwt do
+    it 'serializes only non-nil fields' do
+      jwt = MockServer::Jwt.new(claims: { 'sub' => 'abc' }, issuer: 'iss')
+      expect(jwt.to_h).to eq({ 'claims' => { 'sub' => 'abc' }, 'issuer' => 'iss' })
+    end
+
+    it 'omits unset optional fields' do
+      jwt = MockServer::Jwt.new(claims: { 'sub' => 'abc' })
+      h = jwt.to_h
+      expect(h).not_to have_key('issuer')
+      expect(h).not_to have_key('audience')
+      expect(h).not_to have_key('algorithm')
+      expect(h).not_to have_key('header')
+      expect(h).not_to have_key('scheme')
+    end
+
+    it 'keeps claim values as plain strings including "!" negation and regex' do
+      jwt = MockServer::Jwt.new(claims: { 'role' => '!admin', 'email' => '^.+@example.com$' })
+      expect(jwt.to_h['claims']).to eq({ 'role' => '!admin', 'email' => '^.+@example.com$' })
+    end
+
+    it 'with_claim appends claims fluently' do
+      jwt = MockServer::Jwt.new.with_claim('sub', 'user-123').with_claim('role', '!admin')
+      expect(jwt.to_h['claims']).to eq({ 'sub' => 'user-123', 'role' => '!admin' })
+    end
+
+    it 'round-trips through from_hash' do
+      original = MockServer::Jwt.new(
+        claims: { 'sub' => 'user-123', 'role' => '!admin' },
+        issuer: 'https://issuer.example.com',
+        audience: 'my-api',
+        algorithm: 'RS256',
+        header: 'authorization',
+        scheme: 'Bearer'
+      )
+      roundtrip = MockServer::Jwt.from_hash(original.to_h)
+      expect(roundtrip.to_h).to eq(original.to_h)
+    end
+
+    it 'returns nil from_hash when data is nil' do
+      expect(MockServer::Jwt.from_hash(nil)).to be_nil
+    end
+  end
+
+  # -------------------------------------------------------------------
   # HttpRequest
   # -------------------------------------------------------------------
   describe MockServer::HttpRequest do
@@ -640,6 +736,47 @@ RSpec.describe 'MockServer models' do
       sa = MockServer::SocketAddress.new(host: 'localhost', port: 8080)
       req = MockServer::HttpRequest.new(socket_address: sa)
       expect(req.to_h['socketAddress']).to eq({ 'host' => 'localhost', 'port' => 8080 })
+    end
+
+    it 'serializes a jwt matcher under the "jwt" key alongside method/path' do
+      jwt = MockServer::Jwt.new(
+        claims: { 'sub' => 'user-123', 'role' => '!admin', 'email' => '^.+@example.com$' },
+        issuer: 'https://issuer.example.com',
+        audience: 'my-api',
+        algorithm: 'RS256'
+      )
+      req = MockServer::HttpRequest.new(method: 'GET', path: '/api').with_jwt(jwt)
+      expect(req.to_h).to eq({
+        'method' => 'GET',
+        'path' => '/api',
+        'jwt' => {
+          'claims' => {
+            'sub' => 'user-123',
+            'role' => '!admin',
+            'email' => '^.+@example.com$'
+          },
+          'issuer' => 'https://issuer.example.com',
+          'audience' => 'my-api',
+          'algorithm' => 'RS256'
+        }
+      })
+    end
+
+    it 'omits the jwt key when no jwt matcher is set' do
+      req = MockServer::HttpRequest.new(method: 'GET', path: '/api')
+      expect(req.to_h).not_to have_key('jwt')
+    end
+
+    it 'round-trips a request carrying a jwt matcher' do
+      original = MockServer::HttpRequest.new(method: 'GET', path: '/secure').with_jwt(
+        MockServer::Jwt.new(claims: { 'sub' => '!blocked' }, header: 'authorization', scheme: 'Bearer')
+      )
+      roundtrip = MockServer::HttpRequest.from_hash(original.to_h)
+      expect(roundtrip.jwt).to be_a(MockServer::Jwt)
+      expect(roundtrip.jwt.claims).to eq({ 'sub' => '!blocked' })
+      expect(roundtrip.jwt.header).to eq('authorization')
+      expect(roundtrip.jwt.scheme).to eq('Bearer')
+      expect(roundtrip.to_h).to eq(original.to_h)
     end
 
     it 'deserializes from hash' do

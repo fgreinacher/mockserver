@@ -83,6 +83,49 @@ var requests = client.RetrieveRecordedRequests(
 );
 ```
 
+### JWT Request Matcher
+
+Match a bearer token's claims (exact or regex; a leading `!` negates), plus optional
+issuer/audience/algorithm/header/scheme constraints. Unset properties are omitted from the wire.
+
+```csharp
+client.When(
+    HttpRequest.Request()
+        .WithPath("/secure")
+        .WithJwt(new Jwt
+        {
+            Claims = new Dictionary<string, string>
+            {
+                ["sub"] = "user-123",
+                ["role"] = "!admin",              // negated: any role except admin
+                ["email"] = "^.+@example.com$"     // regex match
+            },
+            Issuer = "https://issuer.example.com",
+            Audience = "my-api",
+            Algorithm = "RS256"
+        })
+).Respond(
+    HttpResponse.Response().WithStatusCode(200)
+);
+```
+
+### ALL_OF Body Matcher
+
+Require the request body to satisfy every sub-matcher. Combine any typed body matchers
+(e.g. JSON path and regex) via `BodyMatcher`:
+
+```csharp
+client.When(
+    HttpRequest.Request()
+        .WithPath("/api")
+        .WithAllOfBody(
+            BodyMatcher.OfJsonPath("$.name"),
+            BodyMatcher.OfRegex(".*active.*"))
+).Respond(
+    HttpResponse.Response().WithStatusCode(200)
+);
+```
+
 ### Async API
 
 All operations have async variants:

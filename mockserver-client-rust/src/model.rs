@@ -43,6 +43,9 @@ pub struct HttpRequest {
     pub body: Option<Body>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub jwt: Option<Jwt>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_address: Option<SocketAddress>,
 }
 
@@ -123,6 +126,30 @@ impl HttpRequest {
         self.body = Some(body);
         self
     }
+
+    /// Set a JWT request matcher.
+    ///
+    /// Serialised under the `"jwt"` key alongside `method`/`path`/`headers`.
+    ///
+    /// # Example
+    /// ```
+    /// use mockserver_client::{HttpRequest, Jwt};
+    ///
+    /// let request = HttpRequest::new()
+    ///     .method("GET")
+    ///     .path("/secure")
+    ///     .jwt(
+    ///         Jwt::new()
+    ///             .claim("sub", "user-123")
+    ///             .claim("role", "!admin")
+    ///             .issuer("https://issuer.example.com")
+    ///             .algorithm("RS256"),
+    ///     );
+    /// ```
+    pub fn jwt(mut self, jwt: Jwt) -> Self {
+        self.jwt = Some(jwt);
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +168,21 @@ pub enum Body {
         file_path: String,
         content_type: Option<String>,
         template_type: Option<String>,
+    },
+    /// An `ALL_OF` composite body matcher — every nested body matcher must match.
+    ///
+    /// Serialises to `{ "type": "ALL_OF", "bodyAllOf": [ <body>, ... ] }`,
+    /// recursing through the normal [`Body`] serialisation for each sub-body.
+    AllOf(Vec<Body>),
+    /// A single-value typed body matcher whose value lives under a named key
+    /// (e.g. `JSON_PATH` → `jsonPath`, `REGEX` → `regex`, `XPATH` → `xpath`).
+    ///
+    /// Serialises to `{ "type": <body_type>, <value_key>: <value> }`. Use the
+    /// [`Body::json_path`] / [`Body::regex`] constructors for the common cases.
+    Matcher {
+        body_type: String,
+        value_key: String,
+        value: String,
     },
 }
 
@@ -187,6 +229,44 @@ impl Body {
         }
         self
     }
+
+    /// Create an `ALL_OF` composite body matcher — every nested body matcher
+    /// must match for the request body to match.
+    ///
+    /// # Example
+    /// ```
+    /// use mockserver_client::Body;
+    ///
+    /// let body = Body::all_of(vec![
+    ///     Body::json_path("$.name"),
+    ///     Body::regex(".*active.*"),
+    /// ]);
+    /// ```
+    pub fn all_of(bodies: Vec<Body>) -> Self {
+        Body::AllOf(bodies)
+    }
+
+    /// Create a `JSON_PATH` body matcher.
+    ///
+    /// Serialises to `{ "type": "JSON_PATH", "jsonPath": <expression> }`.
+    pub fn json_path(expression: impl Into<String>) -> Self {
+        Body::Matcher {
+            body_type: "JSON_PATH".to_string(),
+            value_key: "jsonPath".to_string(),
+            value: expression.into(),
+        }
+    }
+
+    /// Create a `REGEX` body matcher.
+    ///
+    /// Serialises to `{ "type": "REGEX", "regex": <pattern> }`.
+    pub fn regex(pattern: impl Into<String>) -> Self {
+        Body::Matcher {
+            body_type: "REGEX".to_string(),
+            value_key: "regex".to_string(),
+            value: pattern.into(),
+        }
+    }
 }
 
 impl Serialize for Body {
@@ -223,8 +303,43 @@ impl Serialize for Body {
                 }
                 map.end()
             }
+            Body::AllOf(bodies) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", "ALL_OF")?;
+                map.serialize_entry("bodyAllOf", bodies)?;
+                map.end()
+            }
+            Body::Matcher {
+                body_type,
+                value_key,
+                value,
+            } => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", body_type)?;
+                map.serialize_entry(value_key.as_str(), value)?;
+                map.end()
+            }
         }
     }
+}
+
+/// Map a single-value matcher `body_type` to its wire value-key and extract the
+/// string value from the deserialised object (e.g. `JSON_PATH` → `jsonPath`).
+fn matcher_key_value(
+    body_type: &str,
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<(String, String)> {
+    let key = match body_type {
+        "JSON_PATH" => "jsonPath",
+        "REGEX" => "regex",
+        "XPATH" => "xpath",
+        _ => return None,
+    };
+    map.get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| (key.to_string(), s.to_string()))
 }
 
 impl<'de> Deserialize<'de> for Body {
@@ -261,6 +376,26 @@ impl<'de> Deserialize<'de> for Body {
                         content_type,
                         template_type,
                     })
+                } else if body_type == "ALL_OF" {
+                    let bodies = map
+                        .get("bodyAllOf")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .cloned()
+                                .map(serde_json::from_value)
+                                .collect::<std::result::Result<Vec<Body>, _>>()
+                        })
+                        .transpose()
+                        .map_err(serde::de::Error::custom)?
+                        .unwrap_or_default();
+                    Ok(Body::AllOf(bodies))
+                } else if let Some((value_key, value)) = matcher_key_value(&body_type, &map) {
+                    Ok(Body::Matcher {
+                        body_type,
+                        value_key,
+                        value,
+                    })
                 } else {
                     let json = map
                         .get("json")
@@ -272,6 +407,104 @@ impl<'de> Deserialize<'de> for Body {
             }
             _ => Ok(Body::Plain(v.to_string())),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Jwt
+// ---------------------------------------------------------------------------
+
+/// JWT request matcher — matches a JSON Web Token carried on the request.
+///
+/// Serialised under the request's `"jwt"` key. Each entry in [`claims`](Self::claims)
+/// is a claim name mapped to an exact-or-regex string; a leading `!` negates the
+/// match. The optional [`issuer`](Self::issuer), [`audience`](Self::audience),
+/// [`algorithm`](Self::algorithm), [`header`](Self::header) and
+/// [`scheme`](Self::scheme) fields are omitted from the wire form when unset.
+///
+/// # Example
+/// ```
+/// use mockserver_client::Jwt;
+///
+/// let jwt = Jwt::new()
+///     .claim("sub", "user-123")
+///     .claim("role", "!admin")
+///     .claim("email", "^.+@example.com$")
+///     .issuer("https://issuer.example.com")
+///     .audience("my-api")
+///     .algorithm("RS256")
+///     .header("authorization")
+///     .scheme("Bearer");
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Jwt {
+    /// Claim name → exact-or-regex value (leading `!` negates).
+    pub claims: HashMap<String, String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
+}
+
+impl Jwt {
+    /// Create a new empty JWT matcher (no claims, no constraints).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a claim constraint. The value is an exact-or-regex string; a leading
+    /// `!` negates the match.
+    pub fn claim(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.claims.insert(name.into(), value.into());
+        self
+    }
+
+    /// Replace the full claims map.
+    pub fn claims(mut self, claims: HashMap<String, String>) -> Self {
+        self.claims = claims;
+        self
+    }
+
+    /// Require the `iss` (issuer) claim to equal the given value.
+    pub fn issuer(mut self, issuer: impl Into<String>) -> Self {
+        self.issuer = Some(issuer.into());
+        self
+    }
+
+    /// Require the `aud` (audience) claim to equal the given value.
+    pub fn audience(mut self, audience: impl Into<String>) -> Self {
+        self.audience = Some(audience.into());
+        self
+    }
+
+    /// Require the token to be signed with the given algorithm (e.g. "RS256").
+    pub fn algorithm(mut self, algorithm: impl Into<String>) -> Self {
+        self.algorithm = Some(algorithm.into());
+        self
+    }
+
+    /// Set the request header the token is carried in (default "authorization").
+    pub fn header(mut self, header: impl Into<String>) -> Self {
+        self.header = Some(header.into());
+        self
+    }
+
+    /// Set the auth scheme prefix stripped from the header value (e.g. "Bearer").
+    pub fn scheme(mut self, scheme: impl Into<String>) -> Self {
+        self.scheme = Some(scheme.into());
+        self
     }
 }
 
