@@ -165,6 +165,23 @@ def _deserialize_body(data: Any) -> Body | JsonRpcBody | str | dict | None:
             )
         if data.get("type") == "ALL_OF":
             return AllOfBody.from_dict(data)
+        if data.get("type") == "XPATH":
+            return XPathBody.from_dict(data)
+        if data.get("type") == "XML_SCHEMA":
+            return XmlSchemaBody.from_dict(data)
+        if data.get("type") == "JSON_SCHEMA":
+            return JsonSchemaBody.from_dict(data)
+        if data.get("type") == "PARAMETERS":
+            return ParameterBody.from_dict(data)
+        if data.get("type") == "MULTIPART":
+            return MultipartBody.from_dict(data)
+        if data.get("type") == "WASM":
+            return WasmBody.from_dict(data)
+        # An XML body carrying an "xml" field is the canonical MockServer wire form
+        # -> XmlBody. Legacy XML bodies carrying "string" fall through to the generic
+        # Body deserializer below (unchanged behaviour).
+        if data.get("type") == "XML" and "xml" in data:
+            return XmlBody.from_dict(data)
         # A REGEX body carrying a "regex" field is the canonical MockServer wire
         # form -> RegexBody. Legacy REGEX bodies that carry "string" fall through
         # to the generic Body deserializer below (unchanged behaviour).
@@ -188,6 +205,16 @@ def _serialize_key_multi_values(items: list[KeyToMultiValue] | None) -> list[dic
     if items is None:
         return None
     return [item.to_dict() for item in items]
+
+
+def _serialize_key_multi_values_map(items: list[KeyToMultiValue] | None) -> dict | None:
+    # Multi-value {name: [values]} object-map form. MockServer's multipart body
+    # deserializer only recognises fields/filenames/partContentTypes in this map
+    # form (an array-valued "fields" is diverted to the GraphQL handler and the
+    # multipart matcher is silently dropped), so this is the canonical wire shape.
+    if items is None:
+        return None
+    return {item.name: list(item.values) for item in items}
 
 
 def _deserialize_key_multi_values(data: list | dict | None) -> list[KeyToMultiValue] | None:
@@ -469,9 +496,20 @@ class Body:
     charset: str | None = None
     file_path: str | None = None
     template_type: str | None = None
+    optional: bool | None = None
+    # STRING body matcher: treat ``string`` as a substring rather than an exact match.
+    sub_string: bool | None = None
+    # JSON body matcher: how strictly the JSON must match (STRICT / ONLY_MATCHING_FIELDS).
+    match_type: str | None = None
+    # JSON body matcher: compare numbers as strings (avoids float/int coercion differences).
+    match_numbers_as_strings: bool | None = None
 
     def to_dict(self) -> dict:
         result = {}
+        if self.not_body is not None:
+            result["not"] = self.not_body
+        if self.optional is not None:
+            result["optional"] = self.optional
         if self.type is not None:
             result["type"] = self.type
         if self.string is not None:
@@ -480,8 +518,6 @@ class Body:
             result["json"] = self.json
         if self.base64_bytes is not None:
             result["base64Bytes"] = self.base64_bytes
-        if self.not_body is not None:
-            result["not"] = self.not_body
         if self.content_type is not None:
             result["contentType"] = self.content_type
         if self.charset is not None:
@@ -490,6 +526,12 @@ class Body:
             result["filePath"] = self.file_path
         if self.template_type is not None:
             result["templateType"] = self.template_type
+        if self.sub_string is not None:
+            result["subString"] = self.sub_string
+        if self.match_type is not None:
+            result["matchType"] = self.match_type
+        if self.match_numbers_as_strings is not None:
+            result["matchNumbersAsStrings"] = self.match_numbers_as_strings
         return result
 
     @classmethod
@@ -506,6 +548,10 @@ class Body:
             charset=data.get("charset"),
             file_path=data.get("filePath"),
             template_type=data.get("templateType"),
+            optional=data.get("optional"),
+            sub_string=data.get("subString"),
+            match_type=data.get("matchType"),
+            match_numbers_as_strings=data.get("matchNumbersAsStrings"),
         )
 
 
@@ -628,6 +674,238 @@ class AllOfBody:
         )
 
 
+@dataclass
+class XmlBody:
+    # Serialises to {"type": "XML", "xml": <value>} — the wire field name MockServer
+    # expects for an XML body matcher (distinct from the "string" key used by a STRING
+    # body). Use this whenever the exact XML wire shape matters.
+    xml: str = ""
+    content_type: str | None = None
+    not_body: bool = False
+    optional: bool = False
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.not_body:
+            result["not"] = True
+        if self.optional:
+            result["optional"] = True
+        result["type"] = "XML"
+        result["xml"] = self.xml
+        if self.content_type is not None:
+            result["contentType"] = self.content_type
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> XmlBody:
+        if data is None:
+            return None
+        return cls(
+            xml=data.get("xml", ""),
+            content_type=data.get("contentType"),
+            not_body=bool(data.get("not", False)),
+            optional=bool(data.get("optional", False)),
+        )
+
+
+@dataclass
+class XPathBody:
+    # Serialises to {"type": "XPATH", "xpath": <value>, "namespacePrefixes": {...}}.
+    # ``namespace_prefixes`` maps a prefix to its namespace URI and is omitted when empty.
+    xpath: str = ""
+    namespace_prefixes: dict | None = None
+    not_body: bool = False
+    optional: bool = False
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.not_body:
+            result["not"] = True
+        if self.optional:
+            result["optional"] = True
+        result["type"] = "XPATH"
+        result["xpath"] = self.xpath
+        if self.namespace_prefixes is not None:
+            result["namespacePrefixes"] = dict(self.namespace_prefixes)
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> XPathBody:
+        if data is None:
+            return None
+        namespace_prefixes = data.get("namespacePrefixes")
+        return cls(
+            xpath=data.get("xpath", ""),
+            namespace_prefixes=dict(namespace_prefixes) if namespace_prefixes is not None else None,
+            not_body=bool(data.get("not", False)),
+            optional=bool(data.get("optional", False)),
+        )
+
+
+@dataclass
+class XmlSchemaBody:
+    # Serialises to {"type": "XML_SCHEMA", "xmlSchema": <schema>}. ``xml_schema`` carries
+    # the XSD payload as a string.
+    xml_schema: str = ""
+    not_body: bool = False
+    optional: bool = False
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.not_body:
+            result["not"] = True
+        if self.optional:
+            result["optional"] = True
+        result["type"] = "XML_SCHEMA"
+        result["xmlSchema"] = self.xml_schema
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> XmlSchemaBody:
+        if data is None:
+            return None
+        return cls(
+            xml_schema=data.get("xmlSchema", ""),
+            not_body=bool(data.get("not", False)),
+            optional=bool(data.get("optional", False)),
+        )
+
+
+@dataclass
+class JsonSchemaBody:
+    # Serialises to {"type": "JSON_SCHEMA", "jsonSchema": <schema>, "parameterStyles": {...}}.
+    # ``json_schema`` is the JSON Schema payload as a parsed object (dict) — MockServer emits
+    # the schema as a JSON tree, not a string. ``parameter_styles`` is optional.
+    json_schema: Any = None
+    parameter_styles: dict | None = None
+    not_body: bool = False
+    optional: bool = False
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.not_body:
+            result["not"] = True
+        if self.optional:
+            result["optional"] = True
+        result["type"] = "JSON_SCHEMA"
+        result["jsonSchema"] = self.json_schema
+        if self.parameter_styles is not None:
+            result["parameterStyles"] = dict(self.parameter_styles)
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> JsonSchemaBody:
+        if data is None:
+            return None
+        parameter_styles = data.get("parameterStyles")
+        return cls(
+            json_schema=data.get("jsonSchema"),
+            parameter_styles=dict(parameter_styles) if parameter_styles is not None else None,
+            not_body=bool(data.get("not", False)),
+            optional=bool(data.get("optional", False)),
+        )
+
+
+@dataclass
+class ParameterBody:
+    # Serialises to {"type": "PARAMETERS", "parameters": [{"name": .., "values": [..]}]}.
+    # Matches a form-url-encoded / query body by its parameters.
+    parameters: list[KeyToMultiValue] | None = None
+    not_body: bool = False
+    optional: bool = False
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.not_body:
+            result["not"] = True
+        if self.optional:
+            result["optional"] = True
+        result["type"] = "PARAMETERS"
+        if self.parameters is not None:
+            result["parameters"] = _serialize_key_multi_values(self.parameters)
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ParameterBody:
+        if data is None:
+            return None
+        return cls(
+            parameters=_deserialize_key_multi_values(data.get("parameters")),
+            not_body=bool(data.get("not", False)),
+            optional=bool(data.get("optional", False)),
+        )
+
+
+@dataclass
+class MultipartBody:
+    # Serialises to {"type": "MULTIPART", "fields": {name: [values]}, "filenames":
+    # {..}, "partContentTypes": {..}} — each a {name: [values]} object map (the
+    # canonical MockServer wire shape; the array form is silently dropped server-side).
+    # Matches a multipart form-data body by its part fields, filenames and per-part
+    # content types. from_dict accepts both the object-map and the legacy array form.
+    fields: list[KeyToMultiValue] | None = None
+    filenames: list[KeyToMultiValue] | None = None
+    part_content_types: list[KeyToMultiValue] | None = None
+    not_body: bool = False
+    optional: bool = False
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.not_body:
+            result["not"] = True
+        if self.optional:
+            result["optional"] = True
+        result["type"] = "MULTIPART"
+        if self.fields is not None:
+            result["fields"] = _serialize_key_multi_values_map(self.fields)
+        if self.filenames is not None:
+            result["filenames"] = _serialize_key_multi_values_map(self.filenames)
+        if self.part_content_types is not None:
+            result["partContentTypes"] = _serialize_key_multi_values_map(self.part_content_types)
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> MultipartBody:
+        if data is None:
+            return None
+        return cls(
+            fields=_deserialize_key_multi_values(data.get("fields")),
+            filenames=_deserialize_key_multi_values(data.get("filenames")),
+            part_content_types=_deserialize_key_multi_values(data.get("partContentTypes")),
+            not_body=bool(data.get("not", False)),
+            optional=bool(data.get("optional", False)),
+        )
+
+
+@dataclass
+class WasmBody:
+    # Serialises to {"type": "WASM", "moduleName": <name>}. Delegates matching to a WASM
+    # module registered in the server's WasmStore (exports match(ptr, len) -> i32).
+    module_name: str = ""
+    not_body: bool = False
+    optional: bool = False
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.not_body:
+            result["not"] = True
+        if self.optional:
+            result["optional"] = True
+        result["type"] = "WASM"
+        result["moduleName"] = self.module_name
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> WasmBody:
+        if data is None:
+            return None
+        return cls(
+            module_name=data.get("moduleName", ""),
+            not_body=bool(data.get("not", False)),
+            optional=bool(data.get("optional", False)),
+        )
+
+
 def _body_string(value: str) -> Body:
     return Body(type="STRING", string=value)
 
@@ -651,6 +929,41 @@ def _body_xml(value: str) -> Body:
     return Body(type="XML", string=value)
 
 
+def _body_xml_matcher(value: str, content_type: str | None = None) -> XmlBody:
+    # Emits {"type": "XML", "xml": <value>} — the wire form MockServer's
+    # XmlBodyDTODeserializer parses as an XML body matcher (the "xml" key, distinct
+    # from the legacy Body.xml(...) which emits a "string" key).
+    return XmlBody(xml=value, content_type=content_type)
+
+
+def _body_xpath(xpath: str, namespace_prefixes: dict | None = None) -> XPathBody:
+    return XPathBody(xpath=xpath, namespace_prefixes=namespace_prefixes)
+
+
+def _body_xml_schema(xml_schema: str) -> XmlSchemaBody:
+    return XmlSchemaBody(xml_schema=xml_schema)
+
+
+def _body_json_schema(json_schema: Any, parameter_styles: dict | None = None) -> JsonSchemaBody:
+    return JsonSchemaBody(json_schema=json_schema, parameter_styles=parameter_styles)
+
+
+def _body_parameters(parameters: list[KeyToMultiValue] | None = None) -> ParameterBody:
+    return ParameterBody(parameters=parameters)
+
+
+def _body_multipart(
+    fields: list[KeyToMultiValue] | None = None,
+    filenames: list[KeyToMultiValue] | None = None,
+    part_content_types: list[KeyToMultiValue] | None = None,
+) -> MultipartBody:
+    return MultipartBody(fields=fields, filenames=filenames, part_content_types=part_content_types)
+
+
+def _body_wasm(module_name: str) -> WasmBody:
+    return WasmBody(module_name=module_name)
+
+
 def _body_json_rpc(method: str, params_schema: str | None = None) -> JsonRpcBody:
     return JsonRpcBody(method=method, params_schema=params_schema)
 
@@ -671,6 +984,13 @@ Body.xml = staticmethod(_body_xml)
 Body.json_rpc = staticmethod(_body_json_rpc)
 Body.graphql = staticmethod(_body_graphql)
 Body.file = staticmethod(_body_file)
+Body.xml_matcher = staticmethod(_body_xml_matcher)
+Body.xpath = staticmethod(_body_xpath)
+Body.xml_schema = staticmethod(_body_xml_schema)
+Body.json_schema = staticmethod(_body_json_schema)
+Body.parameters = staticmethod(_body_parameters)
+Body.multipart = staticmethod(_body_multipart)
+Body.wasm = staticmethod(_body_wasm)
 
 
 def _body_all_of(*bodies) -> AllOfBody:
@@ -761,9 +1081,15 @@ class HttpRequest:
     path_parameters: list[KeyToMultiValue] | None = None
     socket_address: SocketAddress | None = None
     jwt: Jwt | None = None
+    # Negates the whole request matcher (wire key "not"). When true a request matches
+    # this definition only if it does NOT satisfy the specified properties.
+    not_request: bool | None = None
+    # Protocol matcher: HTTP_1_1 / HTTP_2 / HTTP_3 (see the ``Protocol`` constants).
+    protocol: str | None = None
 
     def to_dict(self) -> dict:
         return _strip_none({
+            "not": self.not_request,
             "method": self.method,
             "path": self.path,
             "queryStringParameters": _serialize_key_multi_values(self.query_string_parameters),
@@ -776,6 +1102,7 @@ class HttpRequest:
             "pathParameters": _serialize_key_multi_values(self.path_parameters),
             "socketAddress": self.socket_address.to_dict() if self.socket_address else None,
             "jwt": self.jwt.to_dict() if self.jwt else None,
+            "protocol": self.protocol,
         })
 
     @classmethod
@@ -795,6 +1122,8 @@ class HttpRequest:
             path_parameters=_deserialize_key_multi_values(data.get("pathParameters")),
             socket_address=SocketAddress.from_dict(data.get("socketAddress")),
             jwt=Jwt.from_dict(data.get("jwt")),
+            not_request=data.get("not"),
+            protocol=data.get("protocol"),
         )
 
     @staticmethod
@@ -865,6 +1194,89 @@ class HttpRequest:
     def with_respond_before_body(self, respond_before_body: bool) -> HttpRequest:
         self.respond_before_body = respond_before_body
         return self
+
+
+class Protocol:
+    """Transport protocol matcher constants for :attr:`HttpRequest.protocol`.
+    Mirrors the core ``Protocol`` enum.
+    """
+
+    HTTP_1_1 = "HTTP_1_1"
+    HTTP_2 = "HTTP_2"
+    HTTP_3 = "HTTP_3"
+
+
+class DnsRecordType:
+    """DNS record type constants for :attr:`DnsRequestDefinition.dns_type`.
+    Mirrors the core ``DnsRecordType`` enum.
+    """
+
+    A = "A"
+    AAAA = "AAAA"
+    CNAME = "CNAME"
+    MX = "MX"
+    SRV = "SRV"
+    TXT = "TXT"
+    PTR = "PTR"
+
+
+class DnsRecordClass:
+    """DNS record class constants for :attr:`DnsRequestDefinition.dns_class`.
+    Mirrors the core ``DnsRecordClass`` enum.
+    """
+
+    IN = "IN"
+    CH = "CH"
+    HS = "HS"
+    ANY = "ANY"
+
+
+@dataclass
+class DnsRequestDefinition:
+    """A DNS query request matcher — an alternative to :class:`HttpRequest` as the
+    ``http_request`` of an expectation (paired with a ``dns_response`` action).
+
+    Serialises to ``{"dnsName": .., "dnsType": .., "dnsClass": ..}``. MockServer
+    discriminates a DNS request matcher from an HTTP one by the presence of
+    ``dnsName``, so no ``type`` field is emitted.
+    """
+
+    dns_name: str | None = None
+    dns_type: str | None = None
+    dns_class: str | None = None
+
+    def to_dict(self) -> dict:
+        return _strip_none({
+            "dnsName": self.dns_name,
+            "dnsType": self.dns_type,
+            "dnsClass": self.dns_class,
+        })
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DnsRequestDefinition:
+        if data is None:
+            return None
+        return cls(
+            dns_name=data.get("dnsName"),
+            dns_type=data.get("dnsType"),
+            dns_class=data.get("dnsClass"),
+        )
+
+    @staticmethod
+    def dns_request(dns_name: str, dns_type: str | None = None, dns_class: str | None = None) -> DnsRequestDefinition:
+        return DnsRequestDefinition(dns_name=dns_name, dns_type=dns_type, dns_class=dns_class)
+
+
+def _deserialize_request_definition(data: Any) -> Any | None:
+    """Deserialize an expectation ``httpRequest`` into the correct request-matcher
+    type. A dict carrying ``dnsName`` is a :class:`DnsRequestDefinition`; anything
+    else is an :class:`HttpRequest`.
+    """
+    if data is None:
+        return None
+    if isinstance(data, dict) and "dnsName" in data:
+        return DnsRequestDefinition.from_dict(data)
+    return HttpRequest.from_dict(data)
 
 
 @dataclass
@@ -1860,12 +2272,206 @@ class CrossProtocolScenario:
         )
 
 
+class RateLimitAlgorithm:
+    """Algorithm constants for :attr:`RateLimit.algorithm`."""
+
+    FIXED_WINDOW = "fixed_window"
+    TOKEN_BUCKET = "token_bucket"
+
+
+@dataclass
+class RateLimit:
+    """A declarative, protocol-agnostic rate limit / quota on an expectation.
+
+    Expectations sharing a ``name`` share one counter. ``fixed_window`` uses
+    ``limit`` + ``window_millis``; ``token_bucket`` uses ``burst`` +
+    ``refill_per_second``.
+    """
+
+    name: str | None = None
+    algorithm: str | None = None
+    limit: int | None = None
+    window_millis: int | None = None
+    burst: int | None = None
+    refill_per_second: float | None = None
+    error_status: int | None = None
+    retry_after: str | None = None
+
+    def to_dict(self) -> dict:
+        return _strip_none({
+            "name": self.name,
+            "algorithm": self.algorithm,
+            "limit": self.limit,
+            "windowMillis": self.window_millis,
+            "burst": self.burst,
+            "refillPerSecond": self.refill_per_second,
+            "errorStatus": self.error_status,
+            "retryAfter": self.retry_after,
+        })
+
+    @classmethod
+    def from_dict(cls, data: dict) -> RateLimit:
+        if data is None:
+            return None
+        return cls(
+            name=data.get("name"),
+            algorithm=data.get("algorithm"),
+            limit=data.get("limit"),
+            window_millis=data.get("windowMillis"),
+            burst=data.get("burst"),
+            refill_per_second=data.get("refillPerSecond"),
+            error_status=data.get("errorStatus"),
+            retry_after=data.get("retryAfter"),
+        )
+
+
+@dataclass
+class HttpForwardWithFallback:
+    """Forward the request to an upstream, but fall back to a canned response when
+    the upstream fails (matched status codes and/or a timeout).
+
+    Serialises to ``{"httpForward": .., "fallbackResponse": .., "fallbackOnStatusCodes":
+    [..], "fallbackOnTimeout": bool, "delay": .., "primary": bool}``.
+    """
+
+    http_forward: HttpForward | None = None
+    fallback_response: HttpResponse | None = None
+    fallback_on_status_codes: list[int] | None = None
+    fallback_on_timeout: bool | None = None
+    delay: Delay | None = None
+    primary: bool | None = None
+
+    def to_dict(self) -> dict:
+        return _strip_none({
+            "httpForward": self.http_forward.to_dict() if self.http_forward else None,
+            "fallbackResponse": self.fallback_response.to_dict() if self.fallback_response else None,
+            "fallbackOnStatusCodes": self.fallback_on_status_codes,
+            "fallbackOnTimeout": self.fallback_on_timeout,
+            "delay": self.delay.to_dict() if self.delay else None,
+            "primary": self.primary,
+        })
+
+    @classmethod
+    def from_dict(cls, data: dict) -> HttpForwardWithFallback:
+        if data is None:
+            return None
+        return cls(
+            http_forward=HttpForward.from_dict(data.get("httpForward")),
+            fallback_response=HttpResponse.from_dict(data.get("fallbackResponse")),
+            fallback_on_status_codes=data.get("fallbackOnStatusCodes"),
+            fallback_on_timeout=data.get("fallbackOnTimeout"),
+            delay=Delay.from_dict(data.get("delay")),
+            primary=data.get("primary"),
+        )
+
+
+class ValidationMode:
+    """Validation-mode constants for :attr:`HttpForwardValidateAction.validation_mode`."""
+
+    STRICT = "STRICT"
+    LOG_ONLY = "LOG_ONLY"
+
+
+@dataclass
+class HttpForwardValidateAction:
+    """Forward the request to an upstream and validate the exchange against an
+    OpenAPI specification.
+
+    Serialises to ``{"specUrlOrPayload": .., "host": .., "port": .., "scheme": ..,
+    "validateRequest": bool, "validateResponse": bool, "validationMode": .., "delay": ..,
+    "primary": bool}``.
+    """
+
+    spec_url_or_payload: str | None = None
+    host: str | None = None
+    port: int | None = None
+    scheme: str | None = None
+    validate_request: bool | None = None
+    validate_response: bool | None = None
+    validation_mode: str | None = None
+    delay: Delay | None = None
+    primary: bool | None = None
+
+    def to_dict(self) -> dict:
+        return _strip_none({
+            "specUrlOrPayload": self.spec_url_or_payload,
+            "host": self.host,
+            "port": self.port,
+            "scheme": self.scheme,
+            "validateRequest": self.validate_request,
+            "validateResponse": self.validate_response,
+            "validationMode": self.validation_mode,
+            "delay": self.delay.to_dict() if self.delay else None,
+            "primary": self.primary,
+        })
+
+    @classmethod
+    def from_dict(cls, data: dict) -> HttpForwardValidateAction:
+        if data is None:
+            return None
+        return cls(
+            spec_url_or_payload=data.get("specUrlOrPayload"),
+            host=data.get("host"),
+            port=data.get("port"),
+            scheme=data.get("scheme"),
+            validate_request=data.get("validateRequest"),
+            validate_response=data.get("validateResponse"),
+            validation_mode=data.get("validationMode"),
+            delay=Delay.from_dict(data.get("delay")),
+            primary=data.get("primary"),
+        )
+
+
+class CaptureSource:
+    """Source constants for :attr:`CaptureRule.source` (the part of the request a
+    capture rule reads from). Mirrors the core ``CaptureRule.Source`` enum — note the
+    values are camelCase, matching the wire form.
+    """
+
+    JSON_PATH = "jsonPath"
+    XPATH = "xpath"
+    HEADER = "header"
+    QUERY_STRING_PARAMETER = "queryStringParameter"
+    COOKIE = "cookie"
+    PATH_PARAMETER = "pathParameter"
+
+
+@dataclass
+class CaptureRule:
+    """Captures a value from the matched request into scenario/session state for use
+    by later scenario-trigger calls.
+
+    Serialises to ``{"source": .., "expression": .., "into": ..}``.
+    """
+
+    source: str | None = None
+    expression: str | None = None
+    into: str | None = None
+
+    def to_dict(self) -> dict:
+        return _strip_none({
+            "source": self.source,
+            "expression": self.expression,
+            "into": self.into,
+        })
+
+    @classmethod
+    def from_dict(cls, data: dict) -> CaptureRule:
+        if data is None:
+            return None
+        return cls(
+            source=data.get("source"),
+            expression=data.get("expression"),
+            into=data.get("into"),
+        )
+
+
 @dataclass
 class Expectation:
     id: str | None = None
     priority: int | None = None
     percentage: int | None = None
-    http_request: HttpRequest | None = None
+    http_request: HttpRequest | DnsRequestDefinition | None = None
     http_response: HttpResponse | None = None
     http_response_template: HttpTemplate | None = None
     http_response_class_callback: HttpClassCallback | None = None
@@ -1885,9 +2491,14 @@ class Expectation:
     # http_llm_response is an mockserver.llm.HttpLlmResponse; typed as Any to
     # avoid a circular import (mockserver.llm imports Expectation from here).
     http_llm_response: Any | None = None
+    http_forward_with_fallback: HttpForwardWithFallback | None = None
+    http_forward_validate_action: HttpForwardValidateAction | None = None
     times: Times | None = None
     time_to_live: TimeToLive | None = None
     chaos: HttpChaosProfile | None = None
+    rate_limit: RateLimit | None = None
+    capture: list[CaptureRule] | None = None
+    namespace: str | None = None
     before_actions: list[AfterAction] | None = None
     after_actions: list[AfterAction] | None = None
     http_responses: list[HttpResponse] | None = None
@@ -1914,6 +2525,8 @@ class Expectation:
             "httpForwardTemplate": self.http_forward_template.to_dict() if self.http_forward_template else None,
             "httpForwardClassCallback": self.http_forward_class_callback.to_dict() if self.http_forward_class_callback else None,
             "httpForwardObjectCallback": self.http_forward_object_callback.to_dict() if self.http_forward_object_callback else None,
+            "httpForwardWithFallback": self.http_forward_with_fallback.to_dict() if self.http_forward_with_fallback else None,
+            "httpForwardValidateAction": self.http_forward_validate_action.to_dict() if self.http_forward_validate_action else None,
             "httpOverrideForwardedRequest": self.http_override_forwarded_request.to_dict() if self.http_override_forwarded_request else None,
             "httpError": self.http_error.to_dict() if self.http_error else None,
             "httpSseResponse": self.http_sse_response.to_dict() if self.http_sse_response else None,
@@ -1926,6 +2539,9 @@ class Expectation:
             "times": self.times.to_dict() if self.times else None,
             "timeToLive": self.time_to_live.to_dict() if self.time_to_live else None,
             "chaos": self.chaos.to_dict() if self.chaos else None,
+            "rateLimit": self.rate_limit.to_dict() if self.rate_limit else None,
+            "capture": [c.to_dict() for c in self.capture] if self.capture else None,
+            "namespace": self.namespace,
             "beforeActions": [a.to_dict() for a in self.before_actions] if self.before_actions else None,
             "afterActions": [a.to_dict() for a in self.after_actions] if self.after_actions else None,
             "httpResponses": [r.to_dict() for r in self.http_responses] if self.http_responses else None,
@@ -1953,7 +2569,7 @@ class Expectation:
             id=data.get("id"),
             priority=data.get("priority"),
             percentage=data.get("percentage"),
-            http_request=HttpRequest.from_dict(data.get("httpRequest")),
+            http_request=_deserialize_request_definition(data.get("httpRequest")),
             http_response=HttpResponse.from_dict(data.get("httpResponse")),
             http_response_template=HttpTemplate.from_dict(data.get("httpResponseTemplate")),
             http_response_class_callback=HttpClassCallback.from_dict(data.get("httpResponseClassCallback")),
@@ -1962,6 +2578,8 @@ class Expectation:
             http_forward_template=HttpTemplate.from_dict(data.get("httpForwardTemplate")),
             http_forward_class_callback=HttpClassCallback.from_dict(data.get("httpForwardClassCallback")),
             http_forward_object_callback=HttpObjectCallback.from_dict(data.get("httpForwardObjectCallback")),
+            http_forward_with_fallback=HttpForwardWithFallback.from_dict(data.get("httpForwardWithFallback")),
+            http_forward_validate_action=HttpForwardValidateAction.from_dict(data.get("httpForwardValidateAction")),
             http_override_forwarded_request=HttpOverrideForwardedRequest.from_dict(data.get("httpOverrideForwardedRequest")),
             http_error=HttpError.from_dict(data.get("httpError")),
             http_sse_response=HttpSseResponse.from_dict(data.get("httpSseResponse")),
@@ -1974,6 +2592,9 @@ class Expectation:
             times=Times.from_dict(data.get("times")),
             time_to_live=TimeToLive.from_dict(data.get("timeToLive")),
             chaos=HttpChaosProfile.from_dict(data.get("chaos")),
+            rate_limit=RateLimit.from_dict(data.get("rateLimit")),
+            capture=[CaptureRule.from_dict(c) for c in data["capture"]] if data.get("capture") else None,
+            namespace=data.get("namespace"),
             before_actions=[AfterAction.from_dict(a) for a in before_actions_data] if before_actions_data else None,
             after_actions=[AfterAction.from_dict(a) for a in after_actions_data] if after_actions_data else None,
             http_responses=[HttpResponse.from_dict(r) for r in data["httpResponses"]] if data.get("httpResponses") else None,

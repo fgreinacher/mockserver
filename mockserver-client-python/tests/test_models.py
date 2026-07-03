@@ -9,6 +9,24 @@ from mockserver.models import (
     AllOfBody,
     BinaryResponse,
     Body,
+    CaptureRule,
+    CaptureSource,
+    DnsRecordClass,
+    DnsRecordType,
+    DnsRequestDefinition,
+    HttpForwardValidateAction,
+    HttpForwardWithFallback,
+    JsonSchemaBody,
+    MultipartBody,
+    ParameterBody,
+    Protocol,
+    RateLimit,
+    RateLimitAlgorithm,
+    ValidationMode,
+    WasmBody,
+    XPathBody,
+    XmlBody,
+    XmlSchemaBody,
     ConnectionOptions,
     CrossProtocolScenario,
     CrossProtocolTrigger,
@@ -47,6 +65,7 @@ from mockserver.models import (
     Verification,
     VerificationSequence,
     VerificationTimes,
+    _deserialize_body,
     _from_camel,
     _serialize_body,
     _serialize_value,
@@ -3755,3 +3774,408 @@ class TestAllOfBody:
         body = AllOfBody.from_dict(data)
         assert isinstance(body, AllOfBody)
         assert body.to_dict() == data
+
+
+# ---------------------------------------------------------------------------
+# Round-trip coverage for previously-dropped Expectation features.
+#
+# Each test drives the strongest round-trip: from_dict(wire) -> to_dict() == wire,
+# proving the whitelist deserializer no longer silently drops the field. Dict
+# equality in Python is order-insensitive, so key order is irrelevant.
+# ---------------------------------------------------------------------------
+
+
+class TestBodySubFieldsRoundTrip:
+    def test_string_sub_string(self):
+        data = {"type": "STRING", "string": "frag", "subString": True}
+        assert Body.from_dict(data).to_dict() == data
+
+    def test_json_match_type(self):
+        data = {"type": "JSON", "json": {"a": 1}, "matchType": "ONLY_MATCHING_FIELDS"}
+        assert Body.from_dict(data).to_dict() == data
+
+    def test_json_match_numbers_as_strings(self):
+        data = {"type": "JSON", "json": {"a": 1}, "matchNumbersAsStrings": True}
+        assert Body.from_dict(data).to_dict() == data
+
+    def test_body_optional_flag(self):
+        data = {"type": "STRING", "string": "x", "optional": True}
+        assert Body.from_dict(data).to_dict() == data
+
+    def test_not_and_sub_string_together(self):
+        data = {"not": True, "type": "STRING", "string": "x", "subString": True}
+        assert Body.from_dict(data).to_dict() == data
+
+    def test_sub_string_absent_when_unset(self):
+        # subString / matchType must be omitted (not emitted as null) when unset.
+        assert Body(type="STRING", string="x").to_dict() == {"type": "STRING", "string": "x"}
+
+
+class TestXmlBodyRoundTrip:
+    def test_minimal(self):
+        data = {"type": "XML", "xml": "<root/>"}
+        body = XmlBody.from_dict(data)
+        assert isinstance(body, XmlBody)
+        assert body.to_dict() == data
+
+    def test_with_content_type_and_flags(self):
+        data = {"not": True, "optional": True, "type": "XML", "xml": "<a/>", "contentType": "application/xml"}
+        assert XmlBody.from_dict(data).to_dict() == data
+
+    def test_deserialized_via_body_dispatch(self):
+        # A wire XML body carrying the "xml" key must resolve to XmlBody, not the
+        # legacy generic Body (which keys off "string").
+        body = _deserialize_body({"type": "XML", "xml": "<a/>"})
+        assert isinstance(body, XmlBody)
+
+    def test_legacy_string_form_still_generic_body(self):
+        body = _deserialize_body({"type": "XML", "string": "<a/>"})
+        assert isinstance(body, Body)
+        assert body.type == "XML"
+
+    def test_factory(self):
+        assert Body.xml_matcher("<a/>").to_dict() == {"type": "XML", "xml": "<a/>"}
+
+
+class TestXPathBodyRoundTrip:
+    def test_minimal(self):
+        data = {"type": "XPATH", "xpath": "/root/child"}
+        assert XPathBody.from_dict(data).to_dict() == data
+
+    def test_with_namespace_prefixes(self):
+        data = {
+            "not": True,
+            "type": "XPATH",
+            "xpath": "//ns:name",
+            "namespacePrefixes": {"ns": "http://example.com/ns"},
+        }
+        assert XPathBody.from_dict(data).to_dict() == data
+
+    def test_dispatch(self):
+        assert isinstance(_deserialize_body({"type": "XPATH", "xpath": "/a"}), XPathBody)
+
+
+class TestXmlSchemaBodyRoundTrip:
+    def test_round_trip(self):
+        data = {"type": "XML_SCHEMA", "xmlSchema": "<xs:schema/>"}
+        assert XmlSchemaBody.from_dict(data).to_dict() == data
+
+    def test_dispatch(self):
+        assert isinstance(_deserialize_body({"type": "XML_SCHEMA", "xmlSchema": "s"}), XmlSchemaBody)
+
+
+class TestJsonSchemaBodyRoundTrip:
+    def test_round_trip_object_schema(self):
+        data = {
+            "type": "JSON_SCHEMA",
+            "jsonSchema": {"type": "object", "properties": {"id": {"type": "integer"}}},
+        }
+        assert JsonSchemaBody.from_dict(data).to_dict() == data
+
+    def test_with_parameter_styles_and_flags(self):
+        data = {
+            "optional": True,
+            "type": "JSON_SCHEMA",
+            "jsonSchema": {"type": "string"},
+            "parameterStyles": {"id": "SIMPLE"},
+        }
+        assert JsonSchemaBody.from_dict(data).to_dict() == data
+
+    def test_dispatch(self):
+        body = _deserialize_body({"type": "JSON_SCHEMA", "jsonSchema": {"type": "object"}})
+        assert isinstance(body, JsonSchemaBody)
+
+
+class TestParameterBodyRoundTrip:
+    def test_round_trip(self):
+        data = {
+            "type": "PARAMETERS",
+            "parameters": [{"name": "q", "values": ["a", "b"]}],
+        }
+        assert ParameterBody.from_dict(data).to_dict() == data
+
+    def test_with_flags(self):
+        data = {
+            "not": True,
+            "optional": True,
+            "type": "PARAMETERS",
+            "parameters": [{"name": "k", "values": ["v"]}],
+        }
+        assert ParameterBody.from_dict(data).to_dict() == data
+
+    def test_dispatch(self):
+        body = _deserialize_body({"type": "PARAMETERS", "parameters": [{"name": "k", "values": ["v"]}]})
+        assert isinstance(body, ParameterBody)
+
+
+class TestMultipartBodyRoundTrip:
+    def test_round_trip_all_parts_object_map(self):
+        # Canonical server wire form: {name: [values]} object maps, NOT arrays.
+        data = {
+            "type": "MULTIPART",
+            "fields": {"field1": ["v1"]},
+            "filenames": {"file1": ["a.txt"]},
+            "partContentTypes": {"file1": ["text/plain"]},
+        }
+        assert MultipartBody.from_dict(data).to_dict() == data
+
+    def test_partial_object_map(self):
+        data = {"type": "MULTIPART", "fields": {"f": ["v"]}}
+        assert MultipartBody.from_dict(data).to_dict() == data
+
+    def test_emits_object_map_not_array(self):
+        # Wire-shape assertion: a client-built MultipartBody MUST emit the object-map
+        # form so the server's multipart deserializer reads it (an array-valued
+        # "fields" is diverted to the GraphQL handler and silently dropped).
+        body = MultipartBody(
+            fields=[KeyToMultiValue(name="f", values=["v"])],
+            filenames=[KeyToMultiValue(name="file", values=["a.txt"])],
+            part_content_types=[KeyToMultiValue(name="file", values=["text/plain"])],
+        )
+        assert body.to_dict() == {
+            "type": "MULTIPART",
+            "fields": {"f": ["v"]},
+            "filenames": {"file": ["a.txt"]},
+            "partContentTypes": {"file": ["text/plain"]},
+        }
+
+    def test_server_form_round_trip(self):
+        # from_dict(object-map wire) -> to_dict() reproduces the same object-map wire.
+        wire = {"type": "MULTIPART", "fields": {"a": ["1", "2"], "b": ["3"]}}
+        assert MultipartBody.from_dict(wire).to_dict() == wire
+
+    def test_accepts_legacy_array_form_on_read(self):
+        # from_dict tolerates the legacy array form but normalises output to the map.
+        body = MultipartBody.from_dict(
+            {"type": "MULTIPART", "fields": [{"name": "f", "values": ["v"]}]}
+        )
+        assert body.to_dict() == {"type": "MULTIPART", "fields": {"f": ["v"]}}
+
+    def test_dispatch(self):
+        assert isinstance(_deserialize_body({"type": "MULTIPART", "fields": {}}), MultipartBody)
+
+
+class TestWasmBodyRoundTrip:
+    def test_round_trip(self):
+        data = {"type": "WASM", "moduleName": "my-rule"}
+        assert WasmBody.from_dict(data).to_dict() == data
+
+    def test_with_flags(self):
+        data = {"not": True, "optional": True, "type": "WASM", "moduleName": "r"}
+        assert WasmBody.from_dict(data).to_dict() == data
+
+    def test_dispatch(self):
+        assert isinstance(_deserialize_body({"type": "WASM", "moduleName": "r"}), WasmBody)
+
+    def test_factory(self):
+        assert Body.wasm("r").to_dict() == {"type": "WASM", "moduleName": "r"}
+
+
+class TestHttpRequestNotAndProtocol:
+    def test_not_flag_round_trip(self):
+        data = {"not": True, "path": "/api"}
+        assert HttpRequest.from_dict(data).to_dict() == data
+
+    def test_protocol_round_trip(self):
+        data = {"path": "/api", "protocol": Protocol.HTTP_2}
+        assert HttpRequest.from_dict(data).to_dict() == data
+
+    def test_not_and_protocol_together(self):
+        data = {"not": True, "method": "GET", "path": "/x", "protocol": "HTTP_3"}
+        assert HttpRequest.from_dict(data).to_dict() == data
+
+
+class TestDnsRequestDefinitionRoundTrip:
+    def test_round_trip(self):
+        data = {"dnsName": "example.com", "dnsType": DnsRecordType.A, "dnsClass": DnsRecordClass.IN}
+        assert DnsRequestDefinition.from_dict(data).to_dict() == data
+
+    def test_minimal(self):
+        data = {"dnsName": "example.com"}
+        assert DnsRequestDefinition.from_dict(data).to_dict() == data
+
+    def test_factory(self):
+        rd = DnsRequestDefinition.dns_request("example.com", DnsRecordType.AAAA)
+        assert rd.to_dict() == {"dnsName": "example.com", "dnsType": "AAAA"}
+
+    def test_expectation_dispatches_dns_request(self):
+        # An expectation whose httpRequest carries dnsName must deserialize into a
+        # DnsRequestDefinition, not an HttpRequest, and survive a round-trip.
+        data = {
+            "httpRequest": {"dnsName": "example.com", "dnsType": "A"},
+            "dnsResponse": {"responseCode": "NO_ERROR"},
+        }
+        exp = Expectation.from_dict(data)
+        assert isinstance(exp.http_request, DnsRequestDefinition)
+        assert exp.to_dict() == data
+
+    def test_expectation_still_dispatches_http_request(self):
+        data = {"httpRequest": {"path": "/api"}, "httpResponse": {"statusCode": 200}}
+        exp = Expectation.from_dict(data)
+        assert isinstance(exp.http_request, HttpRequest)
+        assert exp.to_dict() == data
+
+
+class TestRateLimitRoundTrip:
+    def test_fixed_window(self):
+        data = {
+            "name": "shared",
+            "algorithm": RateLimitAlgorithm.FIXED_WINDOW,
+            "limit": 100,
+            "windowMillis": 1000,
+            "errorStatus": 429,
+            "retryAfter": "1",
+        }
+        assert RateLimit.from_dict(data).to_dict() == data
+
+    def test_token_bucket(self):
+        data = {"algorithm": "token_bucket", "burst": 10, "refillPerSecond": 2.5}
+        assert RateLimit.from_dict(data).to_dict() == data
+
+
+class TestHttpForwardWithFallbackRoundTrip:
+    def test_round_trip(self):
+        data = {
+            "httpForward": {"host": "upstream", "port": 8080},
+            "fallbackResponse": {"statusCode": 503},
+            "fallbackOnStatusCodes": [500, 502, 503],
+            "fallbackOnTimeout": True,
+        }
+        assert HttpForwardWithFallback.from_dict(data).to_dict() == data
+
+    def test_via_expectation(self):
+        data = {
+            "httpRequest": {"path": "/x"},
+            "httpForwardWithFallback": {
+                "httpForward": {"host": "h", "port": 80},
+                "fallbackResponse": {"statusCode": 500},
+                "fallbackOnTimeout": True,
+            },
+        }
+        exp = Expectation.from_dict(data)
+        assert isinstance(exp.http_forward_with_fallback, HttpForwardWithFallback)
+        assert exp.to_dict() == data
+
+
+class TestHttpForwardValidateActionRoundTrip:
+    def test_round_trip(self):
+        data = {
+            "specUrlOrPayload": "https://example.com/openapi.json",
+            "host": "upstream",
+            "port": 443,
+            "scheme": "HTTPS",
+            "validateRequest": True,
+            "validateResponse": False,
+            "validationMode": ValidationMode.STRICT,
+        }
+        assert HttpForwardValidateAction.from_dict(data).to_dict() == data
+
+    def test_via_expectation(self):
+        data = {
+            "httpRequest": {"path": "/x"},
+            "httpForwardValidateAction": {
+                "specUrlOrPayload": "spec",
+                "host": "h",
+                "validationMode": "LOG_ONLY",
+            },
+        }
+        exp = Expectation.from_dict(data)
+        assert isinstance(exp.http_forward_validate_action, HttpForwardValidateAction)
+        assert exp.to_dict() == data
+
+
+class TestCaptureRuleRoundTrip:
+    def test_round_trip(self):
+        data = {"source": CaptureSource.JSON_PATH, "expression": "$.id", "into": "orderId"}
+        assert CaptureRule.from_dict(data).to_dict() == data
+
+    def test_source_constants_are_camel_case(self):
+        assert CaptureSource.QUERY_STRING_PARAMETER == "queryStringParameter"
+        assert CaptureSource.PATH_PARAMETER == "pathParameter"
+
+
+class TestExpectationNewFieldsRoundTrip:
+    def test_namespace(self):
+        data = {"httpRequest": {"path": "/x"}, "httpResponse": {"statusCode": 200}, "namespace": "tenant-a"}
+        assert Expectation.from_dict(data).to_dict() == data
+
+    def test_rate_limit_field(self):
+        data = {
+            "httpRequest": {"path": "/x"},
+            "httpResponse": {"statusCode": 200},
+            "rateLimit": {"name": "n", "limit": 5, "windowMillis": 1000},
+        }
+        exp = Expectation.from_dict(data)
+        assert isinstance(exp.rate_limit, RateLimit)
+        assert exp.to_dict() == data
+
+    def test_capture_field(self):
+        data = {
+            "httpRequest": {"path": "/x"},
+            "httpResponse": {"statusCode": 200},
+            "capture": [
+                {"source": "jsonPath", "expression": "$.id", "into": "id"},
+                {"source": "header", "expression": "X-Trace", "into": "trace"},
+            ],
+        }
+        exp = Expectation.from_dict(data)
+        assert all(isinstance(c, CaptureRule) for c in exp.capture)
+        assert exp.to_dict() == data
+
+
+class TestExpectationKitchenSink:
+    def test_full_round_trip(self):
+        # A maximal expectation exercising every previously-dropped feature at once:
+        # request not/protocol, a PARAMETERS body matcher, chaos, rate limit, capture,
+        # namespace, cross-protocol scenarios, before/after actions, and steps.
+        data = {
+            "id": "kitchen-sink",
+            "priority": 10,
+            "percentage": 50,
+            "httpRequest": {
+                "not": True,
+                "method": "POST",
+                "path": "/orders",
+                "protocol": "HTTP_2",
+                "headers": [{"name": "X-Api", "values": ["v1"]}],
+                "body": {
+                    "type": "PARAMETERS",
+                    "parameters": [{"name": "status", "values": ["active"]}],
+                },
+            },
+            "httpResponse": {"statusCode": 201, "body": "created"},
+            "namespace": "tenant-x",
+            "rateLimit": {
+                "name": "orders",
+                "algorithm": "token_bucket",
+                "burst": 20,
+                "refillPerSecond": 5.0,
+            },
+            "chaos": {"errorStatus": 500, "errorProbability": 0.1},
+            "capture": [{"source": "jsonPath", "expression": "$.id", "into": "orderId"}],
+            "times": {"remainingTimes": 3, "unlimited": False},
+            "timeToLive": {"timeUnit": "SECONDS", "timeToLive": 60, "unlimited": False},
+            "crossProtocolScenarios": [
+                {"trigger": "HTTP_REQUEST", "scenarioName": "s", "targetState": "done"}
+            ],
+            "beforeActions": [{"httpRequest": {"path": "/warm"}}],
+            "afterActions": [{"httpRequest": {"path": "/cleanup"}}],
+        }
+        exp = Expectation.from_dict(data)
+        assert isinstance(exp.http_request.body, ParameterBody)
+        assert isinstance(exp.rate_limit, RateLimit)
+        assert exp.to_dict() == data
+
+    def test_forward_with_fallback_kitchen_sink(self):
+        data = {
+            "id": "fwd",
+            "httpRequest": {"path": "/proxy", "secure": True},
+            "httpForwardWithFallback": {
+                "httpForward": {"host": "upstream", "port": 8443, "scheme": "HTTPS"},
+                "fallbackResponse": {"statusCode": 503, "body": "unavailable"},
+                "fallbackOnStatusCodes": [500, 502, 503, 504],
+                "fallbackOnTimeout": True,
+                "delay": {"timeUnit": "MILLISECONDS", "value": 100},
+            },
+        }
+        assert Expectation.from_dict(data).to_dict() == data
