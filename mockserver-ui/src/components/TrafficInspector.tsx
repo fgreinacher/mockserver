@@ -21,6 +21,7 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
 import SaveAltIcon from '@mui/icons-material/SaveAlt';
 import ReplayIcon from '@mui/icons-material/Replay';
+import RepeatIcon from '@mui/icons-material/Repeat';
 import TerminalIcon from '@mui/icons-material/Terminal';
 import HelpOutlinedIcon from '@mui/icons-material/HelpOutlined';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
@@ -41,6 +42,7 @@ import CaptureAsMockDialog from './CaptureAsMockDialog';
 import DiffRequestsDialog from './DiffRequestsDialog';
 import ExplainUnmatchedDialog from './ExplainUnmatchedDialog';
 import PromoteRecordingsDialog from './PromoteRecordingsDialog';
+import RepeatAdvancedDialog from './RepeatAdvancedDialog';
 import OperatorSearchField from './OperatorSearchField';
 import CopyButton from './CopyButton';
 import { clearLoggedRequest, requestDefinitionOf } from '../lib/traffic';
@@ -1494,6 +1496,7 @@ interface DetailPaneProps {
   scriptedTurns: ScriptedTurn[];
   onCaptureAsMock?: () => void;
   onReplay?: () => void;
+  onRepeat?: () => void;
   /** When true, this entry matched no expectation — show mismatch-debugging actions. */
   unmatched?: boolean;
 }
@@ -1511,6 +1514,7 @@ interface DetailActionsProps {
   unmatched: boolean;
   onCaptureAsMock?: () => void;
   onReplay?: () => void;
+  onRepeat?: () => void;
 }
 
 const detailActionSx = {
@@ -1521,7 +1525,7 @@ const detailActionSx = {
   mr: 0.5,
 } as const;
 
-function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, onReplay }: DetailActionsProps) {
+function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, onReplay, onRepeat }: DetailActionsProps) {
   const debugMismatch = useDebugMismatchContext();
   const generateStub = useGenerateStubContext();
   const [curlCopied, setCurlCopied] = useState(false);
@@ -1590,6 +1594,16 @@ function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, 
           Replay
         </Button>
       )}
+      {onRepeat && (
+        <Button
+          size="small"
+          startIcon={<RepeatIcon sx={{ fontSize: '0.875rem' }} />}
+          onClick={onRepeat}
+          sx={detailActionSx}
+        >
+          Repeat…
+        </Button>
+      )}
       {canCapture && onCaptureAsMock && (
         <Button
           size="small"
@@ -1627,7 +1641,7 @@ function buildTabs(parsed: ParsedTraffic, hasScriptedTurns: boolean): string[] {
   }
 }
 
-function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, unmatched = false }: DetailPaneProps) {
+function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, onRepeat, unmatched = false }: DetailPaneProps) {
   const tabs = buildTabs(summary.parsed, scriptedTurns.length > 0);
   const [detailTab, setDetailTab] = useState(0);
   const canCapture = isCapturableTraffic(summary.parsed);
@@ -1658,6 +1672,7 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, u
             unmatched={unmatched}
             onCaptureAsMock={onCaptureAsMock}
             onReplay={onReplay}
+            onRepeat={onRepeat}
           />
         </Box>
         <Divider />
@@ -1696,6 +1711,7 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, u
           unmatched={unmatched}
           onCaptureAsMock={onCaptureAsMock}
           onReplay={onReplay}
+          onRepeat={onRepeat}
         />
       </Box>
       <Divider />
@@ -1799,6 +1815,7 @@ export default function TrafficInspector() {
 
   const [captureDialogOpen, setCaptureDialogOpen] = useState(false);
   const [replayDialogOpen, setReplayDialogOpen] = useState(false);
+  const [repeatDialogOpen, setRepeatDialogOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
   const [promoteOpen, setPromoteOpen] = useState(false);
 
@@ -2304,6 +2321,7 @@ export default function TrafficInspector() {
               scriptedTurns={scriptedTurns}
               onCaptureAsMock={() => setCaptureDialogOpen(true)}
               onReplay={() => setReplayDialogOpen(true)}
+              onRepeat={() => setRepeatDialogOpen(true)}
               unmatched={selectedEntry.unmatched}
             />
           </ErrorBoundary>
@@ -2329,6 +2347,20 @@ export default function TrafficInspector() {
           onClose={() => setReplayDialogOpen(false)}
           item={selectedEntry.item}
           connectionParams={connectionParams}
+        />
+      )}
+
+      {/* Repeat Advanced dialog — re-issue a captured request N times with a
+          bounded concurrency and inter-request delay (client-driven fan-out of
+          the single-shot replay endpoint). Mount only while open so each run
+          starts from fresh state. */}
+      {selectedEntry && repeatDialogOpen && (
+        <RepeatAdvancedDialog
+          open
+          onClose={() => setRepeatDialogOpen(false)}
+          item={selectedEntry.item}
+          connectionParams={connectionParams}
+          onViewResults={(path) => setTrafficSearch(`path:${path}`)}
         />
       )}
 

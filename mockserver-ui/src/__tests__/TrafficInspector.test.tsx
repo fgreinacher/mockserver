@@ -768,6 +768,136 @@ describe('TrafficInspector — Replay button', () => {
   });
 });
 
+describe('TrafficInspector — Repeat Advanced', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [
+        {
+          key: 'req-repeat',
+          value: {
+            httpRequest: {
+              method: 'GET',
+              path: '/api/repeat-me',
+              headers: [{ name: 'host', values: ['example.com'] }],
+            },
+            httpResponse: { statusCode: 200 },
+          },
+        },
+      ],
+      recordedRequests: [],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows a Repeat… button and opens the dialog on click', async () => {
+    const user = userEvent.setup();
+    renderTrafficInspector();
+
+    await user.click(screen.getByText(/\/api\/repeat-me/));
+
+    const repeatBtn = screen.getByRole('button', { name: /Repeat/i });
+    await user.click(repeatBtn);
+
+    expect(screen.getByText('Repeat Request')).toBeInTheDocument();
+    // Default iterations = 10, concurrency = 1, delay = 0.
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByLabelText('Iterations')).toHaveValue(10);
+    expect(within(dialog).getByLabelText('Concurrency')).toHaveValue(1);
+    expect(within(dialog).getByLabelText('Delay (ms)')).toHaveValue(0);
+  });
+
+  it('issues exactly N replay calls and reports the summary', async () => {
+    const user = userEvent.setup();
+    // A fresh Response per call — a Response body stream can only be read once.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ statusCode: 200 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+
+    renderTrafficInspector();
+    await user.click(screen.getByText(/\/api\/repeat-me/));
+    await user.click(screen.getByRole('button', { name: /Repeat/i }));
+
+    const dialog = screen.getByRole('dialog');
+    const iterationsInput = within(dialog).getByLabelText('Iterations');
+    await user.clear(iterationsInput);
+    await user.type(iterationsInput, '3');
+
+    await user.click(within(dialog).getByRole('button', { name: /Start/i }));
+
+    // Completion summary appears once all three calls settle.
+    expect(await within(dialog).findByText(/3 succeeded, 0 failed/i)).toBeInTheDocument();
+
+    const replayCalls = fetchSpy.mock.calls.filter(([url]) =>
+      typeof url === 'string' && url.includes('/mockserver/replay'),
+    );
+    expect(replayCalls).toHaveLength(3);
+    expect(replayCalls[0]![1]).toEqual(
+      expect.objectContaining({ method: 'PUT', headers: { 'Content-Type': 'application/json' } }),
+    );
+  });
+
+  it('counts failed replays and shows a warning summary', async () => {
+    const user = userEvent.setup();
+    // Every replay returns a 502 → each counts as failed.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: async () => 'Bad Gateway',
+    } as Response);
+
+    renderTrafficInspector();
+    await user.click(screen.getByText(/\/api\/repeat-me/));
+    await user.click(screen.getByRole('button', { name: /Repeat/i }));
+
+    const dialog = screen.getByRole('dialog');
+    const iterationsInput = within(dialog).getByLabelText('Iterations');
+    await user.clear(iterationsInput);
+    await user.type(iterationsInput, '2');
+
+    await user.click(within(dialog).getByRole('button', { name: /Start/i }));
+
+    expect(await within(dialog).findByText(/0 succeeded, 2 failed/i)).toBeInTheDocument();
+  });
+
+  it('View Them seeds the traffic search with the request path', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ statusCode: 200 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+
+    renderTrafficInspector();
+    await user.click(screen.getByText(/\/api\/repeat-me/));
+    await user.click(screen.getByRole('button', { name: /Repeat/i }));
+
+    const dialog = screen.getByRole('dialog');
+    const iterationsInput = within(dialog).getByLabelText('Iterations');
+    await user.clear(iterationsInput);
+    await user.type(iterationsInput, '1');
+    await user.click(within(dialog).getByRole('button', { name: /Start/i }));
+
+    const viewBtn = await within(dialog).findByRole('button', { name: /View Them/i });
+    await user.click(viewBtn);
+
+    expect(useDashboardStore.getState().trafficSearch).toBe('path:/api/repeat-me');
+  });
+});
+
 /**
  * Master/detail resize-divider tests.
  *
