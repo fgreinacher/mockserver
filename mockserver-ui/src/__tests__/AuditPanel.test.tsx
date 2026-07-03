@@ -43,15 +43,53 @@ function fixture(): AuditEntry[] {
   ];
 }
 
-/** Stub fetch to return the supplied array as a JSON body; captures the last URL. */
-const lastUrl = { value: '' };
-function stubFetch(entries: AuditEntry[]) {
-  const mock = vi.fn(async (url: string) => {
-    lastUrl.value = url;
+interface ServerOptions {
+  enabled?: boolean;
+  reads?: boolean;
+  entries?: AuditEntry[];
+  /** When set, a PUT /mockserver/configuration fails with this status + body. */
+  putFailure?: { status: number; body: string };
+}
+
+/**
+ * Stub fetch, routing by URL: GET /mockserver/configuration returns the live
+ * config (reflecting prior PUTs), PUT applies the partial to that live config,
+ * and /mockserver/audit returns the entries array. Captures the PUT bodies and
+ * per-endpoint call counts so tests can assert what the panel sent.
+ */
+function stubServer(options: ServerOptions = {}) {
+  const state: Record<string, unknown> = {
+    controlPlaneAuditEnabled: options.enabled ?? false,
+    controlPlaneAuditReads: options.reads ?? false,
+  };
+  const entries = options.entries ?? [];
+  const puts: Record<string, unknown>[] = [];
+  const auditUrls: string[] = [];
+
+  const mock = vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+    if (url.includes('/mockserver/configuration')) {
+      if (init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        puts.push(body);
+        if (options.putFailure) {
+          return {
+            ok: false,
+            status: options.putFailure.status,
+            statusText: 'Error',
+            text: async (): Promise<string> => options.putFailure!.body,
+          };
+        }
+        Object.assign(state, body);
+        return { ok: true, text: async (): Promise<string> => '' };
+      }
+      return { ok: true, json: async () => ({ ...state }) };
+    }
+    // audit endpoint
+    auditUrls.push(url);
     return { ok: true, json: async () => entries };
   });
   vi.stubGlobal('fetch', mock);
-  return mock;
+  return { mock, puts, auditUrls };
 }
 
 afterEach(() => {
@@ -62,7 +100,7 @@ afterEach(() => {
 
 describe('AuditPanel', () => {
   it('fetches on mount and renders the audit entries', async () => {
-    const mock = stubFetch(fixture());
+    const { auditUrls } = stubServer({ enabled: true, entries: fixture() });
     renderPanel();
 
     await waitFor(() => {
@@ -73,28 +111,126 @@ describe('AuditPanel', () => {
     expect(screen.getByText('FORBIDDEN')).toBeInTheDocument();
     expect(screen.getByText('admin')).toBeInTheDocument();
     // Fetched from the audit endpoint exactly once on mount.
-    expect(mock).toHaveBeenCalledTimes(1);
-    expect(lastUrl.value).toContain('/mockserver/audit');
+    expect(auditUrls).toHaveLength(1);
+    expect(auditUrls[0]).toContain('/mockserver/audit');
+  });
+
+  it('shows the On status chip when the audit trail is enabled', async () => {
+    stubServer({ enabled: true, entries: fixture() });
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText('Audit Trail: On')).toBeInTheDocument();
+    });
+    // The enabled control is a switch, not the Enable button.
+    expect(screen.queryByRole('button', { name: 'Enable Audit Trail' })).not.toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Audit trail enabled' })).toBeInTheDocument();
+  });
+
+  it('shows the Off status chip and Enable button when the audit trail is disabled', async () => {
+    stubServer({ enabled: false, entries: [] });
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText('Audit Trail: Off')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Enable Audit Trail' })).toBeInTheDocument();
+  });
+
+  it('enabling PUTs controlPlaneAuditEnabled:true and flips the chip to On', async () => {
+    const { puts } = stubServer({ enabled: false, entries: [] });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText('Audit Trail: Off')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Enable Audit Trail' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Audit Trail: On')).toBeInTheDocument();
+    });
+    expect(puts).toContainEqual({ controlPlaneAuditEnabled: true });
+    // The "recording started from now on" hint is surfaced once enabled.
+    expect(
+      screen.getByText(/Only control-plane changes made from now on appear here/i),
+    ).toBeInTheDocument();
+  });
+
+  it('turning off PUTs controlPlaneAuditEnabled:false and flips the chip to Off', async () => {
+    const { puts } = stubServer({ enabled: true, entries: [] });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText('Audit Trail: On')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('switch', { name: 'Audit trail enabled' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Audit Trail: Off')).toBeInTheDocument();
+    });
+    expect(puts).toContainEqual({ controlPlaneAuditEnabled: false });
+  });
+
+  it('the reads checkbox PUTs controlPlaneAuditReads', async () => {
+    const { puts } = stubServer({ enabled: true, reads: false, entries: [] });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText('Audit Trail: On')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('checkbox', { name: 'Also record reads' }));
+
+    await waitFor(() => {
+      expect(puts).toContainEqual({ controlPlaneAuditReads: true });
+    });
+  });
+
+  it('surfaces a failed configuration update via the error alert', async () => {
+    stubServer({
+      enabled: false,
+      entries: [],
+      putFailure: { status: 401, body: 'control-plane write forbidden' },
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Enable Audit Trail' })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Enable Audit Trail' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('control-plane write forbidden')).toBeInTheDocument();
+    });
+    // The failed write must not have flipped the status to On.
+    expect(screen.getByText('Audit Trail: Off')).toBeInTheDocument();
   });
 
   it('refetches when Refresh is clicked', async () => {
-    const mock = stubFetch(fixture());
+    const { auditUrls } = stubServer({ enabled: true, entries: fixture() });
     const user = userEvent.setup();
     renderPanel();
 
     await waitFor(() => {
       expect(screen.getByText('control-plane expectation')).toBeInTheDocument();
     });
-    expect(mock).toHaveBeenCalledTimes(1);
+    expect(auditUrls).toHaveLength(1);
 
     await user.click(screen.getByRole('button', { name: /refresh/i }));
     await waitFor(() => {
-      expect(mock).toHaveBeenCalledTimes(2);
+      expect(auditUrls).toHaveLength(2);
     });
   });
 
   it('filters entries by the search field', async () => {
-    stubFetch(fixture());
+    stubServer({ enabled: true, entries: fixture() });
     const user = userEvent.setup();
     renderPanel();
 
@@ -107,26 +243,21 @@ describe('AuditPanel', () => {
     expect(screen.getByText('control-plane clear')).toBeInTheDocument();
   });
 
-  it('explains the opt-in audit trail in the empty state when no entries are recorded', async () => {
-    stubFetch([]);
+  it('explains the opt-in audit trail in the empty state when disabled with no entries', async () => {
+    stubServer({ enabled: false, entries: [] });
     renderPanel();
 
-    // The empty state must explain that the audit trail is off by default and
-    // how to enable it — recording is gated by controlPlaneAuditEnabled, not by
-    // authentication — rather than implying activity would otherwise appear.
+    // The empty state must explain that the audit trail is off by default, point
+    // at the in-UI Enable control, and still list the startup properties.
     await waitFor(() => {
       expect(screen.getByText('No audit entries recorded.')).toBeInTheDocument();
     });
     expect(screen.getByText('controlPlaneAuditEnabled=true')).toBeInTheDocument();
-    expect(
-      screen.getByText('-Dmockserver.controlPlaneAuditEnabled=true'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('MOCKSERVER_CONTROL_PLANE_AUDIT_ENABLED=true'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('-Dmockserver.controlPlaneAuditEnabled=true')).toBeInTheDocument();
+    expect(screen.getByText('MOCKSERVER_CONTROL_PLANE_AUDIT_ENABLED=true')).toBeInTheDocument();
   });
 
-  it('surfaces the server error envelope on failure', async () => {
+  it('surfaces the server error envelope when the audit list fails to load', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
@@ -151,7 +282,9 @@ describe('AuditPanel', () => {
         ok: false,
         status: 404,
         statusText: 'Not Found',
-        json: async () => { throw new Error('no body'); },
+        json: async () => {
+          throw new Error('no body');
+        },
       })),
     );
     renderPanel();

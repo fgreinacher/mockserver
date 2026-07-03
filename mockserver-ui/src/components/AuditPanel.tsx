@@ -10,6 +10,9 @@ import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import TextField from '@mui/material/TextField';
 import InputAdornment from '@mui/material/InputAdornment';
+import Switch from '@mui/material/Switch';
+import Checkbox from '@mui/material/Checkbox';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
@@ -18,10 +21,12 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
-import { humanizeError } from '../lib/errorMessage';
+import { humanizeError, type HumanError } from '../lib/errorMessage';
 import { monospaceFontFamily } from '../theme';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
 import { fetchAuditEntries, type AuditEntry } from '../lib/audit';
+import { getConfiguration, updateConfiguration, type Configuration } from '../lib/configuration';
+import HumanErrorAlert from './HumanErrorAlert';
 
 interface AuditPanelProps {
   connectionParams: ConnectionParams;
@@ -80,29 +85,40 @@ function matchesSearch(entry: AuditEntry, needle: string): boolean {
 
 export default function AuditPanel({ connectionParams }: AuditPanelProps) {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
+  const [config, setConfig] = useState<Configuration | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<HumanError | null>(null);
   const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState('');
   const [refreshTick, setRefreshTick] = useState(0);
 
   // Fetch on mount and whenever the user hits Refresh (refreshTick) — no polling
   // (the audit trail is a control-plane history, not live traffic; the user pulls
-  // updates explicitly). The async fetch is defined inline so state is only ever
-  // set after the awaited call, never synchronously inside the effect.
+  // updates explicitly). The live configuration is fetched alongside the entries
+  // so the On/Off status is accurate even when the list is empty. Both calls run
+  // together via allSettled so a failure of one does not blank the other: a config
+  // failure still lets the (possibly empty) list render, and an audit-list failure
+  // still lets the status chip render. State is only ever set after the awaited
+  // call resolves, never synchronously inside the effect.
   useEffect(() => {
     const controller = new AbortController();
     async function load(): Promise<void> {
-      try {
-        const response = await fetchAuditEntries(connectionParams, { signal: controller.signal });
-        if (controller.signal.aborted) return;
-        setEntries(response);
-        setLoadError(null);
-      } catch (e) {
-        if (controller.signal.aborted) return;
-        setLoadError(humanizeError(e).message);
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
+      const [cfgResult, entriesResult] = await Promise.allSettled([
+        getConfiguration(connectionParams, controller.signal),
+        fetchAuditEntries(connectionParams, { signal: controller.signal }),
+      ]);
+      if (controller.signal.aborted) return;
+      if (cfgResult.status === 'fulfilled') {
+        setConfig(cfgResult.value);
       }
+      if (entriesResult.status === 'fulfilled') {
+        setEntries(entriesResult.value);
+        setLoadError(null);
+      } else {
+        setLoadError(humanizeError(entriesResult.reason).message);
+      }
+      setLoading(false);
     }
     void load();
     return () => controller.abort();
@@ -114,6 +130,30 @@ export default function AuditPanel({ connectionParams }: AuditPanelProps) {
     setLoading(true);
     setRefreshTick((t) => t + 1);
   }, []);
+
+  // Apply a single runtime-config change and, on success, refetch config +
+  // entries so the status chip flips and the list starts showing new changes.
+  // A failed PUT (e.g. control-plane auth rejecting the write) surfaces via the
+  // HumanErrorAlert rather than silently — mirrors ConfigurationDialog's apply().
+  const applyConfig = useCallback(
+    async (partial: Configuration): Promise<void> => {
+      setBusy(true);
+      setUpdateError(null);
+      try {
+        await updateConfiguration(connectionParams, partial);
+        refresh();
+      } catch (e) {
+        setUpdateError(humanizeError(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [connectionParams, refresh],
+  );
+
+  const auditEnabled = config?.['controlPlaneAuditEnabled'] === true;
+  const auditReads = config?.['controlPlaneAuditReads'] === true;
+  const configLoaded = config != null;
 
   const needle = search.trim().toLowerCase();
   const filtered = useMemo(() => {
@@ -128,6 +168,14 @@ export default function AuditPanel({ connectionParams }: AuditPanelProps) {
         <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
           Audit Trail
         </Typography>
+        {configLoaded && (
+          <Chip
+            size="small"
+            label={auditEnabled ? 'Audit Trail: On' : 'Audit Trail: Off'}
+            color={auditEnabled ? 'success' : 'default'}
+            variant={auditEnabled ? 'filled' : 'outlined'}
+          />
+        )}
         {entries && (
           <Chip
             size="small"
@@ -166,8 +214,73 @@ export default function AuditPanel({ connectionParams }: AuditPanelProps) {
 
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         The most recent control-plane changes to this server — mutations to expectations,
-        configuration, and server state. Newest first. Request headers and bodies are never recorded.
+        configuration, and server state (who changed what, and whether it was allowed). This is a
+        separate trail from the data-plane event log of received requests and responses. Newest
+        first. Request headers and bodies are never recorded.
       </Typography>
+
+      {configLoaded && (
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
+            mb: 1.5,
+            flexWrap: 'wrap',
+          }}
+        >
+          {auditEnabled ? (
+            <FormControlLabel
+              control={
+                <Switch
+                  size="small"
+                  checked
+                  disabled={busy}
+                  onChange={() => void applyConfig({ controlPlaneAuditEnabled: false })}
+                  slotProps={{ input: { 'aria-label': 'Audit trail enabled' } }}
+                />
+              }
+              label={<Typography variant="body2">Recording control-plane changes</Typography>}
+            />
+          ) : (
+            <Button
+              size="small"
+              variant="contained"
+              disabled={busy}
+              onClick={() => void applyConfig({ controlPlaneAuditEnabled: true })}
+              sx={{ textTransform: 'none' }}
+            >
+              Enable Audit Trail
+            </Button>
+          )}
+          <Tooltip
+            title="Also record read operations (e.g. GET /mockserver/expectation), not just mutations."
+            arrow
+          >
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={auditReads}
+                  disabled={busy || !auditEnabled}
+                  onChange={(e) => void applyConfig({ controlPlaneAuditReads: e.target.checked })}
+                  slotProps={{ input: { 'aria-label': 'Also record reads' } }}
+                />
+              }
+              label={<Typography variant="body2">Also record reads</Typography>}
+            />
+          </Tooltip>
+        </Box>
+      )}
+
+      {updateError && <HumanErrorAlert error={updateError} sx={{ mb: 1.5 }} />}
+
+      {auditEnabled && (
+        <Alert severity="info" sx={{ mb: 1.5 }}>
+          Recording is on. Only control-plane changes made from now on appear here — changes made
+          before enabling are not recorded.
+        </Alert>
+      )}
 
       {loadError && (
         <Alert
@@ -192,34 +305,44 @@ export default function AuditPanel({ connectionParams }: AuditPanelProps) {
         {filtered.length === 0 ? (
           entries != null && entries.length === 0 ? (
             // Genuinely-empty case. The server records entries only when the
-            // opt-in audit trail is switched on (controlPlaneAuditEnabled,
-            // off by default) — recording is independent of authentication, so
-            // the honest empty state explains how to enable it rather than
-            // implying activity would otherwise appear.
+            // audit trail is switched on (controlPlaneAuditEnabled, off by
+            // default) — recording is independent of authentication. When it is
+            // off the honest empty state points at the in-UI toggle above; when
+            // it is on it explains that only changes made since enabling appear.
             <Box sx={{ p: 2 }}>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                 No audit entries recorded.
               </Typography>
-              <Typography variant="body2" color="text.secondary">
-                The control-plane audit trail is off by default. Start MockServer with{' '}
-                <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
-                  controlPlaneAuditEnabled=true
-                </Box>{' '}
-                (system property{' '}
-                <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
-                  -Dmockserver.controlPlaneAuditEnabled=true
-                </Box>{' '}
-                or environment variable{' '}
-                <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
-                  MOCKSERVER_CONTROL_PLANE_AUDIT_ENABLED=true
-                </Box>
-                ) to record control-plane mutations — changes to expectations, configuration, and
-                server state — here. Only mutations are recorded unless{' '}
-                <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
-                  controlPlaneAuditReads=true
-                </Box>{' '}
-                is also set.
-              </Typography>
+              {auditEnabled ? (
+                <Typography variant="body2" color="text.secondary">
+                  Recording is on — make a control-plane change (register or clear an expectation,
+                  reset, or change configuration) and it will appear here.
+                </Typography>
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  The control-plane audit trail is off by default. Use{' '}
+                  <strong>Enable Audit Trail</strong> above to start recording control-plane
+                  mutations — changes to expectations, configuration, and server state — here. Only
+                  mutations are recorded unless <strong>Also record reads</strong> is ticked. Or set
+                  it at startup with{' '}
+                  <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
+                    controlPlaneAuditEnabled=true
+                  </Box>{' '}
+                  (system property{' '}
+                  <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
+                    -Dmockserver.controlPlaneAuditEnabled=true
+                  </Box>{' '}
+                  or environment variable{' '}
+                  <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
+                    MOCKSERVER_CONTROL_PLANE_AUDIT_ENABLED=true
+                  </Box>
+                  , plus{' '}
+                  <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
+                    controlPlaneAuditReads=true
+                  </Box>{' '}
+                  to include reads).
+                </Typography>
+              )}
             </Box>
           ) : (
             <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
