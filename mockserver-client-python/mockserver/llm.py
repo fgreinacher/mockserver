@@ -116,17 +116,28 @@ class Usage:
 
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Extended token accounting: prompt-cache read/write and reasoning tokens.
+    cached_input_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if self.input_tokens is not None and self.input_tokens < 0:
             raise ValueError("input_tokens must be >= 0")
         if self.output_tokens is not None and self.output_tokens < 0:
             raise ValueError("output_tokens must be >= 0")
+        for name in ("cached_input_tokens", "cache_creation_tokens", "reasoning_tokens"):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be >= 0")
 
     def to_dict(self) -> dict:
         return _strip_none({
             "inputTokens": self.input_tokens,
             "outputTokens": self.output_tokens,
+            "cachedInputTokens": self.cached_input_tokens,
+            "cacheCreationTokens": self.cache_creation_tokens,
+            "reasoningTokens": self.reasoning_tokens,
         })
 
     @classmethod
@@ -136,6 +147,9 @@ class Usage:
         return cls(
             input_tokens=data.get("inputTokens"),
             output_tokens=data.get("outputTokens"),
+            cached_input_tokens=data.get("cachedInputTokens"),
+            cache_creation_tokens=data.get("cacheCreationTokens"),
+            reasoning_tokens=data.get("reasoningTokens"),
         )
 
     def with_input_tokens(self, input_tokens: int) -> Usage:
@@ -167,6 +181,8 @@ class StreamingPhysics:
     tokens_per_second: int | None = None
     jitter: float | None = None
     seed: int | None = None
+    # Stream at sub-word (character/BPE-fragment) granularity rather than whole tokens.
+    subword_streaming: bool | None = None
 
     def __post_init__(self) -> None:
         if self.tokens_per_second is not None and not (1 <= self.tokens_per_second <= 10000):
@@ -180,6 +196,7 @@ class StreamingPhysics:
             "tokensPerSecond": self.tokens_per_second,
             "jitter": self.jitter,
             "seed": self.seed,
+            "subwordStreaming": self.subword_streaming,
         })
 
     @classmethod
@@ -191,6 +208,7 @@ class StreamingPhysics:
             tokens_per_second=data.get("tokensPerSecond"),
             jitter=data.get("jitter"),
             seed=data.get("seed"),
+            subword_streaming=data.get("subwordStreaming"),
         )
 
     def with_time_to_first_token(self, delay: Delay) -> StreamingPhysics:
@@ -347,6 +365,10 @@ class LlmChaosProfile:
     quota_error_status: int | None = None
     token_quota_limit: int | None = None
     token_quota_window_millis: int | None = None
+    # Probability [0,1] of blocking a response as a simulated content-filter hit.
+    content_filter_block_probability: float | None = None
+    # Provider-specific error flavour to synthesize (e.g. "overloaded").
+    error_kind: str | None = None
 
     def to_dict(self) -> dict:
         return _strip_none({
@@ -363,6 +385,8 @@ class LlmChaosProfile:
             "quotaErrorStatus": self.quota_error_status,
             "tokenQuotaLimit": self.token_quota_limit,
             "tokenQuotaWindowMillis": self.token_quota_window_millis,
+            "contentFilterBlockProbability": self.content_filter_block_probability,
+            "errorKind": self.error_kind,
         })
 
     @classmethod
@@ -383,6 +407,8 @@ class LlmChaosProfile:
             quota_error_status=data.get("quotaErrorStatus"),
             token_quota_limit=data.get("tokenQuotaLimit"),
             token_quota_window_millis=data.get("tokenQuotaWindowMillis"),
+            content_filter_block_probability=data.get("contentFilterBlockProbability"),
+            error_kind=data.get("errorKind"),
         )
 
 
@@ -407,6 +433,13 @@ class Completion:
     streaming_physics: StreamingPhysics | None = None
     output_schema: str | None = None
     model: str | None = None
+    # Reject a re-encoded response that violates ``output_schema`` instead of returning it.
+    enforce_output_schema: bool | None = None
+    # Force tool-calling behaviour (e.g. "auto" / "none" / "required" / a tool name).
+    tool_choice: str | None = None
+    # Extended-thinking / reasoning trace text and its provider signature.
+    reasoning_text: str | None = None
+    reasoning_signature: str | None = None
 
     def to_dict(self) -> dict:
         return _strip_none({
@@ -417,6 +450,10 @@ class Completion:
             "streaming": self.streaming,
             "streamingPhysics": self.streaming_physics.to_dict() if self.streaming_physics else None,
             "outputSchema": self.output_schema,
+            "enforceOutputSchema": self.enforce_output_schema,
+            "toolChoice": self.tool_choice,
+            "reasoningText": self.reasoning_text,
+            "reasoningSignature": self.reasoning_signature,
             "model": self.model,
         })
 
@@ -433,6 +470,10 @@ class Completion:
             streaming=data.get("streaming"),
             streaming_physics=StreamingPhysics.from_dict(data.get("streamingPhysics")),
             output_schema=data.get("outputSchema"),
+            enforce_output_schema=data.get("enforceOutputSchema"),
+            tool_choice=data.get("toolChoice"),
+            reasoning_text=data.get("reasoningText"),
+            reasoning_signature=data.get("reasoningSignature"),
             model=data.get("model"),
         )
 
@@ -564,6 +605,130 @@ class ConversationPredicates:
 
 
 # ---------------------------------------------------------------------------
+# ModerationResponse (mirrors org.mockserver.model.ModerationResponse)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ModerationResponse:
+    """A mocked moderation/classification response (flagged categories)."""
+
+    flagged_categories: list[str] | None = None
+    model: str | None = None
+
+    def to_dict(self) -> dict:
+        return _strip_none({
+            "flaggedCategories": self.flagged_categories,
+            "model": self.model,
+        })
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> ModerationResponse | None:
+        if data is None:
+            return None
+        return cls(
+            flagged_categories=data.get("flaggedCategories"),
+            model=data.get("model"),
+        )
+
+
+def moderation(
+    flagged_categories: list[str] | None = None,
+    model: str | None = None,
+) -> ModerationResponse:
+    """Factory mirroring ``ModerationResponse.moderation()``."""
+    return ModerationResponse(flagged_categories=flagged_categories, model=model)
+
+
+# ---------------------------------------------------------------------------
+# RerankResponse (mirrors org.mockserver.model.RerankResponse)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RerankResponse:
+    """A mocked rerank response (top-N document reordering, determinism)."""
+
+    top_n: int | None = None
+    deterministic_from_input: bool | None = None
+    seed: int | None = None
+
+    def to_dict(self) -> dict:
+        return _strip_none({
+            "topN": self.top_n,
+            "deterministicFromInput": self.deterministic_from_input,
+            "seed": self.seed,
+        })
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> RerankResponse | None:
+        if data is None:
+            return None
+        return cls(
+            top_n=data.get("topN"),
+            deterministic_from_input=data.get("deterministicFromInput"),
+            seed=data.get("seed"),
+        )
+
+
+def rerank(
+    top_n: int | None = None,
+    deterministic_from_input: bool | None = None,
+    seed: int | None = None,
+) -> RerankResponse:
+    """Factory mirroring ``RerankResponse.rerank()``."""
+    return RerankResponse(
+        top_n=top_n,
+        deterministic_from_input=deterministic_from_input,
+        seed=seed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# ContentFilter (mirrors org.mockserver.model.ContentFilter)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ContentFilter:
+    """Per-category content-filter severity annotations attached to a response."""
+
+    hate: str | None = None
+    sexual: str | None = None
+    violence: str | None = None
+    self_harm: str | None = None
+
+    def to_dict(self) -> dict:
+        return _strip_none({
+            "hate": self.hate,
+            "sexual": self.sexual,
+            "violence": self.violence,
+            "selfHarm": self.self_harm,
+        })
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> ContentFilter | None:
+        if data is None:
+            return None
+        return cls(
+            hate=data.get("hate"),
+            sexual=data.get("sexual"),
+            violence=data.get("violence"),
+            self_harm=data.get("selfHarm"),
+        )
+
+
+def content_filter(
+    hate: str | None = None,
+    sexual: str | None = None,
+    violence: str | None = None,
+    self_harm: str | None = None,
+) -> ContentFilter:
+    """Factory mirroring ``ContentFilter.contentFilter()``."""
+    return ContentFilter(hate=hate, sexual=sexual, violence=violence, self_harm=self_harm)
+
+
+# ---------------------------------------------------------------------------
 # HttpLlmResponse (mirrors org.mockserver.model.HttpLlmResponse)
 # ---------------------------------------------------------------------------
 
@@ -576,6 +741,9 @@ class HttpLlmResponse:
     model: str | None = None
     completion: Completion | None = None
     embedding: EmbeddingResponse | None = None
+    rerank: RerankResponse | None = None
+    moderation: ModerationResponse | None = None
+    content_filter: ContentFilter | None = None
     conversation_predicates: ConversationPredicates | None = None
     chaos: LlmChaosProfile | None = None
     delay: Delay | None = None
@@ -587,6 +755,9 @@ class HttpLlmResponse:
             "model": self.model,
             "completion": self.completion.to_dict() if self.completion else None,
             "embedding": self.embedding.to_dict() if self.embedding else None,
+            "rerank": self.rerank.to_dict() if self.rerank else None,
+            "moderation": self.moderation.to_dict() if self.moderation else None,
+            "contentFilter": self.content_filter.to_dict() if self.content_filter else None,
             "conversationPredicates": self.conversation_predicates.to_dict() if self.conversation_predicates else None,
             "chaos": self.chaos.to_dict() if self.chaos else None,
             "delay": self.delay.to_dict() if self.delay else None,
@@ -602,6 +773,9 @@ class HttpLlmResponse:
             model=data.get("model"),
             completion=Completion.from_dict(data.get("completion")),
             embedding=EmbeddingResponse.from_dict(data.get("embedding")),
+            rerank=RerankResponse.from_dict(data.get("rerank")),
+            moderation=ModerationResponse.from_dict(data.get("moderation")),
+            content_filter=ContentFilter.from_dict(data.get("contentFilter")),
             conversation_predicates=ConversationPredicates.from_dict(data.get("conversationPredicates")),
             chaos=LlmChaosProfile.from_dict(data.get("chaos")),
             delay=Delay.from_dict(data.get("delay")),

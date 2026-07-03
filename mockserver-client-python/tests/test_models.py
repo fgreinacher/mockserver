@@ -14,8 +14,10 @@ from mockserver.models import (
     DnsRecordClass,
     DnsRecordType,
     DnsRequestDefinition,
+    GraphQLBody,
     HttpForwardValidateAction,
     HttpForwardWithFallback,
+    HttpWebSocketResponse,
     JsonSchemaBody,
     MultipartBody,
     ParameterBody,
@@ -65,6 +67,8 @@ from mockserver.models import (
     Verification,
     VerificationSequence,
     VerificationTimes,
+    WebSocketFrameMatcher,
+    WebSocketMessage,
     _deserialize_body,
     _from_camel,
     _serialize_body,
@@ -4177,5 +4181,132 @@ class TestExpectationKitchenSink:
                 "fallbackOnTimeout": True,
                 "delay": {"timeUnit": "MILLISECONDS", "value": 100},
             },
+        }
+        assert Expectation.from_dict(data).to_dict() == data
+
+
+# ---------------------------------------------------------------------------
+# Round-trip fidelity fills — fields added to close the known-gaps manifest.
+# Each test asserts an exact wire-shaped round-trip (from_dict -> to_dict).
+# ---------------------------------------------------------------------------
+
+
+class TestChaosGraphqlErrors:
+    def test_graphql_error_fields_round_trip(self):
+        data = {
+            "errorProbability": 0.3,
+            "graphqlErrors": True,
+            "graphqlErrorMessage": "boom",
+            "graphqlErrorCode": "INTERNAL_SERVER_ERROR",
+            "graphqlNullifyData": False,
+        }
+        assert HttpChaosProfile.from_dict(data).to_dict() == data
+
+
+class TestGraphQLBodyMatchExtras:
+    def test_fields_and_selection_set_match_type_round_trip(self):
+        data = {
+            "type": "GRAPHQL",
+            "query": "query GetUser($id: ID!) { user(id: $id) { name } }",
+            "operationName": "GetUser",
+            "selectionSetMatchType": "AST_SUBSET",
+            "fields": ["user"],
+            "variablesSchema": "{\"type\":\"object\"}",
+        }
+        body = _deserialize_body(data)
+        assert isinstance(body, GraphQLBody)
+        assert body.fields == ["user"]
+        assert body.selection_set_match_type == "AST_SUBSET"
+        assert body.to_dict() == data
+
+    def test_schema_field_round_trip(self):
+        data = {"type": "GRAPHQL", "query": "{ hello }", "schema": "type Query { hello: String }"}
+        assert _deserialize_body(data).to_dict() == data
+
+
+class TestParameterBodyWireForms:
+    def test_object_map_form_preserved(self):
+        # MockServer's canonical emission: {name: [values]} object-map.
+        data = {
+            "type": "PARAMETERS",
+            "parameters": {"email": ["joe@example.com"], "password": ["secret"]},
+        }
+        body = ParameterBody.from_dict(data)
+        assert body.parameters_as_map is True
+        assert body.to_dict() == data
+
+    def test_array_form_preserved(self):
+        # Legacy [{name, values}] array wire form must still round-trip verbatim.
+        data = {"type": "PARAMETERS", "parameters": [{"name": "email", "values": ["a", "b"]}]}
+        body = ParameterBody.from_dict(data)
+        assert body.parameters_as_map is False
+        assert body.to_dict() == data
+
+
+class TestPathParametersSchemaMatcher:
+    def test_schema_matcher_map_round_trips(self):
+        data = {
+            "path": "/cart/{cartId}",
+            "pathParameters": {
+                "cartId": [{"schema": {"type": "string", "pattern": "^[A-Z0-9-]+$"}}],
+                "maxItemCount": [{"schema": {"type": "integer"}}],
+            },
+        }
+        req = HttpRequest.from_dict(data)
+        assert req.to_dict() == data
+
+    def test_plain_string_values_round_trip(self):
+        data = {"path": "/x/{id}", "pathParameters": {"id": ["abc"]}}
+        assert HttpRequest.from_dict(data).to_dict() == data
+
+
+class TestGrpcMessageTemplateType:
+    def test_stream_message_template_type(self):
+        data = {"json": "{\"id\":1}", "templateType": "VELOCITY", "delay": {"timeUnit": "MILLISECONDS", "value": 100}}
+        assert GrpcStreamMessage.from_dict(data).to_dict() == data
+
+    def test_bidi_rule_response_template_type(self):
+        data = {
+            "statusName": "OK",
+            "rules": [
+                {"matchJson": "{\"name\":\"world\"}", "responses": [{"json": "{\"reply\":\"hi\"}", "templateType": "MUSTACHE"}]}
+            ],
+        }
+        assert GrpcBidiResponse.from_dict(data).to_dict() == data
+
+
+class TestHttpResponseTrailers:
+    def test_trailers_round_trip(self):
+        data = {"statusCode": 200, "trailers": [{"name": "X-Trailer", "values": ["end"]}]}
+        resp = HttpResponse.from_dict({"statusCode": 200, "trailers": {"X-Trailer": ["end"]}})
+        assert resp.to_dict() == data
+
+    def test_with_trailer_builder(self):
+        resp = HttpResponse.response("ok").with_trailer("X-Checksum", "abc")
+        assert resp.to_dict()["trailers"] == [{"name": "X-Checksum", "values": ["abc"]}]
+
+
+class TestWebSocketFrameMatchers:
+    def test_matchers_round_trip(self):
+        data = {
+            "subprotocol": "chat",
+            "messages": [{"text": "hello"}],
+            "matchers": [
+                {"frameType": "TEXT", "textMatcher": "ping", "responses": [{"text": "pong"}]}
+            ],
+            "closeConnection": False,
+        }
+        resp = HttpWebSocketResponse.from_dict(data)
+        assert isinstance(resp.matchers[0], WebSocketFrameMatcher)
+        assert isinstance(resp.matchers[0].responses[0], WebSocketMessage)
+        assert resp.to_dict() == data
+
+
+class TestExpectationTimestamp:
+    def test_timestamp_round_trip(self):
+        data = {
+            "httpRequest": {"path": "/x"},
+            "httpResponse": {"body": "ok"},
+            "timestamp": "2026-07-03T12:00:00.000Z",
         }
         assert Expectation.from_dict(data).to_dict() == data

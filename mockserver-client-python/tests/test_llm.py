@@ -11,17 +11,21 @@ import pytest
 
 from mockserver.llm import (
     Completion,
+    ContentFilter,
     ConversationPredicates,
     EmbeddingResponse,
     HttpLlmResponse,
     LlmChaosProfile,
+    ModerationResponse,
     NormalizationOptions,
     Provider,
+    RerankResponse,
     Role,
     StreamingPhysics,
     ToolUse,
     Usage,
     completion,
+    content_filter,
     conversation,
     cookie,
     embedding,
@@ -29,7 +33,9 @@ from mockserver.llm import (
     llm_failover,
     llm_mock,
     llm_response,
+    moderation,
     query_parameter,
+    rerank,
     streaming_physics,
     time_to_first_token,
     tool_use,
@@ -577,3 +583,82 @@ class TestApplyTo:
             .apply_to(client)
         )
         assert len(client.upserted) == 2
+
+
+# ---------------------------------------------------------------------------
+# Round-trip fidelity fills — LLM fields added to close the known-gaps manifest.
+# ---------------------------------------------------------------------------
+
+
+class TestUsageExtendedTokens:
+    def test_cache_and_reasoning_tokens_round_trip(self):
+        data = {
+            "inputTokens": 10,
+            "outputTokens": 25,
+            "cachedInputTokens": 2,
+            "cacheCreationTokens": 3,
+            "reasoningTokens": 4,
+        }
+        assert Usage.from_dict(data).to_dict() == data
+
+    def test_negative_cache_token_rejected(self):
+        with pytest.raises(ValueError):
+            Usage(cached_input_tokens=-1)
+
+
+class TestStreamingPhysicsSubword:
+    def test_subword_streaming_round_trip(self):
+        data = {"tokensPerSecond": 50, "jitter": 0.2, "seed": 7, "subwordStreaming": True}
+        assert StreamingPhysics.from_dict(data).to_dict() == data
+
+
+class TestCompletionExtras:
+    def test_completion_extra_fields_round_trip(self):
+        data = {
+            "text": "hi",
+            "outputSchema": "{\"type\":\"object\"}",
+            "enforceOutputSchema": True,
+            "toolChoice": "auto",
+            "reasoningText": "thinking",
+            "reasoningSignature": "sig",
+        }
+        assert Completion.from_dict(data).to_dict() == data
+
+
+class TestLlmChaosExtras:
+    def test_content_filter_block_and_error_kind_round_trip(self):
+        data = {
+            "errorStatus": 429,
+            "errorProbability": 0.1,
+            "contentFilterBlockProbability": 0.2,
+            "errorKind": "overloaded",
+        }
+        assert LlmChaosProfile.from_dict(data).to_dict() == data
+
+
+class TestModerationRerankContentFilter:
+    def test_moderation_round_trip(self):
+        data = {"flaggedCategories": ["violence"], "model": "text-moderation-latest"}
+        assert ModerationResponse.from_dict(data).to_dict() == data
+        assert moderation(["violence"], "text-moderation-latest").to_dict() == data
+
+    def test_rerank_round_trip(self):
+        data = {"topN": 3, "deterministicFromInput": True, "seed": 42}
+        assert RerankResponse.from_dict(data).to_dict() == data
+        assert rerank(3, True, 42).to_dict() == data
+
+    def test_content_filter_round_trip(self):
+        data = {"hate": "low", "sexual": "safe", "violence": "medium", "selfHarm": "safe"}
+        assert ContentFilter.from_dict(data).to_dict() == data
+        assert content_filter("low", "safe", "medium", "safe").to_dict() == data
+
+    def test_http_llm_response_wires_all_three(self):
+        data = {
+            "provider": "OPENAI",
+            "model": "text-embedding-3-small",
+            "embedding": {"dimensions": 1536, "deterministicFromInput": True, "seed": 42},
+            "rerank": {"topN": 3, "deterministicFromInput": True, "seed": 42},
+            "moderation": {"flaggedCategories": ["violence"], "model": "text-moderation-latest"},
+            "contentFilter": {"hate": "low", "sexual": "safe", "violence": "medium", "selfHarm": "safe"},
+        }
+        assert HttpLlmResponse.from_dict(data).to_dict() == data

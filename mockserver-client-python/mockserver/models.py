@@ -192,6 +192,9 @@ def _deserialize_body(data: Any) -> Body | JsonRpcBody | str | dict | None:
                 query=data.get("query", ""),
                 operation_name=data.get("operationName"),
                 variables_schema=data.get("variablesSchema"),
+                selection_set_match_type=data.get("selectionSetMatchType"),
+                fields=data.get("fields"),
+                schema=data.get("schema"),
                 not_body=data.get("not", False),
                 optional=data.get("optional", False),
             )
@@ -411,6 +414,11 @@ class HttpChaosProfile:
     quota_window_millis: int | None = None
     quota_error_status: int | None = None
     degradation_ramp_millis: int | None = None
+    # GraphQL error-injection: rewrite a matched response as a GraphQL error envelope.
+    graphql_errors: bool | None = None
+    graphql_error_message: str | None = None
+    graphql_error_code: str | None = None
+    graphql_nullify_data: bool | None = None
 
     def to_dict(self) -> dict:
         return _strip_none({
@@ -433,6 +441,10 @@ class HttpChaosProfile:
             "quotaWindowMillis": self.quota_window_millis,
             "quotaErrorStatus": self.quota_error_status,
             "degradationRampMillis": self.degradation_ramp_millis,
+            "graphqlErrors": self.graphql_errors,
+            "graphqlErrorMessage": self.graphql_error_message,
+            "graphqlErrorCode": self.graphql_error_code,
+            "graphqlNullifyData": self.graphql_nullify_data,
         })
 
     @classmethod
@@ -459,6 +471,10 @@ class HttpChaosProfile:
             quota_window_millis=data.get("quotaWindowMillis"),
             quota_error_status=data.get("quotaErrorStatus"),
             degradation_ramp_millis=data.get("degradationRampMillis"),
+            graphql_errors=data.get("graphqlErrors"),
+            graphql_error_message=data.get("graphqlErrorMessage"),
+            graphql_error_code=data.get("graphqlErrorCode"),
+            graphql_nullify_data=data.get("graphqlNullifyData"),
         )
 
 
@@ -595,6 +611,12 @@ class GraphQLBody:
     query: str = ""
     operation_name: str | None = None
     variables_schema: str | None = None
+    # AST match strictness (NORMALISED_STRING / AST_EXACT / AST_SUBSET).
+    selection_set_match_type: str | None = None
+    # Restrict matching/synthesis to these top-level selection-set field names.
+    fields: list[str] | None = None
+    # SDL text or introspection JSON used to synthesize schema-valid responses.
+    schema: str | None = None
     not_body: bool = False
     optional: bool = False
 
@@ -604,6 +626,12 @@ class GraphQLBody:
             result["operationName"] = self.operation_name
         if self.variables_schema is not None:
             result["variablesSchema"] = self.variables_schema
+        if self.selection_set_match_type is not None:
+            result["selectionSetMatchType"] = self.selection_set_match_type
+        if self.fields is not None:
+            result["fields"] = self.fields
+        if self.schema is not None:
+            result["schema"] = self.schema
         if self.not_body:
             result["not"] = True
         if self.optional:
@@ -808,11 +836,15 @@ class JsonSchemaBody:
 
 @dataclass
 class ParameterBody:
-    # Serialises to {"type": "PARAMETERS", "parameters": [{"name": .., "values": [..]}]}.
-    # Matches a form-url-encoded / query body by its parameters.
+    # Matches a form-url-encoded / query body by its parameters. MockServer accepts
+    # both a {name: [values]} object-map (its canonical emission) and a
+    # [{name, values}] array wire form; ``parameters_as_map`` records which form was
+    # read so the round-trip is byte-identical. Builder-created bodies default to the
+    # array form.
     parameters: list[KeyToMultiValue] | None = None
     not_body: bool = False
     optional: bool = False
+    parameters_as_map: bool = False
 
     def to_dict(self) -> dict:
         result: dict = {}
@@ -822,17 +854,23 @@ class ParameterBody:
             result["optional"] = True
         result["type"] = "PARAMETERS"
         if self.parameters is not None:
-            result["parameters"] = _serialize_key_multi_values(self.parameters)
+            result["parameters"] = (
+                _serialize_key_multi_values_map(self.parameters)
+                if self.parameters_as_map
+                else _serialize_key_multi_values(self.parameters)
+            )
         return result
 
     @classmethod
     def from_dict(cls, data: dict) -> ParameterBody:
         if data is None:
             return None
+        raw = data.get("parameters")
         return cls(
-            parameters=_deserialize_key_multi_values(data.get("parameters")),
+            parameters=_deserialize_key_multi_values(raw),
             not_body=bool(data.get("not", False)),
             optional=bool(data.get("optional", False)),
+            parameters_as_map=isinstance(raw, dict),
         )
 
 
@@ -1099,7 +1137,12 @@ class HttpRequest:
             "secure": self.secure,
             "keepAlive": self.keep_alive,
             "respondBeforeBody": self.respond_before_body,
-            "pathParameters": _serialize_key_multi_values(self.path_parameters),
+            # pathParameters is emitted by MockServer as a {name: [values]} object-map
+            # (its canonical keyToMultiValue form). Unlike headers/queryStringParameters
+            # this map is NOT dual-encoding-normalised on comparison, and the values may
+            # be schema matchers ({"schema": {..}}) rather than plain strings, so we must
+            # preserve the object-map shape verbatim for a faithful round-trip.
+            "pathParameters": _serialize_key_multi_values_map(self.path_parameters),
             "socketAddress": self.socket_address.to_dict() if self.socket_address else None,
             "jwt": self.jwt.to_dict() if self.jwt else None,
             "protocol": self.protocol,
@@ -1328,6 +1371,8 @@ class HttpResponse:
     delay: Delay | None = None
     connection_options: ConnectionOptions | None = None
     primary: bool | None = None
+    # HTTP trailing headers (sent after the body); same keyToMultiValue shape as headers.
+    trailers: list[KeyToMultiValue] | None = None
 
     def to_dict(self) -> dict:
         return _strip_none({
@@ -1339,6 +1384,7 @@ class HttpResponse:
             "delay": self.delay.to_dict() if self.delay else None,
             "connectionOptions": self.connection_options.to_dict() if self.connection_options else None,
             "primary": self.primary,
+            "trailers": _serialize_key_multi_values(self.trailers),
         })
 
     @classmethod
@@ -1354,6 +1400,7 @@ class HttpResponse:
             delay=Delay.from_dict(data.get("delay")),
             connection_options=ConnectionOptions.from_dict(data.get("connectionOptions")),
             primary=data.get("primary"),
+            trailers=_deserialize_key_multi_values(data.get("trailers")),
         )
 
     @staticmethod
@@ -1400,6 +1447,12 @@ class HttpResponse:
 
     def with_reason_phrase(self, reason_phrase: str) -> HttpResponse:
         self.reason_phrase = reason_phrase
+        return self
+
+    def with_trailer(self, name: str, *values: str) -> HttpResponse:
+        if self.trailers is None:
+            self.trailers = []
+        self.trailers.append(KeyToMultiValue(name=name, values=list(values)))
         return self
 
 
@@ -1676,9 +1729,45 @@ class WebSocketMessage:
 
 
 @dataclass
+class WebSocketFrameMatcher:
+    """A per-incoming-frame response rule: when an inbound frame matches, its
+    ``responses`` are sent. Mirrors the ``matchers`` items of a WebSocket response.
+    """
+
+    frame_type: str | None = None
+    text_matcher: str | None = None
+    responses: list[WebSocketMessage] | None = None
+
+    def to_dict(self) -> dict:
+        result: dict = {}
+        if self.frame_type is not None:
+            result["frameType"] = self.frame_type
+        if self.text_matcher is not None:
+            result["textMatcher"] = self.text_matcher
+        if self.responses is not None:
+            result["responses"] = [r.to_dict() if hasattr(r, 'to_dict') else r for r in self.responses]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> WebSocketFrameMatcher:
+        if data is None:
+            return None
+        responses_data = data.get("responses")
+        responses = None
+        if responses_data is not None:
+            responses = [WebSocketMessage.from_dict(r) if isinstance(r, dict) else r for r in responses_data]
+        return cls(
+            frame_type=data.get("frameType"),
+            text_matcher=data.get("textMatcher"),
+            responses=responses,
+        )
+
+
+@dataclass
 class HttpWebSocketResponse:
     subprotocol: str | None = None
     messages: list[WebSocketMessage] | None = None
+    matchers: list[WebSocketFrameMatcher] | None = None
     close_connection: bool | None = None
     delay: Delay | None = None
     primary: bool | None = None
@@ -1689,6 +1778,8 @@ class HttpWebSocketResponse:
             result["subprotocol"] = self.subprotocol
         if self.messages is not None:
             result["messages"] = [m.to_dict() if hasattr(m, 'to_dict') else m for m in self.messages]
+        if self.matchers is not None:
+            result["matchers"] = [m.to_dict() if hasattr(m, 'to_dict') else m for m in self.matchers]
         if self.close_connection is not None:
             result["closeConnection"] = self.close_connection
         if self.delay is not None:
@@ -1705,9 +1796,14 @@ class HttpWebSocketResponse:
         messages = None
         if messages_data is not None:
             messages = [WebSocketMessage.from_dict(m) if isinstance(m, dict) else m for m in messages_data]
+        matchers_data = data.get("matchers")
+        matchers = None
+        if matchers_data is not None:
+            matchers = [WebSocketFrameMatcher.from_dict(m) if isinstance(m, dict) else m for m in matchers_data]
         return cls(
             subprotocol=data.get("subprotocol"),
             messages=messages,
+            matchers=matchers,
             close_connection=data.get("closeConnection"),
             delay=Delay.from_dict(data.get("delay")),
             primary=data.get("primary"),
@@ -1718,11 +1814,15 @@ class HttpWebSocketResponse:
 class GrpcStreamMessage:
     json: str | None = None
     delay: Delay | None = None
+    # Template engine for the message JSON (VELOCITY / JAVASCRIPT / MUSTACHE).
+    template_type: str | None = None
 
     def to_dict(self) -> dict:
         result: dict = {}
         if self.json is not None:
             result["json"] = self.json
+        if self.template_type is not None:
+            result["templateType"] = self.template_type
         if self.delay is not None:
             result["delay"] = self.delay.to_dict()
         return result
@@ -1734,6 +1834,7 @@ class GrpcStreamMessage:
         return cls(
             json=data.get("json"),
             delay=Delay.from_dict(data.get("delay")),
+            template_type=data.get("templateType"),
         )
 
 
@@ -2510,6 +2611,8 @@ class Expectation:
     scenario_name: str | None = None
     scenario_state: str | None = None
     new_scenario_state: str | None = None
+    # Server-assigned creation timestamp (ISO-8601), echoed back on retrieval.
+    timestamp: str | None = None
 
     def to_dict(self) -> dict:
         return _strip_none({
@@ -2553,6 +2656,7 @@ class Expectation:
             "scenarioName": self.scenario_name,
             "scenarioState": self.scenario_state,
             "newScenarioState": self.new_scenario_state,
+            "timestamp": self.timestamp,
         })
 
     @classmethod
@@ -2606,6 +2710,7 @@ class Expectation:
             scenario_name=data.get("scenarioName"),
             scenario_state=data.get("scenarioState"),
             new_scenario_state=data.get("newScenarioState"),
+            timestamp=data.get("timestamp"),
         )
 
 
