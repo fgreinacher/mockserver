@@ -923,7 +923,10 @@ fn test_expectation_template_roundtrip() {
         }
     }"#;
     let exp: Expectation = serde_json::from_str(json_str).unwrap();
-    assert_eq!(exp.http_request.path, Some("/api".to_string()));
+    assert_eq!(
+        exp.http_request.as_ref().unwrap().path,
+        Some("/api".to_string())
+    );
     let tmpl = exp.http_response_template.unwrap();
     assert_eq!(tmpl.template_type, Some("VELOCITY".to_string()));
     assert_eq!(tmpl.template, Some("body here".to_string()));

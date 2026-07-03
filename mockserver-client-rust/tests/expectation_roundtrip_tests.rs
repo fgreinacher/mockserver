@@ -335,7 +335,7 @@ fn request_new_fields_round_trip() {
             "httpResponse": { "statusCode": 200 }
         }"#,
     );
-    let req = &exp.http_request;
+    let req = exp.http_request.as_ref().unwrap();
     assert_eq!(req.secure, Some(true));
     assert_eq!(req.not, Some(true));
     assert_eq!(req.protocol.as_deref(), Some("HTTP_2"));
@@ -552,4 +552,196 @@ fn kitchen_sink_expectation_round_trips() {
             "unknownFutureKnob": { "keep": "me" }
         }"#,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Fidelity-manifest gap closures (previously excused in known-gaps.json → rust)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn path_parameters_schema_matcher_form_round_trips() {
+    // The schema-matcher wire form: each value is a list of matcher objects
+    // (`[{ "schema": { … } }]`) rather than plain strings. Previously this
+    // hard-failed deserialisation of the whole expectation.
+    let exp = round_trip_expectation(
+        r#"{
+            "httpRequest": {
+                "path": "/cart/{cartId}/{maxItemCount}",
+                "pathParameters": {
+                    "cartId": [ { "schema": { "type": "string", "pattern": "^[A-Z0-9-]+$" } } ],
+                    "maxItemCount": [ { "schema": { "type": "integer" } } ]
+                }
+            },
+            "httpResponse": { "body": "ok" }
+        }"#,
+    );
+    let params = exp
+        .http_request
+        .as_ref()
+        .unwrap()
+        .path_parameters
+        .as_ref()
+        .unwrap();
+    assert!(matches!(
+        params.get("cartId"),
+        Some(ParameterValues::Matcher(_))
+    ));
+}
+
+#[test]
+fn path_parameters_plain_form_round_trips() {
+    let exp = round_trip_expectation(
+        r#"{
+            "httpRequest": { "path": "/users/{id}", "pathParameters": { "id": ["42", "^\\d+$"] } },
+            "httpResponse": { "statusCode": 200 }
+        }"#,
+    );
+    assert_eq!(
+        exp.http_request
+            .as_ref()
+            .unwrap()
+            .path_parameters
+            .as_ref()
+            .unwrap()
+            .get("id")
+            .and_then(ParameterValues::as_values),
+        Some(["42".to_string(), "^\\d+$".to_string()].as_slice())
+    );
+}
+
+#[test]
+fn steps_only_expectation_without_request_round_trips() {
+    // A steps-only expectation carries no top-level httpRequest; it must not be
+    // synthesised as `{}` on the way back out.
+    let exp = round_trip_expectation(
+        r#"{
+            "steps": [
+                {
+                    "httpRequest": { "path": "/step1", "method": "POST" },
+                    "blocking": true,
+                    "delay": { "timeUnit": "MILLISECONDS", "value": 5 },
+                    "timeout": { "timeUnit": "SECONDS", "value": 2 },
+                    "failurePolicy": "FAIL_FAST"
+                },
+                { "httpResponse": { "statusCode": 200, "body": "done" }, "responder": true },
+                { "httpClassCallback": { "callbackClass": "org.mockserver.examples.StepCallback" }, "failurePolicy": "BEST_EFFORT" }
+            ]
+        }"#,
+    );
+    assert!(exp.http_request.is_none());
+    assert_eq!(exp.steps.as_ref().unwrap().len(), 3);
+}
+
+#[test]
+fn explicit_empty_request_still_serialises() {
+    // An explicitly-set empty request (match-all) must still serialise as `{}`,
+    // distinguishing it from an absent request.
+    let exp = Expectation::new(HttpRequest::new());
+    let out = serde_json::to_value(&exp).unwrap();
+    assert_eq!(out["httpRequest"], json!({}));
+}
+
+#[test]
+fn http_error_delay_round_trips() {
+    let exp = round_trip_expectation(
+        r#"{
+            "httpRequest": { "path": "/err" },
+            "httpError": {
+                "responseBytes": "SGVsbG8gV29ybGQh",
+                "delay": { "timeUnit": "MILLISECONDS", "value": 20 }
+            }
+        }"#,
+    );
+    assert_eq!(exp.http_error.unwrap().delay.unwrap().value, 20);
+}
+
+#[test]
+fn http_forward_delay_round_trips() {
+    let exp = round_trip_expectation(
+        r#"{
+            "httpRequest": { "path": "/fwd" },
+            "httpForward": {
+                "scheme": "HTTPS",
+                "host": "backend.example.com",
+                "port": 443,
+                "delay": { "timeUnit": "MILLISECONDS", "value": 10 }
+            }
+        }"#,
+    );
+    assert_eq!(exp.http_forward.unwrap().delay.unwrap().value, 10);
+}
+
+#[test]
+fn grpc_stream_message_template_type_round_trips() {
+    let exp = round_trip_expectation(
+        r#"{
+            "httpRequest": { "path": "/grpc/StreamMethod" },
+            "grpcStreamResponse": {
+                "statusName": "OK",
+                "messages": [
+                    { "json": "{\"id\":1}" },
+                    { "json": "{\"id\":2}", "templateType": "VELOCITY", "delay": { "timeUnit": "MILLISECONDS", "value": 100 } }
+                ]
+            }
+        }"#,
+    );
+    let msgs = exp.grpc_stream_response.unwrap().messages.unwrap();
+    assert_eq!(msgs[1].template_type.as_deref(), Some("VELOCITY"));
+}
+
+#[test]
+fn body_matcher_not_optional_round_trips() {
+    // A REGEX (or other single-value) matcher carrying `not`/`optional` must not
+    // drop those flags — it falls through to the verbatim Object representation.
+    let body = round_trip_body(json!({
+        "type": "REGEX",
+        "regex": "starts_with_.*",
+        "not": true,
+        "optional": true
+    }));
+    assert!(matches!(body, Body::Object(_)));
+
+    // The bare two-key matcher still uses the dedicated Matcher variant.
+    let bare = round_trip_body(json!({ "type": "REGEX", "regex": "abc" }));
+    assert!(matches!(bare, Body::Matcher { .. }));
+}
+
+#[test]
+fn websocket_matchers_round_trip() {
+    let exp = round_trip_expectation(
+        r#"{
+            "httpRequest": { "path": "/ws/echo" },
+            "httpWebSocketResponse": {
+                "subprotocol": "chat",
+                "messages": [
+                    { "text": "hello" },
+                    { "binary": "AQID", "delay": { "timeUnit": "MILLISECONDS", "value": 5 } }
+                ],
+                "matchers": [
+                    { "frameType": "TEXT", "textMatcher": "ping", "responses": [ { "text": "pong" } ] }
+                ],
+                "closeConnection": false
+            }
+        }"#,
+    );
+    let matchers = exp.http_web_socket_response.unwrap().matchers.unwrap();
+    assert_eq!(matchers[0].frame_type.as_deref(), Some("TEXT"));
+    assert_eq!(matchers[0].text_matcher.as_deref(), Some("ping"));
+    assert_eq!(
+        matchers[0].responses.as_ref().unwrap()[0].text.as_deref(),
+        Some("pong")
+    );
+}
+
+#[test]
+fn websocket_matcher_builder_round_trips() {
+    let ws = HttpWebSocketResponse::new().subprotocol("chat").matcher(
+        WebSocketMatcher::new()
+            .frame_type("TEXT")
+            .text_matcher("ping")
+            .response(WebSocketMessage::text("pong")),
+    );
+    let out = serde_json::to_value(&ws).unwrap();
+    let back: HttpWebSocketResponse = serde_json::from_value(out).unwrap();
+    assert_eq!(back, ws);
 }

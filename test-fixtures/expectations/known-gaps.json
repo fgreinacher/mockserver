@@ -34,15 +34,7 @@
   "go": [
     "httpRequest.pathParameters"
   ],
-  "rust": [
-    "<unrepresentable-expectation>",
-    "grpcStreamResponse.messages.*.templateType",
-    "httpError.delay",
-    "httpForward.delay",
-    "httpRequest.body.not",
-    "httpRequest.body.optional",
-    "httpWebSocketResponse.matchers"
-  ],
+  "rust": [],
   "dotnet": [],
   "node": [],
   "php": []

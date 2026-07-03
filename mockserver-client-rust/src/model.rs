@@ -38,6 +38,49 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// ParameterValues
+// ---------------------------------------------------------------------------
+
+/// The value of a single key in a MockServer keyToMultiValue matcher (path
+/// parameters, and in general query-string parameters / headers).
+///
+/// MockServer accepts two wire encodings for a key's value:
+///   * the **plain** form — a list of exact-or-regex strings (`["42", "^\\d+$"]`),
+///     modelled by [`Values`](Self::Values); and
+///   * the **schema-matcher** form — a list of matcher objects
+///     (`[{ "schema": { … } }]`, `[{ "not": true, "value": "x" }]`), or the
+///     `{ "parameterStyle": …, "values": [ … ] }` object form — captured verbatim
+///     by [`Matcher`](Self::Matcher) so no field is dropped on a round-trip.
+///
+/// The enum is `#[serde(untagged)]`: the plain string-array form deserialises to
+/// [`Values`](Self::Values); anything else (a matcher-object array, an object, or
+/// even a bare string) falls through to [`Matcher`](Self::Matcher).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ParameterValues {
+    /// Plain multi-value form: a list of exact-or-regex string values.
+    Values(Vec<String>),
+    /// Schema / nottable / optional / parameter-style matcher form, kept verbatim.
+    Matcher(serde_json::Value),
+}
+
+impl ParameterValues {
+    /// Borrow the plain string values, if this is the [`Values`](Self::Values) form.
+    pub fn as_values(&self) -> Option<&[String]> {
+        match self {
+            ParameterValues::Values(v) => Some(v),
+            ParameterValues::Matcher(_) => None,
+        }
+    }
+}
+
+impl From<Vec<String>> for ParameterValues {
+    fn from(values: Vec<String>) -> Self {
+        ParameterValues::Values(values)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HttpRequest
 // ---------------------------------------------------------------------------
 
@@ -95,8 +138,11 @@ pub struct HttpRequest {
     pub protocol: Option<String>,
 
     /// Path parameters (`/users/{id}` style), multiple values per key.
+    ///
+    /// Each key's value is a [`ParameterValues`], accepting both the plain
+    /// string-list form and the schema/nottable matcher form.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub path_parameters: Option<HashMap<String, Vec<String>>>,
+    pub path_parameters: Option<HashMap<String, ParameterValues>>,
 
     /// Cookies to match (single value per name).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -234,10 +280,22 @@ impl HttpRequest {
         self
     }
 
-    /// Add a path parameter (multiple values per key supported).
+    /// Add a plain path parameter value (multiple values per key supported).
+    ///
+    /// For schema/nottable matcher forms, set [`path_parameters`](Self::path_parameters)
+    /// directly with a [`ParameterValues::Matcher`].
     pub fn path_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let params = self.path_parameters.get_or_insert_with(HashMap::new);
-        params.entry(key.into()).or_default().push(value.into());
+        match params
+            .entry(key.into())
+            .or_insert_with(|| ParameterValues::Values(Vec::new()))
+        {
+            ParameterValues::Values(v) => v.push(value.into()),
+            ParameterValues::Matcher(_) => {
+                // Existing entry is a verbatim matcher form; leave it untouched
+                // rather than silently coercing it to a plain value.
+            }
+        }
         self
     }
 
@@ -589,7 +647,13 @@ impl<'de> Deserialize<'de> for Body {
                         .map_err(serde::de::Error::custom)?
                         .unwrap_or_default();
                     Ok(Body::AllOf(bodies))
-                } else if let Some((value_key, value)) = matcher_key_value(&body_type, &map) {
+                } else if map.len() == 2 && matcher_key_value(&body_type, &map).is_some() {
+                    // Only the bare `{ "type": <T>, <valueKey>: <v> }` shape uses
+                    // the dedicated Matcher variant. A matcher carrying extra keys
+                    // (not, optional, matchType, contentType, …) falls through to
+                    // the verbatim Object variant so those fields are not dropped.
+                    let (value_key, value) = matcher_key_value(&body_type, &map)
+                        .expect("matcher_key_value checked above");
                     Ok(Body::Matcher {
                         body_type,
                         value_key,
@@ -960,6 +1024,10 @@ pub struct HttpForward {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scheme: Option<String>,
+
+    /// Delay applied before the request is forwarded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
 }
 
 impl HttpForward {
@@ -969,12 +1037,19 @@ impl HttpForward {
             host: host.into(),
             port: Some(port),
             scheme: None,
+            delay: None,
         }
     }
 
     /// Set the scheme (HTTP or HTTPS).
     pub fn scheme(mut self, scheme: impl Into<String>) -> Self {
         self.scheme = Some(scheme.into());
+        self
+    }
+
+    /// Set a delay applied before the request is forwarded.
+    pub fn delay(mut self, delay: Delay) -> Self {
+        self.delay = Some(delay);
         self
     }
 }
@@ -1107,6 +1182,10 @@ pub struct HttpError {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_bytes: Option<String>,
+
+    /// Delay applied before the error is returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
 }
 
 impl HttpError {
@@ -1124,6 +1203,12 @@ impl HttpError {
     /// Send arbitrary bytes then close.
     pub fn response_bytes(mut self, bytes: impl Into<String>) -> Self {
         self.response_bytes = Some(bytes.into());
+        self
+    }
+
+    /// Set a delay applied before the error is returned.
+    pub fn delay(mut self, delay: Delay) -> Self {
+        self.delay = Some(delay);
         self
     }
 }
@@ -1324,6 +1409,63 @@ impl WebSocketMessage {
     }
 }
 
+/// A per-incoming-frame response rule inside an [`HttpWebSocketResponse::matchers`].
+///
+/// When an incoming WebSocket frame matches this rule (by `frame_type` and/or
+/// `text_matcher`), the paired [`responses`](Self::responses) are sent back.
+/// Unknown fields are captured in [`extra`](Self::extra) so the shape round-trips
+/// without loss.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketMatcher {
+    /// Frame type to match: `"TEXT"`, `"BINARY"`, `"PING"`, `"PONG"` or `"ANY"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_type: Option<String>,
+
+    /// Exact-or-regex matcher applied to a text frame's payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_matcher: Option<String>,
+
+    /// Messages sent in reply when an incoming frame matches this rule.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub responses: Option<Vec<WebSocketMessage>>,
+
+    /// Forward-compatibility catch-all for matcher fields not yet named.
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl WebSocketMatcher {
+    /// Create a new empty matcher rule.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the frame type to match (`"TEXT"`, `"BINARY"`, `"PING"`, `"PONG"`, `"ANY"`).
+    pub fn frame_type(mut self, frame_type: impl Into<String>) -> Self {
+        self.frame_type = Some(frame_type.into());
+        self
+    }
+
+    /// Set an exact-or-regex matcher for a text frame's payload.
+    pub fn text_matcher(mut self, text_matcher: impl Into<String>) -> Self {
+        self.text_matcher = Some(text_matcher.into());
+        self
+    }
+
+    /// Append a reply message sent when an incoming frame matches this rule.
+    pub fn response(mut self, response: WebSocketMessage) -> Self {
+        self.responses.get_or_insert_with(Vec::new).push(response);
+        self
+    }
+
+    /// Replace all reply messages.
+    pub fn responses(mut self, responses: Vec<WebSocketMessage>) -> Self {
+        self.responses = Some(responses);
+        self
+    }
+}
+
 /// Builder for a WebSocket streaming response action.
 ///
 /// Serialized as the `httpWebSocketResponse` action in an expectation.
@@ -1347,6 +1489,11 @@ pub struct HttpWebSocketResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub messages: Option<Vec<WebSocketMessage>>,
 
+    /// Per-incoming-frame response rules; when set, an incoming frame matching a
+    /// rule triggers that rule's `responses`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matchers: Option<Vec<WebSocketMatcher>>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_connection: Option<bool>,
 
@@ -1358,6 +1505,18 @@ impl HttpWebSocketResponse {
     /// Create a new empty WebSocket response.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Append an incoming-frame matcher rule.
+    pub fn matcher(mut self, matcher: WebSocketMatcher) -> Self {
+        self.matchers.get_or_insert_with(Vec::new).push(matcher);
+        self
+    }
+
+    /// Replace all incoming-frame matcher rules.
+    pub fn matchers(mut self, matchers: Vec<WebSocketMatcher>) -> Self {
+        self.matchers = Some(matchers);
+        self
     }
 
     /// Set the negotiated subprotocol.
@@ -1651,6 +1810,11 @@ pub struct GrpcStreamMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub json: Option<String>,
 
+    /// Template engine used to render the message (`"VELOCITY"`, `"JAVASCRIPT"`
+    /// or `"MUSTACHE"`); when unset the `json` is sent verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_type: Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<Delay>,
 }
@@ -1660,8 +1824,15 @@ impl GrpcStreamMessage {
     pub fn json(json: impl Into<String>) -> Self {
         Self {
             json: Some(json.into()),
+            template_type: None,
             delay: None,
         }
+    }
+
+    /// Set the template engine used to render this message.
+    pub fn template_type(mut self, template_type: impl Into<String>) -> Self {
+        self.template_type = Some(template_type.into());
+        self
     }
 
     /// Set a delay before this message is sent.
@@ -2880,7 +3051,11 @@ pub struct Expectation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<RateLimit>,
 
-    pub http_request: HttpRequest,
+    /// Request matcher. Optional because a `steps`-only (or side-effect-only)
+    /// expectation carries no top-level request. Omitted from the wire form when
+    /// `None`; an explicitly empty [`HttpRequest`] still serialises as `{}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_request: Option<HttpRequest>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_response: Option<HttpResponse>,
@@ -3036,7 +3211,7 @@ impl Expectation {
     /// Create a new expectation with the given request matcher.
     pub fn new(request: HttpRequest) -> Self {
         Self {
-            http_request: request,
+            http_request: Some(request),
             ..Default::default()
         }
     }
