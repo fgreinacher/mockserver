@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Every client library now round-trips the full expectation model, proven by a shared fidelity harness.** The
+  Go, Rust, C#, Python, Ruby, and Node clients gained typed support for every expectation feature they previously
+  dropped silently — chaos profiles, rate limits, forward-with-fallback and forward-validate actions, gRPC bidi
+  responses, before/after actions, steps, capture rules, namespaces, LLM response payloads including moderation,
+  rerank, and content filters, WebSocket frame matchers, response trailers, DNS matchers, and all body matcher
+  variants. Forty-four server-validated kitchen-sink fixtures now run as round-trip tests inside each client's own
+  test suite, with a ratcheting known-gaps ledger that fails CI if a documented gap silently regresses or a fixed
+  gap is still excused.
+- **Dashboard: JWT and all-of body matchers are now authorable in the composer.** The Advanced request form gains a
+  JWT section (claims, issuer, audience, algorithm) and an all-of body matcher composing multiple sub-matchers,
+  emitted in the exact server wire format and round-tripping on edit.
+- **Dashboard: the Java code tab is now complete and type-safe.** Generated Java uses the real client API for
+  priority, times, and time-to-live, scenario bindings, namespaces, and capture rules — proven by compiling a
+  kitchen-sink snippet against the built client — and the Java client gains matching withNamespace and withCapture
+  fluent methods. Actions the Java builder preview cannot represent show an honest notice instead of fabricated code.
 
 - **Dashboard: every captured flow is now a launchpad.** A "Create From This" menu on traffic detail panes and
   log rows fans out into every subsystem pre-filled from that flow — create a mock in the composer, set a
@@ -47,6 +62,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directly. The audit view explains the opt-in audit trail (and the demo enables it).
 
 ### Fixed
+- **Generated Go code now compiles.** All Go code generators — the dashboard expectation, verification, and
+  load-scenario tabs, the retrieve-as-Go endpoint, and the website examples — emitted the client import without its
+  /v7 semantic-import-versioning suffix, so generated code never resolved against the published module.
+- **.NET client: reading an object-callback expectation back from the server no longer throws.** The
+  responseCallback field was typed as a string while the server emits a boolean, losing the whole expectation.
+- **Python client: multipart body field matchers no longer vanish on registration.** Multipart fields were emitted
+  in an array form the server misroutes; they now use the server's canonical object form.
+- **Dashboard: editing a mock no longer shows phantom changes.** An untouched edit round-trips to a zero diff — the
+  explicit default forms of priority, times, and timeToLive are preserved instead of appearing as removals, and a
+  genuine reset shows the explicit unlimited form.
+- **Dashboard: the Promote to Mocks button no longer wraps in a narrow traffic pane.**
 
 - **Dashboard: editing an expectation no longer silently strips fields the form does not model.** The composer
   now merges its form output onto the original expectation JSON, preserving scenario bindings, namespaces,
