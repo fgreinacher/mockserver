@@ -26,13 +26,6 @@ export const ALL_VIEWS: readonly ViewMode[] = [
 
 const VIEW_STORAGE_KEY = 'mockserver-view';
 const SEARCH_STORAGE_KEY = 'mockserver-search';
-const RECENT_VIEWS_STORAGE_KEY = 'mockserver-recent-views';
-
-/**
- * How many most-recently-used views the AppBar surfaces as direct, single-click
- * tabs. Kept small so the nav bar stays uncluttered.
- */
-export const MAX_RECENT_VIEWS = 3;
 
 /**
  * Coerce an arbitrary string into a valid ViewMode, applying legacy migrations.
@@ -123,53 +116,6 @@ function getInitialSearch(): PersistedSearch {
 /** Persist the current set of per-panel search/filter terms to localStorage. */
 function persistSearch(search: PersistedSearch): void {
   try { globalThis.localStorage?.setItem(SEARCH_STORAGE_KEY, JSON.stringify(search)); } catch { /* noop */ }
-}
-
-/**
- * Compute the next most-recently-used list after visiting {@link view}: the new
- * view moved to the front, any earlier occurrence removed (dedupe), the list
- * capped at {@link MAX_RECENT_VIEWS}, and 'get-started' never tracked (it is the
- * onboarding landing view, not a destination the user returns to). Pure so the
- * dedupe/cap logic is unit-testable and reused by both setView and restore.
- */
-export function nextRecentViews(current: readonly ViewMode[], view: ViewMode): ViewMode[] {
-  if (view === 'get-started') return [...current];
-  return [view, ...current.filter((v) => v !== view)].slice(0, MAX_RECENT_VIEWS);
-}
-
-/**
- * Restore the persisted recent-views list. Each entry is re-validated through
- * coerceView (applying legacy migrations), 'get-started' is dropped, duplicates
- * are collapsed, and the result is capped — so a stale or hand-edited value can
- * never poison the nav. Defaults to an empty list.
- */
-function getInitialRecentViews(): ViewMode[] {
-  try {
-    const raw = globalThis.localStorage?.getItem(RECENT_VIEWS_STORAGE_KEY);
-    if (raw) {
-      const parsed: unknown = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        const seen = new Set<ViewMode>();
-        const result: ViewMode[] = [];
-        for (const entry of parsed) {
-          const coerced = typeof entry === 'string' ? coerceView(entry) : null;
-          if (coerced && coerced !== 'get-started' && !seen.has(coerced)) {
-            seen.add(coerced);
-            result.push(coerced);
-          }
-        }
-        return result.slice(0, MAX_RECENT_VIEWS);
-      }
-    }
-  } catch {
-    // unavailable or malformed — fall through to empty default
-  }
-  return [];
-}
-
-/** Persist the current recent-views list to localStorage. */
-function persistRecentViews(views: readonly ViewMode[]): void {
-  try { globalThis.localStorage?.setItem(RECENT_VIEWS_STORAGE_KEY, JSON.stringify(views)); } catch { /* noop */ }
 }
 
 /**
@@ -300,12 +246,6 @@ interface DashboardState {
   proxiedRequests: JsonListItem[];
 
   view: ViewMode;
-  /**
-   * The most-recently-used views, newest first, deduped and capped at
-   * {@link MAX_RECENT_VIEWS}, excluding 'get-started'. Surfaced by the AppBar as
-   * direct single-click tabs and persisted across reloads.
-   */
-  recentViews: ViewMode[];
   requestFilter: RequestFilter;
   filterEnabled: boolean;
   filterExpanded: boolean;
@@ -458,7 +398,6 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
   // Restore the last-used view (URL hash wins over localStorage); a genuine
   // first visit with nothing persisted falls back to 'get-started'.
   view: getInitialView(),
-  recentViews: getInitialRecentViews(),
   requestFilter: {},
   filterEnabled: false,
   filterExpanded: false,
@@ -595,11 +534,7 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
   setView: (view) => {
     const resolved = VIEW_MIGRATION[view as string] ?? view;
     persistView(resolved);
-    set((s) => {
-      const recentViews = nextRecentViews(s.recentViews, resolved);
-      persistRecentViews(recentViews);
-      return { view: resolved, selectedTrafficKey: null, recentViews };
-    });
+    set({ view: resolved, selectedTrafficKey: null });
   },
   setRequestFilter: (filter) => set({ requestFilter: filter }),
   setFilterEnabled: (enabled) => set({ filterEnabled: enabled }),
@@ -645,38 +580,22 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
   setSelectedTrafficKey: (key) => set({ selectedTrafficKey: key }),
   editExpectation: (expectation) => {
     persistView('composer');
-    set((s) => {
-      const recentViews = nextRecentViews(s.recentViews, 'composer');
-      persistRecentViews(recentViews);
-      return { pendingEditExpectation: expectation, view: 'composer' as ViewMode, selectedTrafficKey: null, recentViews };
-    });
+    set({ pendingEditExpectation: expectation, view: 'composer' as ViewMode, selectedTrafficKey: null });
   },
   clearPendingEditExpectation: () => set({ pendingEditExpectation: null }),
   setBreakpointPrefill: (prefill) => {
     persistView('breakpoints');
-    set((s) => {
-      const recentViews = nextRecentViews(s.recentViews, 'breakpoints');
-      persistRecentViews(recentViews);
-      return { pendingBreakpointPrefill: prefill, view: 'breakpoints' as ViewMode, selectedTrafficKey: null, recentViews };
-    });
+    set({ pendingBreakpointPrefill: prefill, view: 'breakpoints' as ViewMode, selectedTrafficKey: null });
   },
   clearPendingBreakpointPrefill: () => set({ pendingBreakpointPrefill: null }),
   setVerificationDraft: (prefill) => {
     persistView('verification');
-    set((s) => {
-      const recentViews = nextRecentViews(s.recentViews, 'verification');
-      persistRecentViews(recentViews);
-      return { pendingVerificationDraft: prefill, view: 'verification' as ViewMode, selectedTrafficKey: null, recentViews };
-    });
+    set({ pendingVerificationDraft: prefill, view: 'verification' as ViewMode, selectedTrafficKey: null });
   },
   clearPendingVerificationDraft: () => set({ pendingVerificationDraft: null }),
   setChaosDraft: (prefill) => {
     persistView('chaos');
-    set((s) => {
-      const recentViews = nextRecentViews(s.recentViews, 'chaos');
-      persistRecentViews(recentViews);
-      return { pendingChaosDraft: prefill, view: 'chaos' as ViewMode, selectedTrafficKey: null, recentViews };
-    });
+    set({ pendingChaosDraft: prefill, view: 'chaos' as ViewMode, selectedTrafficKey: null });
   },
   clearPendingChaosDraft: () => set({ pendingChaosDraft: null }),
   // A locally-set error (failed clear, parse failure, connection-lost notice) is

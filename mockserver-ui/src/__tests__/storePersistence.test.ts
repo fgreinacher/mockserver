@@ -175,49 +175,6 @@ describe('view + search persistence', () => {
     });
   });
 
-  describe('recent-views persistence', () => {
-    it('persists the recent-views list on setView and restores it on the next load', async () => {
-      const store = await freshStore();
-      store.getState().setView('metrics' as ViewMode);
-      store.getState().setView('drift' as ViewMode);
-      // Clear the hash so it does not steer the reloaded view.
-      globalThis.location.hash = '';
-      const reloaded = await freshStore();
-      expect(reloaded.getState().recentViews).toEqual(['drift', 'metrics']);
-    });
-
-    it('defaults to an empty recent-views list on a first visit', async () => {
-      const store = await freshStore();
-      expect(store.getState().recentViews).toEqual([]);
-    });
-
-    it('drops invalid, legacy, get-started, and duplicate entries when restoring', async () => {
-      globalThis.localStorage.setItem(
-        'mockserver-recent-views',
-        JSON.stringify(['drift', 'bogus', 'get-started', 'mcp-tools', 'drift', 'metrics']),
-      );
-      const store = await freshStore();
-      // 'bogus' dropped, 'get-started' dropped, 'mcp-tools' migrated to
-      // 'composer', duplicate 'drift' collapsed, order preserved.
-      expect(store.getState().recentViews).toEqual(['drift', 'composer', 'metrics']);
-    });
-
-    it('caps a restored list at three entries', async () => {
-      globalThis.localStorage.setItem(
-        'mockserver-recent-views',
-        JSON.stringify(['drift', 'metrics', 'traffic', 'slo', 'chaos']),
-      );
-      const store = await freshStore();
-      expect(store.getState().recentViews).toEqual(['drift', 'metrics', 'traffic']);
-    });
-
-    it('tolerates malformed persisted recent-views JSON', async () => {
-      globalThis.localStorage.setItem('mockserver-recent-views', '{not valid json');
-      const store = await freshStore();
-      expect(store.getState().recentViews).toEqual([]);
-    });
-  });
-
   describe('theme persistence is preserved', () => {
     it('still restores the persisted theme independently of view/search', async () => {
       globalThis.localStorage.setItem('mockserver-theme', 'light');

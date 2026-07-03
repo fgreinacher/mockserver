@@ -10,7 +10,6 @@ describe('DashboardStore', () => {
       recordedRequests: [],
       proxiedRequests: [],
       view: 'get-started',
-      recentViews: [],
       requestFilter: {},
       filterEnabled: false,
       filterExpanded: false,
@@ -530,50 +529,6 @@ describe('DashboardStore', () => {
       expect(state.expectationSearch).toBe('path');
       expect(state.receivedSearch).toBe('POST');
       expect(state.proxiedSearch).toBe('forward');
-    });
-  });
-
-  describe('recentViews (recently-used view tabs)', () => {
-    it('records a visited view as the most recent', () => {
-      useDashboardStore.getState().setView('metrics');
-      expect(useDashboardStore.getState().recentViews).toEqual(['metrics']);
-    });
-
-    it('orders newest first', () => {
-      const { setView } = useDashboardStore.getState();
-      setView('metrics');
-      setView('drift');
-      setView('traffic');
-      expect(useDashboardStore.getState().recentViews).toEqual(['traffic', 'drift', 'metrics']);
-    });
-
-    it('dedupes: revisiting a view moves it to the front without duplicating', () => {
-      const { setView } = useDashboardStore.getState();
-      setView('metrics');
-      setView('drift');
-      setView('metrics');
-      expect(useDashboardStore.getState().recentViews).toEqual(['metrics', 'drift']);
-    });
-
-    it('caps the list at three entries, dropping the oldest', () => {
-      const { setView } = useDashboardStore.getState();
-      setView('metrics');
-      setView('drift');
-      setView('traffic');
-      setView('slo');
-      expect(useDashboardStore.getState().recentViews).toEqual(['slo', 'traffic', 'drift']);
-    });
-
-    it("never tracks 'get-started'", () => {
-      const { setView } = useDashboardStore.getState();
-      setView('metrics');
-      setView('get-started');
-      expect(useDashboardStore.getState().recentViews).toEqual(['metrics']);
-    });
-
-    it('records the migrated view, not the legacy alias', () => {
-      useDashboardStore.getState().setView('mcp-tools' as never);
-      expect(useDashboardStore.getState().recentViews).toEqual(['composer']);
     });
   });
 

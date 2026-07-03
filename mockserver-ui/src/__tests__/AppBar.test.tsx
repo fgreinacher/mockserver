@@ -268,7 +268,6 @@ describe('AppBar responsive navigation', () => {
       themeMode: 'dark',
       autoScroll: true,
       view: 'dashboard',
-      recentViews: [],
     });
   });
 
@@ -435,46 +434,8 @@ describe('AppBar responsive navigation', () => {
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument();
   });
 
-  it('renders the recently-used views as direct single-click tabs on wide screens', () => {
-    useDashboardStore.setState({ recentViews: ['metrics', 'drift'], view: 'dashboard' });
-    renderAppBar();
-    // Each recent view gets its own labelled quick-tab button, reusing the view's
-    // Title Case label — no dropdown click needed to reach it.
-    expect(screen.getByRole('button', { name: 'Metrics recent tab' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Drift recent tab' })).toBeInTheDocument();
-  });
-
-  it('navigates directly when a recent-view tab is clicked (single click)', async () => {
-    const user = userEvent.setup();
-    useDashboardStore.setState({ recentViews: ['metrics', 'drift'], view: 'dashboard' });
-    renderAppBar();
-
-    await user.click(screen.getByRole('button', { name: 'Drift recent tab' }));
-    expect(useDashboardStore.getState().view).toBe('drift');
-  });
-
-  it('marks the active recent-view tab as the current page', () => {
-    useDashboardStore.setState({ recentViews: ['metrics', 'drift'], view: 'metrics' });
-    renderAppBar();
-    expect(screen.getByRole('button', { name: 'Metrics recent tab' })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('button', { name: 'Drift recent tab' })).not.toHaveAttribute('aria-current');
-  });
-
-  it('renders no recent-view tabs when nothing has been visited yet', () => {
-    useDashboardStore.setState({ recentViews: [], view: 'dashboard' });
-    renderAppBar();
-    expect(screen.queryByRole('button', { name: /recent tab$/ })).not.toBeInTheDocument();
-  });
-
-  it('hides the recent-view tabs on narrow screens (the hamburger covers them)', () => {
-    stubMatchMedia(true);
-    useDashboardStore.setState({ recentViews: ['metrics', 'drift'], view: 'dashboard' });
-    renderAppBar();
-    expect(screen.queryByRole('button', { name: 'Metrics recent tab' })).not.toBeInTheDocument();
-  });
-
   it('uses a fitting AI icon (not the piggy-bank Savings icon) for the AI group', () => {
-    useDashboardStore.setState({ recentViews: [], view: 'dashboard' });
+    useDashboardStore.setState({ view: 'dashboard' });
     renderAppBar();
     // The AI group button carries the swapped-in AutoAwesome icon; the old
     // SavingsIcon (a piggy bank) must no longer appear anywhere in the bar.
