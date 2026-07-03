@@ -126,6 +126,48 @@ public class ForwardChainExpectation {
         return this;
     }
 
+    /**
+     * Set the optional namespace (a.k.a. tenant) that this expectation belongs to,
+     * enabling multiple teams or test-suites to share a single MockServer instance
+     * without their expectations colliding.
+     * <p>
+     * A {@code null}, empty or whitespace-only namespace (the default) places the
+     * expectation in the global namespace, which is matched regardless of any
+     * request namespace. A non-blank namespace scopes the expectation so it only
+     * matches requests that carry the configured namespace header with this exact
+     * value.
+     *
+     * @param namespace the namespace (tenant) for this expectation, or null for global
+     */
+    public ForwardChainExpectation withNamespace(String namespace) {
+        expectation.withNamespace(namespace);
+        return this;
+    }
+
+    /**
+     * Set the capture rules that extract values from the matched request into
+     * scenario state, so later template responses can read them via the
+     * {@code scenario} helper.
+     *
+     * @param capture the capture rules to apply on match
+     */
+    public ForwardChainExpectation withCapture(java.util.List<CaptureRule> capture) {
+        expectation.withCapture(capture);
+        return this;
+    }
+
+    /**
+     * Set the capture rules that extract values from the matched request into
+     * scenario state, so later template responses can read them via the
+     * {@code scenario} helper.
+     *
+     * @param capture the capture rules to apply on match
+     */
+    public ForwardChainExpectation withCapture(CaptureRule... capture) {
+        expectation.withCapture(capture);
+        return this;
+    }
+
     public ForwardChainExpectation withResponseMode(org.mockserver.mock.ResponseMode responseMode) {
         expectation.withResponseMode(responseMode);
         return this;

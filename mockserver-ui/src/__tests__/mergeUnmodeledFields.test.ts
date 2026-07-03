@@ -3,6 +3,7 @@ import {
   buildExpectationJson,
   mergeUnmodeledFields,
   unmodeledFieldNames,
+  jwtFaithfullyModeled,
   type StandardMatcher,
   type StandardActionPayload,
 } from '../lib/standardCodegen';
@@ -643,5 +644,76 @@ describe('unmodeledFieldNames', () => {
       id: 'a',
     };
     expect(unmodeledFieldNames(original, { actionModeled: true })).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JWT — form-modeled on edit ONLY when the form faithfully owns the original
+// jwt (jwtModeled). Otherwise the original jwt is preserved as passthrough so a
+// lossy prefill can never rewrite an unfaithfully-representable jwt.
+// ---------------------------------------------------------------------------
+
+describe('jwtFaithfullyModeled — faithfulness gate', () => {
+  it('is true when there is no jwt (form owns the empty slot → added jwt is emitted)', () => {
+    expect(jwtFaithfullyModeled({ path: '/api' })).toBe(true);
+    expect(jwtFaithfullyModeled(undefined)).toBe(true);
+  });
+
+  it('is true for plain-string claim / issuer forms that round-trip losslessly', () => {
+    expect(jwtFaithfullyModeled({ path: '/api', jwt: { claims: { sub: 'user-1' }, issuer: 'iss' } })).toBe(true);
+    // a plain-string (regex) claim value also round-trips
+    expect(jwtFaithfullyModeled({ path: '/api', jwt: { claims: { scope: '.*admin.*' } } })).toBe(true);
+  });
+
+  it('is FALSE for an object-form NottableString claim the flat form cannot represent', () => {
+    expect(jwtFaithfullyModeled({ path: '/api', jwt: { claims: { sub: { value: 'user-1', not: false, optional: true } } } })).toBe(false);
+    expect(jwtFaithfullyModeled({ path: '/api', jwt: { issuer: { value: 'iss', optional: true } } })).toBe(false);
+  });
+});
+
+describe('mergeUnmodeledFields — jwt (jwtModeled)', () => {
+  const formReqWithJwt = { httpRequest: { path: '/api', jwt: { claims: { sub: 'new' } } } };
+
+  it('(a) adds a jwt to a jwt-less original when jwtModeled', () => {
+    const original = { httpRequest: { path: '/api' }, httpResponse: { statusCode: 200 } };
+    const merged = mergeUnmodeledFields(original, formReqWithJwt, { jwtModeled: true });
+    expect((merged['httpRequest'] as Record<string, unknown>)['jwt']).toEqual({ claims: { sub: 'new' } });
+  });
+
+  it('(b) modifies an existing jwt when jwtModeled', () => {
+    const original = { httpRequest: { path: '/api', jwt: { claims: { sub: 'old' } } }, httpResponse: { statusCode: 200 } };
+    const merged = mergeUnmodeledFields(original, formReqWithJwt, { jwtModeled: true });
+    expect((merged['httpRequest'] as Record<string, unknown>)['jwt']).toEqual({ claims: { sub: 'new' } });
+  });
+
+  it('(c) removes the jwt when the form clears it (jwtModeled, no jwt in formJson)', () => {
+    const original = { httpRequest: { path: '/api', jwt: { claims: { sub: 'old' } } }, httpResponse: { statusCode: 200 } };
+    const merged = mergeUnmodeledFields(original, { httpRequest: { path: '/api' } }, { jwtModeled: true });
+    expect('jwt' in (merged['httpRequest'] as Record<string, unknown>)).toBe(false);
+  });
+
+  it('(d) PRESERVES an unfaithful original jwt when NOT jwtModeled (lossy prefill ignored)', () => {
+    const originalJwt = { claims: { sub: { value: 'user-1', not: false, optional: true } } };
+    const original = { httpRequest: { path: '/api', jwt: originalJwt }, httpResponse: { statusCode: 200 } };
+    // The form emits a lossy jwt, but jwtModeled=false → the original survives.
+    const merged = mergeUnmodeledFields(original, formReqWithJwt, { jwtModeled: false });
+    expect((merged['httpRequest'] as Record<string, unknown>)['jwt']).toEqual(originalJwt);
+  });
+
+  it('unmodeledFieldNames reports httpRequest.jwt only when NOT jwtModeled', () => {
+    const original = { httpRequest: { path: '/api', jwt: { claims: { sub: 'x' } } } };
+    expect(unmodeledFieldNames(original, { jwtModeled: false })).toContain('httpRequest.jwt');
+    expect(unmodeledFieldNames(original, { jwtModeled: true })).not.toContain('httpRequest.jwt');
+  });
+
+  it('end-to-end: a form JWT edit on a jwt-less original is DROPPED without jwtModeled but KEPT with it', () => {
+    const matcher = baseMatcher({ jwt: { claims: 'sub=user-1' } });
+    const original = { httpRequest: { path: '/api/test' }, httpResponse: { statusCode: 200 } };
+    // Quick-style path (no jwtModeled) → the form jwt is not authoritative, so it is dropped.
+    const withoutFlag = buildExpectationJson(matcher, staticAction({ editOriginal: original, editActionModeled: true }));
+    expect('jwt' in (withoutFlag['httpRequest'] as Record<string, unknown>)).toBe(false);
+    // Advanced path (jwtModeled) → the form jwt is emitted.
+    const withFlag = buildExpectationJson(matcher, staticAction({ editOriginal: original, editActionModeled: true, jwtModeled: true }));
+    expect((withFlag['httpRequest'] as Record<string, unknown>)['jwt']).toEqual({ claims: { sub: 'user-1' } });
   });
 });

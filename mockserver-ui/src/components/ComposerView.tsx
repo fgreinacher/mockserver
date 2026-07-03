@@ -48,6 +48,9 @@ import {
   ACTION_FAMILY_KEYS,
   chaosFromExpectation,
   captureFromExpectation,
+  allOfEntryFromWire,
+  jwtFromRequest,
+  jwtFaithfullyModeled,
   sideEffectsFromExpectation,
   stepsFromExpectation,
   CAPTURE_SOURCES,
@@ -87,6 +90,9 @@ import {
   type StepActionType,
   type StandardCaptureRule,
   type CaptureSource,
+  type StandardBodyAllOfEntry,
+  type AllOfSubBodyType,
+  type StandardJwtMatcher,
 } from '../lib/standardCodegen';
 import McpToolsPanel from './McpToolsPanel';
 import ScenarioPanel from './ScenarioPanel';
@@ -340,6 +346,10 @@ interface MatcherState {
   jsonMatchType: JsonMatchType;
   /** SubString toggle (only when bodyMatcherType is 'string'). */
   bodySubString: boolean;
+  /** Sub-matchers composed by an `allOf` body (only when bodyMatcherType is 'allOf'). */
+  bodyAllOf?: StandardBodyAllOfEntry[];
+  /** JWT request-matcher criteria (Advanced form's optional JWT section). */
+  jwt?: StandardJwtMatcher;
   secure: boolean;
   priority: number;
   times: number;         // 0 = unlimited
@@ -363,6 +373,8 @@ function emptyMatcher(): MatcherState {
     graphqlOptions: { selectionSetMatchType: 'NORMALISED_STRING', fields: '' },
     jsonMatchType: 'ONLY_MATCHING_FIELDS',
     bodySubString: false,
+    bodyAllOf: [],
+    jwt: undefined,
     secure: false,
     priority: 0,
     times: 0,
@@ -499,6 +511,161 @@ function ignoredLinesWarning(text: string, separator: ':' | '=', formatHint: str
   const n = countIgnoredKeyValueLines(text, separator);
   if (n === 0) return undefined;
   return `${n} line${n === 1 ? '' : 's'} ignored — expected ${formatHint}`;
+}
+
+const ALLOF_SUB_TYPES: { value: AllOfSubBodyType; label: string }[] = [
+  { value: 'string', label: 'String (exact)' },
+  { value: 'json', label: 'JSON' },
+  { value: 'json-schema', label: 'JSON Schema' },
+  { value: 'json-path', label: 'JSON Path' },
+  { value: 'xml', label: 'XML' },
+  { value: 'xml-schema', label: 'XML Schema' },
+  { value: 'xpath', label: 'XPath' },
+  { value: 'regex', label: 'Regex' },
+];
+
+/** Repeatable sub-matcher rows for an `allOf` composite body (logical AND of body matchers). */
+function AllOfMatcherRows({ matcher, setMatcher }: { matcher: MatcherState; setMatcher: (m: MatcherState) => void }) {
+  const rows = matcher.bodyAllOf ?? [];
+  const update = (next: StandardBodyAllOfEntry[]) => setMatcher({ ...matcher, bodyAllOf: next });
+  const addRow = () => update([...rows, { type: 'json', value: '' }]);
+  const removeRow = (idx: number) => update(rows.filter((_, i) => i !== idx));
+  const patchRow = (idx: number, patch: Partial<StandardBodyAllOfEntry>) =>
+    update(rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  return (
+    <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 1 }} data-testid="allof-section">
+      <Typography variant="caption" color="text.secondary">
+        The request body must satisfy every sub-matcher below (logical AND). Add two or more.
+      </Typography>
+      {rows.map((row, idx) => (
+        <Paper key={idx} variant="outlined" sx={{ p: 1, display: 'flex', gap: 1, alignItems: 'flex-start' }} data-testid="allof-row">
+          <TextField
+            label="Type"
+            size="small"
+            select
+            value={row.type}
+            onChange={(e) => patchRow(idx, { type: e.target.value as AllOfSubBodyType })}
+            sx={{ minWidth: 150 }}
+            slotProps={{ htmlInput: { 'data-testid': `allof-type-${idx}` } }}
+          >
+            {ALLOF_SUB_TYPES.map((t) => (
+              <MenuItem key={t.value} value={t.value}>{t.label}</MenuItem>
+            ))}
+          </TextField>
+          <TextField
+            label="Matcher value"
+            size="small"
+            fullWidth
+            multiline
+            maxRows={4}
+            value={row.value}
+            onChange={(e) => patchRow(idx, { value: e.target.value })}
+            sx={{ flex: 1 }}
+            slotProps={{
+              input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } },
+              htmlInput: { 'data-testid': `allof-value-${idx}` },
+            }}
+          />
+          <IconButton size="small" aria-label="Remove sub-matcher" onClick={() => removeRow(idx)} data-testid={`allof-remove-${idx}`}>
+            <DeleteIcon fontSize="small" />
+          </IconButton>
+        </Paper>
+      ))}
+      <Box>
+        <Button size="small" variant="outlined" onClick={addRow} data-testid="add-allof-row">
+          Add sub-matcher
+        </Button>
+      </Box>
+    </Box>
+  );
+}
+
+/** Optional JWT request-matcher section (httpRequest.jwt). Off by default so an
+ *  untouched matcher emits byte-identical JSON to before this section existed. */
+function JwtMatcherSection({ matcher, setMatcher }: { matcher: MatcherState; setMatcher: (m: MatcherState) => void }) {
+  const enabled = matcher.jwt != null;
+  const jwt = matcher.jwt ?? {};
+  const patch = (p: Partial<StandardJwtMatcher>) => setMatcher({ ...matcher, jwt: { ...jwt, ...p } });
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5 }} data-testid="jwt-section">
+      <FormControlLabel
+        control={
+          <Switch
+            size="small"
+            checked={enabled}
+            onChange={(e) => setMatcher({ ...matcher, jwt: e.target.checked ? (matcher.jwt ?? {}) : undefined })}
+            slotProps={{ input: { 'aria-label': 'Match a JWT', 'data-testid': 'jwt-enable' } as Record<string, unknown> }}
+          />
+        }
+        label={<Typography variant="body2">Match a JWT (JSON Web Token)</Typography>}
+      />
+      <Collapse in={enabled} unmountOnExit>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mt: 1 }}>
+          <Typography variant="caption" color="text.secondary">
+            Matches claims in a JWT carried in a request header. No signature is verified — this is request routing, not authentication.
+          </Typography>
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            <TextField
+              label="Header (default authorization)"
+              size="small"
+              value={jwt.header ?? ''}
+              onChange={(e) => patch({ header: e.target.value })}
+              sx={{ flex: 1, minWidth: 180 }}
+              slotProps={{ htmlInput: { 'data-testid': 'jwt-header' } }}
+            />
+            <TextField
+              label="Scheme (default Bearer)"
+              size="small"
+              value={jwt.scheme ?? ''}
+              onChange={(e) => patch({ scheme: e.target.value })}
+              sx={{ flex: 1, minWidth: 180 }}
+              slotProps={{ htmlInput: { 'data-testid': 'jwt-scheme' } }}
+            />
+          </Box>
+          <TextField
+            label="Claims (name=value per line, ! negates)"
+            size="small"
+            multiline
+            minRows={2}
+            maxRows={6}
+            value={jwt.claims ?? ''}
+            onChange={(e) => patch({ claims: e.target.value })}
+            placeholder={'sub=user-1\nscope=.*admin.*'}
+            slotProps={{
+              input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } },
+              htmlInput: { 'data-testid': 'jwt-claims' },
+            }}
+          />
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            <TextField
+              label="Issuer (iss)"
+              size="small"
+              value={jwt.issuer ?? ''}
+              onChange={(e) => patch({ issuer: e.target.value })}
+              sx={{ flex: 1, minWidth: 150 }}
+              slotProps={{ htmlInput: { 'data-testid': 'jwt-issuer' } }}
+            />
+            <TextField
+              label="Audience (aud)"
+              size="small"
+              value={jwt.audience ?? ''}
+              onChange={(e) => patch({ audience: e.target.value })}
+              sx={{ flex: 1, minWidth: 150 }}
+              slotProps={{ htmlInput: { 'data-testid': 'jwt-audience' } }}
+            />
+            <TextField
+              label="Algorithm (alg)"
+              size="small"
+              value={jwt.algorithm ?? ''}
+              onChange={(e) => patch({ algorithm: e.target.value })}
+              sx={{ flex: 1, minWidth: 150 }}
+              slotProps={{ htmlInput: { 'data-testid': 'jwt-algorithm' } }}
+            />
+          </Box>
+        </Box>
+      </Collapse>
+    </Paper>
+  );
 }
 
 function MatcherPanel({ matcher, setMatcher }: { matcher: MatcherState; setMatcher: (m: MatcherState) => void }) {
@@ -641,9 +808,13 @@ function MatcherPanel({ matcher, setMatcher }: { matcher: MatcherState; setMatch
             <MenuItem value="regex">Regex</MenuItem>
             <MenuItem value="parameters">Parameters</MenuItem>
             <MenuItem value="wasm">WASM module</MenuItem>
+            <MenuItem value="allOf">All of (compose matchers)</MenuItem>
           </TextField>
         </Box>
-        {(() => {
+        {matcher.bodyMatcherType === 'allOf' && (
+          <AllOfMatcherRows matcher={matcher} setMatcher={setMatcher} />
+        )}
+        {matcher.bodyMatcherType !== 'allOf' && (() => {
           const bodyLabel =
             matcher.bodyMatcherType === 'binary'
               ? 'Body matcher (base64 bytes)'
@@ -783,6 +954,7 @@ function MatcherPanel({ matcher, setMatcher }: { matcher: MatcherState; setMatch
           </Box>
         )}
       </Box>
+      <JwtMatcherSection matcher={matcher} setMatcher={setMatcher} />
       <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
         <FormControlLabel
           control={
@@ -966,12 +1138,20 @@ export function matcherFromExpectation(item: JsonListItem): MatcherState {
   let bodyMatcherType: BodyMatcherType = 'string';
   let jsonMatchType: JsonMatchType = 'ONLY_MATCHING_FIELDS';
   let bodySubString = false;
+  let bodyAllOf: StandardBodyAllOfEntry[] = [];
   const graphqlOptions: GraphQLMatcherOptions = { selectionSetMatchType: 'NORMALISED_STRING', fields: '' };
   if (typeof rawBody === 'string') {
     bodyText = rawBody;
   } else if (rawBody && typeof rawBody === 'object') {
     const b = rawBody as Record<string, unknown>;
-    if (b['type'] === 'BINARY' && typeof b['base64Bytes'] === 'string') {
+    if (b['type'] === 'ALL_OF' && Array.isArray(b['bodyAllOf'])) {
+      // Composite conjunction — round-trip the sub-matchers the allOf form can
+      // represent; drop the rest so editing preserves what the form models.
+      bodyMatcherType = 'allOf';
+      bodyAllOf = (b['bodyAllOf'] as unknown[])
+        .map((sub) => allOfEntryFromWire(sub))
+        .filter((e): e is StandardBodyAllOfEntry => e != null);
+    } else if (b['type'] === 'BINARY' && typeof b['base64Bytes'] === 'string') {
       bodyText = b['base64Bytes'] as string;
       bodyBinary = true;
       bodyMatcherType = 'binary';
@@ -1061,6 +1241,8 @@ export function matcherFromExpectation(item: JsonListItem): MatcherState {
     graphqlOptions,
     jsonMatchType,
     bodySubString,
+    bodyAllOf,
+    jwt: jwtFromRequest(req),
     secure: req['secure'] === true,
     priority: typeof v['priority'] === 'number' ? (v['priority'] as number) : 0,
     // 0 = unlimited. An explicitly unlimited expectation prefills 0 rather than its
@@ -3790,6 +3972,11 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
   // (so the original action is preserved).
   const [editOriginal, setEditOriginal] = useState<Record<string, unknown> | null>(null);
   const [editActionModeled, setEditActionModeled] = useState(true);
+  // Whether the Advanced JWT form faithfully owns the original's httpRequest.jwt
+  // on edit. False when the original carries a jwt the form cannot round-trip
+  // losslessly (e.g. object-form NottableString claims): the jwt is then
+  // preserved as passthrough instead of being rewritten by a lossy prefill.
+  const [editJwtModeled, setEditJwtModeled] = useState(true);
 
   // Optional scenario bindings (Advanced form's Scenario section). Blank on a
   // fresh compose; prefilled from the original on edit. These three keys are
@@ -3893,6 +4080,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
       const existingStepsForFlag = stepsFromExpectation(item.value);
       setEditOriginal(item.value);
       prefillScenarioBinding(item.value);
+      setEditJwtModeled(jwtFaithfullyModeled(item.value['httpRequest']));
 
       // Detect the action shape and prefill the matching panel + switch the radio.
       const prefill = actionFromExpectation(item);
@@ -4002,6 +4190,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     // original (and cannot resurrect an old expectation's unmodeled fields).
     setEditOriginal(null);
     setEditActionModeled(true);
+    setEditJwtModeled(true);
     setScenarioBindingName('');
     setScenarioBindingState('');
     setScenarioBindingNext('');
@@ -4051,6 +4240,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
       const existingStepsForFlag = stepsFromExpectation(value);
       setEditOriginal(value);
       prefillScenarioBinding(value);
+      setEditJwtModeled(jwtFaithfullyModeled(value['httpRequest']));
       const prefill = actionFromExpectation(item);
       setEditActionModeled(!!prefill || !!existingStepsForFlag);
       if (prefill) {
@@ -4165,6 +4355,10 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     if (editOriginal) {
       a.editOriginal = editOriginal;
       a.editActionModeled = editActionModeled;
+      // The Advanced form always renders + prefills the JWT section, so it owns
+      // jwt on edit — but only when it can faithfully round-trip the original
+      // (editJwtModeled); otherwise the original jwt is preserved as passthrough.
+      a.jwtModeled = editJwtModeled;
     }
     return a;
   }, [
@@ -4172,7 +4366,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     callbackState, templateState, errorState, websocketState, sseState, binaryResponseState,
     dnsResponseState, forwardTemplateState, forwardClassCallbackState, grpcStreamState,
     chaosEnabled, chaosState, stepsEnabled, stepsState, sideEffectsEnabled, sideEffects,
-    captureEnabled, captureRules, editOriginal, editActionModeled,
+    captureEnabled, captureRules, editOriginal, editActionModeled, editJwtModeled,
     scenarioBindingName, scenarioBindingState, scenarioBindingNext,
   ]);
 
@@ -4830,7 +5024,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
               // model — surfaced as a subtle indicator so the user knows they are
               // kept (not silently dropped) on Update.
               const preservedFields = editOriginal
-                ? unmodeledFieldNames(editOriginal, { actionModeled: editActionModeled, scenarioModeled: true })
+                ? unmodeledFieldNames(editOriginal, { actionModeled: editActionModeled, scenarioModeled: true, jwtModeled: editJwtModeled })
                 : [];
 
               // `effectiveMatcher` is memoised at the component level (attaches

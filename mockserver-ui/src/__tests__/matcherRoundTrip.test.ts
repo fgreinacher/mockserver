@@ -141,3 +141,54 @@ describe('static response action fields round-trip via buildExpectationJson + ma
     expect(resp['cookies']).toEqual({ session: 'abc', foo: 'bar' });
   });
 });
+
+describe('matcherFromExpectation round-trips JWT and allOf', () => {
+  function roundTrip(matcher: StandardMatcher) {
+    const json = buildExpectationJson(matcher, staticAction);
+    return matcherFromExpectation({ key: 'k', value: json as Record<string, unknown> });
+  }
+
+  it('round-trips a JWT matcher (claims, issuer, audience, algorithm, header, scheme)', () => {
+    const result = roundTrip(baseMatcher({
+      jwt: { claims: 'sub=user-1\nscope=!guest', issuer: 'https://issuer', audience: 'aud', algorithm: 'RS256', header: 'x-token', scheme: 'Token' },
+    }));
+    expect(result.jwt).toEqual({
+      header: 'x-token',
+      scheme: 'Token',
+      claims: 'sub=user-1\nscope=!guest',
+      issuer: 'https://issuer',
+      audience: 'aud',
+      algorithm: 'RS256',
+    });
+  });
+
+  it('omits default header/scheme on the round-trip (server drops them)', () => {
+    const result = roundTrip(baseMatcher({ jwt: { claims: 'sub=abc', header: 'authorization', scheme: 'Bearer' } }));
+    expect(result.jwt).toEqual({ claims: 'sub=abc' });
+  });
+
+  it('an enabled-but-empty JWT round-trips to no jwt', () => {
+    const result = roundTrip(baseMatcher({ jwt: {} }));
+    expect(result.jwt).toBeUndefined();
+  });
+
+  it('round-trips an allOf composite body preserving each sub-matcher', () => {
+    const result = roundTrip(baseMatcher({
+      bodyMatcherType: 'allOf',
+      bodyAllOf: [
+        { type: 'json', value: '{"a":1}' },
+        { type: 'regex', value: '^x.*' },
+        { type: 'string', value: 'plain' },
+        { type: 'xpath', value: '/a/b' },
+      ],
+    }));
+    expect(result.bodyMatcherType).toBe('allOf');
+    expect(result.bodyAllOf).toEqual([
+      // JSON is normalised through parse+stringify on the way out
+      { type: 'json', value: '{\n  "a": 1\n}' },
+      { type: 'regex', value: '^x.*' },
+      { type: 'string', value: 'plain' },
+      { type: 'xpath', value: '/a/b' },
+    ]);
+  });
+});

@@ -193,4 +193,42 @@ public class ForwardChainExpectationTest {
         verify(mockAbstractClient).upsert(mockExpectation);
     }
 
+    @Test
+    public void shouldSetNamespace() {
+        // when
+        ForwardChainExpectation returned = forwardChainExpectation.withNamespace("team-a");
+
+        // then
+        assertThat(returned, is(forwardChainExpectation));
+        verify(mockExpectation).withNamespace("team-a");
+    }
+
+    @Test
+    public void shouldSetCaptureVarargs() {
+        // given
+        CaptureRule ruleOne = CaptureRule.capture(CaptureRule.Source.pathParameter, "userId", "userId");
+        CaptureRule ruleTwo = CaptureRule.capture(CaptureRule.Source.header, "X-Trace", "trace");
+
+        // when
+        ForwardChainExpectation returned = forwardChainExpectation.withCapture(ruleOne, ruleTwo);
+
+        // then
+        assertThat(returned, is(forwardChainExpectation));
+        verify(mockExpectation).withCapture(ruleOne, ruleTwo);
+    }
+
+    @Test
+    public void shouldSetCaptureList() {
+        // given
+        CaptureRule rule = CaptureRule.capture(CaptureRule.Source.queryStringParameter, "id", "id");
+        java.util.List<CaptureRule> rules = java.util.Collections.singletonList(rule);
+
+        // when
+        ForwardChainExpectation returned = forwardChainExpectation.withCapture(rules);
+
+        // then
+        assertThat(returned, is(forwardChainExpectation));
+        verify(mockExpectation).withCapture(rules);
+    }
+
 }
