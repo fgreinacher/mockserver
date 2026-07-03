@@ -206,12 +206,34 @@ echo "✓ MockServer ready (PID $MOCKSERVER_PID)"
 DEMO_MQTT_BROKER_URL=""
 if [ "$WITH_BROKER" = true ]; then
   echo "→ Starting Mosquitto MQTT broker on port $MQTT_PORT (Docker container: $MQTT_CONTAINER)..."
+  # Remove any leftover demo container from a previous run FIRST, so its port hold does not
+  # trip the pre-flight below (the old behaviour silently self-cleaned; keep that).
   docker rm -f "$MQTT_CONTAINER" >/dev/null 2>&1 || true
+  # Pre-flight: fail fast if something else already listens on the MQTT port. Without this,
+  # `docker run` exits 125 ("port is already allocated"), the demo container sits in Created,
+  # and the TCP probe below would pass against the foreign listener — falsely reporting the
+  # broker ready and then failing later, deep inside the populate step, with an opaque 400.
+  if (exec 3<>"/dev/tcp/localhost/$MQTT_PORT") 2>/dev/null; then
+    exec 3>&- 2>/dev/null || true
+    echo "ERROR: port $MQTT_PORT is already in use — stop the other MQTT listener (docker ps -a | grep mosquitto; lsof -i :$MQTT_PORT) or pass --mqtt-port <other-port>"
+    exit 1
+  fi
+  # Pull explicitly so a registry/proxy failure is unambiguous and distinct from a startup failure
+  # (an implicit pull inside `docker run -d ... >/dev/null` would be silently swallowed).
+  if ! docker image inspect eclipse-mosquitto:2 >/dev/null 2>&1; then
+    echo "→ Pulling eclipse-mosquitto:2 (first run)..."
+    docker pull eclipse-mosquitto:2 >/dev/null || { echo "ERROR: failed to pull eclipse-mosquitto:2 — check Docker Hub access (offline? rate limit? corporate proxy? the Docker daemon must trust the proxy root CA — Docker Desktop Settings > Docker Engine)"; exit 1; }
+  fi
   docker run -d --name "$MQTT_CONTAINER" -p "$MQTT_PORT:1883" eclipse-mosquitto:2 \
-    sh -c "printf 'listener 1883\nallow_anonymous true\n' > /mosquitto/config/mosquitto.conf && exec /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf" >/dev/null
-  # Wait for the broker TCP port to accept connections (bash /dev/tcp — no nc dependency).
+    sh -c "printf 'listener 1883\nallow_anonymous true\n' > /mosquitto/config/mosquitto.conf && exec /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf" >/dev/null \
+    || { echo "ERROR: docker run failed for the Mosquitto broker:"; docker logs "$MQTT_CONTAINER" 2>&1 | tail -10; exit 1; }
+  # Wait for the broker TCP port to accept connections (bash /dev/tcp — no nc dependency),
+  # checking the container is actually running so a crash surfaces its logs immediately.
   broker_elapsed=0
   until (exec 3<>"/dev/tcp/localhost/$MQTT_PORT") 2>/dev/null; do
+    if [ "$(docker inspect -f '{{.State.Running}}' "$MQTT_CONTAINER" 2>/dev/null)" != "true" ]; then
+      echo "ERROR: the Mosquitto broker container is not running:"; docker logs "$MQTT_CONTAINER" 2>&1 | tail -10; exit 1
+    fi
     [ "$broker_elapsed" -ge 30 ] && { echo "ERROR: MQTT broker did not open port $MQTT_PORT within 30s"; docker logs "$MQTT_CONTAINER" 2>&1 | tail -10; exit 1; }
     sleep 1; broker_elapsed=$((broker_elapsed + 1))
   done
