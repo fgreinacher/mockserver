@@ -2,19 +2,31 @@ package mockserver
 
 // HttpResponse represents an HTTP response action for MockServer.
 type HttpResponse struct {
-	StatusCode        int                 `json:"statusCode,omitempty"`
-	ReasonPhrase      string              `json:"reasonPhrase,omitempty"`
-	Headers           map[string][]string `json:"headers,omitempty"`
-	Cookies           map[string]string   `json:"cookies,omitempty"`
-	Body              interface{}         `json:"body,omitempty"`
-	Delay             *Delay              `json:"delay,omitempty"`
-	ConnectionOptions *ConnectionOptions  `json:"connectionOptions,omitempty"`
+	StatusCode   int                 `json:"statusCode,omitempty"`
+	ReasonPhrase string              `json:"reasonPhrase,omitempty"`
+	Headers      map[string][]string `json:"headers,omitempty"`
+	Cookies      map[string]string   `json:"cookies,omitempty"`
+	Body         interface{}         `json:"body,omitempty"`
+	Delay        *Delay              `json:"delay,omitempty"`
+	// Trailers are HTTP trailing headers sent after the body (HTTP/2, chunked).
+	Trailers map[string][]string `json:"trailers,omitempty"`
+	// StatusCodeRange serves a status drawn from a range (e.g. "200-299").
+	StatusCodeRange string `json:"statusCodeRange,omitempty"`
+	// RecoverAfter serves a failure response for the first N matches then this
+	// response (a deterministic retry/backoff recovery primitive).
+	RecoverAfter      *RecoverAfter      `json:"recoverAfter,omitempty"`
+	ConnectionOptions *ConnectionOptions `json:"connectionOptions,omitempty"`
 }
 
-// Delay represents a response delay.
+// Delay represents a response delay. Value/TimeUnit give a fixed delay;
+// Template (with TemplateType) computes the delay from the request; Distribution
+// draws a variable delay.
 type Delay struct {
-	TimeUnit string `json:"timeUnit"`
-	Value    int    `json:"value"`
+	TimeUnit     string             `json:"timeUnit"`
+	Value        int                `json:"value"`
+	Template     string             `json:"template,omitempty"`
+	TemplateType string             `json:"templateType,omitempty"`
+	Distribution *DelayDistribution `json:"distribution,omitempty"`
 }
 
 // ConnectionOptions represents connection-level response options.
@@ -22,6 +34,7 @@ type ConnectionOptions struct {
 	SuppressContentLengthHeader *bool  `json:"suppressContentLengthHeader,omitempty"`
 	ContentLengthHeaderOverride *int   `json:"contentLengthHeaderOverride,omitempty"`
 	SuppressConnectionHeader    *bool  `json:"suppressConnectionHeader,omitempty"`
+	ChunkSize                   *int   `json:"chunkSize,omitempty"`
 	KeepAliveOverride           *bool  `json:"keepAliveOverride,omitempty"`
 	CloseSocket                 *bool  `json:"closeSocket,omitempty"`
 	CloseSocketDelay            *Delay `json:"closeSocketDelay,omitempty"`

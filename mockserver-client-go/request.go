@@ -13,6 +13,28 @@ type HttpRequest struct {
 	SocketAddress      *SocketAddress      `json:"socketAddress,omitempty"`
 	PathParametersList map[string][]string `json:"pathParameters,omitempty"`
 	JWT                *Jwt                `json:"jwt,omitempty"`
+	// Not negates the whole request matcher (match everything except this).
+	Not *bool `json:"not,omitempty"`
+	// Protocol constrains the matcher to a wire protocol: "HTTP_1_1",
+	// "HTTP_2" or "HTTP_3".
+	Protocol string `json:"protocol,omitempty"`
+	// RespondBeforeBody makes MockServer respond before consuming the request
+	// body (requires no body matcher and a RESPONSE or ERROR action).
+	RespondBeforeBody *bool `json:"respondBeforeBody,omitempty"`
+
+	// --- DNS request definition (RequestDefinition: DnsRequestDefinition) ---
+	// When set, this expectation matches a DNS query rather than an HTTP
+	// request. DnsName is the queried name; DnsType (e.g. "A", "AAAA", "MX")
+	// and DnsClass (e.g. "IN") are optional constraints.
+	DnsName  string `json:"dnsName,omitempty"`
+	DnsType  string `json:"dnsType,omitempty"`
+	DnsClass string `json:"dnsClass,omitempty"`
+
+	// --- OpenAPI request definition (RequestDefinition: OpenAPIDefinition) ---
+	// When set, the request is matched against an OpenAPI/Swagger operation.
+	SpecUrlOrPayload  interface{} `json:"specUrlOrPayload,omitempty"`
+	OperationId       string      `json:"operationId,omitempty"`
+	ContextPathPrefix string      `json:"contextPathPrefix,omitempty"`
 }
 
 // SocketAddress represents a socket address constraint.
@@ -132,13 +154,105 @@ func (b *RequestBuilder) BuildPtr() *HttpRequest {
 	return &req
 }
 
-// TypedBody represents a typed body matcher (e.g., JSON, XML, JSON_PATH, REGEX).
+// TypedBody represents a typed body matcher. A single struct carries every
+// MockServer body-matcher variant (selected by Type); only the fields relevant
+// to that Type are populated. Type is one of: STRING, JSON, JSON_SCHEMA,
+// JSON_PATH, XML, XML_SCHEMA, XPATH, REGEX, PARAMETERS, BINARY, MULTIPART,
+// GRAPHQL, JSON_RPC or WASM (see the MockServer Body schema). Not negates the
+// matcher and Optional makes it optional.
 type TypedBody struct {
 	Type     string `json:"type"`
-	JSON     string `json:"json,omitempty"`
-	XML      string `json:"xml,omitempty"`
+	Not      *bool  `json:"not,omitempty"`
+	Optional *bool  `json:"optional,omitempty"`
+
+	// STRING
+	String    string `json:"string,omitempty"`
+	SubString *bool  `json:"subString,omitempty"`
+
+	// JSON
+	JSON                  string `json:"json,omitempty"`
+	MatchType             string `json:"matchType,omitempty"`
+	MatchNumbersAsStrings *bool  `json:"matchNumbersAsStrings,omitempty"`
+
+	// JSON_SCHEMA — the schema may be a JSON string or an embedded object.
+	JSONSchema interface{} `json:"jsonSchema,omitempty"`
+
+	// JSON_PATH
 	JSONPath string `json:"jsonPath,omitempty"`
-	Regex    string `json:"regex,omitempty"`
+
+	// XML
+	XML string `json:"xml,omitempty"`
+
+	// XML_SCHEMA
+	XMLSchema string `json:"xmlSchema,omitempty"`
+
+	// XPATH
+	XPath string `json:"xpath,omitempty"`
+
+	// REGEX
+	Regex string `json:"regex,omitempty"`
+
+	// PARAMETERS
+	Parameters map[string][]string `json:"parameters,omitempty"`
+
+	// BINARY
+	Base64Bytes string `json:"base64Bytes,omitempty"`
+
+	// MULTIPART
+	Fields           map[string][]string `json:"fields,omitempty"`
+	Filenames        map[string][]string `json:"filenames,omitempty"`
+	PartContentTypes map[string][]string `json:"partContentTypes,omitempty"`
+
+	// GRAPHQL. Note: the GraphQL selection-set field list also serializes to the
+	// JSON key "fields", which the MULTIPART Fields matcher above already owns.
+	// A body is only ever one Type, but a single Go struct cannot expose the same
+	// JSON key twice, so the (advanced, rarely client-set) GraphQL field list is
+	// not a typed field here — it still round-trips losslessly via the generic
+	// HttpRequest.Body interface. SelectionSetMatchType and Schema do not collide.
+	Query                 string `json:"query,omitempty"`
+	OperationName         string `json:"operationName,omitempty"`
+	VariablesSchema       string `json:"variablesSchema,omitempty"`
+	SelectionSetMatchType string `json:"selectionSetMatchType,omitempty"`
+	Schema                string `json:"schema,omitempty"`
+
+	// JSON_RPC
+	Method       string `json:"method,omitempty"`
+	ParamsSchema string `json:"paramsSchema,omitempty"`
+
+	// WASM
+	ModuleName string `json:"moduleName,omitempty"`
+
+	// ContentType applies to the STRING, JSON, XML and BINARY variants.
+	ContentType string `json:"contentType,omitempty"`
+}
+
+// StringBody builds a STRING body matcher (exact-string match) for the given value.
+func StringBody(value string) *TypedBody {
+	return &TypedBody{Type: "STRING", String: value}
+}
+
+// SubStringBody builds a STRING body matcher that matches when the request body
+// contains the given value as a substring.
+func SubStringBody(value string) *TypedBody {
+	subString := true
+	return &TypedBody{Type: "STRING", String: value, SubString: &subString}
+}
+
+// JSONMatchBody builds a JSON body matcher. matchType selects the comparison
+// strictness: "STRICT" or "ONLY_MATCHING_FIELDS" (empty defaults to the server
+// default). Use RequestBuilder.JSONBody for the simple case.
+func JSONMatchBody(json, matchType string) *TypedBody {
+	b := &TypedBody{Type: "JSON", JSON: json}
+	if matchType != "" {
+		b.MatchType = matchType
+	}
+	return b
+}
+
+// JSONSchemaBody builds a JSON_SCHEMA body matcher validating the request body
+// against the given JSON schema (a schema string or a map/struct).
+func JSONSchemaBody(schema interface{}) *TypedBody {
+	return &TypedBody{Type: "JSON_SCHEMA", JSONSchema: schema}
 }
 
 // JSONPathBody builds a JSON_PATH body matcher that matches when the given
@@ -147,10 +261,54 @@ func JSONPathBody(jsonPath string) *TypedBody {
 	return &TypedBody{Type: "JSON_PATH", JSONPath: jsonPath}
 }
 
+// XMLBody builds an XML body matcher (canonical XML comparison).
+func XMLBody(xml string) *TypedBody {
+	return &TypedBody{Type: "XML", XML: xml}
+}
+
+// XMLSchemaBody builds an XML_SCHEMA (XSD) body matcher.
+func XMLSchemaBody(xmlSchema string) *TypedBody {
+	return &TypedBody{Type: "XML_SCHEMA", XMLSchema: xmlSchema}
+}
+
+// XPathBody builds an XPATH body matcher that matches when the given XPath
+// expression selects a node in the request body.
+func XPathBody(xpath string) *TypedBody {
+	return &TypedBody{Type: "XPATH", XPath: xpath}
+}
+
 // RegexBody builds a REGEX body matcher that matches when the request body
 // matches the given regular expression.
 func RegexBody(regex string) *TypedBody {
 	return &TypedBody{Type: "REGEX", Regex: regex}
+}
+
+// ParameterBody builds a PARAMETERS body matcher over form-url-encoded body
+// parameters.
+func ParameterBody(parameters map[string][]string) *TypedBody {
+	return &TypedBody{Type: "PARAMETERS", Parameters: parameters}
+}
+
+// BinaryBody builds a BINARY body matcher for the given base64-encoded bytes.
+func BinaryBody(base64Bytes string) *TypedBody {
+	return &TypedBody{Type: "BINARY", Base64Bytes: base64Bytes}
+}
+
+// MultipartBody builds a MULTIPART (form-data) body matcher. Any of fields,
+// filenames or partContentTypes may be nil.
+func MultipartBody(fields, filenames, partContentTypes map[string][]string) *TypedBody {
+	return &TypedBody{Type: "MULTIPART", Fields: fields, Filenames: filenames, PartContentTypes: partContentTypes}
+}
+
+// GraphQLBody builds a GRAPHQL body matcher for the given query (operationName
+// optional).
+func GraphQLBody(query, operationName string) *TypedBody {
+	return &TypedBody{Type: "GRAPHQL", Query: query, OperationName: operationName}
+}
+
+// WasmBody builds a WASM body matcher delegating to the named WASM module.
+func WasmBody(moduleName string) *TypedBody {
+	return &TypedBody{Type: "WASM", ModuleName: moduleName}
 }
 
 // AllOfBody is a composite body matcher (wire type "ALL_OF") that matches only

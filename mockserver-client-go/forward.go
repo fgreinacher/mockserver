@@ -14,17 +14,23 @@ type HttpForward struct {
 // response returned to the caller. The wire field names mirror the MockServer
 // HttpOverrideForwardedRequestDTO.
 type HttpOverrideForwardedRequest struct {
-	RequestOverride  *HttpRequest  `json:"requestOverride,omitempty"`
-	ResponseOverride *HttpResponse `json:"responseOverride,omitempty"`
-	ResponseTemplate *HttpTemplate `json:"responseTemplate,omitempty"`
-	Delay            *Delay        `json:"delay,omitempty"`
+	RequestOverride  *HttpRequest      `json:"requestOverride,omitempty"`
+	RequestModifier  *RequestModifier  `json:"requestModifier,omitempty"`
+	ResponseOverride *HttpResponse     `json:"responseOverride,omitempty"`
+	ResponseModifier *ResponseModifier `json:"responseModifier,omitempty"`
+	ResponseTemplate *HttpTemplate     `json:"responseTemplate,omitempty"`
+	Delay            *Delay            `json:"delay,omitempty"`
 }
 
 // HttpError represents an HTTP error action for MockServer.
 type HttpError struct {
 	DropConnection *bool  `json:"dropConnection,omitempty"`
 	ResponseBytes  string `json:"responseBytes,omitempty"`
-	Delay          *Delay `json:"delay,omitempty"`
+	// StreamError resets the matched request stream with this error code
+	// (HTTP/2 RST_STREAM / HTTP/3 RESET_STREAM) instead of returning a
+	// response; it takes precedence over DropConnection.
+	StreamError *int64 `json:"streamError,omitempty"`
+	Delay       *Delay `json:"delay,omitempty"`
 }
 
 // ForwardBuilder provides a fluent API for building HttpForward actions.

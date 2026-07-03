@@ -2,8 +2,15 @@ package mockserver
 
 // Expectation represents a MockServer expectation (request matcher + action).
 type Expectation struct {
-	ID                   string          `json:"id,omitempty"`
-	Priority             int             `json:"priority,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Priority int    `json:"priority,omitempty"`
+	// Percentage (0-100) makes the expectation match only that fraction of
+	// otherwise-matching requests (probabilistic matching).
+	Percentage int `json:"percentage,omitempty"`
+	// Chaos applies a declarative fault-injection profile to the response.
+	Chaos *HttpChaosProfile `json:"chaos,omitempty"`
+	// RateLimit applies a declarative, protocol-agnostic rate limit / quota.
+	RateLimit            *RateLimit      `json:"rateLimit,omitempty"`
 	HttpRequest          *HttpRequest    `json:"httpRequest,omitempty"`
 	HttpResponse         *HttpResponse   `json:"httpResponse,omitempty"`
 	HttpResponses        []*HttpResponse `json:"httpResponses,omitempty"`
@@ -14,29 +21,48 @@ type Expectation struct {
 	// target (RequestOverride) while shaping the caller's response via
 	// ResponseOverride or ResponseTemplate.
 	HttpOverrideForwardedRequest *HttpOverrideForwardedRequest `json:"httpOverrideForwardedRequest,omitempty"`
-	HttpError                    *HttpError                    `json:"httpError,omitempty"`
+	// HttpForwardWithFallback forwards upstream but falls back to a local
+	// response on configured status codes or a timeout.
+	HttpForwardWithFallback *HttpForwardWithFallback `json:"httpForwardWithFallback,omitempty"`
+	// HttpForwardValidateAction forwards upstream and validates the request
+	// and/or response against an OpenAPI spec.
+	HttpForwardValidateAction *HttpForwardValidateAction `json:"httpForwardValidateAction,omitempty"`
+	HttpError                 *HttpError                 `json:"httpError,omitempty"`
 	// Class callbacks reference a server-side class (REST-only, no WebSocket).
 	HttpResponseClassCallback *HttpClassCallback `json:"httpResponseClassCallback,omitempty"`
 	HttpForwardClassCallback  *HttpClassCallback `json:"httpForwardClassCallback,omitempty"`
 	// Object/closure callbacks are driven over the callback WebSocket; ClientId
 	// identifies this client's WebSocket connection.
-	HttpResponseObjectCallback *HttpObjectCallback     `json:"httpResponseObjectCallback,omitempty"`
-	HttpForwardObjectCallback  *HttpObjectCallback     `json:"httpForwardObjectCallback,omitempty"`
-	HttpSseResponse            *HttpSseResponse        `json:"httpSseResponse,omitempty"`
-	HttpWebSocketResponse      *HttpWebSocketResponse  `json:"httpWebSocketResponse,omitempty"`
-	GrpcStreamResponse         *GrpcStreamResponse     `json:"grpcStreamResponse,omitempty"`
-	BinaryResponse             *BinaryResponse         `json:"binaryResponse,omitempty"`
-	DnsResponse                *DnsResponse            `json:"dnsResponse,omitempty"`
-	HttpLlmResponse            *HttpLlmResponse        `json:"httpLlmResponse,omitempty"`
-	ScenarioName               string                  `json:"scenarioName,omitempty"`
-	ScenarioState              string                  `json:"scenarioState,omitempty"`
-	NewScenarioState           string                  `json:"newScenarioState,omitempty"`
-	ResponseMode               ResponseMode            `json:"responseMode,omitempty"`
-	ResponseWeights            []int                   `json:"responseWeights,omitempty"`
-	SwitchAfter                *int                    `json:"switchAfter,omitempty"`
-	CrossProtocolScenarios     []CrossProtocolScenario `json:"crossProtocolScenarios,omitempty"`
-	Times                      *Times                  `json:"times,omitempty"`
-	TimeToLive                 *TimeToLive             `json:"timeToLive,omitempty"`
+	HttpResponseObjectCallback *HttpObjectCallback    `json:"httpResponseObjectCallback,omitempty"`
+	HttpForwardObjectCallback  *HttpObjectCallback    `json:"httpForwardObjectCallback,omitempty"`
+	HttpSseResponse            *HttpSseResponse       `json:"httpSseResponse,omitempty"`
+	HttpWebSocketResponse      *HttpWebSocketResponse `json:"httpWebSocketResponse,omitempty"`
+	GrpcStreamResponse         *GrpcStreamResponse    `json:"grpcStreamResponse,omitempty"`
+	// GrpcBidiResponse is a gRPC bidirectional-streaming response action.
+	GrpcBidiResponse       *GrpcBidiResponse       `json:"grpcBidiResponse,omitempty"`
+	BinaryResponse         *BinaryResponse         `json:"binaryResponse,omitempty"`
+	DnsResponse            *DnsResponse            `json:"dnsResponse,omitempty"`
+	HttpLlmResponse        *HttpLlmResponse        `json:"httpLlmResponse,omitempty"`
+	ScenarioName           string                  `json:"scenarioName,omitempty"`
+	ScenarioState          string                  `json:"scenarioState,omitempty"`
+	NewScenarioState       string                  `json:"newScenarioState,omitempty"`
+	ResponseMode           ResponseMode            `json:"responseMode,omitempty"`
+	ResponseWeights        []int                   `json:"responseWeights,omitempty"`
+	SwitchAfter            *int                    `json:"switchAfter,omitempty"`
+	CrossProtocolScenarios []CrossProtocolScenario `json:"crossProtocolScenarios,omitempty"`
+	// BeforeActions run before the primary action; AfterActions run after it
+	// (e.g. fire a webhook or invoke a callback as a side effect).
+	BeforeActions []AfterAction `json:"beforeActions,omitempty"`
+	AfterActions  []AfterAction `json:"afterActions,omitempty"`
+	// Steps defines a multi-step expectation (an ordered pipeline of actions).
+	Steps []ExpectationStep `json:"steps,omitempty"`
+	// Capture extracts values from the matched request into scenario/state keys.
+	Capture []CaptureRule `json:"capture,omitempty"`
+	// Namespace (tenant) isolates this expectation: when set it only matches
+	// requests carrying the configured matchNamespaceHeader with this value.
+	Namespace  string      `json:"namespace,omitempty"`
+	Times      *Times      `json:"times,omitempty"`
+	TimeToLive *TimeToLive `json:"timeToLive,omitempty"`
 }
 
 // ResponseMode selects how MockServer chooses between multiple HttpResponses

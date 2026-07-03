@@ -6,6 +6,10 @@ type HttpTemplate struct {
 	Template     string `json:"template,omitempty"`
 	TemplateFile string `json:"templateFile,omitempty"`
 	Delay        *Delay `json:"delay,omitempty"`
+	// ResponseOverride is merged into the template's rendered response.
+	ResponseOverride *HttpResponse `json:"responseOverride,omitempty"`
+	// ResponseModifier rewrites headers/cookies of the rendered response.
+	ResponseModifier *ResponseModifier `json:"responseModifier,omitempty"`
 }
 
 // TemplateBuilder provides a fluent API for building HttpTemplate actions.
