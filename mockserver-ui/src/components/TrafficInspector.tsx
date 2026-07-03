@@ -2297,6 +2297,9 @@ export default function TrafficInspector() {
             borderBottom: 1,
             borderColor: 'divider',
             flexShrink: 0,
+            // Size container so the Promote button's label can collapse when the
+            // master/detail split squeezes this pane (see the @container queries below).
+            containerType: 'inline-size',
           }}
         >
           <Typography variant="subtitle2" sx={{ fontWeight: 600, fontSize: '0.79rem' }}>
@@ -2418,9 +2421,13 @@ export default function TrafficInspector() {
                 disabled={promotableCount === 0}
                 startIcon={<AutoAwesomeMotionIcon sx={{ fontSize: '0.95rem' }} />}
                 onClick={() => setPromoteOpen(true)}
-                sx={{ height: 28, px: 1, fontSize: '0.7rem', textTransform: 'none', flexShrink: 0 }}
+                sx={{ height: 28, px: 1, fontSize: '0.7rem', textTransform: 'none', flexShrink: 0, whiteSpace: 'nowrap' }}
               >
-                Promote to Mocks
+                {/* The full label wraps to two lines when the master/detail split squeezes
+                    the list pane, so collapse to a short label below the container breakpoint
+                    (the header Box has containerType: 'inline-size'). */}
+                <Box component="span" sx={{ display: 'inline', '@container (max-width: 720px)': { display: 'none' } }}>Promote to Mocks</Box>
+                <Box component="span" sx={{ display: 'none', '@container (max-width: 720px)': { display: 'inline' } }}>Mocks</Box>
               </Button>
             </span>
           </Tooltip>
