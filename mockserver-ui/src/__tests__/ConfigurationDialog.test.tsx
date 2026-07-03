@@ -328,6 +328,74 @@ describe('ConfigurationDialog', () => {
     expect(cellTexts).not.toContain('validateProxyOpenAPISpec');
   });
 
+  it('opens the Server Info tab, fetches effective config + status, and renders source tiers', async () => {
+    const effective = [
+      { name: 'mockserver.logLevel', value: 'INFO', source: 'system-property' },
+      { name: 'mockserver.maxExpectations', value: '(default)', source: 'default' },
+      { name: 'mockserver.proxyAuthenticationPassword', value: '***REDACTED***', source: 'environment-variable' },
+    ];
+    const status = { ports: [1080, 1443], version: '7.3.0', gitHash: 'abc1234' };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/mockserver/config')) return { ok: true, json: async () => effective };
+      if (url.endsWith('/mockserver/status') && init?.method === 'PUT') return { ok: true, json: async () => status };
+      // GET /mockserver/configuration (settings tab)
+      return { ok: true, json: async () => fullConfig() };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() => {
+      expect(screen.getByText('Log level')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('tab', { name: 'Server Info' }));
+
+    // Both endpoints are fetched when the tab opens.
+    await waitFor(() => {
+      const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(urls.some((u) => u.endsWith('/mockserver/config'))).toBe(true);
+      expect(urls.some((u) => u.endsWith('/mockserver/status'))).toBe(true);
+    });
+
+    // Source tier group labels are shown, values grouped under them.
+    await waitFor(() => {
+      expect(screen.getByText(/System property/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Default/)).toBeInTheDocument();
+    expect(screen.getByText(/Environment variable/)).toBeInTheDocument();
+    expect(screen.getByText('mockserver.logLevel')).toBeInTheDocument();
+    expect(screen.getByText('***REDACTED***')).toBeInTheDocument();
+    // Bound ports rendered as chips.
+    expect(screen.getByText('1080')).toBeInTheDocument();
+    expect(screen.getByText('1443')).toBeInTheDocument();
+  });
+
+  it('shows an error on the Server Info tab when the config fetch fails', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/mockserver/config')) return { ok: false, status: 500, statusText: 'Internal Server Error', text: async () => 'boom' };
+      if (url.endsWith('/mockserver/status') && init?.method === 'PUT') return { ok: true, json: async () => ({ ports: [1080] }) };
+      return { ok: true, json: async () => fullConfig() };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() => {
+      expect(screen.getByText('Log level')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('tab', { name: 'Server Info' }));
+
+    // The Server Info panel surfaces a humanized error rather than the config tables.
+    await waitFor(() => {
+      expect(screen.queryByText('mockserver.logLevel')).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText('Loading server info…')).not.toBeInTheDocument();
+  });
+
   it('shows the error alert when a PUT fails', async () => {
     vi.stubGlobal(
       'fetch',

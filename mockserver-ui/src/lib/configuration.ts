@@ -30,6 +30,91 @@ export async function updateConfiguration(params: ConnectionParams, partial: Con
 export const LOG_LEVELS = ['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'OFF'] as const;
 
 // ---------------------------------------------------------------------------
+// Effective (read-only) configuration — GET /mockserver/config
+// ---------------------------------------------------------------------------
+
+/**
+ * The source tier a resolved configuration value came from. Matches the exact
+ * strings emitted by the server's `effectiveConfiguration()` (`--print-config`
+ * twin). `default` means the built-in default (value is rendered as `(default)`);
+ * sensitive values are redacted server-side to `***REDACTED***`.
+ */
+export type ConfigSource =
+  | 'system-property'
+  | 'properties-file'
+  | 'environment-variable'
+  | 'default'
+  | 'runtime-set';
+
+/** One resolved property from the effective configuration. */
+export interface EffectiveConfigProperty {
+  /** The `mockserver.*` property name. */
+  name: string;
+  /** The resolved value (already redacted server-side where sensitive). */
+  value: string;
+  /** Where the value came from. */
+  source: ConfigSource | string;
+}
+
+/** Human-readable label + ordering weight for each known source tier. */
+export const CONFIG_SOURCE_LABELS: Record<string, string> = {
+  'runtime-set': 'Runtime',
+  'system-property': 'System property',
+  'environment-variable': 'Environment variable',
+  'properties-file': 'Properties file',
+  default: 'Default',
+};
+
+/**
+ * Fetch the effective server configuration (`GET /mockserver/config`) — the
+ * `--print-config` twin. Returns one entry per recognised property, each with
+ * its resolved value and source tier. Values are redacted server-side.
+ */
+export async function getEffectiveConfiguration(
+  params: ConnectionParams,
+  signal?: AbortSignal,
+): Promise<EffectiveConfigProperty[]> {
+  const res = await fetch(`${buildBaseUrl(params)}/mockserver/config`, { signal });
+  if (!res.ok) throw new Error(`Failed to load effective configuration (HTTP ${res.status} ${res.statusText})`);
+  const data = (await res.json()) as unknown;
+  return Array.isArray(data) ? (data as EffectiveConfigProperty[]) : [];
+}
+
+// ---------------------------------------------------------------------------
+// Bound ports + build info — PUT /mockserver/status
+// ---------------------------------------------------------------------------
+
+/** Server status payload (`PUT /mockserver/status`) — bound ports plus build info. */
+export interface ServerStatus {
+  /** The ports MockServer is currently listening on. */
+  ports: number[];
+  version?: string;
+  artifactId?: string;
+  groupId?: string;
+  gitHash?: string;
+}
+
+/**
+ * Fetch the running server's bound ports and build info (`PUT /mockserver/status`).
+ * PUT (not GET) is the control-plane verb this endpoint uses.
+ */
+export async function getServerStatus(
+  params: ConnectionParams,
+  signal?: AbortSignal,
+): Promise<ServerStatus> {
+  const res = await fetch(`${buildBaseUrl(params)}/mockserver/status`, { method: 'PUT', signal });
+  if (!res.ok) throw new Error(`Failed to load server status (HTTP ${res.status} ${res.statusText})`);
+  const data = (await res.json()) as Partial<ServerStatus> | null;
+  return {
+    ports: Array.isArray(data?.ports) ? (data!.ports as number[]) : [],
+    version: data?.version,
+    artifactId: data?.artifactId,
+    groupId: data?.groupId,
+    gitHash: data?.gitHash,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Editable property descriptors
 // ---------------------------------------------------------------------------
 

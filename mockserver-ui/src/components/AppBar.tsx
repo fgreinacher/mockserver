@@ -44,6 +44,8 @@ import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import PanToolIcon from '@mui/icons-material/PanTool';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import RpcIcon from '@mui/icons-material/Cable';
+import SchemaIcon from '@mui/icons-material/Schema';
+import HistoryIcon from '@mui/icons-material/History';
 import Button from '@mui/material/Button';
 import Select from '@mui/material/Select';
 import type { SelectChangeEvent } from '@mui/material/Select';
@@ -170,6 +172,7 @@ const NAV_GROUPS: NavGroup[] = [
     tabs: [
       { value: 'get-started', label: 'Get Started', ariaLabel: 'Get started view', icon: <RocketLaunchIcon sx={tabIconSx} /> },
       { value: 'composer', label: 'Mocks', ariaLabel: 'Mocks view', description: 'Create, edit, and manage mock expectations — quick mode for common cases, advanced mode for full control.', icon: <PostAddIcon sx={tabIconSx} /> },
+      { value: 'scenarios', label: 'Scenarios', ariaLabel: 'Scenarios view', description: 'Manage scenario states and transitions — drive stateful, multi-step mock flows through a state machine.', icon: <SchemaIcon sx={tabIconSx} /> },
       { value: 'grpc', label: 'gRPC', ariaLabel: 'gRPC services view', description: 'Mock gRPC services and inspect gRPC calls.', icon: <RpcIcon sx={tabIconSx} /> },
       { value: 'async', label: 'Async', ariaLabel: 'AsyncAPI broker mock view', description: 'Mock event-driven APIs from an AsyncAPI spec — publish test messages to Kafka, MQTT, and AMQP (RabbitMQ) brokers.', icon: <HubIcon sx={tabIconSx} /> },
     ],
@@ -226,6 +229,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: <PanToolIcon sx={tabIconSx} />,
     tabs: [
       { value: 'breakpoints', label: 'Breakpoints', ariaLabel: 'Breakpoints view', description: 'Pause matching requests or responses mid-flight to inspect and edit them.', icon: <PanToolIcon sx={tabIconSx} /> },
+      { value: 'audit', label: 'Audit', ariaLabel: 'Audit trail view', description: 'Review recent control-plane changes — a chronological trail of mutations to expectations, configuration, and server state.', icon: <HistoryIcon sx={tabIconSx} /> },
       { value: 'library', label: 'Library', ariaLabel: 'Library of captured content', description: 'Browse and reuse captured requests, responses, and content.', icon: <Inventory2Icon sx={tabIconSx} /> },
       { value: 'cluster', label: 'Cluster', ariaLabel: 'Cluster status view', description: 'Monitor MockServer cluster nodes and shared state.', icon: <HubOutlinedIcon sx={tabIconSx} /> },
     ],
@@ -262,7 +266,7 @@ const NAV_VIEW_GROUP_ID: Record<ViewMode, string> = NAV_GROUPS.reduce<Record<str
     composer: true, library: true, chaos: true, performance: true,
     metrics: true, drift: true, verification: true, slo: true, async: true,
     grpc: true, breakpoints: true, contract: true, cluster: true, optimise: true,
-    'mcp-health': true,
+    'mcp-health': true, scenarios: true, audit: true,
   };
   for (const v of Object.keys(ALL_VIEW_MODES) as ViewMode[]) {
     if (!(v in NAV_VIEW_GROUP_ID)) {

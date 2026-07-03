@@ -68,6 +68,12 @@ const GrpcServicesPanel = lazy(() => import('./components/GrpcServicesPanel'));
 const BreakpointsPanel = lazy(() => import('./components/BreakpointsPanel'));
 const ContractTestPanel = lazy(() => import('./components/ContractTestPanel'));
 const ClusterPanel = lazy(() => import('./components/ClusterPanel'));
+// Standalone Scenarios view — renders the same ScenarioPanel that the Mocks
+// composer surfaces as a tab, giving the scenario state-machine a first-class
+// nav entry (two access paths, one component).
+const ScenarioPanel = lazy(() => import('./components/ScenarioPanel'));
+// Audit trail view (GET /mockserver/audit) — read-only control-plane mutation log.
+const AuditPanel = lazy(() => import('./components/AuditPanel'));
 
 // How long the WebSocket must stay down before the persistent connection-loss
 // banner appears. Brief reconnects (the common case under StrictMode remount or
@@ -395,6 +401,18 @@ export default function App() {
             {view === 'cluster' && (
               <Suspense fallback={<Box sx={{ p: 2 }}>Loading cluster…</Box>}>
                 <ClusterPanel connectionParams={params} />
+              </Suspense>
+            )}
+            {view === 'scenarios' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading scenarios…</Box>}>
+                <Box sx={{ flex: 1, overflow: 'auto', p: 1.5 }}>
+                  <ScenarioPanel connectionParams={params} />
+                </Box>
+              </Suspense>
+            )}
+            {view === 'audit' && (
+              <Suspense fallback={<Box sx={{ p: 2 }}>Loading audit…</Box>}>
+                <AuditPanel connectionParams={params} />
               </Suspense>
             )}
           </ErrorBoundary>

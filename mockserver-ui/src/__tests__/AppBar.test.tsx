@@ -303,6 +303,26 @@ describe('AppBar responsive navigation', () => {
     expect(useDashboardStore.getState().view).toBe('metrics');
   });
 
+  it('navigates to the standalone Scenarios view from the Mock group', async () => {
+    const user = userEvent.setup();
+    renderAppBar();
+
+    await user.click(screen.getByRole('button', { name: 'Mock views' }));
+    const scenariosItem = await screen.findByRole('menuitem', { name: 'Scenarios view' });
+    await user.click(scenariosItem);
+    expect(useDashboardStore.getState().view).toBe('scenarios');
+  });
+
+  it('navigates to the Audit trail view from the Inspect group', async () => {
+    const user = userEvent.setup();
+    renderAppBar();
+
+    await user.click(screen.getByRole('button', { name: 'Inspect views' }));
+    const auditItem = await screen.findByRole('menuitem', { name: 'Audit trail view' });
+    await user.click(auditItem);
+    expect(useDashboardStore.getState().view).toBe('audit');
+  });
+
   it('highlights the group that owns the active view', () => {
     useDashboardStore.setState({ view: 'slo' });
     renderAppBar();
@@ -344,6 +364,8 @@ describe('AppBar responsive navigation', () => {
       cluster: 'Cluster status view',
       optimise: 'LLM Optimise view',
       'mcp-health': 'MCP server health view',
+      scenarios: 'Scenarios view',
+      audit: 'Audit trail view',
     };
     const allViews = Object.keys(expectedAria) as ViewMode[];
 
@@ -394,8 +416,8 @@ describe('AppBar responsive navigation', () => {
     // self-explanatory Get Started tab is intentionally omitted (no bar).
     const views = Object.keys(NAV_TAB_DESCRIPTIONS);
     // Exact count guards against descriptions being accidentally dropped from
-    // other tabs: 18 tabs carry one (every tab except the omitted Get Started).
-    expect(views.length).toBe(18);
+    // other tabs: 20 tabs carry one (every tab except the omitted Get Started).
+    expect(views.length).toBe(20);
     for (const v of views) {
       expect(NAV_TAB_DESCRIPTIONS[v as keyof typeof NAV_TAB_DESCRIPTIONS]?.length ?? 0).toBeGreaterThan(0);
     }

@@ -18,6 +18,9 @@ import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableRow from '@mui/material/TableRow';
 import TableCell from '@mui/material/TableCell';
+import Tabs from '@mui/material/Tabs';
+import Tab from '@mui/material/Tab';
+import Chip from '@mui/material/Chip';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
 import { monospaceFontFamily } from '../theme';
@@ -25,10 +28,15 @@ import HumanErrorAlert from './HumanErrorAlert';
 import {
   getConfiguration,
   updateConfiguration,
+  getEffectiveConfiguration,
+  getServerStatus,
+  CONFIG_SOURCE_LABELS,
   LOG_LEVELS,
   EDITABLE_PROPERTIES,
   type Configuration,
   type EditablePropertyDescriptor,
+  type EffectiveConfigProperty,
+  type ServerStatus,
 } from '../lib/configuration';
 
 function valueToText(v: unknown): string {
@@ -67,7 +75,53 @@ export default function ConfigurationDialog({
   const [busy, setBusy] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
 
+  // Server Info tab (read-only): effective configuration with source tiers and
+  // the bound ports. Fetched lazily when the tab is first opened.
+  const [tab, setTab] = useState<'settings' | 'info'>('settings');
+  const [effectiveConfig, setEffectiveConfig] = useState<EffectiveConfigProperty[] | null>(null);
+  const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
+  const [infoError, setInfoError] = useState<HumanError | null>(null);
+
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
+
+  // Reset to the Settings tab and drop any loaded Server Info each time the
+  // dialog transitions to open, so every open starts clean and re-fetches. This
+  // uses the "adjust state during render on a prop change" pattern (React's
+  // endorsed alternative to a setState-in-effect) rather than an effect.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) {
+      setTab('settings');
+      setEffectiveConfig(null);
+      setServerStatus(null);
+      setInfoError(null);
+    }
+  }
+
+  // Fetch the effective configuration + bound ports when the Server Info tab is
+  // opened (once per open — the data is read-only). Both calls run together.
+  useEffect(() => {
+    if (!open || tab !== 'info' || effectiveConfig !== null) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    async function loadInfo(): Promise<void> {
+      try {
+        const [cfg, status] = await Promise.all([
+          getEffectiveConfiguration(connectionParams, controller.signal),
+          getServerStatus(connectionParams, controller.signal),
+        ]);
+        if (cancelled) return;
+        setEffectiveConfig(cfg);
+        setServerStatus(status);
+        setInfoError(null);
+      } catch (e) {
+        if (!cancelled) setInfoError(humanizeError(e));
+      }
+    }
+    void loadInfo();
+    return () => { cancelled = true; controller.abort(); };
+  }, [open, tab, effectiveConfig, connectionParams]);
 
   useEffect(() => {
     if (!open) return;
@@ -130,6 +184,17 @@ export default function ConfigurationDialog({
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth fullScreen={fullScreen} aria-labelledby="configuration-dialog-title">
       <DialogTitle id="configuration-dialog-title">Server Configuration</DialogTitle>
       <DialogContent>
+        <Tabs
+          value={tab}
+          onChange={(_, v) => setTab(v as 'settings' | 'info')}
+          sx={{ mb: 1.5, minHeight: 36 }}
+        >
+          <Tab value="settings" label="Settings" sx={{ minHeight: 36, textTransform: 'none' }} />
+          <Tab value="info" label="Server Info" sx={{ minHeight: 36, textTransform: 'none' }} />
+        </Tabs>
+
+        {tab === 'settings' && (
+          <>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Inspect the running server configuration and change common runtime settings. Changes apply
           immediately to this server.
@@ -196,11 +261,136 @@ export default function ConfigurationDialog({
             </TableBody>
           </Table>
         </Box>
+          </>
+        )}
+
+        {tab === 'info' && (
+          <ServerInfoPanel
+            effectiveConfig={effectiveConfig}
+            serverStatus={serverStatus}
+            error={infoError}
+          />
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={handleClose}>Close</Button>
       </DialogActions>
     </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Server Info tab — read-only effective configuration + bound ports
+// ---------------------------------------------------------------------------
+
+/** Preferred display order of the source tiers (most specific override first). */
+const SOURCE_ORDER = [
+  'runtime-set',
+  'system-property',
+  'environment-variable',
+  'properties-file',
+  'default',
+] as const;
+
+/** Group the effective config by source tier, in SOURCE_ORDER (unknowns last). */
+function groupBySource(props: EffectiveConfigProperty[]): [string, EffectiveConfigProperty[]][] {
+  const bySource = new Map<string, EffectiveConfigProperty[]>();
+  for (const p of props) {
+    const list = bySource.get(p.source);
+    if (list) list.push(p);
+    else bySource.set(p.source, [p]);
+  }
+  const ordered: [string, EffectiveConfigProperty[]][] = [];
+  for (const source of SOURCE_ORDER) {
+    const list = bySource.get(source);
+    if (list) { ordered.push([source, list]); bySource.delete(source); }
+  }
+  // Any source not in the known order (forward-compat) appended in insertion order.
+  for (const [source, list] of bySource) ordered.push([source, list]);
+  return ordered;
+}
+
+function ServerInfoPanel({
+  effectiveConfig,
+  serverStatus,
+  error,
+}: {
+  effectiveConfig: EffectiveConfigProperty[] | null;
+  serverStatus: ServerStatus | null;
+  error: HumanError | null;
+}) {
+  const grouped = useMemo(
+    () => (effectiveConfig ? groupBySource(effectiveConfig) : []),
+    [effectiveConfig],
+  );
+
+  if (error) {
+    return <HumanErrorAlert error={error} sx={{ mb: 1.5 }} />;
+  }
+
+  if (effectiveConfig === null) {
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
+        Loading server info…
+      </Typography>
+    );
+  }
+
+  return (
+    <Box>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        The effective configuration this server resolved at startup, with the source of each value.
+        Sensitive values are redacted by the server. This view is read-only.
+      </Typography>
+
+      {/* Bound ports + build info */}
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontWeight: 600 }}>
+        Bound ports
+      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', mb: 0.5 }}>
+        {serverStatus && serverStatus.ports.length > 0 ? (
+          serverStatus.ports.map((port) => (
+            <Chip key={port} size="small" label={String(port)} variant="outlined" sx={{ fontFamily: monospaceFontFamily }} />
+          ))
+        ) : (
+          <Typography variant="body2" color="text.secondary">No bound ports reported.</Typography>
+        )}
+      </Box>
+      {serverStatus?.version && (
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+          Version {serverStatus.version}
+          {serverStatus.gitHash ? ` (${serverStatus.gitHash})` : ''}
+        </Typography>
+      )}
+
+      {/* Effective configuration grouped by source tier */}
+      {grouped.map(([source, props]) => (
+        <Box key={source} sx={{ mt: 1.5 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontWeight: 600 }}>
+            {CONFIG_SOURCE_LABELS[source] ?? source} ({props.length})
+          </Typography>
+          <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}>
+            <Table size="small">
+              <TableBody>
+                {props.map((p) => (
+                  <TableRow key={p.name}>
+                    <TableCell sx={{ typography: 'subtitle2', fontWeight: 400, fontFamily: monospaceFontFamily, width: '55%', verticalAlign: 'top' }}>
+                      {p.name}
+                    </TableCell>
+                    <TableCell sx={{ typography: 'subtitle2', fontWeight: 400, fontFamily: monospaceFontFamily, wordBreak: 'break-all' }}>
+                      {p.value}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
+        </Box>
+      ))}
+      {grouped.length === 0 && (
+        <Typography variant="body2" color="text.secondary">No configuration reported.</Typography>
+      )}
+    </Box>
   );
 }
 

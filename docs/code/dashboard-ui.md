@@ -160,16 +160,17 @@ When `resetKeys` changes (the user navigates to another tab), the boundary clear
 
 ## Top-Level Views
 
-The dashboard has **nineteen top-level views** controlled by the AppBar. The view state is stored in Zustand as `view: ViewMode` where:
+The dashboard has **twenty-one top-level views** controlled by the AppBar. The view state is stored in Zustand as `view: ViewMode` where:
 
 ```
 ViewMode = 'dashboard' | 'traffic' | 'sessions' | 'composer' | 'library'
          | 'chaos' | 'performance' | 'metrics' | 'drift' | 'verification'
          | 'slo' | 'async' | 'grpc' | 'breakpoints'
          | 'contract' | 'cluster' | 'optimise' | 'mcp-health' | 'get-started'
+         | 'scenarios' | 'audit'
 ```
 
-`'composer'` is surfaced in the UI under the button label **Mocks**; `'async'` is the **AsyncAPI** broker view; `'performance'` is the **Performance** load-scenario panel; `'sessions'` is labelled **Trace** in the nav; `'get-started'` is the initial onboarding view shown to new users before any data arrives.
+`'composer'` is surfaced in the UI under the button label **Mocks**; `'async'` is the **AsyncAPI** broker view; `'performance'` is the **Performance** load-scenario panel; `'sessions'` is labelled **Trace** in the nav; `'get-started'` is the initial onboarding view shown to new users before any data arrives; `'scenarios'` is a standalone view over the same `ScenarioPanel` that the Mocks composer embeds as a tab; `'audit'` renders the control-plane audit trail from `GET /mockserver/audit`.
 
 The active view and per-panel search terms persist across page reloads: the view is mirrored in the URL hash (`#/<view>`) and in `localStorage`, resolved at startup by `coerceView`/`persistView` in `store/index.ts`; per-panel search terms are stored under a separate `localStorage` key. Unknown or stale values are silently ignored and fall back to `'get-started'`.
 
@@ -769,7 +770,7 @@ The AppBar "Import / export" (wrench) menu groups one-off control-plane tools, e
   receivedSearch: '',
   proxiedSearch: '',
   trafficSearch: '',
-  view: 'get-started',          // 19 values — see ViewMode in store/index.ts; 'sessions' is labelled "Trace", 'composer' is "Mocks", 'async' is AsyncAPI, 'slo' is SLO, 'contract' is Contract, 'cluster' is Cluster, 'optimise' is "LLM Optimise", 'mcp-health' is "MCP Health"
+  view: 'get-started',          // 21 values — see ViewMode in store/index.ts; 'sessions' is labelled "Trace", 'composer' is "Mocks", 'async' is AsyncAPI, 'slo' is SLO, 'contract' is Contract, 'cluster' is Cluster, 'optimise' is "LLM Optimise", 'mcp-health' is "MCP Health"
   selectedTrafficIndex: null,
   actionTypeFilter: [],
   llmProviderFilter: [],
