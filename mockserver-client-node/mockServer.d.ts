@@ -34,8 +34,14 @@ export type Expectation = {
   httpForwardClassCallback?: HttpClassCallback;
   httpForwardObjectCallback?: HttpObjectCallback;
   httpOverrideForwardedRequest?: HttpOverrideForwardedRequest;
+  /** forward the request upstream, but validate the request and/or response against an OpenAPI spec */
+  httpForwardValidateAction?: HttpForwardValidateAction;
+  /** forward the request upstream, returning a fallback mock response on a configured status code or timeout */
+  httpForwardWithFallback?: HttpForwardWithFallback;
   httpError?: HttpError;
   httpSseResponse?: HttpSseResponse;
+  /** respond with a mocked LLM (chat/completion/embedding/rerank/moderation) response */
+  httpLlmResponse?: HttpLlmResponse;
   httpWebSocketResponse?: HttpWebSocketResponse;
   grpcStreamResponse?: GrpcStreamResponse;
   grpcBidiResponse?: GrpcBidiResponse;
@@ -44,6 +50,8 @@ export type Expectation = {
   times?: Times;
   timeToLive?: TimeToLive;
   chaos?: HttpChaosProfile;
+  /** declarative protocol-agnostic rate limit / quota applied to matching requests */
+  rateLimit?: RateLimit;
   beforeActions?: AfterAction | AfterAction[];
   afterActions?: AfterAction | AfterAction[];
   httpResponses?: HttpResponse[];
@@ -53,11 +61,15 @@ export type Expectation = {
   /** requests served per response block before advancing when responseMode is SWITCH (default 1) */
   switchAfter?: number;
   steps?: ExpectationStep[];
+  /** optional namespace (tenant) this expectation belongs to; when set, the expectation only matches requests carrying the configured matchNamespaceHeader with this value, isolated from other namespaces */
+  namespace?: string;
   scenarioName?: string;
   scenarioState?: string;
   newScenarioState?: string;
   /** advance a (possibly different) scenario when a non-HTTP protocol event occurs */
   crossProtocolScenarios?: CrossProtocolScenario[];
+  /** expectation-level capture rules that extract request values into named variables for later template reference */
+  capture?: CaptureRule[];
 };
 
 /**
@@ -87,7 +99,55 @@ export interface OpenAPIExpectation {
   operationsAndResponses?: Record<string, string>;
 }
 
-export type RequestDefinition = HttpRequest | OpenAPIDefinition;
+export type RequestDefinition =
+  | HttpRequest
+  | OpenAPIDefinition
+  | DnsRequestDefinition
+  | BinaryRequestDefinition
+  | ConditionalRequestDefinition;
+
+/** DNS record type a {@link DnsRequestDefinition} matches on. */
+export type DnsRecordType = "A" | "AAAA" | "CNAME" | "MX" | "SRV" | "TXT" | "PTR";
+
+/** DNS record class a {@link DnsRequestDefinition} matches on. */
+export type DnsRecordClass = "IN" | "CH" | "HS" | "ANY";
+
+/**
+ * A DNS request matcher — matches an inbound DNS query (used with a
+ * `dnsResponse` action). Discriminated on the wire by the presence of `dnsName`.
+ */
+export interface DnsRequestDefinition {
+  /** negate the whole matcher */
+  not?: boolean;
+  /** the queried DNS name to match (e.g. "example.com") */
+  dnsName?: string;
+  /** the queried record type to match */
+  dnsType?: DnsRecordType;
+  /** the queried record class to match (defaults to IN) */
+  dnsClass?: DnsRecordClass;
+}
+
+/**
+ * A raw binary (non-HTTP) request matcher — discriminated on the wire by the
+ * presence of `binaryData`.
+ */
+export interface BinaryRequestDefinition {
+  not?: boolean;
+  /** base64-encoded binary payload to match */
+  binaryData?: string;
+  socketAddress?: SocketAddress;
+}
+
+/**
+ * A conditional request matcher: match `if`, otherwise fall through to `then` /
+ * `else`. Discriminated on the wire by the presence of an `if` sub-matcher.
+ */
+export interface ConditionalRequestDefinition {
+  not?: boolean;
+  if?: RequestDefinition;
+  then?: RequestDefinition;
+  else?: RequestDefinition;
+}
 
 export interface HttpRequest {
   secure?: boolean;
@@ -163,11 +223,100 @@ export interface HttpForward {
   scheme?: "HTTP" | "HTTPS";
 }
 
+/**
+ * Forward the request to an upstream host and validate the request and/or the
+ * response against an OpenAPI specification.
+ */
+export interface HttpForwardValidateAction {
+  /** response delay */
+  delay?: Delay;
+  primary?: boolean;
+  /** the OpenAPI spec to validate against, as an inline JSON/YAML payload, a URL, or a file/classpath reference */
+  specUrlOrPayload?: string;
+  host?: string;
+  /** upstream port (defaults to 80) */
+  port?: number;
+  /** upstream scheme (defaults to HTTP) */
+  scheme?: "HTTP" | "HTTPS";
+  /** validate the outgoing request against the spec (default true) */
+  validateRequest?: boolean;
+  /** validate the upstream response against the spec (default true) */
+  validateResponse?: boolean;
+  /** STRICT fails the exchange on a validation error; LOG_ONLY only logs it (default STRICT) */
+  validationMode?: "STRICT" | "LOG_ONLY";
+}
+
+/**
+ * Forward a request to an upstream host; if upstream returns a configured status
+ * code (default 500-599) or times out, return the fallback mock response instead.
+ */
+export interface HttpForwardWithFallback {
+  /** response delay */
+  delay?: Delay;
+  primary?: boolean;
+  /** the upstream forward target */
+  httpForward?: HttpForward;
+  /** the mock response returned when the upstream call fails over */
+  fallbackResponse?: HttpResponse;
+  /** upstream status codes that trigger the fallback (defaults to 500-599) */
+  fallbackOnStatusCodes?: number[];
+  /** whether an upstream timeout triggers the fallback */
+  fallbackOnTimeout?: boolean;
+}
+
 export interface HttpClassCallback {
   /** response delay */
   delay?: Delay;
   primary?: boolean;
   callbackClass?: string;
+}
+
+/**
+ * The part of the request a {@link CaptureRule} reads its value from.
+ */
+export type CaptureSource =
+  | "jsonPath"
+  | "xpath"
+  | "header"
+  | "queryStringParameter"
+  | "cookie"
+  | "pathParameter";
+
+/**
+ * An expectation-level capture rule: extracts a value from the matched request
+ * and binds it to a named variable that response templates can reference.
+ */
+export interface CaptureRule {
+  /** where in the request to read from */
+  source?: CaptureSource;
+  /** the JSONPath, XPath, or key/name driving the extraction */
+  expression?: string;
+  /** the variable name the extracted value is bound to */
+  into?: string;
+}
+
+/**
+ * A declarative, protocol-agnostic rate limit / quota applied to matching
+ * requests. `fixed_window` uses `limit` + `windowMillis`; `token_bucket` uses
+ * `burst` + `refillPerSecond`.
+ */
+export interface RateLimit {
+  /** shared counter key; expectations with the same name share one counter (defaults to the expectation id) */
+  name?: string;
+  /** rate-limiting algorithm (defaults to fixed_window) */
+  algorithm?: "fixed_window" | "token_bucket";
+  /** fixed_window: max requests allowed per window before requests are rejected */
+  limit?: number;
+  /** fixed_window: window length in milliseconds */
+  windowMillis?: number;
+  /** token_bucket: bucket capacity in tokens */
+  burst?: number;
+  /** token_bucket: token refill rate per second */
+  refillPerSecond?: number;
+  /** status returned when over-limit (default 429) */
+  errorStatus?: number;
+  /** literal Retry-After header value; computed from the reset time when omitted */
+  retryAfter?: string;
 }
 
 export interface HttpObjectCallback {
@@ -486,6 +635,187 @@ export interface HttpChaosProfile {
   quotaWindowMillis?: number;
   quotaErrorStatus?: number;
   degradationRampMillis?: number;
+}
+
+/** LLM provider whose wire format the mocked response is encoded in. */
+export type LlmProvider =
+  | "ANTHROPIC"
+  | "OPENAI"
+  | "OPENAI_RESPONSES"
+  | "GEMINI"
+  | "BEDROCK"
+  | "AZURE_OPENAI"
+  | "OLLAMA"
+  | "COHERE"
+  | "VOYAGE"
+  | "MISTRAL"
+  | "XAI"
+  | "DEEPSEEK"
+  | "GROQ"
+  | "OPENROUTER";
+
+/** Role of the latest parsed conversation message, used by conversation predicates. */
+export type LlmRole = "USER" | "ASSISTANT" | "TOOL" | "SYSTEM";
+
+/** A single tool/function call the mocked assistant should emit. */
+export interface LlmToolUse {
+  id?: string;
+  name?: string;
+  /** the tool-call arguments as a JSON string */
+  arguments?: string;
+}
+
+/** Token accounting reported on a mocked completion. */
+export interface LlmUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  cacheCreationTokens?: number;
+  reasoningTokens?: number;
+}
+
+/** Streaming timing physics for a mocked streamed completion. */
+export interface LlmStreamingPhysics {
+  timeToFirstToken?: Delay;
+  tokensPerSecond?: number;
+  jitter?: number;
+  seed?: number;
+  /** stream sub-word tokens rather than whole words */
+  subwordStreaming?: boolean;
+}
+
+/** A mocked LLM chat/completion response. */
+export interface LlmCompletion {
+  text?: string;
+  toolCalls?: LlmToolUse[];
+  stopReason?: string;
+  usage?: LlmUsage;
+  streaming?: boolean;
+  streamingPhysics?: LlmStreamingPhysics;
+  /** a JSON-schema string constraining structured output */
+  outputSchema?: string;
+  /** reject/repair output that does not conform to outputSchema */
+  enforceOutputSchema?: boolean;
+  model?: string;
+  toolChoice?: string;
+  reasoningText?: string;
+  reasoningSignature?: string;
+}
+
+/** A mocked embedding response. */
+export interface LlmEmbeddingResponse {
+  dimensions?: number;
+  deterministicFromInput?: boolean;
+  seed?: number;
+}
+
+/** A mocked rerank response. */
+export interface LlmRerankResponse {
+  topN?: number;
+  deterministicFromInput?: boolean;
+  seed?: number;
+}
+
+/** A mocked moderation response. */
+export interface LlmModerationResponse {
+  flaggedCategories?: string[];
+  model?: string;
+}
+
+/** A mocked content-filter annotation (per-category severity). */
+export interface LlmContentFilter {
+  hate?: string;
+  sexual?: string;
+  violence?: string;
+  selfHarm?: string;
+}
+
+/**
+ * Text normalization applied to the latest parsed message before the
+ * contains/matches conversation predicates are evaluated.
+ */
+export interface LlmNormalizationOptions {
+  collapseWhitespace?: boolean;
+  lowercase?: boolean;
+  sortJsonKeys?: boolean;
+  /** drop a built-in set of volatile fields (ids, timestamps, etc.) before comparison */
+  dropBuiltInVolatileFields?: boolean;
+  /** additional field names to drop before comparison */
+  dropVolatileFields?: string[];
+}
+
+/**
+ * Predicates over the decoded LLM conversation that gate whether this mocked
+ * response matches a given turn.
+ */
+export interface LlmConversationPredicates {
+  /** match only at this zero-based turn index */
+  turnIndex?: number;
+  latestMessageContains?: string;
+  /** regex source matched against the latest message */
+  latestMessageMatches?: string;
+  latestMessageRole?: LlmRole;
+  /** match when the latest message contains a tool result for this tool name */
+  containsToolResultFor?: string;
+  /** opt-in fuzzy LLM-judged semantic match (off by default) */
+  semanticMatchAgainst?: string;
+  /** normalization applied before contains/matches */
+  normalization?: LlmNormalizationOptions;
+}
+
+/**
+ * Chaos/fault-injection profile for a mocked LLM response (errors, streaming
+ * truncation, quotas, provider-specific error bodies).
+ */
+export interface LlmChaosProfile {
+  errorStatus?: number;
+  retryAfter?: string;
+  /** 0.0-1.0; null/0 = never inject an error */
+  errorProbability?: number;
+  /** streaming: how the SSE event stream is truncated */
+  truncateMode?: "NONE" | "MID_STREAM";
+  /** 0.0-1.0 fraction of events to keep before truncating */
+  truncateAtFraction?: number;
+  /** streaming: emit a malformed (broken-JSON) SSE chunk */
+  malformedSse?: boolean;
+  /** makes a fractional errorProbability reproducible */
+  seed?: number;
+  /** stateful request quota: shared counter key */
+  quotaName?: string;
+  /** stateful request quota: max requests allowed per window */
+  quotaLimit?: number;
+  /** stateful request quota: window length in milliseconds */
+  quotaWindowMillis?: number;
+  /** stateful request quota: status when exceeded (default 429) */
+  quotaErrorStatus?: number;
+  /** stateful token quota: max tokens allowed per window (TPM/TPD) */
+  tokenQuotaLimit?: number;
+  /** stateful token quota: window length in milliseconds */
+  tokenQuotaWindowMillis?: number;
+  /** OVERLOAD | RATE_LIMIT | SERVER_ERROR -> emit the active provider's error body/status */
+  errorKind?: "OVERLOAD" | "RATE_LIMIT" | "SERVER_ERROR";
+  /** 0.0-1.0; null/0 = never inject a content-filter block */
+  contentFilterBlockProbability?: number;
+}
+
+/**
+ * A mocked LLM response action: encodes a completion, embedding, rerank, or
+ * moderation response in the given provider's wire format, optionally gated by
+ * conversation predicates and shaped by an LLM chaos profile.
+ */
+export interface HttpLlmResponse {
+  /** response delay */
+  delay?: Delay;
+  primary?: boolean;
+  provider?: LlmProvider;
+  model?: string;
+  completion?: LlmCompletion;
+  embedding?: LlmEmbeddingResponse;
+  rerank?: LlmRerankResponse;
+  moderation?: LlmModerationResponse;
+  contentFilter?: LlmContentFilter;
+  conversationPredicates?: LlmConversationPredicates;
+  chaos?: LlmChaosProfile;
 }
 
 /** The service-level indicator a single SLO objective is evaluated over. */

@@ -13,6 +13,7 @@
         "forceConsistentCasingInFileNames": true
     },
     "include": [
-        "test/mockServerClient.ts"
+        "test/mockServerClient.ts",
+        "test/expectationTypes.ts"
     ]
 }
