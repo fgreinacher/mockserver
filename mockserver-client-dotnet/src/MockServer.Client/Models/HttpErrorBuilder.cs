@@ -19,6 +19,12 @@ public sealed class HttpErrorBuilder
         return this;
     }
 
+    public HttpErrorBuilder WithDelay(TimeUnit timeUnit, long value)
+    {
+        _error.Delay = new Delay { TimeUnit = timeUnit, Value = value };
+        return this;
+    }
+
     public HttpError Build() => _error;
 
     /// <summary>

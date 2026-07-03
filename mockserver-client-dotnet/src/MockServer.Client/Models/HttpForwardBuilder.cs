@@ -25,6 +25,12 @@ public sealed class HttpForwardBuilder
         return this;
     }
 
+    public HttpForwardBuilder WithDelay(TimeUnit timeUnit, long value)
+    {
+        _forward.Delay = new Delay { TimeUnit = timeUnit, Value = value };
+        return this;
+    }
+
     public HttpForward Build() => _forward;
 
     /// <summary>

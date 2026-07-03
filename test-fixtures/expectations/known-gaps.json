@@ -43,32 +43,7 @@
     "httpRequest.body.optional",
     "httpWebSocketResponse.matchers"
   ],
-  "dotnet": [
-    "grpcStreamResponse.messages.*.templateType",
-    "httpError.delay",
-    "httpForward.delay",
-    "httpForwardObjectCallback.responseCallback",
-    "httpLlmResponse.completion.enforceOutputSchema",
-    "httpLlmResponse.completion.reasoningSignature",
-    "httpLlmResponse.completion.reasoningText",
-    "httpLlmResponse.completion.streamingPhysics.subwordStreaming",
-    "httpLlmResponse.completion.toolChoice",
-    "httpLlmResponse.completion.usage.cacheCreationTokens",
-    "httpLlmResponse.completion.usage.cachedInputTokens",
-    "httpLlmResponse.completion.usage.reasoningTokens",
-    "httpLlmResponse.contentFilter",
-    "httpLlmResponse.moderation",
-    "httpLlmResponse.primary",
-    "httpLlmResponse.rerank",
-    "httpOverrideForwardedRequest.httpResponse",
-    "httpRequest.dnsClass",
-    "httpRequest.dnsName",
-    "httpRequest.dnsType",
-    "httpRequest.pathParameters",
-    "httpResponseObjectCallback.responseCallback",
-    "httpWebSocketResponse.matchers",
-    "rateLimit.refillPerSecond"
-  ],
+  "dotnet": [],
   "node": [],
   "php": []
 }

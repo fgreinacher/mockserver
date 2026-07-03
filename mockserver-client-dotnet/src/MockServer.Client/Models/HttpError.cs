@@ -16,6 +16,14 @@ public sealed class HttpError
     public string? ResponseBytes { get; set; }
 
     /// <summary>
+    /// Optional delay applied before the error behaviour is triggered. Mirrors the server's
+    /// <c>httpError.json</c> <c>delay</c> property.
+    /// </summary>
+    [JsonPropertyName("delay")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Delay? Delay { get; set; }
+
+    /// <summary>
     /// Creates a new HttpError builder.
     /// </summary>
     public static HttpErrorBuilder Error() => new();

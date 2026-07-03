@@ -20,6 +20,15 @@ public sealed class HttpOverrideForwardedRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HttpRequest? HttpRequest { get; set; }
 
+    /// <summary>
+    /// A static response returned to the caller instead of forwarding upstream. Serialised as
+    /// <c>httpResponse</c> — the second <c>oneOf</c> variant of the server's
+    /// <c>httpOverrideForwardedRequest.json</c> schema (<c>httpRequest</c> + <c>httpResponse</c>).
+    /// </summary>
+    [JsonPropertyName("httpResponse")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HttpResponse? HttpResponse { get; set; }
+
     [JsonPropertyName("responseTemplate")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HttpTemplate? ResponseTemplate { get; set; }

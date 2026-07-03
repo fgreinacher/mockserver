@@ -146,127 +146,15 @@ public class RoundTripFidelityTests
         var inputText = File.ReadAllText(fixturePath);
         var original = JsonNode.Parse(inputText)!;
 
-        // Deserialize with the client's real options. A statically typed model can THROW on a field
-        // whose JSON type it does not model (e.g. a boolean where it declares a string) instead of
-        // silently dropping it the way a dynamically typed client does. To keep the comparator faithful,
-        // strip the offending field from a working copy and retry: the dropped path then surfaces as a
-        // normal diff against the (untouched) original input — exactly the outcome a lenient client yields.
-        var working = JsonNode.Parse(inputText)!;
-        Expectation? expectation = null;
-        for (var guard = 0; guard < 500; guard++)
-        {
-            try
-            {
-                expectation = JsonSerializer.Deserialize<Expectation>(working.ToJsonString(), JsonOptions);
-                break;
-            }
-            catch (JsonException ex) when (ex.Path is { Length: > 0 } p && p != "$" && RemovePath(working, p))
-            {
-                // stripped an un-modelable field; loop to catch any further ones
-            }
-        }
-        // If it still cannot deserialize (not a strippable type mismatch), surface the real failure.
-        expectation ??= JsonSerializer.Deserialize<Expectation>(working.ToJsonString(), JsonOptions);
-
+        // Deserialize with the client's real options and re-serialize. Unknown fields are ignored and
+        // modeled fields must survive intact — any dropped/mutated field surfaces as a diff below.
+        var expectation = JsonSerializer.Deserialize<Expectation>(inputText, JsonOptions);
         var outputText = JsonSerializer.Serialize(expectation, JsonOptions);
+
         var input = Norm(original, null);
         var output = Norm(JsonNode.Parse(outputText), null);
         return Diffs(input, output, "");
     }
-
-    /// <summary>
-    /// Remove the node addressed by a System.Text.Json exception <c>Path</c> (e.g. <c>$.a.b[0].c</c>)
-    /// from the working tree. Returns false when the node cannot be located, so the caller's exception
-    /// filter declines and the original exception propagates (no infinite loop).
-    /// </summary>
-    private static bool RemovePath(JsonNode root, string path)
-    {
-        var tokens = new List<object>();
-        var i = 0;
-        if (i < path.Length && path[i] == '$')
-        {
-            i++;
-        }
-        while (i < path.Length)
-        {
-            var c = path[i];
-            if (c == '.')
-            {
-                i++;
-                var start = i;
-                while (i < path.Length && path[i] != '.' && path[i] != '[')
-                {
-                    i++;
-                }
-                tokens.Add(path.Substring(start, i - start));
-            }
-            else if (c == '[')
-            {
-                i++;
-                if (i < path.Length && (path[i] == '\'' || path[i] == '"'))
-                {
-                    var quote = path[i++];
-                    var start = i;
-                    while (i < path.Length && path[i] != quote)
-                    {
-                        i++;
-                    }
-                    tokens.Add(path.Substring(start, i - start));
-                    if (i < path.Length) i++; // closing quote
-                    if (i < path.Length && path[i] == ']') i++;
-                }
-                else
-                {
-                    var start = i;
-                    while (i < path.Length && path[i] != ']')
-                    {
-                        i++;
-                    }
-                    var idxText = path.Substring(start, i - start);
-                    if (i < path.Length) i++; // ']'
-                    tokens.Add(int.TryParse(idxText, out var idx) ? idx : (object)idxText);
-                }
-            }
-            else
-            {
-                i++;
-            }
-        }
-        if (tokens.Count == 0)
-        {
-            return false;
-        }
-
-        JsonNode? cur = root;
-        for (var t = 0; t < tokens.Count - 1 && cur is not null; t++)
-        {
-            cur = Descend(cur, tokens[t]);
-        }
-        if (cur is null)
-        {
-            return false;
-        }
-
-        var last = tokens[^1];
-        if (last is string key && cur is JsonObject obj && obj.ContainsKey(key))
-        {
-            obj.Remove(key);
-            return true;
-        }
-        if (last is int index && cur is JsonArray arr && index >= 0 && index < arr.Count)
-        {
-            arr.RemoveAt(index);
-            return true;
-        }
-        return false;
-    }
-
-    private static JsonNode? Descend(JsonNode node, object token) => token switch
-    {
-        string key when node is JsonObject o && o.ContainsKey(key) => o[key],
-        int idx when node is JsonArray a && idx >= 0 && idx < a.Count => a[idx],
-        _ => null
-    };
 
     /// <summary>
     /// NORM (null == absent) + CANON (dual-encoding canonicalization) in one recursive pass,

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace MockServer.Client.Models;
@@ -15,9 +16,33 @@ public sealed class HttpRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Path { get; set; }
 
+    /// <summary>
+    /// Path-parameter matchers, a <c>keyToMultiValue</c> map (name → list of values). Each value is a
+    /// <see cref="JsonElement"/> so both the simple string form (<c>{"id":["42"]}</c>) and the
+    /// schema-matcher form (<c>{"id":[{"schema":{...}}]}</c>) round-trip without loss. Use
+    /// <see cref="JsonElement.GetString"/> to read simple string values.
+    /// </summary>
     [JsonPropertyName("pathParameters")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public Dictionary<string, List<string>>? PathParameters { get; set; }
+    public Dictionary<string, List<JsonElement>>? PathParameters { get; set; }
+
+    /// <summary>
+    /// DNS query name to match (DNS-protocol requests). Mirrors the server's <c>httpRequest.json</c>
+    /// <c>dnsName</c> property.
+    /// </summary>
+    [JsonPropertyName("dnsName")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DnsName { get; set; }
+
+    /// <summary>DNS record type to match (e.g. <c>A</c>, <c>AAAA</c>, <c>CNAME</c>).</summary>
+    [JsonPropertyName("dnsType")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DnsType { get; set; }
+
+    /// <summary>DNS record class to match (e.g. <c>IN</c>).</summary>
+    [JsonPropertyName("dnsClass")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DnsClass { get; set; }
 
     [JsonPropertyName("queryStringParameters")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

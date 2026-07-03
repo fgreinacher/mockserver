@@ -186,11 +186,167 @@ public class ExpectationCompletenessTests
         exp.Namespace.Should().Be("tenant-a");
         exp.Chaos!.ErrorStatus.Should().Be(500);
         exp.RateLimit!.Limit.Should().Be(100);
-        exp.HttpRequest!.PathParameters!["petId"][0].Should().Be("42");
+        exp.HttpRequest!.PathParameters!["petId"][0].GetString().Should().Be("42");
         exp.HttpRequest.Cookies!["session"].Should().Be("s1");
         exp.HttpResponse!.Cookies!["sid"].Should().Be("9");
         exp.BeforeActions.Should().HaveCount(1);
         exp.AfterActions.Should().HaveCount(1);
         exp.Capture![0].Into.Should().Be("id");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Residual round-trip fidelity gaps (closed) — one test per formerly-excused field group.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void ObjectCallback_BooleanResponseCallback_Deserializes_WithoutThrowing()
+    {
+        // Regression: the server emits responseCallback as a JSON boolean. When the model typed it as
+        // string?, deserialization THREW and the whole expectation was lost. It must now be a bool?.
+        var json = "{\"httpRequest\":{\"path\":\"/objcb\"}," +
+                   "\"httpResponseObjectCallback\":{\"clientId\":\"client-xyz\",\"responseCallback\":true}," +
+                   "\"httpForwardObjectCallback\":{\"clientId\":\"client-123\",\"responseCallback\":false}}";
+
+        var exp = JsonSerializer.Deserialize<Expectation>(json, JsonOptions)!;
+
+        exp.HttpResponseObjectCallback!.ClientId.Should().Be("client-xyz");
+        exp.HttpResponseObjectCallback.ResponseCallback.Should().BeTrue();
+        exp.HttpForwardObjectCallback!.ResponseCallback.Should().BeFalse();
+        AssertRoundTrips<Expectation>(json);
+    }
+
+    [Fact]
+    public void HttpError_WithDelay_RoundTrips()
+    {
+        var json = "{\"responseBytes\":\"SGVsbG8=\",\"delay\":{\"timeUnit\":\"MILLISECONDS\",\"value\":20}}";
+        AssertRoundTrips<HttpError>(json);
+    }
+
+    [Fact]
+    public void HttpForward_WithDelay_RoundTrips()
+    {
+        var json = "{\"scheme\":\"HTTPS\",\"host\":\"backend.example.com\",\"port\":443," +
+                   "\"delay\":{\"timeUnit\":\"MILLISECONDS\",\"value\":10}}";
+        AssertRoundTrips<HttpForward>(json);
+    }
+
+    [Fact]
+    public void OverrideForwardedRequest_WithHttpResponse_RoundTrips()
+    {
+        var json = "{\"httpRequest\":{\"path\":\"/other\",\"socketAddress\":{\"host\":\"h\",\"port\":1234,\"scheme\":\"HTTPS\"}}," +
+                   "\"httpResponse\":{\"body\":\"overridden\"},\"delay\":{\"timeUnit\":\"MILLISECONDS\",\"value\":5}}";
+        AssertRoundTrips<HttpOverrideForwardedRequest>(json);
+
+        var model = JsonSerializer.Deserialize<HttpOverrideForwardedRequest>(json, JsonOptions)!;
+        model.HttpResponse!.Body.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Request_DnsFields_RoundTrip()
+    {
+        var json = "{\"dnsName\":\"example.com\",\"dnsType\":\"A\",\"dnsClass\":\"IN\"}";
+        AssertRoundTrips<HttpRequest>(json);
+
+        var req = JsonSerializer.Deserialize<HttpRequest>(json, JsonOptions)!;
+        req.DnsName.Should().Be("example.com");
+        req.DnsType.Should().Be("A");
+        req.DnsClass.Should().Be("IN");
+    }
+
+    [Fact]
+    public void Request_PathParameters_SchemaMatcherForm_RoundTrips()
+    {
+        // keyToMultiValue schema-matcher form: each value is an object, not a bare string.
+        var json = "{\"path\":\"/cart/{cartId}\",\"pathParameters\":{" +
+                   "\"cartId\":[{\"schema\":{\"type\":\"string\",\"pattern\":\"^[A-Z0-9-]+$\"}}]," +
+                   "\"maxItemCount\":[{\"schema\":{\"type\":\"integer\"}}]}}";
+        AssertRoundTrips<HttpRequest>(json);
+
+        var req = JsonSerializer.Deserialize<HttpRequest>(json, JsonOptions)!;
+        req.PathParameters!["cartId"][0].GetProperty("schema").GetProperty("type").GetString().Should().Be("string");
+    }
+
+    [Fact]
+    public void Request_PathParameters_SimpleStringForm_StillRoundTrips()
+    {
+        var json = "{\"path\":\"/pets/{id}\",\"pathParameters\":{\"id\":[\"123\"]}}";
+        AssertRoundTrips<HttpRequest>(json);
+
+        var req = JsonSerializer.Deserialize<HttpRequest>(json, JsonOptions)!;
+        req.PathParameters!["id"][0].GetString().Should().Be("123");
+    }
+
+    [Fact]
+    public void RateLimit_RefillPerSecond_WholeNumber_PreservesTrailingZero()
+    {
+        // decimal (not double) so 5.0 survives round-trip as "5.0" rather than collapsing to "5".
+        var json = "{\"algorithm\":\"token_bucket\",\"burst\":20,\"refillPerSecond\":5.0}";
+        var model = JsonSerializer.Deserialize<RateLimit>(json, JsonOptions)!;
+        var reserialized = JsonSerializer.Serialize(model, JsonOptions);
+
+        model.RefillPerSecond.Should().Be(5.0m);
+        reserialized.Should().Contain("\"refillPerSecond\":5.0");
+        JsonNode.DeepEquals(JsonNode.Parse(json), JsonNode.Parse(reserialized)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void GrpcStreamResponse_MessageTemplateType_RoundTrips()
+    {
+        var json = "{\"statusName\":\"OK\",\"messages\":[{\"json\":\"{}\"}," +
+                   "{\"json\":\"{}\",\"templateType\":\"VELOCITY\",\"delay\":{\"timeUnit\":\"MILLISECONDS\",\"value\":100}}]}";
+        AssertRoundTrips<GrpcStreamResponse>(json);
+    }
+
+    [Fact]
+    public void WebSocketResponse_Matchers_RoundTrip()
+    {
+        var json = "{\"subprotocol\":\"chat\",\"messages\":[{\"text\":\"hello\"}]," +
+                   "\"matchers\":[{\"frameType\":\"TEXT\",\"textMatcher\":\"ping\",\"responses\":[{\"text\":\"pong\"}]}]," +
+                   "\"closeConnection\":false}";
+        AssertRoundTrips<HttpWebSocketResponse>(json);
+
+        var model = JsonSerializer.Deserialize<HttpWebSocketResponse>(json, JsonOptions)!;
+        model.Matchers![0].FrameType.Should().Be("TEXT");
+        model.Matchers[0].Responses![0].Text.Should().Be("pong");
+    }
+
+    [Fact]
+    public void LlmResponse_CompletionExtras_And_Primary_RoundTrip()
+    {
+        var json = "{\"provider\":\"ANTHROPIC\",\"model\":\"claude\"," +
+                   "\"completion\":{\"text\":\"hi\"," +
+                   "\"usage\":{\"inputTokens\":10,\"outputTokens\":25,\"cachedInputTokens\":2,\"cacheCreationTokens\":3,\"reasoningTokens\":4}," +
+                   "\"outputSchema\":\"{\\\"type\\\":\\\"object\\\"}\",\"enforceOutputSchema\":true,\"toolChoice\":\"auto\"," +
+                   "\"reasoningText\":\"thinking\",\"reasoningSignature\":\"sig\"," +
+                   "\"streamingPhysics\":{\"tokensPerSecond\":50,\"subwordStreaming\":true}}," +
+                   "\"primary\":true}";
+        AssertRoundTrips<MockServer.Client.Llm.HttpLlmResponse>(json);
+
+        var model = JsonSerializer.Deserialize<MockServer.Client.Llm.HttpLlmResponse>(json, JsonOptions)!;
+        model.Primary.Should().BeTrue();
+        model.Completion!.EnforceOutputSchema.Should().BeTrue();
+        model.Completion.ToolChoice.Should().Be("auto");
+        model.Completion.ReasoningText.Should().Be("thinking");
+        model.Completion.ReasoningSignature.Should().Be("sig");
+        model.Completion.Usage!.CachedInputTokens.Should().Be(2);
+        model.Completion.Usage.CacheCreationTokens.Should().Be(3);
+        model.Completion.Usage.ReasoningTokens.Should().Be(4);
+        model.Completion.StreamingPhysics!.SubwordStreaming.Should().BeTrue();
+    }
+
+    [Fact]
+    public void LlmResponse_RerankModerationContentFilter_RoundTrip()
+    {
+        var json = "{\"provider\":\"OPENAI\",\"model\":\"m\"," +
+                   "\"embedding\":{\"dimensions\":1536,\"deterministicFromInput\":true,\"seed\":42}," +
+                   "\"rerank\":{\"topN\":3,\"deterministicFromInput\":true,\"seed\":42}," +
+                   "\"moderation\":{\"flaggedCategories\":[\"violence\"],\"model\":\"text-moderation-latest\"}," +
+                   "\"contentFilter\":{\"hate\":\"low\",\"sexual\":\"safe\",\"violence\":\"medium\",\"selfHarm\":\"safe\"}}";
+        AssertRoundTrips<MockServer.Client.Llm.HttpLlmResponse>(json);
+
+        var model = JsonSerializer.Deserialize<MockServer.Client.Llm.HttpLlmResponse>(json, JsonOptions)!;
+        model.Rerank!.TopN.Should().Be(3);
+        model.Moderation!.FlaggedCategories.Should().ContainSingle().Which.Should().Be("violence");
+        model.ContentFilter!.Violence.Should().Be("medium");
     }
 }

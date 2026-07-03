@@ -13,6 +13,11 @@ public sealed class GrpcStreamMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Json { get; set; }
 
+    /// <summary>Optional template engine for the message: <c>VELOCITY</c>, <c>JAVASCRIPT</c> or <c>MUSTACHE</c>.</summary>
+    [JsonPropertyName("templateType")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TemplateType { get; set; }
+
     [JsonPropertyName("delay")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Delay? Delay { get; set; }

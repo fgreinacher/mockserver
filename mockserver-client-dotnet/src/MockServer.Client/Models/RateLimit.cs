@@ -33,9 +33,14 @@ public sealed class RateLimit
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? Burst { get; set; }
 
+    /// <summary>
+    /// <c>token_bucket</c>: token refill rate per second. Typed as <see cref="decimal"/> (not
+    /// <see cref="double"/>) so a whole-number rate written on the wire as <c>5.0</c> preserves its
+    /// trailing zero on round-trip (a <c>double</c> would re-serialise it as <c>5</c>).
+    /// </summary>
     [JsonPropertyName("refillPerSecond")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public double? RefillPerSecond { get; set; }
+    public decimal? RefillPerSecond { get; set; }
 
     [JsonPropertyName("errorStatus")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

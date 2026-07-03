@@ -57,12 +57,14 @@ public sealed class HttpObjectCallback
     public string? ClientId { get; set; }
 
     /// <summary>
-    /// Optional name of the response callback registered on the WebSocket client.
-    /// Mirrors the Node client's <c>responseCallback</c> field; usually left unset.
+    /// When true, the server expects a response (rather than a forwarded request) back over the
+    /// callback WebSocket. Serialised as the JSON boolean <c>responseCallback</c> — the server's
+    /// <c>org.mockserver.model.HttpObjectCallback.responseCallback</c> is a <c>Boolean</c>
+    /// (schema <c>httpObjectCallback.json</c> declares <c>"type": "boolean"</c>). Usually left unset.
     /// </summary>
     [JsonPropertyName("responseCallback")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ResponseCallback { get; set; }
+    public bool? ResponseCallback { get; set; }
 
     /// <summary>
     /// Optional delay applied before the callback's result is returned.

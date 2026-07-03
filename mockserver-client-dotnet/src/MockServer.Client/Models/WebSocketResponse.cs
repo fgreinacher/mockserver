@@ -41,6 +41,30 @@ public sealed class WebSocketMessage
 }
 
 /// <summary>
+/// A per-incoming-frame response rule within an <see cref="HttpWebSocketResponse"/>. When an incoming
+/// frame matches (<see cref="FrameType"/> and/or <see cref="TextMatcher"/>), the rule's
+/// <see cref="Responses"/> are streamed back. Mirrors an item of the server's
+/// <c>httpWebSocketResponse.json</c> <c>matchers</c> array.
+/// </summary>
+public sealed class WebSocketFrameMatcher
+{
+    /// <summary>The frame type to match: <c>TEXT</c>, <c>BINARY</c>, <c>PING</c>, <c>PONG</c> or <c>ANY</c>.</summary>
+    [JsonPropertyName("frameType")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FrameType { get; set; }
+
+    /// <summary>Optional exact-or-regex matcher applied to the incoming frame's text payload.</summary>
+    [JsonPropertyName("textMatcher")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TextMatcher { get; set; }
+
+    /// <summary>Messages streamed back when this rule matches.</summary>
+    [JsonPropertyName("responses")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<WebSocketMessage>? Responses { get; set; }
+}
+
+/// <summary>
 /// Represents a WebSocket response action for MockServer. When the matched
 /// request is a WebSocket upgrade, the configured messages are sent to the
 /// connected client.
@@ -54,6 +78,14 @@ public sealed class HttpWebSocketResponse
     [JsonPropertyName("messages")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<WebSocketMessage>? Messages { get; set; }
+
+    /// <summary>
+    /// Per-incoming-frame response rules; when set, an incoming frame matching a rule triggers that
+    /// rule's responses. Mirrors the server's <c>httpWebSocketResponse.json</c> <c>matchers</c> array.
+    /// </summary>
+    [JsonPropertyName("matchers")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<WebSocketFrameMatcher>? Matchers { get; set; }
 
     [JsonPropertyName("closeConnection")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

@@ -84,6 +84,21 @@ public sealed class Usage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? OutputTokens { get; set; }
 
+    /// <summary>Number of input tokens served from a provider prompt cache (schema: <c>cachedInputTokens</c>).</summary>
+    [JsonPropertyName("cachedInputTokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CachedInputTokens { get; set; }
+
+    /// <summary>Number of tokens written to the provider prompt cache (schema: <c>cacheCreationTokens</c>).</summary>
+    [JsonPropertyName("cacheCreationTokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? CacheCreationTokens { get; set; }
+
+    /// <summary>Number of reasoning (thinking) tokens counted separately from output (schema: <c>reasoningTokens</c>).</summary>
+    [JsonPropertyName("reasoningTokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ReasoningTokens { get; set; }
+
     public static Usage Create() => new();
 
     public Usage WithInputTokens(int inputTokens)
@@ -99,6 +114,30 @@ public sealed class Usage
         if (outputTokens < 0)
             throw new ArgumentException("outputTokens must be >= 0", nameof(outputTokens));
         OutputTokens = outputTokens;
+        return this;
+    }
+
+    public Usage WithCachedInputTokens(int cachedInputTokens)
+    {
+        if (cachedInputTokens < 0)
+            throw new ArgumentException("cachedInputTokens must be >= 0", nameof(cachedInputTokens));
+        CachedInputTokens = cachedInputTokens;
+        return this;
+    }
+
+    public Usage WithCacheCreationTokens(int cacheCreationTokens)
+    {
+        if (cacheCreationTokens < 0)
+            throw new ArgumentException("cacheCreationTokens must be >= 0", nameof(cacheCreationTokens));
+        CacheCreationTokens = cacheCreationTokens;
+        return this;
+    }
+
+    public Usage WithReasoningTokens(int reasoningTokens)
+    {
+        if (reasoningTokens < 0)
+            throw new ArgumentException("reasoningTokens must be >= 0", nameof(reasoningTokens));
+        ReasoningTokens = reasoningTokens;
         return this;
     }
 }
@@ -124,6 +163,14 @@ public sealed class StreamingPhysics
     [JsonPropertyName("seed")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? Seed { get; set; }
+
+    /// <summary>
+    /// When true (server default), stream at sub-word granularity rather than whole tokens
+    /// (schema: <c>subwordStreaming</c>, default <c>true</c>).
+    /// </summary>
+    [JsonPropertyName("subwordStreaming")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? SubwordStreaming { get; set; }
 
     public static StreamingPhysics Create() => new();
 
@@ -158,6 +205,12 @@ public sealed class StreamingPhysics
     public StreamingPhysics WithSeed(long seed)
     {
         Seed = seed;
+        return this;
+    }
+
+    public StreamingPhysics WithSubwordStreaming(bool subwordStreaming = true)
+    {
+        SubwordStreaming = subwordStreaming;
         return this;
     }
 }
@@ -196,6 +249,26 @@ public sealed class Completion
     [JsonPropertyName("outputSchema")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? OutputSchema { get; set; }
+
+    /// <summary>When true, the generated output is validated/enforced against <see cref="OutputSchema"/>.</summary>
+    [JsonPropertyName("enforceOutputSchema")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? EnforceOutputSchema { get; set; }
+
+    /// <summary>The tool-choice directive echoed on the completion (e.g. <c>auto</c>, <c>none</c>, a tool name).</summary>
+    [JsonPropertyName("toolChoice")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ToolChoice { get; set; }
+
+    /// <summary>Reasoning (thinking) text returned alongside the completion.</summary>
+    [JsonPropertyName("reasoningText")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReasoningText { get; set; }
+
+    /// <summary>Provider signature attesting to the reasoning content (e.g. Anthropic <c>signature</c>).</summary>
+    [JsonPropertyName("reasoningSignature")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReasoningSignature { get; set; }
 
     [JsonPropertyName("model")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -260,6 +333,30 @@ public sealed class Completion
         return this;
     }
 
+    public Completion WithEnforceOutputSchema(bool enforce = true)
+    {
+        EnforceOutputSchema = enforce;
+        return this;
+    }
+
+    public Completion WithToolChoice(string toolChoice)
+    {
+        ToolChoice = toolChoice;
+        return this;
+    }
+
+    public Completion WithReasoningText(string reasoningText)
+    {
+        ReasoningText = reasoningText;
+        return this;
+    }
+
+    public Completion WithReasoningSignature(string reasoningSignature)
+    {
+        ReasoningSignature = reasoningSignature;
+        return this;
+    }
+
     public Completion WithModel(string model)
     {
         Model = model;
@@ -304,6 +401,101 @@ public sealed class EmbeddingResponse
         Seed = seed;
         return this;
     }
+}
+
+/// <summary>
+/// A mocked rerank response (determinism controls)
+/// (mirrors <c>org.mockserver.model.RerankResponse</c>).
+/// </summary>
+public sealed class RerankResponse
+{
+    /// <summary>Number of top documents to return (schema: <c>topN</c>, minimum 0).</summary>
+    [JsonPropertyName("topN")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? TopN { get; set; }
+
+    [JsonPropertyName("deterministicFromInput")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? DeterministicFromInput { get; set; }
+
+    [JsonPropertyName("seed")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? Seed { get; set; }
+
+    public static RerankResponse Create() => new();
+
+    public RerankResponse WithTopN(int topN)
+    {
+        TopN = topN;
+        return this;
+    }
+
+    public RerankResponse WithDeterministicFromInput(bool deterministic)
+    {
+        DeterministicFromInput = deterministic;
+        return this;
+    }
+
+    public RerankResponse WithSeed(long seed)
+    {
+        Seed = seed;
+        return this;
+    }
+}
+
+/// <summary>
+/// A mocked moderation response
+/// (mirrors <c>org.mockserver.model.ModerationResponse</c>).
+/// </summary>
+public sealed class ModerationResponse
+{
+    /// <summary>Categories reported as flagged (schema: <c>flaggedCategories</c>).</summary>
+    [JsonPropertyName("flaggedCategories")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? FlaggedCategories { get; set; }
+
+    [JsonPropertyName("model")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Model { get; set; }
+
+    public static ModerationResponse Create() => new();
+
+    public ModerationResponse WithFlaggedCategories(params string[] categories)
+    {
+        FlaggedCategories = new List<string>(categories);
+        return this;
+    }
+
+    public ModerationResponse WithModel(string model)
+    {
+        Model = model;
+        return this;
+    }
+}
+
+/// <summary>
+/// A mocked Azure-style content-filter result (per-category severities)
+/// (mirrors <c>org.mockserver.model.ContentFilterResponse</c>).
+/// </summary>
+public sealed class ContentFilterResponse
+{
+    [JsonPropertyName("hate")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hate { get; set; }
+
+    [JsonPropertyName("sexual")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Sexual { get; set; }
+
+    [JsonPropertyName("violence")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Violence { get; set; }
+
+    [JsonPropertyName("selfHarm")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SelfHarm { get; set; }
+
+    public static ContentFilterResponse Create() => new();
 }
 
 /// <summary>
@@ -432,6 +624,21 @@ public sealed class HttpLlmResponse
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public EmbeddingResponse? Embedding { get; set; }
 
+    /// <summary>A mocked rerank response (schema: <c>rerank</c>).</summary>
+    [JsonPropertyName("rerank")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RerankResponse? Rerank { get; set; }
+
+    /// <summary>A mocked moderation response (schema: <c>moderation</c>).</summary>
+    [JsonPropertyName("moderation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ModerationResponse? Moderation { get; set; }
+
+    /// <summary>A mocked content-filter result (schema: <c>contentFilter</c>).</summary>
+    [JsonPropertyName("contentFilter")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ContentFilterResponse? ContentFilter { get; set; }
+
     [JsonPropertyName("conversationPredicates")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ConversationPredicates? ConversationPredicates { get; set; }
@@ -443,6 +650,11 @@ public sealed class HttpLlmResponse
     [JsonPropertyName("delay")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Delay? Delay { get; set; }
+
+    /// <summary>When true, marks this as a primary action (schema: <c>primary</c>).</summary>
+    [JsonPropertyName("primary")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Primary { get; set; }
 
     public static HttpLlmResponse Create() => new();
 
@@ -469,6 +681,30 @@ public sealed class HttpLlmResponse
     {
         Embedding = embedding;
         Completion = null;
+        return this;
+    }
+
+    public HttpLlmResponse WithRerank(RerankResponse rerank)
+    {
+        Rerank = rerank;
+        return this;
+    }
+
+    public HttpLlmResponse WithModeration(ModerationResponse moderation)
+    {
+        Moderation = moderation;
+        return this;
+    }
+
+    public HttpLlmResponse WithContentFilter(ContentFilterResponse contentFilter)
+    {
+        ContentFilter = contentFilter;
+        return this;
+    }
+
+    public HttpLlmResponse WithPrimary(bool primary = true)
+    {
+        Primary = primary;
         return this;
     }
 }

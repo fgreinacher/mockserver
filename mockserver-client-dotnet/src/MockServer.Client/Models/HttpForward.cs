@@ -20,6 +20,14 @@ public sealed class HttpForward
     public string? Scheme { get; set; }
 
     /// <summary>
+    /// Optional delay applied before the request is forwarded. Mirrors the server's
+    /// <c>httpForward.json</c> <c>delay</c> property.
+    /// </summary>
+    [JsonPropertyName("delay")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Delay? Delay { get; set; }
+
+    /// <summary>
     /// Creates a new HttpForward builder.
     /// </summary>
     public static HttpForwardBuilder Forward() => new();
