@@ -1,4 +1,5 @@
 import { useMemo, useState, useCallback, useRef, memo } from 'react';
+import type { ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
@@ -27,6 +28,7 @@ import CheckIcon from '@mui/icons-material/Check';
 import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import ChecklistIcon from '@mui/icons-material/Checklist';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
+import AutoAwesomeMotionIcon from '@mui/icons-material/AutoAwesomeMotion';
 import { useDashboardStore } from '../store';
 import { useConnectionParams } from '../hooks/useConnectionParams';
 import { useDragResize } from '../hooks/useDragResize';
@@ -38,6 +40,7 @@ import ConfirmDialog from './ConfirmDialog';
 import CaptureAsMockDialog from './CaptureAsMockDialog';
 import DiffRequestsDialog from './DiffRequestsDialog';
 import ExplainUnmatchedDialog from './ExplainUnmatchedDialog';
+import PromoteRecordingsDialog from './PromoteRecordingsDialog';
 import OperatorSearchField from './OperatorSearchField';
 import CopyButton from './CopyButton';
 import { clearLoggedRequest, requestDefinitionOf } from '../lib/traffic';
@@ -1231,6 +1234,257 @@ function ReplayDialog({ open, onClose, item, connectionParams }: ReplayDialogPro
 }
 
 // ---------------------------------------------------------------------------
+// Structured Request / Response inspector (generic HTTP traffic)
+//
+// Competitor traffic inspectors (Fiddler / Charles / Proxyman) present a
+// structured Request / Response view rather than a raw JSON tree. For generic
+// (non-LLM) HTTP traffic the detail pane defaults to these structured tabs and
+// keeps the raw JSON tree as the last tab. All sub-panels read the already
+// secret-masked value, so credentials never render verbatim here either.
+// ---------------------------------------------------------------------------
+
+/** Small bold section label used inside the structured panels. */
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <Typography
+      variant="caption"
+      color="text.secondary"
+      sx={{ fontWeight: 600, display: 'block', mt: 1.5, mb: 0.5 }}
+    >
+      {children}
+    </Typography>
+  );
+}
+
+/** Two-column table of MockServer-format headers / query parameters. */
+function KeyValueTable({ pairs, emptyLabel }: { pairs: Array<[string, string]>; emptyLabel: string }) {
+  if (pairs.length === 0) {
+    return (
+      <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+        {emptyLabel}
+      </Typography>
+    );
+  }
+  return (
+    <Box
+      component="table"
+      sx={{ borderCollapse: 'collapse', width: '100%', tableLayout: 'fixed' }}
+    >
+      <Box component="tbody">
+        {pairs.map(([name, value], i) => (
+          <Box
+            component="tr"
+            key={`${name}-${i}`}
+            sx={{ '&:nth-of-type(odd)': { bgcolor: 'action.hover' } }}
+          >
+            <Box
+              component="td"
+              sx={{
+                fontFamily: monospaceFontFamily,
+                fontSize: '0.7rem',
+                fontWeight: 600,
+                color: 'text.secondary',
+                verticalAlign: 'top',
+                p: 0.5,
+                width: '34%',
+                wordBreak: 'break-word',
+              }}
+            >
+              {name}
+            </Box>
+            <Box
+              component="td"
+              sx={{
+                fontFamily: monospaceFontFamily,
+                fontSize: '0.7rem',
+                p: 0.5,
+                wordBreak: 'break-word',
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {value}
+            </Box>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * Render a request/response body: pretty-printed with the JSON viewer when the
+ * body is (or parses cleanly to) JSON, otherwise as raw wrapped monospace text.
+ * `extractBodyContent` unwraps MockServer's body DTO and base64-decodes BINARY.
+ */
+function BodyView({ body }: { body: unknown }) {
+  const content = extractBodyContent(body);
+  if (content == null || content === '') {
+    return (
+      <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+        No body
+      </Typography>
+    );
+  }
+  if (typeof content === 'object') {
+    return <JsonViewer data={content as Record<string, unknown>} collapsed={2} />;
+  }
+  if (typeof content === 'string') {
+    // Parse OUTSIDE of the JSX return so no component is constructed inside the
+    // try/catch (React does not surface such render errors — lint enforces this).
+    const asJson = tryParseJsonObject(content);
+    if (asJson) {
+      return <JsonViewer data={asJson} collapsed={2} />;
+    }
+    return (
+      <Typography
+        component="pre"
+        sx={{
+          fontFamily: monospaceFontFamily,
+          fontSize: '0.72rem',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          m: 0,
+        }}
+      >
+        {content}
+      </Typography>
+    );
+  }
+  return <Typography variant="body2">{String(content)}</Typography>;
+}
+
+/** Parse a string to a JSON object/array, or return null when it is not JSON. */
+function tryParseJsonObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+  try {
+    const json = JSON.parse(trimmed) as unknown;
+    return json && typeof json === 'object' ? (json as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Structured Request tab: method/path/query prominently, headers table, body. */
+function StructuredRequestPanel({ value }: { value: Record<string, unknown> }) {
+  const req =
+    value['httpRequest'] && typeof value['httpRequest'] === 'object' && !Array.isArray(value['httpRequest'])
+      ? (value['httpRequest'] as Record<string, unknown>)
+      : null;
+  if (!req) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        No request captured.
+      </Typography>
+    );
+  }
+  const method = typeof req['method'] === 'string' && req['method'] ? (req['method'] as string) : 'GET';
+  const path = typeof req['path'] === 'string' ? (req['path'] as string) : '/';
+  const queryPairs = headerPairs(req['queryStringParameters']);
+  return (
+    <Box>
+      <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, flexWrap: 'wrap' }}>
+        <Chip label={method} size="small" color="primary" sx={{ fontFamily: monospaceFontFamily }} />
+        <Typography
+          sx={{ fontFamily: monospaceFontFamily, fontSize: '0.8rem', fontWeight: 600, wordBreak: 'break-all' }}
+        >
+          {path}
+        </Typography>
+      </Box>
+      <SectionLabel>Query Parameters</SectionLabel>
+      <KeyValueTable pairs={queryPairs} emptyLabel="No query parameters" />
+      <SectionLabel>Headers</SectionLabel>
+      <KeyValueTable pairs={headerPairs(req['headers'])} emptyLabel="No headers" />
+      <SectionLabel>Body</SectionLabel>
+      <BodyView body={req['body']} />
+    </Box>
+  );
+}
+
+/** Structured Response tab: status/reason prominently, headers table, body. */
+function StructuredResponsePanel({ value }: { value: Record<string, unknown> }) {
+  const res =
+    value['httpResponse'] && typeof value['httpResponse'] === 'object' && !Array.isArray(value['httpResponse'])
+      ? (value['httpResponse'] as Record<string, unknown>)
+      : null;
+  if (!res) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        No response captured for this request.
+      </Typography>
+    );
+  }
+  const status = typeof res['statusCode'] === 'number' ? (res['statusCode'] as number) : null;
+  const reason = typeof res['reasonPhrase'] === 'string' ? (res['reasonPhrase'] as string) : '';
+  return (
+    <Box>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+        {status !== null && <Chip label={status} size="small" color={statusColor(status)} />}
+        {reason && (
+          <Typography sx={{ fontFamily: monospaceFontFamily, fontSize: '0.8rem', fontWeight: 600 }}>
+            {reason}
+          </Typography>
+        )}
+      </Box>
+      <SectionLabel>Headers</SectionLabel>
+      <KeyValueTable pairs={headerPairs(res['headers'])} emptyLabel="No headers" />
+      <SectionLabel>Body</SectionLabel>
+      <BodyView body={res['body']} />
+    </Box>
+  );
+}
+
+/**
+ * Compact at-a-glance header for the structured (generic) detail pane. Surfaces
+ * only data that the captured item actually carries — method, host, path, and
+ * response status/reason. Per-request latency is intentionally NOT shown here:
+ * only proxied traffic carries a `timing` block (rendered by TimingWaterfall),
+ * and the dashboard WebSocket does not push a per-item capture timestamp, so we
+ * do not invent one.
+ */
+function GenericSummaryHeader({ summary }: { summary: TrafficSummary }) {
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 0.75,
+        px: 1,
+        py: 0.5,
+        borderBottom: 1,
+        borderColor: 'divider',
+        flexShrink: 0,
+        flexWrap: 'wrap',
+      }}
+    >
+      <Typography
+        variant="caption"
+        sx={{ fontFamily: monospaceFontFamily, fontWeight: 600, color: 'primary.main' }}
+      >
+        {summary.method ?? '?'}
+      </Typography>
+      <Tooltip title={`${summary.host ?? ''}${summary.path ?? ''}`}>
+        <Typography
+          variant="caption"
+          noWrap
+          sx={{ fontFamily: monospaceFontFamily, flex: 1, minWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
+          {summary.host ?? ''}{summary.path ?? ''}
+        </Typography>
+      </Tooltip>
+      {summary.statusCode !== null && (
+        <Chip
+          label={summary.statusCode}
+          size="small"
+          color={statusColor(summary.statusCode)}
+          sx={{ height: 18, fontSize: '0.6rem', '& .MuiChip-label': { px: 0.5 } }}
+        />
+      )}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Detail pane wrapper — single-level, adaptive tab row
 // ---------------------------------------------------------------------------
 
@@ -1367,7 +1621,9 @@ function buildTabs(parsed: ParsedTraffic, hasScriptedTurns: boolean): string[] {
     case 'mcp':
       return ['MCP', 'Raw JSON'];
     case 'generic':
-      return []; // no tabs — render Raw JSON directly
+      // Structured Request / Response inspector by default, with the raw JSON
+      // tree kept as the last tab (competitor-parity with Fiddler / Charles).
+      return ['Request', 'Response', 'Raw JSON'];
   }
 }
 
@@ -1419,6 +1675,7 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, u
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       <LlmUsageDetail parsed={summary.parsed} />
+      {summary.parsed.kind === 'generic' && <GenericSummaryHeader summary={summary} />}
       {summary.timing && <TimingWaterfall timing={summary.timing} />}
       <Box sx={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
         <Tabs
@@ -1443,6 +1700,8 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, u
       </Box>
       <Divider />
       <Box sx={{ flex: 1, overflowY: 'auto', p: 1, minHeight: 0 }}>
+        {activeLabel === 'Request' && <StructuredRequestPanel value={maskedValue} />}
+        {activeLabel === 'Response' && <StructuredResponsePanel value={maskedValue} />}
         {activeLabel === 'Messages' && summary.parsed.kind === 'anthropic' && (
           <AnthropicMessagesPanel parsed={summary.parsed} />
         )}
@@ -1541,6 +1800,7 @@ export default function TrafficInspector() {
   const [captureDialogOpen, setCaptureDialogOpen] = useState(false);
   const [replayDialogOpen, setReplayDialogOpen] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
+  const [promoteOpen, setPromoteOpen] = useState(false);
 
   // Compare mode: pick two requests from the list and diff them field-by-field via the shared
   // DiffRequestsDialog (PUT /mockserver/diff). compareKeys holds the (max two) selected item keys.
@@ -1616,6 +1876,26 @@ export default function TrafficInspector() {
   // Count of captured requests that matched no expectation, surfaced as a header
   // badge that opens the Explain-Unmatched dialog.
   const unmatchedCount = useMemo(() => summaries.filter((s) => s.unmatched).length, [summaries]);
+
+  // Only recorded (proxied/forwarded) traffic can be promoted into mocks — the
+  // server's promote endpoint retrieves FORWARDED_REQUEST exchanges — so gate the
+  // "Promote to Mocks" action on there being at least one proxied request.
+  const promotableCount = proxiedRequests.length;
+
+  // Pre-fill the promote dialog's method / path filter from the current search's
+  // method:/path: operators, where the user has expressed one, so the promotion
+  // scope matches what they are already looking at.
+  const promotePrefill = useMemo(() => {
+    const { operators } = parseSearchTerm(trafficSearch);
+    const method = operators.find((op) => op.field === 'method')?.expr;
+    const rawPath = operators.find((op) => op.field === 'path')?.expr;
+    // The search's path: operator treats * as a glob, but the server filter is a
+    // regex matcher — translate so the prefill scopes to what is on screen.
+    const path = rawPath?.includes('*')
+      ? rawPath.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
+      : rawPath;
+    return { method: method || undefined, path: path || undefined };
+  }, [trafficSearch]);
 
   // Filter by search
   const filtered = useMemo(
@@ -1895,6 +2175,27 @@ export default function TrafficInspector() {
               </Button>
             </>
           )}
+          <Box sx={{ flexGrow: 1 }} />
+          <Tooltip
+            title={
+              promotableCount > 0
+                ? 'Turn recorded (proxied) traffic into active mock expectations'
+                : 'Proxy some traffic through MockServer first — recorded requests can then be promoted to mocks'
+            }
+          >
+            <span>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={promotableCount === 0}
+                startIcon={<AutoAwesomeMotionIcon sx={{ fontSize: '0.95rem' }} />}
+                onClick={() => setPromoteOpen(true)}
+                sx={{ height: 28, px: 1, fontSize: '0.7rem', textTransform: 'none', flexShrink: 0 }}
+              >
+                Promote to Mocks
+              </Button>
+            </span>
+          </Tooltip>
         </Box>
         <Box sx={{ flex: 1, overflowY: 'auto', bgcolor: 'background.default' }}>
           {filtered.length === 0 ? (
@@ -2051,6 +2352,20 @@ export default function TrafficInspector() {
         onClose={() => setExplainOpen(false)}
         connectionParams={connectionParams}
       />
+
+      {/* Promote recordings to mocks — bulk-activate expectations from recorded
+          (proxied) traffic via PUT /mockserver/recordings/promote. Mount only
+          while open, keyed on the prefill so it re-seeds when the search changes. */}
+      {promoteOpen && (
+        <PromoteRecordingsDialog
+          key={`${promotePrefill.method ?? ''}|${promotePrefill.path ?? ''}`}
+          open
+          onClose={() => setPromoteOpen(false)}
+          connectionParams={connectionParams}
+          recordedCount={promotableCount}
+          initialFilter={promotePrefill}
+        />
+      )}
 
       <ConfirmDialog
         open={bulkClearConfirm}

@@ -1407,3 +1407,191 @@ describe('TrafficInspector — empty state', () => {
     expect(screen.getByText(/Get Started tab/i)).toBeInTheDocument();
   });
 });
+
+describe('TrafficInspector — Structured detail pane (generic HTTP)', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      recordedRequests: [],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+    });
+  });
+
+  it('defaults to structured Request/Response tabs with Raw JSON kept last', async () => {
+    const user = userEvent.setup();
+    useDashboardStore.setState({
+      proxiedRequests: [
+        {
+          key: 'req-structured',
+          value: {
+            httpRequest: {
+              method: 'POST',
+              path: '/api/orders',
+              headers: [
+                { name: 'host', values: ['example.com'] },
+                { name: 'content-type', values: ['application/json'] },
+              ],
+              queryStringParameters: [{ name: 'page', values: ['2'] }],
+              body: { type: 'JSON', json: '{"sku":"A1"}' },
+            },
+            httpResponse: {
+              statusCode: 201,
+              reasonPhrase: 'Created',
+              headers: [{ name: 'x-trace', values: ['abc123'] }],
+              body: { type: 'JSON', json: '{"id":7}' },
+            },
+          },
+        },
+      ],
+    });
+
+    renderTrafficInspector();
+    await user.click(screen.getByText(/\/api\/orders/));
+
+    // Structured tabs render, Raw JSON is present as the last tab.
+    const requestTab = screen.getByRole('tab', { name: 'Request' });
+    expect(requestTab).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Response' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Raw JSON' })).toBeInTheDocument();
+    // Request tab is selected by default.
+    expect(requestTab).toHaveAttribute('aria-selected', 'true');
+
+    // Request tab surfaces method/path, a query-parameter row, and a header row.
+    expect(screen.getByText('/api/orders')).toBeInTheDocument();
+    expect(screen.getByText('page')).toBeInTheDocument();
+    expect(screen.getByText('content-type')).toBeInTheDocument();
+
+    // Response tab surfaces status + reason and its own header.
+    await user.click(screen.getByRole('tab', { name: 'Response' }));
+    expect(screen.getByText('Created')).toBeInTheDocument();
+    expect(screen.getByText('x-trace')).toBeInTheDocument();
+
+    // Raw JSON tab still renders the raw tree.
+    await user.click(screen.getByRole('tab', { name: 'Raw JSON' }));
+    expect(screen.getByText('httpRequest')).toBeInTheDocument();
+  });
+
+  it('renders a non-JSON request body as raw text (fallback)', async () => {
+    const user = userEvent.setup();
+    useDashboardStore.setState({
+      proxiedRequests: [
+        {
+          key: 'req-plaintext',
+          value: {
+            httpRequest: {
+              method: 'POST',
+              path: '/api/upload',
+              headers: [{ name: 'host', values: ['example.com'] }],
+              body: { type: 'STRING', string: 'just plain text, not json' },
+            },
+            httpResponse: { statusCode: 200 },
+          },
+        },
+      ],
+    });
+
+    renderTrafficInspector();
+    await user.click(screen.getByText(/\/api\/upload/));
+
+    // The plain-text body is shown verbatim under the Request tab (no JSON tree).
+    expect(screen.getByText('just plain text, not json')).toBeInTheDocument();
+  });
+});
+
+describe('TrafficInspector — Promote to Mocks', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      recordedRequests: [],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+      view: 'traffic',
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function seedProxied() {
+    useDashboardStore.setState({
+      proxiedRequests: [
+        {
+          key: 'req-promote',
+          value: {
+            httpRequest: { method: 'GET', path: '/api/users', headers: [{ name: 'host', values: ['example.com'] }] },
+            httpResponse: { statusCode: 200, body: { type: 'JSON', json: '{"ok":true}' } },
+          },
+        },
+      ],
+    });
+  }
+
+  it('disables the Promote button when there is no proxied traffic', () => {
+    renderTrafficInspector();
+    expect(screen.getByRole('button', { name: /Promote to Mocks/i })).toBeDisabled();
+  });
+
+  it('calls the promote endpoint with the search-derived filter and reports the created count', async () => {
+    const user = userEvent.setup();
+    seedProxied();
+    useDashboardStore.setState({ trafficSearch: 'method:GET path:/api/users' });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => [{ id: 'e1' }, { id: 'e2' }],
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderTrafficInspector();
+    await user.click(screen.getByRole('button', { name: /Promote to Mocks/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    // Filter prefilled from the search operators.
+    expect(within(dialog).getByLabelText('Method filter')).toHaveValue('GET');
+    expect(within(dialog).getByLabelText('Path filter')).toHaveValue('/api/users');
+
+    await user.click(within(dialog).getByRole('button', { name: 'Run' }));
+
+    // Hits the promote endpoint with the filter as the request-matcher body.
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/mockserver/recordings/promote'),
+      expect.objectContaining({ method: 'PUT' }),
+    );
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body).toMatchObject({ method: 'GET', path: '/api/users' });
+
+    // Success message reports the number of created expectations.
+    expect(await within(dialog).findByText(/Created 2 expectations/i)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: /View Expectations/i })).toBeInTheDocument();
+  });
+
+  it('surfaces the server error envelope when the promote call fails', async () => {
+    const user = userEvent.setup();
+    seedProxied();
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => 'no recorded traffic to promote',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderTrafficInspector();
+    await user.click(screen.getByRole('button', { name: /Promote to Mocks/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Run' }));
+
+    // The shared HumanErrorAlert shows a humanised 400 message...
+    expect(await within(dialog).findByText(/rejected as invalid/i)).toBeInTheDocument();
+    // ...and keeps the raw server body behind a Details toggle.
+    await user.click(within(dialog).getByRole('button', { name: /details/i }));
+    expect(within(dialog).getByText(/no recorded traffic to promote/i)).toBeInTheDocument();
+  });
+});
