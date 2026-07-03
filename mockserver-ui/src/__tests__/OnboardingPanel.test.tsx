@@ -121,33 +121,21 @@ describe('OnboardingPanel', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
-  it('shows a copyable curl one-liner targeting the connection host:port', () => {
-    renderPanel();
-    // Built from the same connection params the WebSocket uses (host 127.0.0.1, port 1080).
-    expect(screen.getByText('curl http://127.0.0.1:1080/some/path')).toBeInTheDocument();
-  });
-
-  it('shows the proxy setup snippet with the server host:port and a CA setup link', () => {
-    renderPanel();
-    expect(screen.getByText('export HTTPS_PROXY=http://127.0.0.1:1080')).toBeInTheDocument();
-    const caLink = screen.getByRole('link', { name: /open the proxy setup details/i });
-    expect(caLink).toHaveAttribute('href', 'http://127.0.0.1:1080/mockserver/proxyConfiguration');
-  });
-
-  it('navigates to the composer from the Create Your First Mock CTA', async () => {
-    const user = userEvent.setup();
-    renderPanel();
-
-    await user.click(screen.getByRole('button', { name: /Create Your First Mock/i }));
-    expect(useDashboardStore.getState().view).toBe('composer');
-  });
-
   it('navigates to the composer from the Mocking tile Create Mock button', async () => {
     const user = userEvent.setup();
     renderPanel();
 
     await user.click(screen.getByRole('button', { name: /^Create Mock$/i }));
     expect(useDashboardStore.getState().view).toBe('composer');
+  });
+
+  it('no longer renders the Try It Now quick-start section', () => {
+    renderPanel();
+    // The Mocking tile's Create Mock CTA now carries the primary first-run action,
+    // so the duplicated "Try It Now" steps (and their curl / proxy snippets) are gone.
+    expect(screen.queryByText('Try It Now')).not.toBeInTheDocument();
+    expect(screen.queryByText(/curl http:\/\//i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/export HTTPS_PROXY=/i)).not.toBeInTheDocument();
   });
 
   it('does not show the returning-user banner when the server has no state', () => {

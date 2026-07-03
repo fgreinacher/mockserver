@@ -12,14 +12,10 @@ import PauseCircleIcon from '@mui/icons-material/PauseCircle';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import SavingsIcon from '@mui/icons-material/Savings';
 import BoltIcon from '@mui/icons-material/Bolt';
-import RocketLaunchIcon from '@mui/icons-material/RocketLaunch';
 import { useState } from 'react';
 import OpenApiImportDialog from './OpenApiImportDialog';
-import CopyButton from './CopyButton';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
 import { useDashboardStore, type ViewMode } from '../store';
-import { buildBaseUrl } from '../lib/mcpClient';
-import { monospaceFontFamily } from '../theme';
 
 interface OnboardingPanelProps {
   connectionParams: ConnectionParams;
@@ -49,8 +45,13 @@ function ActionCard({
     <Card
       variant="outlined"
       sx={(theme) => ({
-        flex: '1 1 0',
-        minWidth: 0,
+        // Wide enough that the longest title ("Performance Testing") stays on one
+        // line; whole tiles wrap to the next row rather than being squeezed narrow
+        // enough to wrap the heading. The maxWidth stops a lone wrapped tile from
+        // stretching across the full row.
+        flex: '1 1 200px',
+        minWidth: 200,
+        maxWidth: 360,
         display: 'flex',
         flexDirection: 'column',
         transition: theme.transitions.create(['transform', 'box-shadow', 'border-color'], {
@@ -88,39 +89,6 @@ function ActionCard({
   );
 }
 
-/** A single copyable command line: monospace code on the left, CopyButton on the right. */
-function CommandLine({ command }: { command: string }) {
-  return (
-    <Box
-      sx={(theme) => ({
-        display: 'flex',
-        alignItems: 'center',
-        gap: 1,
-        px: 1,
-        py: 0.5,
-        borderRadius: 1,
-        border: `1px solid ${theme.palette.divider}`,
-        bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)',
-      })}
-    >
-      <Typography
-        component="code"
-        sx={{
-          flex: 1,
-          minWidth: 0,
-          overflowX: 'auto',
-          whiteSpace: 'pre',
-          fontFamily: monospaceFontFamily,
-          fontSize: '0.8rem',
-        }}
-      >
-        {command}
-      </Typography>
-      <CopyButton text={command} />
-    </Box>
-  );
-}
-
 const OTHER_TABS: { view: ViewMode; label: string; description: string }[] = [
   { view: 'dashboard', label: 'Dashboard', description: 'active mocks & live event log' },
   { view: 'library', label: 'Library', description: 'import / export, Postman, WSDL, HAR' },
@@ -138,17 +106,6 @@ export default function OnboardingPanel({ connectionParams }: OnboardingPanelPro
   const hasExistingState = activeMockCount > 0 || recordedRequestCount > 0;
 
   const go = (view: ViewMode) => () => setView(view);
-
-  // Derive the server's address from the same connection params the WebSocket uses,
-  // so the copy-paste snippets hit this actual MockServer instance.
-  const baseUrl = buildBaseUrl(connectionParams);
-  // A forward proxy is addressed by host:port only (no base path, plain http CONNECT).
-  const proxyUrl = `http://${connectionParams.host}:${connectionParams.port}`;
-  const curlCommand = `curl ${baseUrl}/some/path`;
-  const proxyEnvCommand = `export HTTPS_PROXY=${proxyUrl}`;
-  // GET /mockserver/proxyConfiguration serves the active CA certificate (PEM) plus the
-  // OS-specific proxy-setup env blocks — the same information printed with --proxy-setup.
-  const caSetupUrl = `${baseUrl}/mockserver/proxyConfiguration`;
 
   // The six key features, rendered as tiles on wide screens and as a compact
   // bulleted list on narrow ones (mobile / the IDE-embedded dashboard).
@@ -251,58 +208,6 @@ export default function OnboardingPanel({ connectionParams }: OnboardingPanelPro
         </Alert>
       )}
 
-      {/* Try It Now: the fastest paths to first value — create a mock, send the
-          server its first request, or point an app's traffic through the proxy.
-          The snippets are built from the live connection params so they address
-          this exact instance. */}
-      <Card variant="outlined" sx={{ mb: 4, maxWidth: 760, width: '100%' }}>
-        <CardContent sx={{ p: 2 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 1.5 }}>
-            <RocketLaunchIcon color="primary" fontSize="small" />
-            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-              Try It Now
-            </Typography>
-          </Box>
-
-          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75 }}>
-            1. Create Your First Mock
-          </Typography>
-          <Typography variant="caption" component="p" color="text.secondary" sx={{ mb: 1 }}>
-            Register a request matcher and response in the Mocks composer.
-          </Typography>
-          <Button variant="contained" size="small" onClick={go('composer')} sx={{ mb: 2.5 }}>
-            Create Your First Mock
-          </Button>
-
-          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75 }}>
-            2. Send Your First Request
-          </Typography>
-          <Typography variant="caption" component="p" color="text.secondary" sx={{ mb: 1 }}>
-            Run this against the server — it will appear in the Dashboard and Traffic views.
-          </Typography>
-          <Box sx={{ mb: 2.5 }}>
-            <CommandLine command={curlCommand} />
-          </Box>
-
-          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75 }}>
-            3. Proxy an App Through MockServer
-          </Typography>
-          <Typography variant="caption" component="p" color="text.secondary" sx={{ mb: 1 }}>
-            Route an app's HTTPS traffic through the proxy to record and inspect it. For HTTPS you
-            also need to trust MockServer's CA certificate —{' '}
-            <Link href={caSetupUrl} target="_blank" rel="noopener">
-              open the proxy setup details
-            </Link>{' '}
-            (CA certificate plus environment variables), or start the server with{' '}
-            <Typography component="code" sx={{ fontFamily: monospaceFontFamily, fontSize: '0.8rem' }}>
-              --proxy-setup
-            </Typography>
-            .
-          </Typography>
-          <CommandLine command={proxyEnvCommand} />
-        </CardContent>
-      </Card>
-
       {/* Responsive switch keyed off the CONTAINER width, not the viewport. The
           dashboard is embedded in a narrow IDE tool window (JCEF) whose CSS
           viewport stays wide regardless of the visible panel size, so a viewport
@@ -312,12 +217,14 @@ export default function OnboardingPanel({ connectionParams }: OnboardingPanelPro
           panel is narrow — so an engine without container-query support (older
           browsers, jsdom in tests) falls back to tiles rather than nothing. */}
       <Box sx={{ containerType: 'inline-size', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-        {/* Wide panels: feature tiles side by side. */}
+        {/* Wide panels: feature tiles side by side, wrapping to a second row when
+            six no longer fit at their one-line-title minimum width rather than
+            squeezing all six abreast (which wrapped the headings). */}
         <Box
           sx={{
             display: 'flex',
             '@container (max-width: 899.98px)': { display: 'none' },
-            flexWrap: 'nowrap',
+            flexWrap: 'wrap',
             gap: 1.5,
             alignItems: 'stretch',
             justifyContent: 'center',
