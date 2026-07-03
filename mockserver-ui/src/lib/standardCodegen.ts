@@ -2444,7 +2444,7 @@ export function standardToGo(matcher: StandardMatcher, action: StandardActionPay
     'import (',
     '\t"encoding/json"',
     '',
-    '\tmockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"',
+    '\tmockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"',
     ')',
     '',
     'func main() {',

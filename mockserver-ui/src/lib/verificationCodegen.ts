@@ -463,7 +463,7 @@ export function verifyToGo(input: VerificationCodegenInput): string {
     'package main',
     '',
     'import (',
-    '\tmockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"',
+    '\tmockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"',
     ')',
     '',
     'func main() {',

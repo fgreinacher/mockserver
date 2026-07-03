@@ -7,7 +7,7 @@ import java.util.List;
 
 /**
  * Generates copy-paste-ready Go expectation code for the MockServer Go client
- * ({@code github.com/mock-server/mockserver-monorepo/mockserver-client-go}).
+ * ({@code github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7}).
  * <p>
  * Following the same JSON-wrap pattern as the JavaScript/Python generators, the
  * generated code embeds each expectation's existing JSON serialization (the
@@ -33,7 +33,7 @@ import java.util.List;
  * import (
  *     "encoding/json"
  *
- *     mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+ *     mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
  * )
  *
  * func main() {
@@ -63,7 +63,7 @@ public class ExpectationToGoSerializer {
         output.append("package main").append(NEW_LINE).append(NEW_LINE);
         output.append("import (").append(NEW_LINE);
         output.append(TAB).append("\"encoding/json\"").append(NEW_LINE).append(NEW_LINE);
-        output.append(TAB).append("mockserver \"github.com/mock-server/mockserver-monorepo/mockserver-client-go\"").append(NEW_LINE);
+        output.append(TAB).append("mockserver \"github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7\"").append(NEW_LINE);
         output.append(")").append(NEW_LINE).append(NEW_LINE);
         output.append("func main() {").append(NEW_LINE);
         output.append(TAB).append("client := mockserver.New(\"localhost\", 1080)").append(NEW_LINE);

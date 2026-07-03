@@ -81,7 +81,7 @@ describe('standardToPython', () => {
 describe('standardToGo', () => {
   it('unmarshals the JSON into a mockserver.Expectation and Upserts it', () => {
     const code = standardToGo(baseMatcher(), templateFileAction, BASE_URL);
-    expect(code).toContain('mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"');
+    expect(code).toContain('mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"');
     expect(code).toContain('mockserver.New("localhost", 1080)');
     expect(code).toContain('json.Unmarshal([]byte(expectationJSON), &expectation)');
     expect(code).toContain('client.Upsert(expectation)');
