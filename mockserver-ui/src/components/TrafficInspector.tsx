@@ -35,6 +35,8 @@ import { useConnectionParams } from '../hooks/useConnectionParams';
 import { useDragResize } from '../hooks/useDragResize';
 import { useDebugMismatchContext } from '../hooks/DebugMismatchContext';
 import { useGenerateStubContext } from '../hooks/GenerateStubContext';
+import { useSetBreakpointContext } from '../hooks/SetBreakpointContext';
+import { CreateFromMenu, buildLaunchpadActions } from './LogEntry';
 import JsonViewer from './JsonViewer';
 import ErrorBoundary from './ErrorBoundary';
 import ConfirmDialog from './ConfirmDialog';
@@ -59,6 +61,7 @@ import {
 import type { ScriptedTurn } from './ConversationView';
 import type { JsonListItem } from '../types';
 import { isCapturableTraffic } from '../lib/expectationFromCapture';
+import type { CreateFromMenuAction } from './LogEntry';
 import { replayRequests } from '../lib/replay';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
 import HumanErrorAlert from './HumanErrorAlert';
@@ -1528,6 +1531,7 @@ const detailActionSx = {
 function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, onReplay, onRepeat }: DetailActionsProps) {
   const debugMismatch = useDebugMismatchContext();
   const generateStub = useGenerateStubContext();
+  const setBreakpoint = useSetBreakpointContext();
   const [curlCopied, setCurlCopied] = useState(false);
 
   const httpRequest = useMemo(() => {
@@ -1536,6 +1540,23 @@ function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, 
       ? (req as Record<string, unknown>)
       : null;
   }, [item.value]);
+
+  // "Create From This…" launchpad — the same fan-out (mock / breakpoint /
+  // verify / chaos) offered on log rows, seeded from the selected flow. Pass
+  // the whole captured value so Create Mock reuses the generic extraction, and
+  // method/host/path from the parsed summary. Only shown when a request exists.
+  const launchpadActions = useMemo<CreateFromMenuAction[]>(
+    () => buildLaunchpadActions(
+      {
+        itemValue: httpRequest ? item.value : undefined,
+        method: summary.method ?? undefined,
+        path: summary.path ?? undefined,
+        host: summary.host ?? undefined,
+      },
+      setBreakpoint,
+    ),
+    [httpRequest, item.value, summary.method, summary.path, summary.host, setBreakpoint],
+  );
 
   const handleCopyCurl = useCallback(async () => {
     const curl = buildRequestCurl(item.value, summary);
@@ -1613,6 +1634,9 @@ function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, 
         >
           Capture as mock
         </Button>
+      )}
+      {httpRequest && (
+        <CreateFromMenu actions={launchpadActions} iconColor="text.secondary" iconFontSize="1.1rem" />
       )}
     </>
   );

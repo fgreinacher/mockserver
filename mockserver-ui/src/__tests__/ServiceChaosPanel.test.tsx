@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, waitFor, cleanup, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ServiceChaosPanel from '../components/ServiceChaosPanel';
+import { useDashboardStore } from '../store';
 
 const params = { host: '127.0.0.1', port: '1080', secure: false };
 
@@ -1356,5 +1357,33 @@ describe('ServiceChaosPanel — Quick Chaos strip', () => {
       host: 'api.example.com',
       chaos: { errorStatus: 500, errorProbability: 0.21 },
     });
+  });
+});
+
+describe('ServiceChaosPanel — launchpad chaos draft consumption', () => {
+  afterEach(() => {
+    useDashboardStore.setState({ pendingChaosDraft: null });
+  });
+
+  it('prefills the HTTP register host, expands the card, and clears the draft', async () => {
+    stubServiceChaos({ services: {} });
+    useDashboardStore.setState({ pendingChaosDraft: { host: 'api.example.com', path: '/api/orders' } });
+    render(<ServiceChaosPanel connectionParams={params} />);
+
+    // The HTTP Service Chaos card is expanded (its register form is visible) and
+    // the host scope is prefilled from the draft.
+    await waitFor(() => expect(screen.getByText('Register chaos for a host')).toBeInTheDocument());
+    expect(screen.getByDisplayValue('api.example.com')).toBeInTheDocument();
+    // The one-shot draft is consumed exactly once.
+    expect(useDashboardStore.getState().pendingChaosDraft).toBeNull();
+  });
+
+  it('expands the card even when the draft carries only a path (no host)', async () => {
+    stubServiceChaos({ services: {} });
+    useDashboardStore.setState({ pendingChaosDraft: { path: '/api/orders' } });
+    render(<ServiceChaosPanel connectionParams={params} />);
+
+    await waitFor(() => expect(screen.getByText('Register chaos for a host')).toBeInTheDocument());
+    expect(useDashboardStore.getState().pendingChaosDraft).toBeNull();
   });
 });

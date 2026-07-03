@@ -104,6 +104,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
 import LinearProgress from '@mui/material/LinearProgress';
 import { getConfiguration, updateConfiguration, type Configuration } from '../lib/configuration';
+import { useDashboardStore } from '../store';
 import ConfirmDialog from './ConfirmDialog';
 import HumanErrorAlert from './HumanErrorAlert';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
@@ -945,6 +946,30 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
       controller.abort();
     };
   }, [connectionParams, experimentsExpanded, historyExpanded, historyTick]);
+
+  // Consume a pending chaos draft handed off from a flow's "Add Chaos For This
+  // Host/Path" launchpad action: prefill the HTTP register form's host scope and
+  // open the (collapsed-by-default) HTTP Service Chaos card, then clear the draft
+  // so it applies exactly once. HTTP chaos is host-scoped, so the request's host
+  // is the scope field; a draft with only a path still opens the card so the user
+  // can fill in the host.
+  const pendingChaosDraft = useDashboardStore((s) => s.pendingChaosDraft);
+  const clearPendingChaosDraft = useDashboardStore((s) => s.clearPendingChaosDraft);
+  useEffect(() => {
+    // Clear the one-shot hand-off on teardown so a draft can never survive an
+    // unmount mid-apply and re-apply on re-mount.
+    if (!pendingChaosDraft) return clearPendingChaosDraft;
+    const host = pendingChaosDraft.host?.trim();
+    // Consuming a one-shot store hand-off is the legitimate "sync React state
+    // from an external system" case; the effect clears the signal so it runs
+    // exactly once (same pattern as the Composer/Breakpoints panels).
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (host) setForm((prev) => ({ ...prev, host }));
+    setHttpExpanded(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    clearPendingChaosDraft();
+    return clearPendingChaosDraft;
+  }, [pendingChaosDraft, clearPendingChaosDraft]);
 
   const hosts = useMemo(() => Object.keys(data.services).sort(), [data.services]);
 

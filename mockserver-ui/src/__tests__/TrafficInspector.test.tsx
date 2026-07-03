@@ -1725,3 +1725,86 @@ describe('TrafficInspector — Promote to Mocks', () => {
     expect(within(dialog).getByText(/no recorded traffic to promote/i)).toBeInTheDocument();
   });
 });
+
+describe('TrafficInspector — "Create From This…" launchpad menu', () => {
+  const MENU_LABEL = 'Create from this request…';
+
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [
+        {
+          key: 'req-http-1',
+          value: {
+            httpRequest: {
+              method: 'GET',
+              path: '/api/orders',
+              headers: [{ name: 'host', values: ['api.example.com'] }],
+            },
+            httpResponse: { statusCode: 200 },
+          },
+        },
+      ],
+      recordedRequests: [],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+      view: 'traffic',
+      pendingEditExpectation: null,
+      pendingVerificationDraft: null,
+      pendingChaosDraft: null,
+    });
+  });
+
+  afterEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      pendingEditExpectation: null,
+      pendingVerificationDraft: null,
+      pendingChaosDraft: null,
+    });
+  });
+
+  async function selectRowAndOpenMenu(user: ReturnType<typeof userEvent.setup>) {
+    renderTrafficInspector();
+    await user.click(screen.getByText(/\/api\/orders/));
+    await user.click(screen.getByRole('button', { name: MENU_LABEL }));
+  }
+
+  it('offers the menu with all four actions in the detail pane', async () => {
+    const user = userEvent.setup();
+    await selectRowAndOpenMenu(user);
+    expect(screen.getByRole('menuitem', { name: 'Create Mock' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Set Breakpoint' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Verify This Request' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Add Chaos For This Host/Path' })).toBeInTheDocument();
+  });
+
+  it('"Verify This Request" seeds the verification draft and navigates', async () => {
+    const user = userEvent.setup();
+    await selectRowAndOpenMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: 'Verify This Request' }));
+    const state = useDashboardStore.getState();
+    expect(state.pendingVerificationDraft).toEqual({ method: 'GET', path: '/api/orders' });
+    expect(state.view).toBe('verification');
+  });
+
+  it('"Add Chaos For This Host/Path" seeds the chaos draft and navigates', async () => {
+    const user = userEvent.setup();
+    await selectRowAndOpenMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: 'Add Chaos For This Host/Path' }));
+    const state = useDashboardStore.getState();
+    expect(state.pendingChaosDraft).toEqual({ host: 'api.example.com', path: '/api/orders' });
+    expect(state.view).toBe('chaos');
+  });
+
+  it('"Create Mock" loads a draft expectation into the Composer', async () => {
+    const user = userEvent.setup();
+    await selectRowAndOpenMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: 'Create Mock' }));
+    const state = useDashboardStore.getState();
+    expect(state.view).toBe('composer');
+    const req = state.pendingEditExpectation?.['httpRequest'] as Record<string, unknown>;
+    expect(req?.['method']).toBe('GET');
+    expect(req?.['path']).toBe('/api/orders');
+  });
+});

@@ -1,23 +1,134 @@
 import { useState, useMemo, memo, useDeferredValue, Fragment } from 'react';
+import type { ReactNode, MouseEvent as ReactMouseEvent } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
+import Menu from '@mui/material/Menu';
+import MenuItem from '@mui/material/MenuItem';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import ListItemText from '@mui/material/ListItemText';
+import type { SxProps, Theme } from '@mui/material/styles';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import HelpOutlinedIcon from '@mui/icons-material/HelpOutlined';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import PauseCircleIcon from '@mui/icons-material/PauseCircle';
+import MoreVertIcon from '@mui/icons-material/MoreVert';
+import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutlined';
+import FactCheckOutlinedIcon from '@mui/icons-material/FactCheckOutlined';
+import BoltIcon from '@mui/icons-material/Bolt';
 import type { LogEntryValue, MessagePart } from '../types';
 import JsonViewer from './JsonViewer';
 import BecauseSection from './BecauseSection';
 import CopyButton from './CopyButton';
 import { useDebugMismatchContext } from '../hooks/DebugMismatchContext';
 import { useGenerateStubContext } from '../hooks/GenerateStubContext';
-import { useSetBreakpointContext } from '../hooks/SetBreakpointContext';
+import { useSetBreakpointContext, type SetBreakpointFn } from '../hooks/SetBreakpointContext';
 import { entryToText } from '../lib/logEntryText';
 import { parseLogTimestamp, formatCompactTime, formatAbsoluteTime } from '../lib/logEntryTime';
 import { monospaceFontFamily } from '../theme';
+import { useDashboardStore } from '../store';
+import { extractGenericExpectationFromCapture } from '../lib/expectationFromCapture';
+import { expectationToJsonObject } from '../lib/llmExpectationCodegen';
+
+// ---------------------------------------------------------------------------
+// "Create From This…" launchpad menu — shared by LogEntry (log-row hover) and
+// the Traffic detail pane. One captured flow fans out into every subsystem:
+// Create Mock (Composer), Set Breakpoint, Verify This Request, Add Chaos. Each
+// action is wired by the surface that owns the data; this component is the
+// compact overflow presentation (IconButton + Menu) common to both.
+// ---------------------------------------------------------------------------
+
+export interface CreateFromMenuAction {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  /** Absent => the item is disabled (its target data is missing). */
+  onClick?: () => void;
+  /** Tooltip explaining why the item is disabled, shown when `onClick` is absent. */
+  disabledTooltip?: string;
+}
+
+/**
+ * Compact overflow menu offering the launchpad actions. A menu item with no
+ * `onClick` renders disabled with its `disabledTooltip`, so the same menu can
+ * be shown wherever a flow carries a request while gating the individual
+ * actions whose target data (method/path/host) is missing.
+ */
+export function CreateFromMenu({
+  actions,
+  tooltip = 'Create from this request…',
+  iconColor = 'primary.main',
+  iconFontSize = '0.9rem',
+  buttonSx,
+}: {
+  actions: CreateFromMenuAction[];
+  tooltip?: string;
+  iconColor?: string;
+  iconFontSize?: string;
+  buttonSx?: SxProps<Theme>;
+}) {
+  const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
+  const open = Boolean(anchorEl);
+  const handleOpen = (e: ReactMouseEvent<HTMLElement>) => {
+    e.stopPropagation();
+    setAnchorEl(e.currentTarget);
+  };
+  const close = () => setAnchorEl(null);
+
+  return (
+    <>
+      <Tooltip title={tooltip}>
+        <IconButton
+          size="small"
+          aria-label={tooltip}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={handleOpen}
+          sx={{ p: 0, ml: 0.5, '& .MuiSvgIcon-root': { fontSize: iconFontSize }, ...buttonSx }}
+        >
+          <MoreVertIcon sx={{ color: iconColor }} />
+        </IconButton>
+      </Tooltip>
+      <Menu
+        anchorEl={anchorEl}
+        open={open}
+        onClose={close}
+        onClick={(e) => e.stopPropagation()}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        {actions.map((action) => {
+          const disabled = !action.onClick;
+          const item = (
+            <MenuItem
+              disabled={disabled}
+              onClick={() => {
+                action.onClick?.();
+                close();
+              }}
+              dense
+            >
+              <ListItemIcon sx={{ minWidth: 32 }}>{action.icon}</ListItemIcon>
+              <ListItemText slotProps={{ primary: { variant: 'body2' } }}>{action.label}</ListItemText>
+            </MenuItem>
+          );
+          if (disabled && action.disabledTooltip) {
+            // A disabled MenuItem does not emit hover events, so wrap it in a
+            // span for the Tooltip to anchor to.
+            return (
+              <Tooltip key={action.key} title={action.disabledTooltip} placement="left">
+                <span>{item}</span>
+              </Tooltip>
+            );
+          }
+          return <Fragment key={action.key}>{item}</Fragment>;
+        })}
+      </Menu>
+    </>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // W3C traceparent pill (F8)
@@ -325,6 +436,118 @@ function extractBreakpointPrefill(entry: LogEntryValue): { method?: string; path
   return { method, path };
 }
 
+/** Read the Host header value from MockServer's array or object header shape. */
+function hostFromRequestHeaders(headers: unknown): string | undefined {
+  if (Array.isArray(headers)) {
+    for (const h of headers) {
+      if (h && typeof h === 'object' && !Array.isArray(h)) {
+        const entry = h as Record<string, unknown>;
+        const name = entry['name'];
+        const values = entry['values'];
+        if (typeof name === 'string' && name.toLowerCase() === 'host'
+          && Array.isArray(values) && typeof values[0] === 'string') {
+          return values[0];
+        }
+      }
+    }
+  } else if (headers && typeof headers === 'object') {
+    for (const [k, v] of Object.entries(headers as Record<string, unknown>)) {
+      if (k.toLowerCase() === 'host') {
+        if (typeof v === 'string') return v;
+        if (Array.isArray(v) && typeof v[0] === 'string') return v[0];
+      }
+    }
+  }
+  return undefined;
+}
+
+interface LaunchpadData {
+  /** Captured value wrapping the request (`{ httpRequest, ... }`) for mock extraction. */
+  itemValue: Record<string, unknown>;
+  method?: string;
+  path?: string;
+  host?: string;
+}
+
+/**
+ * Derive the launchpad inputs (method / path / host + a capture value for mock
+ * extraction) from a log row's request. Returns `null` when the entry carries
+ * no request, so the "Create From This…" menu is only offered on
+ * request-bearing rows.
+ */
+function extractLaunchpadData(entry: LogEntryValue): LaunchpadData | null {
+  const found = extractRequestFromEntry(entry);
+  if (!found) return null;
+  const nested = found['httpRequest'];
+  const isWrapped = nested != null && typeof nested === 'object' && !Array.isArray(nested);
+  const request = isWrapped ? (nested as Record<string, unknown>) : found;
+  const method = typeof request['method'] === 'string' ? (request['method'] as string) : undefined;
+  const path = typeof request['path'] === 'string' ? (request['path'] as string) : undefined;
+  if (!method && !path) return null;
+  const host = hostFromRequestHeaders(request['headers']);
+  // extractGenericExpectationFromCapture reads `itemValue.httpRequest`, so pass
+  // the wrapped value as-is or synthesise a wrapper around a bare request.
+  const itemValue = isWrapped ? found : { httpRequest: request };
+  return { itemValue, method, path, host };
+}
+
+/**
+ * Build the four launchpad actions from a captured flow's data + the breakpoint
+ * seeder. Shared shape used by both the log row and the Traffic detail pane so
+ * the fan-out (Composer / Breakpoint / Verify / Chaos) stays consistent. Store
+ * actions are read via getState() inside the handlers so callers do not
+ * subscribe (keeps the memoized log row off the store's update path).
+ */
+export function buildLaunchpadActions(
+  data: { itemValue?: Record<string, unknown>; method?: string; path?: string; host?: string },
+  setBreakpoint: SetBreakpointFn | null,
+): CreateFromMenuAction[] {
+  const { itemValue, method, path, host } = data;
+  return [
+    {
+      key: 'mock',
+      label: 'Create Mock',
+      icon: <AddCircleOutlineIcon fontSize="small" color="primary" />,
+      onClick: itemValue
+        ? () => {
+            const draft = extractGenericExpectationFromCapture(itemValue);
+            useDashboardStore.getState().editExpectation(
+              expectationToJsonObject(draft) as Record<string, unknown>,
+            );
+          }
+        : undefined,
+      disabledTooltip: 'No request captured to build a mock from',
+    },
+    {
+      key: 'breakpoint',
+      label: 'Set Breakpoint',
+      icon: <PauseCircleIcon fontSize="small" color="secondary" />,
+      onClick: setBreakpoint && (method || path)
+        ? () => setBreakpoint({ method, path })
+        : undefined,
+      disabledTooltip: 'No method or path to break on',
+    },
+    {
+      key: 'verify',
+      label: 'Verify This Request',
+      icon: <FactCheckOutlinedIcon fontSize="small" color="info" />,
+      onClick: method || path
+        ? () => useDashboardStore.getState().setVerificationDraft({ method, path })
+        : undefined,
+      disabledTooltip: 'No method or path to verify',
+    },
+    {
+      key: 'chaos',
+      label: 'Add Chaos For This Host/Path',
+      icon: <BoltIcon fontSize="small" color="warning" />,
+      onClick: host || path
+        ? () => useDashboardStore.getState().setChaosDraft({ host, path })
+        : undefined,
+      disabledTooltip: 'No host or path for a chaos scope',
+    },
+  ];
+}
+
 function LogEntry({ entry, indent = false, divider = false, collapsible = false, entryKey, expanded: expandedProp, onToggleExpand }: LogEntryProps) {
   const style = entry.style ?? {};
   const hasBody = entry.messageParts && entry.messageParts.length > 0;
@@ -350,6 +573,13 @@ function LogEntry({ entry, indent = false, divider = false, collapsible = false,
   // not), so the user can pause future occurrences of this exact method+path.
   const breakpointPrefill = useMemo(() => extractBreakpointPrefill(entry), [entry]);
   const showSetBreakpointButton = setBreakpoint !== null && breakpointPrefill !== null;
+  // "Create From This…" launchpad — offered on any request-bearing row so one
+  // captured flow can fan out into a mock, breakpoint, verification, or chaos.
+  const launchpad = useMemo(() => extractLaunchpadData(entry), [entry]);
+  const launchpadActions = useMemo(
+    () => (launchpad ? buildLaunchpadActions(launchpad, setBreakpoint) : []),
+    [launchpad, setBreakpoint],
+  );
 
   return (
     <Box
@@ -454,6 +684,7 @@ function LogEntry({ entry, indent = false, divider = false, collapsible = false,
                 </IconButton>
               </Tooltip>
             )}
+            {launchpad && <CreateFromMenu actions={launchpadActions} />}
             {!expanded && (() => {
               const summary = getSummary(entry);
               return (

@@ -321,6 +321,30 @@ interface DashboardState {
   /** Clear the pending breakpoint prefill (called by the panel once consumed). */
   clearPendingBreakpointPrefill: () => void;
 
+  /**
+   * Pre-filled method/path to seed the Verification form, set when the user
+   * picks "Verify This Request" from a flow's Create-From menu. Consumed (and
+   * cleared) by VerificationView once it has applied it to the single-request
+   * matcher. Defaults elsewhere (times mode "atLeast", count 1) are the form's.
+   */
+  pendingVerificationDraft: { method?: string; path?: string } | null;
+  /** Seed the verification form from a request and switch to that view. */
+  setVerificationDraft: (prefill: { method?: string; path?: string }) => void;
+  /** Clear the pending verification draft (called by the view once consumed). */
+  clearPendingVerificationDraft: () => void;
+
+  /**
+   * Pre-filled scope (host and/or path) to seed the HTTP chaos rule form, set
+   * when the user picks "Add Chaos For This Host/Path" from a flow's
+   * Create-From menu. Consumed (and cleared) by ServiceChaosPanel once it has
+   * applied it to the register form and expanded that card.
+   */
+  pendingChaosDraft: { host?: string; path?: string } | null;
+  /** Seed the HTTP chaos form scope from a request and switch to that view. */
+  setChaosDraft: (prefill: { host?: string; path?: string }) => void;
+  /** Clear the pending chaos draft (called by the panel once consumed). */
+  clearPendingChaosDraft: () => void;
+
   applyMessage: (message: WebSocketMessage) => void;
   clearUI: () => void;
   setView: (view: ViewMode) => void;
@@ -409,6 +433,8 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
 
   pendingEditExpectation: null,
   pendingBreakpointPrefill: null,
+  pendingVerificationDraft: null,
+  pendingChaosDraft: null,
 
   actionTypeFilter: [],
   llmProviderFilter: [],
@@ -479,6 +505,8 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
       selectedTrafficKey: null,
       pendingEditExpectation: null,
       pendingBreakpointPrefill: null,
+      pendingVerificationDraft: null,
+      pendingChaosDraft: null,
       error: null,
       errorSource: null,
       notification: null,
@@ -560,6 +588,16 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
     set({ pendingBreakpointPrefill: prefill, view: 'breakpoints' as ViewMode, selectedTrafficKey: null });
   },
   clearPendingBreakpointPrefill: () => set({ pendingBreakpointPrefill: null }),
+  setVerificationDraft: (prefill) => {
+    persistView('verification');
+    set({ pendingVerificationDraft: prefill, view: 'verification' as ViewMode, selectedTrafficKey: null });
+  },
+  clearPendingVerificationDraft: () => set({ pendingVerificationDraft: null }),
+  setChaosDraft: (prefill) => {
+    persistView('chaos');
+    set({ pendingChaosDraft: prefill, view: 'chaos' as ViewMode, selectedTrafficKey: null });
+  },
+  clearPendingChaosDraft: () => set({ pendingChaosDraft: null }),
   // A locally-set error (failed clear, parse failure, connection-lost notice) is
   // tagged 'client' so a subsequent data push cannot silently wipe it — it stays
   // until the user dismisses it or a later setError/push supersedes it.

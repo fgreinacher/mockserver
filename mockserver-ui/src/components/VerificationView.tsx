@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, type ReactNode } from 'react';
+import { useState, useCallback, useMemo, useEffect, type ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
@@ -27,6 +27,7 @@ import {
 } from '../lib/verification';
 import VerificationReview from './VerificationReview';
 import HumanErrorAlert from './HumanErrorAlert';
+import { useDashboardStore } from '../store';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
 import { monospaceFontFamily } from '../theme';
 
@@ -219,6 +220,37 @@ export default function VerificationView({ connectionParams }: { connectionParam
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<VerifyResult | null>(null);
   const [error, setError] = useState<HumanError | null>(null);
+
+  // Consume a pending verification draft handed off from a flow's "Verify This
+  // Request" launchpad action: prefill the single-request matcher's method/path
+  // (times mode/count keep their form defaults — atLeast 1), switch to single
+  // mode with the request matcher expanded, then clear the draft so it is
+  // applied exactly once. Reading via the store hook (not getState) makes the
+  // effect re-run when the draft arrives while the view is already mounted.
+  const pendingVerificationDraft = useDashboardStore((s) => s.pendingVerificationDraft);
+  const clearPendingVerificationDraft = useDashboardStore((s) => s.clearPendingVerificationDraft);
+  useEffect(() => {
+    // Always clear the one-shot hand-off on teardown so a draft can never
+    // survive the view being unmounted mid-apply and re-apply on re-mount.
+    if (!pendingVerificationDraft) return clearPendingVerificationDraft;
+    const { method, path } = pendingVerificationDraft;
+    // Consuming a one-shot hand-off from the Zustand store IS the legitimate
+    // "sync React state from an external system" case the rule exempts; the
+    // effect clears the signal at the end so it runs exactly once per hand-off
+    // (the same pattern the Composer/Breakpoints panels use).
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setMode('single');
+    setSingle((prev) => ({
+      ...prev,
+      method: method ?? prev.method,
+      path: path ?? prev.path,
+    }));
+    setSingleRequestExpanded(true);
+    setResult(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    clearPendingVerificationDraft();
+    return clearPendingVerificationDraft;
+  }, [pendingVerificationDraft, clearPendingVerificationDraft]);
 
   const run = useCallback(async (fn: () => Promise<VerifyResult>) => {
     setBusy(true);

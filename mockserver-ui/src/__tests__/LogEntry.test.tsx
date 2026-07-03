@@ -1,9 +1,30 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import LogEntry from '../components/LogEntry';
 import { entryToText } from '../lib/logEntryText';
+import { SetBreakpointContext } from '../hooks/SetBreakpointContext';
+import { useDashboardStore } from '../store';
 import type { LogEntryValue } from '../types';
+
+/** A collapsible log entry that carries an HTTP request (method/path/host). */
+function requestBearingEntry(): LogEntryValue {
+  return {
+    description: 'received request',
+    messageParts: [
+      {
+        key: 'msg_0',
+        value: {
+          method: 'GET',
+          path: '/api/orders',
+          headers: [{ name: 'host', values: ['api.example.com'] }],
+        },
+        json: true,
+        argument: true,
+      },
+    ],
+  };
+}
 
 describe('LogEntry', () => {
   it('renders a text-only message part', () => {
@@ -193,6 +214,96 @@ describe('LogEntry timestamp', () => {
     expect(time).toHaveTextContent('not-a-date');
     // No machine-readable dateTime when it could not be parsed.
     expect(time).not.toHaveAttribute('datetime');
+  });
+});
+
+describe('LogEntry — "Create From This…" launchpad menu', () => {
+  const MENU_LABEL = 'Create from this request…';
+
+  beforeEach(() => {
+    useDashboardStore.setState({
+      view: 'dashboard',
+      pendingEditExpectation: null,
+      pendingVerificationDraft: null,
+      pendingChaosDraft: null,
+    });
+  });
+
+  it('shows the menu button on a request-bearing collapsible row', () => {
+    render(<LogEntry entry={requestBearingEntry()} collapsible />);
+    expect(screen.getByRole('button', { name: MENU_LABEL })).toBeInTheDocument();
+  });
+
+  it('does not show the menu on a plain text (non-request) row', () => {
+    const entry: LogEntryValue = {
+      description: '10:00:00 INFO',
+      messageParts: [{ key: 'msg_0', value: 'server started' }],
+    };
+    render(<LogEntry entry={entry} collapsible />);
+    expect(screen.queryByRole('button', { name: MENU_LABEL })).not.toBeInTheDocument();
+  });
+
+  it('opens the menu with all four launchpad actions', async () => {
+    const user = userEvent.setup();
+    render(<LogEntry entry={requestBearingEntry()} collapsible />);
+    await user.click(screen.getByRole('button', { name: MENU_LABEL }));
+    expect(screen.getByRole('menuitem', { name: 'Create Mock' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Set Breakpoint' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Verify This Request' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Add Chaos For This Host/Path' })).toBeInTheDocument();
+  });
+
+  it('"Verify This Request" seeds the verification draft and navigates', async () => {
+    const user = userEvent.setup();
+    render(<LogEntry entry={requestBearingEntry()} collapsible />);
+    await user.click(screen.getByRole('button', { name: MENU_LABEL }));
+    await user.click(screen.getByRole('menuitem', { name: 'Verify This Request' }));
+    const state = useDashboardStore.getState();
+    expect(state.pendingVerificationDraft).toEqual({ method: 'GET', path: '/api/orders' });
+    expect(state.view).toBe('verification');
+  });
+
+  it('"Add Chaos For This Host/Path" seeds the chaos draft with the host and navigates', async () => {
+    const user = userEvent.setup();
+    render(<LogEntry entry={requestBearingEntry()} collapsible />);
+    await user.click(screen.getByRole('button', { name: MENU_LABEL }));
+    await user.click(screen.getByRole('menuitem', { name: 'Add Chaos For This Host/Path' }));
+    const state = useDashboardStore.getState();
+    expect(state.pendingChaosDraft).toEqual({ host: 'api.example.com', path: '/api/orders' });
+    expect(state.view).toBe('chaos');
+  });
+
+  it('"Create Mock" loads a draft expectation into the Composer', async () => {
+    const user = userEvent.setup();
+    render(<LogEntry entry={requestBearingEntry()} collapsible />);
+    await user.click(screen.getByRole('button', { name: MENU_LABEL }));
+    await user.click(screen.getByRole('menuitem', { name: 'Create Mock' }));
+    const state = useDashboardStore.getState();
+    expect(state.view).toBe('composer');
+    expect(state.pendingEditExpectation).not.toBeNull();
+    const req = state.pendingEditExpectation?.['httpRequest'] as Record<string, unknown>;
+    expect(req?.['method']).toBe('GET');
+    expect(req?.['path']).toBe('/api/orders');
+  });
+
+  it('"Set Breakpoint" is disabled without a breakpoint context', async () => {
+    const user = userEvent.setup();
+    render(<LogEntry entry={requestBearingEntry()} collapsible />);
+    await user.click(screen.getByRole('button', { name: MENU_LABEL }));
+    expect(screen.getByRole('menuitem', { name: 'Set Breakpoint' })).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('"Set Breakpoint" calls the breakpoint context when provided', async () => {
+    const user = userEvent.setup();
+    const setBreakpoint = vi.fn();
+    render(
+      <SetBreakpointContext.Provider value={setBreakpoint}>
+        <LogEntry entry={requestBearingEntry()} collapsible />
+      </SetBreakpointContext.Provider>,
+    );
+    await user.click(screen.getByRole('button', { name: MENU_LABEL }));
+    await user.click(screen.getByRole('menuitem', { name: 'Set Breakpoint' }));
+    expect(setBreakpoint).toHaveBeenCalledWith({ method: 'GET', path: '/api/orders' });
   });
 });
 

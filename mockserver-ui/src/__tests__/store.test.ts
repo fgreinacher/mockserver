@@ -541,4 +541,44 @@ describe('DashboardStore', () => {
       expect(useDashboardStore.getState().themeMode).toBe('dark');
     });
   });
+
+  describe('launchpad hand-off drafts', () => {
+    beforeEach(() => {
+      useDashboardStore.setState({
+        view: 'traffic',
+        selectedTrafficKey: 'req-1',
+        pendingVerificationDraft: null,
+        pendingChaosDraft: null,
+      });
+    });
+
+    it('setVerificationDraft stores the draft and navigates to the verification view', () => {
+      useDashboardStore.getState().setVerificationDraft({ method: 'POST', path: '/api/orders' });
+      const state = useDashboardStore.getState();
+      expect(state.pendingVerificationDraft).toEqual({ method: 'POST', path: '/api/orders' });
+      expect(state.view).toBe('verification');
+      // Navigating away clears the selected traffic row (like the other hand-offs).
+      expect(state.selectedTrafficKey).toBeNull();
+    });
+
+    it('clearPendingVerificationDraft resets the draft to null', () => {
+      useDashboardStore.getState().setVerificationDraft({ path: '/x' });
+      useDashboardStore.getState().clearPendingVerificationDraft();
+      expect(useDashboardStore.getState().pendingVerificationDraft).toBeNull();
+    });
+
+    it('setChaosDraft stores the scope and navigates to the chaos view', () => {
+      useDashboardStore.getState().setChaosDraft({ host: 'api.example.com', path: '/api/orders' });
+      const state = useDashboardStore.getState();
+      expect(state.pendingChaosDraft).toEqual({ host: 'api.example.com', path: '/api/orders' });
+      expect(state.view).toBe('chaos');
+      expect(state.selectedTrafficKey).toBeNull();
+    });
+
+    it('clearPendingChaosDraft resets the draft to null', () => {
+      useDashboardStore.getState().setChaosDraft({ host: 'api.example.com' });
+      useDashboardStore.getState().clearPendingChaosDraft();
+      expect(useDashboardStore.getState().pendingChaosDraft).toBeNull();
+    });
+  });
 });
