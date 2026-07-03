@@ -7,7 +7,9 @@ import type { JsonListItem } from '../types';
 import Panel from './Panel';
 import JsonListItemComponent from './JsonListItem';
 import ProgressiveList from './ProgressiveList';
+import CopyButton from './CopyButton';
 import { useExpansion } from '../hooks/useExpansion';
+import { useConnectionParams } from '../hooks/useConnectionParams';
 import { matchesItemSearch } from '../lib/searchMatcher';
 import { monospaceFontFamily } from '../theme';
 
@@ -153,6 +155,8 @@ export default function RequestPanel({
   );
 
   const expansion = useExpansion();
+  const connectionParams = useConnectionParams();
+  const curlExample = `curl -x http://${connectionParams.host}:${connectionParams.port} http://example.com`;
 
   return (
     <Panel
@@ -163,9 +167,37 @@ export default function RequestPanel({
       onSearchChange={onSearchChange}
     >
       {filtered.length === 0 ? (
-        <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
-          {items.length === 0 ? 'No requests yet — recorded requests appear here as traffic reaches the server.' : 'No matching requests'}
-        </Typography>
+        items.length === 0 ? (
+          <Box sx={{ p: 2, textAlign: 'center', color: 'text.secondary' }}>
+            <Typography variant="body2" sx={{ mb: 1 }}>No requests yet.</Typography>
+            <Typography variant="caption" component="div" sx={{ mb: 1 }}>
+              Send a request through MockServer — as a proxy or to a mock — and it appears here. For example:
+            </Typography>
+            <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, maxWidth: '100%' }}>
+              <Box
+                component="code"
+                sx={{
+                  fontFamily: monospaceFontFamily,
+                  fontSize: '0.72rem',
+                  px: 1,
+                  py: 0.5,
+                  bgcolor: 'action.hover',
+                  borderRadius: 1,
+                  overflowX: 'auto',
+                  textAlign: 'left',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {curlExample}
+              </Box>
+              <CopyButton text={curlExample} />
+            </Box>
+          </Box>
+        ) : (
+          <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
+            No matching requests
+          </Typography>
+        )
       ) : (
         <ProgressiveList
           count={filtered.length}

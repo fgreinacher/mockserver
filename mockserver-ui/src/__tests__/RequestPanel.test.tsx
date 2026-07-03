@@ -11,6 +11,17 @@ describe('RequestPanel', () => {
     expect(screen.getByText(/No requests/)).toBeInTheDocument();
   });
 
+  it('offers an actionable, copyable curl one-liner (with host:port) in the empty state', () => {
+    render(
+      <RequestPanel title="Received Requests" items={[]} searchValue="" onSearchChange={() => {}} />,
+    );
+    const code = document.querySelector('code');
+    // The example curl re-issues a proxied request against this MockServer's host:port.
+    expect(code?.textContent).toMatch(/curl -x http:\/\/[\w.-]+:\d+ http:\/\/example\.com/);
+    // A copy affordance sits alongside it (shared CopyButton renders a button).
+    expect(document.querySelectorAll('button').length).toBeGreaterThan(0);
+  });
+
   it('renders requests with reverse index based on filtered count', () => {
     const items = [
       { key: 'r1', value: { method: 'GET', path: '/first' } },

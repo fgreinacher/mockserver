@@ -27,18 +27,48 @@ import { monospaceFontFamily } from '../theme';
 import CaptureAsMockDialog from './CaptureAsMockDialog';
 import DiffPanel from './DiffPanel';
 
-function scoreColor(matched: number, total: number): 'success' | 'warning' | 'error' {
-  // Guard divide-by-zero: a matcher with no fields hasn't "failed" anything, so don't paint it red.
-  if (total <= 0) return 'success';
-  const ratio = matched / total;
-  if (ratio >= 0.8) return 'success';
-  if (ratio >= 0.5) return 'warning';
-  return 'error';
+// Client-derived remediation hints, mirroring the server's MismatchRemediation
+// defaults. The debug-mismatch endpoint (unlike explainUnmatched) does not return
+// remediation hints, so we derive an equivalent short hint from the field name.
+const FIELD_HINTS: Record<string, string> = {
+  method: 'check the HTTP method',
+  path: 'check the request path',
+  pathParameters: 'check path parameter values',
+  queryParameters: 'check query string parameters',
+  cookies: 'check request cookies',
+  headers: 'check request headers',
+  body: 'check the request body content',
+  secure: 'check whether the request uses HTTPS vs HTTP',
+  protocol: 'check the protocol version',
+  'keep-alive': 'check the keep-alive setting',
+  operation: 'check the OpenAPI operation id',
+  openapi: 'check the OpenAPI operation id',
+  clientCertificate: 'check the client certificate',
+  jwt: 'check the JWT claims',
+};
+
+function hintForField(field: string): string | undefined {
+  return FIELD_HINTS[field];
+}
+
+// Count of fields that actually failed to match. The server's totalFieldCount
+// counts every possible match field (including ones the matcher never specified),
+// so matchedFieldCount/totalFieldCount reads misleadingly high (e.g. 15/16 for a
+// method+path matcher). The honest number is how many fields differ.
+function differingFieldCount(result: DebugMismatchExpectationResult): number {
+  if (result.differences) return Object.keys(result.differences).length;
+  return Math.max(0, result.totalFieldCount - result.matchedFieldCount);
+}
+
+function chipColor(result: DebugMismatchExpectationResult): 'success' | 'warning' | 'error' {
+  if (result.matches) return 'success';
+  return differingFieldCount(result) <= 2 ? 'warning' : 'error';
 }
 
 function ExpectationResultRow({ result, isClosest }: { result: DebugMismatchExpectationResult; isClosest: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const hasDiffs = result.differences && Object.keys(result.differences).length > 0;
+  const differing = differingFieldCount(result);
 
   return (
     <Box
@@ -76,11 +106,11 @@ function ExpectationResultRow({ result, isClosest }: { result: DebugMismatchExpe
           <CancelIcon sx={{ fontSize: '1rem', color: 'error.main' }} />
         )}
         <Chip
-          label={`${result.matchedFieldCount}/${result.totalFieldCount}`}
+          label={result.matches ? 'matches' : `differs on ${differing} field${differing === 1 ? '' : 's'}`}
           size="small"
-          color={scoreColor(result.matchedFieldCount, result.totalFieldCount)}
+          color={chipColor(result)}
           variant="outlined"
-          sx={{ fontFamily: monospaceFontFamily, fontSize: '0.75rem', height: 20, minWidth: 48 }}
+          sx={{ fontFamily: monospaceFontFamily, fontSize: '0.75rem', height: 20 }}
         />
         <Box component="span" sx={{ fontFamily: monospaceFontFamily, fontSize: '0.8rem', color: 'text.secondary' }}>
           {result.expectationMethod && result.expectationPath
@@ -118,6 +148,14 @@ function ExpectationResultRow({ result, isClosest }: { result: DebugMismatchExpe
                   {diff}
                 </Typography>
               ))}
+              {hintForField(field) && (
+                <Typography
+                  variant="caption"
+                  sx={{ display: 'block', pl: 2, fontStyle: 'italic', color: 'text.secondary', lineHeight: 1.4 }}
+                >
+                  Hint: {hintForField(field)}
+                </Typography>
+              )}
             </Box>
           ))}
         </Box>
@@ -244,7 +282,7 @@ export default function DebugMismatchDialog({ connectionParams }: DebugMismatchD
               />
             )}
           </Box>
-          <IconButton size="small" onClick={close}>
+          <IconButton size="small" onClick={close} aria-label="Close">
             <CloseIcon fontSize="small" />
           </IconButton>
         </DialogTitle>

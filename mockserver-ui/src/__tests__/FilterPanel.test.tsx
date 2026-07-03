@@ -102,6 +102,29 @@ describe('FilterPanel', () => {
     });
   });
 
+  it('auto-enables filtering the first time a field is edited', async () => {
+    const user = userEvent.setup();
+    useDashboardStore.setState({ filterExpanded: true, filterEnabled: false });
+    renderFilterPanel();
+
+    // Fields are editable while filtering is off, and the hint invites the user in.
+    expect(useDashboardStore.getState().filterEnabled).toBe(false);
+    expect(screen.getByText('Type in any field to start filtering.')).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Path'), '/api');
+
+    // Editing armed the filter: the switch is now on and the store reflects it.
+    await waitFor(() => expect(useDashboardStore.getState().filterEnabled).toBe(true));
+    expect(screen.getByLabelText('Enabled')).toBeChecked();
+  });
+
+  it('leaves filtering off until a field is actually edited', () => {
+    useDashboardStore.setState({ filterExpanded: true, filterEnabled: false });
+    renderFilterPanel();
+    // No edit yet — the switch must not arm itself just from rendering.
+    expect(useDashboardStore.getState().filterEnabled).toBe(false);
+  });
+
   it('toggles the "Show forwarded" log display switch through the store', async () => {
     const user = userEvent.setup();
     useDashboardStore.setState({ filterExpanded: true, logShowForwarded: true });

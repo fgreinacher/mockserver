@@ -306,7 +306,14 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
     };
   }, [emitFilter]);
 
-  const disabled = !filterEnabled;
+  // Fields stay editable even while filtering is off so the first edit can arm it.
+  const disabled = false;
+
+  // Auto-enable: editing any filter field flips the "Enabled" switch on (no-op when
+  // already on). The switch stays available for turning filtering back off.
+  const arm = useCallback(() => {
+    if (!filterEnabled) setFilterEnabled(true);
+  }, [filterEnabled, setFilterEnabled]);
 
   const persist = useCallback((next: FilterPreset[]) => {
     setPresets(next);
@@ -395,9 +402,9 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
                 }
                 label="Enabled"
               />
-              {disabled && (
+              {!filterEnabled && (
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: -0.5 }}>
-                  Turn on “Enabled” to filter.
+                  Type in any field to start filtering.
                 </Typography>
               )}
             </Box>
@@ -407,7 +414,7 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
                 size="small"
                 label="Method"
                 value={method}
-                onChange={(e) => setMethod(e.target.value)}
+                onChange={(e) => { arm(); setMethod(e.target.value); }}
                 disabled={disabled}
                 sx={{ width: { xs: '100%', sm: 130 } }}
               >
@@ -421,7 +428,7 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
                 size="small"
                 label={regex ? 'Path (regex)' : 'Path'}
                 value={path}
-                onChange={(e) => setPath(e.target.value)}
+                onChange={(e) => { arm(); setPath(e.target.value); }}
                 disabled={disabled}
                 error={Boolean(pathRegexError)}
                 helperText={pathRegexError}
@@ -431,7 +438,7 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
                 size="small"
                 label="Body contains"
                 value={body}
-                onChange={(e) => setBody(e.target.value)}
+                onChange={(e) => { arm(); setBody(e.target.value); }}
                 disabled={disabled}
                 placeholder="text in the request body"
                 sx={{ width: { xs: '100%', sm: 200 } }}
@@ -441,7 +448,7 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
                   <Switch
                     size="small"
                     checked={regex}
-                    onChange={(e) => setRegex(e.target.checked)}
+                    onChange={(e) => { arm(); setRegex(e.target.checked); }}
                     disabled={disabled}
                   />
                 }
@@ -452,7 +459,7 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
                   <Switch
                     size="small"
                     checked={secure}
-                    onChange={(e) => setSecure(e.target.checked)}
+                    onChange={(e) => { arm(); setSecure(e.target.checked); }}
                     disabled={disabled}
                   />
                 }
@@ -463,7 +470,7 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
                   <Switch
                     size="small"
                     checked={keepAlive}
-                    onChange={(e) => setKeepAlive(e.target.checked)}
+                    onChange={(e) => { arm(); setKeepAlive(e.target.checked); }}
                     disabled={disabled}
                   />
                 }
@@ -476,7 +483,7 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
               label="Action Type (expectations only)"
               options={ACTION_TYPES}
               selected={actionTypeFilter}
-              onChange={setActionTypeFilter}
+              onChange={(v) => { arm(); setActionTypeFilter(v); }}
               disabled={disabled}
             />
             {hasLlmExpectations && (
@@ -484,7 +491,7 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
                 label="LLM Provider (expectations only)"
                 options={LLM_PROVIDERS}
                 selected={llmProviderFilter}
-                onChange={setLlmProviderFilter}
+                onChange={(v) => { arm(); setLlmProviderFilter(v); }}
                 displayMap={PROVIDER_DISPLAY}
                 disabled={disabled}
               />
@@ -509,9 +516,9 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
             </Typography>
           </Box>
           <Box sx={{ mt: 2 }}>
-            <MultiValueField label="Headers" items={headers} onChange={setHeaders} disabled={disabled} />
-            <SingleValueField label="Cookies" items={cookies} onChange={setCookies} disabled={disabled} />
-            <MultiValueField label="Query Parameters" items={queryParams} onChange={setQueryParams} disabled={disabled} />
+            <MultiValueField label="Headers" items={headers} onChange={(v) => { arm(); setHeaders(v); }} disabled={disabled} />
+            <SingleValueField label="Cookies" items={cookies} onChange={(v) => { arm(); setCookies(v); }} disabled={disabled} />
+            <MultiValueField label="Query Parameters" items={queryParams} onChange={(v) => { arm(); setQueryParams(v); }} disabled={disabled} />
           </Box>
           <Box sx={{ mt: 2 }}>
             <Typography variant="caption" color="primary" sx={{ mb: 0.5, display: 'block' }}>
