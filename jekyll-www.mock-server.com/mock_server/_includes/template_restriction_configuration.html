@@ -101,7 +101,7 @@
 
 <button id="button_configuration_template_faker_seed" class="accordion title"><strong>Template faker seed</strong></button>
 <div class="panel title">
-    <p>Seed for the template <code>faker</code> sample-data helper (Velocity <code>$faker</code>, Mustache <code>{{faker.*}}</code>, JavaScript <code>faker</code>). By default faker is unseeded, so faker-driven templates produce different, random values on every render.</p>
+    <p>Seed for the template <code>faker</code> sample-data helper (Velocity <code>$faker</code>, Mustache <code>{% raw %}{{faker.*}}{% endraw %}</code>, JavaScript <code>faker</code>). By default faker is unseeded, so faker-driven templates produce different, random values on every render.</p>
     <p>Set a non-zero value to seed faker deterministically so faker-driven templates generate reproducible fixtures across runs &mdash; useful when you want your generated test data to be stable from one run to the next. The seed produces a deterministic sequence of values for a given order of renders; determinism is strongest when fixtures are generated sequentially.</p>
     <p>The default of <code>0</code> leaves faker unseeded, so existing templates are unaffected.</p>
     <p>Type: <span class="keyword">long</span> Default: <span class="this_value">0</span></p>

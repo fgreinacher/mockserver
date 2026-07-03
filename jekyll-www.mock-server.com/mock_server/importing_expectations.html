@@ -170,7 +170,7 @@ curl -v -X PUT "http://localhost:1080/mockserver/import?format=recording" \
     <li><strong>Response</strong> &mdash; <span class="inline_code">statusCode</span>, <span class="inline_code">headers</span>, <span class="inline_code">body</span>, and <span class="inline_code">latency</span> (delay). Response <span class="inline_code">rules</span> (query/header/body targets) become extra request matchers, with descending priority so the route's response order is preserved and the <span class="inline_code">default</span> response acts as a catch-all.</li>
     <li><strong>Response mode</strong> &mdash; <span class="inline_code">SEQUENTIAL</span> and <span class="inline_code">RANDOM</span> map to the matching MockServer cycling response mode.</li>
 </ul>
-<p><em>Warned, not mapped:</em> the <span class="inline_code">crud</span> route type, cookie/path rule targets, the <span class="inline_code">null</span>/<span class="inline_code">empty_array</span> rule operators, <span class="inline_code">OR</span>-combined rules (only the first rule maps), file-backed bodies, data buckets, and Handlebars <span class="inline_code">{{...}}</span> templating (served verbatim).</p>
+<p><em>Warned, not mapped:</em> the <span class="inline_code">crud</span> route type, cookie/path rule targets, the <span class="inline_code">null</span>/<span class="inline_code">empty_array</span> rule operators, <span class="inline_code">OR</span>-combined rules (only the first rule maps), file-backed bodies, data buckets, and Handlebars <span class="inline_code">{% raw %}{{...}}{% endraw %}</span> templating (served verbatim).</p>
 
 <a id="import_redaction" class="anchor" href="#import_redaction">&nbsp;</a>
 

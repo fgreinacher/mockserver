@@ -283,7 +283,7 @@ sitemap:
 
 <p>With the body file <span class="inline_code">responses/order.json</span> containing template placeholders, for example:</p>
 
-<pre class="prettyprint lang-json code"><code class="code">{ "method": "{{ request.method }}", "path": "{{ request.path }}" }</code></pre>
+<pre class="prettyprint lang-json code"><code class="code">{% raw %}{ "method": "{{ request.method }}", "path": "{{ request.path }}" }{% endraw %}</code></pre>
 
 <p>Body-file templating uses the text-based engines (<span class="inline_code">MUSTACHE</span> and <span class="inline_code">VELOCITY</span>) because they render text directly. JavaScript templates build a full response object rather than a text fragment, so for JavaScript use an <span class="inline_code">httpResponseTemplate</span> (optionally with <span class="inline_code">templateFile</span>) instead.</p>
 

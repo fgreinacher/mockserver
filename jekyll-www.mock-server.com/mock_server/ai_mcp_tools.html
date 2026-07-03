@@ -1894,7 +1894,7 @@ keywords: "mcp tools, mockserver mcp tools, create_expectation, verify_request, 
     </thead>
     <tbody>
         <tr><td><code>prompts/list</code></td><td>Returns the configured prompt set — each prompt's <code>name</code>, <code>description</code>, and <code>arguments</code> list (each argument has a <code>name</code>, optional <code>description</code>, and <code>required</code> flag)</td></tr>
-        <tr><td><code>prompts/get</code></td><td>Returns a prompt's message(s) with <code>{{argument}}</code> placeholders substituted from the supplied <code>arguments</code> map. An unknown prompt name returns JSON-RPC error code <code>INVALID_PARAMS</code> (<code>-32602</code>).</td></tr>
+        <tr><td><code>prompts/get</code></td><td>Returns a prompt's message(s) with <code>{% raw %}{{argument}}{% endraw %}</code> placeholders substituted from the supplied <code>arguments</code> map. An unknown prompt name returns JSON-RPC error code <code>INVALID_PARAMS</code> (<code>-32602</code>).</td></tr>
     </tbody>
 </table>
 
