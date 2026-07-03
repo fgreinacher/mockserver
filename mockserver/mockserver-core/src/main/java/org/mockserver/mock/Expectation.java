@@ -25,6 +25,19 @@ import static org.mockserver.model.OpenAPIDefinition.openAPI;
 public class Expectation extends ObjectWithJsonToString {
 
     private static final String[] excludedFields = {"id", "created", "sortableExpectationId"};
+    /**
+     * Request header (0-based) that lets a caller force which entry of a multi-response
+     * {@code httpResponses} sequence is served for that single request — overriding the
+     * configured {@link ResponseMode} without advancing the rotation position (peek
+     * semantics; see {@link #getPrimaryAction(Integer)} and {@link #consumeMatch(Integer)}).
+     * Invalid or out-of-bounds values are ignored (normal selection applies). The header is
+     * NOT stripped from the request model: it is retained in recordings and on the logged
+     * request, and matching is unaffected. It is filtered only from outbound forwards —
+     * HTTP/proxy forwards via {@code MockServerHttpRequestToFullHttpRequest.setHeader} and the
+     * WebSocket passthrough via {@code WebSocketProxyRelayHandler.isSuppressedRelayHeader} —
+     * so it never leaks upstream.
+     */
+    public static final String FORCE_RESPONSE_INDEX_HEADER = "x-mockserver-response-index";
     private static final AtomicInteger EXPECTATION_COUNTER = new AtomicInteger(0);
     private static final long START_TIME = System.currentTimeMillis();
     private int hashCode;
@@ -73,10 +86,27 @@ public class Expectation extends ObjectWithJsonToString {
     private String newScenarioState;
     @JsonIgnore
     private final AtomicInteger matchCount = new AtomicInteger(0);
+    /**
+     * Dedicated rotation position for {@code SEQUENTIAL}/{@code SWITCH} response-sequence selection.
+     * A NORMAL request advances this counter and snapshots it per-thread at match time (exactly as
+     * {@link #matchCount} historically did); a request served a forced variant via
+     * {@link #FORCE_RESPONSE_INDEX_HEADER} (peek semantics) still consumes a {@code Times} unit and
+     * increments {@link #matchCount}, but does NOT touch this counter — so a forced request is
+     * transparent to the rotation seen by concurrent normal callers. Keeping the rotation on its own
+     * counter (advanced only by normal matches, snapshotted at match time) preserves the collision-free
+     * invariant unconditionally, without a resolution-time compensation read that could race.
+     */
+    @JsonIgnore
+    private final AtomicInteger rotationCount = new AtomicInteger(0);
     @JsonIgnore
     private final AtomicLong chaosFirstMatchEpochMillis = new AtomicLong(0L);
+    /**
+     * Per-thread snapshot of {@link #rotationCount} taken at match time (in {@link #consumeMatch}),
+     * read by {@link #selectFromResponses()} so selection uses the position fixed when this request
+     * matched rather than a later shared read.
+     */
     @JsonIgnore
-    private final ThreadLocal<Integer> lastConsumedCount = new ThreadLocal<>();
+    private final ThreadLocal<Integer> lastRotationSnapshot = new ThreadLocal<>();
 
     /**
      * Specify the OpenAPI and operationId to match against by URL or payload and string as follows:
@@ -884,6 +914,78 @@ public class Expectation extends ObjectWithJsonToString {
     }
 
     /**
+     * Whether a {@code forcedResponseIndex} would actually be served as a forced variant by
+     * {@link #getPrimaryAction(Integer)} — i.e. it is non-null, in-bounds, and this expectation
+     * carries a multi-response {@code httpResponses} sequence with no {@code steps}. This is the
+     * single source of truth for "is this a forced serve", used both at match time (to decide
+     * whether the request advances the rotation counter) and at resolution time (to pick the
+     * variant), so the two decisions can never diverge.
+     */
+    @JsonIgnore
+    public boolean isForcedResponseServe(Integer forcedResponseIndex) {
+        return forcedResponseIndex != null
+            && (steps == null || steps.isEmpty())
+            && httpResponses != null && !httpResponses.isEmpty()
+            && forcedResponseIndex >= 0 && forcedResponseIndex < httpResponses.size();
+    }
+
+    /**
+     * Action-resolution overload that honours a caller-forced response-sequence index (the
+     * {@link #FORCE_RESPONSE_INDEX_HEADER} affordance). When the index {@link #isForcedResponseServe
+     * would be served}, the response at that exact index is returned <em>without</em> reading or
+     * advancing the {@link #rotationCount rotation position} (peek semantics), overriding the
+     * configured {@link ResponseMode}. A null, out-of-bounds, or otherwise inapplicable index falls
+     * through to the normal {@link #getPrimaryAction()} selection — a forced index is never an error.
+     * The rotation is left undisturbed structurally: a forced request never increments
+     * {@link #rotationCount} (see {@link #consumeMatch(Integer)}), so no resolution-time compensation
+     * is needed here.
+     *
+     * @param forcedResponseIndex the 0-based sequence index to force, or {@code null} for normal selection
+     */
+    @JsonIgnore
+    public Action getPrimaryAction(Integer forcedResponseIndex) {
+        if (isForcedResponseServe(forcedResponseIndex)) {
+            HttpResponse forced = httpResponses.get(forcedResponseIndex);
+            if (forced != null) {
+                forced.setExpectationId(getId());
+                return forced;
+            }
+        }
+        return getPrimaryAction();
+    }
+
+    /**
+     * Convenience alias of {@link #getPrimaryAction(Integer)} mirroring the no-arg {@link #getAction()}.
+     */
+    @JsonIgnore
+    public Action getAction(Integer forcedResponseIndex) {
+        return getPrimaryAction(forcedResponseIndex);
+    }
+
+    /**
+     * Parses the 0-based force-response-variant index from the {@link #FORCE_RESPONSE_INDEX_HEADER}
+     * header on an incoming request. Returns {@code null} when the request is null/not an HTTP
+     * request, the header is absent/blank, or the value is not an integer — in every such case normal
+     * response selection applies (the header is advisory and never an error). Bounds are validated
+     * later against the matched expectation's {@code httpResponses} in {@link #isForcedResponseServe}.
+     */
+    @JsonIgnore
+    public static Integer parseForcedResponseIndex(RequestDefinition request) {
+        if (!(request instanceof HttpRequest httpRequest)) {
+            return null;
+        }
+        String value = httpRequest.getFirstHeader(FORCE_RESPONSE_INDEX_HEADER);
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException nfe) {
+            return null;
+        }
+    }
+
+    /**
      * Returns the ordered list of side-effect steps (non-responder steps that appear
      * before the responder in the steps list). Returns empty list when steps is null
      * or empty, or when no non-responder steps precede the responder.
@@ -966,8 +1068,10 @@ public class Expectation extends ObjectWithJsonToString {
         if (responseMode == ResponseMode.WEIGHTED) {
             return selectWeightedResponse();
         }
-        Integer consumed = lastConsumedCount.get();
-        int count = Math.max(0, (consumed != null ? consumed : matchCount.get()) - 1);
+        // rotation position from the per-thread snapshot taken at match time; forced requests never
+        // advance rotationCount, so they are structurally transparent to SEQUENTIAL/SWITCH order
+        Integer snapshot = lastRotationSnapshot.get();
+        int count = Math.max(0, (snapshot != null ? snapshot : rotationCount.get()) - 1);
         if (responseMode == ResponseMode.SWITCH) {
             return selectSwitchedResponse(count);
         }
@@ -1291,16 +1395,28 @@ public class Expectation extends ObjectWithJsonToString {
     }
 
     public boolean consumeMatch() {
+        return consumeMatch(null);
+    }
+
+    /**
+     * Records a match, advancing the response-sequence rotation only for a NORMAL request. A request
+     * served a forced variant ({@link #isForcedResponseServe(Integer)} for {@code forcedResponseIndex}
+     * is {@code true}) still decrements {@code Times} and increments {@link #matchCount}, but does NOT
+     * advance {@link #rotationCount} — so it is transparent to the rotation seen by concurrent normal
+     * callers (peek semantics). {@code forcedResponseIndex} is {@code null} for a normal request.
+     */
+    public boolean consumeMatch(Integer forcedResponseIndex) {
         if (times != null) {
             if (!times.decrementAndCheckGreaterThanZero()) {
                 return false;
             }
         }
-        lastConsumedCount.set(matchCount.incrementAndGet());
-        // record the first-match instant (via the controllable clock) once, to anchor
-        // any time-based chaos outage window on this expectation
-        chaosFirstMatchEpochMillis.compareAndSet(0L, TimeService.currentTimeMillis());
+        recordMatch(forcedResponseIndex);
         return true;
+    }
+
+    public void consumeMatchLocally() {
+        consumeMatchLocally(null);
     }
 
     /**
@@ -1310,12 +1426,30 @@ public class Expectation extends ObjectWithJsonToString {
      * Times object must not also decrement, or the node-local counter
      * would diverge from the shared one.
      * <p>
-     * Updates matchCount, lastConsumedCount, and chaosFirstMatchEpochMillis
-     * exactly as {@link #consumeMatch()} does. These are node-local runtime
-     * metrics that do not need to be shared across the cluster.
+     * Updates matchCount, the rotation snapshot, and chaosFirstMatchEpochMillis
+     * exactly as {@link #consumeMatch(Integer)} does (including the forced-request
+     * rotation-transparency rule). These are node-local runtime metrics that do
+     * not need to be shared across the cluster.
      */
-    public void consumeMatchLocally() {
-        lastConsumedCount.set(matchCount.incrementAndGet());
+    public void consumeMatchLocally(Integer forcedResponseIndex) {
+        recordMatch(forcedResponseIndex);
+    }
+
+    /**
+     * Shared match bookkeeping for {@link #consumeMatch(Integer)} and {@link #consumeMatchLocally(Integer)}.
+     * Always increments {@link #matchCount} (Times/metrics/chaos-anchor semantics, unchanged). For a NORMAL
+     * request it also advances {@link #rotationCount} and snapshots the new position per-thread; for a FORCED
+     * request it snapshots the CURRENT (un-advanced) position so the rotation is left exactly where it was.
+     */
+    private void recordMatch(Integer forcedResponseIndex) {
+        matchCount.incrementAndGet();
+        if (isForcedResponseServe(forcedResponseIndex)) {
+            lastRotationSnapshot.set(rotationCount.get());
+        } else {
+            lastRotationSnapshot.set(rotationCount.incrementAndGet());
+        }
+        // record the first-match instant (via the controllable clock) once, to anchor
+        // any time-based chaos outage window on this expectation
         chaosFirstMatchEpochMillis.compareAndSet(0L, TimeService.currentTimeMillis());
     }
 

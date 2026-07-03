@@ -39,6 +39,35 @@ public class WebSocketProxyRelayHandlerTest {
     }
 
     @Test
+    public void shouldNotRelayForceResponseIndexControlHeaderToUpstream() {
+        // given - a WS upgrade request carrying the force-response-variant control header plus an ordinary
+        // custom header and the Netty-managed handshake headers
+        HttpRequest request = HttpRequest.request().withMethod("GET").withPath("/ws")
+            .withHeader("Upgrade", "websocket")
+            .withHeader("Connection", "Upgrade")
+            .withHeader("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .withHeader("x-custom", "keep-me")
+            .withHeader(org.mockserver.mock.Expectation.FORCE_RESPONSE_INDEX_HEADER, "1");
+
+        // when - the upstream handshake headers are built (this passthrough path bypasses the HTTP mapper)
+        io.netty.handler.codec.http.HttpHeaders forwarded = WebSocketProxyRelayHandler.buildUpstreamCustomHeaders(request);
+
+        // then - the control header is filtered out, ordinary custom headers survive, handshake headers excluded
+        assertFalse(forwarded.contains(org.mockserver.mock.Expectation.FORCE_RESPONSE_INDEX_HEADER));
+        assertTrue(forwarded.contains("x-custom"));
+        assertThat(forwarded.get("x-custom"), is("keep-me"));
+        assertFalse(forwarded.contains("Sec-WebSocket-Key"));
+        assertFalse(forwarded.contains("Upgrade"));
+    }
+
+    @Test
+    public void shouldSuppressForceResponseIndexHeaderCaseInsensitively() {
+        assertTrue(WebSocketProxyRelayHandler.isSuppressedRelayHeader(org.mockserver.mock.Expectation.FORCE_RESPONSE_INDEX_HEADER));
+        assertTrue(WebSocketProxyRelayHandler.isSuppressedRelayHeader("X-MockServer-Response-Index"));
+        assertFalse(WebSocketProxyRelayHandler.isSuppressedRelayHeader("x-other"));
+    }
+
+    @Test
     public void shouldRejectNonUpgradeRequests() {
         assertFalse(WebSocketProxyRelayHandler.isWebSocketUpgrade(null));
         // POST is not a WS upgrade

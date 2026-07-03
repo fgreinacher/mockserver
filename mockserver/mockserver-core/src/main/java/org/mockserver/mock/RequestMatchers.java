@@ -623,10 +623,12 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                     }
                     // CAS succeeded: record the match locally (without
                     // decrementing node-local Times — the backend is authoritative)
-                    expectation.consumeMatchLocally();
+                    expectation.consumeMatchLocally(Expectation.parseForcedResponseIndex(requestDefinition));
                 } else {
-                    // Default single-node fast path: identical to pre-clustering
-                    if (!expectation.consumeMatch()) {
+                    // Default single-node fast path: identical to pre-clustering.
+                    // The forced-variant index (x-mockserver-response-index) is passed so a forced
+                    // request advances Times/matchCount but NOT the response-sequence rotation.
+                    if (!expectation.consumeMatch(Expectation.parseForcedResponseIndex(requestDefinition))) {
                         httpRequestMatcher.setResponseInProgress(false);
                         continue;
                     }
@@ -911,9 +913,9 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                         }
                         continue;
                     }
-                    expectation.consumeMatchLocally();
+                    expectation.consumeMatchLocally(Expectation.parseForcedResponseIndex(headersOnlyRequest));
                 } else {
-                    if (!expectation.consumeMatch()) {
+                    if (!expectation.consumeMatch(Expectation.parseForcedResponseIndex(headersOnlyRequest))) {
                         httpRequestMatcher.setResponseInProgress(false);
                         continue;
                     }

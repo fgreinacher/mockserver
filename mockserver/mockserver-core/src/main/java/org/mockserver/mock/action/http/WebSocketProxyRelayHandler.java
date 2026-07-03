@@ -8,6 +8,7 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mock.CrossProtocolEventBus;
+import org.mockserver.mock.Expectation;
 import org.mockserver.model.CrossProtocolTrigger;
 import org.mockserver.model.Header;
 import org.mockserver.model.HttpRequest;
@@ -117,19 +118,9 @@ public class WebSocketProxyRelayHandler {
             return;
         }
 
-        // custom headers to forward to the upstream (everything except the handshake headers Netty sets itself)
-        final HttpHeaders customHeaders = new DefaultHttpHeaders();
-        if (request.getHeaderList() != null) {
-            for (Header header : request.getHeaderList()) {
-                String name = header.getName().getValue();
-                if (isManagedHandshakeHeader(name)) {
-                    continue;
-                }
-                for (NottableString value : header.getValues()) {
-                    customHeaders.add(name, value.getValue());
-                }
-            }
-        }
+        // custom headers to forward to the upstream (everything except the handshake headers Netty sets
+        // itself and MockServer control headers that must not leak upstream)
+        final HttpHeaders customHeaders = buildUpstreamCustomHeaders(request);
         final String subprotocol = request.getFirstHeader("Sec-WebSocket-Protocol");
 
         final WebSocketClientHandshaker upstreamHandshaker = WebSocketClientHandshakerFactory.newHandshaker(
@@ -195,6 +186,40 @@ public class WebSocketProxyRelayHandler {
         } catch (Exception e) {
             return value;
         }
+    }
+
+    /**
+     * Builds the set of client request headers to forward on the upstream WebSocket handshake: every header
+     * except the ones Netty's handshaker manages itself ({@link #isManagedHandshakeHeader}) and MockServer
+     * control headers that must never leak upstream ({@link #isSuppressedRelayHeader}). Package-private and
+     * static so the header-copy policy can be unit-tested directly without live networking.
+     */
+    static HttpHeaders buildUpstreamCustomHeaders(HttpRequest request) {
+        HttpHeaders customHeaders = new DefaultHttpHeaders();
+        if (request.getHeaderList() != null) {
+            for (Header header : request.getHeaderList()) {
+                String name = header.getName().getValue();
+                if (isManagedHandshakeHeader(name) || isSuppressedRelayHeader(name)) {
+                    continue;
+                }
+                for (NottableString value : header.getValues()) {
+                    customHeaders.add(name, value.getValue());
+                }
+            }
+        }
+        return customHeaders;
+    }
+
+    /**
+     * MockServer control headers that must never be relayed to the upstream WebSocket server. Unlike
+     * {@link #isManagedHandshakeHeader} (headers Netty's handshaker owns), these are meaningful only to
+     * MockServer — currently the force-response-variant header {@link Expectation#FORCE_RESPONSE_INDEX_HEADER}
+     * — and are filtered from the forwarded handshake so they never leak upstream, matching the HTTP forward
+     * mapper's filter ({@code MockServerHttpRequestToFullHttpRequest.setHeader}). This passthrough path builds
+     * the upstream handshake headers itself, bypassing that mapper, so the filter is applied here too.
+     */
+    static boolean isSuppressedRelayHeader(String name) {
+        return name.equalsIgnoreCase(Expectation.FORCE_RESPONSE_INDEX_HEADER);
     }
 
     /**

@@ -673,6 +673,19 @@ client.upsert(&amp;[expectation]).unwrap();</code></pre>
     <p>Runnable example: <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/curl/scenario">examples/curl/scenario</a> (and the same under <span class="inline_code">examples/&lt;language&gt;/scenario</span>).</p>
 </div>
 
+<p><strong>Force a specific variant per request.</strong> A caller can pick exactly which entry of an <span class="inline_code">httpResponses</span> list it receives by sending the <span class="inline_code">x-mockserver-response-index</span> request header with a 0-based index &mdash; overriding <span class="inline_code">responseMode</span> for that one request only. This is handy for asserting a single variant (for example the <span class="inline_code">503</span> failure case) on demand without exhausting or reordering the sequence. The forced request is a <em>peek</em>: it does not advance the sequential/switch rotation seen by other requests. An out-of-range or non-numeric value is simply ignored (normal selection applies), and single-response expectations ignore the header.</p>
+
+<button class="accordion title"><strong>Force a Variant</strong> &mdash; ask for the second (503) response of a sequence on demand</button>
+<div class="panel title">
+    <p>Given the <span class="inline_code">SEQUENTIAL</span> expectation above (200 then 503), send <span class="inline_code">x-mockserver-response-index: 1</span> to force the second response for this request, regardless of where the rotation currently sits.</p>
+
+    <button class="accordion"><strong>REST (curl)</strong></button>
+    <div class="panel">
+        <pre class="prettyprint lang-bash code"><code class="code">curl -H 'x-mockserver-response-index: 1' http://localhost:1080/api/payments
+# -> 503 { "status": "unavailable" }  (the sequence position is unchanged for the next caller)</code></pre>
+    </div>
+</div>
+
 <a id="timed_triggered_flows" class="anchor" href="#timed_triggered_flows">&nbsp;</a>
 
 <h4>Timed &amp; Triggered Scenario Flows</h4>

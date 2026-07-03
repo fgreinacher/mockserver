@@ -3414,6 +3414,19 @@ function ExistingMocksList({
             {filtered.map((e) => {
               const idShort = e.key.slice(0, 8);
               const summary = summaryForExpectation(e.value, kind === 'mcp' ? 'standard' : kind);
+              // response sequences (httpResponses) support forcing a specific variant per request
+              const isResponseSequence = !!e.value['httpResponses'];
+              const summaryLabel = (
+                <Typography
+                  component="span"
+                  sx={{ fontSize: '0.78rem', fontFamily: monospaceFontFamily }}
+                >
+                  <Box component="span" sx={{ color: 'text.secondary', mr: 0.5 }}>
+                    {idShort}...
+                  </Box>
+                  {summary}
+                </Typography>
+              );
               return (
                 <ListItemButton
                   key={e.key}
@@ -3430,15 +3443,16 @@ function ExistingMocksList({
                 >
                   <ListItemText
                     primary={
-                      <Typography
-                        component="span"
-                        sx={{ fontSize: '0.78rem', fontFamily: monospaceFontFamily }}
-                      >
-                        <Box component="span" sx={{ color: 'text.secondary', mr: 0.5 }}>
-                          {idShort}...
-                        </Box>
-                        {summary}
-                      </Typography>
+                      isResponseSequence ? (
+                        <Tooltip
+                          arrow
+                          title="Force a specific variant per request with the x-mockserver-response-index header (0-based); it peeks without advancing the sequence."
+                        >
+                          {summaryLabel}
+                        </Tooltip>
+                      ) : (
+                        summaryLabel
+                      )
                     }
                     sx={{ m: 0 }}
                   />

@@ -116,11 +116,15 @@ public class MockServerHttpRequestToFullHttpRequest {
     private void setHeader(HttpRequest httpRequest, FullHttpRequest request) {
         for (Header header : httpRequest.getHeaderList()) {
             String headerName = header.getName().getValue();
-            // do not set hop-by-hop headers
+            // do not set hop-by-hop headers, and never leak the x-mockserver-response-index control header
+            // (force-response-variant) upstream — it is consumed at action-resolution time and is meaningful
+            // only to MockServer. Filtering it out of the outbound request here (rather than mutating the
+            // model) keeps it in recorded traffic while ensuring forwards/proxies never carry it.
             if (!headerName.equalsIgnoreCase(CONTENT_LENGTH.toString())
                 && !headerName.equalsIgnoreCase(TRANSFER_ENCODING.toString())
                 && !headerName.equalsIgnoreCase(HOST.toString())
-                && !headerName.equalsIgnoreCase(ACCEPT_ENCODING.toString())) {
+                && !headerName.equalsIgnoreCase(ACCEPT_ENCODING.toString())
+                && !headerName.equalsIgnoreCase(org.mockserver.mock.Expectation.FORCE_RESPONSE_INDEX_HEADER)) {
                 if (!header.getValues().isEmpty()) {
                     for (NottableString headerValue : header.getValues()) {
                         request.headers().add(headerName, headerValue.getValue());
