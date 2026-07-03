@@ -7,6 +7,36 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Free-form map used as a forward-compatibility safety net on the wire types
+/// that model MockServer actions. Any JSON field the typed model does not yet
+/// name is captured here (via `#[serde(flatten)]`) so it survives a
+/// deserialize-then-serialize round-trip instead of being silently dropped.
+///
+/// An empty map contributes no keys when serialized, so a `flatten`ed `Extra`
+/// is invisible on the wire unless the server actually sent unknown fields.
+pub type Extra = serde_json::Map<String, serde_json::Value>;
+
+/// Deserialize a MockServer `oneOf: [ <T>, [ <T> ] ]` field (a single object or
+/// an array of objects) into a `Vec<T>`. Used by `beforeActions`, `afterActions`
+/// and `capture`, which the server accepts in either shape.
+fn one_or_many<'de, D, T>(deserializer: D) -> std::result::Result<Option<Vec<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany<T> {
+        One(T),
+        Many(Vec<T>),
+    }
+    let opt = Option::<OneOrMany<T>>::deserialize(deserializer)?;
+    Ok(opt.map(|v| match v {
+        OneOrMany::One(t) => vec![t],
+        OneOrMany::Many(v) => v,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // HttpRequest
 // ---------------------------------------------------------------------------
@@ -47,6 +77,35 @@ pub struct HttpRequest {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_address: Option<SocketAddress>,
+
+    /// Negate the whole request matcher (`"not": true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not: Option<bool>,
+
+    /// Match only requests received over TLS (`"secure"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secure: Option<bool>,
+
+    /// Match only keep-alive requests (`"keepAlive"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_alive: Option<bool>,
+
+    /// Match the request protocol (e.g. `"HTTP_1_1"`, `"HTTP_2"`, `"HTTP_3"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+
+    /// Path parameters (`/users/{id}` style), multiple values per key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_parameters: Option<HashMap<String, Vec<String>>>,
+
+    /// Cookies to match (single value per name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cookies: Option<HashMap<String, String>>,
+
+    /// Forward-compatibility catch-all for request fields the typed model does
+    /// not yet name (e.g. `clientCertificate`, `localAddress`, `remoteAddress`).
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl HttpRequest {
@@ -150,6 +209,44 @@ impl HttpRequest {
         self.jwt = Some(jwt);
         self
     }
+
+    /// Negate the whole request matcher.
+    pub fn not(mut self, not: bool) -> Self {
+        self.not = Some(not);
+        self
+    }
+
+    /// Match only requests received over TLS.
+    pub fn secure(mut self, secure: bool) -> Self {
+        self.secure = Some(secure);
+        self
+    }
+
+    /// Match only keep-alive requests.
+    pub fn keep_alive(mut self, keep_alive: bool) -> Self {
+        self.keep_alive = Some(keep_alive);
+        self
+    }
+
+    /// Match the request protocol (e.g. `"HTTP_1_1"`, `"HTTP_2"`).
+    pub fn protocol(mut self, protocol: impl Into<String>) -> Self {
+        self.protocol = Some(protocol.into());
+        self
+    }
+
+    /// Add a path parameter (multiple values per key supported).
+    pub fn path_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let params = self.path_parameters.get_or_insert_with(HashMap::new);
+        params.entry(key.into()).or_default().push(value.into());
+        self
+    }
+
+    /// Add a cookie to match (single value per name).
+    pub fn cookie(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        let cookies = self.cookies.get_or_insert_with(HashMap::new);
+        cookies.insert(name.into(), value.into());
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +281,13 @@ pub enum Body {
         value_key: String,
         value: String,
     },
+    /// Any typed body object captured verbatim as a JSON object — the
+    /// forward-compatible catch-all for body matcher/value types that do not
+    /// have a dedicated variant (`STRING`/`subString`, `XML`, `XML_SCHEMA`,
+    /// `JSON_SCHEMA`, `PARAMETERS`, `BINARY`, `GRAPHQL`, `MULTIPART`, `WASM`,
+    /// `JSON_RPC`, `FUZZY`, …). Serialises the map back exactly, so every body
+    /// shape round-trips without silent field loss.
+    Object(serde_json::Map<String, serde_json::Value>),
 }
 
 impl Body {
@@ -267,6 +371,100 @@ impl Body {
             value: pattern.into(),
         }
     }
+
+    /// Create an `XPATH` body matcher (`{ "type": "XPATH", "xpath": <expr> }`).
+    pub fn xpath(expression: impl Into<String>) -> Self {
+        Body::Matcher {
+            body_type: "XPATH".to_string(),
+            value_key: "xpath".to_string(),
+            value: expression.into(),
+        }
+    }
+
+    /// Create a `STRING` body matcher. When `sub_string` is true the value need
+    /// only be a substring of the request body.
+    ///
+    /// Serialises to `{ "type": "STRING", "string": <value>, "subString": <b> }`.
+    pub fn string(value: impl Into<String>, sub_string: bool) -> Self {
+        let mut map = serde_json::Map::new();
+        map.insert("type".into(), serde_json::Value::from("STRING"));
+        map.insert("string".into(), serde_json::Value::from(value.into()));
+        map.insert("subString".into(), serde_json::Value::from(sub_string));
+        Body::Object(map)
+    }
+
+    /// Create an `XML` body matcher (`{ "type": "XML", "xml": <value> }`).
+    pub fn xml(value: impl Into<String>) -> Self {
+        Self::single_object("XML", "xml", value.into())
+    }
+
+    /// Create an `XML_SCHEMA` body matcher
+    /// (`{ "type": "XML_SCHEMA", "xmlSchema": <schema> }`).
+    pub fn xml_schema(schema: impl Into<String>) -> Self {
+        Self::single_object("XML_SCHEMA", "xmlSchema", schema.into())
+    }
+
+    /// Create a `JSON_SCHEMA` body matcher
+    /// (`{ "type": "JSON_SCHEMA", "jsonSchema": <schema> }`).
+    pub fn json_schema(schema: impl Into<String>) -> Self {
+        Self::single_object("JSON_SCHEMA", "jsonSchema", schema.into())
+    }
+
+    /// Create a `PARAMETERS` (form/body parameter) matcher
+    /// (`{ "type": "PARAMETERS", "parameters": { name: [values] } }`).
+    pub fn parameters(parameters: HashMap<String, Vec<String>>) -> Self {
+        let mut map = serde_json::Map::new();
+        map.insert("type".into(), serde_json::Value::from("PARAMETERS"));
+        map.insert(
+            "parameters".into(),
+            serde_json::to_value(parameters).unwrap_or(serde_json::Value::Null),
+        );
+        Body::Object(map)
+    }
+
+    /// Create a `BINARY` body matcher/value from raw bytes (base64-encoded on
+    /// the wire as `base64Bytes`), with an optional content type.
+    pub fn binary(data: impl AsRef<[u8]>, content_type: Option<String>) -> Self {
+        let mut map = serde_json::Map::new();
+        map.insert("type".into(), serde_json::Value::from("BINARY"));
+        map.insert(
+            "base64Bytes".into(),
+            serde_json::Value::from(BASE64.encode(data.as_ref())),
+        );
+        if let Some(ct) = content_type {
+            map.insert("contentType".into(), serde_json::Value::from(ct));
+        }
+        Body::Object(map)
+    }
+
+    /// Create a `GRAPHQL` body matcher (`{ "type": "GRAPHQL", "query": <query> }`).
+    pub fn graphql(query: impl Into<String>) -> Self {
+        let mut map = serde_json::Map::new();
+        map.insert("type".into(), serde_json::Value::from("GRAPHQL"));
+        map.insert("query".into(), serde_json::Value::from(query.into()));
+        Body::Object(map)
+    }
+
+    /// Create a `WASM` custom-rule body matcher from a pre-built JSON object.
+    ///
+    /// Captured verbatim, so any current or future WASM matcher fields survive
+    /// a round-trip.
+    pub fn wasm(object: serde_json::Map<String, serde_json::Value>) -> Self {
+        Body::Object(object)
+    }
+
+    /// Build a `Body::Object` from a raw JSON object — the escape hatch for any
+    /// body type not covered by a dedicated constructor.
+    pub fn object(object: serde_json::Map<String, serde_json::Value>) -> Self {
+        Body::Object(object)
+    }
+
+    fn single_object(body_type: &str, key: &str, value: String) -> Self {
+        let mut map = serde_json::Map::new();
+        map.insert("type".into(), serde_json::Value::from(body_type));
+        map.insert(key.into(), serde_json::Value::from(value));
+        Body::Object(map)
+    }
 }
 
 impl Serialize for Body {
@@ -321,6 +519,7 @@ impl Serialize for Body {
                 map.serialize_entry(value_key.as_str(), value)?;
                 map.end()
             }
+            Body::Object(object) => object.serialize(serializer),
         }
     }
 }
@@ -396,13 +595,27 @@ impl<'de> Deserialize<'de> for Body {
                         value_key,
                         value,
                     })
-                } else {
+                } else if body_type == "JSON"
+                    && map.len() == 2
+                    && map.get("json").is_some_and(|v| v.is_string())
+                {
+                    // Preserve the dedicated typed-JSON representation, but only
+                    // for the bare `{ "type": "JSON", "json": ... }` shape — a
+                    // JSON body carrying extra keys (matchType, contentType,
+                    // not, optional, …) falls through to the verbatim Object
+                    // variant so those fields are not dropped.
                     let json = map
                         .get("json")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     Ok(Body::Typed { body_type, json })
+                } else {
+                    // Any other typed body object (STRING, XML, XML_SCHEMA,
+                    // JSON_SCHEMA, PARAMETERS, BINARY, GRAPHQL, MULTIPART, WASM,
+                    // JSON_RPC, FUZZY, an inline JSON object literal, …) is kept
+                    // verbatim so no field is silently dropped.
+                    Ok(Body::Object(map))
                 }
             }
             _ => Ok(Body::Plain(v.to_string())),
@@ -537,6 +750,44 @@ pub struct HttpResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<Delay>,
+
+    /// Response cookies (single value per name; emitted as `Set-Cookie`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cookies: Option<HashMap<String, String>>,
+
+    /// HTTP reason phrase (e.g. `"Not Found"`); overrides the default for the
+    /// status code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_phrase: Option<String>,
+
+    /// A status-code range to respond with a random status from (e.g. `"2xx"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code_range: Option<String>,
+
+    /// Response trailers (HTTP/2 trailing headers), multiple values per key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trailers: Option<HashMap<String, Vec<String>>>,
+
+    /// Generate the response body from an inline/JSON-schema string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generate_from_schema: Option<String>,
+
+    /// Connection-level options (chunking, content-length, socket close, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_options: Option<ConnectionOptions>,
+
+    /// Fail the first N requests then recover (circuit-breaker style).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recover_after: Option<RecoverAfter>,
+
+    /// Mark this response as the primary action of a composite expectation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    /// Forward-compatibility catch-all for response fields the typed model does
+    /// not yet name.
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl HttpResponse {
@@ -567,6 +818,56 @@ impl HttpResponse {
     /// Set a response delay.
     pub fn delay(mut self, delay: Delay) -> Self {
         self.delay = Some(delay);
+        self
+    }
+
+    /// Add a response cookie (single value per name).
+    pub fn cookie(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        let cookies = self.cookies.get_or_insert_with(HashMap::new);
+        cookies.insert(name.into(), value.into());
+        self
+    }
+
+    /// Set the HTTP reason phrase (e.g. `"Not Found"`).
+    pub fn reason_phrase(mut self, reason_phrase: impl Into<String>) -> Self {
+        self.reason_phrase = Some(reason_phrase.into());
+        self
+    }
+
+    /// Set a status-code range to respond with a random status from (e.g. `"2xx"`).
+    pub fn status_code_range(mut self, range: impl Into<String>) -> Self {
+        self.status_code_range = Some(range.into());
+        self
+    }
+
+    /// Add a response trailer (HTTP/2 trailing header), multiple values per key.
+    pub fn trailer(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let trailers = self.trailers.get_or_insert_with(HashMap::new);
+        trailers.entry(key.into()).or_default().push(value.into());
+        self
+    }
+
+    /// Generate the response body from a schema string.
+    pub fn generate_from_schema(mut self, schema: impl Into<String>) -> Self {
+        self.generate_from_schema = Some(schema.into());
+        self
+    }
+
+    /// Set connection-level options.
+    pub fn connection_options(mut self, options: ConnectionOptions) -> Self {
+        self.connection_options = Some(options);
+        self
+    }
+
+    /// Set a recover-after (fail-first-N) policy.
+    pub fn recover_after(mut self, recover_after: RecoverAfter) -> Self {
+        self.recover_after = Some(recover_after);
+        self
+    }
+
+    /// Mark this response as the primary action of a composite expectation.
+    pub fn primary(mut self, primary: bool) -> Self {
+        self.primary = Some(primary);
         self
     }
 }
@@ -1801,6 +2102,759 @@ impl CrossProtocolScenario {
 }
 
 // ---------------------------------------------------------------------------
+// ConnectionOptions / RecoverAfter
+// ---------------------------------------------------------------------------
+
+/// Connection-level options for an [`HttpResponse`] — control content-length,
+/// chunking, keep-alive and socket-close behaviour.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppress_content_length_header: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_length_header_override: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppress_connection_header: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_size: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_alive_override: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_socket: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_socket_delay: Option<Delay>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl ConnectionOptions {
+    /// Create a new empty set of connection options.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Circuit-breaker style policy on an [`HttpResponse`]: fail the first
+/// `fail_times` requests with `fail_response`, then serve the real response.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoverAfter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fail_times: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fail_response: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idempotency_header: Option<String>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl RecoverAfter {
+    /// Create a new empty recover-after policy.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RateLimit
+// ---------------------------------------------------------------------------
+
+/// Declarative, protocol-agnostic rate limit / quota attached to an expectation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    /// `"fixed_window"` (default) or `"token_bucket"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_millis: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub burst: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refill_per_second: Option<f64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_status: Option<i32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<String>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl RateLimit {
+    /// Create a new empty rate limit.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a `fixed_window` rate limit of `limit` requests per `window_millis`.
+    pub fn fixed_window(limit: i64, window_millis: i64) -> Self {
+        Self {
+            algorithm: Some("fixed_window".to_string()),
+            limit: Some(limit),
+            window_millis: Some(window_millis),
+            ..Default::default()
+        }
+    }
+
+    /// Create a `token_bucket` rate limit with `burst` capacity refilled at
+    /// `refill_per_second` tokens per second.
+    pub fn token_bucket(burst: i64, refill_per_second: f64) -> Self {
+        Self {
+            algorithm: Some("token_bucket".to_string()),
+            burst: Some(burst),
+            refill_per_second: Some(refill_per_second),
+            ..Default::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HttpForwardWithFallback / HttpForwardValidateAction / HttpOverrideForwardedRequest
+// ---------------------------------------------------------------------------
+
+/// Forward action that falls back to a canned response when the upstream fails
+/// (serialised as `httpForwardWithFallback`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpForwardWithFallback {
+    pub http_forward: HttpForward,
+
+    pub fallback_response: HttpResponse,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_on_status_codes: Option<Vec<i32>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_on_timeout: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl HttpForwardWithFallback {
+    /// Create a forward-with-fallback action.
+    pub fn new(http_forward: HttpForward, fallback_response: HttpResponse) -> Self {
+        Self {
+            http_forward,
+            fallback_response,
+            fallback_on_status_codes: None,
+            fallback_on_timeout: None,
+            delay: None,
+            primary: None,
+            extra: Extra::new(),
+        }
+    }
+
+    /// Fall back when the upstream returns any of these status codes.
+    pub fn fallback_on_status_codes(mut self, codes: Vec<i32>) -> Self {
+        self.fallback_on_status_codes = Some(codes);
+        self
+    }
+
+    /// Fall back when the upstream request times out.
+    pub fn fallback_on_timeout(mut self, fallback: bool) -> Self {
+        self.fallback_on_timeout = Some(fallback);
+        self
+    }
+}
+
+/// Forward action that also validates request/response against an OpenAPI spec
+/// (serialised as `httpForwardValidateAction`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpForwardValidateAction {
+    pub spec_url_or_payload: String,
+
+    pub host: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validate_request: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validate_response: Option<bool>,
+
+    /// `"STRICT"` or `"LOG_ONLY"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_mode: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl HttpForwardValidateAction {
+    /// Create a forward-and-validate action against the given spec and host.
+    pub fn new(spec_url_or_payload: impl Into<String>, host: impl Into<String>) -> Self {
+        Self {
+            spec_url_or_payload: spec_url_or_payload.into(),
+            host: host.into(),
+            port: None,
+            scheme: None,
+            validate_request: None,
+            validate_response: None,
+            validation_mode: None,
+            delay: None,
+            primary: None,
+            extra: Extra::new(),
+        }
+    }
+}
+
+/// Override the forwarded request and/or response (serialised as
+/// `httpOverrideForwardedRequest`).
+///
+/// Covers both wire shapes accepted by the server: the modern
+/// `requestOverride`/`requestModifier`/`responseOverride`/`responseModifier`
+/// form and the legacy `httpRequest`/`httpResponse` form. The `requestModifier`
+/// and `responseModifier` sub-objects are kept as free-form JSON
+/// ([`serde_json::Value`]) — they round-trip exactly, and the `extra` catch-all
+/// preserves any other field.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpOverrideForwardedRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_override: Option<HttpRequest>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_modifier: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_override: Option<HttpResponse>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_modifier: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_template: Option<HttpTemplate>,
+
+    /// Legacy shape: request to forward.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_request: Option<HttpRequest>,
+
+    /// Legacy shape: response to return.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_response: Option<HttpResponse>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl HttpOverrideForwardedRequest {
+    /// Create a new empty override action.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the request override.
+    pub fn request_override(mut self, request: HttpRequest) -> Self {
+        self.request_override = Some(request);
+        self
+    }
+
+    /// Set the response override.
+    pub fn response_override(mut self, response: HttpResponse) -> Self {
+        self.response_override = Some(response);
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ExpectationAction (before/after) / CaptureRule / ExpectationStep
+// ---------------------------------------------------------------------------
+
+/// A side-effect action run before (`beforeActions`) or after (`afterActions`)
+/// an expectation's main action fires: an out-of-band request, or a class/object
+/// callback.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpectationAction {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_request: Option<HttpRequest>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_class_callback: Option<HttpClassCallback>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_object_callback: Option<HttpObjectCallback>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocking: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<Delay>,
+
+    /// `"FAIL_FAST"` or `"BEST_EFFORT"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_policy: Option<String>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl ExpectationAction {
+    /// Create a before/after action that fires an out-of-band HTTP request.
+    pub fn request(request: HttpRequest) -> Self {
+        Self {
+            http_request: Some(request),
+            ..Default::default()
+        }
+    }
+
+    /// Create a before/after action that invokes a server-side class callback.
+    pub fn class_callback(callback: HttpClassCallback) -> Self {
+        Self {
+            http_class_callback: Some(callback),
+            ..Default::default()
+        }
+    }
+}
+
+/// A capture rule (`capture`) — extract a value from the matched request and
+/// bind it into scenario/template state under `into`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureRule {
+    /// One of `jsonPath`, `xpath`, `header`, `queryStringParameter`, `cookie`,
+    /// `pathParameter`.
+    pub source: String,
+
+    pub expression: String,
+
+    pub into: String,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl CaptureRule {
+    /// Create a capture rule binding `expression` (evaluated against `source`)
+    /// into the variable `into`.
+    pub fn new(
+        source: impl Into<String>,
+        expression: impl Into<String>,
+        into: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: source.into(),
+            expression: expression.into(),
+            into: into.into(),
+            extra: Extra::new(),
+        }
+    }
+}
+
+/// One step of a multi-step expectation (`steps`) — used to script a sequence of
+/// responder/side-effect actions for a single match.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpectationStep {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_request: Option<HttpRequest>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_class_callback: Option<HttpClassCallback>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_object_callback: Option<HttpObjectCallback>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_forward: Option<HttpForward>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_override_forwarded_request: Option<HttpOverrideForwardedRequest>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_response: Option<HttpResponse>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_error: Option<HttpError>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub responder: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocking: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<Delay>,
+
+    /// `"FAIL_FAST"` or `"BEST_EFFORT"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_policy: Option<String>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl ExpectationStep {
+    /// Create a new empty step.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a step whose responder action is the given response.
+    pub fn response(response: HttpResponse) -> Self {
+        Self {
+            http_response: Some(response),
+            responder: Some(true),
+            ..Default::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GrpcBidiResponse
+// ---------------------------------------------------------------------------
+
+/// A single message in a [`GrpcBidiResponse`] (or one of its rule responses).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrpcBidiMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json: Option<String>,
+
+    /// `"VELOCITY"`, `"JAVASCRIPT"` or `"MUSTACHE"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_type: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl GrpcBidiMessage {
+    /// Create a bidi message from a JSON-encoded protobuf message string.
+    pub fn json(json: impl Into<String>) -> Self {
+        Self {
+            json: Some(json.into()),
+            ..Default::default()
+        }
+    }
+}
+
+/// A request-keyed rule in a [`GrpcBidiResponse`] — when an incoming message
+/// matches `match_json`, the paired `responses` are sent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrpcBidiRule {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_json: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub responses: Option<Vec<GrpcBidiMessage>>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+/// A gRPC bidirectional-streaming response action (`grpcBidiResponse`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GrpcBidiResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, Vec<String>>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Vec<GrpcBidiMessage>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<GrpcBidiRule>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_connection: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl GrpcBidiResponse {
+    /// Create a new empty gRPC bidi response.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append a streamed message.
+    pub fn message(mut self, message: GrpcBidiMessage) -> Self {
+        self.messages.get_or_insert_with(Vec::new).push(message);
+        self
+    }
+
+    /// Append a request-keyed rule.
+    pub fn rule(mut self, rule: GrpcBidiRule) -> Self {
+        self.rules.get_or_insert_with(Vec::new).push(rule);
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HttpLlmResponse
+// ---------------------------------------------------------------------------
+
+/// A single tool call in an [`LlmCompletion`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmToolCall {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+/// Token-usage accounting for an [`LlmCompletion`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<i64>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+/// Streaming timing model (physics) for an [`LlmCompletion`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmStreamingPhysics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_first_token: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_per_second: Option<i32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jitter: Option<f64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subword_streaming: Option<bool>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+/// The chat/text completion of an [`HttpLlmResponse`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmCompletion {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<LlmToolCall>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsage>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enforce_output_schema: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_text: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_signature: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub streaming_physics: Option<LlmStreamingPhysics>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl LlmCompletion {
+    /// Create a completion with the given assistant text.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: Some(text.into()),
+            ..Default::default()
+        }
+    }
+}
+
+/// The LLM response action (`httpLlmResponse`). Only the completion, embedding,
+/// rerank, moderation and content-filter sub-objects are commonly set; each is
+/// optional and every unknown/nested field is preserved via its own `extra`
+/// catch-all so full LLM configs round-trip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpLlmResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<Delay>,
+
+    /// `"ANTHROPIC"`, `"OPENAI"`, `"OPENAI_RESPONSES"`, `"GEMINI"`, `"BEDROCK"`,
+    /// `"AZURE_OPENAI"`, `"OLLAMA"`, `"COHERE"`, `"VOYAGE"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion: Option<LlmCompletion>,
+
+    /// Embedding-response config (kept free-form; round-trips verbatim).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<serde_json::Value>,
+
+    /// Rerank-response config (kept free-form; round-trips verbatim).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank: Option<serde_json::Value>,
+
+    /// Moderation-response config (kept free-form; round-trips verbatim).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moderation: Option<serde_json::Value>,
+
+    /// Content-filter config (kept free-form; round-trips verbatim).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_filter: Option<serde_json::Value>,
+
+    /// Conversation-matching predicates (kept free-form; round-trips verbatim).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_predicates: Option<serde_json::Value>,
+
+    /// LLM-specific chaos config (kept free-form; round-trips verbatim).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chaos: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl HttpLlmResponse {
+    /// Create a new empty LLM response.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the provider (e.g. `"ANTHROPIC"`, `"OPENAI"`).
+    pub fn provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = Some(provider.into());
+        self
+    }
+
+    /// Set the model name.
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    /// Set the completion.
+    pub fn completion(mut self, completion: LlmCompletion) -> Self {
+        self.completion = Some(completion);
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Expectation
 // ---------------------------------------------------------------------------
 
@@ -1813,6 +2867,18 @@ pub struct Expectation {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
+
+    /// Match only a percentage (0–100) of otherwise-matching requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percentage: Option<i32>,
+
+    /// Declarative HTTP chaos / fault-injection profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chaos: Option<HttpChaosProfile>,
+
+    /// Declarative, protocol-agnostic rate limit / quota.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimit>,
 
     pub http_request: HttpRequest,
 
@@ -1847,8 +2913,24 @@ pub struct Expectation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_forward_object_callback: Option<HttpObjectCallback>,
 
+    /// Override the forwarded request/response (`httpOverrideForwardedRequest`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_override_forwarded_request: Option<HttpOverrideForwardedRequest>,
+
+    /// Forward and validate against an OpenAPI spec (`httpForwardValidateAction`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_forward_validate_action: Option<HttpForwardValidateAction>,
+
+    /// Forward with a fallback response on failure (`httpForwardWithFallback`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_forward_with_fallback: Option<HttpForwardWithFallback>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_sse_response: Option<HttpSseResponse>,
+
+    /// LLM response action (`httpLlmResponse`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_llm_response: Option<HttpLlmResponse>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http_web_socket_response: Option<HttpWebSocketResponse>,
@@ -1861,6 +2943,10 @@ pub struct Expectation {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grpc_stream_response: Option<GrpcStreamResponse>,
+
+    /// gRPC bidirectional-streaming response action (`grpcBidiResponse`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grpc_bidi_response: Option<GrpcBidiResponse>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub times: Option<Times>,
@@ -1899,6 +2985,51 @@ pub struct Expectation {
     /// Cross-protocol scenario correlations that advance scenario state on protocol events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_protocol_scenarios: Option<Vec<CrossProtocolScenario>>,
+
+    /// Side-effect actions run before the main action fires (`beforeActions`).
+    ///
+    /// The server accepts a single object or an array; this client accepts both
+    /// on the wire and always serialises an array.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "one_or_many",
+        default
+    )]
+    pub before_actions: Option<Vec<ExpectationAction>>,
+
+    /// Side-effect actions run after the main action fires (`afterActions`).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "one_or_many",
+        default
+    )]
+    pub after_actions: Option<Vec<ExpectationAction>>,
+
+    /// Capture rules that bind request values into scenario/template state.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "one_or_many",
+        default
+    )]
+    pub capture: Option<Vec<CaptureRule>>,
+
+    /// Optional namespace (tenant) this expectation belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+
+    /// Multi-step script for a single match (`steps`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<Vec<ExpectationStep>>,
+
+    /// Creation timestamp (set by the server; round-tripped when present).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+
+    /// Forward-compatibility catch-all for any expectation field the typed model
+    /// does not yet name, so unknown fields survive a round-trip instead of
+    /// being silently dropped.
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl Expectation {
@@ -2105,6 +3236,95 @@ impl Expectation {
     /// Replace all cross-protocol scenario correlations.
     pub fn cross_protocol_scenarios(mut self, scenarios: Vec<CrossProtocolScenario>) -> Self {
         self.cross_protocol_scenarios = Some(scenarios);
+        self
+    }
+
+    /// Match only a percentage (0–100) of otherwise-matching requests.
+    pub fn percentage(mut self, percentage: i32) -> Self {
+        self.percentage = Some(percentage);
+        self
+    }
+
+    /// Attach a declarative HTTP chaos / fault-injection profile.
+    pub fn chaos(mut self, chaos: HttpChaosProfile) -> Self {
+        self.chaos = Some(chaos);
+        self
+    }
+
+    /// Attach a declarative rate limit / quota.
+    pub fn rate_limit(mut self, rate_limit: RateLimit) -> Self {
+        self.rate_limit = Some(rate_limit);
+        self
+    }
+
+    /// Override the forwarded request/response (`httpOverrideForwardedRequest`).
+    pub fn override_forwarded_request(
+        mut self,
+        override_request: HttpOverrideForwardedRequest,
+    ) -> Self {
+        self.http_override_forwarded_request = Some(override_request);
+        self
+    }
+
+    /// Forward and validate against an OpenAPI spec (`httpForwardValidateAction`).
+    pub fn forward_validate(mut self, action: HttpForwardValidateAction) -> Self {
+        self.http_forward_validate_action = Some(action);
+        self
+    }
+
+    /// Forward with a fallback response on failure (`httpForwardWithFallback`).
+    pub fn forward_with_fallback(mut self, action: HttpForwardWithFallback) -> Self {
+        self.http_forward_with_fallback = Some(action);
+        self
+    }
+
+    /// Set an LLM response action (`httpLlmResponse`).
+    pub fn respond_llm(mut self, llm: HttpLlmResponse) -> Self {
+        self.http_llm_response = Some(llm);
+        self
+    }
+
+    /// Set a gRPC bidirectional-streaming response action (`grpcBidiResponse`).
+    pub fn respond_grpc_bidi(mut self, grpc: GrpcBidiResponse) -> Self {
+        self.grpc_bidi_response = Some(grpc);
+        self
+    }
+
+    /// Append a before-action (`beforeActions`).
+    pub fn before_action(mut self, action: ExpectationAction) -> Self {
+        self.before_actions
+            .get_or_insert_with(Vec::new)
+            .push(action);
+        self
+    }
+
+    /// Append an after-action (`afterActions`).
+    pub fn after_action(mut self, action: ExpectationAction) -> Self {
+        self.after_actions.get_or_insert_with(Vec::new).push(action);
+        self
+    }
+
+    /// Append a capture rule (`capture`).
+    pub fn capture_rule(mut self, rule: CaptureRule) -> Self {
+        self.capture.get_or_insert_with(Vec::new).push(rule);
+        self
+    }
+
+    /// Set the namespace (tenant) this expectation belongs to.
+    pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+
+    /// Append a step to the multi-step script (`steps`).
+    pub fn step(mut self, step: ExpectationStep) -> Self {
+        self.steps.get_or_insert_with(Vec::new).push(step);
+        self
+    }
+
+    /// Replace all steps (`steps`).
+    pub fn steps(mut self, steps: Vec<ExpectationStep>) -> Self {
+        self.steps = Some(steps);
         self
     }
 }
@@ -3600,6 +4820,82 @@ pub struct HttpChaosProfile {
     /// Fixed seed for deterministic probabilistic outcomes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seed: Option<i64>,
+
+    /// Literal `Retry-After` header value returned with an injected error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<String>,
+
+    /// Probability (0.0–1.0) of dropping the TCP connection without responding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drop_connection_probability: Option<f64>,
+
+    /// Let the first N requests succeed before chaos becomes active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub succeed_first: Option<i64>,
+
+    /// Number of requests to fail once chaos is active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fail_request_count: Option<i64>,
+
+    /// Time-based outage: chaos activates this many ms after first match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outage_after_millis: Option<i64>,
+
+    /// Time-based outage: chaos stays active this many ms then self-heals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outage_duration_millis: Option<i64>,
+
+    /// Keep only this leading fraction (0.0–1.0) of the response body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncate_body_at_fraction: Option<f64>,
+
+    /// Corrupt the response body so it fails to parse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub malformed_body: Option<bool>,
+
+    /// Dribble the response body in chunks of this many bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slow_response_chunk_size: Option<i64>,
+
+    /// Delay between slow-response chunks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slow_response_chunk_delay: Option<Delay>,
+
+    /// Shared quota counter key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_name: Option<String>,
+
+    /// Max requests allowed per quota window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_limit: Option<i64>,
+
+    /// Quota fixed-window length in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_window_millis: Option<i64>,
+
+    /// Status returned when the quota is exceeded (default 429).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_error_status: Option<u16>,
+
+    /// Ramp error/drop probabilities linearly over this many ms from first match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub degradation_ramp_millis: Option<i64>,
+
+    /// Rewrite the response body as a GraphQL error envelope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graphql_errors: Option<bool>,
+
+    /// Message in `errors[0].message` of the GraphQL error envelope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graphql_error_message: Option<String>,
+
+    /// Value for `errors[0].extensions.code`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graphql_error_code: Option<String>,
+
+    /// Whether `data` is null (default true) in the GraphQL error envelope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graphql_nullify_data: Option<bool>,
 
     /// Any additional fields the server supports that are not modelled above.
     #[serde(flatten)]
