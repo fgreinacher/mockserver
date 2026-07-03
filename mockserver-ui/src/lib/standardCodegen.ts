@@ -1117,6 +1117,52 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Top-level keys the edit form models but whose SERVER DEFAULT it prefills as its
+ * neutral value: priority `0`, times `{unlimited:true}`, timeToLive `{unlimited:true}`.
+ * `buildExpectationJson` omits these when the form is at its default (priority 0,
+ * times 0, ttl 0), so a blanket delete-when-omitted merge would strip an original
+ * that already carried the explicit default — producing a spurious diff for a
+ * semantic no-op (server default ≡ explicit default form).
+ *
+ * These are therefore handled specially in {@link mergeUnmodeledFields}: on an
+ * untouched round-trip (original already at default) the original's explicit key
+ * is PRESERVED verbatim; only a genuine reset of a NON-default value re-emits the
+ * default — as an explicit `{unlimited:true}` form for times / timeToLive (so the
+ * intent is visible and re-editable), or as a deletion for priority (0 and absent
+ * are identical to the server, and a preserved existing test pins that shape).
+ */
+interface DefaultPreservingKey {
+  key: string;
+  /** True when `v` (the original's value for `key`) is the server default form. */
+  isDefault: (v: unknown) => boolean;
+  /**
+   * The explicit default form to emit when the user resets a non-default value to
+   * default. Undefined ⇒ delete the key on reset (priority 0 ≡ absent to the server).
+   */
+  resetForm?: () => unknown;
+}
+
+function priorityIsDefault(v: unknown): boolean {
+  return v == null || v === 0;
+}
+
+/** Absent or an explicit `{ unlimited: true }` object is the server "unlimited" default. */
+function unlimitedIsDefault(v: unknown): boolean {
+  if (v == null) return true;
+  return isPlainObject(v) && v['unlimited'] === true;
+}
+
+const DEFAULT_PRESERVING_KEYS: readonly DefaultPreservingKey[] = [
+  { key: 'priority', isDefault: priorityIsDefault },
+  { key: 'times', isDefault: unlimitedIsDefault, resetForm: () => ({ unlimited: true }) },
+  { key: 'timeToLive', isDefault: unlimitedIsDefault, resetForm: () => ({ unlimited: true }) },
+];
+
+const DEFAULT_PRESERVING_KEY_SET: ReadonlySet<string> = new Set(
+  DEFAULT_PRESERVING_KEYS.map((d) => d.key),
+);
+
+/**
  * Deep-merge the form-generated expectation JSON (`formJson`) onto the retained
  * `original`, so that:
  *  - fields the form models are authoritative from the form (including removals
@@ -1155,10 +1201,31 @@ export function mergeUnmodeledFields(
   }
 
   // Simple form-modeled top-level keys — set when the form emits them, delete
-  // when it omits them.
+  // when it omits them. The default-preserving keys (priority / times /
+  // timeToLive) are handled separately below so an untouched round-trip of an
+  // explicit server default does not produce a spurious diff.
   for (const k of FORM_MODELED_TOP_LEVEL_KEYS) {
+    if (DEFAULT_PRESERVING_KEY_SET.has(k)) continue;
     if (k in formJson) result[k] = formJson[k];
     else delete result[k];
+  }
+
+  // Default-preserving keys — see {@link DEFAULT_PRESERVING_KEYS}. The form is
+  // authoritative whenever it emits a (non-default) value; otherwise the form is
+  // at its default and we distinguish an untouched round-trip from a deliberate
+  // reset using the ORIGINAL's value:
+  //   • original already at default (absent or explicit default) → preserve the
+  //     clone untouched, so the diff is EMPTY for a semantic no-op;
+  //   • original was a real non-default value → the user reset it, so emit the
+  //     explicit default form (times / timeToLive) or delete it (priority).
+  for (const { key, isDefault, resetForm } of DEFAULT_PRESERVING_KEYS) {
+    if (key in formJson) {
+      result[key] = formJson[key];
+    } else if (key in original && !isDefault(original[key])) {
+      if (resetForm) result[key] = resetForm();
+      else delete result[key];
+    }
+    // else: leave the clone as-is (preserve the original's explicit default / absence).
   }
 
   // Scenario binding keys — form-authoritative ONLY on the Advanced path
@@ -2189,7 +2256,36 @@ function stepToJava(step: StandardExpectationStep): string {
   return lines.join('\n');
 }
 
+/**
+ * When editing an expectation whose ORIGINAL action the form could not model
+ * (e.g. `httpLlmResponse`, an `httpResponses` sequence, an `*ObjectCallback`),
+ * {@link buildExpectationJson} PRESERVES that original action verbatim, but the
+ * fluent Java builder preview builds from the form's action model — which is the
+ * form's default, NOT the preserved action. Emitting that snippet would show Java
+ * that does something DIFFERENT from the registered expectation.
+ *
+ * Returns the preserved action-family key name (so the caller can name it in an
+ * honest notice) when the Java preview cannot faithfully represent the action;
+ * otherwise undefined. Signal: `editOriginal` present AND the form did NOT model
+ * the action (`editActionModeled === false`, the same flag the merge keys on),
+ * AND the original actually carries an action-family key to preserve. The
+ * JSON / curl / client-library tabs render the merged JSON and stay faithful.
+ */
+export function unrepresentableJavaActionKey(action: StandardActionPayload): string | undefined {
+  if (!action.editOriginal || action.editActionModeled !== false) return undefined;
+  return ACTION_FAMILY_KEYS.find((k) => k in action.editOriginal!);
+}
+
 export function standardToJava(matcher: StandardMatcher, action: StandardActionPayload): string {
+  const unrepresentable = unrepresentableJavaActionKey(action);
+  if (unrepresentable) {
+    return [
+      `// This expectation uses ${unrepresentable}, which the Java builder API`,
+      '// preview cannot represent. Use the JSON or curl tab — the registered',
+      '// JSON shown there is the exact, faithful payload that will be sent.',
+    ].join('\n');
+  }
+
   const hasChaos = !!(action.chaos && buildChaosJson(action.chaos));
   const hasSteps = !!(action.steps && action.steps.length > 0);
   const sideEffects = (action.sideEffects ?? []).filter((se) => se.path.trim());

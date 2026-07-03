@@ -357,6 +357,116 @@ describe('buildExpectationJson editOriginal overlay (shared preview + wire path)
 });
 
 // ---------------------------------------------------------------------------
+// Default-preserving keys (priority / times / timeToLive) — an unedited edit of
+// an expectation that carries the server's EXPLICIT default forms must round-trip
+// to an EMPTY diff, not spuriously delete those keys. A genuine reset of a real
+// non-default value stays a visible change.
+// ---------------------------------------------------------------------------
+
+describe('priority / times / timeToLive — default forms preserved on an untouched edit', () => {
+  it('round-trips an expectation carrying explicit-default priority/times/timeToLive + an unmodeled action + scenarioName to a ZERO diff (the screenshot case)', () => {
+    // Exactly the shape from the bug report: an LLM expectation whose action the
+    // form cannot model, carrying the server's explicit default forms.
+    const original = {
+      httpRequest: { method: 'POST', path: '/v1/chat/completions' },
+      httpLlmResponse: { provider: 'openai', model: 'gpt-4o' },
+      scenarioName: 'llm-flow',
+      priority: 0,
+      times: { unlimited: true },
+      timeToLive: { unlimited: true },
+      id: 'llm-1',
+    };
+    // The user changes nothing. The form prefills priority 0 / times 0 / ttl 0,
+    // and the action is unmodeled (editActionModeled false), so the merge must
+    // preserve every field verbatim.
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 'llm-1', method: 'POST', path: '/v1/chat/completions' }),
+      { type: 'static', static: { statusCode: 200, body: '', contentType: '' }, editOriginal: original, editActionModeled: false },
+    );
+    expect(wire).toEqual(original);
+    // No fabricated static response leaked in from the (unmodeled) form action.
+    expect(wire['httpResponse']).toBeUndefined();
+  });
+
+  it('preserves an explicit-default priority:0 even when the action IS modeled and only the status code changes', () => {
+    const original = {
+      httpRequest: { path: '/api' },
+      httpResponse: { statusCode: 200 },
+      priority: 0,
+      times: { unlimited: true },
+      id: 'p0',
+    };
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 'p0', path: '/api' }),
+      staticAction({ editOriginal: original, editActionModeled: true }, 201),
+    );
+    expect((wire['httpResponse'] as Record<string, unknown>)['statusCode']).toBe(201);
+    // The explicit defaults are NOT stripped — no noisy diff for a semantic no-op.
+    expect(wire['priority']).toBe(0);
+    expect(wire['times']).toEqual({ unlimited: true });
+  });
+
+  it('resetting a real non-default times to 0 (unlimited) emits the explicit {unlimited:true} form, not a silent drop', () => {
+    const original = {
+      httpRequest: { path: '/api' },
+      httpResponse: { statusCode: 200 },
+      times: { remainingTimes: 4, unlimited: false },
+      id: 't',
+    };
+    // matcher.times defaults to 0 → the user reset Times to unlimited.
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 't', path: '/api' }),
+      staticAction({ editOriginal: original, editActionModeled: true }),
+    );
+    expect(wire['times']).toEqual({ unlimited: true });
+  });
+
+  it('resetting a real non-default timeToLive to forever emits the explicit {unlimited:true} form', () => {
+    const original = {
+      httpRequest: { path: '/api' },
+      httpResponse: { statusCode: 200 },
+      timeToLive: { timeUnit: 'SECONDS', timeToLive: 90, unlimited: false },
+      id: 'ttl',
+    };
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 'ttl', path: '/api' }),
+      staticAction({ editOriginal: original, editActionModeled: true }),
+    );
+    expect(wire['timeToLive']).toEqual({ unlimited: true });
+  });
+
+  it('still deletes a real non-default priority on reset (priority 0 ≡ absent to the server)', () => {
+    // Complements the existing "clearing priority deletes it" test: this asserts
+    // the reset shape when threaded through buildExpectationJson.
+    const original = {
+      httpRequest: { path: '/api' },
+      httpResponse: { statusCode: 200 },
+      priority: 10,
+      id: 'p',
+    };
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 'p', path: '/api' }),
+      staticAction({ editOriginal: original, editActionModeled: true }),
+    );
+    expect(wire['priority']).toBeUndefined();
+  });
+
+  it('changing a non-default priority to another non-default value stays form-authoritative', () => {
+    const original = {
+      httpRequest: { path: '/api' },
+      httpResponse: { statusCode: 200 },
+      priority: 10,
+      id: 'p',
+    };
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 'p', path: '/api', priority: 20 }),
+      staticAction({ editOriginal: original, editActionModeled: true }),
+    );
+    expect(wire['priority']).toBe(20);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Advanced Scenario section — the three scenario keys become form-MODELED only
 // when scenarioModeled is set (the Advanced path). The Quick path (no
 // scenarioModeled) keeps them as unmodeled passthrough, so bindings survive.

@@ -14,7 +14,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   standardToJava,
+  standardToJson,
+  standardToNode,
+  standardToCurl,
   buildExpectationJson,
+  unrepresentableJavaActionKey,
   type StandardMatcher,
   type StandardActionPayload,
 } from '../lib/standardCodegen';
@@ -226,5 +230,63 @@ describe('static response preserves arbitrary response headers', () => {
       'X-Trace': ['abc'],
       'content-type': ['application/json'],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Java tab honest fallback — when editing an expectation whose ORIGINAL action
+// the form cannot model (e.g. httpLlmResponse), the merged JSON preserves that
+// action, but the fluent Java builder would fabricate an unrelated response().
+// The Java tab must instead show an honest notice pointing at the faithful tabs.
+// ---------------------------------------------------------------------------
+
+describe('Java tab honest fallback for an unmodeled preserved action (httpLlmResponse)', () => {
+  const original = {
+    httpRequest: { method: 'POST', path: '/v1/chat/completions' },
+    httpLlmResponse: { provider: 'openai', model: 'gpt-4o' },
+    id: 'llm-1',
+  };
+  // The form did NOT model the action (editActionModeled === false), exactly as
+  // ComposerView records when actionFromExpectation returns null for httpLlmResponse.
+  const editAction: StandardActionPayload = {
+    type: 'static',
+    static: { statusCode: 200, body: '', contentType: '' },
+    editOriginal: original,
+    editActionModeled: false,
+  };
+  const matcher = httpMatcher({ id: 'llm-1', method: 'POST', path: '/v1/chat/completions' });
+
+  it('detects the unrepresentable action key', () => {
+    expect(unrepresentableJavaActionKey(editAction)).toBe('httpLlmResponse');
+    // A modeled action (or new-compose, no editOriginal) is representable.
+    expect(unrepresentableJavaActionKey({ ...editAction, editActionModeled: true })).toBeUndefined();
+    expect(unrepresentableJavaActionKey({ type: 'static', static: { statusCode: 200, body: '', contentType: '' } })).toBeUndefined();
+  });
+
+  it('Java tab shows an honest notice naming the action, not fabricated builder code', () => {
+    const java = standardToJava(matcher, editAction);
+    expect(java).toContain('httpLlmResponse');
+    expect(java).toContain('cannot represent');
+    expect(java).toContain('JSON or curl');
+    // No fabricated fluent builder snippet.
+    expect(java).not.toContain('mockServerClient');
+    expect(java).not.toContain('.respond(');
+    expect(java).not.toContain('response(');
+    expect(java).not.toContain('request(');
+  });
+
+  it('JSON / Node / curl tabs still render the full, faithful expectation JSON (httpLlmResponse preserved)', () => {
+    const json = standardToJson(matcher, editAction);
+    expect(JSON.parse(json)['httpLlmResponse']).toEqual(original.httpLlmResponse);
+    // The fabricated static response must NOT leak into the wire JSON.
+    expect(JSON.parse(json)['httpResponse']).toBeUndefined();
+    expect(standardToNode(matcher, editAction, 'http://localhost:1080')).toContain('httpLlmResponse');
+    expect(standardToCurl(matcher, editAction, 'http://localhost:1080')).toContain('httpLlmResponse');
+  });
+
+  it('does NOT trigger the fallback when the action is modeled — Java stays faithful', () => {
+    const java = standardToJava(matcher, { ...editAction, editActionModeled: true });
+    expect(java).toContain('mockServerClient');
+    expect(java).not.toContain('cannot represent');
   });
 });
