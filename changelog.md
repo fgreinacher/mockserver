@@ -29,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over real per-request fault probabilities, per upstream host) makes fault injection approachable, and the
   traffic timing waterfall now distinguishes latency MockServer injected (chaos latency, configured response
   delays including the global delay, breakpoint holds) from real upstream/processing time — mock-served
-  responses carry a timing block for the first time.
+  responses carry a timing block for the first time when they inject latency (a plain mock's recorded
+  output is unchanged).
 
 - **Force a response-sequence variant per request.** A request matching an expectation with multiple responses
   can force which variant it receives via a 0-based `x-mockserver-response-index` header. Forced requests

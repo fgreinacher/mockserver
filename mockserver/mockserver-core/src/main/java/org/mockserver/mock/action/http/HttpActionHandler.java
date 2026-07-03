@@ -2529,6 +2529,17 @@ public class HttpActionHandler {
         if (response == null) {
             return;
         }
+        // Only attach a timing block when MockServer actually injected latency (chaos, delay, or a
+        // breakpoint hold) and the response does not already carry a timing. A plain mock response with
+        // no injection is left untouched, so its serialised form — and therefore recorded log messages
+        // and retrieved responses — stays byte-identical to the pre-waterfall behaviour. The waterfall
+        // only has something to attribute when there is injected latency, which is exactly this case.
+        final boolean hasInjection = injectedChaosLatencyMillis != null
+            || injectedDelayMillis != null
+            || breakpointHeldMillis != null;
+        if (!hasInjection && response.getTiming() == null) {
+            return;
+        }
         final long totalMillis = Math.max(0L, (System.nanoTime() - startNanos) / 1_000_000L);
         // Copy rather than mutate any pre-existing Timing: an in-JVM expectation whose response
         // carries a preset Timing would otherwise share (and race on) one instance across requests.

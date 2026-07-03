@@ -1100,7 +1100,7 @@ public class HttpActionHandlerChaosTest {
     }
 
     @Test
-    public void mockResponseWithoutInjectionStillCarriesTimingBlock() {
+    public void mockResponseWithoutInjectionCarriesNoTimingBlock() {
         // given - a plain mock response with no chaos and no delay
         HttpRequest request = request("some_path");
         HttpResponse normalResponse = response("normal body").withDelay(milliseconds(0));
@@ -1113,15 +1113,12 @@ public class HttpActionHandlerChaosTest {
         // when
         actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
 
-        // then - a timing block is present (so the dashboard renders a waterfall for mocks) with no injected time
+        // then - no timing block is attached, so the serialised response (and therefore recorded log
+        // messages and retrieved responses) stays byte-identical to the pre-waterfall behaviour. The
+        // waterfall only appears when MockServer actually injected latency to attribute.
         ArgumentCaptor<HttpResponse> responseCaptor = ArgumentCaptor.forClass(HttpResponse.class);
         verify(mockResponseWriter).writeResponse(eq(request), responseCaptor.capture(), eq(false));
-        Timing timing = responseCaptor.getValue().getTiming();
-        assertThat("mock response should carry a timing block", timing != null, is(true));
-        assertThat(timing.getTotalTimeInMillis() != null, is(true));
-        assertThat(timing.getInjectedChaosLatencyMillis(), is((Long) null));
-        assertThat(timing.getInjectedDelayMillis(), is((Long) null));
-        assertThat(timing.getBreakpointHeldMillis(), is((Long) null));
+        assertThat("a plain mock response carries no timing block", responseCaptor.getValue().getTiming(), is((Timing) null));
     }
 
     private static double scrapeCounterValue(String name, String labelName, String labelValue) {
