@@ -153,7 +153,7 @@ active_expectations = client.retrieve_active_expectations</code></pre>
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 activeExpectations, err := client.RetrieveActiveExpectations(nil)</code></pre>
@@ -233,7 +233,7 @@ active_expectations = client.retrieve_active_expectations(
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 activeExpectations, err := client.RetrieveActiveExpectations(
@@ -349,7 +349,7 @@ active_expectations = client.retrieve_active_expectations(
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 // Go client always returns JSON-deserialized structs
@@ -507,7 +507,7 @@ log_messages = client.retrieve_log_messages</code></pre>
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 logMessages, err := client.RetrieveLogMessages(nil)</code></pre>
@@ -590,7 +590,7 @@ log_messages = client.retrieve_log_messages(
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 logMessages, err := client.RetrieveLogMessages(
@@ -686,7 +686,7 @@ log_messages = client.retrieve_log_messages(
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 // returns raw JSON bytes containing log messages
@@ -774,7 +774,7 @@ metrics = client.retrieve_metrics</code></pre>
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 metrics, err := client.RetrieveMetrics()</code></pre>
@@ -873,7 +873,7 @@ client.update_configuration('{"logLevel": "DEBUG", "maxExpectations": 5000}')</c
     </div>
     <button class="accordion inner">Go</button>
     <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 

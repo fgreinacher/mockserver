@@ -50,7 +50,7 @@ recorded_expectations = client.retrieve_recorded_expectations</code></pre>
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 recordedExpectations, err := client.RetrieveRecordedExpectations(nil)</code></pre>
@@ -130,7 +130,7 @@ recorded_expectations = client.retrieve_recorded_expectations(
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 recordedExpectations, err := client.RetrieveRecordedExpectations(
@@ -342,7 +342,7 @@ recorded_expectations = client.retrieve_recorded_expectations(
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 // RetrieveRecordedExpectations returns JSON-parsed expectations
@@ -443,7 +443,7 @@ recorded_requests = client.retrieve_recorded_requests</code></pre>
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 recordedRequests, err := client.RetrieveRecordedRequests(nil)</code></pre>
@@ -523,7 +523,7 @@ recorded_requests = client.retrieve_recorded_requests(
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 recordedRequests, err := client.RetrieveRecordedRequests(
@@ -638,7 +638,7 @@ recorded_requests = client.retrieve_recorded_requests(
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 // RetrieveRecordedRequests returns JSON-parsed requests
@@ -739,7 +739,7 @@ recorded = client.retrieve_recorded_requests_and_responses</code></pre>
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 // use the raw Retrieve method for request/response pairs
@@ -826,7 +826,7 @@ recorded = client.retrieve_recorded_requests_and_responses(
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 data, err := client.Retrieve(
@@ -931,7 +931,7 @@ har = JSON.parse(response.body)</code></pre>
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 // use raw Retrieve with empty format to get HAR via query params
@@ -1037,7 +1037,7 @@ har = JSON.parse(response.body)</code></pre>
         </div>
         <button class="accordion inner">Go</button>
         <div class="panel">
-            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go"
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
 client := mockserver.New("localhost", 1080)
 data, err := client.Retrieve(
