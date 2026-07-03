@@ -8,6 +8,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dashboard: every captured flow is now a launchpad.** A "Create From This" menu on traffic detail panes and
+  log rows fans out into every subsystem pre-filled from that flow — create a mock in the composer, set a
+  breakpoint, prefill a verification, or add chaos for the host. The traffic inspector also gains structured
+  Request/Response tabs (headers tables and pretty-printed bodies, with the raw JSON tree kept as a tab),
+  "Copy as curl" with shell-safe quoting and masked credentials, a Charles-style "Repeat" action (iterations,
+  bounded concurrency, delay, live progress and cancel), a Proxyman-style diff pool with an editable ignored-headers
+  list, an unmatched-count chip with why-didn't-this-match and generate-stub actions, and bulk
+  "Promote to Mocks" over recorded traffic (`PUT /mockserver/recordings/promote`).
+
+- **Dashboard: previously server-only capabilities are now reachable from the UI.** Validate recorded traffic
+  against an OpenAPI spec (`/trafficValidate`), import GraphQL SDL schemas and mock SCIM providers, import Pact
+  contracts, generate HTTP expectations from AsyncAPI specs, dry-run WASM modules against a sample request,
+  reload persisted recording archives (NDJSON or from server disk), a preemption-simulation card and experiment
+  history in Service Chaos, a control-plane Audit view, a standalone Scenarios view in the navigation, and a
+  read-only Server Info tab (effective configuration with source tiers, bound ports plus bind-additional-port,
+  proxy setup with CA download) alongside a server-side decoded-prompt LLM run diff.
+
+- **Dashboard: quick chaos and honest latency attribution.** A one-toggle Quick Chaos strip (percentage slider
+  over real per-request fault probabilities, per upstream host) makes fault injection approachable, and the
+  traffic timing waterfall now distinguishes latency MockServer injected (chaos latency, configured response
+  delays including the global delay, breakpoint holds) from real upstream/processing time — mock-served
+  responses carry a timing block for the first time.
+
+- **Force a response-sequence variant per request.** A request matching an expectation with multiple responses
+  can force which variant it receives via a 0-based `x-mockserver-response-index` header. Forced requests
+  consume `times` but never advance the sequential/switch rotation for other callers; the header is retained
+  in recordings and filtered from every outbound forward, including WebSocket passthrough. Invalid values are
+  ignored.
+
+- **Dashboard: faster first load, first-run onboarding, and one-click navigation.** All views load lazily
+  (initial bundle down from 259 kB to about 164 kB gzip), a Try It Now path on the get-started view creates a
+  first mock or copies a working curl and proxy setup, returning users get an open-dashboard shortcut, the
+  three most recent views render as single-click tabs, keyboard shortcuts move off browser-conflicting
+  bindings with a ? help overlay, and matcher testing is available at the point of need in the composer and
+  on every expectation row.
+
+### Fixed
+
+- **Dashboard: editing an expectation no longer silently strips fields the form does not model.** The composer
+  now merges its form output onto the original expectation JSON, preserving scenario bindings, namespaces,
+  response sequences, cross-protocol scenarios, and matcher fields such as `keepAlive` and `socketAddress` in
+  both quick and advanced modes, with an alert listing the preserved fields.
+
+- **Dashboard reliability fixes.** Paused breakpoint exchanges survive navigating away from the Breakpoints
+  view; stream-frame editing is UTF-8 safe and surfaces encode failures; a reconnect re-sends the active
+  request filter instead of silently streaming unfiltered data; an error-only push no longer blanks the
+  panels; user-action errors persist until dismissed (and the banner is dismissible); mismatch dialogs report
+  honest "differs on N field(s)" scores with remediation hints; and a response template rendering invalid
+  output is now surfaced as a `TEMPLATE_GENERATION_FAILED` event instead of a silent 404 logged as a success.
+
+- **Dashboard performance, measured.** Idle pushes no longer re-render every panel each second, hidden tabs
+  buffer instead of processing WebSocket updates, and hot parse/search paths are cached — all verified by a
+  committed benchmark suite (`npm run bench` in `mockserver-ui`) comparing against the pre-optimization
+  implementations at small and large payload scales.
+
 - **Automated release publishing for the Ruby and PHP Testcontainers modules.** The `mockserver-testcontainers/ruby`
   and `mockserver-testcontainers/php` modules now publish automatically as two new `soft_fail` release-pipeline
   components. `tc-ruby` (`scripts/release/components/tc-ruby.sh`) self-bumps the gem `version.rb`, builds inside the
