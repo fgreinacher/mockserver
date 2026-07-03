@@ -190,13 +190,42 @@ export default function AuditPanel({ connectionParams }: AuditPanelProps) {
 
       <Paper variant="outlined" sx={{ p: 0 }}>
         {filtered.length === 0 ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
-            {entries == null
-              ? 'Loading audit trail…'
-              : (entries.length === 0
-                ? 'No control-plane changes recorded yet.'
-                : 'No entries match your search.')}
-          </Typography>
+          entries != null && entries.length === 0 ? (
+            // Genuinely-empty case. The server records entries only when the
+            // opt-in audit trail is switched on (controlPlaneAuditEnabled,
+            // off by default) — recording is independent of authentication, so
+            // the honest empty state explains how to enable it rather than
+            // implying activity would otherwise appear.
+            <Box sx={{ p: 2 }}>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                No audit entries recorded.
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                The control-plane audit trail is off by default. Start MockServer with{' '}
+                <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
+                  controlPlaneAuditEnabled=true
+                </Box>{' '}
+                (system property{' '}
+                <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
+                  -Dmockserver.controlPlaneAuditEnabled=true
+                </Box>{' '}
+                or environment variable{' '}
+                <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
+                  MOCKSERVER_CONTROL_PLANE_AUDIT_ENABLED=true
+                </Box>
+                ) to record control-plane mutations — changes to expectations, configuration, and
+                server state — here. Only mutations are recorded unless{' '}
+                <Box component="code" sx={{ fontFamily: monospaceFontFamily }}>
+                  controlPlaneAuditReads=true
+                </Box>{' '}
+                is also set.
+              </Typography>
+            </Box>
+          ) : (
+            <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
+              {entries == null ? 'Loading audit trail…' : 'No entries match your search.'}
+            </Typography>
+          )
         ) : (
           <TableContainer>
             <Table size="small" stickyHeader>

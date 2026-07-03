@@ -107,13 +107,23 @@ describe('AuditPanel', () => {
     expect(screen.getByText('control-plane clear')).toBeInTheDocument();
   });
 
-  it('shows the empty state when no entries are recorded', async () => {
+  it('explains the opt-in audit trail in the empty state when no entries are recorded', async () => {
     stubFetch([]);
     renderPanel();
 
+    // The empty state must explain that the audit trail is off by default and
+    // how to enable it — recording is gated by controlPlaneAuditEnabled, not by
+    // authentication — rather than implying activity would otherwise appear.
     await waitFor(() => {
-      expect(screen.getByText('No control-plane changes recorded yet.')).toBeInTheDocument();
+      expect(screen.getByText('No audit entries recorded.')).toBeInTheDocument();
     });
+    expect(screen.getByText('controlPlaneAuditEnabled=true')).toBeInTheDocument();
+    expect(
+      screen.getByText('-Dmockserver.controlPlaneAuditEnabled=true'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('MOCKSERVER_CONTROL_PLANE_AUDIT_ENABLED=true'),
+    ).toBeInTheDocument();
   });
 
   it('surfaces the server error envelope on failure', async () => {

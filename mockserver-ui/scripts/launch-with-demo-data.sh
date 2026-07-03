@@ -161,7 +161,10 @@ DEMO_MAX_HEAP="${DEMO_MAX_HEAP:-1g}"
 # the capped heap into continuous GC, pegging every core and stalling the machine. A demo never
 # needs more than a few thousand entries of scrollback; override with DEMO_MAX_LOG_ENTRIES.
 DEMO_MAX_LOG_ENTRIES="${DEMO_MAX_LOG_ENTRIES:-5000}"
-MOCKSERVER_JVM_ARGS=(-Xmx"$DEMO_MAX_HEAP" -Dmockserver.maxLogEntries="$DEMO_MAX_LOG_ENTRIES" -Dmockserver.metricsEnabled=true -Dmockserver.wasmEnabled=true)
+# controlPlaneAuditEnabled: the audit trail is opt-in (off by default); enable it in the demo so
+# the dashboard's Audit view shows the populate script's control-plane changes instead of an
+# empty how-to-enable notice.
+MOCKSERVER_JVM_ARGS=(-Xmx"$DEMO_MAX_HEAP" -Dmockserver.maxLogEntries="$DEMO_MAX_LOG_ENTRIES" -Dmockserver.metricsEnabled=true -Dmockserver.wasmEnabled=true -Dmockserver.controlPlaneAuditEnabled=true)
 # --load-generation enables the load-generation control plane WITHOUT auto-starting the
 # heavy demo scenarios (that auto-start is gated on DEMO_WITH_LOAD_INJECTION below). This lets
 # a caller drive a deliberately light scenario — e.g. for a clean Performance screenshot —
