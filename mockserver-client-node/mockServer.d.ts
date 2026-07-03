@@ -70,6 +70,8 @@ export type Expectation = {
   crossProtocolScenarios?: CrossProtocolScenario[];
   /** expectation-level capture rules that extract request values into named variables for later template reference */
   capture?: CaptureRule[];
+  /** added to allow request and response log output to be used to create expectations */
+  timestamp?: string;
 };
 
 /**
@@ -149,10 +151,15 @@ export interface ConditionalRequestDefinition {
   else?: RequestDefinition;
 }
 
+/** HTTP protocol version a {@link HttpRequest} matches on. */
+export type Protocol = "HTTP_1_1" | "HTTP_2" | "HTTP_3";
+
 export interface HttpRequest {
   secure?: boolean;
   keepAlive?: boolean;
   respondBeforeBody?: boolean;
+  /** HTTP protocol version the request was received over */
+  protocol?: Protocol;
   method?: StringOrJsonSchema;
   path?: StringOrJsonSchema;
   pathParameters?: KeyToMultiValue;
@@ -201,6 +208,8 @@ export interface HttpResponse {
   /** connection options */
   connectionOptions?: ConnectionOptions;
   headers?: KeyToMultiValue;
+  /** trailing headers sent after the response body (HTTP/2 / chunked HTTP/1.1 trailers) */
+  trailers?: KeyToMultiValue;
   statusCode?: number;
   reasonPhrase?: string;
 }
@@ -549,9 +558,21 @@ export interface WebSocketMessage {
   delay?: Delay;
 }
 
+/**
+ * Per-incoming-frame response rule for a {@link HttpWebSocketResponse}; when a
+ * received frame matches, the rule's {@link WebSocketMessage} responses are sent.
+ */
+export interface WebSocketFrameMatcher {
+  frameType?: "TEXT" | "BINARY" | "PING" | "PONG" | "ANY";
+  textMatcher?: string;
+  responses?: WebSocketMessage[];
+}
+
 export interface HttpWebSocketResponse {
   subprotocol?: string;
   messages?: WebSocketMessage[];
+  /** per-incoming-frame response rules; when set, an incoming frame matching a rule triggers that rule's responses */
+  matchers?: WebSocketFrameMatcher[];
   closeConnection?: boolean;
   delay?: Delay;
   primary?: boolean;
@@ -559,6 +580,7 @@ export interface HttpWebSocketResponse {
 
 export interface GrpcStreamMessage {
   json?: string;
+  templateType?: "VELOCITY" | "JAVASCRIPT" | "MUSTACHE";
   delay?: Delay;
 }
 
@@ -635,6 +657,14 @@ export interface HttpChaosProfile {
   quotaWindowMillis?: number;
   quotaErrorStatus?: number;
   degradationRampMillis?: number;
+  /** rewrite the response body as a GraphQL error envelope (HTTP 200, {"data":null,"errors":[...]}) */
+  graphqlErrors?: boolean;
+  /** the error message in errors[0].message; defaults to 'simulated GraphQL error' when graphqlErrors is true and this is unset */
+  graphqlErrorMessage?: string;
+  /** optional value for errors[0].extensions.code (e.g. 'INTERNAL_SERVER_ERROR'); extensions object is omitted when unset */
+  graphqlErrorCode?: string;
+  /** when true (default), data is null; when false, attempt to preserve the original response body JSON as the data value */
+  graphqlNullifyData?: boolean;
 }
 
 /** LLM provider whose wire format the mocked response is encoded in. */

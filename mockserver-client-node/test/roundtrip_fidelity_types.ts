@@ -485,7 +485,6 @@ export const gapCapture: Expectation = {
 export const gapTimestamp: Expectation = {
     httpRequest: { path: '/gap/timestamp' },
     httpResponse: { body: 'ok' },
-    // @ts-expect-error known gap: timestamp (top-level Expectation key)
     timestamp: '2026-07-03T12:00:00.000Z'
 };
 
@@ -495,7 +494,6 @@ export const gapHttpResponseTrailers: Expectation = {
     httpRequest: { path: '/gap/trailers' },
     httpResponse: {
         statusCode: 200,
-        // @ts-expect-error known gap: httpResponse.trailers (HttpResponse)
         trailers: { 'X-Trailer': ['end'] }
     }
 };
@@ -503,7 +501,6 @@ export const gapHttpResponseTrailers: Expectation = {
 export const gapHttpRequestProtocol: Expectation = {
     httpRequest: {
         path: '/gap/protocol',
-        // @ts-expect-error known gap: httpRequest.protocol (HttpRequest)
         protocol: 'HTTP_2'
     },
     httpResponse: { body: 'ok' }
@@ -533,7 +530,6 @@ export const gapDnsQueryClass: Expectation = {
 export const gapChaosGraphqlErrors: Expectation = {
     httpRequest: { path: '/gap/chaos/graphqlErrors' },
     chaos: {
-        // @ts-expect-error known gap: chaos.graphqlErrors (HttpChaosProfile)
         graphqlErrors: true
     }
 };
@@ -541,7 +537,6 @@ export const gapChaosGraphqlErrors: Expectation = {
 export const gapChaosGraphqlErrorMessage: Expectation = {
     httpRequest: { path: '/gap/chaos/graphqlErrorMessage' },
     chaos: {
-        // @ts-expect-error known gap: chaos.graphqlErrorMessage (HttpChaosProfile)
         graphqlErrorMessage: 'boom'
     }
 };
@@ -549,7 +544,6 @@ export const gapChaosGraphqlErrorMessage: Expectation = {
 export const gapChaosGraphqlErrorCode: Expectation = {
     httpRequest: { path: '/gap/chaos/graphqlErrorCode' },
     chaos: {
-        // @ts-expect-error known gap: chaos.graphqlErrorCode (HttpChaosProfile)
         graphqlErrorCode: 'INTERNAL_SERVER_ERROR'
     }
 };
@@ -557,7 +551,6 @@ export const gapChaosGraphqlErrorCode: Expectation = {
 export const gapChaosGraphqlNullifyData: Expectation = {
     httpRequest: { path: '/gap/chaos/graphqlNullifyData' },
     chaos: {
-        // @ts-expect-error known gap: chaos.graphqlNullifyData (HttpChaosProfile)
         graphqlNullifyData: false
     }
 };
@@ -565,7 +558,6 @@ export const gapChaosGraphqlNullifyData: Expectation = {
 export const gapWebSocketMatchers: Expectation = {
     httpRequest: { path: '/gap/ws/matchers' },
     httpWebSocketResponse: {
-        // @ts-expect-error known gap: httpWebSocketResponse.matchers (HttpWebSocketResponse)
         matchers: [{ frameType: 'TEXT', textMatcher: 'ping', responses: [{ text: 'pong' }] }]
     }
 };
@@ -576,7 +568,6 @@ export const gapGrpcStreamMessageTemplateType: Expectation = {
         messages: [
             {
                 json: '{"id":2}',
-                // @ts-expect-error known gap: GrpcStreamMessage.templateType (grpcStreamResponse.messages[] / grpcBidiResponse.rules[].responses[])
                 templateType: 'VELOCITY'
             }
         ]

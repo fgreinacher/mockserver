@@ -17,9 +17,14 @@ import {
     ConditionalRequestDefinition,
     DnsRequestDefinition,
     Expectation,
+    GrpcStreamResponse,
+    HttpChaosProfile,
     HttpForwardValidateAction,
     HttpForwardWithFallback,
     HttpLlmResponse,
+    HttpRequest,
+    HttpResponse,
+    HttpWebSocketResponse,
     LlmChaosProfile,
     LlmCompletion,
     LlmConversationPredicates,
@@ -181,21 +186,68 @@ const llmResponse: HttpLlmResponse = {
     chaos: llmChaos
 };
 
+// --- protocol matcher, response trailers, chaos GraphQL faults -------------
+
+const httpRequestWithProtocol: HttpRequest = {
+    method: 'POST',
+    path: '/graphql',
+    protocol: 'HTTP_2'
+};
+
+const httpResponseWithTrailers: HttpResponse = {
+    statusCode: 200,
+    body: 'ok',
+    headers: {'Content-Type': ['application/grpc']},
+    trailers: {'grpc-status': ['0'], 'grpc-message': ['OK']}
+};
+
+const graphqlChaos: HttpChaosProfile = {
+    errorStatus: 500,
+    graphqlErrors: true,
+    graphqlErrorMessage: 'simulated GraphQL error',
+    graphqlErrorCode: 'INTERNAL_SERVER_ERROR',
+    graphqlNullifyData: false
+};
+
+// --- gRPC stream templating and WebSocket per-frame matchers ---------------
+
+const grpcStreamResponse: GrpcStreamResponse = {
+    statusName: 'OK',
+    messages: [
+        {json: '{"id":1}'},
+        {json: '{"seq":$!counter}', templateType: 'VELOCITY', delay: {timeUnit: 'MILLISECONDS', value: 10}}
+    ]
+};
+
+const webSocketResponse: HttpWebSocketResponse = {
+    subprotocol: 'chat',
+    messages: [{text: 'welcome'}],
+    matchers: [
+        {frameType: 'TEXT', textMatcher: 'ping', responses: [{text: 'pong'}]},
+        {frameType: 'ANY', responses: [{binary: 'AQID', delay: {timeUnit: 'MILLISECONDS', value: 5}}]}
+    ]
+};
+
 // --- kitchen-sink Expectation: every new member present --------------------
 
 const kitchenSink: Expectation = {
     id: 'exp-1',
     priority: 10,
     percentage: 50,
-    httpRequest: dnsRequest,
+    httpRequest: httpRequestWithProtocol,
+    httpResponse: httpResponseWithTrailers,
     httpForwardValidateAction: forwardValidate,
     httpForwardWithFallback: forwardWithFallback,
     httpLlmResponse: llmResponse,
+    httpWebSocketResponse: webSocketResponse,
+    grpcStreamResponse,
+    chaos: graphqlChaos,
     rateLimit: fixedWindowLimit,
     namespace: 'tenant-a',
     capture: captureRules,
     times: {unlimited: true},
-    timeToLive: {unlimited: true}
+    timeToLive: {unlimited: true},
+    timestamp: '2026-07-03T12:00:00.000Z'
 };
 
 // Reference every binding so `noUnusedLocals`-style checks (if enabled) and the

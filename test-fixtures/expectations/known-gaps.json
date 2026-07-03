@@ -105,16 +105,6 @@
     "httpWebSocketResponse.matchers",
     "rateLimit.refillPerSecond"
   ],
-  "node": [
-    "chaos.graphqlErrorCode",
-    "chaos.graphqlErrorMessage",
-    "chaos.graphqlErrors",
-    "chaos.graphqlNullifyData",
-    "grpcStreamResponse.messages.*.templateType",
-    "httpRequest.protocol",
-    "httpResponse.trailers",
-    "httpWebSocketResponse.matchers",
-    "timestamp"
-  ],
+  "node": [],
   "php": []
 }
