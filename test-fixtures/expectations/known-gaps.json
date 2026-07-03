@@ -45,30 +45,9 @@
     "httpWebSocketResponse.matchers",
     "timestamp"
   ],
+  "_go_note": "httpRequest.pathParameters is a pre-existing model limitation, not a droppable field: HttpRequest.PathParametersList is typed map[string][]string and the public builder RequestBuilder.PathParameter(name string, values ...string) writes into it, but the schema-matcher wire form is { name: [ { schema: {...} } ] }, which []string cannot hold. Widening the field (or the builder) to carry schema objects is a breaking type/signature change, disallowed by the additive-only contract, so this one path is retained. All other go gaps were closed by additively adding typed fields.",
   "go": [
-    "chaos.graphqlErrorCode",
-    "chaos.graphqlErrorMessage",
-    "chaos.graphqlErrors",
-    "chaos.graphqlNullifyData",
-    "grpcBidiResponse.rules.*.responses.*.templateType",
-    "grpcStreamResponse.messages.*.templateType",
-    "httpLlmResponse.completion.enforceOutputSchema",
-    "httpLlmResponse.completion.reasoningSignature",
-    "httpLlmResponse.completion.reasoningText",
-    "httpLlmResponse.completion.streamingPhysics.subwordStreaming",
-    "httpLlmResponse.completion.toolChoice",
-    "httpLlmResponse.completion.usage.cacheCreationTokens",
-    "httpLlmResponse.completion.usage.cachedInputTokens",
-    "httpLlmResponse.completion.usage.reasoningTokens",
-    "httpLlmResponse.contentFilter",
-    "httpLlmResponse.moderation",
-    "httpLlmResponse.primary",
-    "httpLlmResponse.rerank",
-    "httpOverrideForwardedRequest.httpRequest",
-    "httpOverrideForwardedRequest.httpResponse",
-    "httpRequest.pathParameters",
-    "httpWebSocketResponse.matchers",
-    "timestamp"
+    "httpRequest.pathParameters"
   ],
   "rust": [
     "<unrepresentable-expectation>",

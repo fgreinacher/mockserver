@@ -99,10 +99,22 @@ type WebSocketMessage struct {
 	Delay  *Delay `json:"delay,omitempty"`
 }
 
+// WebSocketMatcher is a per-incoming-frame response rule: an inbound frame of
+// FrameType ("TEXT", "BINARY", "PING", "PONG" or "ANY") whose text matches
+// TextMatcher triggers this rule's Responses (mirrors httpWebSocketResponse.matchers).
+type WebSocketMatcher struct {
+	FrameType   string             `json:"frameType,omitempty"`
+	TextMatcher string             `json:"textMatcher,omitempty"`
+	Responses   []WebSocketMessage `json:"responses,omitempty"`
+}
+
 // HttpWebSocketResponse represents a WebSocket response action.
 type HttpWebSocketResponse struct {
-	Subprotocol     string             `json:"subprotocol,omitempty"`
-	Messages        []WebSocketMessage `json:"messages,omitempty"`
+	Subprotocol string             `json:"subprotocol,omitempty"`
+	Messages    []WebSocketMessage `json:"messages,omitempty"`
+	// Matchers are per-incoming-frame response rules; when set, an incoming
+	// frame matching a rule triggers that rule's responses.
+	Matchers        []WebSocketMatcher `json:"matchers,omitempty"`
 	CloseConnection *bool              `json:"closeConnection,omitempty"`
 	Delay           *Delay             `json:"delay,omitempty"`
 	Primary         *bool              `json:"primary,omitempty"`
@@ -168,10 +180,14 @@ func (b *WebSocketResponseBuilder) Build() HttpWebSocketResponse {
 // --- gRPC streaming response ---
 
 // GrpcStreamMessage represents a single message in a gRPC stream. JSON is the
-// JSON encoding of the protobuf message.
+// JSON encoding of the protobuf message. TemplateType, when set, selects the
+// template engine ("VELOCITY", "JAVASCRIPT" or "MUSTACHE") used to render JSON
+// against the inbound request before sending. This type is shared by both
+// GrpcStreamResponse.Messages and GrpcBidiRule.Responses.
 type GrpcStreamMessage struct {
-	JSON  string `json:"json,omitempty"`
-	Delay *Delay `json:"delay,omitempty"`
+	JSON         string `json:"json,omitempty"`
+	TemplateType string `json:"templateType,omitempty"`
+	Delay        *Delay `json:"delay,omitempty"`
 }
 
 // GrpcStreamResponse represents a gRPC server-streaming response action.

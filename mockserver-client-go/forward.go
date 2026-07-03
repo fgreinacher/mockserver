@@ -9,17 +9,31 @@ type HttpForward struct {
 }
 
 // HttpOverrideForwardedRequest forwards the matched request to an overridden
-// target while shaping the caller's response. RequestOverride replaces the
-// outbound (forwarded) request; ResponseOverride or ResponseTemplate shape the
-// response returned to the caller. The wire field names mirror the MockServer
-// HttpOverrideForwardedRequestDTO.
+// target while shaping the caller's response. The server serialization is a
+// oneOf of two wire forms, both represented here (a value only ever populates
+// one form):
+//
+//   - the modifier form — RequestOverride replaces the outbound (forwarded)
+//     request; ResponseOverride or ResponseTemplate shape the response returned
+//     to the caller; RequestModifier / ResponseModifier declaratively rewrite
+//     them;
+//   - the modern form — HttpRequest / HttpResponse carry the override request
+//     and response directly under those keys.
+//
+// The wire field names mirror the MockServer HttpOverrideForwardedRequestDTO.
 type HttpOverrideForwardedRequest struct {
 	RequestOverride  *HttpRequest      `json:"requestOverride,omitempty"`
 	RequestModifier  *RequestModifier  `json:"requestModifier,omitempty"`
 	ResponseOverride *HttpResponse     `json:"responseOverride,omitempty"`
 	ResponseModifier *ResponseModifier `json:"responseModifier,omitempty"`
 	ResponseTemplate *HttpTemplate     `json:"responseTemplate,omitempty"`
-	Delay            *Delay            `json:"delay,omitempty"`
+	// HttpRequest / HttpResponse are the modern oneOf form of the override
+	// (the request/response carried directly under these keys).
+	HttpRequest  *HttpRequest  `json:"httpRequest,omitempty"`
+	HttpResponse *HttpResponse `json:"httpResponse,omitempty"`
+	Delay        *Delay        `json:"delay,omitempty"`
+	// Primary marks this as the primary action when multiple are present.
+	Primary *bool `json:"primary,omitempty"`
 }
 
 // HttpError represents an HTTP error action for MockServer.

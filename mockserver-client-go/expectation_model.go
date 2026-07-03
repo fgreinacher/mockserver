@@ -33,6 +33,15 @@ type HttpChaosProfile struct {
 	QuotaWindowMillis         *int64   `json:"quotaWindowMillis,omitempty"`
 	QuotaErrorStatus          int      `json:"quotaErrorStatus,omitempty"`
 	DegradationRampMillis     *int64   `json:"degradationRampMillis,omitempty"`
+	// GraphQL error-envelope injection: GraphqlErrors rewrites the response as a
+	// GraphQL error envelope (HTTP 200, {"data":null,"errors":[...]});
+	// GraphqlErrorMessage / GraphqlErrorCode populate errors[0].message and
+	// errors[0].extensions.code; GraphqlNullifyData (server default true) nulls
+	// the data field when true — the pointers preserve an explicit false.
+	GraphqlErrors       *bool  `json:"graphqlErrors,omitempty"`
+	GraphqlErrorMessage string `json:"graphqlErrorMessage,omitempty"`
+	GraphqlErrorCode    string `json:"graphqlErrorCode,omitempty"`
+	GraphqlNullifyData  *bool  `json:"graphqlNullifyData,omitempty"`
 }
 
 // --- Rate limit / quota (Expectation.rateLimit) ---

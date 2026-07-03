@@ -74,10 +74,17 @@ func (t *ToolUse) WithArguments(arguments string) *ToolUse {
 	return t
 }
 
-// Usage holds token usage counts for a completion.
+// Usage holds token usage counts for a completion. CachedInputTokens,
+// CacheCreationTokens and ReasoningTokens are optional provider-specific counts
+// (prompt-cache read/write and reasoning tokens) mirrored from the server's
+// httpLlmResponse.completion.usage schema; a meaningful 0 round-trips via the
+// pointer types.
 type Usage struct {
-	InputTokens  *int `json:"inputTokens,omitempty"`
-	OutputTokens *int `json:"outputTokens,omitempty"`
+	InputTokens         *int `json:"inputTokens,omitempty"`
+	OutputTokens        *int `json:"outputTokens,omitempty"`
+	CachedInputTokens   *int `json:"cachedInputTokens,omitempty"`
+	CacheCreationTokens *int `json:"cacheCreationTokens,omitempty"`
+	ReasoningTokens     *int `json:"reasoningTokens,omitempty"`
 }
 
 // NewUsage creates an empty Usage.
@@ -110,6 +117,9 @@ type StreamingPhysics struct {
 	TokensPerSecond  *int     `json:"tokensPerSecond,omitempty"`
 	Jitter           *float64 `json:"jitter,omitempty"`
 	Seed             *int64   `json:"seed,omitempty"`
+	// SubwordStreaming splits streamed tokens at sub-word boundaries (server
+	// default true); the pointer preserves an explicit false.
+	SubwordStreaming *bool `json:"subwordStreaming,omitempty"`
 }
 
 // NewStreamingPhysics creates an empty StreamingPhysics.
@@ -156,7 +166,16 @@ type Completion struct {
 	Streaming        *bool             `json:"streaming,omitempty"`
 	StreamingPhysics *StreamingPhysics `json:"streamingPhysics,omitempty"`
 	OutputSchema     string            `json:"outputSchema,omitempty"`
-	Model            string            `json:"model,omitempty"`
+	// EnforceOutputSchema makes the server validate the generated text against
+	// OutputSchema (the pointer preserves an explicit false).
+	EnforceOutputSchema *bool `json:"enforceOutputSchema,omitempty"`
+	// ToolChoice constrains tool selection (e.g. "auto", "none", "required").
+	ToolChoice string `json:"toolChoice,omitempty"`
+	// ReasoningText / ReasoningSignature carry mocked reasoning content and its
+	// provider signature (e.g. Anthropic extended thinking).
+	ReasoningText      string `json:"reasoningText,omitempty"`
+	ReasoningSignature string `json:"reasoningSignature,omitempty"`
+	Model              string `json:"model,omitempty"`
 }
 
 // NewCompletion creates an empty Completion.
@@ -276,15 +295,45 @@ type ConversationPredicates struct {
 	Normalization         *NormalizationOptions `json:"normalization,omitempty"`
 }
 
+// RerankResponse is a mocked reranking response (shape, determinism), a sibling
+// of Embedding in httpLlmResponse.rerank.
+type RerankResponse struct {
+	TopN                   *int   `json:"topN,omitempty"`
+	DeterministicFromInput *bool  `json:"deterministicFromInput,omitempty"`
+	Seed                   *int64 `json:"seed,omitempty"`
+}
+
+// ModerationResponse is a mocked content-moderation verdict
+// (httpLlmResponse.moderation): the flagged categories and the reporting model.
+type ModerationResponse struct {
+	FlaggedCategories []string `json:"flaggedCategories,omitempty"`
+	Model             string   `json:"model,omitempty"`
+}
+
+// ContentFilterResponse is a mocked Azure-style content-filter verdict
+// (httpLlmResponse.contentFilter); each field is a per-category severity string
+// (e.g. "safe", "low", "medium", "high").
+type ContentFilterResponse struct {
+	Hate     string `json:"hate,omitempty"`
+	Sexual   string `json:"sexual,omitempty"`
+	Violence string `json:"violence,omitempty"`
+	SelfHarm string `json:"selfHarm,omitempty"`
+}
+
 // HttpLlmResponse is the httpLlmResponse action payload of an LLM expectation.
 type HttpLlmResponse struct {
 	Provider               string                  `json:"provider,omitempty"`
 	Model                  string                  `json:"model,omitempty"`
 	Completion             *Completion             `json:"completion,omitempty"`
 	Embedding              *EmbeddingResponse      `json:"embedding,omitempty"`
+	Rerank                 *RerankResponse         `json:"rerank,omitempty"`
+	Moderation             *ModerationResponse     `json:"moderation,omitempty"`
+	ContentFilter          *ContentFilterResponse  `json:"contentFilter,omitempty"`
 	ConversationPredicates *ConversationPredicates `json:"conversationPredicates,omitempty"`
 	Chaos                  interface{}             `json:"chaos,omitempty"`
 	Delay                  *Delay                  `json:"delay,omitempty"`
+	// Primary marks this response as the primary action when multiple are present.
+	Primary *bool `json:"primary,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

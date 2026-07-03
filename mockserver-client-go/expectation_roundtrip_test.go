@@ -523,3 +523,123 @@ func TestConstructedKitchenSinkRoundTrip(t *testing.T) {
 		t.Errorf("constructed round-trip mismatch\nfirst : %s\nsecond: %s", first, second)
 	}
 }
+
+// TestLlmCompletionExtrasRoundTrip covers the completion-level fidelity fields
+// closed in the go gap wave: the extended usage counts, streamingPhysics'
+// subwordStreaming, enforceOutputSchema, toolChoice and the reasoning fields.
+func TestLlmCompletionExtrasRoundTrip(t *testing.T) {
+	assertRoundTrip(t, `{
+      "httpRequest": {"method": "POST", "path": "/v1/messages"},
+      "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "model": "claude-sonnet-4",
+        "completion": {
+          "text": "hi",
+          "usage": {
+            "inputTokens": 10,
+            "outputTokens": 25,
+            "cachedInputTokens": 2,
+            "cacheCreationTokens": 3,
+            "reasoningTokens": 4
+          },
+          "streaming": true,
+          "outputSchema": "{\"type\":\"object\"}",
+          "enforceOutputSchema": true,
+          "toolChoice": "auto",
+          "reasoningText": "thinking",
+          "reasoningSignature": "sig",
+          "streamingPhysics": {"tokensPerSecond": 50, "subwordStreaming": false}
+        },
+        "primary": true
+      }
+    }`)
+}
+
+// TestLlmRerankModerationContentFilterRoundTrip covers the sibling LLM response
+// payloads: rerank, moderation and contentFilter.
+func TestLlmRerankModerationContentFilterRoundTrip(t *testing.T) {
+	assertRoundTrip(t, `{
+      "httpRequest": {"method": "POST", "path": "/v1/embeddings"},
+      "httpLlmResponse": {
+        "provider": "OPENAI",
+        "model": "text-embedding-3-small",
+        "embedding": {"dimensions": 1536, "deterministicFromInput": true, "seed": 42},
+        "rerank": {"topN": 3, "deterministicFromInput": true, "seed": 42},
+        "moderation": {"flaggedCategories": ["violence"], "model": "text-moderation-latest"},
+        "contentFilter": {"hate": "low", "sexual": "safe", "violence": "medium", "selfHarm": "safe"}
+      }
+    }`)
+}
+
+// TestGrpcTemplateTypeRoundTrip covers templateType on both gRPC stream-message
+// sites: grpcStreamResponse.messages[*] and grpcBidiResponse.rules[*].responses[*].
+func TestGrpcTemplateTypeRoundTrip(t *testing.T) {
+	assertRoundTrip(t, `{
+      "grpcStreamResponse": {
+        "statusName": "OK",
+        "messages": [
+          {"json": "{\"id\":1}"},
+          {"json": "{\"id\":2}", "templateType": "VELOCITY", "delay": {"timeUnit": "MILLISECONDS", "value": 100}}
+        ]
+      }
+    }`)
+	assertRoundTrip(t, `{
+      "grpcBidiResponse": {
+        "statusName": "OK",
+        "rules": [
+          {"matchJson": "{\"name\":\"world\"}", "responses": [{"json": "{\"reply\":\"hi\"}", "templateType": "MUSTACHE"}]}
+        ]
+      }
+    }`)
+}
+
+// TestOverrideForwardedRequestModernFormRoundTrip covers the modern oneOf wire
+// form of httpOverrideForwardedRequest (httpRequest/httpResponse keys).
+func TestOverrideForwardedRequestModernFormRoundTrip(t *testing.T) {
+	assertRoundTrip(t, `{
+      "httpRequest": {"path": "/ovr"},
+      "httpOverrideForwardedRequest": {
+        "httpRequest": {
+          "path": "/other",
+          "headers": {"Host": ["target.host.com"]},
+          "socketAddress": {"host": "target.host.com", "port": 1234, "scheme": "HTTPS"}
+        },
+        "httpResponse": {"body": "overridden"},
+        "delay": {"timeUnit": "MILLISECONDS", "value": 5}
+      }
+    }`)
+}
+
+// TestWebSocketMatchersRoundTrip covers httpWebSocketResponse.matchers
+// (per-incoming-frame response rules).
+func TestWebSocketMatchersRoundTrip(t *testing.T) {
+	assertRoundTrip(t, `{
+      "httpRequest": {"path": "/ws/echo"},
+      "httpWebSocketResponse": {
+        "subprotocol": "chat",
+        "messages": [{"text": "hello"}, {"binary": "AQID", "delay": {"timeUnit": "MILLISECONDS", "value": 5}}],
+        "matchers": [
+          {"frameType": "TEXT", "textMatcher": "ping", "responses": [{"text": "pong"}]}
+        ],
+        "closeConnection": false
+      }
+    }`)
+}
+
+// TestChaosGraphqlAndTimestampRoundTrip covers the GraphQL error-envelope chaos
+// fields (including an explicit graphqlNullifyData:false) and the top-level
+// expectation timestamp.
+func TestChaosGraphqlAndTimestampRoundTrip(t *testing.T) {
+	assertRoundTrip(t, `{
+      "httpRequest": {"path": "/chaos"},
+      "httpResponse": {"body": "ok"},
+      "chaos": {
+        "errorStatus": 500,
+        "graphqlErrors": true,
+        "graphqlErrorMessage": "boom",
+        "graphqlErrorCode": "INTERNAL_SERVER_ERROR",
+        "graphqlNullifyData": false
+      },
+      "timestamp": "2026-07-03T12:00:00.000Z"
+    }`)
+}

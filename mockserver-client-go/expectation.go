@@ -63,6 +63,9 @@ type Expectation struct {
 	Namespace  string      `json:"namespace,omitempty"`
 	Times      *Times      `json:"times,omitempty"`
 	TimeToLive *TimeToLive `json:"timeToLive,omitempty"`
+	// Timestamp is the server-assigned creation time of the expectation (echoed
+	// back when the server returns registered expectations); ISO-8601 string.
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 // ResponseMode selects how MockServer chooses between multiple HttpResponses
