@@ -115,12 +115,22 @@ confirmed via `-Xlog:cds=info` ("Opened archive /mockserver.jsa", mapped dynamic
 fallback cases proven: a missing archive and a corrupt archive each log a warning and start
 normally.
 
-**Mechanism.** The same train-at-build-time pattern as the `-aot` image, targeting JDK 17 with classic AppCDS rather than the Leyden AOT cache, in `docker/local/Dockerfile` (the release/snapshot artifact) and `docker/Dockerfile` (public download-mode reference, which also retains its netty-tcnative install):
+> **Runtime bumped to JDK 25 (follow-up: re-measure).** The 566 ms / 411 MB figures above were
+> measured on the JDK 17 runtime this image originally shipped. The standard/local images now bake a
+> jlink-trimmed **Temurin 25** runtime (the library is still compiled to the Java 17 floor — a
+> runtime-only change). The AppCDS archive re-trains and re-maps correctly on JDK 25 (verified
+> locally via `-Xlog:cds`: both the `-Xshare:dump` base archive and the dynamic `/mockserver.jsa`
+> open and map with no "cannot be mapped" warning; `java -version` reports `25.0.3`). A single local
+> container launch→ready observation after the bump was ~563 ms — comparable, but a single sample,
+> not a median-of-5 benchmark; re-run `scripts/perf/bench_startup.py` on JDK 25 for an authoritative
+> figure.
 
-- Build stage: `eclipse-temurin:17-jdk-noble` with a jlink-trimmed runtime (same module set as the jlink binary bundle: `java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs`, `--compress=2` — the `zip-6` form is JDK 21+).
+**Mechanism.** The same train-at-build-time pattern as the `-aot` image, on a JDK 25 runtime with classic AppCDS rather than the Leyden AOT cache, in `docker/local/Dockerfile` (the release/snapshot artifact) and `docker/Dockerfile` (public download-mode reference, which also retains its netty-tcnative install). The runtime JVM is JDK 25; the library is still compiled to the Java 17 bytecode floor, so this is a runtime-only choice:
+
+- Build stage: `eclipse-temurin:25-jdk-noble` with a jlink-trimmed runtime (same module set as the jlink binary bundle: `java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs`, `--compress=zip-6` — the JDK-21+ form; the legacy numeric `--compress=2` was removed after JDK 17).
 - `java -Xshare:dump` first creates the base CDS archive — a jlink image does not ship one, and the dynamic app archive layers on top of it.
 - Training run: `java -XX:ArchiveClassesAtExit=/mockserver.jsa -jar ... -serverPort 1080`, polled via the bundled `org.mockserver.cli.HealthCheck`, then clean `SIGTERM`; the build fails if the archive was not produced.
-- Runtime: distroless java-base-debian12 (digest-pinned by INDEX digest, same digest as `docker/aot`), trimmed JDK 17, jar, and archive. Entrypoint adds `-XX:SharedArchiveFile=/mockserver.jsa` with default `-Xshare:auto` semantics — if the archive is unusable (e.g. wrong JDK build) the JVM logs a warning and starts normally, making this safe for the default image.
+- Runtime: distroless java-base-debian12 (digest-pinned by INDEX digest, same digest as `docker/aot`), trimmed JDK 25, jar, and archive. Entrypoint adds `-XX:SharedArchiveFile=/mockserver.jsa` with default `-Xshare:auto` semantics — if the archive is unusable (e.g. wrong JDK build) the JVM logs a warning and starts normally, making this safe for the default image.
 - `TieredStopAtLevel=1` is intentionally NOT set — it would cap peak throughput for load-injection users. It remains a Testcontainers/ephemeral tip only.
 - The release-script context contract (jar name, `DASHBOARD_ANALYTICS_*` build args, no network access in the `docker/local` build) is unchanged; no release wiring changes were needed.
 
@@ -161,7 +171,7 @@ The `-aot` Docker variant (`docker/aot/Dockerfile`) bakes a Leyden AOT cache (JE
 
 The AOT cache is CPU-architecture and JDK-build specific; multi-arch builds produce independent caches. Netty-tcnative is omitted; TLS uses the JDK provider (functionally identical, slightly lower TLS handshake throughput).
 
-Measured gain: −37% (−42% with `proxySetupLogging=false`) versus the standard baseline, on the fat-jar host benchmark. At release time the `-aot` container measured 0.35–0.37 s to ready vs 0.69–1.14 s for the then-untuned standard image; with AppCDS the standard image now reaches ~0.57 s, narrowing the gap while staying on JDK 17.
+Measured gain: −37% (−42% with `proxySetupLogging=false`) versus the standard baseline, on the fat-jar host benchmark. At release time the `-aot` container measured 0.35–0.37 s to ready vs 0.69–1.14 s for the then-untuned standard image; with AppCDS the standard image now reaches ~0.57 s (measured on the previous JDK 17 runtime; the image now runs a JDK 25 runtime and the figure should be re-measured — a single local container observation after the JDK 25 bump was comparable), narrowing the gap.
 
 ## GraalVM Native Image
 

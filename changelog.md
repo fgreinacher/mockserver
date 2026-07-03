@@ -572,6 +572,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The standard and local Docker images now run on a JDK 25 runtime.** The `mockserver/mockserver` image
+  (built from `docker/local/Dockerfile`, and its `docker/Dockerfile` download-mode reference) now bakes a
+  jlink-trimmed **Eclipse Temurin 25** runtime and its AppCDS archive, moving off JDK 17. The MockServer library
+  itself is still compiled to the Java 17 bytecode floor — this is a runtime-only change (running the same jar on
+  a newer JVM), with no API or behaviour changes. The jlink step uses the JDK-25 `--compress=zip-6` form (the
+  legacy numeric `--compress=2` was removed after JDK 17). The baked startup-optimisation figure (~0.57 s) was
+  measured on JDK 17 and should be re-measured on JDK 25; a single local container observation was comparable.
+
 - **Standard Docker image starts ~34% faster — Application Class Data Sharing (AppCDS) archive baked in at
   image build.** The standard `mockserver/mockserver` image now trains an AppCDS class archive over MockServer's
   own classes during the image build (the same train-at-build approach as the `-aot` variant, on a
