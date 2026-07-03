@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '@mui/material/styles';
 import { buildTheme } from '../theme';
 import ScenarioPanel from '../components/ScenarioPanel';
+import { useDashboardStore } from '../store';
 
 // jsdom cannot run the real mermaid renderer (it needs layout/measurement), so
 // mock the dynamic import — exactly as AgentRunGraph's tests do. We capture the
@@ -32,6 +33,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  useDashboardStore.setState({ activeExpectations: [] });
 });
 
 describe('ScenarioPanel — Trigger confirmation', () => {
@@ -186,5 +188,98 @@ describe('ScenarioPanel — state-machine diagram (UI3)', () => {
       expect(lastSource).toContain('paid --> shipped');
       expect(lastSource).toContain('class shipped current');
     });
+  });
+});
+
+describe('ScenarioPanel — scenario details + Edit hand-off', () => {
+  const checkoutExpectations = [
+    {
+      key: 'e-start',
+      value: {
+        id: 'e-start',
+        scenarioName: 'checkout',
+        scenarioState: 'Started',
+        newScenarioState: 'PAID',
+        httpRequest: { method: 'POST', path: '/pay' },
+        httpResponse: { statusCode: 200 },
+      },
+    },
+    {
+      key: 'e-paid',
+      value: {
+        id: 'e-paid',
+        scenarioName: 'checkout',
+        scenarioState: 'PAID',
+        newScenarioState: 'SHIPPED',
+        httpRequest: { method: 'POST', path: '/ship' },
+        httpResponse: { statusCode: 200 },
+      },
+    },
+  ];
+
+  function stubEmptyScenarioList() {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ scenarios: [] }) })),
+    );
+  }
+
+  it('renders per-scenario states, method/path, and transition arrows from store fixtures', async () => {
+    const user = userEvent.setup();
+    stubEmptyScenarioList();
+    useDashboardStore.setState({ activeExpectations: checkoutExpectations });
+
+    renderPanel();
+
+    // The scenario card appears; expand it to reveal its states.
+    expect(await screen.findByText('Scenario Details')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Expand scenario' }));
+
+    // States are grouped and shown in canonical order with their bound mocks.
+    expect(screen.getByText('POST /pay')).toBeInTheDocument();
+    expect(screen.getByText('POST /ship')).toBeInTheDocument();
+    // Transition arrows: matched-state → transition-state.
+    expect(screen.getByText('Started → PAID')).toBeInTheDocument();
+    expect(screen.getByText('PAID → SHIPPED')).toBeInTheDocument();
+  });
+
+  it('per-row Edit dispatches editExpectation with the full JSON (bindings intact)', async () => {
+    const user = userEvent.setup();
+    stubEmptyScenarioList();
+    const editSpy = vi.fn();
+    useDashboardStore.setState({ activeExpectations: checkoutExpectations, editExpectation: editSpy });
+
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Expand scenario' }));
+    const rowEditButtons = screen.getAllByRole('button', { name: 'Edit expectation' });
+    await user.click(rowEditButtons[0]!);
+
+    expect(editSpy).toHaveBeenCalledTimes(1);
+    const arg = editSpy.mock.calls[0]![0] as Record<string, unknown>;
+    // The exact expectation JSON is handed off, preserving the scenario bindings
+    // so the Composer edit-overlay can round-trip them.
+    expect(arg['scenarioName']).toBe('checkout');
+    expect(arg['scenarioState']).toBe('Started');
+    expect(arg['newScenarioState']).toBe('PAID');
+  });
+
+  it('scenario-level Edit on a single-mock scenario edits it directly', async () => {
+    const user = userEvent.setup();
+    stubEmptyScenarioList();
+    const editSpy = vi.fn();
+    useDashboardStore.setState({
+      activeExpectations: [checkoutExpectations[0]!],
+      editExpectation: editSpy,
+    });
+
+    renderPanel();
+
+    await screen.findByText('Scenario Details');
+    // The scenario-level "Edit" button (single bound mock → edits it directly).
+    await user.click(screen.getByRole('button', { name: 'Edit scenario' }));
+
+    expect(editSpy).toHaveBeenCalledTimes(1);
+    expect((editSpy.mock.calls[0]![0] as Record<string, unknown>)['scenarioName']).toBe('checkout');
   });
 });

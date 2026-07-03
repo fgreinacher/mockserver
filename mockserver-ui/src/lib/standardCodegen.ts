@@ -504,6 +504,31 @@ export interface StandardActionPayload {
    * the form's default. Only meaningful alongside {@link editOriginal}.
    */
   editActionModeled?: boolean;
+  /**
+   * Scenario state-machine bindings, as entered in the Advanced form's optional
+   * Scenario section. Blank fields are omitted from the payload.
+   */
+  scenario?: StandardScenarioBinding;
+  /**
+   * True only when the Advanced form rendered the Scenario section, making the
+   * three scenario keys (scenarioName / scenarioState / newScenarioState) form
+   * AUTHORITATIVE — set from the form when non-empty, and removed from the merged
+   * result when cleared. On the Quick path (and any caller that leaves this
+   * false/undefined) the three keys stay UNMODELED and are preserved by
+   * {@link mergeUnmodeledFields} passthrough — so a quick edit of a
+   * scenario-bound expectation can never drop its bindings.
+   */
+  scenarioModeled?: boolean;
+}
+
+/** The Advanced form's optional Scenario section. */
+export interface StandardScenarioBinding {
+  /** Scenario name this expectation is bound to (top-level `scenarioName`). */
+  name?: string;
+  /** State the scenario must be in for this to match (top-level `scenarioState`). */
+  requiredState?: string;
+  /** State the scenario moves to when matched (top-level `newScenarioState`). */
+  transitionTo?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -971,6 +996,20 @@ export function buildExpectationJson(
     if (captureRules.length > 0) out['capture'] = captureRules;
   }
 
+  // Scenario bindings — only emitted (and only made form-authoritative) on the
+  // Advanced path, which sets `scenarioModeled`. On the Quick path these keys
+  // stay unmodeled and are preserved by mergeUnmodeledFields passthrough. Blank
+  // fields are omitted, so new-compose with an empty Scenario section produces
+  // byte-identical output to before this section existed.
+  if (action.scenarioModeled) {
+    const name = action.scenario?.name?.trim();
+    const requiredState = action.scenario?.requiredState?.trim();
+    const transitionTo = action.scenario?.transitionTo?.trim();
+    if (name) out['scenarioName'] = name;
+    if (requiredState) out['scenarioState'] = requiredState;
+    if (transitionTo) out['newScenarioState'] = transitionTo;
+  }
+
   if (matcher.id.trim()) out['id'] = matcher.id.trim();
   if (matcher.priority !== 0) out['priority'] = matcher.priority;
   if (matcher.times > 0) {
@@ -987,7 +1026,10 @@ export function buildExpectationJson(
   // the preview (StandardReview → buildExpectationJson) and the wire payload
   // (registerExpectation → buildExpectationJson) show the identical merged JSON.
   if (action.editOriginal) {
-    return mergeUnmodeledFields(action.editOriginal, out, { actionModeled: action.editActionModeled });
+    return mergeUnmodeledFields(action.editOriginal, out, {
+      actionModeled: action.editActionModeled,
+      scenarioModeled: action.scenarioModeled,
+    });
   }
 
   return out;
@@ -1007,6 +1049,17 @@ export function buildExpectationJson(
 export const FORM_MODELED_TOP_LEVEL_KEYS: readonly string[] = [
   'chaos', 'beforeActions', 'afterActions', 'steps', 'capture',
   'id', 'priority', 'times', 'timeToLive',
+];
+
+/**
+ * Scenario binding keys the Advanced form models — but ONLY when its Scenario
+ * section was rendered (signalled by `scenarioModeled`). They are handled
+ * separately from {@link FORM_MODELED_TOP_LEVEL_KEYS} precisely because the Quick
+ * path must NOT treat them as modeled: on that path they stay unmodeled and are
+ * preserved by passthrough, so a quick edit never drops a scenario binding.
+ */
+export const FORM_MODELED_SCENARIO_KEYS: readonly string[] = [
+  'scenarioName', 'scenarioState', 'newScenarioState',
 ];
 
 /**
@@ -1050,6 +1103,13 @@ export interface MergeUnmodeledOptions {
    * action the form could not load, to preserve that action instead.
    */
   actionModeled?: boolean;
+  /**
+   * True only when the Advanced form's Scenario section was rendered, making the
+   * scenario keys ({@link FORM_MODELED_SCENARIO_KEYS}) form-authoritative (set
+   * from the form, deleted when cleared). Default false: the keys are left as
+   * unmodeled passthrough (the Quick path), so bindings are never dropped.
+   */
+  scenarioModeled?: boolean;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -1076,6 +1136,7 @@ export function mergeUnmodeledFields(
   opts: MergeUnmodeledOptions = {},
 ): Record<string, unknown> {
   const actionModeled = opts.actionModeled !== false;
+  const scenarioModeled = opts.scenarioModeled === true;
   const result: Record<string, unknown> = structuredClone(original);
 
   // Request matcher — nested merge: modeled sub-fields authoritative, the rest
@@ -1098,6 +1159,16 @@ export function mergeUnmodeledFields(
   for (const k of FORM_MODELED_TOP_LEVEL_KEYS) {
     if (k in formJson) result[k] = formJson[k];
     else delete result[k];
+  }
+
+  // Scenario binding keys — form-authoritative ONLY on the Advanced path
+  // (scenarioModeled). Otherwise the keys are left as they were cloned from the
+  // original, i.e. preserved by passthrough (the Quick path never emits them).
+  if (scenarioModeled) {
+    for (const k of FORM_MODELED_SCENARIO_KEYS) {
+      if (k in formJson) result[k] = formJson[k];
+      else delete result[k];
+    }
   }
 
   // Action / response family. `steps` (handled above) is also an action slot,
@@ -1125,7 +1196,12 @@ export function unmodeledFieldNames(
   opts: MergeUnmodeledOptions = {},
 ): string[] {
   const actionModeled = opts.actionModeled !== false;
+  const scenarioModeled = opts.scenarioModeled === true;
   const modeledTop = new Set<string>([...FORM_MODELED_TOP_LEVEL_KEYS, 'httpRequest']);
+  // When the Advanced Scenario section is rendered, the three scenario keys are
+  // modeled and must NOT be reported as preserved-passthrough. On the Quick path
+  // they remain unmodeled and keep appearing in the "Preserving N fields" chip.
+  if (scenarioModeled) for (const k of FORM_MODELED_SCENARIO_KEYS) modeledTop.add(k);
   const actionFamily = new Set<string>(ACTION_FAMILY_KEYS);
   const names: string[] = [];
   for (const key of Object.keys(original)) {

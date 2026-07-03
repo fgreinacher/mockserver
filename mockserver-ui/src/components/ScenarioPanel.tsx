@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useReducer, useRef, useId, useMemo } from 'react';
+import { useState, useCallback, useEffect, useReducer, useRef, useId, useMemo, type MouseEvent as ReactMouseEvent } from 'react';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
@@ -9,10 +9,18 @@ import Divider from '@mui/material/Divider';
 import Alert from '@mui/material/Alert';
 import Tooltip from '@mui/material/Tooltip';
 import CircularProgress from '@mui/material/CircularProgress';
+import IconButton from '@mui/material/IconButton';
+import Collapse from '@mui/material/Collapse';
+import Menu from '@mui/material/Menu';
+import MenuItem from '@mui/material/MenuItem';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import TimerIcon from '@mui/icons-material/Timer';
+import EditIcon from '@mui/icons-material/Edit';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ConfirmDialog from './ConfirmDialog';
+import TruncatedText from './TruncatedText';
 import { humanizeError } from '../lib/errorMessage';
 import { useDashboardStore } from '../store';
 import {
@@ -20,6 +28,11 @@ import {
   toScenarioMermaid,
   type ScenarioTransition,
 } from '../lib/scenarioGraph';
+import {
+  buildScenarioDetails,
+  type BoundExpectation,
+  type ScenarioDetail,
+} from '../lib/scenarioState';
 import {
   getScenarioState,
   setScenarioState,
@@ -163,6 +176,22 @@ export default function ScenarioPanel({ connectionParams }: ScenarioPanelProps) 
   const [observed, recordObservation] = useReducer(observedGraphReducer, EMPTY_OBSERVED);
 
   const themeMode = useDashboardStore((s) => s.themeMode);
+  // Bound expectations are already client-side: activeExpectations holds full
+  // expectation JSON pushed over the WebSocket, each carrying top-level
+  // scenarioName / scenarioState / newScenarioState — no extra fetch needed.
+  const activeExpectations = useDashboardStore((s) => s.activeExpectations);
+  // Same hand-off ExpectationPanel uses: loads the expectation into the Composer
+  // form and switches to view:'composer' (navigates from the standalone
+  // Scenarios nav view; the Mocks view flips to its Compose tab, see below).
+  const editExpectation = useDashboardStore((s) => s.editExpectation);
+
+  // Per-scenario detail: what each scenario IS — its states and the expectations
+  // bound to each state. The server list annotates each with its live current
+  // state and surfaces scenarios that have no client-side expectation.
+  const scenarioDetails = useMemo<ScenarioDetail[]>(() => {
+    const currentStates = new Map(scenarios.map((s) => [s.scenarioName, s.currentState]));
+    return buildScenarioDetails(activeExpectations, currentStates);
+  }, [activeExpectations, scenarios]);
 
   // Build the Mermaid source for the selected scenario's state machine. Only the
   // observations for the selected scenario are shown.
@@ -321,6 +350,17 @@ export default function ScenarioPanel({ connectionParams }: ScenarioPanelProps) 
           </Box>
         )}
       </Box>
+
+      {/* Scenario details (UI): for each scenario, the expectations bound to
+          each state and where each one transitions to, with a per-row and a
+          scenario-level Edit action that loads the mock into the Composer. */}
+      {scenarioDetails.length > 0 && (
+        <ScenarioDetailsSection
+          details={scenarioDetails}
+          selectedScenario={scenarioName.trim()}
+          onEdit={(value) => editExpectation(value)}
+        />
+      )}
 
       {/* Scenario name + refresh */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
@@ -496,6 +536,245 @@ export default function ScenarioPanel({ connectionParams }: ScenarioPanelProps) 
         </Typography>
       </Box>
     </Paper>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Scenario details — states + bound expectations, with Edit hand-offs
+// ---------------------------------------------------------------------------
+
+/** Strip the internal LLM-conversation prefix/isolation suffix for display. */
+function shortenScenarioName(name: string): string {
+  return name.replace(/^__llm_conv_/, 'conv ').replace(/__iso=.*$/, '');
+}
+
+/** A compact `METHOD /path` summary of a bound expectation's matcher. */
+function summariseRequest(e: BoundExpectation): string {
+  return `${e.method ?? 'ANY'} ${e.path ?? '(any path)'}`;
+}
+
+interface ScenarioDetailsSectionProps {
+  details: ScenarioDetail[];
+  /** The scenario currently selected in the query form, highlighted here. */
+  selectedScenario: string;
+  onEdit: (value: Record<string, unknown>) => void;
+}
+
+/**
+ * Renders each scenario as an expandable card: its states (sorted in canonical
+ * order) and, under each state, the expectations bound to it — showing the
+ * method/path, the state it matches in, and the state it transitions to. Every
+ * bound expectation has a per-row Edit action; each scenario also has a
+ * scenario-level Edit that either edits its single mock directly or opens a
+ * picker when several mocks are bound. All Edit actions reuse the store's
+ * `editExpectation`, which loads the mock into the Composer.
+ */
+function ScenarioDetailsSection({ details, selectedScenario, onEdit }: ScenarioDetailsSectionProps) {
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  // Scenario-level Edit picker (only used when a scenario binds >1 mock).
+  const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
+  const [menuChoices, setMenuChoices] = useState<BoundExpectation[]>([]);
+
+  const toggle = useCallback((name: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
+
+  const handleScenarioEdit = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, d: ScenarioDetail) => {
+      const bound = d.states.flatMap((s) => s.expectations);
+      if (bound.length === 0) return;
+      if (bound.length === 1) {
+        onEdit(bound[0]!.value);
+        return;
+      }
+      setMenuChoices(bound);
+      setMenuAnchor(event.currentTarget);
+    },
+    [onEdit],
+  );
+
+  const closeMenu = useCallback(() => {
+    setMenuAnchor(null);
+    setMenuChoices([]);
+  }, []);
+
+  return (
+    <Box sx={{ mb: 1 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem', display: 'block', mb: 0.5 }}>
+        Scenario Details
+      </Typography>
+      {details.map((d) => {
+        const isOpen = expanded.has(d.scenarioName);
+        const isSelected = d.scenarioName === selectedScenario;
+        return (
+          <Box
+            key={d.scenarioName}
+            sx={{ mb: 0.5, border: 1, borderColor: isSelected ? 'primary.main' : 'divider', borderRadius: 1 }}
+          >
+            <Box
+              onClick={() => toggle(d.scenarioName)}
+              sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 0.5, py: 0.25, cursor: 'pointer' }}
+            >
+              <IconButton
+                size="small"
+                aria-label={isOpen ? 'Collapse scenario' : 'Expand scenario'}
+                sx={{ p: 0.25 }}
+              >
+                {isOpen ? (
+                  <ExpandMoreIcon sx={{ fontSize: '1rem' }} />
+                ) : (
+                  <ChevronRightIcon sx={{ fontSize: '1rem' }} />
+                )}
+              </IconButton>
+              <Tooltip title={d.scenarioName}>
+                <Box
+                  component="span"
+                  sx={{
+                    fontFamily: 'monospace',
+                    fontSize: '0.7rem',
+                    fontWeight: 600,
+                    flex: 1,
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {shortenScenarioName(d.scenarioName)}
+                </Box>
+              </Tooltip>
+              {d.currentState != null && (
+                <Tooltip title={`Current state: ${d.currentState}`}>
+                  <Chip
+                    label={d.currentState}
+                    size="small"
+                    color="primary"
+                    variant="outlined"
+                    sx={{ height: 18, fontSize: '0.6rem', fontFamily: 'monospace', maxWidth: 140 }}
+                  />
+                </Tooltip>
+              )}
+              <Chip
+                label={`${d.expectationCount} mock${d.expectationCount === 1 ? '' : 's'}`}
+                size="small"
+                variant="outlined"
+                sx={{ height: 18, fontSize: '0.6rem' }}
+              />
+              {d.expectationCount > 0 && (
+                <Tooltip title="Edit this scenario's mock in the Composer">
+                  <Button
+                    size="small"
+                    aria-label="Edit scenario"
+                    startIcon={<EditIcon sx={{ fontSize: '0.75rem' }} />}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleScenarioEdit(event, d);
+                    }}
+                    sx={{ height: 20, fontSize: '0.6rem', textTransform: 'none', minWidth: 0 }}
+                  >
+                    Edit
+                  </Button>
+                </Tooltip>
+              )}
+            </Box>
+            <Collapse in={isOpen} unmountOnExit>
+              <Box sx={{ px: 1, pb: 0.5 }}>
+                {d.states.length === 0 ? (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ fontSize: '0.65rem', fontStyle: 'italic' }}
+                  >
+                    No mocks bound to this scenario in this dashboard — it may advance via cross-protocol
+                    triggers.
+                  </Typography>
+                ) : (
+                  d.states.map((group) => (
+                    <Box key={group.state} sx={{ mb: 0.5 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.25 }}>
+                        <Chip
+                          label={group.state}
+                          size="small"
+                          color={group.state === d.currentState ? 'primary' : 'default'}
+                          variant={group.state === d.currentState ? 'filled' : 'outlined'}
+                          sx={{ height: 18, fontSize: '0.6rem', fontFamily: 'monospace' }}
+                        />
+                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6rem' }}>
+                          {group.expectations.length} mock{group.expectations.length === 1 ? '' : 's'}
+                        </Typography>
+                      </Box>
+                      {group.expectations.map((e) => (
+                        <Box
+                          key={e.key}
+                          sx={{ display: 'flex', alignItems: 'center', gap: 0.5, pl: 1, py: 0.125 }}
+                        >
+                          <Box component="span" sx={{ flex: 1, minWidth: 0 }}>
+                            <TruncatedText
+                              text={summariseRequest(e)}
+                              sx={{ fontFamily: 'monospace', fontSize: '0.65rem' }}
+                            />
+                          </Box>
+                          <Tooltip
+                            title={
+                              e.newScenarioState
+                                ? `Transitions to "${e.newScenarioState}"`
+                                : 'No state transition'
+                            }
+                          >
+                            <Box
+                              component="span"
+                              sx={{
+                                fontFamily: 'monospace',
+                                fontSize: '0.6rem',
+                                color: 'text.secondary',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {`${e.scenarioState} → ${e.newScenarioState ?? '·'}`}
+                            </Box>
+                          </Tooltip>
+                          <Tooltip title="Edit in Composer">
+                            <span>
+                              <IconButton
+                                size="small"
+                                aria-label="Edit expectation"
+                                onClick={() => onEdit(e.value)}
+                                sx={{ p: 0.25 }}
+                              >
+                                <EditIcon sx={{ fontSize: '0.8rem' }} />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </Box>
+                      ))}
+                    </Box>
+                  ))
+                )}
+              </Box>
+            </Collapse>
+          </Box>
+        );
+      })}
+      <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={closeMenu}>
+        {menuChoices.map((e) => (
+          <MenuItem
+            key={e.key}
+            onClick={() => {
+              onEdit(e.value);
+              closeMenu();
+            }}
+            sx={{ fontSize: '0.7rem', fontFamily: 'monospace' }}
+          >
+            {e.scenarioState}: {summariseRequest(e)}
+          </MenuItem>
+        ))}
+      </Menu>
+    </Box>
   );
 }
 

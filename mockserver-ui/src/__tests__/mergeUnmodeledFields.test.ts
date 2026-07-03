@@ -357,6 +357,108 @@ describe('buildExpectationJson editOriginal overlay (shared preview + wire path)
 });
 
 // ---------------------------------------------------------------------------
+// Advanced Scenario section — the three scenario keys become form-MODELED only
+// when scenarioModeled is set (the Advanced path). The Quick path (no
+// scenarioModeled) keeps them as unmodeled passthrough, so bindings survive.
+// ---------------------------------------------------------------------------
+
+describe('scenario bindings — form-modeled only on the Advanced path (scenarioModeled)', () => {
+  const scenarioBoundOriginal = {
+    httpRequest: { method: 'POST', path: '/checkout' },
+    httpResponse: { statusCode: 200, body: 'ok' },
+    scenarioName: 'checkout',
+    scenarioState: 'PAID',
+    newScenarioState: 'SHIPPED',
+    namespace: 'orders',
+    id: 'checkout-paid',
+  };
+
+  it('Advanced edit that changes only the status code round-trips the bindings identically', () => {
+    // The Advanced form prefilled the Scenario section from the original, so it
+    // re-emits the same three values; scenarioModeled makes them authoritative.
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 'checkout-paid', method: 'POST', path: '/checkout' }),
+      staticAction({
+        static: { statusCode: 201, body: 'ok', contentType: '' },
+        editOriginal: scenarioBoundOriginal,
+        editActionModeled: true,
+        scenario: { name: 'checkout', requiredState: 'PAID', transitionTo: 'SHIPPED' },
+        scenarioModeled: true,
+      }),
+    );
+    expect((wire['httpResponse'] as Record<string, unknown>)['statusCode']).toBe(201);
+    expect(wire['scenarioName']).toBe('checkout');
+    expect(wire['scenarioState']).toBe('PAID');
+    expect(wire['newScenarioState']).toBe('SHIPPED');
+    // Other unmodeled fields still pass through.
+    expect(wire['namespace']).toBe('orders');
+  });
+
+  it('Advanced edit that clears a scenario field removes that key (form-authoritative)', () => {
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 'checkout-paid', method: 'POST', path: '/checkout' }),
+      staticAction({
+        editOriginal: scenarioBoundOriginal,
+        editActionModeled: true,
+        // User cleared "Transition To" but kept name + required state.
+        scenario: { name: 'checkout', requiredState: 'PAID', transitionTo: '' },
+        scenarioModeled: true,
+      }),
+    );
+    expect(wire['scenarioName']).toBe('checkout');
+    expect(wire['scenarioState']).toBe('PAID');
+    expect(wire['newScenarioState']).toBeUndefined();
+    // Clearing modeled scenario keys does NOT touch unrelated passthrough.
+    expect(wire['namespace']).toBe('orders');
+  });
+
+  it('Advanced edit can add a binding to a previously stateless mock', () => {
+    const stateless = {
+      httpRequest: { method: 'GET', path: '/api' },
+      httpResponse: { statusCode: 200 },
+      id: 'plain',
+    };
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 'plain', method: 'GET', path: '/api' }),
+      staticAction({
+        editOriginal: stateless,
+        editActionModeled: true,
+        scenario: { name: 'flow', requiredState: 'Started', transitionTo: 'next' },
+        scenarioModeled: true,
+      }),
+    );
+    expect(wire['scenarioName']).toBe('flow');
+    expect(wire['scenarioState']).toBe('Started');
+    expect(wire['newScenarioState']).toBe('next');
+  });
+
+  it('new Advanced compose with an empty Scenario section is byte-identical to before the section existed', () => {
+    const withSection = buildExpectationJson(
+      baseMatcher({ path: '/fresh', method: 'GET' }),
+      staticAction({ scenario: { name: '', requiredState: '', transitionTo: '' }, scenarioModeled: true }),
+    );
+    const withoutSection = buildExpectationJson(
+      baseMatcher({ path: '/fresh', method: 'GET' }),
+      staticAction(),
+    );
+    expect(withSection).toEqual(withoutSection);
+    expect(Object.keys(withSection).sort()).toEqual(['httpRequest', 'httpResponse'].sort());
+  });
+
+  it('Quick-path edit (no scenarioModeled) preserves bindings even though the Quick form never renders them', () => {
+    // The Quick static "Update mock" action never sets scenario/scenarioModeled;
+    // the three keys must survive as unmodeled passthrough.
+    const wire = buildExpectationJson(
+      baseMatcher({ id: 'checkout-paid', method: 'POST', path: '/checkout' }),
+      { type: 'static', static: { statusCode: 201, body: 'ok', contentType: '' }, editOriginal: scenarioBoundOriginal, editActionModeled: true },
+    );
+    expect(wire['scenarioName']).toBe('checkout');
+    expect(wire['scenarioState']).toBe('PAID');
+    expect(wire['newScenarioState']).toBe('SHIPPED');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // unmodeledFieldNames — drives the "Preserving N fields …" indicator
 // ---------------------------------------------------------------------------
 
@@ -397,6 +499,31 @@ describe('unmodeledFieldNames', () => {
     // When the form owns the action slot it will replace these, so they are not
     // reported as "preserved".
     expect(unmodeledFieldNames(original, { actionModeled: true })).not.toContain('httpResponses');
+  });
+
+  it('drops the three scenario keys from the preserved list when scenarioModeled (Advanced), keeping other passthrough', () => {
+    const original = {
+      httpRequest: { path: '/svc' },
+      httpResponse: { statusCode: 200 },
+      scenarioName: 'checkout',
+      scenarioState: 'PAID',
+      newScenarioState: 'SHIPPED',
+      namespace: 'orders',
+      crossProtocolScenarios: [{ trigger: 'DNS_QUERY' }],
+    };
+    // Advanced path: scenario keys are modeled, so they must NOT be listed…
+    const advanced = unmodeledFieldNames(original, { actionModeled: true, scenarioModeled: true });
+    expect(advanced).not.toContain('scenarioName');
+    expect(advanced).not.toContain('scenarioState');
+    expect(advanced).not.toContain('newScenarioState');
+    // …but genuinely unmodeled fields still are.
+    expect(advanced).toContain('namespace');
+    expect(advanced).toContain('crossProtocolScenarios');
+    // Quick path (no scenarioModeled): the scenario keys stay in the chip.
+    const quick = unmodeledFieldNames(original, { actionModeled: true });
+    expect(quick).toContain('scenarioName');
+    expect(quick).toContain('scenarioState');
+    expect(quick).toContain('newScenarioState');
   });
 
   it('returns an empty list when the form models everything present', () => {

@@ -3791,6 +3791,22 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
   const [editOriginal, setEditOriginal] = useState<Record<string, unknown> | null>(null);
   const [editActionModeled, setEditActionModeled] = useState(true);
 
+  // Optional scenario bindings (Advanced form's Scenario section). Blank on a
+  // fresh compose; prefilled from the original on edit. These three keys are
+  // form-authoritative only on the Advanced path (scenarioModeled) — the Quick
+  // path preserves them as unmodeled passthrough. See lib/standardCodegen.ts.
+  const [scenarioBindingName, setScenarioBindingName] = useState('');
+  const [scenarioBindingState, setScenarioBindingState] = useState('');
+  const [scenarioBindingNext, setScenarioBindingNext] = useState('');
+
+  // Prefill the three scenario fields from an expectation value (empty when the
+  // key is absent, so loading a non-scenario mock clears any stale binding).
+  const prefillScenarioBinding = useCallback((value: Record<string, unknown>) => {
+    setScenarioBindingName(typeof value['scenarioName'] === 'string' ? (value['scenarioName'] as string) : '');
+    setScenarioBindingState(typeof value['scenarioState'] === 'string' ? (value['scenarioState'] as string) : '');
+    setScenarioBindingNext(typeof value['newScenarioState'] === 'string' ? (value['newScenarioState'] as string) : '');
+  }, []);
+
   const [registering, setRegistering] = useState(false);
   // Humanised register error (short message + raw details behind an expander).
   const [error, setError] = useState<HumanError | null>(null);
@@ -3876,6 +3892,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
       // reader, so they count as "modeled" too.
       const existingStepsForFlag = stepsFromExpectation(item.value);
       setEditOriginal(item.value);
+      prefillScenarioBinding(item.value);
 
       // Detect the action shape and prefill the matching panel + switch the radio.
       const prefill = actionFromExpectation(item);
@@ -3962,7 +3979,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
         setCaptureRules([]);
       }
     },
-    [activeExpectations],
+    [activeExpectations, prefillScenarioBinding],
   );
 
   // Reset the whole form to a blank HTTP static mock. Shared by the
@@ -3985,6 +4002,9 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     // original (and cannot resurrect an old expectation's unmodeled fields).
     setEditOriginal(null);
     setEditActionModeled(true);
+    setScenarioBindingName('');
+    setScenarioBindingState('');
+    setScenarioBindingNext('');
     setError(null);
     setRegisteredLabel(null);
   }, []);
@@ -4018,6 +4038,10 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     // effect clears the signal at the end so it runs exactly once per hand-off.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMode('advanced');
+    // A hand-off may arrive while the Scenarios tab is active (the Scenarios
+    // view's per-mock Edit). Switch to the Compose tab so the loaded form (and
+    // its now-prefilled Scenario section) is actually visible.
+    setComposerTab(0);
     if (inList) {
       handleLoadExisting(inList.key);
     } else {
@@ -4026,6 +4050,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
       // Retain the original so Register/preview preserves unmodeled fields.
       const existingStepsForFlag = stepsFromExpectation(value);
       setEditOriginal(value);
+      prefillScenarioBinding(value);
       const prefill = actionFromExpectation(item);
       setEditActionModeled(!!prefill || !!existingStepsForFlag);
       if (prefill) {
@@ -4068,7 +4093,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     }
     // Consume the hand-off so re-renders don't reload it.
     clearPendingEditExpectation();
-  }, [pendingEditExpectation, activeExpectations, handleLoadExisting, clearPendingEditExpectation]);
+  }, [pendingEditExpectation, activeExpectations, handleLoadExisting, clearPendingEditExpectation, prefillScenarioBinding]);
 
   // Standard kind picker only lists expectations that AREN'T LLM
   // Conversation scenarios — those have their own picker on the
@@ -4118,6 +4143,23 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     if (captureEnabled && captureRules.length > 0) {
       a.capture = captureRules;
     }
+    // Scenario bindings — the Advanced form renders the Scenario section, so it
+    // OWNS these three keys (scenarioModeled): set when non-empty, removed when
+    // cleared on edit. The Quick path never sets scenarioModeled, so it keeps
+    // the bindings as unmodeled passthrough. Blank fields emit nothing, so a
+    // fresh Advanced compose is byte-identical to before this section existed.
+    a.scenario = {
+      name: scenarioBindingName,
+      requiredState: scenarioBindingState,
+      transitionTo: scenarioBindingNext,
+    };
+    // GUARD: scenarioModeled makes the three scenario keys form-authoritative
+    // (delete-when-cleared). It is safe ONLY because this draftAction is consumed
+    // exclusively by the Advanced register path, which always renders the Scenario
+    // section and prefills it on edit. Any future kind reusing draftAction to
+    // register WITHOUT rendering/prefilling that section would silently delete
+    // scenario bindings — keep this flag out of such paths.
+    a.scenarioModeled = true;
     // Edit overlay — carry the retained original so buildExpectationJson merges
     // the form output onto it (preserving unmodeled fields).
     if (editOriginal) {
@@ -4131,6 +4173,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
     dnsResponseState, forwardTemplateState, forwardClassCallbackState, grpcStreamState,
     chaosEnabled, chaosState, stepsEnabled, stepsState, sideEffectsEnabled, sideEffects,
     captureEnabled, captureRules, editOriginal, editActionModeled,
+    scenarioBindingName, scenarioBindingState, scenarioBindingNext,
   ]);
 
   // For DNS kind, attach the DNS matcher so buildExpectationJson emits the DNS
@@ -4735,6 +4778,44 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
               </Collapse>
             </Paper>
 
+            {/* Scenario bindings — optional state-machine wiring. Blank fields
+                are omitted (a stateless mock). On edit these are prefilled and
+                stay authoritative (clearing a field removes the binding); the
+                Quick path preserves them untouched as passthrough. */}
+            <Paper variant="outlined" sx={{ p: 2 }} data-testid="scenario-section">
+              <Typography variant="subtitle2" sx={{ textTransform: 'uppercase', letterSpacing: 0.5, color: 'text.secondary' }}>
+                Scenario (optional)
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, mb: 1 }}>
+                Bind this mock to a scenario state machine: it matches only while the scenario is in
+                the required state, then advances it to the transition state. Leave blank for a
+                stateless mock.
+              </Typography>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                <TextField
+                  size="small"
+                  label="Scenario Name"
+                  value={scenarioBindingName}
+                  onChange={(e) => setScenarioBindingName(e.target.value)}
+                  sx={{ flex: 1, minWidth: 160 }}
+                />
+                <TextField
+                  size="small"
+                  label="Required State"
+                  value={scenarioBindingState}
+                  onChange={(e) => setScenarioBindingState(e.target.value)}
+                  sx={{ flex: 1, minWidth: 140 }}
+                />
+                <TextField
+                  size="small"
+                  label="Transition To"
+                  value={scenarioBindingNext}
+                  onChange={(e) => setScenarioBindingNext(e.target.value)}
+                  sx={{ flex: 1, minWidth: 140 }}
+                />
+              </Box>
+            </Paper>
+
             {/* Step 4: review & register — shows the generated Java / JSON /
                 curl, then the single Register button (mirrors the
                 LLM Conversation form's review-and-register section). */}
@@ -4749,7 +4830,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
               // model — surfaced as a subtle indicator so the user knows they are
               // kept (not silently dropped) on Update.
               const preservedFields = editOriginal
-                ? unmodeledFieldNames(editOriginal, { actionModeled: editActionModeled })
+                ? unmodeledFieldNames(editOriginal, { actionModeled: editActionModeled, scenarioModeled: true })
                 : [];
 
               // `effectiveMatcher` is memoised at the component level (attaches
