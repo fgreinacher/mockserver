@@ -40,10 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dashboard: faster first load, first-run onboarding, and one-click navigation.** All views load lazily
   (initial bundle down from 259 kB to about 164 kB gzip), a Try It Now path on the get-started view creates a
-  first mock or copies a working curl and proxy setup, returning users get an open-dashboard shortcut, the
-  three most recent views render as single-click tabs, keyboard shortcuts move off browser-conflicting
-  bindings with a ? help overlay, and matcher testing is available at the point of need in the composer and
-  on every expectation row.
+  first mock, returning users get an open-dashboard shortcut, keyboard shortcuts move off
+  browser-conflicting bindings with a ? help overlay, and matcher testing is available at the point of need
+  in the composer and on every expectation row. The scenarios view details each scenario's states, bound
+  mocks, and transitions with edit-in-composer actions, and the advanced composer models scenario bindings
+  directly. The audit view explains the opt-in audit trail (and the demo enables it).
 
 ### Fixed
 
