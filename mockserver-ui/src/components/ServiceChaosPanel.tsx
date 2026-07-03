@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type SyntheticEvent } from 'react';
 import Box from '@mui/material/Box';
 import Collapse from '@mui/material/Collapse';
 import Paper from '@mui/material/Paper';
@@ -20,6 +20,7 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Switch from '@mui/material/Switch';
+import Slider from '@mui/material/Slider';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 import EditIcon from '@mui/icons-material/Edit';
@@ -37,8 +38,13 @@ import {
   patchServiceChaos,
   summarizeChaosProfile,
   formatTtl,
+  buildQuickChaosProfile,
+  deriveQuickChaos,
+  QUICK_CHAOS_DEFAULT_PERCENT,
+  QUICK_CHAOS_LATENCY_MS,
   type HttpChaosProfileDTO,
   type ServiceChaosResponse,
+  type QuickChaosMode,
 } from '../lib/serviceChaos';
 import {
   fetchGrpcHealth,
@@ -111,6 +117,14 @@ const responsiveWidth = (px: number) => ({ width: { xs: '100%', sm: px } });
 // and wrap uniformly via CSS Grid auto-fit instead of fixed pixel widths.
 const CHAOS_GRID = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 1, alignItems: 'start' } as const;
 const CHAOS_GRID_WIDE = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 1, alignItems: 'start' } as const;
+
+// Canned Quick Chaos fault modes, in display order. Each maps to real server fault
+// fields via buildQuickChaosProfile: 500s + errorProbability, connection drop, +3s latency.
+const QUICK_CHAOS_MODE_OPTIONS: { mode: QuickChaosMode; label: string }[] = [
+  { mode: 'errors', label: '500 Errors' },
+  { mode: 'reset', label: 'Connection Reset' },
+  { mode: 'latency', label: 'Latency +3s' },
+];
 
 // --- SLO verdict display helpers (A1/A2: terminal experiment verdict) ---
 
@@ -567,6 +581,13 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
 
+  // Quick Chaos strip — local (pre-enable) form state. Once enabled, the live values
+  // are DERIVED from the polled registry (see quickChaos below); this local state only
+  // holds what to register when the user first turns it on.
+  const [quickHostInput, setQuickHostInput] = useState('');
+  const [quickPercent, setQuickPercent] = useState<number>(QUICK_CHAOS_DEFAULT_PERCENT);
+  const [quickModes, setQuickModes] = useState<QuickChaosMode[]>(['errors']);
+
   // Edit inline form state
   const [editingHost, setEditingHost] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditFormState>({
@@ -964,6 +985,94 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
       setForm(EMPTY_FORM);
     });
   }, [connectionParams, form, runAction]);
+
+  // --- Quick Chaos strip ---------------------------------------------------
+  // Live state is DERIVED from the polled registry so the strip round-trips on load
+  // (no hidden client state): a host carrying a canonical Quick-Chaos-shaped rule means
+  // "on". When on, the host/percent/modes shown come from that rule; when off, the local
+  // form state (quickHostInput/quickPercent/quickModes) drives what to register.
+  const quickChaos = useMemo(() => deriveQuickChaos(data.services), [data.services]);
+  const quickEnabled = quickChaos != null;
+  const quickHost = quickEnabled ? quickChaos.host : quickHostInput;
+  // The slider is always driven by local state so the thumb tracks a drag even while
+  // a rule is active; the derived (server) percent re-syncs it whenever it changes —
+  // on load/adoption, after a commit, or when a PUT fails and the poll snaps back.
+  const derivedQuickPercent = quickChaos?.percent ?? null;
+  const [lastDerivedQuickPercent, setLastDerivedQuickPercent] = useState<number | null>(null);
+  if (derivedQuickPercent !== lastDerivedQuickPercent) {
+    setLastDerivedQuickPercent(derivedQuickPercent);
+    if (derivedQuickPercent != null) setQuickPercent(derivedQuickPercent);
+  }
+  const quickPercentValue = quickPercent;
+  const quickModesValue = quickEnabled ? quickChaos.modes : quickModes;
+  // The slider only governs the probability-scoped modes (errors/reset); latency is not
+  // probability-gated server-side, so a latency-only selection disables the slider.
+  const quickPercentAppliesToModes =
+    quickModesValue.includes('errors') || quickModesValue.includes('reset');
+
+  // Register (or replace) the Quick-Chaos rule for a host with the given modes/percent.
+  const applyQuickChaos = useCallback(
+    (host: string, modes: QuickChaosMode[], percent: number) =>
+      runAction(() =>
+        registerServiceChaos(connectionParams, host, buildQuickChaosProfile(modes, percent)),
+      ),
+    [connectionParams, runAction],
+  );
+
+  const handleQuickToggle = useCallback(
+    (_e: ChangeEvent<HTMLInputElement>, checked: boolean) => {
+      if (checked) {
+        const host = quickHostInput.trim();
+        if (host === '') {
+          setActionError({ message: 'Enter a target host to enable Quick Chaos' });
+          return;
+        }
+        if (quickModes.length === 0) {
+          setActionError({ message: 'Select at least one fault mode' });
+          return;
+        }
+        void applyQuickChaos(host, quickModes, quickPercent);
+      } else if (quickChaos) {
+        void runAction(() => removeServiceChaos(connectionParams, quickChaos.host));
+      }
+    },
+    [applyQuickChaos, connectionParams, quickChaos, quickHostInput, quickModes, quickPercent, runAction],
+  );
+
+  // Slider: update local state live; when enabled, commit the change to the server on release.
+  const handleQuickPercentChange = useCallback((_e: Event, value: number | number[]) => {
+    setQuickPercent(Array.isArray(value) ? value[0] ?? QUICK_CHAOS_DEFAULT_PERCENT : value);
+  }, []);
+  const handleQuickPercentCommit = useCallback(
+    (_e: Event | SyntheticEvent, value: number | number[]) => {
+      if (!quickChaos) return;
+      const percent = Array.isArray(value) ? value[0] ?? quickChaos.percent : value;
+      void applyQuickChaos(quickChaos.host, quickChaos.modes, percent);
+    },
+    [applyQuickChaos, quickChaos],
+  );
+
+  // Toggle one canned fault mode. When enabled, re-register (or, if the last mode is
+  // removed, delete the rule — i.e. turn Quick Chaos off).
+  const handleQuickModeToggle = useCallback(
+    (mode: QuickChaosMode) => {
+      if (quickChaos) {
+        const next = quickChaos.modes.includes(mode)
+          ? quickChaos.modes.filter((m) => m !== mode)
+          : [...quickChaos.modes, mode];
+        if (next.length === 0) {
+          void runAction(() => removeServiceChaos(connectionParams, quickChaos.host));
+        } else {
+          void applyQuickChaos(quickChaos.host, next, quickChaos.percent);
+        }
+      } else {
+        setQuickModes((prev) =>
+          prev.includes(mode) ? prev.filter((m) => m !== mode) : [...prev, mode],
+        );
+      }
+    },
+    [applyQuickChaos, connectionParams, quickChaos, runAction],
+  );
 
   const setField = (field: keyof FormState) => (e: ChangeEvent<HTMLInputElement>) =>
     setForm((prev) => ({ ...prev, [field]: e.target.value }));
@@ -1384,6 +1493,80 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
           onClose={() => setActionError(null)}
         />
       )}
+
+      {/* Quick Chaos — one-toggle approachability layer over per-host service chaos */}
+      <Paper
+        variant="outlined"
+        sx={{ p: 1.25, mb: 1.5, borderColor: quickEnabled ? 'warning.main' : undefined }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+            Quick Chaos
+          </Typography>
+          <FormControlLabel
+            control={
+              <Switch
+                size="small"
+                checked={quickEnabled}
+                onChange={handleQuickToggle}
+                disabled={busy}
+              />
+            }
+            label={<Typography variant="caption">Enable Chaos</Typography>}
+          />
+          <TextField
+            size="small"
+            label="Target Host"
+            placeholder="e.g. api.example.com"
+            value={quickHost}
+            disabled={quickEnabled || busy}
+            onChange={(e) => setQuickHostInput(e.target.value)}
+            sx={responsiveWidth(200)}
+          />
+          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+            {QUICK_CHAOS_MODE_OPTIONS.map(({ mode, label }) => {
+              const selected = quickModesValue.includes(mode);
+              return (
+                <Chip
+                  key={mode}
+                  size="small"
+                  label={label}
+                  clickable
+                  color={selected ? 'warning' : 'default'}
+                  variant={selected ? 'filled' : 'outlined'}
+                  aria-pressed={selected}
+                  disabled={busy}
+                  onClick={() => handleQuickModeToggle(mode)}
+                />
+              );
+            })}
+          </Box>
+        </Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 1, flexWrap: 'wrap' }}>
+          <Box sx={{ width: 200, display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Slider
+              size="small"
+              min={1}
+              max={100}
+              value={quickPercentValue}
+              onChange={handleQuickPercentChange}
+              onChangeCommitted={handleQuickPercentCommit}
+              disabled={busy || !quickPercentAppliesToModes}
+              aria-label="Percentage of requests affected"
+              valueLabelDisplay="auto"
+            />
+            <Typography variant="caption" sx={{ minWidth: 34, textAlign: 'right' }}>
+              {quickPercentValue}%
+            </Typography>
+          </Box>
+          <Typography variant="caption" color="text.secondary">
+            {quickPercentAppliesToModes
+              ? `Affects ~${quickPercentValue}% of requests forwarded to ${quickHost || 'the target host'}.`
+              : `Latency applies to all requests forwarded to ${quickHost || 'the target host'}.`}
+            {quickModesValue.includes('latency') && ` Latency mode adds +${QUICK_CHAOS_LATENCY_MS}ms to every request.`}
+          </Typography>
+        </Box>
+      </Paper>
 
       {/* Auto-halt controls (inline) */}
       {autoHaltEnabled !== null && (

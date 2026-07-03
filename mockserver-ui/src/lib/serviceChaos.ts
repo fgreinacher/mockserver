@@ -209,6 +209,141 @@ export function summarizeChaosProfile(profile: HttpChaosProfileDTO): string[] {
   return parts;
 }
 
+// --- Quick Chaos (approachability layer) -----------------------------------
+//
+// "Quick Chaos" is a one-toggle entry point over the same per-host service-chaos
+// rules the full HTTP card manages — no new server capability. It maps a small set
+// of canned fault modes to REAL fields the server already supports, scoped by the
+// server's genuine per-request probability (errorProbability / dropConnectionProbability).
+//
+// IMPORTANT SCOPING NOTES (verified against the server):
+//   * Service chaos is keyed by upstream HOST (ServiceChaosRegistry) — there is no
+//     global/all-traffic scope, so Quick Chaos targets one host like every other rule.
+//   * errorProbability / dropConnectionProbability ARE true per-request probabilities
+//     (ChaosProbability.shouldInject draws ThreadLocalRandom when no seed is set), so
+//     "affecting X% of requests" is honest for the errors/reset modes. We deliberately
+//     do NOT set `seed`: a fixed seed makes shouldInject a single reproducible draw
+//     (all-or-nothing), which would break the percentage.
+//   * Latency is NOT probability-gated server-side — it applies to every matched
+//     request — so the latency mode is labelled "all requests", not X%.
+//
+// A Quick-Chaos rule carries no hidden state: it is a normal service-chaos rule and
+// shows in the HTTP list. It is recognised ("tagged") purely by its canonical SHAPE —
+// only the fields below, at canonical values — so the strip can round-trip its own
+// state from the polled rules on load.
+
+/** Fixed latency (ms) applied by the Quick Chaos "latency" mode. */
+export const QUICK_CHAOS_LATENCY_MS = 3000;
+/** Default percentage for the Quick Chaos slider. */
+export const QUICK_CHAOS_DEFAULT_PERCENT = 10;
+
+/** The canned Quick Chaos fault modes, mapped to real server fault fields. */
+export type QuickChaosMode = 'errors' | 'reset' | 'latency';
+export const QUICK_CHAOS_MODES: QuickChaosMode[] = ['errors', 'reset', 'latency'];
+
+export interface QuickChaosState {
+  host: string;
+  percent: number;
+  modes: QuickChaosMode[];
+}
+
+/**
+ * Build the canonical service-chaos profile for a Quick Chaos selection. Percent is
+ * an integer 1–100; it drives the true per-request probability of the errors/reset
+ * modes. The latency mode is a fixed +{@link QUICK_CHAOS_LATENCY_MS}ms (all requests).
+ */
+export function buildQuickChaosProfile(modes: QuickChaosMode[], percent: number): HttpChaosProfileDTO {
+  const probability = Math.min(1, Math.max(0.01, percent / 100));
+  const profile: HttpChaosProfileDTO = {};
+  if (modes.includes('errors')) {
+    profile.errorStatus = 500;
+    profile.errorProbability = probability;
+  }
+  if (modes.includes('reset')) {
+    profile.dropConnectionProbability = probability;
+  }
+  if (modes.includes('latency')) {
+    profile.latency = { timeUnit: 'MILLISECONDS', value: QUICK_CHAOS_LATENCY_MS };
+  }
+  return profile;
+}
+
+/** The profile keys Quick Chaos is allowed to set; any other populated key disqualifies. */
+const QUICK_CHAOS_KEYS: ReadonlySet<string> = new Set([
+  'errorStatus',
+  'errorProbability',
+  'dropConnectionProbability',
+  'latency',
+]);
+
+function isProbability(value: number | undefined): value is number {
+  return value != null && value > 0 && value <= 1;
+}
+
+/**
+ * True when a profile matches the canonical Quick Chaos shape — i.e. it could have
+ * been produced by {@link buildQuickChaosProfile}. This is the "tag" used to recognise
+ * and adopt a Quick-Chaos rule from the polled registry (there is no name/id field on a
+ * profile, so the shape is the identity). A hand-authored rule that happens to match is
+ * treated as Quick Chaos too, which is safe — the strip simply surfaces and manages it.
+ */
+export function isQuickChaosProfile(profile: HttpChaosProfileDTO | undefined): boolean {
+  if (!profile) return false;
+  // Reject if any non-Quick-Chaos facet is populated.
+  for (const [key, value] of Object.entries(profile)) {
+    if (value != null && value !== false && !QUICK_CHAOS_KEYS.has(key)) return false;
+  }
+  const hasErrors = profile.errorStatus != null;
+  const hasReset = profile.dropConnectionProbability != null;
+  const hasLatency = profile.latency?.value != null;
+  if (!hasErrors && !hasReset && !hasLatency) return false;
+  // errors mode is canonical only as 500 + a real probability.
+  if (hasErrors && !(profile.errorStatus === 500 && isProbability(profile.errorProbability))) return false;
+  // errorProbability without an errorStatus is never canonical.
+  if (!hasErrors && profile.errorProbability != null) return false;
+  if (hasReset && !isProbability(profile.dropConnectionProbability)) return false;
+  if (hasLatency && profile.latency?.value !== QUICK_CHAOS_LATENCY_MS) return false;
+  return true;
+}
+
+/** The Quick Chaos modes present in a canonical profile (order: errors, reset, latency). */
+export function quickChaosModesOf(profile: HttpChaosProfileDTO): QuickChaosMode[] {
+  const modes: QuickChaosMode[] = [];
+  if (profile.errorStatus != null) modes.push('errors');
+  if (profile.dropConnectionProbability != null) modes.push('reset');
+  if (profile.latency?.value != null) modes.push('latency');
+  return modes;
+}
+
+/**
+ * The percentage encoded by a canonical profile's per-request probability, preferring the
+ * errors probability, then reset. Returns null for a latency-only profile (latency is not
+ * probability-scoped), so the caller can fall back to the current slider value.
+ */
+export function quickChaosPercentOf(profile: HttpChaosProfileDTO): number | null {
+  const probability = profile.errorProbability ?? profile.dropConnectionProbability;
+  return probability != null ? Math.round(probability * 100) : null;
+}
+
+/**
+ * Derive the current Quick Chaos state from the polled per-host registry, or null when no
+ * host carries a Quick-Chaos-shaped rule. When several match, the first host in ascending
+ * order wins (deterministic).
+ */
+export function deriveQuickChaos(services: Record<string, HttpChaosProfileDTO>): QuickChaosState | null {
+  for (const host of Object.keys(services).sort()) {
+    const profile = services[host];
+    if (profile && isQuickChaosProfile(profile)) {
+      return {
+        host,
+        modes: quickChaosModesOf(profile),
+        percent: quickChaosPercentOf(profile) ?? QUICK_CHAOS_DEFAULT_PERCENT,
+      };
+    }
+  }
+  return null;
+}
+
 /** Format a remaining-TTL in ms as a compact countdown (e.g. "1m 05s", "12s"). */
 export function formatTtl(remainingMillis: number): string {
   const totalSeconds = Math.max(0, Math.round(remainingMillis / 1000));

@@ -6,6 +6,13 @@ import {
   clearServiceChaos,
   summarizeChaosProfile,
   formatTtl,
+  buildQuickChaosProfile,
+  isQuickChaosProfile,
+  quickChaosModesOf,
+  quickChaosPercentOf,
+  deriveQuickChaos,
+  QUICK_CHAOS_LATENCY_MS,
+  QUICK_CHAOS_DEFAULT_PERCENT,
 } from '../lib/serviceChaos';
 
 const params = { host: '127.0.0.1', port: '1080', secure: false };
@@ -150,5 +157,79 @@ describe('service chaos control-plane calls', () => {
     await expect(registerServiceChaos(params, 'a.svc', { errorStatus: 503 })).rejects.toThrow(
       "'ttlMillis' must be >= 1 when supplied",
     );
+  });
+});
+
+describe('Quick Chaos helpers', () => {
+  it('buildQuickChaosProfile maps modes to real server fault fields with % as probability', () => {
+    expect(buildQuickChaosProfile(['errors'], 10)).toEqual({ errorStatus: 500, errorProbability: 0.1 });
+    expect(buildQuickChaosProfile(['reset'], 25)).toEqual({ dropConnectionProbability: 0.25 });
+    expect(buildQuickChaosProfile(['latency'], 10)).toEqual({
+      latency: { timeUnit: 'MILLISECONDS', value: QUICK_CHAOS_LATENCY_MS },
+    });
+    expect(buildQuickChaosProfile(['errors', 'reset', 'latency'], 50)).toEqual({
+      errorStatus: 500,
+      errorProbability: 0.5,
+      dropConnectionProbability: 0.5,
+      latency: { timeUnit: 'MILLISECONDS', value: QUICK_CHAOS_LATENCY_MS },
+    });
+  });
+
+  it('buildQuickChaosProfile never sets a seed (so % stays a true per-request draw)', () => {
+    expect(buildQuickChaosProfile(['errors'], 30)).not.toHaveProperty('seed');
+  });
+
+  it('buildQuickChaosProfile clamps percent into (0, 100]', () => {
+    expect(buildQuickChaosProfile(['errors'], 100).errorProbability).toBe(1);
+    expect(buildQuickChaosProfile(['reset'], 0).dropConnectionProbability).toBe(0.01);
+  });
+
+  it('isQuickChaosProfile recognises canonical shapes', () => {
+    expect(isQuickChaosProfile({ errorStatus: 500, errorProbability: 0.1 })).toBe(true);
+    expect(isQuickChaosProfile({ dropConnectionProbability: 0.2 })).toBe(true);
+    expect(isQuickChaosProfile({ latency: { timeUnit: 'MILLISECONDS', value: QUICK_CHAOS_LATENCY_MS } })).toBe(true);
+    expect(isQuickChaosProfile({ errorStatus: 500, errorProbability: 1 })).toBe(true);
+  });
+
+  it('isQuickChaosProfile rejects non-canonical / manual rules', () => {
+    expect(isQuickChaosProfile(undefined)).toBe(false);
+    expect(isQuickChaosProfile({})).toBe(false);
+    // wrong error status
+    expect(isQuickChaosProfile({ errorStatus: 503, errorProbability: 0.1 })).toBe(false);
+    // errors mode without a probability (a "always 500" manual rule)
+    expect(isQuickChaosProfile({ errorStatus: 500 })).toBe(false);
+    // a stray probability with no status
+    expect(isQuickChaosProfile({ errorProbability: 0.1 })).toBe(false);
+    // non-canonical latency value
+    expect(isQuickChaosProfile({ latency: { timeUnit: 'MILLISECONDS', value: 200 } })).toBe(false);
+    // an extra advanced facet disqualifies
+    expect(isQuickChaosProfile({ dropConnectionProbability: 0.2, malformedBody: true })).toBe(false);
+    expect(isQuickChaosProfile({ errorStatus: 500, errorProbability: 0.1, seed: 42 })).toBe(false);
+  });
+
+  it('quickChaosModesOf / quickChaosPercentOf read back a canonical profile', () => {
+    const profile = buildQuickChaosProfile(['errors', 'latency'], 15);
+    expect(quickChaosModesOf(profile)).toEqual(['errors', 'latency']);
+    expect(quickChaosPercentOf(profile)).toBe(15);
+    // latency-only has no probability → null (caller falls back to slider default)
+    expect(quickChaosPercentOf(buildQuickChaosProfile(['latency'], 40))).toBeNull();
+  });
+
+  it('deriveQuickChaos finds the tagged host and reads its state', () => {
+    const state = deriveQuickChaos({
+      'other.svc': { errorStatus: 503, errorProbability: 1.0 }, // manual, not adopted
+      'api.example.com': buildQuickChaosProfile(['errors', 'reset'], 20),
+    });
+    expect(state).toEqual({ host: 'api.example.com', modes: ['errors', 'reset'], percent: 20 });
+  });
+
+  it('deriveQuickChaos returns null when no host carries a Quick-Chaos rule', () => {
+    expect(deriveQuickChaos({ 'a.svc': { errorStatus: 503 } })).toBeNull();
+    expect(deriveQuickChaos({})).toBeNull();
+  });
+
+  it('deriveQuickChaos falls back to the default percent for a latency-only rule', () => {
+    const state = deriveQuickChaos({ 'lat.svc': buildQuickChaosProfile(['latency'], 99) });
+    expect(state).toEqual({ host: 'lat.svc', modes: ['latency'], percent: QUICK_CHAOS_DEFAULT_PERCENT });
   });
 });

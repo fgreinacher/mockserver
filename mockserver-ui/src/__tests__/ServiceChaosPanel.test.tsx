@@ -1265,3 +1265,96 @@ describe('ServiceChaosPanel', () => {
     await waitFor(() => expect(screen.getByText('No past experiment runs.')).toBeInTheDocument());
   });
 });
+
+describe('ServiceChaosPanel — Quick Chaos strip', () => {
+  it('enabling Quick Chaos registers exactly the tagged rule for the target host', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await screen.findByText('Quick Chaos');
+
+    await user.type(screen.getByLabelText('Target Host'), 'api.example.com');
+    // default modes = ['errors'], default percent = 10
+    await user.click(screen.getByRole('switch', { name: 'Enable Chaos' }));
+
+    await waitFor(() => expect(puts.length).toBeGreaterThan(0));
+    expect(puts[0]?.body).toEqual({
+      host: 'api.example.com',
+      chaos: { errorStatus: 500, errorProbability: 0.1 },
+    });
+  });
+
+  it('does not PUT on load but reflects an existing tagged rule as enabled', async () => {
+    const { puts } = stubServiceChaos({
+      services: { 'api.example.com': { errorStatus: 500, errorProbability: 0.2, dropConnectionProbability: 0.2 } },
+    });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await screen.findByText('Quick Chaos');
+
+    // The switch reflects server state...
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'Enable Chaos' })).toBeChecked(),
+    );
+    // ...the host is shown and locked...
+    expect(screen.getByLabelText('Target Host')).toHaveValue('api.example.com');
+    expect(screen.getByLabelText('Target Host')).toBeDisabled();
+    // ...and no PUT was issued just from deriving state.
+    expect(puts.length).toBe(0);
+  });
+
+  it('turning Quick Chaos off deletes exactly its tagged host', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({
+      services: { 'api.example.com': { errorStatus: 500, errorProbability: 0.2 } },
+    });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'Enable Chaos' })).toBeChecked(),
+    );
+
+    await user.click(screen.getByRole('switch', { name: 'Enable Chaos' }));
+
+    await waitFor(() => expect(puts.length).toBeGreaterThan(0));
+    expect(puts[0]?.body).toEqual({ host: 'api.example.com', remove: true });
+  });
+
+  it('adding a fault mode while enabled re-registers the host with both faults', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({
+      services: { 'api.example.com': { errorStatus: 500, errorProbability: 0.2 } },
+    });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'Enable Chaos' })).toBeChecked(),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Connection Reset' }));
+
+    await waitFor(() => expect(puts.length).toBeGreaterThan(0));
+    expect(puts[0]?.body).toEqual({
+      host: 'api.example.com',
+      chaos: { errorStatus: 500, errorProbability: 0.2, dropConnectionProbability: 0.2 },
+    });
+  });
+
+  it('the slider updates the tagged rule with a new percentage', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({
+      services: { 'api.example.com': { errorStatus: 500, errorProbability: 0.2 } },
+    });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'Enable Chaos' })).toBeChecked(),
+    );
+
+    const slider = screen.getByRole('slider', { name: 'Percentage of requests affected' });
+    slider.focus();
+    await user.keyboard('{ArrowRight}'); // 20 -> 21
+
+    await waitFor(() => expect(puts.length).toBeGreaterThan(0));
+    expect(puts[0]?.body).toEqual({
+      host: 'api.example.com',
+      chaos: { errorStatus: 500, errorProbability: 0.21 },
+    });
+  });
+});
