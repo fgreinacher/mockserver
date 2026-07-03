@@ -115,6 +115,92 @@ export async function getServerStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Proxy setup — GET /mockserver/proxyConfiguration
+// ---------------------------------------------------------------------------
+
+/**
+ * Proxy setup information served by `GET /mockserver/proxyConfiguration`:
+ * the HTTPS proxy URL, ready-to-paste OS environment-variable blocks, and the
+ * CA certificate (path + PEM) a client must trust to intercept TLS traffic.
+ */
+export interface ProxyConfiguration {
+  /** Filesystem path (on the server) of the written CA certificate. */
+  caCertificatePath: string;
+  /** The CA public certificate in PEM form (private key is never exposed). */
+  caCertificatePem: string;
+  /** The `https_proxy` URL clients should point at (e.g. `http://host:1080`). */
+  httpsProxy: string;
+  /** Copy-paste environment-variable blocks for common shells. */
+  environmentVariables: {
+    unix: string;
+    powershell: string;
+  };
+  /** True when the built-in default CA is in use (vs a custom-provided one). */
+  usingDefaultCa: boolean;
+  /** Optional server-side warning (e.g. default CA in production), else null. */
+  warning: string | null;
+}
+
+/**
+ * Fetch the proxy setup information (`GET /mockserver/proxyConfiguration`).
+ *
+ * @throws Error with the server's `{ "error": ... }` body on a non-2xx response.
+ */
+export async function getProxyConfiguration(
+  params: ConnectionParams,
+  signal?: AbortSignal,
+): Promise<ProxyConfiguration> {
+  const res = await fetch(`${buildBaseUrl(params)}/mockserver/proxyConfiguration`, { signal });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || `Failed to load proxy configuration (HTTP ${res.status} ${res.statusText})`);
+  }
+  const data = (await res.json()) as Partial<ProxyConfiguration> | null;
+  const env = (data?.environmentVariables ?? {}) as Partial<ProxyConfiguration['environmentVariables']>;
+  return {
+    caCertificatePath: data?.caCertificatePath ?? '',
+    caCertificatePem: data?.caCertificatePem ?? '',
+    httpsProxy: data?.httpsProxy ?? '',
+    environmentVariables: {
+      unix: env.unix ?? '',
+      powershell: env.powershell ?? '',
+    },
+    usingDefaultCa: data?.usingDefaultCa === true,
+    warning: data?.warning ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Bind additional port — PUT /mockserver/bind
+// ---------------------------------------------------------------------------
+
+/**
+ * Ask the server to bind an additional listening port (`PUT /mockserver/bind`).
+ * The body is a `PortBinding` (`{ "ports": [<port>] }`); the response echoes the
+ * full set of ports the server is now listening on.
+ *
+ * @returns the complete list of bound ports after the bind.
+ * @throws Error with the server's message on a non-2xx response (e.g. 400 when
+ *         the port is already in use).
+ */
+export async function bindAdditionalPort(
+  params: ConnectionParams,
+  port: number,
+): Promise<number[]> {
+  const res = await fetch(`${buildBaseUrl(params)}/mockserver/bind`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ports: [port] }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || `Failed to bind port (HTTP ${res.status} ${res.statusText})`);
+  }
+  const data = (await res.json()) as Partial<{ ports: number[] }> | null;
+  return Array.isArray(data?.ports) ? (data!.ports as number[]) : [];
+}
+
+// ---------------------------------------------------------------------------
 // Editable property descriptors
 // ---------------------------------------------------------------------------
 

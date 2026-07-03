@@ -5,6 +5,11 @@
  * - **Expectation JSON**: `PUT /mockserver/expectation` (single or array)
  * - **HAR (HTTP Archive)** and **Postman collection**: `PUT /mockserver/import`
  *   with a `?format=har|postman` query parameter (raw collection JSON body).
+ * - **Recording (NDJSON)**: `PUT /mockserver/import?format=recording` reloads a
+ *   persisted NDJSON archive of recorded request/response traffic (the
+ *   disk-offload capture) back into the event log — from the request body, or
+ *   from the server's configured `persistedRecordedRequestsPath` via
+ *   `?format=recording&source=disk`.
  *
  * OpenAPI and WSDL have their own dedicated libs (openapiImport.ts, wsdlImport.ts).
  */
@@ -61,4 +66,54 @@ export async function importCollection(
   }
   const created = (await res.json()) as unknown;
   return Array.isArray(created) ? created : [];
+}
+
+/**
+ * Result of reloading a recorded-traffic NDJSON archive.
+ */
+export interface RecordingImportResult {
+  /** Number of request/response pairs reloaded into the event log. */
+  count: number;
+  /** Number of crash-truncated / malformed NDJSON lines the server skipped. */
+  skipped: number;
+}
+
+/**
+ * Reload a persisted NDJSON archive of recorded request/response traffic via
+ * `PUT /mockserver/import?format=recording`.
+ *
+ * - When `ndjson` has content it is sent as the request body.
+ * - When `fromDisk` is true (or `ndjson` is blank) the request is sent with
+ *   `&source=disk` and an empty body, so the server reads its configured
+ *   `persistedRecordedRequestsPath` archive instead.
+ *
+ * The server responds `201` with a JSON array of the reloaded pairs and, when
+ * any malformed lines were skipped, an `x-mockserver-recorded-requests-skipped`
+ * header carrying the skipped-line count.
+ *
+ * @throws Error with the server's message on a non-2xx response (e.g. 400 when
+ *         no disk archive exists or the NDJSON cannot be parsed).
+ */
+export async function importRecording(
+  params: ConnectionParams,
+  ndjson: string | null,
+  opts: { fromDisk?: boolean } = {},
+): Promise<RecordingImportResult> {
+  const fromDisk = opts.fromDisk === true || !ndjson || ndjson.trim() === '';
+  const url = `${buildBaseUrl(params)}/mockserver/import?format=recording${fromDisk ? '&source=disk' : ''}`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: fromDisk ? '' : ndjson!,
+  });
+  if (!res.ok) {
+    throw new Error((await res.text()) || `HTTP ${res.status} ${res.statusText}`);
+  }
+  const skippedHeader = res.headers?.get?.('x-mockserver-recorded-requests-skipped');
+  const skipped = skippedHeader != null ? Number(skippedHeader) : 0;
+  const reloaded = (await res.json()) as unknown;
+  return {
+    count: Array.isArray(reloaded) ? reloaded.length : 0,
+    skipped: Number.isFinite(skipped) ? skipped : 0,
+  };
 }

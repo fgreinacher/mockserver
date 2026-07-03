@@ -25,11 +25,14 @@ import type { ConnectionParams } from '../hooks/useConnectionParams';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
 import { monospaceFontFamily } from '../theme';
 import HumanErrorAlert from './HumanErrorAlert';
+import CopyButton from './CopyButton';
 import {
   getConfiguration,
   updateConfiguration,
   getEffectiveConfiguration,
   getServerStatus,
+  getProxyConfiguration,
+  bindAdditionalPort,
   CONFIG_SOURCE_LABELS,
   LOG_LEVELS,
   EDITABLE_PROPERTIES,
@@ -37,6 +40,7 @@ import {
   type EditablePropertyDescriptor,
   type EffectiveConfigProperty,
   type ServerStatus,
+  type ProxyConfiguration,
 } from '../lib/configuration';
 
 function valueToText(v: unknown): string {
@@ -81,6 +85,10 @@ export default function ConfigurationDialog({
   const [effectiveConfig, setEffectiveConfig] = useState<EffectiveConfigProperty[] | null>(null);
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const [infoError, setInfoError] = useState<HumanError | null>(null);
+  // Proxy setup is fetched independently so a proxy failure does not hide the
+  // effective-config / bound-ports panel.
+  const [proxyConfig, setProxyConfig] = useState<ProxyConfiguration | null>(null);
+  const [proxyError, setProxyError] = useState<HumanError | null>(null);
 
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
 
@@ -96,6 +104,8 @@ export default function ConfigurationDialog({
       setEffectiveConfig(null);
       setServerStatus(null);
       setInfoError(null);
+      setProxyConfig(null);
+      setProxyError(null);
     }
   }
 
@@ -120,6 +130,11 @@ export default function ConfigurationDialog({
       }
     }
     void loadInfo();
+    // Proxy setup — best-effort, own error surface (a proxy failure must not
+    // hide the effective-config / bound-ports panel).
+    getProxyConfiguration(connectionParams, controller.signal)
+      .then((proxy) => { if (!cancelled) { setProxyConfig(proxy); setProxyError(null); } })
+      .catch((e) => { if (!cancelled) setProxyError(humanizeError(e)); });
     return () => { cancelled = true; controller.abort(); };
   }, [open, tab, effectiveConfig, connectionParams]);
 
@@ -269,6 +284,10 @@ export default function ConfigurationDialog({
             effectiveConfig={effectiveConfig}
             serverStatus={serverStatus}
             error={infoError}
+            proxyConfig={proxyConfig}
+            proxyError={proxyError}
+            connectionParams={connectionParams}
+            onPortsBound={(ports) => setServerStatus((s) => (s ? { ...s, ports } : { ports }))}
           />
         )}
       </DialogContent>
@@ -314,10 +333,18 @@ function ServerInfoPanel({
   effectiveConfig,
   serverStatus,
   error,
+  proxyConfig,
+  proxyError,
+  connectionParams,
+  onPortsBound,
 }: {
   effectiveConfig: EffectiveConfigProperty[] | null;
   serverStatus: ServerStatus | null;
   error: HumanError | null;
+  proxyConfig: ProxyConfiguration | null;
+  proxyError: HumanError | null;
+  connectionParams: ConnectionParams;
+  onPortsBound: (ports: number[]) => void;
 }) {
   const grouped = useMemo(
     () => (effectiveConfig ? groupBySource(effectiveConfig) : []),
@@ -356,12 +383,16 @@ function ServerInfoPanel({
           <Typography variant="body2" color="text.secondary">No bound ports reported.</Typography>
         )}
       </Box>
+      <BindPortControl connectionParams={connectionParams} onPortsBound={onPortsBound} />
       {serverStatus?.version && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1, mb: 1.5 }}>
           Version {serverStatus.version}
           {serverStatus.gitHash ? ` (${serverStatus.gitHash})` : ''}
         </Typography>
       )}
+
+      {/* Proxy setup */}
+      <ProxySetupSection proxyConfig={proxyConfig} proxyError={proxyError} />
 
       {/* Effective configuration grouped by source tier */}
       {grouped.map(([source, props]) => (
@@ -389,6 +420,151 @@ function ServerInfoPanel({
       ))}
       {grouped.length === 0 && (
         <Typography variant="body2" color="text.secondary">No configuration reported.</Typography>
+      )}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bind additional port
+// ---------------------------------------------------------------------------
+
+function BindPortControl({
+  connectionParams,
+  onPortsBound,
+}: {
+  connectionParams: ConnectionParams;
+  onPortsBound: (ports: number[]) => void;
+}) {
+  const [port, setPort] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<HumanError | null>(null);
+
+  const bind = useCallback(async () => {
+    const parsed = Number(port);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+      setError({ message: 'Enter a valid port number (0–65535).' });
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const ports = await bindAdditionalPort(connectionParams, parsed);
+      onPortsBound(ports);
+      setPort('');
+    } catch (e) {
+      setError(humanizeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [port, connectionParams, onPortsBound]);
+
+  return (
+    <Box sx={{ mt: 0.5 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <TextField
+          size="small"
+          type="number"
+          label="Bind additional port"
+          value={port}
+          disabled={busy}
+          sx={{ width: 200 }}
+          slotProps={{ htmlInput: { min: 0, max: 65535 } }}
+          onChange={(e) => setPort(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void bind(); }}
+        />
+        <Button size="small" variant="outlined" disabled={busy || port.trim() === ''} onClick={() => void bind()}>
+          Bind
+        </Button>
+      </Box>
+      {error && <HumanErrorAlert error={error} sx={{ mt: 1 }} />}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Proxy setup section
+// ---------------------------------------------------------------------------
+
+function ProxySetupSection({
+  proxyConfig,
+  proxyError,
+}: {
+  proxyConfig: ProxyConfiguration | null;
+  proxyError: HumanError | null;
+}) {
+  const downloadCa = useCallback(() => {
+    if (!proxyConfig?.caCertificatePem) return;
+    const blob = new Blob([proxyConfig.caCertificatePem], { type: 'application/x-pem-file' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mockserver-ca.pem';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [proxyConfig]);
+
+  return (
+    <Box sx={{ mt: 1.5 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontWeight: 600 }}>
+        Proxy setup
+      </Typography>
+      {proxyError && <HumanErrorAlert error={proxyError} sx={{ mb: 1 }} />}
+      {!proxyError && !proxyConfig && (
+        <Typography variant="body2" color="text.secondary">Loading proxy setup…</Typography>
+      )}
+      {proxyConfig && (
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+          {proxyConfig.warning && <HumanErrorAlert message={proxyConfig.warning} severity="warning" />}
+
+          {/* HTTPS proxy URL */}
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+              HTTPS proxy URL
+            </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Typography variant="body2" sx={{ fontFamily: monospaceFontFamily, wordBreak: 'break-all' }}>
+                {proxyConfig.httpsProxy || '(unavailable)'}
+              </Typography>
+              {proxyConfig.httpsProxy && <CopyButton text={proxyConfig.httpsProxy} />}
+            </Box>
+          </Box>
+
+          {/* Environment-variable snippets */}
+          {([
+            ['Unix / macOS shell', proxyConfig.environmentVariables.unix],
+            ['PowerShell', proxyConfig.environmentVariables.powershell],
+          ] as const).filter(([, snippet]) => snippet).map(([label, snippet]) => (
+            <Box key={label}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">{label}</Typography>
+                <CopyButton text={snippet} />
+              </Box>
+              <Box
+                component="pre"
+                sx={{
+                  m: 0, p: 1, borderRadius: 1, border: 1, borderColor: 'divider',
+                  fontFamily: monospaceFontFamily, fontSize: '0.72rem',
+                  overflowX: 'auto', whiteSpace: 'pre', bgcolor: 'action.hover',
+                }}
+              >
+                {snippet}
+              </Box>
+            </Box>
+          ))}
+
+          {/* CA certificate download */}
+          <Box>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+              CA certificate {proxyConfig.usingDefaultCa ? '(built-in default)' : '(custom)'}
+            </Typography>
+            <Button size="small" variant="outlined" disabled={!proxyConfig.caCertificatePem} onClick={downloadCa}>
+              Download CA (mockserver-ca.pem)
+            </Button>
+          </Box>
+        </Box>
       )}
     </Box>
   );

@@ -16,7 +16,7 @@ import Button from '@mui/material/Button';
 import Snackbar from '@mui/material/Snackbar';
 import CircularProgress from '@mui/material/CircularProgress';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
-import { importExpectationJson, importCollection } from '../lib/importMocks';
+import { importExpectationJson, importCollection, importRecording, type RecordingImportResult } from '../lib/importMocks';
 import { importOpenApi } from '../lib/openapiImport';
 import { importWsdl } from '../lib/wsdlImport';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
@@ -27,7 +27,7 @@ import HumanErrorAlert from './HumanErrorAlert';
 // Types
 // ---------------------------------------------------------------------------
 
-type ImportFormat = 'json' | 'openapi' | 'wsdl' | 'har' | 'postman';
+type ImportFormat = 'json' | 'openapi' | 'wsdl' | 'har' | 'postman' | 'recording';
 
 type ImportSource = 'paste' | 'url' | 'file';
 
@@ -45,7 +45,19 @@ const FORMATS: FormatMeta[] = [
   { value: 'wsdl', label: 'WSDL / SOAP', description: 'A WSDL 1.1 document. SOAP operations are converted to expectations.', urlSupported: false },
   { value: 'har', label: 'HAR (HTTP Archive)', description: 'A HAR JSON file captured from browser DevTools or a proxy.', urlSupported: false },
   { value: 'postman', label: 'Postman collection', description: 'A Postman collection (v2.x) JSON export; requests are converted to expectations.', urlSupported: false },
+  { value: 'recording', label: 'Recording (NDJSON)', description: 'A persisted NDJSON archive of recorded request/response traffic (disk-offload capture); reloaded into the event log. Leave blank and use "Reload From Server Disk" to read the server\'s configured archive.', urlSupported: false },
 ];
+
+/** Build a user-facing message from a recording reload result. */
+function recordingMessage(result: RecordingImportResult): string {
+  const base =
+    result.count > 0
+      ? `Reloaded ${result.count} recorded request${result.count === 1 ? '' : 's'}`
+      : 'No recorded requests reloaded';
+  return result.skipped > 0
+    ? `${base} (${result.skipped} malformed line${result.skipped === 1 ? '' : 's'} skipped)`
+    : base;
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -100,6 +112,17 @@ export default function ImportForm({ connectionParams }: ImportFormProps) {
         throw new Error(source === 'url' ? 'Please enter a URL.' : 'Please provide content to import.');
       }
 
+      // Recording archives reload into the event log (not into expectations), so
+      // they report a reloaded-pair count + skipped-line count rather than a
+      // created-expectation list.
+      if (format === 'recording') {
+        const result = await importRecording(connectionParams, input, { fromDisk: false });
+        setSnackMessage(recordingMessage(result));
+        setPayload('');
+        setUrlValue('');
+        return;
+      }
+
       let created: unknown[];
       switch (format) {
         case 'json':
@@ -137,6 +160,21 @@ export default function ImportForm({ connectionParams }: ImportFormProps) {
       setBusy(false);
     }
   }, [format, source, payload, urlValue, connectionParams]);
+
+  // Reload the recording archive the server persisted to disk (source=disk),
+  // no request body required.
+  const handleReloadFromDisk = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await importRecording(connectionParams, null, { fromDisk: true });
+      setSnackMessage(recordingMessage(result));
+    } catch (e) {
+      setError(humanizeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [connectionParams]);
 
   return (
     <>
@@ -230,7 +268,7 @@ export default function ImportForm({ connectionParams }: ImportFormProps) {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".json,.yaml,.yml,.xml,.wsdl,.har"
+                    accept=".json,.yaml,.yml,.xml,.wsdl,.har,.ndjson"
                     style={{ display: 'none' }}
                     onChange={handleFileSelect}
                     data-testid="import-file-input"
@@ -257,7 +295,9 @@ export default function ImportForm({ connectionParams }: ImportFormProps) {
                         ? '<definitions xmlns="http://schemas.xmlsoap.org/wsdl/" ...>'
                         : format === 'postman'
                           ? '{ "info": { "name": "My API", ... }, "item": [ ... ] }'
-                          : '{ "log": { "entries": [ ... ] } }'
+                          : format === 'recording'
+                            ? '{"httpRequest":{...},"httpResponse":{...}}\n{"httpRequest":{...},"httpResponse":{...}}'
+                            : '{ "log": { "entries": [ ... ] } }'
                 }
                 slotProps={{ input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } } }}
               />
@@ -268,7 +308,7 @@ export default function ImportForm({ connectionParams }: ImportFormProps) {
 
       {/* Import button */}
       <Paper variant="outlined" sx={{ p: 2 }}>
-        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
           <Button
             variant="contained"
             size="small"
@@ -276,10 +316,22 @@ export default function ImportForm({ connectionParams }: ImportFormProps) {
             disabled={busy || (source === 'url' ? !urlValue.trim() : !payload.trim())}
             startIcon={busy ? <CircularProgress size={16} color="inherit" /> : undefined}
           >
-            {busy ? 'Importing...' : 'Import'}
+            {busy ? 'Importing...' : format === 'recording' ? 'Reload' : 'Import'}
           </Button>
+          {format === 'recording' && (
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => void handleReloadFromDisk()}
+              disabled={busy}
+            >
+              Reload From Server Disk
+            </Button>
+          )}
           <Typography variant="caption" color="text.secondary">
-            {currentFormatMeta.label} will be sent to MockServer and converted to expectations.
+            {format === 'recording'
+              ? 'The recorded request/response traffic will be reloaded into the event log.'
+              : `${currentFormatMeta.label} will be sent to MockServer and converted to expectations.`}
           </Typography>
         </Box>
       </Paper>

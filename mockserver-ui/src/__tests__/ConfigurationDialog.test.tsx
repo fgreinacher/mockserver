@@ -372,6 +372,71 @@ describe('ConfigurationDialog', () => {
     expect(screen.getByText('1443')).toBeInTheDocument();
   });
 
+  it('renders the Proxy setup section and binds an additional port on the Server Info tab', async () => {
+    const effective = [{ name: 'mockserver.logLevel', value: 'INFO', source: 'system-property' }];
+    const proxy = {
+      caCertificatePath: '/data/ca.pem',
+      caCertificatePem: '-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----',
+      httpsProxy: 'http://127.0.0.1:1080',
+      environmentVariables: { unix: 'export https_proxy=http://127.0.0.1:1080', powershell: '$env:HTTPS_PROXY="http://127.0.0.1:1080"' },
+      usingDefaultCa: true,
+      warning: null,
+    };
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/mockserver/config')) return { ok: true, json: async () => effective };
+      if (url.endsWith('/mockserver/proxyConfiguration')) return { ok: true, json: async () => proxy };
+      if (url.endsWith('/mockserver/bind') && init?.method === 'PUT') return { ok: true, json: async () => ({ ports: [1080, 2020] }) };
+      if (url.endsWith('/mockserver/status') && init?.method === 'PUT') return { ok: true, json: async () => ({ ports: [1080] }) };
+      return { ok: true, json: async () => fullConfig() };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    renderDialog();
+    await waitFor(() => { expect(screen.getByText('Log level')).toBeInTheDocument(); });
+    await user.click(screen.getByRole('tab', { name: 'Server Info' }));
+
+    // Proxy setup section renders the HTTPS proxy URL + env snippets.
+    await waitFor(() => { expect(screen.getByText('Proxy setup')).toBeInTheDocument(); });
+    expect(screen.getByText('http://127.0.0.1:1080')).toBeInTheDocument();
+    expect(screen.getByText(/export https_proxy=/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Download CA/ })).toBeInTheDocument();
+
+    // Bind an additional port — chips refresh to include the new port.
+    const bindInput = screen.getByLabelText('Bind additional port');
+    await user.type(bindInput, '2020');
+    await user.click(screen.getByRole('button', { name: 'Bind' }));
+
+    await waitFor(() => {
+      const bindCall = fetchMock.mock.calls.find(
+        (c) => String(c[0]).endsWith('/mockserver/bind') && (c[1] as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(bindCall).toBeTruthy();
+      expect(JSON.parse((bindCall![1] as RequestInit).body as string)).toEqual({ ports: [2020] });
+    });
+    await waitFor(() => { expect(screen.getByText('2020')).toBeInTheDocument(); });
+  });
+
+  it('shows a proxy-setup error without hiding the effective config', async () => {
+    const effective = [{ name: 'mockserver.logLevel', value: 'INFO', source: 'system-property' }];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/mockserver/config')) return { ok: true, json: async () => effective };
+      if (url.endsWith('/mockserver/proxyConfiguration')) return { ok: false, status: 400, statusText: 'Bad Request', text: async () => '{"error":"failed to get proxy configuration"}' };
+      if (url.endsWith('/mockserver/status') && init?.method === 'PUT') return { ok: true, json: async () => ({ ports: [1080] }) };
+      return { ok: true, json: async () => fullConfig() };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    renderDialog();
+    await waitFor(() => { expect(screen.getByText('Log level')).toBeInTheDocument(); });
+    await user.click(screen.getByRole('tab', { name: 'Server Info' }));
+
+    // The effective config still renders even though the proxy fetch failed.
+    await waitFor(() => { expect(screen.getByText('mockserver.logLevel')).toBeInTheDocument(); });
+    expect(screen.getByText('Proxy setup')).toBeInTheDocument();
+  });
+
   it('shows an error on the Server Info tab when the config fetch fails', async () => {
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith('/mockserver/config')) return { ok: false, status: 500, statusText: 'Internal Server Error', text: async () => 'boom' };

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { importExpectationJson, importCollection } from '../lib/importMocks';
+import { importExpectationJson, importCollection, importRecording } from '../lib/importMocks';
 
 const params = { host: '127.0.0.1', port: '1080', secure: false };
 
@@ -8,7 +8,7 @@ interface FetchCall {
   init?: RequestInit;
 }
 
-function stubFetch(status: number, body: unknown): FetchCall[] {
+function stubFetch(status: number, body: unknown, headers: Record<string, string> = {}): FetchCall[] {
   const calls: FetchCall[] = [];
   vi.stubGlobal(
     'fetch',
@@ -18,6 +18,7 @@ function stubFetch(status: number, body: unknown): FetchCall[] {
         ok: status >= 200 && status < 300,
         status,
         statusText: 'stub',
+        headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
         json: async () => body,
         text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
       };
@@ -104,5 +105,48 @@ describe('importCollection', () => {
   it('returns an empty array when the response is not an array', async () => {
     stubFetch(201, { unexpected: true });
     expect(await importCollection(params, '{}', 'har')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// importRecording (NDJSON archive reload via PUT /mockserver/import?format=recording)
+// ---------------------------------------------------------------------------
+
+describe('importRecording', () => {
+  it('PUTs NDJSON body to ?format=recording and returns the reloaded count', async () => {
+    const ndjson = '{"httpRequest":{"path":"/a"},"httpResponse":{"statusCode":200}}';
+    const calls = stubFetch(201, [{ httpRequest: {} }, { httpRequest: {} }]);
+    const result = await importRecording(params, ndjson);
+    expect(result).toEqual({ count: 2, skipped: 0 });
+    expect(calls[0]?.url).toBe('http://127.0.0.1:1080/mockserver/import?format=recording');
+    expect(calls[0]?.init?.method).toBe('PUT');
+    expect(calls[0]?.init?.body).toBe(ndjson);
+  });
+
+  it('surfaces the skipped-line count from the response header', async () => {
+    const calls = stubFetch(201, [{ httpRequest: {} }], { 'x-mockserver-recorded-requests-skipped': '3' });
+    const result = await importRecording(params, '{"httpRequest":{}}');
+    expect(result).toEqual({ count: 1, skipped: 3 });
+    expect(calls[0]?.url).not.toContain('source=disk');
+  });
+
+  it('adds &source=disk and an empty body when fromDisk is set', async () => {
+    const calls = stubFetch(201, []);
+    await importRecording(params, null, { fromDisk: true });
+    expect(calls[0]?.url).toBe('http://127.0.0.1:1080/mockserver/import?format=recording&source=disk');
+    expect(calls[0]?.init?.body).toBe('');
+  });
+
+  it('treats a blank body as a disk reload', async () => {
+    const calls = stubFetch(201, []);
+    await importRecording(params, '   ');
+    expect(calls[0]?.url).toContain('source=disk');
+  });
+
+  it('throws the server message on a 400 (no archive on disk)', async () => {
+    stubFetch(400, 'no persisted recorded requests archive found at /data/recorded.ndjson');
+    await expect(importRecording(params, null, { fromDisk: true })).rejects.toThrow(
+      'no persisted recorded requests archive found',
+    );
   });
 });

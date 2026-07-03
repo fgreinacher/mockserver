@@ -122,6 +122,7 @@ describe('Import kind in Composer', () => {
     expect(getFormatRadio(/OpenAPI/)).toBeInTheDocument();
     expect(getFormatRadio(/WSDL/)).toBeInTheDocument();
     expect(getFormatRadio(/HAR/)).toBeInTheDocument();
+    expect(getFormatRadio(/Recording \(NDJSON\)/)).toBeInTheDocument();
   });
 
   it('switching from Import to HTTP restores the matcher/action steps', async () => {
@@ -278,6 +279,36 @@ describe('Import per-format endpoint calls', () => {
       const call = fetchCalls.find((c) => c.url.includes('/mockserver/import?format=postman'));
       expect(call).toBeTruthy();
       expect(call!.init?.method).toBe('PUT');
+    });
+  });
+
+  it('Recording (NDJSON) paste calls PUT /mockserver/import?format=recording with the body', async () => {
+    const user = userEvent.setup();
+    renderComposer();
+    await user.click(screen.getByLabelText('Import'));
+    await user.click(getFormatRadio(/Recording/));
+    const textarea = screen.getByLabelText('Recording (NDJSON) content');
+    await pasteInto(user, textarea, '{"httpRequest":{"path":"/a"},"httpResponse":{"statusCode":200}}');
+    await user.click(screen.getByRole('button', { name: 'Reload' }));
+    await waitFor(() => {
+      const call = fetchCalls.find((c) => c.url.includes('/mockserver/import?format=recording'));
+      expect(call).toBeTruthy();
+      expect(call!.url).not.toContain('source=disk');
+      expect(call!.init?.method).toBe('PUT');
+    });
+  });
+
+  it('Reload From Server Disk calls ?format=recording&source=disk with no body', async () => {
+    const user = userEvent.setup();
+    renderComposer();
+    await user.click(screen.getByLabelText('Import'));
+    await user.click(getFormatRadio(/Recording/));
+    await user.click(screen.getByRole('button', { name: 'Reload From Server Disk' }));
+    await waitFor(() => {
+      const call = fetchCalls.find((c) => c.url.includes('source=disk'));
+      expect(call).toBeTruthy();
+      expect(call!.url).toContain('format=recording');
+      expect(call!.init?.body).toBe('');
     });
   });
 });
