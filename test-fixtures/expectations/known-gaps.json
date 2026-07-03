@@ -29,22 +29,7 @@
     "httpWebSocketResponse.matchers",
     "timestamp"
   ],
-  "ruby": [
-    "chaos.graphqlErrorCode",
-    "chaos.graphqlErrorMessage",
-    "chaos.graphqlErrors",
-    "chaos.graphqlNullifyData",
-    "grpcBidiResponse.rules.*.responses.*.templateType",
-    "grpcStreamResponse.messages.*.templateType",
-    "httpRequest.body.fields",
-    "httpRequest.body.selectionSetMatchType",
-    "httpRequest.body.xml",
-    "httpRequest.pathParameters",
-    "httpRequest.protocol",
-    "httpResponse.trailers",
-    "httpWebSocketResponse.matchers",
-    "timestamp"
-  ],
+"ruby": [],
   "_go_note": "httpRequest.pathParameters is a pre-existing model limitation, not a droppable field: HttpRequest.PathParametersList is typed map[string][]string and the public builder RequestBuilder.PathParameter(name string, values ...string) writes into it, but the schema-matcher wire form is { name: [ { schema: {...} } ] }, which []string cannot hold. Widening the field (or the builder) to carry schema objects is a breaking type/signature change, disallowed by the additive-only contract, so this one path is retained. All other go gaps were closed by additively adding typed fields.",
   "go": [
     "httpRequest.pathParameters"

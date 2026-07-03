@@ -206,6 +206,18 @@ module MockServer
   end
 
   # @api private
+  # Serialise a keyToMultiValue collection in the { name => [values] } object form
+  # (rather than the [{name, values}] array form). MockServer accepts both wire
+  # encodings for keyToMultiValue fields, but pathParameters (a schema-matcher map
+  # whose values are themselves { "schema": {...} } objects) is conventionally
+  # emitted in the object form, so this preserves the caller's shape on round-trip.
+  def self.serialize_key_multi_values_object(items)
+    return nil if items.nil?
+
+    items.each_with_object({}) { |item, map| map[item.name] = item.values }
+  end
+
+  # @api private
   def self.deserialize_key_multi_values(data)
     return nil if data.nil?
 
@@ -427,12 +439,15 @@ module MockServer
     # (StringBodyDTO.subString, JsonBodyDTO.matchType/matchNumbersAsStrings,
     # JsonSchemaBodyDTO.jsonSchema/parameterStyles, XmlSchemaBodyDTO.xmlSchema,
     # ParameterBodyDTO.parameters, WasmBodyDTO.moduleName, BodyDTO.optional).
-    attr_accessor :type, :string, :json, :regex, :json_path, :xpath, :base64_bytes,
+    # xml carries the XML body's own +xml+ wire key (XmlBodyDTO.xml). It is distinct
+    # from +string+: the legacy Body.xml(...) factory populates +string+ (pinned by a
+    # test), whereas a server-produced XML body serialises its content under +xml+.
+    attr_accessor :type, :string, :xml, :json, :regex, :json_path, :xpath, :base64_bytes,
                   :not_body, :content_type, :charset, :file_path, :template_type, :body_all_of,
                   :sub_string, :match_type, :match_numbers_as_strings, :json_schema,
                   :parameter_styles, :xml_schema, :parameters, :module_name, :optional
 
-    def initialize(type: nil, string: nil, json: nil, regex: nil, json_path: nil, xpath: nil,
+    def initialize(type: nil, string: nil, xml: nil, json: nil, regex: nil, json_path: nil, xpath: nil,
                    base64_bytes: nil, not_body: nil, content_type: nil, charset: nil,
                    file_path: nil, template_type: nil, body_all_of: nil,
                    sub_string: nil, match_type: nil, match_numbers_as_strings: nil,
@@ -440,6 +455,7 @@ module MockServer
                    parameters: nil, module_name: nil, optional: nil)
       @type = type
       @string = string
+      @xml = xml
       @json = json
       @regex = regex
       @json_path = json_path
@@ -466,6 +482,7 @@ module MockServer
       result = {}
       result['type']         = @type          unless @type.nil?
       result['string']       = @string        unless @string.nil?
+      result['xml']          = @xml           unless @xml.nil?
       result['json']         = @json          unless @json.nil?
       result['regex']        = @regex         unless @regex.nil?
       result['jsonPath']     = @json_path     unless @json_path.nil?
@@ -498,6 +515,7 @@ module MockServer
       new(
         type:          data['type'],
         string:        data['string'],
+        xml:           data['xml'],
         json:          data['json'],
         regex:         data['regex'],
         json_path:     data['jsonPath'],
@@ -634,12 +652,22 @@ module MockServer
   end
 
   class GraphQLBody
-    attr_accessor :query, :operation_name, :variables_schema, :not_body, :optional
+    # selection_set_match_type selects how the query's selection set is matched
+    # (NORMALISED_STRING / AST_EXACT / AST_SUBSET) and +fields+ is the array of
+    # top-level field names the matcher restricts to, mirroring the server
+    # GraphQLBodyDTO +selectionSetMatchType+ / +fields+ (the GRAPHQL body's +fields+
+    # is a plain string array, distinct from the MULTIPART body's keyToMultiValue
+    # +fields+ map — the server discriminates the two by the body +type+).
+    attr_accessor :query, :operation_name, :variables_schema,
+                  :selection_set_match_type, :fields, :not_body, :optional
 
-    def initialize(query:, operation_name: nil, variables_schema: nil, not_body: false, optional: false)
+    def initialize(query:, operation_name: nil, variables_schema: nil,
+                   selection_set_match_type: nil, fields: nil, not_body: false, optional: false)
       @query = query
       @operation_name = operation_name
       @variables_schema = variables_schema
+      @selection_set_match_type = selection_set_match_type
+      @fields = fields
       @not_body = not_body
       @optional = optional
     end
@@ -648,6 +676,8 @@ module MockServer
       result = { 'type' => 'GRAPHQL', 'query' => @query }
       result['operationName'] = @operation_name if @operation_name
       result['variablesSchema'] = @variables_schema if @variables_schema
+      result['selectionSetMatchType'] = @selection_set_match_type unless @selection_set_match_type.nil?
+      result['fields'] = @fields unless @fields.nil?
       result['not'] = true if @not_body
       result['optional'] = true if @optional
       result
@@ -657,11 +687,13 @@ module MockServer
       return nil if data.nil?
 
       new(
-        query:            data['query'] || '',
-        operation_name:   data['operationName'],
-        variables_schema: data['variablesSchema'],
-        not_body:         data.fetch('not', false),
-        optional:         data.fetch('optional', false)
+        query:                    data['query'] || '',
+        operation_name:           data['operationName'],
+        variables_schema:         data['variablesSchema'],
+        selection_set_match_type: data['selectionSetMatchType'],
+        fields:                   data['fields'],
+        not_body:                 data.fetch('not', false),
+        optional:                 data.fetch('optional', false)
       )
     end
   end
@@ -751,13 +783,16 @@ module MockServer
     # request definition from an HTTP one purely by the presence of a non-blank
     # +dnsName+ on the +httpRequest+ object, so these fields round-trip through
     # the same +httpRequest+ slot as the HTTP matcher fields.
+    # protocol pins the transport the matcher requires
+    # (org.mockserver.model.Protocol: HTTP_1_1 / HTTP_2 / HTTP_3 / SOCKS / ...),
+    # round-tripping the httpRequest +protocol+ wire key.
     attr_accessor :method, :path, :query_string_parameters, :headers,
-                  :cookies, :body, :secure, :keep_alive, :respond_before_body,
+                  :cookies, :body, :secure, :protocol, :keep_alive, :respond_before_body,
                   :path_parameters, :socket_address, :jwt,
                   :dns_name, :dns_type, :dns_class
 
     def initialize(method: nil, path: nil, query_string_parameters: nil, headers: nil,
-                   cookies: nil, body: nil, secure: nil, keep_alive: nil,
+                   cookies: nil, body: nil, secure: nil, protocol: nil, keep_alive: nil,
                    respond_before_body: nil, path_parameters: nil, socket_address: nil,
                    jwt: nil, dns_name: nil, dns_type: nil, dns_class: nil)
       @method = method
@@ -767,6 +802,7 @@ module MockServer
       @cookies = cookies
       @body = body
       @secure = secure
+      @protocol = protocol
       @keep_alive = keep_alive
       @respond_before_body = respond_before_body
       @path_parameters = path_parameters
@@ -786,9 +822,10 @@ module MockServer
         'cookies'               => MockServer.serialize_cookies(@cookies),
         'body'                  => MockServer.serialize_body(@body),
         'secure'                => @secure,
+        'protocol'              => @protocol,
         'keepAlive'             => @keep_alive,
         'respondBeforeBody'     => @respond_before_body,
-        'pathParameters'        => MockServer.serialize_key_multi_values(@path_parameters),
+        'pathParameters'        => MockServer.serialize_key_multi_values_object(@path_parameters),
         'socketAddress'         => @socket_address&.to_h,
         'jwt'                   => @jwt&.to_h,
         'dnsName'               => @dns_name,
@@ -808,6 +845,7 @@ module MockServer
         cookies:                 MockServer.deserialize_cookies(data['cookies']),
         body:                    MockServer.deserialize_body(data['body']),
         secure:                  data['secure'],
+        protocol:                data['protocol'],
         keep_alive:              data['keepAlive'],
         respond_before_body:     data['respondBeforeBody'],
         path_parameters:         MockServer.deserialize_key_multi_values(data['pathParameters']),
@@ -931,11 +969,13 @@ module MockServer
   end
 
   class HttpResponse
+    # trailers carries HTTP trailing headers (org.mockserver.model.Headers on the
+    # response's +trailers+ slot), a keyToMultiValue collection like +headers+.
     attr_accessor :status_code, :reason_phrase, :headers, :cookies,
-                  :body, :delay, :connection_options, :primary
+                  :body, :delay, :connection_options, :trailers, :primary
 
     def initialize(status_code: nil, reason_phrase: nil, headers: nil, cookies: nil,
-                   body: nil, delay: nil, connection_options: nil, primary: nil)
+                   body: nil, delay: nil, connection_options: nil, trailers: nil, primary: nil)
       @status_code = status_code
       @reason_phrase = reason_phrase
       @headers = headers
@@ -943,6 +983,7 @@ module MockServer
       @body = body
       @delay = delay
       @connection_options = connection_options
+      @trailers = trailers
       @primary = primary
     end
 
@@ -955,6 +996,7 @@ module MockServer
         'body'             => MockServer.serialize_body(@body),
         'delay'            => @delay&.to_h,
         'connectionOptions' => @connection_options&.to_h,
+        'trailers'         => MockServer.serialize_key_multi_values(@trailers),
         'primary'          => @primary
       })
     end
@@ -970,6 +1012,7 @@ module MockServer
         body:              MockServer.deserialize_body(data['body']),
         delay:             Delay.from_hash(data['delay']),
         connection_options: ConnectionOptions.from_hash(data['connectionOptions']),
+        trailers:          MockServer.deserialize_key_multi_values(data['trailers']),
         primary:           data['primary']
       )
     end
@@ -1401,12 +1444,49 @@ module MockServer
     end
   end
 
-  class HttpWebSocketResponse
-    attr_accessor :subprotocol, :messages, :close_connection, :delay, :primary
+  # A per-incoming-frame response rule for a WebSocket mock (mirrors the server
+  # WebSocketMessageMatcher). When +frame_type+ (TEXT / BINARY / PING / PONG / ANY)
+  # and the optional +text_matcher+ match an inbound frame, the rule's +responses+
+  # (each a {WebSocketMessage}) are sent back.
+  class WebSocketFrameMatcher
+    attr_accessor :frame_type, :text_matcher, :responses
 
-    def initialize(subprotocol: nil, messages: nil, close_connection: nil, delay: nil, primary: nil)
+    def initialize(frame_type: nil, text_matcher: nil, responses: nil)
+      @frame_type = frame_type
+      @text_matcher = text_matcher
+      @responses = responses
+    end
+
+    def to_h
+      result = {}
+      result['frameType'] = @frame_type unless @frame_type.nil?
+      result['textMatcher'] = @text_matcher unless @text_matcher.nil?
+      result['responses'] = @responses&.map(&:to_h) if @responses
+      result
+    end
+
+    def self.from_hash(data)
+      return nil if data.nil?
+
+      responses_data = data['responses']
+      responses = responses_data&.map { |r| WebSocketMessage.from_hash(r) }
+      new(
+        frame_type:   data['frameType'],
+        text_matcher: data['textMatcher'],
+        responses:    responses
+      )
+    end
+  end
+
+  class HttpWebSocketResponse
+    # matchers carries per-incoming-frame response rules (server
+    # HttpWebSocketResponseDTO.matchers); each is a {WebSocketFrameMatcher}.
+    attr_accessor :subprotocol, :messages, :matchers, :close_connection, :delay, :primary
+
+    def initialize(subprotocol: nil, messages: nil, matchers: nil, close_connection: nil, delay: nil, primary: nil)
       @subprotocol = subprotocol
       @messages = messages
+      @matchers = matchers
       @close_connection = close_connection
       @delay = delay
       @primary = primary
@@ -1416,6 +1496,7 @@ module MockServer
       result = {}
       result['subprotocol'] = @subprotocol unless @subprotocol.nil?
       result['messages'] = @messages&.map(&:to_h) if @messages
+      result['matchers'] = @matchers&.map(&:to_h) if @matchers
       result['closeConnection'] = @close_connection unless @close_connection.nil?
       result['delay'] = @delay.to_h if @delay
       result['primary'] = @primary unless @primary.nil?
@@ -1427,9 +1508,12 @@ module MockServer
 
       messages_data = data['messages']
       messages = messages_data&.map { |m| WebSocketMessage.from_hash(m) }
+      matchers_data = data['matchers']
+      matchers = matchers_data&.map { |m| WebSocketFrameMatcher.from_hash(m) }
       new(
         subprotocol:      data['subprotocol'],
         messages:         messages,
+        matchers:         matchers,
         close_connection: data['closeConnection'],
         delay:            Delay.from_hash(data['delay']),
         primary:          data['primary']
@@ -1438,16 +1522,21 @@ module MockServer
   end
 
   class GrpcStreamMessage
-    attr_accessor :json, :delay
+    # template_type marks the message +json+ as a response template rendered by the
+    # named engine (VELOCITY / JAVASCRIPT / MUSTACHE), mirroring the server
+    # GrpcStreamResponseDTO / GrpcBidiResponseDTO message +templateType+.
+    attr_accessor :json, :template_type, :delay
 
-    def initialize(json: nil, delay: nil)
+    def initialize(json: nil, template_type: nil, delay: nil)
       @json = json
+      @template_type = template_type
       @delay = delay
     end
 
     def to_h
       result = {}
       result['json'] = @json unless @json.nil?
+      result['templateType'] = @template_type unless @template_type.nil?
       result['delay'] = @delay.to_h if @delay
       result
     end
@@ -1456,8 +1545,9 @@ module MockServer
       return nil if data.nil?
 
       new(
-        json:  data['json'],
-        delay: Delay.from_hash(data['delay'])
+        json:          data['json'],
+        template_type: data['templateType'],
+        delay:         Delay.from_hash(data['delay'])
       )
     end
   end
@@ -1726,13 +1816,20 @@ module MockServer
   end
 
   class HttpChaosProfile
+    # graphql_errors / graphql_error_message / graphql_error_code /
+    # graphql_nullify_data carry the GraphQL fault-injection knobs from the server
+    # HttpChaosProfileDTO: when graphqlErrors is set the mocked GraphQL response is
+    # rewritten to carry an "errors" array (message/code from graphqlErrorMessage /
+    # graphqlErrorCode) and, when graphqlNullifyData is true, a null "data" field.
     attr_accessor :error_status, :error_probability, :drop_connection_probability,
                   :retry_after, :latency, :seed, :succeed_first, :fail_request_count,
                   :outage_after_millis, :outage_duration_millis,
                   :truncate_body_at_fraction, :malformed_body,
                   :slow_response_chunk_size, :slow_response_chunk_delay,
                   :quota_name, :quota_limit, :quota_window_millis, :quota_error_status,
-                  :degradation_ramp_millis
+                  :degradation_ramp_millis,
+                  :graphql_errors, :graphql_error_message, :graphql_error_code,
+                  :graphql_nullify_data
 
     def initialize(error_status: nil, error_probability: nil, drop_connection_probability: nil,
                    retry_after: nil, latency: nil, seed: nil, succeed_first: nil, fail_request_count: nil,
@@ -1740,7 +1837,9 @@ module MockServer
                    truncate_body_at_fraction: nil, malformed_body: nil,
                    slow_response_chunk_size: nil, slow_response_chunk_delay: nil,
                    quota_name: nil, quota_limit: nil, quota_window_millis: nil, quota_error_status: nil,
-                   degradation_ramp_millis: nil)
+                   degradation_ramp_millis: nil,
+                   graphql_errors: nil, graphql_error_message: nil, graphql_error_code: nil,
+                   graphql_nullify_data: nil)
       @error_status = error_status
       @error_probability = error_probability
       @drop_connection_probability = drop_connection_probability
@@ -1760,6 +1859,10 @@ module MockServer
       @quota_window_millis = quota_window_millis
       @quota_error_status = quota_error_status
       @degradation_ramp_millis = degradation_ramp_millis
+      @graphql_errors = graphql_errors
+      @graphql_error_message = graphql_error_message
+      @graphql_error_code = graphql_error_code
+      @graphql_nullify_data = graphql_nullify_data
     end
 
     def to_h
@@ -1782,7 +1885,11 @@ module MockServer
         'quotaLimit'                 => @quota_limit,
         'quotaWindowMillis'          => @quota_window_millis,
         'quotaErrorStatus'           => @quota_error_status,
-        'degradationRampMillis'      => @degradation_ramp_millis
+        'degradationRampMillis'      => @degradation_ramp_millis,
+        'graphqlErrors'              => @graphql_errors,
+        'graphqlErrorMessage'        => @graphql_error_message,
+        'graphqlErrorCode'           => @graphql_error_code,
+        'graphqlNullifyData'         => @graphql_nullify_data
       })
     end
 
@@ -1808,7 +1915,11 @@ module MockServer
         quota_limit:                 data['quotaLimit'],
         quota_window_millis:         data['quotaWindowMillis'],
         quota_error_status:          data['quotaErrorStatus'],
-        degradation_ramp_millis:     data['degradationRampMillis']
+        degradation_ramp_millis:     data['degradationRampMillis'],
+        graphql_errors:              data['graphqlErrors'],
+        graphql_error_message:       data['graphqlErrorMessage'],
+        graphql_error_code:          data['graphqlErrorCode'],
+        graphql_nullify_data:        data['graphqlNullifyData']
       )
     end
   end
@@ -2269,7 +2380,7 @@ module MockServer
                   :before_actions, :after_actions,
                   :http_responses, :response_mode, :response_weights, :switch_after,
                   :cross_protocol_scenarios, :steps, :capture, :namespace,
-                  :scenario_name, :scenario_state, :new_scenario_state
+                  :scenario_name, :scenario_state, :new_scenario_state, :timestamp
 
     def initialize(id: nil, priority: nil, percentage: nil, http_request: nil, http_response: nil,
                    http_response_template: nil, http_response_class_callback: nil,
@@ -2285,7 +2396,8 @@ module MockServer
                    http_responses: nil, response_mode: nil, response_weights: nil,
                    switch_after: nil, cross_protocol_scenarios: nil, steps: nil,
                    capture: nil, namespace: nil,
-                   scenario_name: nil, scenario_state: nil, new_scenario_state: nil)
+                   scenario_name: nil, scenario_state: nil, new_scenario_state: nil,
+                   timestamp: nil)
       @id = id
       @priority = priority
       @percentage = percentage
@@ -2329,6 +2441,7 @@ module MockServer
       @scenario_name = scenario_name
       @scenario_state = scenario_state
       @new_scenario_state = new_scenario_state
+      @timestamp = timestamp
     end
 
     # Set the response class-callback action. Accepts either a fully-qualified
@@ -2402,7 +2515,8 @@ module MockServer
         'chaos'                        => @chaos&.to_h,
         'scenarioName'                 => @scenario_name,
         'scenarioState'                => @scenario_state,
-        'newScenarioState'             => @new_scenario_state
+        'newScenarioState'             => @new_scenario_state,
+        'timestamp'                    => @timestamp
       })
     end
 
@@ -2463,7 +2577,8 @@ module MockServer
         chaos:                           HttpChaosProfile.from_hash(data['chaos']),
         scenario_name:                   data['scenarioName'],
         scenario_state:                  data['scenarioState'],
-        new_scenario_state:              data['newScenarioState']
+        new_scenario_state:              data['newScenarioState'],
+        timestamp:                       data['timestamp']
       )
     end
   end

@@ -3094,4 +3094,121 @@ RSpec.describe 'MockServer models' do
       expect(req.cookies[0].values).to eq(['abc123'])
     end
   end
+
+  # -------------------------------------------------------------------
+  # Residual round-trip fidelity fields (closed known-gaps["ruby"] entries)
+  # -------------------------------------------------------------------
+  describe 'round-trip fidelity fields' do
+    it 'HttpChaosProfile round-trips the GraphQL fault-injection knobs' do
+      chaos = MockServer::HttpChaosProfile.new(
+        graphql_errors: true,
+        graphql_error_message: 'boom',
+        graphql_error_code: 'INTERNAL_SERVER_ERROR',
+        graphql_nullify_data: false
+      )
+      h = chaos.to_h
+      expect(h['graphqlErrors']).to be(true)
+      expect(h['graphqlErrorMessage']).to eq('boom')
+      expect(h['graphqlErrorCode']).to eq('INTERNAL_SERVER_ERROR')
+      # false must survive strip_none (only nil is dropped)
+      expect(h).to have_key('graphqlNullifyData')
+      expect(h['graphqlNullifyData']).to be(false)
+
+      restored = MockServer::HttpChaosProfile.from_hash(h)
+      expect(restored.graphql_errors).to be(true)
+      expect(restored.graphql_error_message).to eq('boom')
+      expect(restored.graphql_error_code).to eq('INTERNAL_SERVER_ERROR')
+      expect(restored.graphql_nullify_data).to be(false)
+    end
+
+    it 'HttpChaosProfile omits GraphQL knobs when unset' do
+      h = MockServer::HttpChaosProfile.new(error_status: 500).to_h
+      %w[graphqlErrors graphqlErrorMessage graphqlErrorCode graphqlNullifyData].each do |k|
+        expect(h).not_to have_key(k)
+      end
+    end
+
+    it 'GrpcStreamMessage round-trips templateType' do
+      msg = MockServer::GrpcStreamMessage.new(json: '{"id":2}', template_type: 'VELOCITY')
+      h = msg.to_h
+      expect(h['templateType']).to eq('VELOCITY')
+      expect(MockServer::GrpcStreamMessage.from_hash(h).template_type).to eq('VELOCITY')
+    end
+
+    it 'GrpcStreamMessage omits templateType when unset' do
+      expect(MockServer::GrpcStreamMessage.new(json: '{}').to_h).not_to have_key('templateType')
+    end
+
+    it 'GraphQLBody round-trips selectionSetMatchType and array fields' do
+      body = MockServer::GraphQLBody.new(
+        query: 'query GetUser($id: ID!) { user(id: $id) { name } }',
+        operation_name: 'GetUser',
+        selection_set_match_type: 'AST_SUBSET',
+        fields: ['user']
+      )
+      h = body.to_h
+      expect(h['selectionSetMatchType']).to eq('AST_SUBSET')
+      expect(h['fields']).to eq(['user'])
+
+      restored = MockServer::GraphQLBody.from_hash(h)
+      expect(restored.selection_set_match_type).to eq('AST_SUBSET')
+      expect(restored.fields).to eq(['user'])
+    end
+
+    it 'Body round-trips the XML wire key without disturbing string' do
+      body = MockServer::Body.from_hash({ 'type' => 'XML', 'xml' => '<a><b>c</b></a>' })
+      expect(body.xml).to eq('<a><b>c</b></a>')
+      expect(body.string).to be_nil
+      h = body.to_h
+      expect(h['xml']).to eq('<a><b>c</b></a>')
+      expect(h).not_to have_key('string')
+    end
+
+    it 'Body.xml factory still emits the legacy string key (not xml)' do
+      h = MockServer::Body.xml('<root/>').to_h
+      expect(h['string']).to eq('<root/>')
+      expect(h).not_to have_key('xml')
+    end
+
+    it 'HttpRequest round-trips the protocol field' do
+      req = MockServer::HttpRequest.from_hash({ 'path' => '/adv', 'protocol' => 'HTTP_2' })
+      expect(req.protocol).to eq('HTTP_2')
+      expect(req.to_h['protocol']).to eq('HTTP_2')
+    end
+
+    it 'HttpRequest serializes pathParameters in the schema-matcher object form' do
+      path_params = { 'cartId' => [{ 'schema' => { 'type' => 'string', 'pattern' => '^[A-Z0-9-]+$' } }] }
+      req = MockServer::HttpRequest.from_hash({ 'path' => '/c', 'pathParameters' => path_params })
+      expect(req.to_h['pathParameters']).to eq(path_params)
+    end
+
+    it 'HttpResponse round-trips trailers' do
+      resp = MockServer::HttpResponse.from_hash({ 'trailers' => { 'X-Trailer' => ['end'] } })
+      expect(resp.trailers[0].name).to eq('X-Trailer')
+      expect(resp.trailers[0].values).to eq(['end'])
+      expect(resp.to_h['trailers']).to eq([{ 'name' => 'X-Trailer', 'values' => ['end'] }])
+    end
+
+    it 'HttpWebSocketResponse round-trips per-frame matchers' do
+      data = {
+        'subprotocol' => 'chat',
+        'matchers' => [
+          { 'frameType' => 'TEXT', 'textMatcher' => 'ping', 'responses' => [{ 'text' => 'pong' }] }
+        ]
+      }
+      resp = MockServer::HttpWebSocketResponse.from_hash(data)
+      matcher = resp.matchers[0]
+      expect(matcher).to be_a(MockServer::WebSocketFrameMatcher)
+      expect(matcher.frame_type).to eq('TEXT')
+      expect(matcher.text_matcher).to eq('ping')
+      expect(matcher.responses[0].text).to eq('pong')
+      expect(resp.to_h['matchers']).to eq(data['matchers'])
+    end
+
+    it 'Expectation round-trips the timestamp field' do
+      exp = MockServer::Expectation.from_hash({ 'timestamp' => '2026-07-03T12:00:00.000Z' })
+      expect(exp.timestamp).to eq('2026-07-03T12:00:00.000Z')
+      expect(exp.to_h['timestamp']).to eq('2026-07-03T12:00:00.000Z')
+    end
+  end
 end
