@@ -11,6 +11,8 @@ import Button from '@mui/material/Button';
 import Tooltip from '@mui/material/Tooltip';
 import Checkbox from '@mui/material/Checkbox';
 import ToggleButton from '@mui/material/ToggleButton';
+import Popover from '@mui/material/Popover';
+import IconButton from '@mui/material/IconButton';
 import Alert from '@mui/material/Alert';
 import CircularProgress from '@mui/material/CircularProgress';
 import Dialog from '@mui/material/Dialog';
@@ -30,6 +32,9 @@ import CompareArrowsIcon from '@mui/icons-material/CompareArrows';
 import ChecklistIcon from '@mui/icons-material/Checklist';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
 import AutoAwesomeMotionIcon from '@mui/icons-material/AutoAwesomeMotion';
+import LibraryAddIcon from '@mui/icons-material/LibraryAdd';
+import LibraryAddCheckIcon from '@mui/icons-material/LibraryAddCheck';
+import CloseIcon from '@mui/icons-material/Close';
 import { useDashboardStore } from '../store';
 import { useConnectionParams } from '../hooks/useConnectionParams';
 import { useDragResize } from '../hooks/useDragResize';
@@ -1500,6 +1505,8 @@ interface DetailPaneProps {
   onCaptureAsMock?: () => void;
   onReplay?: () => void;
   onRepeat?: () => void;
+  onAddToDiffPool?: () => void;
+  inDiffPool?: boolean;
   /** When true, this entry matched no expectation — show mismatch-debugging actions. */
   unmatched?: boolean;
 }
@@ -1518,6 +1525,10 @@ interface DetailActionsProps {
   onCaptureAsMock?: () => void;
   onReplay?: () => void;
   onRepeat?: () => void;
+  /** Add this request to the persistent Diff Pool (see the header chip). */
+  onAddToDiffPool?: () => void;
+  /** True when this request is already in the Diff Pool — the action shows as done. */
+  inDiffPool?: boolean;
 }
 
 const detailActionSx = {
@@ -1528,7 +1539,7 @@ const detailActionSx = {
   mr: 0.5,
 } as const;
 
-function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, onReplay, onRepeat }: DetailActionsProps) {
+function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, onReplay, onRepeat, onAddToDiffPool, inDiffPool }: DetailActionsProps) {
   const debugMismatch = useDebugMismatchContext();
   const generateStub = useGenerateStubContext();
   const setBreakpoint = useSetBreakpointContext();
@@ -1635,6 +1646,23 @@ function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, 
           Capture as mock
         </Button>
       )}
+      {httpRequest && onAddToDiffPool && (
+        <Tooltip title={inDiffPool ? 'Already in the Diff Pool' : 'Add this request to the Diff Pool to compare it against another later'}>
+          <span>
+            <Button
+              size="small"
+              disabled={inDiffPool}
+              startIcon={inDiffPool
+                ? <LibraryAddCheckIcon sx={{ fontSize: '0.875rem' }} />
+                : <LibraryAddIcon sx={{ fontSize: '0.875rem' }} />}
+              onClick={onAddToDiffPool}
+              sx={detailActionSx}
+            >
+              {inDiffPool ? 'In Diff Pool' : 'Add to Diff Pool'}
+            </Button>
+          </span>
+        </Tooltip>
+      )}
       {httpRequest && (
         <CreateFromMenu actions={launchpadActions} iconColor="text.secondary" iconFontSize="1.1rem" />
       )}
@@ -1665,7 +1693,7 @@ function buildTabs(parsed: ParsedTraffic, hasScriptedTurns: boolean): string[] {
   }
 }
 
-function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, onRepeat, unmatched = false }: DetailPaneProps) {
+function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, onRepeat, onAddToDiffPool, inDiffPool, unmatched = false }: DetailPaneProps) {
   const tabs = buildTabs(summary.parsed, scriptedTurns.length > 0);
   const [detailTab, setDetailTab] = useState(0);
   const canCapture = isCapturableTraffic(summary.parsed);
@@ -1697,6 +1725,8 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, o
             onCaptureAsMock={onCaptureAsMock}
             onReplay={onReplay}
             onRepeat={onRepeat}
+            onAddToDiffPool={onAddToDiffPool}
+            inDiffPool={inDiffPool}
           />
         </Box>
         <Divider />
@@ -1736,6 +1766,8 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, o
           onCaptureAsMock={onCaptureAsMock}
           onReplay={onReplay}
           onRepeat={onRepeat}
+          onAddToDiffPool={onAddToDiffPool}
+          inDiffPool={inDiffPool}
         />
       </Box>
       <Divider />
@@ -1787,6 +1819,35 @@ function DetailPane({ item, summary, scriptedTurns, onCaptureAsMock, onReplay, o
       </Box>
     </Box>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Diff Pool — a persistent, cross-selection set of requests staged for diffing
+// (Proxyman's "Add to Diff pool" / Fiddler "Compare"). Kept as lightweight refs
+// so it survives selection changes and WebSocket refreshes without pinning the
+// full store. The captured `value` is retained so the diff payload can be built
+// on demand (and re-masked) the same way the two-pick Compare flow does.
+// ---------------------------------------------------------------------------
+
+interface DiffPoolEntry {
+  key: string;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  value: Record<string, unknown>;
+}
+
+/**
+ * Convert a captured request's value into the request JSON the diff endpoint
+ * expects — the `httpRequest` sub-object if present, otherwise the whole value —
+ * with secret headers masked first so credentials aren't shown verbatim in the
+ * diff editor (and don't flow into a replay from there). Shared by the two-pick
+ * Compare flow and the Diff Pool so both produce identical payloads.
+ */
+function requestJsonForDiff(value: Record<string, unknown>): string {
+  const masked = maskSecretsInValue(value);
+  const request = (masked['httpRequest'] as Record<string, unknown> | undefined) ?? masked;
+  return JSON.stringify(request, null, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -1848,6 +1909,44 @@ export default function TrafficInspector() {
   const [compareMode, setCompareMode] = useState(false);
   const [compareKeys, setCompareKeys] = useState<string[]>([]);
   const [diffDialogOpen, setDiffDialogOpen] = useState(false);
+
+  // Diff Pool (Proxyman-style): a persistent set of staged requests independent
+  // of the current selection or the two-pick Compare mode. Held as lightweight
+  // refs so it survives WebSocket refreshes. The popover lets the user pick any
+  // two pooled entries and open the SAME shared diff dialog on them.
+  const [diffPool, setDiffPool] = useState<DiffPoolEntry[]>([]);
+  const [poolAnchorEl, setPoolAnchorEl] = useState<HTMLElement | null>(null);
+  const [poolPicks, setPoolPicks] = useState<string[]>([]);
+  const [poolDiffPair, setPoolDiffPair] = useState<[string, string] | null>(null);
+
+  const addToDiffPool = useCallback((entry: DiffPoolEntry) => {
+    setDiffPool((prev) => (prev.some((e) => e.key === entry.key) ? prev : [...prev, entry]));
+  }, []);
+
+  const removeFromDiffPool = useCallback((key: string) => {
+    setDiffPool((prev) => {
+      const next = prev.filter((e) => e.key !== key);
+      // The header chip (the popover anchor) unmounts when the pool empties, so
+      // close the popover too rather than leaving it anchored to a detached node.
+      if (next.length === 0) setPoolAnchorEl(null);
+      return next;
+    });
+    setPoolPicks((prev) => prev.filter((k) => k !== key));
+  }, []);
+
+  const clearDiffPool = useCallback(() => {
+    setDiffPool([]);
+    setPoolPicks([]);
+    setPoolAnchorEl(null);
+  }, []);
+
+  const togglePoolPick = useCallback((key: string) => {
+    setPoolPicks((prev) => {
+      if (prev.includes(key)) return prev.filter((k) => k !== key);
+      if (prev.length >= 2) return prev; // cap at two; further checkboxes disabled
+      return [...prev, key];
+    });
+  }, []);
 
   // Bulk-select mode: pick any number of requests and clear them in one action.
   // Kept separate from (and mutually exclusive with) compare mode, which caps at
@@ -1979,6 +2078,36 @@ export default function TrafficInspector() {
     [compareMode, selectMode, toggleCompareKey, toggleSelectKey, handleRowClick],
   );
 
+  // Whether the currently-selected detail entry is already staged in the pool,
+  // and a handler to stage it. Extracted from the selected summary so the pooled
+  // ref stays lightweight (method / path / status) while keeping the value for
+  // the diff payload.
+  const selectedInDiffPool = selectedEntry ? diffPool.some((e) => e.key === selectedEntry.item.key) : false;
+
+  const handleAddSelectedToDiffPool = useCallback(() => {
+    if (!selectedEntry) return;
+    addToDiffPool({
+      key: selectedEntry.item.key,
+      method: selectedEntry.summary.method,
+      path: selectedEntry.summary.path,
+      status: selectedEntry.summary.statusCode,
+      value: selectedEntry.item.value,
+    });
+  }, [selectedEntry, addToDiffPool]);
+
+  // The two pooled entries picked in the popover, in pick order (first =
+  // "expected", second = "actual"), and their diff payloads.
+  const canDiffPool = poolPicks.length === 2;
+  const openPoolDiff = useCallback(() => {
+    if (poolPicks.length !== 2) return;
+    const pair = poolPicks.map((key) => {
+      const entry = diffPool.find((e) => e.key === key);
+      return entry ? requestJsonForDiff(entry.value) : '';
+    });
+    setPoolDiffPair([pair[0] ?? '', pair[1] ?? '']);
+    setPoolAnchorEl(null);
+  }, [poolPicks, diffPool]);
+
   // Resolve the two selected requests to the JSON the diff endpoint expects (the request
   // definition — `httpRequest` if present, otherwise the whole captured value). Preserve the
   // user's pick order: the first selected is "expected", the second "actual".
@@ -1990,16 +2119,9 @@ export default function TrafficInspector() {
   );
 
   const compareJson = useMemo(() => {
-    const toRequestJson = (item: JsonListItem): string => {
-      // Mask secret headers before the diff so credentials aren't shown verbatim
-      // in the comparison editor (and don't flow into a replay from there).
-      const masked = maskSecretsInValue(item.value);
-      const request = (masked['httpRequest'] as Record<string, unknown> | undefined) ?? masked;
-      return JSON.stringify(request, null, 2);
-    };
     return validCompareKeys.map((key) => {
       const entry = allRequests.find((item) => item.key === key);
-      return entry ? toRequestJson(entry) : '';
+      return entry ? requestJsonForDiff(entry.value) : '';
     });
   }, [validCompareKeys, allRequests]);
 
@@ -2177,6 +2299,19 @@ export default function TrafficInspector() {
               Diff ({validCompareKeys.length}/2)
             </Button>
           )}
+          {diffPool.length > 0 && (
+            <Tooltip title="Requests staged for comparison — pick any two to diff">
+              <Chip
+                icon={<LibraryAddCheckIcon sx={{ fontSize: '0.9rem' }} />}
+                label={`Diff Pool (${diffPool.length})`}
+                color="secondary"
+                size="small"
+                onClick={(e) => setPoolAnchorEl(e.currentTarget)}
+                aria-label={`Diff Pool (${diffPool.length})`}
+                sx={{ height: 22, fontSize: '0.65rem', cursor: 'pointer', flexShrink: 0, '& .MuiChip-label': { px: 0.75 } }}
+              />
+            </Tooltip>
+          )}
           <Tooltip title="Select multiple requests to clear at once">
             <ToggleButton
               value="select"
@@ -2346,6 +2481,8 @@ export default function TrafficInspector() {
               onCaptureAsMock={() => setCaptureDialogOpen(true)}
               onReplay={() => setReplayDialogOpen(true)}
               onRepeat={() => setRepeatDialogOpen(true)}
+              onAddToDiffPool={handleAddSelectedToDiffPool}
+              inDiffPool={selectedInDiffPool}
               unmatched={selectedEntry.unmatched}
             />
           </ErrorBoundary>
@@ -2398,6 +2535,112 @@ export default function TrafficInspector() {
           connectionParams={connectionParams}
           initialExpected={compareJson[0] ?? ''}
           initialActual={compareJson[1] ?? ''}
+        />
+      )}
+
+      {/* Diff Pool popover — the staged requests, each removable, with a Clear All
+          and a two-pick "Diff Selected" that opens the same shared diff dialog. */}
+      <Popover
+        open={Boolean(poolAnchorEl)}
+        anchorEl={poolAnchorEl}
+        onClose={() => setPoolAnchorEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        slotProps={{ paper: { sx: { width: 360, maxWidth: '90vw' } } }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderBottom: 1, borderColor: 'divider' }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, flexGrow: 1 }}>
+            Diff Pool ({diffPool.length})
+          </Typography>
+          <Button
+            size="small"
+            color="inherit"
+            onClick={clearDiffPool}
+            disabled={diffPool.length === 0}
+            sx={{ fontSize: '0.7rem', textTransform: 'none' }}
+          >
+            Clear All
+          </Button>
+        </Box>
+        <Box sx={{ maxHeight: 320, overflowY: 'auto' }}>
+          {diffPool.length === 0 ? (
+            <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
+              No requests staged. Use “Add to Diff Pool” in the detail pane.
+            </Typography>
+          ) : (
+            diffPool.map((entry) => {
+              const picked = poolPicks.includes(entry.key);
+              return (
+                <Box
+                  key={entry.key}
+                  sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 1, py: 0.25, borderBottom: 1, borderColor: 'divider' }}
+                >
+                  <Checkbox
+                    size="small"
+                    checked={picked}
+                    disabled={!picked && poolPicks.length >= 2}
+                    onChange={() => togglePoolPick(entry.key)}
+                    slotProps={{ input: { 'aria-label': `Pick ${entry.method ?? ''} ${entry.path ?? entry.key}` } }}
+                    sx={{ p: 0.25, flexShrink: 0 }}
+                  />
+                  <Typography variant="caption" sx={{ fontWeight: 700, flexShrink: 0, minWidth: 40 }}>
+                    {entry.method ?? '—'}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    sx={{ fontFamily: monospaceFontFamily, flexGrow: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    title={entry.path ?? undefined}
+                  >
+                    {entry.path ?? entry.key}
+                  </Typography>
+                  {entry.status !== null && (
+                    <Chip
+                      label={entry.status}
+                      color={statusColor(entry.status)}
+                      size="small"
+                      sx={{ height: 18, fontSize: '0.6rem', flexShrink: 0, '& .MuiChip-label': { px: 0.6 } }}
+                    />
+                  )}
+                  <Tooltip title="Remove from Diff Pool">
+                    <IconButton
+                      size="small"
+                      onClick={() => removeFromDiffPool(entry.key)}
+                      aria-label={`Remove ${entry.method ?? ''} ${entry.path ?? entry.key} from Diff Pool`}
+                      sx={{ p: 0.25, flexShrink: 0 }}
+                    >
+                      <CloseIcon sx={{ fontSize: '0.9rem' }} />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+              );
+            })
+          )}
+        </Box>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 1, borderTop: 1, borderColor: 'divider' }}>
+          <Typography variant="caption" color="text.secondary" sx={{ flexGrow: 1 }}>
+            {poolPicks.length}/2 picked
+          </Typography>
+          <Button
+            size="small"
+            variant="contained"
+            disabled={!canDiffPool}
+            onClick={openPoolDiff}
+            sx={{ fontSize: '0.7rem', textTransform: 'none' }}
+          >
+            Diff Selected
+          </Button>
+        </Box>
+      </Popover>
+
+      {/* Diff two pooled requests — same shared dialog + endpoint as the two-pick
+          Compare flow, seeded from the pool selection. Keyed so it re-seeds per pair. */}
+      {poolDiffPair && (
+        <DiffRequestsDialog
+          key={`pool:${poolPicks.join('|')}`}
+          open
+          onClose={() => setPoolDiffPair(null)}
+          connectionParams={connectionParams}
+          initialExpected={poolDiffPair[0]}
+          initialActual={poolDiffPair[1]}
         />
       )}
 

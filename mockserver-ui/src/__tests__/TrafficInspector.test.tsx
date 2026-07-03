@@ -498,6 +498,144 @@ describe('TrafficInspector — compare two requests (diff)', () => {
   });
 });
 
+describe('TrafficInspector — Diff Pool', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      proxiedRequests: [],
+      recordedRequests: [
+        {
+          key: 'pool-a',
+          value: {
+            httpRequest: { method: 'GET', path: '/api/alpha', headers: [{ name: 'host', values: ['example.com'] }] },
+            httpResponse: { statusCode: 200 },
+          },
+        },
+        {
+          key: 'pool-b',
+          value: {
+            httpRequest: { method: 'POST', path: '/api/beta', headers: [{ name: 'host', values: ['example.com'] }] },
+            httpResponse: { statusCode: 201 },
+          },
+        },
+      ],
+      activeExpectations: [],
+      trafficSearch: '',
+      selectedTrafficKey: null,
+    });
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  async function addToPool(user: ReturnType<typeof userEvent.setup>, pathText: RegExp) {
+    await user.click(screen.getByText(pathText));
+    await user.click(screen.getByRole('button', { name: /Add to Diff Pool/i }));
+  }
+
+  it('adds the selected request to the pool and shows the header chip count', async () => {
+    const user = userEvent.setup();
+    renderTrafficInspector();
+
+    // No chip before anything is staged.
+    expect(screen.queryByRole('button', { name: /Diff Pool \(/i })).not.toBeInTheDocument();
+
+    await addToPool(user, /\/api\/alpha/);
+
+    // Chip appears with a count of one; the action flips to the "already in pool" state.
+    expect(screen.getByRole('button', { name: /Diff Pool \(1\)/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /In Diff Pool/i })).toBeDisabled();
+
+    await addToPool(user, /\/api\/beta/);
+    expect(screen.getByRole('button', { name: /Diff Pool \(2\)/i })).toBeInTheDocument();
+  });
+
+  it('removes a single entry and clears the whole pool from the popover', async () => {
+    const user = userEvent.setup();
+    renderTrafficInspector();
+
+    await addToPool(user, /\/api\/alpha/);
+    await addToPool(user, /\/api\/beta/);
+
+    // Open the pool popover from the header chip.
+    await user.click(screen.getByRole('button', { name: /Diff Pool \(2\)/i }));
+    // Both entries are listed.
+    expect(screen.getByRole('button', { name: /Remove GET \/api\/alpha from Diff Pool/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Remove POST \/api\/beta from Diff Pool/i })).toBeInTheDocument();
+
+    // Remove one entry -> only the other remains listed.
+    await user.click(screen.getByRole('button', { name: /Remove GET \/api\/alpha from Diff Pool/i }));
+    expect(screen.queryByRole('button', { name: /Remove GET \/api\/alpha from Diff Pool/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Remove POST \/api\/beta from Diff Pool/i })).toBeInTheDocument();
+
+    // Clear All empties the pool, closes the popover, and the header chip disappears.
+    await user.click(screen.getByRole('button', { name: /Clear All/i }));
+    expect(screen.queryByRole('button', { name: /Diff Pool \(/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Remove POST \/api\/beta from Diff Pool/i })).not.toBeInTheDocument();
+  });
+
+  it('picks two pooled entries and diffs them via the shared dialog + PUT /mockserver/diff', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        diffCount: 1,
+        identical: false,
+        diffs: [{ field: 'method', expectedValue: 'GET', actualValue: 'POST', diffType: 'CHANGED' }],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderTrafficInspector();
+    await addToPool(user, /\/api\/alpha/);
+    await addToPool(user, /\/api\/beta/);
+
+    await user.click(screen.getByRole('button', { name: /Diff Pool \(2\)/i }));
+
+    // "Diff Selected" is disabled until exactly two are picked.
+    const diffSelected = screen.getByRole('button', { name: /Diff Selected/i });
+    expect(diffSelected).toBeDisabled();
+
+    await user.click(screen.getByRole('checkbox', { name: /Pick GET \/api\/alpha/i }));
+    await user.click(screen.getByRole('checkbox', { name: /Pick POST \/api\/beta/i }));
+    expect(diffSelected).toBeEnabled();
+    await user.click(diffSelected);
+
+    // The shared diff dialog opens seeded with the two pooled requests.
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Compare' }));
+    expect(await within(dialog).findByText('Request Diff')).toBeInTheDocument();
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toMatch(/\/mockserver\/diff$/);
+    const body = JSON.parse((init as RequestInit).body as string);
+    // First pick (alpha) -> expected, second pick (beta) -> actual, sending httpRequest definitions.
+    expect(body.expected).toMatchObject({ method: 'GET', path: '/api/alpha' });
+    expect(body.actual).toMatchObject({ method: 'POST', path: '/api/beta' });
+  });
+
+  it('caps the popover selection at two entries', async () => {
+    const user = userEvent.setup();
+    useDashboardStore.setState({
+      recordedRequests: [
+        { key: 'p1', value: { httpRequest: { method: 'GET', path: '/one' }, httpResponse: { statusCode: 200 } } },
+        { key: 'p2', value: { httpRequest: { method: 'GET', path: '/two' }, httpResponse: { statusCode: 200 } } },
+        { key: 'p3', value: { httpRequest: { method: 'GET', path: '/three' }, httpResponse: { statusCode: 200 } } },
+      ],
+    });
+    renderTrafficInspector();
+
+    await addToPool(user, /\/one/);
+    await addToPool(user, /\/two/);
+    await addToPool(user, /\/three/);
+
+    await user.click(screen.getByRole('button', { name: /Diff Pool \(3\)/i }));
+    const picks = screen.getAllByRole('checkbox');
+    await user.click(picks[0]!);
+    await user.click(picks[1]!);
+    // The third checkbox is disabled once two are picked; picked ones stay interactive.
+    expect(picks[2]!).toBeDisabled();
+    expect(picks[0]!).toBeEnabled();
+  });
+});
+
 describe('TrafficInspector — Capture as mock for standard HTTP (WS5.2)', () => {
   beforeEach(() => {
     useDashboardStore.setState({

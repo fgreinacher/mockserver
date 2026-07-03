@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
@@ -11,7 +11,13 @@ import TextField from '@mui/material/TextField';
 import Button from '@mui/material/Button';
 import HumanErrorAlert from './HumanErrorAlert';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
-import { diffRequests, type DiffResult } from '../lib/diff';
+import {
+  diffRequests,
+  filterIgnoredHeaderDiffs,
+  parseIgnoredHeaders,
+  DEFAULT_IGNORED_DIFF_HEADERS,
+  type DiffResult,
+} from '../lib/diff';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
 import { monospaceFontFamily } from '../theme';
 import DiffPanel from './DiffPanel';
@@ -47,6 +53,16 @@ export default function DiffRequestsDialog({
   const [result, setResult] = useState<DiffResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<HumanError | null>(null);
+  // Fiddler-style header ignore-list: drop noisy per-request headers (timestamps,
+  // correlation ids, trace context, computed content length) from the rendered
+  // diff. Applied purely on the client — the diff endpoint has no ignore-fields
+  // parameter — so changing it re-filters the existing result without re-querying.
+  const [ignoredHeadersInput, setIgnoredHeadersInput] = useState(() => DEFAULT_IGNORED_DIFF_HEADERS.join(', '));
+  const ignoredHeaders = useMemo(() => parseIgnoredHeaders(ignoredHeadersInput), [ignoredHeadersInput]);
+  const displayedResult = useMemo(
+    () => (result ? filterIgnoredHeaderDiffs(result, ignoredHeaders) : null),
+    [result, ignoredHeaders],
+  );
 
   const submit = useCallback(async () => {
     let expectedObj: Record<string, unknown>;
@@ -96,13 +112,24 @@ export default function DiffRequestsDialog({
             dialog (the editable request JSON is below for tweaking and re-running). */}
         {(loading || result) && (
           <Box sx={{ mb: 1.5 }}>
-            <DiffPanel result={result} loading={loading} error={null} />
+            <DiffPanel result={displayedResult} loading={loading} error={null} />
           </Box>
         )}
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
           Paste two requests as JSON to compare them field-by-field. Copy a request from the Traffic
           inspector, or hand-author one.
         </Typography>
+        <TextField
+          label="Ignored Headers"
+          value={ignoredHeadersInput}
+          onChange={(e) => setIgnoredHeadersInput(e.target.value)}
+          placeholder={DEFAULT_IGNORED_DIFF_HEADERS.join(', ')}
+          helperText="Comma-separated header names hidden from the diff (timestamps, correlation ids, trace context)."
+          size="small"
+          fullWidth
+          sx={{ mb: 1.5 }}
+          slotProps={{ input: { sx: { fontFamily: monospaceFontFamily, fontSize: '0.78rem' } } }}
+        />
         <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap' }}>
           <TextField
             label="Expected request (JSON)"

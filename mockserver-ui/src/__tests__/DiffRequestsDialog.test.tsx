@@ -63,6 +63,76 @@ describe('DiffRequestsDialog', () => {
     });
   });
 
+  it('hides ignored-header rows from the rendered diff (Fiddler-style ignore list)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        diffCount: 2,
+        identical: false,
+        diffs: [
+          { field: 'headers.Date', expectedValue: 'Mon', actualValue: 'Tue', diffType: 'CHANGED' },
+          { field: 'path', expectedValue: '/a', actualValue: '/b', diffType: 'CHANGED' },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ThemeProvider theme={buildTheme('dark')}>
+        <DiffRequestsDialog
+          open
+          onClose={vi.fn()}
+          connectionParams={connectionParams}
+          initialExpected={'{"path":"/a"}'}
+          initialActual={'{"path":"/b"}'}
+        />
+      </ThemeProvider>,
+    );
+
+    // Default ignore list includes "date": the headers.Date row is filtered out,
+    // the real "path" difference stays, and the count reflects the filtered set.
+    expect(await screen.findByText('path')).toBeInTheDocument();
+    expect(screen.queryByText('headers.Date')).not.toBeInTheDocument();
+    expect(screen.getByText('1 differences')).toBeInTheDocument();
+  });
+
+  it('re-filters live when the ignored-headers input changes, without re-querying', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        diffCount: 2,
+        identical: false,
+        diffs: [
+          { field: 'headers.Date', expectedValue: 'Mon', actualValue: 'Tue', diffType: 'CHANGED' },
+          { field: 'path', expectedValue: '/a', actualValue: '/b', diffType: 'CHANGED' },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ThemeProvider theme={buildTheme('dark')}>
+        <DiffRequestsDialog
+          open
+          onClose={vi.fn()}
+          connectionParams={connectionParams}
+          initialExpected={'{"path":"/a"}'}
+          initialActual={'{"path":"/b"}'}
+        />
+      </ThemeProvider>,
+    );
+
+    // Initially the Date row is hidden by the default ignore list.
+    expect(await screen.findByText('path')).toBeInTheDocument();
+    expect(screen.queryByText('headers.Date')).not.toBeInTheDocument();
+
+    // Clearing the ignore list reveals the Date row again — no extra fetch.
+    fireEvent.change(screen.getByLabelText(/Ignored Headers/), { target: { value: '' } });
+    expect(await screen.findByText('headers.Date')).toBeInTheDocument();
+    expect(screen.getByText('2 differences')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('auto-runs the diff on open when both requests are pre-populated (Traffic Compare flow)', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
