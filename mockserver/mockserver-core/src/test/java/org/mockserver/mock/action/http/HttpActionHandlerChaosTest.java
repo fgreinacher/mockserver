@@ -1033,6 +1033,97 @@ public class HttpActionHandlerChaosTest {
         }
     }
 
+    // --- Injected-vs-real latency waterfall: timing block on mock-served responses ---
+
+    /**
+     * Runs the runnable passed to scheduler.schedule immediately (without sleeping) so the injected
+     * timing fields — which are derived from the Delay objects, not from wall-clock sleep — can be
+     * asserted deterministically and fast.
+     */
+    private void runSchedulerWithoutSleeping() {
+        doAnswer(invocation -> {
+            Runnable cmd = invocation.getArgument(0);
+            cmd.run();
+            return null;
+        }).when(scheduler).schedule(any(Runnable.class), eq(true), any(Delay[].class));
+    }
+
+    @Test
+    public void mockResponseWithChaosLatencyCarriesInjectedChaosTiming() {
+        // given - a mock response with a chaos latency fault of 500ms
+        HttpRequest request = request("some_path");
+        HttpResponse normalResponse = response("normal body").withDelay(milliseconds(0));
+        Expectation expectation = new Expectation(request)
+            .thenRespond(normalResponse)
+            .withChaos(httpChaosProfile().withLatency(milliseconds(500)));
+
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+        when(mockHttpResponseActionHandler.handle(any(HttpResponse.class), any(HttpRequest.class), any(RequestDefinition.class))).thenReturn(normalResponse);
+        runSchedulerWithoutSleeping();
+
+        // when
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - the written mock response carries a timing block attributing 500ms to injected chaos latency
+        ArgumentCaptor<HttpResponse> responseCaptor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(mockResponseWriter).writeResponse(eq(request), responseCaptor.capture(), eq(false));
+        Timing timing = responseCaptor.getValue().getTiming();
+        assertThat("mock response should carry a timing block", timing != null, is(true));
+        assertThat(timing.getInjectedChaosLatencyMillis(), is(500L));
+        assertThat("action delay was zero so no injected delay is reported", timing.getInjectedDelayMillis(), is((Long) null));
+        assertThat("no breakpoint held this exchange", timing.getBreakpointHeldMillis(), is((Long) null));
+        assertThat("total time is measured", timing.getTotalTimeInMillis() != null, is(true));
+    }
+
+    @Test
+    public void mockResponseWithActionDelayCarriesInjectedDelayTiming() {
+        // given - a mock response with a configured action delay of 200ms (no chaos)
+        HttpRequest request = request("some_path");
+        HttpResponse normalResponse = response("normal body").withDelay(milliseconds(200));
+        Expectation expectation = new Expectation(request).thenRespond(normalResponse);
+
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+        when(mockHttpResponseActionHandler.handle(any(HttpResponse.class), any(HttpRequest.class), any(RequestDefinition.class))).thenReturn(normalResponse);
+        runSchedulerWithoutSleeping();
+
+        // when
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - the written mock response carries a timing block attributing 200ms to the injected action delay
+        ArgumentCaptor<HttpResponse> responseCaptor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(mockResponseWriter).writeResponse(eq(request), responseCaptor.capture(), eq(false));
+        Timing timing = responseCaptor.getValue().getTiming();
+        assertThat("mock response should carry a timing block", timing != null, is(true));
+        assertThat(timing.getInjectedDelayMillis(), is(200L));
+        assertThat("no chaos latency was configured", timing.getInjectedChaosLatencyMillis(), is((Long) null));
+        assertThat("total time is measured", timing.getTotalTimeInMillis() != null, is(true));
+    }
+
+    @Test
+    public void mockResponseWithoutInjectionStillCarriesTimingBlock() {
+        // given - a plain mock response with no chaos and no delay
+        HttpRequest request = request("some_path");
+        HttpResponse normalResponse = response("normal body").withDelay(milliseconds(0));
+        Expectation expectation = new Expectation(request).thenRespond(normalResponse);
+
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+        when(mockHttpResponseActionHandler.handle(any(HttpResponse.class), any(HttpRequest.class), any(RequestDefinition.class))).thenReturn(normalResponse);
+        runSchedulerWithoutSleeping();
+
+        // when
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - a timing block is present (so the dashboard renders a waterfall for mocks) with no injected time
+        ArgumentCaptor<HttpResponse> responseCaptor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(mockResponseWriter).writeResponse(eq(request), responseCaptor.capture(), eq(false));
+        Timing timing = responseCaptor.getValue().getTiming();
+        assertThat("mock response should carry a timing block", timing != null, is(true));
+        assertThat(timing.getTotalTimeInMillis() != null, is(true));
+        assertThat(timing.getInjectedChaosLatencyMillis(), is((Long) null));
+        assertThat(timing.getInjectedDelayMillis(), is((Long) null));
+        assertThat(timing.getBreakpointHeldMillis(), is((Long) null));
+    }
+
     private static double scrapeCounterValue(String name, String labelName, String labelValue) {
         MetricSnapshots snapshots = PrometheusRegistry.defaultRegistry.scrape();
         for (MetricSnapshot snapshot : snapshots) {

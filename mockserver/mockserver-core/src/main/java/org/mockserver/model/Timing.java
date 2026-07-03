@@ -12,6 +12,11 @@ public class Timing {
     private Long connectionTimeInMillis;
     private Long timeToFirstByteInMillis;
     private Long totalTimeInMillis;
+    // Injected-vs-real latency waterfall (additive): the portion of totalTimeInMillis that MockServer
+    // deliberately injected, split by source, versus real connect/processing/upstream time. All optional.
+    private Long injectedChaosLatencyMillis;
+    private Long injectedDelayMillis;
+    private Long breakpointHeldMillis;
 
     public static Timing timing() {
         return new Timing();
@@ -71,6 +76,45 @@ public class Timing {
         return this;
     }
 
+    /**
+     * @return the latency (in milliseconds) MockServer injected via a chaos-profile latency fault, or
+     * {@code null} when no chaos latency was applied to this exchange.
+     */
+    public Long getInjectedChaosLatencyMillis() {
+        return injectedChaosLatencyMillis;
+    }
+
+    public Timing withInjectedChaosLatencyMillis(Long injectedChaosLatencyMillis) {
+        this.injectedChaosLatencyMillis = injectedChaosLatencyMillis;
+        return this;
+    }
+
+    /**
+     * @return the delay (in milliseconds) MockServer injected from the matched action's configured
+     * {@code delay}, or {@code null} when the action had no delay.
+     */
+    public Long getInjectedDelayMillis() {
+        return injectedDelayMillis;
+    }
+
+    public Timing withInjectedDelayMillis(Long injectedDelayMillis) {
+        this.injectedDelayMillis = injectedDelayMillis;
+        return this;
+    }
+
+    /**
+     * @return how long (in milliseconds) the exchange was held paused at a response-phase breakpoint
+     * before it was resumed, or {@code null} when no breakpoint held this exchange.
+     */
+    public Long getBreakpointHeldMillis() {
+        return breakpointHeldMillis;
+    }
+
+    public Timing withBreakpointHeldMillis(Long breakpointHeldMillis) {
+        this.breakpointHeldMillis = breakpointHeldMillis;
+        return this;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -85,11 +129,14 @@ public class Timing {
             Objects.equals(responseReceivedMillis, timing.responseReceivedMillis) &&
             Objects.equals(connectionTimeInMillis, timing.connectionTimeInMillis) &&
             Objects.equals(timeToFirstByteInMillis, timing.timeToFirstByteInMillis) &&
-            Objects.equals(totalTimeInMillis, timing.totalTimeInMillis);
+            Objects.equals(totalTimeInMillis, timing.totalTimeInMillis) &&
+            Objects.equals(injectedChaosLatencyMillis, timing.injectedChaosLatencyMillis) &&
+            Objects.equals(injectedDelayMillis, timing.injectedDelayMillis) &&
+            Objects.equals(breakpointHeldMillis, timing.breakpointHeldMillis);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(requestStartedMillis, connectionEstablishedMillis, responseReceivedMillis, connectionTimeInMillis, timeToFirstByteInMillis, totalTimeInMillis);
+        return Objects.hash(requestStartedMillis, connectionEstablishedMillis, responseReceivedMillis, connectionTimeInMillis, timeToFirstByteInMillis, totalTimeInMillis, injectedChaosLatencyMillis, injectedDelayMillis, breakpointHeldMillis);
     }
 }

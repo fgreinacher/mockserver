@@ -396,6 +396,98 @@ describe('TrafficInspector — per-request timing display', () => {
     expect(screen.getByText('TTFB 1200ms')).toBeInTheDocument();
     expect(screen.getByText('total 1500ms')).toBeInTheDocument();
   });
+
+  it('renders injected chaos-latency segment and the injected/real legend for a proxied response', async () => {
+    const user = userEvent.setup();
+
+    useDashboardStore.setState({
+      proxiedRequests: [
+        {
+          key: 'req-chaos-timed',
+          value: {
+            httpRequest: {
+              method: 'GET',
+              path: '/api/data',
+              headers: [{ name: 'host', values: ['example.com'] }],
+            },
+            httpResponse: {
+              statusCode: 200,
+              timing: {
+                connectionTimeInMillis: 10,
+                timeToFirstByteInMillis: 60,
+                totalTimeInMillis: 100,
+                requestStartedMillis: 1700000000000,
+                connectionEstablishedMillis: 1700000000010,
+                responseReceivedMillis: 1700000000100,
+                injectedChaosLatencyMillis: 500,
+                injectedDelayMillis: null,
+                breakpointHeldMillis: null,
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    renderTrafficInspector();
+    await user.click(screen.getByText(/\/api\/data/));
+
+    // Real segments (proxied) plus the injected chaos-latency segment are rendered
+    expect(screen.getByTestId('timing-waterfall')).toBeInTheDocument();
+    expect(screen.getByTestId('timing-segment-connect')).toBeInTheDocument();
+    expect(screen.getByTestId('timing-segment-injected-chaos')).toBeInTheDocument();
+    // Grouped legend distinguishes injected from real
+    expect(screen.getByTestId('timing-legend-injected')).toBeInTheDocument();
+    expect(screen.getByText('Injected by MockServer:')).toBeInTheDocument();
+    expect(screen.getByText('Chaos latency')).toBeInTheDocument();
+    // Injected total chip surfaces the injected sum
+    expect(screen.getByText('injected 500ms')).toBeInTheDocument();
+  });
+
+  it('renders a waterfall with a processing segment and injected delay for a mock-served response', async () => {
+    const user = userEvent.setup();
+
+    useDashboardStore.setState({
+      recordedRequests: [
+        {
+          key: 'req-mock-timed',
+          value: {
+            httpRequest: {
+              method: 'GET',
+              path: '/api/mock-delayed',
+            },
+            // Mock-served: no connect/TTFB, total already includes the injected delay
+            httpResponse: {
+              statusCode: 200,
+              timing: {
+                connectionTimeInMillis: null,
+                timeToFirstByteInMillis: null,
+                totalTimeInMillis: 205,
+                requestStartedMillis: null,
+                connectionEstablishedMillis: null,
+                responseReceivedMillis: null,
+                injectedChaosLatencyMillis: null,
+                injectedDelayMillis: 200,
+                breakpointHeldMillis: null,
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    renderTrafficInspector();
+    await user.click(screen.getByText(/\/api\/mock-delayed/));
+
+    // Mock-served entries now render a waterfall too (previously proxy-only)
+    expect(screen.getByTestId('timing-waterfall')).toBeInTheDocument();
+    // No connect segment on a mock; a real "processing" segment plus the injected delay segment
+    expect(screen.queryByTestId('timing-segment-connect')).not.toBeInTheDocument();
+    expect(screen.getByTestId('timing-segment-processing')).toBeInTheDocument();
+    expect(screen.getByTestId('timing-segment-injected-delay')).toBeInTheDocument();
+    expect(screen.getByText('Response delay')).toBeInTheDocument();
+    expect(screen.getByText('injected 200ms')).toBeInTheDocument();
+  });
 });
 
 describe('TrafficInspector — compare two requests (diff)', () => {

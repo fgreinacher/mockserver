@@ -216,6 +216,13 @@ export interface RequestTiming {
   requestStartedMillis: number | null;
   connectionEstablishedMillis: number | null;
   responseReceivedMillis: number | null;
+  // Injected-vs-real latency waterfall (additive; may be absent on older servers): the portion of
+  // totalTimeInMillis that MockServer deliberately injected, split by source. "Real" time (connect,
+  // processing, upstream) is derived as total minus the sum of these. Optional so older payloads and
+  // callers that predate these fields remain valid.
+  injectedChaosLatencyMillis?: number | null;
+  injectedDelayMillis?: number | null;
+  breakpointHeldMillis?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1326,6 +1333,9 @@ export function summarizeTraffic(value: Record<string, unknown>): TrafficSummary
         requestStartedMillis: getNumber(timingObj, 'requestStartedMillis'),
         connectionEstablishedMillis: getNumber(timingObj, 'connectionEstablishedMillis'),
         responseReceivedMillis: getNumber(timingObj, 'responseReceivedMillis'),
+        injectedChaosLatencyMillis: getNumber(timingObj, 'injectedChaosLatencyMillis'),
+        injectedDelayMillis: getNumber(timingObj, 'injectedDelayMillis'),
+        breakpointHeldMillis: getNumber(timingObj, 'breakpointHeldMillis'),
       };
     }
   }

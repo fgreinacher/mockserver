@@ -2386,6 +2386,17 @@ public class HttpActionHandler {
         // returned unchanged, so existing behaviour is byte-for-byte preserved.
         Delay resolvedActionDelay = getDelayTemplateResolver().resolve(effectiveResponse.getDelay(), request);
         Delay[] delays = combineWithChaosAndGlobalDelay(resolvedActionDelay, chaosLatency);
+        // Injected-vs-real latency waterfall: capture what MockServer is about to inject so the dashboard
+        // can distinguish it from real processing time. Sampled once here (exact for static delays; an
+        // independent draw for distribution delays) and measured against a nanoTime taken before the
+        // injected delays are applied. A few longs + one Timing object per response — no hot-path threads.
+        final long timingStartNanos = System.nanoTime();
+        final Long injectedChaosLatencyMillis = chaosLatency != null ? chaosLatency.sampleValueMillis() : null;
+        final long resolvedActionDelayMillis = resolvedActionDelay != null ? resolvedActionDelay.sampleValueMillis() : 0L;
+        final Long configuredGlobalDelayMillis = configuration.globalResponseDelayMillis();
+        final long globalDelayMillis = configuredGlobalDelayMillis != null && configuredGlobalDelayMillis > 0 ? configuredGlobalDelayMillis : 0L;
+        final long totalInjectedDelayMillis = resolvedActionDelayMillis + globalDelayMillis;
+        final Long injectedDelayMillis = totalInjectedDelayMillis > 0 ? totalInjectedDelayMillis : null;
         scheduler.schedule(() -> {
             // breakpoint: RESPONSE-phase pause for matched mock responses (RESPONSE / RESPONSE_TEMPLATE /
             // RESPONSE_CLASS_CALLBACK only — scoped by action type so the protocol-specific write paths that
@@ -2398,7 +2409,12 @@ public class HttpActionHandler {
                 if (responseBreakpoint != null) {
                     final java.util.concurrent.Executor continuationExecutor = scheduler.getExecutorService() != null
                         ? scheduler.getExecutorService() : Runnable::run;
+                    // breakpoint: measure how long the exchange is held paused so the waterfall can attribute
+                    // the hold to MockServer rather than to real processing time.
+                    final long breakpointPauseNanos = System.nanoTime();
                     if (attemptResponseBreakpoint(responseBreakpoint, request, effectiveResponse, action.getExpectationId(), responseWriter, continuationExecutor, responseToWrite -> {
+                        final long breakpointHeldMillis = Math.max(0L, (System.nanoTime() - breakpointPauseNanos) / 1_000_000L);
+                        attachMockServedTiming(responseToWrite, timingStartNanos, injectedChaosLatencyMillis, injectedDelayMillis, breakpointHeldMillis);
                         mockServerLogger.logEvent(
                             new LogEntry()
                                 .setType(EXPECTATION_RESPONSE)
@@ -2420,6 +2436,10 @@ public class HttpActionHandler {
                 }
             }
             try {
+                // Injected-vs-real latency waterfall: give the mock response a timing block (measured total +
+                // the injected components) before it is logged/written so the dashboard renders a waterfall for
+                // mock-served entries too, not just proxied ones. No breakpoint fired on this path.
+                attachMockServedTiming(effectiveResponse, timingStartNanos, injectedChaosLatencyMillis, injectedDelayMillis, null);
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setType(EXPECTATION_RESPONSE)
@@ -2496,6 +2516,38 @@ public class HttpActionHandler {
         System.arraycopy(baseDelays, 0, combined, 0, baseDelays.length);
         combined[baseDelays.length] = chaosLatency;
         return combined;
+    }
+
+    /**
+     * Attaches an injected-vs-real latency {@link Timing} block to a mock-served response so the dashboard
+     * waterfall is not proxy-only. Mock responses have no upstream connect/TTFB timing, so the block carries
+     * the measured total plus the injected components (chaos latency, action delay, breakpoint hold); the UI
+     * derives "real" processing time as total minus injected. Timing is metadata only — it is serialised for
+     * the dashboard/API but never written to the HTTP wire (mirrors the forwarded-response timing block).
+     */
+    private static void attachMockServedTiming(final HttpResponse response, final long startNanos, final Long injectedChaosLatencyMillis, final Long injectedDelayMillis, final Long breakpointHeldMillis) {
+        if (response == null) {
+            return;
+        }
+        final long totalMillis = Math.max(0L, (System.nanoTime() - startNanos) / 1_000_000L);
+        // Copy rather than mutate any pre-existing Timing: an in-JVM expectation whose response
+        // carries a preset Timing would otherwise share (and race on) one instance across requests.
+        final Timing existing = response.getTiming();
+        Timing timing = Timing.timing();
+        if (existing != null) {
+            timing
+                .withRequestStartedMillis(existing.getRequestStartedMillis())
+                .withConnectionEstablishedMillis(existing.getConnectionEstablishedMillis())
+                .withResponseReceivedMillis(existing.getResponseReceivedMillis())
+                .withConnectionTimeInMillis(existing.getConnectionTimeInMillis())
+                .withTimeToFirstByteInMillis(existing.getTimeToFirstByteInMillis())
+                .withTotalTimeInMillis(existing.getTotalTimeInMillis());
+        }
+        response.withTiming(timing
+            .withTotalTimeInMillis(totalMillis)
+            .withInjectedChaosLatencyMillis(injectedChaosLatencyMillis)
+            .withInjectedDelayMillis(injectedDelayMillis)
+            .withBreakpointHeldMillis(breakpointHeldMillis));
     }
 
     /**
@@ -2612,6 +2664,12 @@ public class HttpActionHandler {
                 }
                 if (chaosLatency != null) {
                     org.mockserver.metrics.Metrics.incrementHttpChaosInjected("latency");
+                    // Injected-vs-real latency waterfall: annotate the forwarded response's existing timing
+                    // block (real connect/TTFB/upstream from NettyHttpClient) with the chaos latency MockServer
+                    // is about to inject, so the dashboard can separate injected from real time on proxied flows.
+                    if (effectiveResponse != null && effectiveResponse.getTiming() != null) {
+                        effectiveResponse.getTiming().withInjectedChaosLatencyMillis(chaosLatency.sampleValueMillis());
+                    }
                 }
 
                 // Drift detection: asynchronously compare the real upstream response against

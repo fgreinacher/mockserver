@@ -57,6 +57,10 @@ required?"}
     LOG_NO --> WRITE
 ```
 
+### Injected-vs-real latency timing
+
+Every response's `httpResponse.timing` block (`org.mockserver.model.Timing`) records how long the exchange took, split so the dashboard can distinguish latency **MockServer injected** from **real** processing/upstream time. Proxied responses already carry the real `connectionTimeInMillis` / `timeToFirstByteInMillis` / `totalTimeInMillis` measured by `NettyHttpClient`. Three additive fields attribute the injected portion at its natural site: `injectedChaosLatencyMillis` (a chaos-profile latency fault — set in `HttpActionHandler.writeResponseActionResponse` for mock responses and `writeForwardActionResponse` for forwarded ones), `injectedDelayMillis` (the matched action's configured `delay`), and `breakpointHeldMillis` (time held at a response-phase breakpoint). Mock-served responses — which previously had no timing block — now get a minimal one (measured `totalTimeInMillis` plus the injected fields) so the dashboard waterfall is not proxy-only; the UI derives "real" time as total minus the injected sum. Measurement overhead is a few `System.nanoTime()` deltas and one `Timing` object per response; injected values are sampled once from the `Delay` (exact for static delays, an independent draw for distribution delays). The fields are additive and serialise via the existing `HttpResponseSerializer`, so older clients simply ignore them. Deferred: breakpoint-hold timing is captured only on the mock response path; the forward-path breakpoints (which already surface real upstream timing) do not yet record it.
+
 ## HttpState -- The Control Plane Brain
 
 `HttpState` (`mockserver-core/.../mock/HttpState.java`) is the central orchestrator. It owns:
