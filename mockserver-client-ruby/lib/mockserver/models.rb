@@ -104,6 +104,7 @@ module MockServer
   # during deserialization.
   BODY_TYPES = Set.new(%w[
     STRING JSON REGEX XML BINARY JSON_SCHEMA JSON_PATH XPATH XML_SCHEMA JSON_RPC GRAPHQL FILE ALL_OF
+    PARAMETERS WASM
   ]).freeze
 
   # -------------------------------------------------------------------
@@ -420,12 +421,23 @@ module MockServer
   end
 
   class Body
+    # sub_string / match_type / match_numbers_as_strings / json_schema /
+    # parameter_styles / xml_schema / parameters / module_name / optional are the
+    # per-type matcher sub-fields carried by the server body DTOs
+    # (StringBodyDTO.subString, JsonBodyDTO.matchType/matchNumbersAsStrings,
+    # JsonSchemaBodyDTO.jsonSchema/parameterStyles, XmlSchemaBodyDTO.xmlSchema,
+    # ParameterBodyDTO.parameters, WasmBodyDTO.moduleName, BodyDTO.optional).
     attr_accessor :type, :string, :json, :regex, :json_path, :xpath, :base64_bytes,
-                  :not_body, :content_type, :charset, :file_path, :template_type, :body_all_of
+                  :not_body, :content_type, :charset, :file_path, :template_type, :body_all_of,
+                  :sub_string, :match_type, :match_numbers_as_strings, :json_schema,
+                  :parameter_styles, :xml_schema, :parameters, :module_name, :optional
 
     def initialize(type: nil, string: nil, json: nil, regex: nil, json_path: nil, xpath: nil,
                    base64_bytes: nil, not_body: nil, content_type: nil, charset: nil,
-                   file_path: nil, template_type: nil, body_all_of: nil)
+                   file_path: nil, template_type: nil, body_all_of: nil,
+                   sub_string: nil, match_type: nil, match_numbers_as_strings: nil,
+                   json_schema: nil, parameter_styles: nil, xml_schema: nil,
+                   parameters: nil, module_name: nil, optional: nil)
       @type = type
       @string = string
       @json = json
@@ -439,6 +451,15 @@ module MockServer
       @file_path = file_path
       @template_type = template_type
       @body_all_of = body_all_of
+      @sub_string = sub_string
+      @match_type = match_type
+      @match_numbers_as_strings = match_numbers_as_strings
+      @json_schema = json_schema
+      @parameter_styles = parameter_styles
+      @xml_schema = xml_schema
+      @parameters = parameters
+      @module_name = module_name
+      @optional = optional
     end
 
     def to_h
@@ -455,6 +476,15 @@ module MockServer
       result['charset']      = @charset       unless @charset.nil?
       result['filePath']     = @file_path     unless @file_path.nil?
       result['templateType'] = @template_type unless @template_type.nil?
+      result['subString']    = @sub_string    unless @sub_string.nil?
+      result['matchType']    = @match_type    unless @match_type.nil?
+      result['matchNumbersAsStrings'] = @match_numbers_as_strings unless @match_numbers_as_strings.nil?
+      result['jsonSchema']   = @json_schema   unless @json_schema.nil?
+      result['parameterStyles'] = @parameter_styles unless @parameter_styles.nil?
+      result['xmlSchema']    = @xml_schema    unless @xml_schema.nil?
+      result['parameters']   = @parameters    unless @parameters.nil?
+      result['moduleName']   = @module_name   unless @module_name.nil?
+      result['optional']     = @optional      unless @optional.nil?
       unless @body_all_of.nil?
         result['bodyAllOf'] = @body_all_of.map { |b| MockServer.serialize_body(b) }
       end
@@ -478,6 +508,15 @@ module MockServer
         charset:       data['charset'],
         file_path:     data['filePath'],
         template_type: data['templateType'],
+        sub_string:               data['subString'],
+        match_type:               data['matchType'],
+        match_numbers_as_strings: data['matchNumbersAsStrings'],
+        json_schema:              data['jsonSchema'],
+        parameter_styles:         data['parameterStyles'],
+        xml_schema:               data['xmlSchema'],
+        parameters:               data['parameters'],
+        module_name:              data['moduleName'],
+        optional:                 data['optional'],
         body_all_of:   all_of&.map { |b| MockServer.deserialize_body(b) }
       )
     end
@@ -516,6 +555,34 @@ module MockServer
 
     def self.xpath(value)
       new(type: 'XPATH', xpath: value)
+    end
+
+    # A JSON_SCHEMA body matcher. +parameter_styles+ is an optional
+    # { parameter-name => style } map (serialised as +parameterStyles+).
+    def self.json_schema(schema, parameter_styles: nil)
+      new(type: 'JSON_SCHEMA', json_schema: schema, parameter_styles: parameter_styles)
+    end
+
+    # An XML_SCHEMA body matcher.
+    def self.xml_schema(schema)
+      new(type: 'XML_SCHEMA', xml_schema: schema)
+    end
+
+    # A STRING body matcher that matches when +value+ appears as a substring.
+    def self.sub_string(value)
+      new(type: 'STRING', string: value, sub_string: true)
+    end
+
+    # A PARAMETERS (form / query) body matcher. +parameters+ is the wire form
+    # of the parameter collection (either a { name => [values] } map or the
+    # [{name, values}] array form).
+    def self.parameters(parameters)
+      new(type: 'PARAMETERS', parameters: parameters)
+    end
+
+    # A WASM body matcher that delegates matching to the named WASM module.
+    def self.wasm(module_name)
+      new(type: 'WASM', module_name: module_name)
     end
 
     def self.file(file_path, content_type: nil, template_type: nil)
@@ -679,14 +746,20 @@ module MockServer
   end
 
   class HttpRequest
+    # dns_name / dns_type / dns_class carry a DNS request matcher
+    # (org.mockserver.model.DnsRequestDefinition). The server discriminates a DNS
+    # request definition from an HTTP one purely by the presence of a non-blank
+    # +dnsName+ on the +httpRequest+ object, so these fields round-trip through
+    # the same +httpRequest+ slot as the HTTP matcher fields.
     attr_accessor :method, :path, :query_string_parameters, :headers,
                   :cookies, :body, :secure, :keep_alive, :respond_before_body,
-                  :path_parameters, :socket_address, :jwt
+                  :path_parameters, :socket_address, :jwt,
+                  :dns_name, :dns_type, :dns_class
 
     def initialize(method: nil, path: nil, query_string_parameters: nil, headers: nil,
                    cookies: nil, body: nil, secure: nil, keep_alive: nil,
                    respond_before_body: nil, path_parameters: nil, socket_address: nil,
-                   jwt: nil)
+                   jwt: nil, dns_name: nil, dns_type: nil, dns_class: nil)
       @method = method
       @path = path
       @query_string_parameters = query_string_parameters
@@ -699,6 +772,9 @@ module MockServer
       @path_parameters = path_parameters
       @socket_address = socket_address
       @jwt = jwt
+      @dns_name = dns_name
+      @dns_type = dns_type
+      @dns_class = dns_class
     end
 
     def to_h
@@ -714,7 +790,10 @@ module MockServer
         'respondBeforeBody'     => @respond_before_body,
         'pathParameters'        => MockServer.serialize_key_multi_values(@path_parameters),
         'socketAddress'         => @socket_address&.to_h,
-        'jwt'                   => @jwt&.to_h
+        'jwt'                   => @jwt&.to_h,
+        'dnsName'               => @dns_name,
+        'dnsType'               => @dns_type,
+        'dnsClass'              => @dns_class
       })
     end
 
@@ -733,8 +812,16 @@ module MockServer
         respond_before_body:     data['respondBeforeBody'],
         path_parameters:         MockServer.deserialize_key_multi_values(data['pathParameters']),
         socket_address:          SocketAddress.from_hash(data['socketAddress']),
-        jwt:                     Jwt.from_hash(data['jwt'])
+        jwt:                     Jwt.from_hash(data['jwt']),
+        dns_name:                data['dnsName'],
+        dns_type:                data['dnsType'],
+        dns_class:               data['dnsClass']
       )
+    end
+
+    # Build a DNS request matcher (org.mockserver.model.DnsRequestDefinition).
+    def self.dns_request(dns_name, dns_type: nil, dns_class: nil)
+      new(dns_name: dns_name, dns_type: dns_type, dns_class: dns_class)
     end
 
     def self.request(path: nil)
@@ -1976,19 +2063,212 @@ module MockServer
     end
   end
 
+  # Per-expectation rate limit (org.mockserver.model.RateLimit). When the counter
+  # keyed by +name+ (or the expectation id when +name+ is nil) exceeds the
+  # configured limit, the server returns +error_status+ (default 429).
+  #
+  # +algorithm+ is the wire enum value: "fixed_window" (default) or
+  # "token_bucket" (the server serialises it lower-case). FIXED_WINDOW uses
+  # +limit+ / +window_millis+; TOKEN_BUCKET uses +burst+ / +refill_per_second+.
+  class RateLimit
+    attr_accessor :name, :algorithm, :limit, :window_millis, :burst,
+                  :refill_per_second, :error_status, :retry_after
+
+    def initialize(name: nil, algorithm: nil, limit: nil, window_millis: nil, burst: nil,
+                   refill_per_second: nil, error_status: nil, retry_after: nil)
+      @name = name
+      @algorithm = algorithm
+      @limit = limit
+      @window_millis = window_millis
+      @burst = burst
+      @refill_per_second = refill_per_second
+      @error_status = error_status
+      @retry_after = retry_after
+    end
+
+    def to_h
+      MockServer.strip_none({
+        'name'            => @name,
+        'algorithm'       => @algorithm,
+        'limit'           => @limit,
+        'windowMillis'    => @window_millis,
+        'burst'           => @burst,
+        'refillPerSecond' => @refill_per_second,
+        'errorStatus'     => @error_status,
+        'retryAfter'      => @retry_after
+      })
+    end
+
+    def self.from_hash(data)
+      return nil if data.nil?
+
+      new(
+        name:              data['name'],
+        algorithm:         data['algorithm'],
+        limit:             data['limit'],
+        window_millis:     data['windowMillis'],
+        burst:             data['burst'],
+        refill_per_second: data['refillPerSecond'],
+        error_status:      data['errorStatus'],
+        retry_after:       data['retryAfter']
+      )
+    end
+
+    def self.fixed_window(limit, window_millis, name: nil)
+      new(name: name, algorithm: 'fixed_window', limit: limit, window_millis: window_millis)
+    end
+
+    def self.token_bucket(burst, refill_per_second, name: nil)
+      new(name: name, algorithm: 'token_bucket', burst: burst, refill_per_second: refill_per_second)
+    end
+  end
+
+  # A single expectation-level capture rule (org.mockserver.model.CaptureRule):
+  # extract a value from the matched request via +source+/+expression+ and store
+  # it under the +into+ key for use by later actions/templates.
+  #
+  # +source+ is the wire enum value, one of: "jsonPath", "xpath", "header",
+  # "queryStringParameter", "cookie", "pathParameter".
+  class CaptureRule
+    attr_accessor :source, :expression, :into
+
+    def initialize(source: nil, expression: nil, into: nil)
+      @source = source
+      @expression = expression
+      @into = into
+    end
+
+    def to_h
+      MockServer.strip_none({
+        'source'     => @source,
+        'expression' => @expression,
+        'into'       => @into
+      })
+    end
+
+    def self.from_hash(data)
+      return nil if data.nil?
+
+      new(
+        source:     data['source'],
+        expression: data['expression'],
+        into:       data['into']
+      )
+    end
+  end
+
+  # Forward-and-validate action (org.mockserver.model.HttpForwardValidateAction):
+  # forwards the request to +host+/+port+ (+scheme+) and validates the request
+  # and/or response against the OpenAPI +spec_url_or_payload+.
+  #
+  # +validation_mode+ is the wire enum value "STRICT" (default) or "LOG_ONLY".
+  class HttpForwardValidateAction
+    attr_accessor :spec_url_or_payload, :host, :port, :scheme,
+                  :validate_request, :validate_response, :validation_mode,
+                  :delay, :primary
+
+    def initialize(spec_url_or_payload: nil, host: nil, port: nil, scheme: nil,
+                   validate_request: nil, validate_response: nil, validation_mode: nil,
+                   delay: nil, primary: nil)
+      @spec_url_or_payload = spec_url_or_payload
+      @host = host
+      @port = port
+      @scheme = scheme
+      @validate_request = validate_request
+      @validate_response = validate_response
+      @validation_mode = validation_mode
+      @delay = delay
+      @primary = primary
+    end
+
+    def to_h
+      MockServer.strip_none({
+        'specUrlOrPayload' => @spec_url_or_payload,
+        'host'             => @host,
+        'port'             => @port,
+        'scheme'           => @scheme,
+        'validateRequest'  => @validate_request,
+        'validateResponse' => @validate_response,
+        'validationMode'   => @validation_mode,
+        'delay'            => @delay&.to_h,
+        'primary'          => @primary
+      })
+    end
+
+    def self.from_hash(data)
+      return nil if data.nil?
+
+      new(
+        spec_url_or_payload: data['specUrlOrPayload'],
+        host:                data['host'],
+        port:                data['port'],
+        scheme:              data['scheme'],
+        validate_request:    data['validateRequest'],
+        validate_response:   data['validateResponse'],
+        validation_mode:     data['validationMode'],
+        delay:               Delay.from_hash(data['delay']),
+        primary:             data['primary']
+      )
+    end
+  end
+
+  # Forward-with-fallback action (org.mockserver.model.HttpForwardWithFallback):
+  # forwards via +http_forward+, but returns +fallback_response+ when the
+  # upstream responds with one of +fallback_on_status_codes+ or (when
+  # +fallback_on_timeout+ is true) times out.
+  class HttpForwardWithFallback
+    attr_accessor :http_forward, :fallback_response, :fallback_on_status_codes,
+                  :fallback_on_timeout, :delay, :primary
+
+    def initialize(http_forward: nil, fallback_response: nil, fallback_on_status_codes: nil,
+                   fallback_on_timeout: nil, delay: nil, primary: nil)
+      @http_forward = http_forward
+      @fallback_response = fallback_response
+      @fallback_on_status_codes = fallback_on_status_codes
+      @fallback_on_timeout = fallback_on_timeout
+      @delay = delay
+      @primary = primary
+    end
+
+    def to_h
+      MockServer.strip_none({
+        'httpForward'          => @http_forward&.to_h,
+        'fallbackResponse'     => @fallback_response&.to_h,
+        'fallbackOnStatusCodes' => @fallback_on_status_codes,
+        'fallbackOnTimeout'    => @fallback_on_timeout,
+        'delay'                => @delay&.to_h,
+        'primary'              => @primary
+      })
+    end
+
+    def self.from_hash(data)
+      return nil if data.nil?
+
+      new(
+        http_forward:             HttpForward.from_hash(data['httpForward']),
+        fallback_response:        HttpResponse.from_hash(data['fallbackResponse']),
+        fallback_on_status_codes: data['fallbackOnStatusCodes'],
+        fallback_on_timeout:      data['fallbackOnTimeout'],
+        delay:                    Delay.from_hash(data['delay']),
+        primary:                  data['primary']
+      )
+    end
+  end
+
   class Expectation
     attr_accessor :id, :priority, :percentage, :http_request, :http_response,
                   :http_response_template, :http_response_class_callback,
                   :http_response_object_callback, :http_forward,
                   :http_forward_template, :http_forward_class_callback,
                   :http_forward_object_callback, :http_override_forwarded_request,
-                  :http_error, :times, :time_to_live, :chaos,
-                  :http_sse_response, :http_websocket_response,
+                  :http_error, :times, :time_to_live, :chaos, :rate_limit,
+                  :http_sse_response, :http_llm_response, :http_websocket_response,
                   :grpc_stream_response, :grpc_bidi_response,
                   :binary_response, :dns_response,
+                  :http_forward_with_fallback, :http_forward_validate_action,
                   :before_actions, :after_actions,
                   :http_responses, :response_mode, :response_weights, :switch_after,
-                  :cross_protocol_scenarios, :steps,
+                  :cross_protocol_scenarios, :steps, :capture, :namespace,
                   :scenario_name, :scenario_state, :new_scenario_state
 
     def initialize(id: nil, priority: nil, percentage: nil, http_request: nil, http_response: nil,
@@ -1996,13 +2276,15 @@ module MockServer
                    http_response_object_callback: nil, http_forward: nil,
                    http_forward_template: nil, http_forward_class_callback: nil,
                    http_forward_object_callback: nil, http_override_forwarded_request: nil,
-                   http_error: nil, times: nil, time_to_live: nil, chaos: nil,
-                   http_sse_response: nil, http_websocket_response: nil,
+                   http_error: nil, times: nil, time_to_live: nil, chaos: nil, rate_limit: nil,
+                   http_sse_response: nil, http_llm_response: nil, http_websocket_response: nil,
                    grpc_stream_response: nil, grpc_bidi_response: nil,
                    binary_response: nil, dns_response: nil,
+                   http_forward_with_fallback: nil, http_forward_validate_action: nil,
                    before_actions: nil, after_actions: nil,
                    http_responses: nil, response_mode: nil, response_weights: nil,
                    switch_after: nil, cross_protocol_scenarios: nil, steps: nil,
+                   capture: nil, namespace: nil,
                    scenario_name: nil, scenario_state: nil, new_scenario_state: nil)
       @id = id
       @priority = priority
@@ -2024,12 +2306,16 @@ module MockServer
       @times = times
       @time_to_live = time_to_live
       @chaos = chaos
+      @rate_limit = rate_limit
       @http_sse_response = http_sse_response
+      @http_llm_response = http_llm_response
       @http_websocket_response = http_websocket_response
       @grpc_stream_response = grpc_stream_response
       @grpc_bidi_response = grpc_bidi_response
       @binary_response = binary_response
       @dns_response = dns_response
+      @http_forward_with_fallback = http_forward_with_fallback
+      @http_forward_validate_action = http_forward_validate_action
       @before_actions = before_actions
       @after_actions = after_actions
       @http_responses = http_responses
@@ -2038,6 +2324,8 @@ module MockServer
       @switch_after = switch_after
       @cross_protocol_scenarios = cross_protocol_scenarios
       @steps = steps
+      @capture = capture
+      @namespace = namespace
       @scenario_name = scenario_name
       @scenario_state = scenario_state
       @new_scenario_state = new_scenario_state
@@ -2088,8 +2376,11 @@ module MockServer
         'httpForwardClassCallback'     => @http_forward_class_callback&.to_h,
         'httpForwardObjectCallback'    => @http_forward_object_callback&.to_h,
         'httpOverrideForwardedRequest' => @http_override_forwarded_request&.to_h,
+        'httpForwardValidateAction'    => @http_forward_validate_action&.to_h,
+        'httpForwardWithFallback'      => @http_forward_with_fallback&.to_h,
         'httpError'                    => @http_error&.to_h,
         'httpSseResponse'              => @http_sse_response&.to_h,
+        'httpLlmResponse'              => MockServer.serialize_value(@http_llm_response),
         'httpWebSocketResponse'        => @http_websocket_response&.to_h,
         'grpcStreamResponse'           => @grpc_stream_response&.to_h,
         'grpcBidiResponse'             => @grpc_bidi_response&.to_h,
@@ -2103,6 +2394,9 @@ module MockServer
         'switchAfter'                  => @switch_after,
         'crossProtocolScenarios'       => @cross_protocol_scenarios&.map(&:to_h),
         'steps'                        => @steps&.map(&:to_h),
+        'capture'                      => @capture&.map(&:to_h),
+        'rateLimit'                    => @rate_limit&.to_h,
+        'namespace'                    => @namespace,
         'times'                        => @times&.to_h,
         'timeToLive'                   => @time_to_live&.to_h,
         'chaos'                        => @chaos&.to_h,
@@ -2143,8 +2437,11 @@ module MockServer
         http_forward_class_callback:     HttpClassCallback.from_hash(data['httpForwardClassCallback']),
         http_forward_object_callback:    HttpObjectCallback.from_hash(data['httpForwardObjectCallback']),
         http_override_forwarded_request: HttpOverrideForwardedRequest.from_hash(data['httpOverrideForwardedRequest']),
+        http_forward_validate_action:    HttpForwardValidateAction.from_hash(data['httpForwardValidateAction']),
+        http_forward_with_fallback:      HttpForwardWithFallback.from_hash(data['httpForwardWithFallback']),
         http_error:                      HttpError.from_hash(data['httpError']),
         http_sse_response:               HttpSseResponse.from_hash(data['httpSseResponse']),
+        http_llm_response:               data['httpLlmResponse'],
         http_websocket_response:         HttpWebSocketResponse.from_hash(data['httpWebSocketResponse']),
         grpc_stream_response:            GrpcStreamResponse.from_hash(data['grpcStreamResponse']),
         grpc_bidi_response:              GrpcBidiResponse.from_hash(data['grpcBidiResponse']),
@@ -2158,6 +2455,9 @@ module MockServer
         switch_after:                    data['switchAfter'],
         cross_protocol_scenarios:        data['crossProtocolScenarios']&.map { |c| CrossProtocolScenario.from_hash(c) },
         steps:                           data['steps']&.map { |s| ExpectationStep.from_hash(s) },
+        capture:                         data['capture']&.map { |c| CaptureRule.from_hash(c) },
+        rate_limit:                      RateLimit.from_hash(data['rateLimit']),
+        namespace:                       data['namespace'],
         times:                           Times.from_hash(data['times']),
         time_to_live:                    TimeToLive.from_hash(data['timeToLive']),
         chaos:                           HttpChaosProfile.from_hash(data['chaos']),
