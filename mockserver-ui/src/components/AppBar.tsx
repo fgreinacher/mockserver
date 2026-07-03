@@ -32,7 +32,7 @@ import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import PostAddIcon from '@mui/icons-material/PostAdd';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
 import SpeedIcon from '@mui/icons-material/Speed';
-import SavingsIcon from '@mui/icons-material/Savings';
+import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import MonitorHeartIcon from '@mui/icons-material/MonitorHeart';
 import BoltIcon from '@mui/icons-material/Bolt';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
@@ -215,9 +215,9 @@ const NAV_GROUPS: NavGroup[] = [
     id: 'ai',
     label: 'AI',
     ariaLabel: 'AI views',
-    icon: <SavingsIcon sx={tabIconSx} />,
+    icon: <AutoAwesomeIcon sx={tabIconSx} />,
     tabs: [
-      { value: 'optimise', label: 'LLM Optimise', ariaLabel: 'LLM Optimise view', description: 'Analyse captured LLM traffic to optimise prompts, inference cost, safety, and speed.', icon: <SavingsIcon sx={tabIconSx} /> },
+      { value: 'optimise', label: 'LLM Optimise', ariaLabel: 'LLM Optimise view', description: 'Analyse captured LLM traffic to optimise prompts, inference cost, safety, and speed.', icon: <AutoAwesomeIcon sx={tabIconSx} /> },
       { value: 'mcp-health', label: 'MCP Health', ariaLabel: 'MCP server health view', description: 'See which MCP servers your proxied tools call are slow or erroring — the MCP server is often the real bottleneck behind a slow coding assistant.', icon: <MonitorHeartIcon sx={tabIconSx} /> },
       { value: 'sessions', label: 'Trace', ariaLabel: 'Trace inspector view', description: 'Trace related requests grouped together — including LLM agent runs — to debug multi-step flows end to end.', icon: <AccountTreeIcon sx={tabIconSx} /> },
     ],
@@ -240,6 +240,18 @@ const NAV_GROUPS: NavGroup[] = [
 // to build the description map. Keeping it derived guarantees it never drifts
 // from the grouped source of truth.
 const NAV_TABS: NavTab[] = NAV_GROUPS.flatMap((g) => g.tabs);
+
+// First NavTab found for each view — used to render the recent-view quick tabs
+// with the same Title Case label and icon the view carries in its group. A view
+// that appears in more than one group (e.g. Trace) keeps its first definition,
+// which is intentional: the label/icon are identical across its groups.
+const NAV_TAB_BY_VIEW: Partial<Record<ViewMode, NavTab>> = NAV_TABS.reduce<Partial<Record<ViewMode, NavTab>>>(
+  (acc, tab) => {
+    if (!(tab.value in acc)) acc[tab.value] = tab;
+    return acc;
+  },
+  {},
+);
 
 // Compile-time exhaustiveness guard. This `Record<ViewMode, string>` must name
 // every ViewMode at least once — TypeScript errors if a value is added to the
@@ -306,6 +318,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
   const toggleAutoScroll = useDashboardStore((s) => s.toggleAutoScroll);
   const view = useDashboardStore((s) => s.view);
   const setView = useDashboardStore((s) => s.setView);
+  const recentViews = useDashboardStore((s) => s.recentViews);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const theme = useTheme();
   // Below this width the grouped group-button bar would crowd the toolbar, so
@@ -562,6 +575,42 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
                 </MenuItem>
               ))}
             </Menu>
+          </Box>
+        )}
+        {/* Recent-view quick tabs: the most-recently-used views as direct,
+            single-click buttons so returning to a view no longer costs two
+            clicks through a group dropdown. The group dropdowns above remain the
+            full catalogue. Hidden below lg (the hamburger already covers narrow
+            screens) and when nothing has been visited yet. */}
+        {!compactNav && recentViews.length > 0 && (
+          <Box
+            aria-label="Recent views"
+            sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}
+          >
+            <Divider
+              orientation="vertical"
+              flexItem
+              sx={{ mx: 0.5, my: 0.5, borderColor: themeMode === 'light' ? 'rgba(255,255,255,0.3)' : 'divider' }}
+            />
+            {recentViews.map((recentView) => {
+              const tab = NAV_TAB_BY_VIEW[recentView];
+              if (!tab) return null;
+              const isActive = view === recentView;
+              return (
+                <Button
+                  key={recentView}
+                  size="small"
+                  color="inherit"
+                  aria-label={`${tab.label} recent tab`}
+                  aria-current={isActive ? 'page' : undefined}
+                  onClick={() => setView(recentView)}
+                  sx={groupButtonSx(isActive)}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </Button>
+              );
+            })}
           </Box>
         )}
         <Box sx={{ flex: compactNav ? 1 : '0 0 auto' }} />
