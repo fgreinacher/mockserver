@@ -159,7 +159,7 @@ PACKAGE_NAME="$(jq -r '.name' "$MODULE_DIR/composer.json")"
 log_info "Confirming Packagist indexed $PACKAGE_NAME@$TAG (webhook lags ~1-2 min)"
 if ! retry 5 10 -- bash -c '
        url="https://repo.packagist.org/p2/'"$PACKAGE_NAME"'.json"
-       curl -fsSL --max-time 30 "$url" 2>/dev/null | grep -q "\"version\":\"'"$TAG"'\""
+       body=$(curl -fsSL --max-time 30 "$url" 2>/dev/null) && grep -q "\"version\":\"'"$TAG"'\"" <<<"$body"
      '; then
   log_info ":warning: Packagist has not indexed $PACKAGE_NAME@$TAG yet after retries — non-fatal (mirror master + tag pushed; the webhook indexes within minutes)"
 fi

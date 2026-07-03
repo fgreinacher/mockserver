@@ -61,7 +61,7 @@ else
     # other unrelated validation failures (malformed body, missing required
     # field, schema mismatch, etc.) and we don't want to silently mask a real
     # error as "idempotent success".
-    if echo "$create_output" | grep -qE "Release\.tag_name already exists|already_exists"; then
+    if grep -qE "Release\.tag_name already exists|already_exists" <<<"$create_output"; then
       log_info "  release mockserver-$RELEASE_VERSION already exists — treating as idempotent success"
     else
       printf '%s\n' "$create_output"

@@ -129,7 +129,7 @@ check_body_contains() {
     HARD_FAILS+=("$label")
     return
   fi
-  if echo "$response" | grep -qE "$pattern"; then
+  if grep -qE "$pattern" <<<"$response"; then
     log_info "  PASS  $label"
   else
     log_error "  FAIL  $label  (pattern not found: $pattern) — $url"

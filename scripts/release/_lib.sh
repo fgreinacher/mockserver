@@ -313,7 +313,7 @@ run_idempotent() {
   out=$("$@" 2>&1) || rc=$?
   printf '%s\n' "$out"
   if [[ $rc -eq 0 ]]; then return 0; fi
-  if printf '%s' "$out" | grep -qiE "$marker"; then
+  if grep -qiE "$marker" <<<"$out"; then
     log_info ":information_source: '$1' reports this version already published (matched /$marker/) — treating as success (idempotent)"
     return 0
   fi

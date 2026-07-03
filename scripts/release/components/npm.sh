@@ -146,10 +146,13 @@ NPMRC
   # fixed-string grep, so the `.` in the version is a literal (not a regex
   # wildcard) and we cannot false-match the version appearing as a dist-tag
   # value, a `version` field, or a tarball URL.
-  until curl -fsS --connect-timeout 10 --max-time 15 \
+  # Capture the packument then grep a here-string: a direct `curl | grep -q` can
+  # SIGPIPE curl under pipefail when grep short-circuits, misreading a successful
+  # match as "not resolvable" (same class as the prepare.sh changelog bug).
+  until packument=$(curl -fsS --connect-timeout 10 --max-time 15 \
       -H 'Accept: application/vnd.npm.install-v1+json' \
-      "https://registry.npmjs.org/$npm_name" 2>/dev/null \
-      | grep -qF -- "\"$RELEASE_VERSION\":"; do
+      "https://registry.npmjs.org/$npm_name" 2>/dev/null) \
+      && grep -qF -- "\"$RELEASE_VERSION\":" <<<"$packument"; do
     if [[ "$waited" -ge 300 ]]; then
       log_error "[$pkg] $npm_name@$RELEASE_VERSION still not resolvable from npm install metadata after ${waited}s"
       return 1

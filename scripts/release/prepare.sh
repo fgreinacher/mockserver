@@ -57,7 +57,7 @@ if grep -Eq "^## \[$RELEASE_VERSION\]" "$REPO_ROOT/changelog.md"; then
   exit 1
 fi
 UNRELEASED_SECTION=$(sed -n '/^## \[Unreleased\]/,/^## \[/p' "$REPO_ROOT/changelog.md" | sed '1d;$d')
-if ! printf '%s\n' "$UNRELEASED_SECTION" | grep -Eq '^- '; then
+if ! grep -Eq '^- ' <<<"$UNRELEASED_SECTION"; then
   log_error "changelog.md has no bullets under Unreleased"
   exit 1
 fi
