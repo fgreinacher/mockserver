@@ -16,6 +16,28 @@ public sealed class Expectation
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? Priority { get; set; }
 
+    /// <summary>
+    /// Probabilistic match percentage (0-100): when set, the expectation matches only this percentage
+    /// of otherwise-matching requests. Drives simple probabilistic fault/behaviour injection.
+    /// </summary>
+    [JsonPropertyName("percentage")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Percentage { get; set; }
+
+    /// <summary>
+    /// Declarative HTTP chaos / fault-injection profile applied to this expectation.
+    /// </summary>
+    [JsonPropertyName("chaos")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HttpChaosProfile? Chaos { get; set; }
+
+    /// <summary>
+    /// Declarative, protocol-agnostic rate limit / quota applied to this expectation.
+    /// </summary>
+    [JsonPropertyName("rateLimit")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RateLimit? RateLimit { get; set; }
+
     [JsonPropertyName("httpRequest")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HttpRequest? HttpRequest { get; set; }
@@ -51,6 +73,21 @@ public sealed class Expectation
     [JsonPropertyName("httpOverrideForwardedRequest")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HttpOverrideForwardedRequest? HttpOverrideForwardedRequest { get; set; }
+
+    /// <summary>
+    /// Forward action that falls back to a canned response when the upstream forward fails or returns
+    /// a configured status code.
+    /// </summary>
+    [JsonPropertyName("httpForwardWithFallback")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HttpForwardWithFallback? HttpForwardWithFallback { get; set; }
+
+    /// <summary>
+    /// Forward action that validates the request and/or response against an OpenAPI spec.
+    /// </summary>
+    [JsonPropertyName("httpForwardValidateAction")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HttpForwardValidateAction? HttpForwardValidateAction { get; set; }
 
     [JsonPropertyName("httpError")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -100,6 +137,13 @@ public sealed class Expectation
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public GrpcStreamResponse? GrpcStreamResponse { get; set; }
 
+    /// <summary>
+    /// Bidirectional-streaming gRPC response action.
+    /// </summary>
+    [JsonPropertyName("grpcBidiResponse")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GrpcBidiResponse? GrpcBidiResponse { get; set; }
+
     [JsonPropertyName("binaryResponse")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public BinaryResponse? BinaryResponse { get; set; }
@@ -111,6 +155,43 @@ public sealed class Expectation
     [JsonPropertyName("httpLlmResponse")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public HttpLlmResponse? HttpLlmResponse { get; set; }
+
+    /// <summary>
+    /// Side-effect actions run before the primary action produces a response.
+    /// </summary>
+    [JsonPropertyName("beforeActions")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<AfterAction>? BeforeActions { get; set; }
+
+    /// <summary>
+    /// Side-effect actions run after the primary action produces a response.
+    /// </summary>
+    [JsonPropertyName("afterActions")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<AfterAction>? AfterActions { get; set; }
+
+    /// <summary>
+    /// Ordered multi-step action sequence; exactly one step is the responder.
+    /// </summary>
+    [JsonPropertyName("steps")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<ExpectationStep>? Steps { get; set; }
+
+    /// <summary>
+    /// Value-capture rules that extract values from the matched request into scenario state.
+    /// </summary>
+    [JsonPropertyName("capture")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<CaptureRule>? Capture { get; set; }
+
+    /// <summary>
+    /// Optional namespace (tenant) this expectation belongs to; when set, the expectation only matches
+    /// requests carrying the configured match-namespace header with this value and stays isolated from
+    /// other namespaces.
+    /// </summary>
+    [JsonPropertyName("namespace")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Namespace { get; set; }
 
     [JsonPropertyName("scenarioName")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -163,4 +244,12 @@ public sealed class Expectation
     [JsonPropertyName("timeToLive")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TimeToLive? TimeToLive { get; set; }
+
+    /// <summary>
+    /// Optional timestamp carried so request/response log output can be round-tripped into an
+    /// expectation. Preserved verbatim; not otherwise interpreted by the client.
+    /// </summary>
+    [JsonPropertyName("timestamp")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Timestamp { get; set; }
 }

@@ -15,6 +15,10 @@ public sealed class HttpRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Path { get; set; }
 
+    [JsonPropertyName("pathParameters")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, List<string>>? PathParameters { get; set; }
+
     [JsonPropertyName("queryStringParameters")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, List<string>>? QueryStringParameters { get; set; }
@@ -23,9 +27,29 @@ public sealed class HttpRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, List<string>>? Headers { get; set; }
 
+    /// <summary>
+    /// Cookie matchers (single value per name). Serialised as the <c>keyToValue</c> map form.
+    /// </summary>
+    [JsonPropertyName("cookies")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, string>? Cookies { get; set; }
+
+    /// <summary>
+    /// The request body matcher. Accepts a raw string, a <see cref="TypedBody"/>, <see cref="FileBody"/>,
+    /// <see cref="AllOfBody"/>, or the fully-typed <see cref="Models.Body"/>; on deserialisation an
+    /// unrecognised shape is preserved as a raw <c>JsonElement</c> so it round-trips without loss.
+    /// </summary>
     [JsonPropertyName("body")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public object? Body { get; set; }
+
+    /// <summary>
+    /// The original (pre-normalisation) body text, retained by the server so a recorded request can be
+    /// turned back into an expectation. Preserved verbatim.
+    /// </summary>
+    [JsonPropertyName("originalBody")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? OriginalBody { get; set; }
 
     /// <summary>
     /// JWT matcher applied to a bearer token on the request (typically the <c>Authorization</c>
@@ -52,8 +76,96 @@ public sealed class HttpRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? KeepAlive { get; set; }
 
+    /// <summary>Negates the whole request matcher when true.</summary>
+    [JsonPropertyName("not")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Not { get; set; }
+
+    /// <summary>
+    /// When true the server responds before the request body is fully received (expect-continue style).
+    /// </summary>
+    [JsonPropertyName("respondBeforeBody")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? RespondBeforeBody { get; set; }
+
+    /// <summary>The protocol the request must arrive on: <c>HTTP_1_1</c>, <c>HTTP_2</c> or <c>HTTP_3</c>.</summary>
+    [JsonPropertyName("protocol")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Protocol? Protocol { get; set; }
+
+    /// <summary>The local socket address the request arrived on (matcher / recorded value).</summary>
+    [JsonPropertyName("localAddress")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LocalAddress { get; set; }
+
+    /// <summary>The remote client socket address (matcher / recorded value).</summary>
+    [JsonPropertyName("remoteAddress")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RemoteAddress { get; set; }
+
+    /// <summary>TLS client-certificate matcher (subject / issuer / SHA-256 fingerprint).</summary>
+    [JsonPropertyName("clientCertificate")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ClientCertificate? ClientCertificate { get; set; }
+
+    /// <summary>The presented TLS client-certificate chain (recorded value).</summary>
+    [JsonPropertyName("clientCertificateChain")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<ClientCertificateInfo>? ClientCertificateChain { get; set; }
+
     /// <summary>
     /// Creates a new HttpRequest builder.
     /// </summary>
     public static HttpRequestBuilder Request() => new();
+}
+
+/// <summary>Transport protocol a request matcher constrains to.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum Protocol
+{
+    HTTP_1_1,
+    HTTP_2,
+    HTTP_3
+}
+
+/// <summary>
+/// TLS client-certificate matcher. Each field is an exact-or-regex string matched against the
+/// presented certificate. Mirrors the server's <c>clientCertificate</c> schema.
+/// </summary>
+public sealed class ClientCertificate
+{
+    [JsonPropertyName("subject")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Subject { get; set; }
+
+    [JsonPropertyName("issuer")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Issuer { get; set; }
+
+    [JsonPropertyName("fingerprintSha256")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FingerprintSha256 { get; set; }
+}
+
+/// <summary>
+/// One entry of a recorded TLS client-certificate chain. Mirrors the server's
+/// <c>clientCertificateChain</c> item schema.
+/// </summary>
+public sealed class ClientCertificateInfo
+{
+    [JsonPropertyName("issuerDistinguishedName")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? IssuerDistinguishedName { get; set; }
+
+    [JsonPropertyName("subjectDistinguishedName")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SubjectDistinguishedName { get; set; }
+
+    [JsonPropertyName("serialNumber")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SerialNumber { get; set; }
+
+    [JsonPropertyName("signatureAlgorithmName")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SignatureAlgorithmName { get; set; }
 }
