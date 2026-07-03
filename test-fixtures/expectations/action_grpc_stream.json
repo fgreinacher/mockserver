@@ -1,0 +1,28 @@
+{
+  "httpRequest": {
+    "path": "/grpc/StreamMethod"
+  },
+  "grpcStreamResponse": {
+    "statusName": "OK",
+    "statusMessage": "success",
+    "headers": {
+      "x-meta": [
+        "v"
+      ]
+    },
+    "messages": [
+      {
+        "json": "{\"id\":1}"
+      },
+      {
+        "json": "{\"id\":2}",
+        "templateType": "VELOCITY",
+        "delay": {
+          "timeUnit": "MILLISECONDS",
+          "value": 100
+        }
+      }
+    ],
+    "closeConnection": false
+  }
+}

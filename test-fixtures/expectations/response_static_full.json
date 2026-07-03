@@ -1,0 +1,67 @@
+{
+  "id": "static-full-1",
+  "priority": 10,
+  "httpRequest": {
+    "method": "POST",
+    "path": "/api/orders",
+    "headers": {
+      "Accept": [
+        "application/json"
+      ]
+    },
+    "queryStringParameters": {
+      "trace": [
+        "true"
+      ]
+    },
+    "cookies": {
+      "session": "abc123"
+    },
+    "secure": true,
+    "keepAlive": true,
+    "body": {
+      "type": "STRING",
+      "string": "order-fragment",
+      "subString": true,
+      "contentType": "text/plain"
+    }
+  },
+  "httpResponse": {
+    "statusCode": 201,
+    "reasonPhrase": "Created",
+    "headers": {
+      "Content-Type": [
+        "application/json"
+      ]
+    },
+    "cookies": {
+      "issued": "cookie-value"
+    },
+    "body": "created",
+    "delay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 50
+    },
+    "connectionOptions": {
+      "keepAliveOverride": true,
+      "closeSocket": false,
+      "contentLengthHeaderOverride": 12,
+      "suppressContentLengthHeader": false,
+      "suppressConnectionHeader": true
+    },
+    "trailers": {
+      "X-Trailer": [
+        "end"
+      ]
+    }
+  },
+  "times": {
+    "remainingTimes": 5,
+    "unlimited": false
+  },
+  "timeToLive": {
+    "timeUnit": "SECONDS",
+    "timeToLive": 3600,
+    "unlimited": false
+  }
+}

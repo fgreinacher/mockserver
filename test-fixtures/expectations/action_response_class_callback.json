@@ -1,0 +1,8 @@
+{
+  "httpRequest": {
+    "path": "/clscb"
+  },
+  "httpResponseClassCallback": {
+    "callbackClass": "org.mockserver.examples.ResponseCallback"
+  }
+}

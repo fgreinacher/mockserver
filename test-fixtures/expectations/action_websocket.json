@@ -1,0 +1,32 @@
+{
+  "httpRequest": {
+    "path": "/ws/echo"
+  },
+  "httpWebSocketResponse": {
+    "subprotocol": "chat",
+    "messages": [
+      {
+        "text": "hello"
+      },
+      {
+        "binary": "AQID",
+        "delay": {
+          "timeUnit": "MILLISECONDS",
+          "value": 5
+        }
+      }
+    ],
+    "matchers": [
+      {
+        "frameType": "TEXT",
+        "textMatcher": "ping",
+        "responses": [
+          {
+            "text": "pong"
+          }
+        ]
+      }
+    ],
+    "closeConnection": false
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/form",
+    "headers": {
+      "Content-Type": [
+        "application/x-www-form-urlencoded"
+      ]
+    },
+    "body": {
+      "type": "PARAMETERS",
+      "parameters": {
+        "email": [
+          "joe@example.com"
+        ],
+        "password": [
+          "secret"
+        ]
+      }
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "percentage": 50,
+  "httpRequest": {
+    "path": "/chaos"
+  },
+  "httpResponse": {
+    "body": "ok"
+  },
+  "chaos": {
+    "errorStatus": 500,
+    "retryAfter": "3",
+    "errorProbability": 0.3,
+    "dropConnectionProbability": 0.1,
+    "latency": {
+      "timeUnit": "MILLISECONDS",
+      "value": 200
+    },
+    "seed": 9,
+    "succeedFirst": 2,
+    "failRequestCount": 5,
+    "outageAfterMillis": 1000,
+    "outageDurationMillis": 5000,
+    "truncateBodyAtFraction": 0.5,
+    "malformedBody": true,
+    "slowResponseChunkSize": 16,
+    "slowResponseChunkDelay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 10
+    },
+    "quotaName": "q",
+    "quotaLimit": 10,
+    "quotaWindowMillis": 1000,
+    "quotaErrorStatus": 429,
+    "degradationRampMillis": 2000,
+    "graphqlErrors": true,
+    "graphqlErrorMessage": "boom",
+    "graphqlErrorCode": "INTERNAL_SERVER_ERROR",
+    "graphqlNullifyData": false
+  },
+  "rateLimit": {
+    "name": "rl",
+    "algorithm": "token_bucket",
+    "burst": 20,
+    "refillPerSecond": 5.0,
+    "errorStatus": 429,
+    "retryAfter": "1"
+  }
+}

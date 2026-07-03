@@ -1,0 +1,28 @@
+{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/login"
+  },
+  "httpResponse": {
+    "statusCode": 200,
+    "body": "{\"token\":\"abc\"}"
+  },
+  "scenarioName": "LoginFlow",
+  "scenarioState": "Started",
+  "newScenarioState": "LoggedIn",
+  "crossProtocolScenarios": [
+    {
+      "trigger": "HTTP_REQUEST",
+      "matchPattern": "/login",
+      "scenarioName": "LoginFlow",
+      "targetState": "LoggedIn"
+    }
+  ],
+  "times": {
+    "unlimited": true
+  },
+  "timeToLive": {
+    "unlimited": true
+  },
+  "timestamp": "2026-07-03T12:00:00.000Z"
+}

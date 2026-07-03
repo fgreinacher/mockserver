@@ -33,6 +33,7 @@ const PORT = parseInt(process.env.MOCKSERVER_PORT, 10) || 1080;
 const TARGET_DIR = path.resolve(__dirname, '..', '..', 'mockserver', 'mockserver-netty', 'target');
 const TEST_FILES = [
     'test/no_proxy/scenario_helper_test.js',
+    'test/no_proxy/roundtrip_fidelity_identity_test.js',
     'test/no_proxy/class_callback_test.js',
     'test/no_proxy/llm_builder_test.js',
     'test/no_proxy/mcp_mock_builder_test.js',

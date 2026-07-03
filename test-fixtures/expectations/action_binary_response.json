@@ -1,0 +1,12 @@
+{
+  "httpRequest": {
+    "path": "/download"
+  },
+  "binaryResponse": {
+    "binaryData": "SGVsbG8gV29ybGQh",
+    "delay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 3
+    }
+  }
+}

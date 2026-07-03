@@ -1,0 +1,49 @@
+{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/v1/embeddings"
+  },
+  "httpLlmResponse": {
+    "provider": "OPENAI",
+    "model": "text-embedding-3-small",
+    "embedding": {
+      "dimensions": 1536,
+      "deterministicFromInput": true,
+      "seed": 42
+    },
+    "rerank": {
+      "topN": 3,
+      "deterministicFromInput": true,
+      "seed": 42
+    },
+    "moderation": {
+      "flaggedCategories": [
+        "violence"
+      ],
+      "model": "text-moderation-latest"
+    },
+    "contentFilter": {
+      "hate": "low",
+      "sexual": "safe",
+      "violence": "medium",
+      "selfHarm": "safe"
+    },
+    "chaos": {
+      "errorStatus": 429,
+      "retryAfter": "5",
+      "errorProbability": 0.1,
+      "truncateMode": "MID_STREAM",
+      "truncateAtFraction": 0.5,
+      "malformedSse": true,
+      "seed": 1,
+      "quotaName": "q1",
+      "quotaLimit": 100,
+      "quotaWindowMillis": 60000,
+      "quotaErrorStatus": 429,
+      "tokenQuotaLimit": 1000,
+      "tokenQuotaWindowMillis": 60000,
+      "contentFilterBlockProbability": 0.2,
+      "errorKind": "overloaded"
+    }
+  }
+}

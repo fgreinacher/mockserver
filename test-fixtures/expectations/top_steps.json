@@ -1,0 +1,33 @@
+{
+  "steps": [
+    {
+      "httpRequest": {
+        "path": "/step1",
+        "method": "POST"
+      },
+      "blocking": true,
+      "delay": {
+        "timeUnit": "MILLISECONDS",
+        "value": 5
+      },
+      "timeout": {
+        "timeUnit": "SECONDS",
+        "value": 2
+      },
+      "failurePolicy": "FAIL_FAST"
+    },
+    {
+      "httpResponse": {
+        "statusCode": 200,
+        "body": "done"
+      },
+      "responder": true
+    },
+    {
+      "httpClassCallback": {
+        "callbackClass": "org.mockserver.examples.StepCallback"
+      },
+      "failurePolicy": "BEST_EFFORT"
+    }
+  ]
+}

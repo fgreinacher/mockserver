@@ -1,0 +1,14 @@
+{
+  "httpRequest": {
+    "path": "/json",
+    "body": {
+      "type": "JSON",
+      "json": "{\"a\":1}",
+      "matchType": "STRICT",
+      "contentType": "application/json"
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

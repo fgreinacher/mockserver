@@ -1,0 +1,9 @@
+{
+  "httpRequest": {
+    "path": "/objcb"
+  },
+  "httpResponseObjectCallback": {
+    "clientId": "client-xyz",
+    "responseCallback": true
+  }
+}

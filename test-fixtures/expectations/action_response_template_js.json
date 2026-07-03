@@ -1,0 +1,9 @@
+{
+  "httpRequest": {
+    "path": "/tmpljs"
+  },
+  "httpResponseTemplate": {
+    "templateType": "JAVASCRIPT",
+    "template": "return { statusCode: 200, body: JSON.stringify({t: request.method}) };"
+  }
+}

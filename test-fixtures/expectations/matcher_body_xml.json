@@ -1,0 +1,12 @@
+{
+  "httpRequest": {
+    "path": "/xml",
+    "body": {
+      "type": "XML",
+      "xml": "<a><b>c</b></a>"
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

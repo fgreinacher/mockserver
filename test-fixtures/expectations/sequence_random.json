@@ -1,0 +1,16 @@
+{
+  "httpRequest": {
+    "path": "/random"
+  },
+  "httpResponses": [
+    {
+      "statusCode": 200,
+      "body": "a"
+    },
+    {
+      "statusCode": 201,
+      "body": "b"
+    }
+  ],
+  "responseMode": "RANDOM"
+}

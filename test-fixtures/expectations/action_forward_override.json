@@ -1,0 +1,27 @@
+{
+  "httpRequest": {
+    "path": "/ovr"
+  },
+  "httpOverrideForwardedRequest": {
+    "httpRequest": {
+      "path": "/other",
+      "headers": {
+        "Host": [
+          "target.host.com"
+        ]
+      },
+      "socketAddress": {
+        "host": "target.host.com",
+        "port": 1234,
+        "scheme": "HTTPS"
+      }
+    },
+    "httpResponse": {
+      "body": "overridden"
+    },
+    "delay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 5
+    }
+  }
+}

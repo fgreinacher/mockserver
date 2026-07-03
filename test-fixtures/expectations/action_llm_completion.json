@@ -1,0 +1,64 @@
+{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/v1/messages"
+  },
+  "httpLlmResponse": {
+    "provider": "ANTHROPIC",
+    "model": "claude-sonnet-4-20250514",
+    "delay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 15
+    },
+    "completion": {
+      "text": "Hello, world!",
+      "toolCalls": [
+        {
+          "id": "call_1",
+          "name": "get_weather",
+          "arguments": "{\"city\":\"SF\"}"
+        }
+      ],
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 10,
+        "outputTokens": 25,
+        "cachedInputTokens": 2,
+        "cacheCreationTokens": 3,
+        "reasoningTokens": 4
+      },
+      "streaming": true,
+      "outputSchema": "{\"type\":\"object\"}",
+      "enforceOutputSchema": true,
+      "toolChoice": "auto",
+      "reasoningText": "thinking",
+      "reasoningSignature": "sig",
+      "model": "claude-sonnet-4-20250514",
+      "streamingPhysics": {
+        "tokensPerSecond": 50,
+        "jitter": 0.2,
+        "seed": 7,
+        "subwordStreaming": true
+      }
+    },
+    "conversationPredicates": {
+      "turnIndex": 1,
+      "latestMessageContains": "weather",
+      "latestMessageMatches": ".*weather.*",
+      "latestMessageRole": "USER",
+      "containsToolResultFor": "get_weather",
+      "semanticMatchAgainst": "weather query",
+      "normalization": {
+        "collapseWhitespace": true,
+        "lowercase": true,
+        "sortJsonKeys": true,
+        "dropBuiltInVolatileFields": true,
+        "dropVolatileFields": [
+          "id",
+          "created"
+        ]
+      }
+    },
+    "primary": true
+  }
+}

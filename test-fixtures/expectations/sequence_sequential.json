@@ -1,0 +1,16 @@
+{
+  "httpRequest": {
+    "path": "/seq"
+  },
+  "httpResponses": [
+    {
+      "statusCode": 200,
+      "body": "first"
+    },
+    {
+      "statusCode": 503,
+      "body": "second"
+    }
+  ],
+  "responseMode": "SEQUENTIAL"
+}

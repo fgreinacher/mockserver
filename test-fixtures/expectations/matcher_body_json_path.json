@@ -1,0 +1,12 @@
+{
+  "httpRequest": {
+    "path": "/jsonpath",
+    "body": {
+      "type": "JSON_PATH",
+      "jsonPath": "$.store.book[?(@.price < 10)]"
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

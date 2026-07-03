@@ -1,0 +1,22 @@
+{
+  "httpRequest": {
+    "path": "/allof",
+    "body": {
+      "type": "ALL_OF",
+      "bodyAllOf": [
+        {
+          "type": "STRING",
+          "string": "part",
+          "subString": true
+        },
+        {
+          "type": "JSON_PATH",
+          "jsonPath": "$.ok"
+        }
+      ]
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

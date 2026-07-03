@@ -1,0 +1,25 @@
+{
+  "httpRequest": {
+    "method": "GET",
+    "path": "/adv",
+    "secure": true,
+    "keepAlive": true,
+    "protocol": "HTTP_2",
+    "socketAddress": {
+      "host": "target.example.com",
+      "port": 443,
+      "scheme": "HTTPS"
+    },
+    "headers": {
+      "X-Env": [
+        "prod"
+      ]
+    },
+    "cookies": {
+      "tenant": "acme"
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

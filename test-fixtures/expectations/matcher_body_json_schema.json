@@ -1,0 +1,22 @@
+{
+  "httpRequest": {
+    "path": "/schema",
+    "body": {
+      "type": "JSON_SCHEMA",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

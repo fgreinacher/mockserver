@@ -1,0 +1,12 @@
+{
+  "httpRequest": {
+    "path": "/fwdcb"
+  },
+  "httpForwardClassCallback": {
+    "callbackClass": "org.mockserver.examples.ForwardCallback",
+    "delay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 1
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "httpRequest": {
+    "path": "/events"
+  },
+  "httpSseResponse": {
+    "statusCode": 200,
+    "headers": {
+      "Cache-Control": [
+        "no-cache"
+      ]
+    },
+    "events": [
+      {
+        "event": "message",
+        "data": "one",
+        "id": "1"
+      },
+      {
+        "event": "message",
+        "data": "two",
+        "id": "2",
+        "retry": 5000
+      }
+    ],
+    "closeConnection": true
+  }
+}

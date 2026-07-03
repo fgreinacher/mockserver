@@ -1,0 +1,9 @@
+{
+  "httpRequest": {
+    "path": "/tmplm"
+  },
+  "httpResponseTemplate": {
+    "templateType": "MUSTACHE",
+    "template": "{\"statusCode\": 200, \"body\": \"{{request.path}}\"}"
+  }
+}

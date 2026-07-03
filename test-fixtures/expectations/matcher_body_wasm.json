@@ -1,0 +1,12 @@
+{
+  "httpRequest": {
+    "path": "/wasm",
+    "body": {
+      "type": "WASM",
+      "moduleName": "my-rule"
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

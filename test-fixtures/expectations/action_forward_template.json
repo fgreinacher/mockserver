@@ -1,0 +1,9 @@
+{
+  "httpRequest": {
+    "path": "/fwdtmpl"
+  },
+  "httpForwardTemplate": {
+    "templateType": "VELOCITY",
+    "template": "{'path':\"/somePath\",'headers':{'Host':[\"localhost:1081\"]}}"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/graphql",
+    "body": {
+      "type": "GRAPHQL",
+      "query": "query GetUser($id: ID!) { user(id: $id) { name email } }",
+      "operationName": "GetUser",
+      "selectionSetMatchType": "AST_SUBSET",
+      "fields": [
+        "user"
+      ],
+      "variablesSchema": "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}}}"
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

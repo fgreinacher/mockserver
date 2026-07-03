@@ -23,4 +23,14 @@
     <ProjectReference Include="..\..\src\MockServer.Client\MockServer.Client.csproj" />
   </ItemGroup>
 
+  <!--
+    Cross-language fixture-fidelity harness: copy the shared expectation fixtures
+    (repo-root test-fixtures/expectations/*.json, including known-gaps.json) next to
+    the test assembly so RoundTripFidelityTests can load them regardless of the
+    unstable `dotnet test` working directory. Loaded from AppContext.BaseDirectory/fixtures.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\..\test-fixtures\expectations\*.json" Link="fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

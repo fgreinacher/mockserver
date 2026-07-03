@@ -1,0 +1,14 @@
+{
+  "httpRequest": {
+    "path": "/fwd"
+  },
+  "httpForward": {
+    "scheme": "HTTPS",
+    "host": "backend.example.com",
+    "port": 443,
+    "delay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 10
+    }
+  }
+}

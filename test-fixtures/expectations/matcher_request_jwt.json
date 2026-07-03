@@ -1,0 +1,18 @@
+{
+  "httpRequest": {
+    "path": "/secure",
+    "jwt": {
+      "header": "Authorization",
+      "scheme": "Bearer",
+      "claims": {
+        "role": "admin"
+      },
+      "issuer": "https://issuer.example.com",
+      "audience": "my-api",
+      "algorithm": "RS256"
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

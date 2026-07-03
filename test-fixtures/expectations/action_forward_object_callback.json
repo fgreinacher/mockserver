@@ -1,0 +1,9 @@
+{
+  "httpRequest": {
+    "path": "/fwdobj"
+  },
+  "httpForwardObjectCallback": {
+    "clientId": "client-123",
+    "responseCallback": true
+  }
+}

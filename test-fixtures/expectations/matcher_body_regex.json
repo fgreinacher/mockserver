@@ -1,0 +1,14 @@
+{
+  "httpRequest": {
+    "path": "/regex",
+    "body": {
+      "type": "REGEX",
+      "regex": "starts_with_.*",
+      "not": true,
+      "optional": true
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

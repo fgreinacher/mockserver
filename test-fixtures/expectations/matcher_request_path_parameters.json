@@ -1,0 +1,25 @@
+{
+  "httpRequest": {
+    "path": "/cart/{cartId}/{maxItemCount}",
+    "pathParameters": {
+      "cartId": [
+        {
+          "schema": {
+            "type": "string",
+            "pattern": "^[A-Z0-9-]+$"
+          }
+        }
+      ],
+      "maxItemCount": [
+        {
+          "schema": {
+            "type": "integer"
+          }
+        }
+      ]
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}

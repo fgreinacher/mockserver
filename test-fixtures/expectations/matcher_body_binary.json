@@ -1,0 +1,13 @@
+{
+  "httpRequest": {
+    "path": "/binary",
+    "body": {
+      "type": "BINARY",
+      "base64Bytes": "SGVsbG8=",
+      "contentType": "application/octet-stream"
+    }
+  },
+  "httpResponse": {
+    "body": "ok"
+  }
+}
