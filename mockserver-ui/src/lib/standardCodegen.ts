@@ -2378,6 +2378,346 @@ function chaosToJava(chaos: StandardChaosDraft): string {
   return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// LLM response Java codegen — transpile a PRESERVED httpLlmResponse action
+// (carried through an edit overlay because the standard composer form cannot
+// model it) into the type-safe org.mockserver.model fluent builder chain,
+// ending in `.respondWithLlm(...)`. Driven from the built expectation JSON (the
+// same object the JSON / curl / client-library tabs render) so the Java tab is
+// faithful rather than a whole-action fallback notice.
+//
+// The Java LLM client is fully typed: HttpLlmResponse.llmResponse() with
+// withProvider/withModel/withCompletion/withEmbedding/withRerank/withModeration/
+// withContentFilter/withConversationPredicates/withChaos, and the model builders
+// Completion, Usage, StreamingPhysics, ToolUse, ConversationPredicates,
+// NormalizationOptions, EmbeddingResponse, RerankResponse, ModerationResponse,
+// LlmContentFilter and LlmChaosProfile — so every field the wire JSON carries has
+// a setter. Any key without one is named in a single honest NOTE comment.
+// ---------------------------------------------------------------------------
+
+interface LlmJavaCall {
+  method: string;
+  /** A single-line argument expression, or a nested builder to render multi-line. */
+  arg: string | LlmJavaChain;
+}
+interface LlmJavaChain {
+  factory: string;
+  calls: LlmJavaCall[];
+}
+
+/** Render a fluent builder chain, one `.withX(...)` per line, nesting sub-builders. */
+function renderLlmChain(chain: LlmJavaChain, indent: string): string[] {
+  const lines: string[] = [indent + chain.factory];
+  for (const call of chain.calls) {
+    if (typeof call.arg === 'string') {
+      lines.push(`${indent}    .${call.method}(${call.arg})`);
+    } else {
+      lines.push(`${indent}    .${call.method}(`);
+      for (const l of renderLlmChain(call.arg, indent + '        ')) lines.push(l);
+      lines.push(`${indent}    )`);
+    }
+  }
+  return lines;
+}
+
+/** A Java `double` literal — integral values get a `.0` so they bind to a Double
+ *  parameter (Java will not widen an int literal to Double). Mirrors chaosToJava. */
+function javaDoubleLiteral(n: number): string {
+  return n % 1 === 0 ? n.toFixed(1) : String(n);
+}
+
+const asJsonObject = (v: unknown): Record<string, unknown> | undefined =>
+  v != null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+
+/**
+ * Transpile a preserved `httpLlmResponse` action JSON object into the
+ * `.respondWithLlm(llmResponse()...)` terminal-action snippet plus the imports it
+ * needs. `note` names any fields the builder chain could not carry (normally none).
+ */
+function llmResponseToJava(llm: Record<string, unknown>): { code: string; imports: string[]; note?: string } {
+  const imports = new Set<string>(['import static org.mockserver.model.HttpLlmResponse.llmResponse;']);
+  const calls: LlmJavaCall[] = [];
+  const handled = new Set<string>();
+  const unmapped: string[] = [];
+
+  const str = (o: Record<string, unknown>, k: string): string | undefined =>
+    typeof o[k] === 'string' ? (o[k] as string) : undefined;
+  const num = (o: Record<string, unknown>, k: string): number | undefined =>
+    typeof o[k] === 'number' ? (o[k] as number) : undefined;
+  const bool = (o: Record<string, unknown>, k: string): boolean | undefined =>
+    typeof o[k] === 'boolean' ? (o[k] as boolean) : undefined;
+
+  // provider / model on the response
+  const provider = str(llm, 'provider');
+  if (provider && provider.trim()) {
+    imports.add('import org.mockserver.model.Provider;');
+    calls.push({ method: 'withProvider', arg: `Provider.${provider.trim()}` });
+    handled.add('provider');
+  }
+  const model = str(llm, 'model');
+  if (model !== undefined) {
+    calls.push({ method: 'withModel', arg: `"${escapeJava(model)}"` });
+    handled.add('model');
+  }
+
+  // completion — the main text/tool/usage/streaming payload
+  const completion = asJsonObject(llm['completion']);
+  if (completion) {
+    imports.add('import static org.mockserver.model.Completion.completion;');
+    const cCalls: LlmJavaCall[] = [];
+    const cHandled = new Set<string>();
+    const text = str(completion, 'text');
+    if (text !== undefined) { cCalls.push({ method: 'withText', arg: `"${escapeJava(text)}"` }); cHandled.add('text'); }
+    const toolCalls = completion['toolCalls'];
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+      imports.add('import static org.mockserver.model.ToolUse.toolUse;');
+      for (const raw of toolCalls) {
+        const tc = asJsonObject(raw);
+        if (!tc) continue;
+        let expr = `toolUse("${escapeJava(str(tc, 'name') ?? '')}")`;
+        const id = str(tc, 'id');
+        if (id !== undefined) expr += `.withId("${escapeJava(id)}")`;
+        const args = str(tc, 'arguments');
+        if (args !== undefined) expr += `.withArguments("${escapeJava(args)}")`;
+        cCalls.push({ method: 'withToolCall', arg: expr });
+      }
+      cHandled.add('toolCalls');
+    }
+    const stopReason = str(completion, 'stopReason');
+    if (stopReason !== undefined) { cCalls.push({ method: 'withStopReason', arg: `"${escapeJava(stopReason)}"` }); cHandled.add('stopReason'); }
+    const usage = asJsonObject(completion['usage']);
+    if (usage) {
+      imports.add('import static org.mockserver.model.Usage.usage;');
+      const uCalls: LlmJavaCall[] = [];
+      const usageFields = [
+        ['inputTokens', 'withInputTokens'], ['outputTokens', 'withOutputTokens'],
+        ['cachedInputTokens', 'withCachedInputTokens'], ['cacheCreationTokens', 'withCacheCreationTokens'],
+        ['reasoningTokens', 'withReasoningTokens'],
+      ] as const;
+      for (const [k, m] of usageFields) {
+        const v = num(usage, k);
+        if (v !== undefined) uCalls.push({ method: m, arg: `${v}` });
+      }
+      const usageKeys = usageFields.map(([k]) => k as string);
+      for (const k of Object.keys(usage).filter((k) => !usageKeys.includes(k))) unmapped.push(`completion.usage.${k}`);
+      cCalls.push({ method: 'withUsage', arg: { factory: 'usage()', calls: uCalls } });
+      cHandled.add('usage');
+    }
+    const streaming = bool(completion, 'streaming');
+    if (streaming !== undefined) { cCalls.push({ method: 'withStreaming', arg: `${streaming}` }); cHandled.add('streaming'); }
+    const sp = asJsonObject(completion['streamingPhysics']);
+    if (sp) {
+      imports.add('import static org.mockserver.model.StreamingPhysics.streamingPhysics;');
+      const spCalls: LlmJavaCall[] = [];
+      const spHandled = new Set<string>();
+      const ttft = asJsonObject(sp['timeToFirstToken']);
+      if (ttft && num(ttft, 'value') !== undefined) {
+        imports.add('import org.mockserver.model.Delay;');
+        imports.add('import java.util.concurrent.TimeUnit;');
+        const rawUnit = str(ttft, 'timeUnit');
+        const unit = rawUnit && JAVA_TIME_UNITS.has(rawUnit) ? rawUnit : 'MILLISECONDS';
+        spCalls.push({ method: 'withTimeToFirstToken', arg: `new Delay(TimeUnit.${unit}, ${num(ttft, 'value')})` });
+        spHandled.add('timeToFirstToken');
+      }
+      const tps = num(sp, 'tokensPerSecond');
+      if (tps !== undefined) { spCalls.push({ method: 'withTokensPerSecond', arg: `${tps}` }); spHandled.add('tokensPerSecond'); }
+      const jitter = num(sp, 'jitter');
+      if (jitter !== undefined) { spCalls.push({ method: 'withJitter', arg: javaDoubleLiteral(jitter) }); spHandled.add('jitter'); }
+      const seed = num(sp, 'seed');
+      if (seed !== undefined) { spCalls.push({ method: 'withSeed', arg: `${seed}L` }); spHandled.add('seed'); }
+      const subword = bool(sp, 'subwordStreaming');
+      if (subword !== undefined) { spCalls.push({ method: 'withSubwordStreaming', arg: `${subword}` }); spHandled.add('subwordStreaming'); }
+      for (const k of Object.keys(sp).filter((k) => !spHandled.has(k))) unmapped.push(`completion.streamingPhysics.${k}`);
+      cCalls.push({ method: 'withStreamingPhysics', arg: { factory: 'streamingPhysics()', calls: spCalls } });
+      cHandled.add('streamingPhysics');
+    }
+    const outputSchema = str(completion, 'outputSchema');
+    if (outputSchema !== undefined) { cCalls.push({ method: 'withOutputSchema', arg: `"${escapeJava(outputSchema)}"` }); cHandled.add('outputSchema'); }
+    const enforce = bool(completion, 'enforceOutputSchema');
+    if (enforce !== undefined) { cCalls.push({ method: 'withEnforceOutputSchema', arg: `${enforce}` }); cHandled.add('enforceOutputSchema'); }
+    const cModel = str(completion, 'model');
+    if (cModel !== undefined) { cCalls.push({ method: 'withModel', arg: `"${escapeJava(cModel)}"` }); cHandled.add('model'); }
+    const toolChoice = str(completion, 'toolChoice');
+    if (toolChoice !== undefined) { cCalls.push({ method: 'withToolChoice', arg: `"${escapeJava(toolChoice)}"` }); cHandled.add('toolChoice'); }
+    const reasoningText = str(completion, 'reasoningText');
+    if (reasoningText !== undefined) { cCalls.push({ method: 'withReasoningText', arg: `"${escapeJava(reasoningText)}"` }); cHandled.add('reasoningText'); }
+    const reasoningSignature = str(completion, 'reasoningSignature');
+    if (reasoningSignature !== undefined) { cCalls.push({ method: 'withReasoningSignature', arg: `"${escapeJava(reasoningSignature)}"` }); cHandled.add('reasoningSignature'); }
+    for (const k of Object.keys(completion).filter((k) => !cHandled.has(k))) unmapped.push(`completion.${k}`);
+    calls.push({ method: 'withCompletion', arg: { factory: 'completion()', calls: cCalls } });
+    handled.add('completion');
+  }
+
+  // conversationPredicates (+ normalization)
+  const cp = asJsonObject(llm['conversationPredicates']);
+  if (cp) {
+    imports.add('import static org.mockserver.model.ConversationPredicates.conversationPredicates;');
+    const cpCalls: LlmJavaCall[] = [];
+    const cpHandled = new Set<string>();
+    const turnIndex = num(cp, 'turnIndex');
+    if (turnIndex !== undefined) { cpCalls.push({ method: 'withTurnIndex', arg: `${turnIndex}` }); cpHandled.add('turnIndex'); }
+    for (const [k, m] of [
+      ['latestMessageContains', 'withLatestMessageContains'],
+      ['latestMessageMatches', 'withLatestMessageMatches'],
+      ['containsToolResultFor', 'withContainsToolResultFor'],
+      ['semanticMatchAgainst', 'withSemanticMatchAgainst'],
+    ] as const) {
+      const v = str(cp, k);
+      if (v !== undefined) { cpCalls.push({ method: m, arg: `"${escapeJava(v)}"` }); cpHandled.add(k); }
+    }
+    const role = str(cp, 'latestMessageRole');
+    if (role !== undefined) {
+      imports.add('import org.mockserver.llm.ParsedMessage;');
+      cpCalls.push({ method: 'withLatestMessageRole', arg: `ParsedMessage.Role.${role}` });
+      cpHandled.add('latestMessageRole');
+    }
+    const norm = asJsonObject(cp['normalization']);
+    if (norm) {
+      imports.add('import static org.mockserver.model.NormalizationOptions.normalizationOptions;');
+      const nCalls: LlmJavaCall[] = [];
+      const nHandled = new Set<string>();
+      for (const [k, m] of [
+        ['collapseWhitespace', 'withCollapseWhitespace'], ['lowercase', 'withLowercase'],
+        ['sortJsonKeys', 'withSortJsonKeys'], ['dropBuiltInVolatileFields', 'withDropBuiltInVolatileFields'],
+      ] as const) {
+        const v = bool(norm, k);
+        if (v !== undefined) { nCalls.push({ method: m, arg: `${v}` }); nHandled.add(k); }
+      }
+      const dropFields = norm['dropVolatileFields'];
+      if (Array.isArray(dropFields)) {
+        imports.add('import java.util.Arrays;');
+        const items = dropFields.filter((x) => typeof x === 'string').map((x) => `"${escapeJava(x as string)}"`).join(', ');
+        nCalls.push({ method: 'withDropVolatileFields', arg: `Arrays.asList(${items})` });
+        nHandled.add('dropVolatileFields');
+      }
+      for (const k of Object.keys(norm).filter((k) => !nHandled.has(k))) unmapped.push(`conversationPredicates.normalization.${k}`);
+      cpCalls.push({ method: 'withNormalization', arg: { factory: 'normalizationOptions()', calls: nCalls } });
+      cpHandled.add('normalization');
+    }
+    for (const k of Object.keys(cp).filter((k) => !cpHandled.has(k))) unmapped.push(`conversationPredicates.${k}`);
+    calls.push({ method: 'withConversationPredicates', arg: { factory: 'conversationPredicates()', calls: cpCalls } });
+    handled.add('conversationPredicates');
+  }
+
+  // embedding / rerank
+  const emb = asJsonObject(llm['embedding']);
+  if (emb) {
+    imports.add('import static org.mockserver.model.EmbeddingResponse.embedding;');
+    const eCalls: LlmJavaCall[] = [];
+    const dims = num(emb, 'dimensions');
+    if (dims !== undefined) eCalls.push({ method: 'withDimensions', arg: `${dims}` });
+    const det = bool(emb, 'deterministicFromInput');
+    if (det !== undefined) eCalls.push({ method: 'withDeterministicFromInput', arg: `${det}` });
+    const seed = num(emb, 'seed');
+    if (seed !== undefined) eCalls.push({ method: 'withSeed', arg: `${seed}L` });
+    for (const k of Object.keys(emb).filter((k) => !['dimensions', 'deterministicFromInput', 'seed'].includes(k))) unmapped.push(`embedding.${k}`);
+    calls.push({ method: 'withEmbedding', arg: { factory: 'embedding()', calls: eCalls } });
+    handled.add('embedding');
+  }
+  const rer = asJsonObject(llm['rerank']);
+  if (rer) {
+    imports.add('import static org.mockserver.model.RerankResponse.rerank;');
+    const rCalls: LlmJavaCall[] = [];
+    const topN = num(rer, 'topN');
+    if (topN !== undefined) rCalls.push({ method: 'withTopN', arg: `${topN}` });
+    const det = bool(rer, 'deterministicFromInput');
+    if (det !== undefined) rCalls.push({ method: 'withDeterministicFromInput', arg: `${det}` });
+    const seed = num(rer, 'seed');
+    if (seed !== undefined) rCalls.push({ method: 'withSeed', arg: `${seed}L` });
+    for (const k of Object.keys(rer).filter((k) => !['topN', 'deterministicFromInput', 'seed'].includes(k))) unmapped.push(`rerank.${k}`);
+    calls.push({ method: 'withRerank', arg: { factory: 'rerank()', calls: rCalls } });
+    handled.add('rerank');
+  }
+
+  // moderation
+  const mod = asJsonObject(llm['moderation']);
+  if (mod) {
+    imports.add('import static org.mockserver.model.ModerationResponse.moderationResponse;');
+    const mCalls: LlmJavaCall[] = [];
+    const flagged = mod['flaggedCategories'];
+    if (Array.isArray(flagged)) {
+      for (const cat of flagged) if (typeof cat === 'string') mCalls.push({ method: 'withFlaggedCategory', arg: `"${escapeJava(cat)}"` });
+    }
+    const mModel = str(mod, 'model');
+    if (mModel !== undefined) mCalls.push({ method: 'withModel', arg: `"${escapeJava(mModel)}"` });
+    for (const k of Object.keys(mod).filter((k) => !['flaggedCategories', 'model'].includes(k))) unmapped.push(`moderation.${k}`);
+    calls.push({ method: 'withModeration', arg: { factory: 'moderationResponse()', calls: mCalls } });
+    handled.add('moderation');
+  }
+
+  // contentFilter
+  const cf = asJsonObject(llm['contentFilter']);
+  if (cf) {
+    imports.add('import static org.mockserver.model.LlmContentFilter.llmContentFilter;');
+    const cfCalls: LlmJavaCall[] = [];
+    for (const [k, m] of [['hate', 'withHate'], ['sexual', 'withSexual'], ['violence', 'withViolence'], ['selfHarm', 'withSelfHarm']] as const) {
+      const v = str(cf, k);
+      if (v !== undefined) cfCalls.push({ method: m, arg: `"${escapeJava(v)}"` });
+    }
+    for (const k of Object.keys(cf).filter((k) => !['hate', 'sexual', 'violence', 'selfHarm'].includes(k))) unmapped.push(`contentFilter.${k}`);
+    calls.push({ method: 'withContentFilter', arg: { factory: 'llmContentFilter()', calls: cfCalls } });
+    handled.add('contentFilter');
+  }
+
+  // chaos
+  const chaos = asJsonObject(llm['chaos']);
+  if (chaos) {
+    imports.add('import static org.mockserver.model.LlmChaosProfile.llmChaosProfile;');
+    const chCalls: LlmJavaCall[] = [];
+    const chHandled = new Set<string>();
+    const intField = (k: string, m: string) => { const v = num(chaos, k); if (v !== undefined) { chCalls.push({ method: m, arg: `${v}` }); chHandled.add(k); } };
+    const longField = (k: string, m: string) => { const v = num(chaos, k); if (v !== undefined) { chCalls.push({ method: m, arg: `${v}L` }); chHandled.add(k); } };
+    const dblField = (k: string, m: string) => { const v = num(chaos, k); if (v !== undefined) { chCalls.push({ method: m, arg: javaDoubleLiteral(v) }); chHandled.add(k); } };
+    const strField = (k: string, m: string) => { const v = str(chaos, k); if (v !== undefined) { chCalls.push({ method: m, arg: `"${escapeJava(v)}"` }); chHandled.add(k); } };
+    const boolField = (k: string, m: string) => { const v = bool(chaos, k); if (v !== undefined) { chCalls.push({ method: m, arg: `${v}` }); chHandled.add(k); } };
+    intField('errorStatus', 'withErrorStatus');
+    strField('retryAfter', 'withRetryAfter');
+    dblField('errorProbability', 'withErrorProbability');
+    const truncateMode = str(chaos, 'truncateMode');
+    if (truncateMode !== undefined) {
+      imports.add('import org.mockserver.model.LlmChaosProfile;');
+      chCalls.push({ method: 'withTruncateMode', arg: `LlmChaosProfile.TruncateMode.${truncateMode}` });
+      chHandled.add('truncateMode');
+    }
+    dblField('truncateAtFraction', 'withTruncateAtFraction');
+    boolField('malformedSse', 'withMalformedSse');
+    longField('seed', 'withSeed');
+    strField('quotaName', 'withQuotaName');
+    intField('quotaLimit', 'withQuotaLimit');
+    longField('quotaWindowMillis', 'withQuotaWindowMillis');
+    intField('quotaErrorStatus', 'withQuotaErrorStatus');
+    longField('tokenQuotaLimit', 'withTokenQuotaLimit');
+    longField('tokenQuotaWindowMillis', 'withTokenQuotaWindowMillis');
+    strField('errorKind', 'withErrorKind');
+    dblField('contentFilterBlockProbability', 'withContentFilterBlockProbability');
+    for (const k of Object.keys(chaos).filter((k) => !chHandled.has(k))) unmapped.push(`chaos.${k}`);
+    calls.push({ method: 'withChaos', arg: { factory: 'llmChaosProfile()', calls: chCalls } });
+    handled.add('chaos');
+  }
+
+  // delay (Action base) — .withDelay(TimeUnit, long)
+  const delay = asJsonObject(llm['delay']);
+  if (delay && num(delay, 'value') !== undefined) {
+    imports.add('import java.util.concurrent.TimeUnit;');
+    const rawUnit = str(delay, 'timeUnit');
+    const unit = rawUnit && JAVA_TIME_UNITS.has(rawUnit) ? rawUnit : 'SECONDS';
+    calls.push({ method: 'withDelay', arg: `TimeUnit.${unit}, ${num(delay, 'value')}` });
+    handled.add('delay');
+  }
+
+  // primary (Action base)
+  if (llm['primary'] === true) { calls.push({ method: 'withPrimary', arg: 'true' }); handled.add('primary'); }
+
+  for (const k of Object.keys(llm).filter((k) => !handled.has(k))) unmapped.push(k);
+
+  const chain: LlmJavaChain = { factory: 'llmResponse()', calls };
+  const code = ['.respondWithLlm(', ...renderLlmChain(chain, '    '), ')'].join('\n');
+  const note = unmapped.length > 0
+    ? `// NOTE: the Java builder preview omits httpLlmResponse field(s) it cannot carry: ${unmapped.join(', ')} — see the JSON tab.`
+    : undefined;
+  return { code, imports: Array.from(imports), note };
+}
+
 /**
  * Compute the exact set of imports the generated Java snippet needs, based on the matcher
  * and action actually emitted. Returned sorted (static imports first) and de-duplicated so
@@ -2388,6 +2728,12 @@ function collectJavaImports(
   action: StandardActionPayload,
   hasChaos: boolean,
   json: Record<string, unknown>,
+  /**
+   * When set, the emitted terminal action is a preserved `httpLlmResponse`
+   * (see {@link llmResponseToJava}) rather than the form's modeled `action`.
+   * These imports replace the `switch (action.type)` action-family imports.
+   */
+  llmActionImports?: string[],
 ): string[] {
   const imp = new Set<string>();
   const isDns = !!(matcher.dns && matcher.dns.dnsName.trim());
@@ -2459,7 +2805,11 @@ function collectJavaImports(
     }
   }
 
-  // Action
+  // Action — a preserved httpLlmResponse carries its own imports; otherwise the
+  // form's modeled action drives the action-family imports.
+  if (llmActionImports) {
+    for (const i of llmActionImports) imp.add(i);
+  } else
   switch (action.type) {
     case 'static':
       imp.add('import static org.mockserver.model.HttpResponse.response;');
@@ -2671,8 +3021,18 @@ function stepToJava(step: StandardExpectationStep): string {
 }
 
 /**
+ * Preserved action-family keys the Java builder tab CAN represent faithfully from
+ * the built JSON, even though the standard composer form cannot model them:
+ * `httpLlmResponse` is transpiled into the fully-typed `llmResponse()` builder
+ * chain by {@link llmResponseToJava}. These must be excluded from the
+ * unrepresentable-fallback test so the Java tab emits real code rather than a
+ * whole-action notice.
+ */
+const JAVA_REPRESENTABLE_PRESERVED_KEYS: ReadonlySet<string> = new Set(['httpLlmResponse']);
+
+/**
  * When editing an expectation whose ORIGINAL action the form could not model
- * (e.g. `httpLlmResponse`, an `httpResponses` sequence, an `*ObjectCallback`),
+ * (e.g. an `httpResponses` sequence, an `*ObjectCallback`),
  * {@link buildExpectationJson} PRESERVES that original action verbatim, but the
  * fluent Java builder preview builds from the form's action model — which is the
  * form's default, NOT the preserved action. Emitting that snippet would show Java
@@ -2682,12 +3042,14 @@ function stepToJava(step: StandardExpectationStep): string {
  * honest notice) when the Java preview cannot faithfully represent the action;
  * otherwise undefined. Signal: `editOriginal` present AND the form did NOT model
  * the action (`editActionModeled === false`, the same flag the merge keys on),
- * AND the original actually carries an action-family key to preserve. The
- * JSON / curl / client-library tabs render the merged JSON and stay faithful.
+ * AND the original actually carries an action-family key to preserve that the Java
+ * tab cannot transpile ({@link JAVA_REPRESENTABLE_PRESERVED_KEYS} are excluded —
+ * `httpLlmResponse` is emitted as a real builder chain). The JSON / curl /
+ * client-library tabs render the merged JSON and stay faithful regardless.
  */
 export function unrepresentableJavaActionKey(action: StandardActionPayload): string | undefined {
   if (!action.editOriginal || action.editActionModeled !== false) return undefined;
-  return ACTION_FAMILY_KEYS.find((k) => k in action.editOriginal!);
+  return ACTION_FAMILY_KEYS.find((k) => k in action.editOriginal! && !JAVA_REPRESENTABLE_PRESERVED_KEYS.has(k));
 }
 
 export function standardToJava(matcher: StandardMatcher, action: StandardActionPayload): string {
@@ -2710,8 +3072,13 @@ export function standardToJava(matcher: StandardMatcher, action: StandardActionP
   // scenario and capture setters) from it, so the Java tab faithfully mirrors the
   // JSON tab — including fields carried through an edit overlay.
   const json = buildExpectationJson(matcher, action);
+  // A preserved httpLlmResponse action (carried verbatim through an edit overlay
+  // because the standard composer form cannot model it) is transpiled into the
+  // type-safe llmResponse() builder chain rather than the form's default action.
+  const preservedLlm = asJsonObject(json['httpLlmResponse']);
+  const llmEmit = preservedLlm ? llmResponseToJava(preservedLlm) : undefined;
   const lines: string[] = [];
-  for (const imp of collectJavaImports(matcher, action, hasChaos, json)) lines.push(imp);
+  for (const imp of collectJavaImports(matcher, action, hasChaos, json, llmEmit?.imports)) lines.push(imp);
   lines.push('');
   lines.push('mockServerClient');
   const when = whenArgsFromJson(json);
@@ -2760,16 +3127,21 @@ export function standardToJava(matcher: StandardMatcher, action: StandardActionP
     lines.push('    ' + sideEffectToJava(se).split('\n').join('\n    '));
     lines.push('  )');
   }
-  // Emit the terminal action. actionToJava bundles the call (.respond(/.forward(/.error(...) with
-  // its argument indented 4 spaces; dedent the inner argument lines by 2 so that, after the 2-space
-  // wrapper that nests the call under mockServerClient, the argument aligns at the same depth (4
-  // spaces) as the matcher inside .when( ... ) — keeping request() and response()/template() flush.
-  const actionLines = actionToJava(action).split('\n');
+  // Emit the terminal action. actionToJava (or llmResponseToJava for a preserved
+  // httpLlmResponse) bundles the call (.respond(/.forward(/.respondWithLlm(...) with
+  // its argument indented 4 spaces; dedent the inner argument lines by 2 so that, after
+  // the 2-space wrapper that nests the call under mockServerClient, the argument aligns at
+  // the same depth (4 spaces) as the matcher inside .when( ... ) — keeping request() and
+  // response()/llmResponse() flush.
+  const actionLines = (llmEmit ? llmEmit.code : actionToJava(action)).split('\n');
   const alignedAction = actionLines
     .map((ln, i) => (i === 0 || i === actionLines.length - 1 ? ln : ln.replace(/^ {2}/, '')))
     .map((ln) => '  ' + ln)
     .join('\n');
   lines.push(alignedAction + ';');
+  // Honest one-line notice naming any preserved LLM field the typed builder cannot
+  // carry (normally none — every wire field has a setter).
+  if (llmEmit?.note) lines.push(llmEmit.note);
   return lines.join('\n');
 }
 

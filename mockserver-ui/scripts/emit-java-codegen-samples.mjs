@@ -113,6 +113,60 @@ const editOverlay = {
   },
 };
 
+// (d.1) Preserved httpLlmResponse action (editActionModeled === false): the standard
+//       composer form cannot model an LLM response, so an edit of such an expectation
+//       preserves it verbatim and standardToJava transpiles it into the type-safe
+//       llmResponse() builder chain (.respondWithLlm(...)). This kitchen-sink LLM
+//       payload exercises the FULL org.mockserver.model LLM builder surface —
+//       Completion/Usage/StreamingPhysics/ToolUse/ConversationPredicates/
+//       NormalizationOptions/EmbeddingResponse/RerankResponse/ModerationResponse/
+//       LlmContentFilter/LlmChaosProfile — so a rename of any of those fluent methods
+//       fails this javac gate rather than shipping broken generated Java.
+const llmPreserved = {
+  name: 'llm_response_preserved',
+  matcher: httpMatcher({ method: 'POST', path: '/v1/chat/completions', priority: 7, times: 3, ttlSeconds: 120 }),
+  action: {
+    type: 'static',
+    static: { statusCode: 200, body: '', contentType: '' },
+    scenarioModeled: true,
+    scenario: { name: 'chat', requiredState: 'greeted', transitionTo: 'answered' },
+    editActionModeled: false,
+    editOriginal: {
+      httpRequest: { method: 'POST', path: '/v1/chat/completions' },
+      httpLlmResponse: {
+        provider: 'OPENAI',
+        model: 'gpt-4o',
+        completion: {
+          text: 'Hello there',
+          toolCalls: [{ id: 'call_1', name: 'get_weather', arguments: '{"city":"SF"}' }],
+          stopReason: 'stop',
+          usage: { inputTokens: 12, outputTokens: 34, cachedInputTokens: 4, cacheCreationTokens: 2, reasoningTokens: 8 },
+          streaming: true,
+          streamingPhysics: { timeToFirstToken: { timeUnit: 'MILLISECONDS', value: 250 }, tokensPerSecond: 50, jitter: 0.2, seed: 99, subwordStreaming: false },
+          outputSchema: '{"type":"object"}',
+          enforceOutputSchema: true,
+          toolChoice: 'required',
+          reasoningText: 'let me think',
+          reasoningSignature: 'sig-abc',
+        },
+        conversationPredicates: {
+          turnIndex: 2,
+          latestMessageContains: 'weather',
+          latestMessageRole: 'USER',
+          normalization: { collapseWhitespace: true, lowercase: true, dropVolatileFields: ['ts', 'id'] },
+        },
+        embedding: { dimensions: 1536, deterministicFromInput: true, seed: 7 },
+        rerank: { topN: 3, deterministicFromInput: false, seed: 11 },
+        moderation: { flaggedCategories: ['hate', 'violence'], model: 'omni-moderation-latest' },
+        contentFilter: { hate: 'high', sexual: 'safe', violence: 'medium', selfHarm: 'low' },
+        chaos: { errorStatus: 429, retryAfter: '30', errorProbability: 0.5, truncateMode: 'MID_STREAM', truncateAtFraction: 0.75, malformedSse: true, seed: 5, quotaName: 'gpt', quotaLimit: 100, quotaWindowMillis: 60000, errorKind: 'RATE_LIMIT', contentFilterBlockProbability: 0.1 },
+        delay: { timeUnit: 'MILLISECONDS', value: 500 },
+        primary: true,
+      },
+    },
+  },
+};
+
 // (d) Side-effect (before/after webhook) + wasm body matcher + connectionOptions-only.
 const extras = [
   {
@@ -134,7 +188,7 @@ const extras = [
   },
 ];
 
-const cases = [kitchenSink, ...terminalActions, editOverlay, ...extras];
+const cases = [kitchenSink, ...terminalActions, editOverlay, llmPreserved, ...extras];
 
 // Exhaustiveness guard (review INC-12): every StandardActionType member must be
 // exercised by exactly one terminalActions case, so a 15th action type added to

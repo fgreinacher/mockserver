@@ -235,60 +235,201 @@ describe('static response preserves arbitrary response headers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Java tab honest fallback — when editing an expectation whose ORIGINAL action
-// the form cannot model (e.g. httpLlmResponse), the merged JSON preserves that
-// action, but the fluent Java builder would fabricate an unrelated response().
-// The Java tab must instead show an honest notice pointing at the faithful tabs.
+// Preserved httpLlmResponse — the standard composer form cannot model an LLM
+// response, so editing such an expectation preserves it verbatim. The Java tab
+// transpiles that preserved action into the fully-typed llmResponse() builder
+// chain (.respondWithLlm(...)) instead of the old whole-action fallback notice.
+// These assertions pin the emission against the verified org.mockserver.model
+// LLM builder API (HttpLlmResponse / Completion / Usage / StreamingPhysics /
+// ToolUse / ConversationPredicates / NormalizationOptions / EmbeddingResponse /
+// RerankResponse / ModerationResponse / LlmContentFilter / LlmChaosProfile).
 // ---------------------------------------------------------------------------
 
-describe('Java tab honest fallback for an unmodeled preserved action (httpLlmResponse)', () => {
-  const original = {
-    httpRequest: { method: 'POST', path: '/v1/chat/completions' },
-    httpLlmResponse: { provider: 'openai', model: 'gpt-4o' },
-    id: 'llm-1',
-  };
+describe('preserved httpLlmResponse → type-safe llmResponse() builder chain', () => {
+  const matcher = httpMatcher({ id: 'llm-1', method: 'POST', path: '/v1/chat/completions' });
   // The form did NOT model the action (editActionModeled === false), exactly as
   // ComposerView records when actionFromExpectation returns null for httpLlmResponse.
-  const editAction: StandardActionPayload = {
+  const preserved = (httpLlmResponse: Record<string, unknown>): StandardActionPayload => ({
     type: 'static',
     static: { statusCode: 200, body: '', contentType: '' },
-    editOriginal: original,
+    editOriginal: { httpRequest: { method: 'POST', path: '/v1/chat/completions' }, httpLlmResponse, id: 'llm-1' },
     editActionModeled: false,
-  };
-  const matcher = httpMatcher({ id: 'llm-1', method: 'POST', path: '/v1/chat/completions' });
+  });
 
-  it('detects the unrepresentable action key', () => {
-    expect(unrepresentableJavaActionKey(editAction)).toBe('httpLlmResponse');
-    // A modeled action (or new-compose, no editOriginal) is representable.
-    expect(unrepresentableJavaActionKey({ ...editAction, editActionModeled: true })).toBeUndefined();
+  it('unrepresentableJavaActionKey no longer fires for httpLlmResponse', () => {
+    expect(unrepresentableJavaActionKey(preserved({ provider: 'OPENAI' }))).toBeUndefined();
+    // A modeled action (or new-compose, no editOriginal) is representable too.
+    expect(unrepresentableJavaActionKey({ ...preserved({ provider: 'OPENAI' }), editActionModeled: true })).toBeUndefined();
     expect(unrepresentableJavaActionKey({ type: 'static', static: { statusCode: 200, body: '', contentType: '' } })).toBeUndefined();
   });
 
-  it('Java tab shows an honest notice naming the action, not fabricated builder code', () => {
-    const java = standardToJava(matcher, editAction);
-    expect(java).toContain('httpLlmResponse');
+  it('a genuinely unrepresentable preserved action (httpResponses sequence) still falls back', () => {
+    const action: StandardActionPayload = {
+      type: 'static',
+      static: { statusCode: 200, body: '', contentType: '' },
+      editOriginal: { httpRequest: { path: '/api' }, httpResponses: [{ statusCode: 200 }, { statusCode: 503 }] },
+      editActionModeled: false,
+    };
+    expect(unrepresentableJavaActionKey(action)).toBe('httpResponses');
+    const java = standardToJava(httpMatcher(), action);
+    expect(java).toContain('httpResponses');
     expect(java).toContain('cannot represent');
-    expect(java).toContain('JSON or curl');
-    // No fabricated fluent builder snippet.
     expect(java).not.toContain('mockServerClient');
-    expect(java).not.toContain('.respond(');
-    expect(java).not.toContain('response(');
-    expect(java).not.toContain('request(');
   });
 
-  it('JSON / Node / curl tabs still render the full, faithful expectation JSON (httpLlmResponse preserved)', () => {
-    const json = standardToJson(matcher, editAction);
-    expect(JSON.parse(json)['httpLlmResponse']).toEqual(original.httpLlmResponse);
+  it('emits the exact fluent chain for a core completion payload', () => {
+    const java = standardToJava(matcher, preserved({
+      provider: 'OPENAI', model: 'gpt-4o',
+      completion: { text: 'Hi', toolCalls: [{ name: 'get_weather', arguments: '{}' }], usage: { inputTokens: 10, outputTokens: 20 } },
+    }));
+    expect(java).toBe(
+      'import static org.mockserver.model.Completion.completion;\n' +
+      'import static org.mockserver.model.HttpLlmResponse.llmResponse;\n' +
+      'import static org.mockserver.model.HttpRequest.request;\n' +
+      'import static org.mockserver.model.ToolUse.toolUse;\n' +
+      'import static org.mockserver.model.Usage.usage;\n' +
+      'import org.mockserver.model.Provider;\n' +
+      '\n' +
+      'mockServerClient\n' +
+      '  .when(\n' +
+      '    request()\n' +
+      '        .withMethod("POST")\n' +
+      '        .withPath("/v1/chat/completions")\n' +
+      '  )\n' +
+      '  .respondWithLlm(\n' +
+      '    llmResponse()\n' +
+      '        .withProvider(Provider.OPENAI)\n' +
+      '        .withModel("gpt-4o")\n' +
+      '        .withCompletion(\n' +
+      '            completion()\n' +
+      '                .withText("Hi")\n' +
+      '                .withToolCall(toolUse("get_weather").withArguments("{}"))\n' +
+      '                .withUsage(\n' +
+      '                    usage()\n' +
+      '                        .withInputTokens(10)\n' +
+      '                        .withOutputTokens(20)\n' +
+      '                )\n' +
+      '        )\n' +
+      '  );'
+    );
+  });
+
+  it('maps every field of a kitchen-sink LLM payload to the correct typed setter', () => {
+    const java = standardToJava(matcher, preserved({
+      provider: 'OPENAI', model: 'gpt-4o',
+      completion: {
+        text: 'Hello there',
+        toolCalls: [{ id: 'call_1', name: 'get_weather', arguments: '{"city":"SF"}' }],
+        stopReason: 'stop',
+        usage: { inputTokens: 12, outputTokens: 34, cachedInputTokens: 4, cacheCreationTokens: 2, reasoningTokens: 8 },
+        streaming: true,
+        streamingPhysics: { timeToFirstToken: { timeUnit: 'MILLISECONDS', value: 250 }, tokensPerSecond: 50, jitter: 0.2, seed: 99, subwordStreaming: false },
+        outputSchema: '{"type":"object"}', enforceOutputSchema: true, toolChoice: 'required',
+        reasoningText: 'let me think', reasoningSignature: 'sig-abc',
+      },
+      conversationPredicates: {
+        turnIndex: 2, latestMessageContains: 'weather', latestMessageRole: 'USER',
+        normalization: { collapseWhitespace: true, lowercase: true, dropVolatileFields: ['ts', 'id'] },
+      },
+      embedding: { dimensions: 1536, deterministicFromInput: true, seed: 7 },
+      rerank: { topN: 3, deterministicFromInput: false, seed: 11 },
+      moderation: { flaggedCategories: ['hate', 'violence'], model: 'omni-moderation-latest' },
+      contentFilter: { hate: 'high', sexual: 'safe', violence: 'medium', selfHarm: 'low' },
+      chaos: { errorStatus: 429, retryAfter: '30', errorProbability: 0.5, truncateMode: 'MID_STREAM', truncateAtFraction: 0.75, malformedSse: true, seed: 5, quotaName: 'gpt', quotaLimit: 100, quotaWindowMillis: 60000, errorKind: 'RATE_LIMIT', contentFilterBlockProbability: 0.1 },
+      delay: { timeUnit: 'MILLISECONDS', value: 500 },
+      primary: true,
+    }));
+    // Response-level
+    expect(java).toContain('.respondWithLlm(');
+    expect(java).toContain('.withProvider(Provider.OPENAI)');
+    // Completion + usage (incl. cache/reasoning subtotals)
+    expect(java).toContain('.withText("Hello there")');
+    expect(java).toContain('.withToolCall(toolUse("get_weather").withId("call_1").withArguments("{\\"city\\":\\"SF\\"}"))');
+    expect(java).toContain('.withStopReason("stop")');
+    expect(java).toContain('.withCachedInputTokens(4)');
+    expect(java).toContain('.withCacheCreationTokens(2)');
+    expect(java).toContain('.withReasoningTokens(8)');
+    // Streaming physics (incl. subwordStreaming + Delay + Long seed)
+    expect(java).toContain('.withStreaming(true)');
+    expect(java).toContain('.withTimeToFirstToken(new Delay(TimeUnit.MILLISECONDS, 250))');
+    expect(java).toContain('.withTokensPerSecond(50)');
+    expect(java).toContain('.withJitter(0.2)');
+    expect(java).toContain('.withSeed(99L)');
+    expect(java).toContain('.withSubwordStreaming(false)');
+    // Structured output + tool choice + reasoning
+    expect(java).toContain('.withOutputSchema("{\\"type\\":\\"object\\"}")');
+    expect(java).toContain('.withEnforceOutputSchema(true)');
+    expect(java).toContain('.withToolChoice("required")');
+    expect(java).toContain('.withReasoningText("let me think")');
+    expect(java).toContain('.withReasoningSignature("sig-abc")');
+    // Conversation predicates (+ role enum + normalization)
+    expect(java).toContain('.withConversationPredicates(');
+    expect(java).toContain('.withTurnIndex(2)');
+    expect(java).toContain('.withLatestMessageContains("weather")');
+    expect(java).toContain('.withLatestMessageRole(ParsedMessage.Role.USER)');
+    expect(java).toContain('.withNormalization(');
+    expect(java).toContain('.withLowercase(true)');
+    expect(java).toContain('.withDropVolatileFields(Arrays.asList("ts", "id"))');
+    // Embedding / rerank / moderation / content filter
+    expect(java).toContain('.withEmbedding(');
+    expect(java).toContain('.withDimensions(1536)');
+    expect(java).toContain('.withRerank(');
+    expect(java).toContain('.withTopN(3)');
+    expect(java).toContain('.withModeration(');
+    expect(java).toContain('.withFlaggedCategory("hate")');
+    expect(java).toContain('.withFlaggedCategory("violence")');
+    expect(java).toContain('.withContentFilter(');
+    expect(java).toContain('.withHate("high")');
+    // Chaos (incl. TruncateMode enum + Double + Long)
+    expect(java).toContain('.withChaos(');
+    expect(java).toContain('.withErrorStatus(429)');
+    expect(java).toContain('.withErrorProbability(0.5)');
+    expect(java).toContain('.withTruncateMode(LlmChaosProfile.TruncateMode.MID_STREAM)');
+    expect(java).toContain('.withQuotaWindowMillis(60000L)');
+    expect(java).toContain('.withErrorKind("RATE_LIMIT")');
+    // Action-base modifiers
+    expect(java).toContain('.withDelay(TimeUnit.MILLISECONDS, 500)');
+    expect(java).toContain('.withPrimary(true)');
+    // No whole-action fallback, no fabricated static response()
+    expect(java).not.toContain('cannot represent');
+    expect(java).not.toContain('response()');
+    // Correct static/plain imports for the builders used
+    expect(java).toContain('import static org.mockserver.model.LlmChaosProfile.llmChaosProfile;');
+    expect(java).toContain('import static org.mockserver.model.NormalizationOptions.normalizationOptions;');
+    expect(java).toContain('import org.mockserver.llm.ParsedMessage;');
+    expect(java).toContain('import org.mockserver.model.LlmChaosProfile;');
+    expect(java).toContain('import java.util.Arrays;');
+  });
+
+  it('cross-cutting modifiers (priority/times/ttl + scenario) still emit on the LLM path', () => {
+    const action: StandardActionPayload = {
+      ...preserved({ provider: 'ANTHROPIC', completion: { text: 'ok' } }),
+      scenarioModeled: true,
+      scenario: { name: 'chat', requiredState: 'greeted', transitionTo: 'answered' },
+    };
+    const m = httpMatcher({ method: 'POST', path: '/v1/messages', priority: 7, times: 3, ttlSeconds: 120 });
+    const java = standardToJava(m, action);
+    // 4-arg when overload driven by the built JSON
+    expect(java).toContain('Times.exactly(3)');
+    expect(java).toContain('TimeToLive.exactly(TimeUnit.SECONDS, 120L)');
+    expect(java).toMatch(/\n {4}7\n {2}\)/); // priority as the 4th when(...) arg
+    // Scenario setters on the ForwardChainExpectation, before the terminal action
+    expect(java).toContain('.withScenarioName("chat")');
+    expect(java).toContain('.withScenarioState("greeted")');
+    expect(java).toContain('.withNewScenarioState("answered")');
+    expect(java).toContain('.respondWithLlm(');
+    // ordering: scenario setters precede the terminal action
+    expect(java.indexOf('.withScenarioName(')).toBeLessThan(java.indexOf('.respondWithLlm('));
+  });
+
+  it('JSON / Node / curl tabs remain byte-for-byte faithful (JSON emission unchanged)', () => {
+    const action = preserved({ provider: 'OPENAI', model: 'gpt-4o', completion: { text: 'Hi' } });
+    const json = standardToJson(matcher, action);
+    expect(JSON.parse(json)['httpLlmResponse']).toEqual({ provider: 'OPENAI', model: 'gpt-4o', completion: { text: 'Hi' } });
     // The fabricated static response must NOT leak into the wire JSON.
     expect(JSON.parse(json)['httpResponse']).toBeUndefined();
-    expect(standardToNode(matcher, editAction, 'http://localhost:1080')).toContain('httpLlmResponse');
-    expect(standardToCurl(matcher, editAction, 'http://localhost:1080')).toContain('httpLlmResponse');
-  });
-
-  it('does NOT trigger the fallback when the action is modeled — Java stays faithful', () => {
-    const java = standardToJava(matcher, { ...editAction, editActionModeled: true });
-    expect(java).toContain('mockServerClient');
-    expect(java).not.toContain('cannot represent');
+    expect(standardToNode(matcher, action, 'http://localhost:1080')).toContain('httpLlmResponse');
+    expect(standardToCurl(matcher, action, 'http://localhost:1080')).toContain('httpLlmResponse');
   });
 });
 
