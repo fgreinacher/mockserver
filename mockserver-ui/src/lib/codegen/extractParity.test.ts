@@ -1,0 +1,33 @@
+/**
+ * Byte-identity parity harness for the per-language client-code emitters.
+ *
+ * The committed golden fixture ({@link ./__fixtures__/emitterGolden.ts}) was
+ * generated from the code BEFORE the six non-Java emitters (standardToNode /
+ * Python / Go / Csharp / Ruby / Rust) were extracted out of standardCodegen.ts
+ * into per-language modules under lib/codegen/. This test asserts every emitter
+ * reproduces that golden output character-for-character across the extraction
+ * refactor, and permanently guards the emitters against accidental output drift
+ * during the subsequent typed-emitter rewrites.
+ *
+ * It drives the emitters via extractParityCases, which imports them from
+ * '../standardCodegen' (their canonical re-export surface), so the import path is
+ * identical before and after extraction. Snapshots are deliberately NOT used —
+ * vitest snapshot state is unavailable in this jsdom pool — and an explicit,
+ * committed golden is a clearer, self-documenting proof of byte-identity.
+ */
+import { describe, it, expect } from 'vitest';
+import { combos, emitters } from './extractParityCases';
+import { emitterGolden } from './__fixtures__/emitterGolden';
+
+describe('per-language emitter byte-identity parity', () => {
+  for (const [lang, emit] of Object.entries(emitters)) {
+    describe(lang, () => {
+      for (const combo of combos) {
+        it(`${combo.name}`, () => {
+          const actual = emit(combo.matcher, combo.action, combo.baseUrl);
+          expect(actual).toBe(emitterGolden[lang]?.[combo.name]);
+        });
+      }
+    });
+  }
+});
