@@ -137,8 +137,11 @@ describe('standardToNode Expectation type proof', () => {
 
   it('negative control: a bogus key makes the literal fail the type check', () => {
     const good = extractLiteral(standardToNode(firstCombo.matcher, firstCombo.action, firstCombo.baseUrl));
-    // Inject an excess property the Expectation type does not declare.
-    const bad = good.replace('{', '{\n  "__definitelyNotAnExpectationField__": true,');
+    // Inject an excess property the Expectation type does not declare, right
+    // after the literal's opening brace. Built by concatenation (not replace)
+    // so the single-insertion intent is explicit.
+    expect(good.startsWith('{')).toBe(true);
+    const bad = '{\n  "__definitelyNotAnExpectationField__": true,' + good.slice(1);
     const { ok, output } = typecheckExpectationLiterals('negative.ts', [bad]);
     expect(ok, 'tsc must reject a literal with an undeclared Expectation field').toBe(false);
     expect(output).toContain('__definitelyNotAnExpectationField__');
