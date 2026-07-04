@@ -122,7 +122,10 @@ describe('standardToCsharp — edit-only passthrough features', () => {
         { statusCode: 500, body: 'fallback' },
       ],
       responseMode: 'SEQUENTIAL',
-      httpLlmResponse: { provider: 'openai', model: 'gpt-4o' },
+      httpLlmResponse: {
+        provider: 'OPENAI', model: 'gpt-4o',
+        completion: { text: 'hi', usage: { inputTokens: 1, outputTokens: 2 } },
+      },
     },
   };
 
@@ -131,9 +134,13 @@ describe('standardToCsharp — edit-only passthrough features', () => {
     expect(code).toContain('Namespace = "tenant-a"');
     expect(code).toContain('HttpResponses = new List<HttpResponse>');
     expect(code).toContain('ResponseMode = ResponseMode.SEQUENTIAL');
-    // LLM is an edit-only action the composer never authors — preserved verbatim
-    // into its typed property (never a whole-Expectation blob).
-    expect(code).toContain('HttpLlmResponse = JsonSerializer.Deserialize<HttpLlmResponse>(');
+    // LLM is an edit-only action the composer never authors — now emitted as a
+    // TYPED object initializer (not a JsonSerializer.Deserialize<HttpLlmResponse> blob).
+    expect(code).toContain('using MockServer.Client.Llm;');
+    expect(code).toContain('HttpLlmResponse = new HttpLlmResponse');
+    expect(code).toContain('Completion = new Completion');
+    expect(code).toContain('Usage = new Usage');
+    expect(code).not.toContain('Deserialize<HttpLlmResponse>');
     expect(code).not.toContain('Deserialize<Expectation>');
   });
 });

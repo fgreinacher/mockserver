@@ -479,6 +479,280 @@ class PyBuilder {
     return renderList(items, indent);
   }
 
+  /**
+   * Generic typed-constructor renderer: emit `ClassName(kw=...)` from a field
+   * spec `[wireKey, pythonKwarg, convert]`, skipping absent fields. Used by the
+   * LLM / rate-limit / cross-protocol / object-callback / forward-validate /
+   * gRPC-bidi builders so every edit-preserved wire field maps onto a typed
+   * dataclass argument (never a raw dict passthrough).
+   */
+  private typed(
+    className: string,
+    o: Json,
+    spec: Array<[string, string, (v: unknown, indent: number) => string]>,
+    indent: number,
+  ): string {
+    this.use(className);
+    const kw: Kw[] = [];
+    for (const [wire, py, fn] of spec) {
+      if (o[wire] != null) kw.push([py, fn(o[wire], indent + 4)]);
+    }
+    return renderCall(className, kw, indent);
+  }
+
+  // --- LLM response (httpLlmResponse) — fully typed tree ---------------------
+
+  private llm(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const B = (x: unknown) => pyBool(x);
+    return this.typed('HttpLlmResponse', v as Json, [
+      ['provider', 'provider', S],
+      ['model', 'model', S],
+      ['completion', 'completion', (x, i) => this.completion(x, i)],
+      ['embedding', 'embedding', (x, i) => this.embedding(x, i)],
+      ['rerank', 'rerank', (x, i) => this.rerank(x, i)],
+      ['moderation', 'moderation', (x, i) => this.moderation(x, i)],
+      ['contentFilter', 'content_filter', (x, i) => this.contentFilter(x, i)],
+      ['conversationPredicates', 'conversation_predicates', (x, i) => this.conversationPredicates(x, i)],
+      ['chaos', 'chaos', (x, i) => this.llmChaos(x, i)],
+      ['delay', 'delay', (x) => this.delay(x)],
+      ['primary', 'primary', B],
+    ], indent);
+  }
+
+  private completion(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const B = (x: unknown) => pyBool(x);
+    return this.typed('Completion', v as Json, [
+      ['text', 'text', S],
+      ['toolCalls', 'tool_calls', (x, i) => this.toolCalls(x, i)],
+      ['stopReason', 'stop_reason', S],
+      ['usage', 'usage', (x, i) => this.usage(x, i)],
+      ['streaming', 'streaming', B],
+      ['streamingPhysics', 'streaming_physics', (x, i) => this.streamingPhysics(x, i)],
+      ['outputSchema', 'output_schema', S],
+      ['enforceOutputSchema', 'enforce_output_schema', B],
+      ['toolChoice', 'tool_choice', S],
+      ['reasoningText', 'reasoning_text', S],
+      ['reasoningSignature', 'reasoning_signature', S],
+      ['model', 'model', S],
+    ], indent);
+  }
+
+  private toolCalls(v: unknown, indent: number): string {
+    this.use('ToolUse');
+    const items = (v as Json[]).map((t) => {
+      const kw: Kw[] = [];
+      if (t['name'] != null) kw.push(['name', pyStr(t['name'])]);
+      if (t['id'] != null) kw.push(['id', pyStr(t['id'])]);
+      if (t['arguments'] != null) kw.push(['arguments', pyStr(t['arguments'])]);
+      return renderInline('ToolUse', kw);
+    });
+    return renderList(items, indent);
+  }
+
+  private usage(v: unknown, indent: number): string {
+    void indent;
+    this.use('Usage');
+    const o = v as Json;
+    const kw: Kw[] = [];
+    for (const [wire, py] of [
+      ['inputTokens', 'input_tokens'], ['outputTokens', 'output_tokens'],
+      ['cachedInputTokens', 'cached_input_tokens'], ['cacheCreationTokens', 'cache_creation_tokens'],
+      ['reasoningTokens', 'reasoning_tokens'],
+    ] as [string, string][]) {
+      if (o[wire] != null) kw.push([py, pyNum(o[wire])]);
+    }
+    return renderInline('Usage', kw);
+  }
+
+  private streamingPhysics(v: unknown, indent: number): string {
+    const N = (x: unknown) => pyNum(x);
+    const B = (x: unknown) => pyBool(x);
+    return this.typed('StreamingPhysics', v as Json, [
+      ['timeToFirstToken', 'time_to_first_token', (x) => this.delay(x)],
+      ['tokensPerSecond', 'tokens_per_second', N],
+      ['jitter', 'jitter', N],
+      ['seed', 'seed', N],
+      ['subwordStreaming', 'subword_streaming', B],
+    ], indent);
+  }
+
+  private conversationPredicates(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const N = (x: unknown) => pyNum(x);
+    return this.typed('ConversationPredicates', v as Json, [
+      ['turnIndex', 'turn_index', N],
+      ['latestMessageContains', 'latest_message_contains', S],
+      ['latestMessageMatches', 'latest_message_matches', S],
+      ['latestMessageRole', 'latest_message_role', S],
+      ['containsToolResultFor', 'contains_tool_result_for', S],
+      ['semanticMatchAgainst', 'semantic_match_against', S],
+      ['normalization', 'normalization', (x, i) => this.normalization(x, i)],
+    ], indent);
+  }
+
+  private normalization(v: unknown, indent: number): string {
+    const B = (x: unknown) => pyBool(x);
+    const SL = (x: unknown) => strArray(x);
+    return this.typed('NormalizationOptions', v as Json, [
+      ['collapseWhitespace', 'collapse_whitespace', B],
+      ['lowercase', 'lowercase', B],
+      ['sortJsonKeys', 'sort_json_keys', B],
+      ['dropBuiltInVolatileFields', 'drop_built_in_volatile_fields', B],
+      ['dropVolatileFields', 'drop_volatile_fields', SL],
+    ], indent);
+  }
+
+  private embedding(v: unknown, indent: number): string {
+    const N = (x: unknown) => pyNum(x);
+    const B = (x: unknown) => pyBool(x);
+    return this.typed('EmbeddingResponse', v as Json, [
+      ['dimensions', 'dimensions', N],
+      ['deterministicFromInput', 'deterministic_from_input', B],
+      ['seed', 'seed', N],
+    ], indent);
+  }
+
+  private rerank(v: unknown, indent: number): string {
+    const N = (x: unknown) => pyNum(x);
+    const B = (x: unknown) => pyBool(x);
+    return this.typed('RerankResponse', v as Json, [
+      ['topN', 'top_n', N],
+      ['deterministicFromInput', 'deterministic_from_input', B],
+      ['seed', 'seed', N],
+    ], indent);
+  }
+
+  private moderation(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const SL = (x: unknown) => strArray(x);
+    return this.typed('ModerationResponse', v as Json, [
+      ['flaggedCategories', 'flagged_categories', SL],
+      ['model', 'model', S],
+    ], indent);
+  }
+
+  private contentFilter(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    return this.typed('ContentFilter', v as Json, [
+      ['hate', 'hate', S], ['sexual', 'sexual', S], ['violence', 'violence', S], ['selfHarm', 'self_harm', S],
+    ], indent);
+  }
+
+  private llmChaos(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const N = (x: unknown) => pyNum(x);
+    const B = (x: unknown) => pyBool(x);
+    return this.typed('LlmChaosProfile', v as Json, [
+      ['errorStatus', 'error_status', N],
+      ['retryAfter', 'retry_after', S],
+      ['errorProbability', 'error_probability', N],
+      ['truncateMode', 'truncate_mode', S],
+      ['truncateAtFraction', 'truncate_at_fraction', N],
+      ['malformedSse', 'malformed_sse', B],
+      ['seed', 'seed', N],
+      ['quotaName', 'quota_name', S],
+      ['quotaLimit', 'quota_limit', N],
+      ['quotaWindowMillis', 'quota_window_millis', N],
+      ['quotaErrorStatus', 'quota_error_status', N],
+      ['tokenQuotaLimit', 'token_quota_limit', N],
+      ['tokenQuotaWindowMillis', 'token_quota_window_millis', N],
+      ['contentFilterBlockProbability', 'content_filter_block_probability', N],
+      ['errorKind', 'error_kind', S],
+    ], indent);
+  }
+
+  // --- Non-LLM edit-preserved siblings / actions ----------------------------
+
+  private httpResponses(v: unknown, indent: number): string {
+    const items = (v as Json[]).map((r) => this.response(r, indent + 4));
+    return renderList(items, indent);
+  }
+
+  private rateLimit(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const N = (x: unknown) => pyNum(x);
+    return this.typed('RateLimit', v as Json, [
+      ['name', 'name', S],
+      ['algorithm', 'algorithm', S],
+      ['limit', 'limit', N],
+      ['windowMillis', 'window_millis', N],
+      ['burst', 'burst', N],
+      ['refillPerSecond', 'refill_per_second', N],
+      ['errorStatus', 'error_status', N],
+      ['retryAfter', 'retry_after', S],
+    ], indent);
+  }
+
+  private crossProtocol(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const items = (v as Json[]).map((c) => this.typed('CrossProtocolScenario', c, [
+      ['trigger', 'trigger', S],
+      ['matchPattern', 'match_pattern', S],
+      ['scenarioName', 'scenario_name', S],
+      ['targetState', 'target_state', S],
+    ], indent + 4));
+    return renderList(items, indent);
+  }
+
+  private objectCallback(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const B = (x: unknown) => pyBool(x);
+    return this.typed('HttpObjectCallback', v as Json, [
+      ['clientId', 'client_id', S],
+      ['responseCallback', 'response_callback', B],
+      ['delay', 'delay', (x) => this.delay(x)],
+      ['primary', 'primary', B],
+    ], indent);
+  }
+
+  private forwardValidate(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const N = (x: unknown) => pyNum(x);
+    const B = (x: unknown) => pyBool(x);
+    return this.typed('HttpForwardValidateAction', v as Json, [
+      ['specUrlOrPayload', 'spec_url_or_payload', S],
+      ['host', 'host', S],
+      ['port', 'port', N],
+      ['scheme', 'scheme', S],
+      ['validateRequest', 'validate_request', B],
+      ['validateResponse', 'validate_response', B],
+      ['validationMode', 'validation_mode', S],
+      ['delay', 'delay', (x) => this.delay(x)],
+      ['primary', 'primary', B],
+    ], indent);
+  }
+
+  private grpcMessages(v: unknown, indent: number): string {
+    this.use('GrpcStreamMessage');
+    const items = (v as Json[]).map((m) => renderInline('GrpcStreamMessage', [['json', pyStr(m['json'])]]));
+    return renderList(items, indent);
+  }
+
+  private grpcBidi(v: unknown, indent: number): string {
+    const S = (x: unknown) => pyStr(x);
+    const B = (x: unknown) => pyBool(x);
+    return this.typed('GrpcBidiResponse', v as Json, [
+      ['statusName', 'status_name', S],
+      ['statusMessage', 'status_message', S],
+      ['headers', 'headers', (x, i) => this.keyMultiList(x, i)],
+      ['messages', 'messages', (x, i) => this.grpcMessages(x, i)],
+      ['rules', 'rules', (x, i) => this.grpcBidiRules(x, i)],
+      ['closeConnection', 'close_connection', B],
+      ['delay', 'delay', (x) => this.delay(x)],
+      ['primary', 'primary', B],
+    ], indent);
+  }
+
+  private grpcBidiRules(v: unknown, indent: number): string {
+    const items = (v as Json[]).map((r) => this.typed('GrpcBidiRule', r, [
+      ['matchJson', 'match_json', (x) => pyStr(x)],
+      ['responses', 'responses', (x, i) => this.grpcMessages(x, i)],
+    ], indent + 4));
+    return renderList(items, indent);
+  }
+
   private capture(v: unknown, indent: number): string {
     this.use('CaptureRule');
     const items = (v as Json[]).map((c) =>
@@ -535,6 +809,14 @@ class PyBuilder {
     emit('httpForwardTemplate', 'http_forward_template', (x, i) => this.template(x, i));
     emit('httpForwardClassCallback', 'http_forward_class_callback', (x, i) => this.classCallback(x, i));
     emit('grpcStreamResponse', 'grpc_stream_response', (x, i) => this.grpc(x, i));
+    // Edit-preserved actions the standard composer form cannot model but an edit
+    // overlay carries through verbatim — emitted TYPED, never dropped or blobbed.
+    emit('httpLlmResponse', 'http_llm_response', (x, i) => this.llm(x, i));
+    emit('httpResponses', 'http_responses', (x, i) => this.httpResponses(x, i));
+    emit('httpResponseObjectCallback', 'http_response_object_callback', (x, i) => this.objectCallback(x, i));
+    emit('httpForwardObjectCallback', 'http_forward_object_callback', (x, i) => this.objectCallback(x, i));
+    emit('httpForwardValidateAction', 'http_forward_validate_action', (x, i) => this.forwardValidate(x, i));
+    emit('grpcBidiResponse', 'grpc_bidi_response', (x, i) => this.grpcBidi(x, i));
     emit('steps', 'steps', (x, i) => this.steps(x, i));
     emit('beforeActions', 'before_actions', (x, i) => this.actions(x, i));
     emit('afterActions', 'after_actions', (x, i) => this.actions(x, i));
@@ -545,9 +827,16 @@ class PyBuilder {
     emit('newScenarioState', 'new_scenario_state', (x) => pyStr(x));
     emit('id', 'id', (x) => pyStr(x));
     emit('priority', 'priority', (x) => pyNum(x));
+    emit('percentage', 'percentage', (x) => pyNum(x));
+    emit('responseMode', 'response_mode', (x) => pyStr(x));
+    emit('responseWeights', 'response_weights', (x) => intArray(x));
+    emit('switchAfter', 'switch_after', (x) => pyNum(x));
+    emit('rateLimit', 'rate_limit', (x, i) => this.rateLimit(x, i));
+    emit('crossProtocolScenarios', 'cross_protocol_scenarios', (x, i) => this.crossProtocol(x, i));
     emit('times', 'times', (x) => this.times(x));
     emit('timeToLive', 'time_to_live', (x) => this.ttl(x));
     emit('namespace', 'namespace', (x) => pyStr(x));
+    emit('timestamp', 'timestamp', (x) => pyStr(x));
     return kw;
   }
 }

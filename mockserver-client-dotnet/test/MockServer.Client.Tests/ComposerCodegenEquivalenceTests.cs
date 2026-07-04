@@ -25,6 +25,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 using MockServer.Client.Models;
+using MockServer.Client.Llm;
 using Xunit;
 
 namespace MockServer.Client.Tests;
@@ -648,4 +649,172 @@ public class ComposerCodegenEquivalenceTests
             },
         },
         @"{""httpRequest"":{""path"":""/api"",""method"":""GET""},""httpOverrideForwardedRequest"":{""requestOverride"":{""method"":""PATCH"",""secure"":true,""path"":""/v2/api"",""headers"":{""X-Fwd"":[""yes""],""Host"":[""rewrite.example.com""]},""queryStringParameters"":{""debug"":[""1""]},""body"":""{\""patched\"":true}""}}}");
+
+    // ---- Edit-preserved actions/siblings the standard composer form cannot model ----
+    // These arrive via an edit overlay (editActionModeled === false / sibling
+    // passthrough) and MUST be emitted as TYPED object initializers — previously the
+    // C# emitter degraded them to JsonSerializer.Deserialize<T>(@"json") fragments.
+
+    [Fact]
+    public void Strict_preserved_llm_completion() => AssertStrict(
+        new Expectation
+        {
+            HttpRequest = new HttpRequest
+            {
+                Method = "POST",
+                Path = "/v1/messages",
+            },
+            HttpLlmResponse = new HttpLlmResponse
+            {
+                Provider = "ANTHROPIC",
+                Model = "claude-sonnet-4-20250514",
+                Completion = new Completion
+                {
+                    Text = "Hello, world!",
+                    ToolCalls = new List<ToolUse>
+                    {
+                        new ToolUse
+                        {
+                            Id = "call_1",
+                            Name = "get_weather",
+                            Arguments = "{\"city\":\"SF\"}",
+                        },
+                    },
+                    StopReason = "end_turn",
+                    Usage = new Usage
+                    {
+                        InputTokens = 10,
+                        OutputTokens = 25,
+                        CachedInputTokens = 2,
+                        CacheCreationTokens = 3,
+                        ReasoningTokens = 4,
+                    },
+                    Streaming = true,
+                    StreamingPhysics = new StreamingPhysics
+                    {
+                        TokensPerSecond = 50,
+                        Jitter = 0.2,
+                        Seed = 7,
+                        SubwordStreaming = true,
+                    },
+                    OutputSchema = "{\"type\":\"object\"}",
+                    EnforceOutputSchema = true,
+                    ToolChoice = "auto",
+                    ReasoningText = "thinking",
+                    ReasoningSignature = "sig",
+                    Model = "claude-sonnet-4-20250514",
+                },
+                ConversationPredicates = new ConversationPredicates
+                {
+                    TurnIndex = 1,
+                    LatestMessageContains = "weather",
+                    LatestMessageMatches = ".*weather.*",
+                    LatestMessageRole = "USER",
+                    ContainsToolResultFor = "get_weather",
+                    SemanticMatchAgainst = "weather query",
+                    Normalization = new NormalizationOptions
+                    {
+                        CollapseWhitespace = true,
+                        Lowercase = true,
+                        SortJsonKeys = true,
+                        DropBuiltInVolatileFields = true,
+                        DropVolatileFields = new() { "id", "created" },
+                    },
+                },
+                Delay = new Delay { TimeUnit = TimeUnit.MILLISECONDS, Value = 15 },
+                Primary = true,
+            },
+        },
+        @"{""httpRequest"":{""method"":""POST"",""path"":""/v1/messages""},""httpLlmResponse"":{""provider"":""ANTHROPIC"",""model"":""claude-sonnet-4-20250514"",""delay"":{""timeUnit"":""MILLISECONDS"",""value"":15},""completion"":{""text"":""Hello, world!"",""toolCalls"":[{""id"":""call_1"",""name"":""get_weather"",""arguments"":""{\""city\"":\""SF\""}""}],""stopReason"":""end_turn"",""usage"":{""inputTokens"":10,""outputTokens"":25,""cachedInputTokens"":2,""cacheCreationTokens"":3,""reasoningTokens"":4},""streaming"":true,""outputSchema"":""{\""type\"":\""object\""}"",""enforceOutputSchema"":true,""toolChoice"":""auto"",""reasoningText"":""thinking"",""reasoningSignature"":""sig"",""model"":""claude-sonnet-4-20250514"",""streamingPhysics"":{""tokensPerSecond"":50,""jitter"":0.2,""seed"":7,""subwordStreaming"":true}},""conversationPredicates"":{""turnIndex"":1,""latestMessageContains"":""weather"",""latestMessageMatches"":"".*weather.*"",""latestMessageRole"":""USER"",""containsToolResultFor"":""get_weather"",""semanticMatchAgainst"":""weather query"",""normalization"":{""collapseWhitespace"":true,""lowercase"":true,""sortJsonKeys"":true,""dropBuiltInVolatileFields"":true,""dropVolatileFields"":[""id"",""created""]}},""primary"":true}}");
+
+    [Fact]
+    public void Strict_preserved_response_sequence() => AssertStrict(
+        new Expectation
+        {
+            HttpRequest = new HttpRequest
+            {
+                Method = "GET",
+                Path = "/seq",
+            },
+            HttpResponses = new List<HttpResponse>
+            {
+                new HttpResponse
+                {
+                    StatusCode = 200,
+                    Body = "first",
+                },
+                new HttpResponse
+                {
+                    StatusCode = 201,
+                    Headers = new Dictionary<string, List<string>>
+                    {
+                        ["content-type"] = new() { "text/plain" },
+                    },
+                    Body = "second",
+                },
+            },
+            ResponseMode = ResponseMode.WEIGHTED,
+            ResponseWeights = new List<int> { 3, 1 },
+            SwitchAfter = 5,
+        },
+        @"{""httpRequest"":{""method"":""GET"",""path"":""/seq""},""httpResponses"":[{""statusCode"":200,""body"":""first""},{""statusCode"":201,""body"":""second"",""headers"":{""content-type"":[""text/plain""]}}],""responseMode"":""WEIGHTED"",""responseWeights"":[3,1],""switchAfter"":5}");
+
+    [Fact]
+    public void Strict_preserved_rate_limit() => AssertStrict(
+        new Expectation
+        {
+            Percentage = 50,
+            HttpRequest = new HttpRequest
+            {
+                Method = "GET",
+                Path = "/rl",
+            },
+            HttpResponse = new HttpResponse
+            {
+                StatusCode = 200,
+                Body = "ok",
+            },
+            RateLimit = new RateLimit
+            {
+                Name = "api",
+                Algorithm = "token_bucket",
+                Limit = 100,
+                WindowMillis = 60000,
+                Burst = 20,
+                RefillPerSecond = 5m,
+                ErrorStatus = 429,
+                RetryAfter = "1",
+            },
+        },
+        @"{""httpRequest"":{""method"":""GET"",""path"":""/rl""},""rateLimit"":{""name"":""api"",""algorithm"":""token_bucket"",""limit"":100,""windowMillis"":60000,""burst"":20,""refillPerSecond"":5,""errorStatus"":429,""retryAfter"":""1""},""percentage"":50,""httpResponse"":{""statusCode"":200,""body"":""ok""}}");
+
+    [Fact]
+    public void Strict_preserved_cross_protocol() => AssertStrict(
+        new Expectation
+        {
+            Percentage = 25,
+            Namespace = "team-a",
+            HttpRequest = new HttpRequest
+            {
+                Method = "GET",
+                Path = "/xp",
+            },
+            HttpResponse = new HttpResponse
+            {
+                StatusCode = 200,
+                Body = "ok",
+            },
+            CrossProtocolScenarios = new List<CrossProtocolScenario>
+            {
+                new CrossProtocolScenario
+                {
+                    Trigger = CrossProtocolTrigger.DNS_QUERY,
+                    MatchPattern = "*.example.com",
+                    ScenarioName = "dns-scn",
+                    TargetState = "RESOLVED",
+                },
+            },
+            Timestamp = "2026-01-01T00:00:00Z",
+        },
+        @"{""httpRequest"":{""method"":""GET"",""path"":""/xp""},""crossProtocolScenarios"":[{""trigger"":""DNS_QUERY"",""matchPattern"":""*.example.com"",""scenarioName"":""dns-scn"",""targetState"":""RESOLVED""}],""namespace"":""team-a"",""timestamp"":""2026-01-01T00:00:00Z"",""percentage"":25,""httpResponse"":{""statusCode"":200,""body"":""ok""}}");
 }

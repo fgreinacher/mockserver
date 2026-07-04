@@ -642,17 +642,169 @@ function renderCrossProtocol(cp: Record<string, unknown>, indent: number): strin
 }
 
 // ---------------------------------------------------------------------------
-// Top-level Expectation
+// Edit-preserved actions / siblings — typed object initializers (previously a
+// per-fragment JsonSerializer.Deserialize<T>). Every field the composer's edit
+// overlay can carry maps onto a strongly-typed model property. The one genuinely
+// untyped leaf is HttpLlmResponse.Chaos (declared `object?` in the client model,
+// with no LLM-specific chaos class), which stays a typed JsonElement fragment —
+// mirroring the Go `raw` / Rust `serde_json::Value` treatment of the same field.
 // ---------------------------------------------------------------------------
 
-/** Exotic, edit-only top-level actions carried as a typed per-fragment Deserialize. */
-const RAW_TOPLEVEL: Record<string, { prop: string; type: string }> = {
-  httpResponseObjectCallback: { prop: 'HttpResponseObjectCallback', type: 'HttpObjectCallback' },
-  httpForwardObjectCallback: { prop: 'HttpForwardObjectCallback', type: 'HttpObjectCallback' },
-  httpForwardValidateAction: { prop: 'HttpForwardValidateAction', type: 'HttpForwardValidateAction' },
-  httpLlmResponse: { prop: 'HttpLlmResponse', type: 'HttpLlmResponse' },
-  grpcBidiResponse: { prop: 'GrpcBidiResponse', type: 'GrpcBidiResponse' },
-  rateLimit: { prop: 'RateLimit', type: 'RateLimit' },
+type CsSpec = Array<[wireKey: string, prop: string, fn: (v: unknown, indent: number, ctx: Ctx) => string]>;
+const cS = (v: unknown): string => csStr(String(v));
+const cN = (v: unknown): string => csNumber(Number(v));
+const cB = (v: unknown): string => (v ? 'true' : 'false');
+/** decimal literal (RateLimit.RefillPerSecond is `decimal?`, not double). */
+const cDec = (v: unknown): string => `${csNumber(Number(v))}m`;
+const cStrList = (v: unknown): string => renderStringList(Array.isArray(v) ? v : []);
+
+function csTyped(type: string, o: Record<string, unknown>, spec: CsSpec, indent: number, ctx: Ctx): string {
+  const props: string[] = [];
+  for (const [wire, prop, fn] of spec) {
+    if (wire in o && o[wire] != null) props.push(`${prop} = ${fn(o[wire], indent + 4, ctx)}`);
+  }
+  return csObjectInit(type, props, indent);
+}
+
+function renderUsage(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('Usage', o, [
+    ['inputTokens', 'InputTokens', cN], ['outputTokens', 'OutputTokens', cN],
+    ['cachedInputTokens', 'CachedInputTokens', cN], ['cacheCreationTokens', 'CacheCreationTokens', cN],
+    ['reasoningTokens', 'ReasoningTokens', cN],
+  ], indent, ctx);
+}
+
+function renderToolUse(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('ToolUse', o, [
+    ['id', 'Id', cS], ['name', 'Name', cS], ['arguments', 'Arguments', cS],
+  ], indent, ctx);
+}
+
+function renderStreamingPhysics(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('StreamingPhysics', o, [
+    ['timeToFirstToken', 'TimeToFirstToken', (v) => renderDelay(v as Record<string, unknown>)],
+    ['tokensPerSecond', 'TokensPerSecond', cN], ['jitter', 'Jitter', cN],
+    ['seed', 'Seed', cN], ['subwordStreaming', 'SubwordStreaming', cB],
+  ], indent, ctx);
+}
+
+function renderCompletion(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('Completion', o, [
+    ['text', 'Text', cS],
+    ['toolCalls', 'ToolCalls', (v, i) => renderList(v as unknown[], 'ToolUse', (t, ti) => renderToolUse(t, ti, ctx), i)],
+    ['stopReason', 'StopReason', cS],
+    ['usage', 'Usage', (v, i) => renderUsage(v as Record<string, unknown>, i, ctx)],
+    ['streaming', 'Streaming', cB],
+    ['streamingPhysics', 'StreamingPhysics', (v, i) => renderStreamingPhysics(v as Record<string, unknown>, i, ctx)],
+    ['outputSchema', 'OutputSchema', cS],
+    ['enforceOutputSchema', 'EnforceOutputSchema', cB],
+    ['toolChoice', 'ToolChoice', cS],
+    ['reasoningText', 'ReasoningText', cS],
+    ['reasoningSignature', 'ReasoningSignature', cS],
+    ['model', 'Model', cS],
+  ], indent, ctx);
+}
+
+function renderNormalization(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('NormalizationOptions', o, [
+    ['collapseWhitespace', 'CollapseWhitespace', cB], ['lowercase', 'Lowercase', cB],
+    ['sortJsonKeys', 'SortJsonKeys', cB], ['dropBuiltInVolatileFields', 'DropBuiltInVolatileFields', cB],
+    ['dropVolatileFields', 'DropVolatileFields', cStrList],
+  ], indent, ctx);
+}
+
+function renderConversationPredicates(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('ConversationPredicates', o, [
+    ['turnIndex', 'TurnIndex', cN], ['latestMessageContains', 'LatestMessageContains', cS],
+    ['latestMessageMatches', 'LatestMessageMatches', cS], ['latestMessageRole', 'LatestMessageRole', cS],
+    ['containsToolResultFor', 'ContainsToolResultFor', cS], ['semanticMatchAgainst', 'SemanticMatchAgainst', cS],
+    ['normalization', 'Normalization', (v, i) => renderNormalization(v as Record<string, unknown>, i, ctx)],
+  ], indent, ctx);
+}
+
+function renderLlm(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  ctx.usings.add('MockServer.Client.Llm');
+  return csTyped('HttpLlmResponse', o, [
+    ['provider', 'Provider', cS],
+    ['model', 'Model', cS],
+    ['completion', 'Completion', (v, i) => renderCompletion(v as Record<string, unknown>, i, ctx)],
+    ['embedding', 'Embedding', (v, i) => csTyped('EmbeddingResponse', v as Record<string, unknown>, [
+      ['dimensions', 'Dimensions', cN], ['deterministicFromInput', 'DeterministicFromInput', cB], ['seed', 'Seed', cN],
+    ], i, ctx)],
+    ['rerank', 'Rerank', (v, i) => csTyped('RerankResponse', v as Record<string, unknown>, [
+      ['topN', 'TopN', cN], ['deterministicFromInput', 'DeterministicFromInput', cB], ['seed', 'Seed', cN],
+    ], i, ctx)],
+    ['moderation', 'Moderation', (v, i) => csTyped('ModerationResponse', v as Record<string, unknown>, [
+      ['flaggedCategories', 'FlaggedCategories', cStrList], ['model', 'Model', cS],
+    ], i, ctx)],
+    ['contentFilter', 'ContentFilter', (v, i) => csTyped('ContentFilterResponse', v as Record<string, unknown>, [
+      ['hate', 'Hate', cS], ['sexual', 'Sexual', cS], ['violence', 'Violence', cS], ['selfHarm', 'SelfHarm', cS],
+    ], i, ctx)],
+    ['conversationPredicates', 'ConversationPredicates', (v, i) => renderConversationPredicates(v as Record<string, unknown>, i, ctx)],
+    // No LLM-specific chaos class exists — the model types this `object?`.
+    ['chaos', 'Chaos', (v, _i, c) => { c.usings.add('System.Text.Json'); return `JsonSerializer.Deserialize<JsonElement>(${csVerbatim(stableJson(v))})`; }],
+    ['delay', 'Delay', (v) => renderDelay(v as Record<string, unknown>)],
+    ['primary', 'Primary', cB],
+  ], indent, ctx);
+}
+
+function renderObjectCallback(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('HttpObjectCallback', o, [
+    ['clientId', 'ClientId', cS], ['responseCallback', 'ResponseCallback', cB],
+    ['delay', 'Delay', (v) => renderDelay(v as Record<string, unknown>)], ['primary', 'Primary', cB],
+  ], indent, ctx);
+}
+
+function renderForwardValidate(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('HttpForwardValidateAction', o, [
+    ['specUrlOrPayload', 'SpecUrlOrPayload', cS], ['host', 'Host', cS], ['port', 'Port', cN], ['scheme', 'Scheme', cS],
+    ['validateRequest', 'ValidateRequest', cB], ['validateResponse', 'ValidateResponse', cB],
+    ['validationMode', 'ValidationMode', cS], ['delay', 'Delay', (v) => renderDelay(v as Record<string, unknown>)],
+    ['primary', 'Primary', cB],
+  ], indent, ctx);
+}
+
+function renderGrpcBidiMessage(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('GrpcBidiMessage', o, [
+    ['json', 'Json', cS], ['templateType', 'TemplateType', cS],
+    ['delay', 'Delay', (v) => renderDelay(v as Record<string, unknown>)],
+  ], indent, ctx);
+}
+
+function renderGrpcBidiRule(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('GrpcBidiRule', o, [
+    ['matchJson', 'MatchJson', cS],
+    ['responses', 'Responses', (v, i) => renderList(v as unknown[], 'GrpcBidiMessage', (m, mi) => renderGrpcBidiMessage(m, mi, ctx), i)],
+  ], indent, ctx);
+}
+
+function renderGrpcBidi(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('GrpcBidiResponse', o, [
+    ['statusName', 'StatusName', cS], ['statusMessage', 'StatusMessage', cS],
+    ['headers', 'Headers', (v, i) => renderMultiMap(v as Record<string, unknown>, i)],
+    ['messages', 'Messages', (v, i) => renderList(v as unknown[], 'GrpcBidiMessage', (m, mi) => renderGrpcBidiMessage(m, mi, ctx), i)],
+    ['rules', 'Rules', (v, i) => renderList(v as unknown[], 'GrpcBidiRule', (r, ri) => renderGrpcBidiRule(r, ri, ctx), i)],
+    ['closeConnection', 'CloseConnection', cB],
+    ['delay', 'Delay', (v) => renderDelay(v as Record<string, unknown>)], ['primary', 'Primary', cB],
+  ], indent, ctx);
+}
+
+function renderRateLimit(o: Record<string, unknown>, indent: number, ctx: Ctx): string {
+  return csTyped('RateLimit', o, [
+    ['name', 'Name', cS], ['algorithm', 'Algorithm', cS], ['limit', 'Limit', cN],
+    ['windowMillis', 'WindowMillis', cN], ['burst', 'Burst', cN], ['refillPerSecond', 'RefillPerSecond', cDec],
+    ['errorStatus', 'ErrorStatus', cN], ['retryAfter', 'RetryAfter', cS],
+  ], indent, ctx);
+}
+
+/** Edit-only top-level actions/siblings → their typed renderer + Expectation property. */
+const TYPED_TOPLEVEL: Record<string, { prop: string; render: (o: Record<string, unknown>, indent: number, ctx: Ctx) => string }> = {
+  httpResponseObjectCallback: { prop: 'HttpResponseObjectCallback', render: renderObjectCallback },
+  httpForwardObjectCallback: { prop: 'HttpForwardObjectCallback', render: renderObjectCallback },
+  httpForwardValidateAction: { prop: 'HttpForwardValidateAction', render: renderForwardValidate },
+  httpLlmResponse: { prop: 'HttpLlmResponse', render: renderLlm },
+  grpcBidiResponse: { prop: 'GrpcBidiResponse', render: renderGrpcBidi },
+  rateLimit: { prop: 'RateLimit', render: renderRateLimit },
 };
 
 function renderTimes(times: unknown): string[] {
@@ -701,9 +853,9 @@ function renderExpectation(json: Record<string, unknown>, ctx: Ctx): string {
   if (isObject(json['dnsResponse'])) props.push(`DnsResponse = ${renderDns(json['dnsResponse'] as Record<string, unknown>, I, ctx)}`);
   if (isObject(json['grpcStreamResponse'])) props.push(`GrpcStreamResponse = ${renderGrpc(json['grpcStreamResponse'] as Record<string, unknown>, I, ctx)}`);
 
-  // Exotic, edit-only actions carried verbatim into their typed property.
-  for (const [wire, { prop, type }] of Object.entries(RAW_TOPLEVEL)) {
-    if (wire in json && json[wire] != null) props.push(`${prop} = ${rawTyped(type, json[wire], ctx)}`);
+  // Edit-only actions/siblings — typed object initializers into their property.
+  for (const [wire, { prop, render }] of Object.entries(TYPED_TOPLEVEL)) {
+    if (wire in json && json[wire] != null) props.push(`${prop} = ${render(json[wire] as Record<string, unknown>, I, ctx)}`);
   }
 
   // Multi-response selection controls.

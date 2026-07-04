@@ -203,6 +203,215 @@ export const combos: Combo[] = [
     },
     baseUrl: BASE_URL,
   },
+
+  // -------------------------------------------------------------------------
+  // Edit-preserved action combos. These exercise the wire keys that the
+  // standard Composer form CANNOT model but that an edit overlay carries
+  // through verbatim (see standardCodegen.ts ACTION_FAMILY_KEYS + the merge in
+  // mergeUnmodeledFields). ComposerView produces exactly this shape on the edit
+  // path: a form-default action plus `editOriginal` (the retained server JSON)
+  // and `editActionModeled: false` when the original action is unmodeled — so
+  // buildExpectationJson preserves the original action-family key(s). Every
+  // language emitter must render these TYPED (this was the regression: two
+  // emitters dropped the preserved action entirely, others degraded it to a
+  // JSON blob). `editActionModeled: true` is used where the preserved payload is
+  // a NON-action sibling (rateLimit / crossProtocolScenarios / percentage /
+  // timestamp / namespace) that passes through alongside a form-modeled action.
+  // -------------------------------------------------------------------------
+  {
+    // Kitchen-sink LLM completion — mirrors test-fixtures/expectations/action_llm_completion.json.
+    name: 'edit-llm-completion',
+    matcher: baseMatcher({ method: 'POST', path: '/v1/messages' }),
+    action: {
+      type: 'static',
+      static: { statusCode: 200, body: '', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
+      editActionModeled: false,
+      editOriginal: {
+        httpRequest: { method: 'POST', path: '/v1/messages' },
+        httpLlmResponse: {
+          provider: 'ANTHROPIC',
+          model: 'claude-sonnet-4-20250514',
+          delay: { timeUnit: 'MILLISECONDS', value: 15 },
+          completion: {
+            text: 'Hello, world!',
+            toolCalls: [{ id: 'call_1', name: 'get_weather', arguments: '{"city":"SF"}' }],
+            stopReason: 'end_turn',
+            usage: { inputTokens: 10, outputTokens: 25, cachedInputTokens: 2, cacheCreationTokens: 3, reasoningTokens: 4 },
+            streaming: true,
+            outputSchema: '{"type":"object"}',
+            enforceOutputSchema: true,
+            toolChoice: 'auto',
+            reasoningText: 'thinking',
+            reasoningSignature: 'sig',
+            model: 'claude-sonnet-4-20250514',
+            streamingPhysics: { tokensPerSecond: 50, jitter: 0.2, seed: 7, subwordStreaming: true },
+          },
+          conversationPredicates: {
+            turnIndex: 1,
+            latestMessageContains: 'weather',
+            latestMessageMatches: '.*weather.*',
+            latestMessageRole: 'USER',
+            containsToolResultFor: 'get_weather',
+            semanticMatchAgainst: 'weather query',
+            normalization: {
+              collapseWhitespace: true, lowercase: true, sortJsonKeys: true,
+              dropBuiltInVolatileFields: true, dropVolatileFields: ['id', 'created'],
+            },
+          },
+          primary: true,
+        },
+      },
+    },
+    baseUrl: BASE_URL,
+  },
+  {
+    // LLM embedding / rerank / moderation / contentFilter / llm-chaos — mirrors
+    // test-fixtures/expectations/action_llm_embedding_rerank.json.
+    name: 'edit-llm-embedding-rerank',
+    matcher: baseMatcher({ method: 'POST', path: '/v1/embeddings' }),
+    action: {
+      type: 'static',
+      static: { statusCode: 200, body: '', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
+      editActionModeled: false,
+      editOriginal: {
+        httpRequest: { method: 'POST', path: '/v1/embeddings' },
+        httpLlmResponse: {
+          provider: 'OPENAI',
+          model: 'text-embedding-3-small',
+          embedding: { dimensions: 1536, deterministicFromInput: true, seed: 42 },
+          rerank: { topN: 3, deterministicFromInput: true, seed: 42 },
+          moderation: { flaggedCategories: ['violence'], model: 'text-moderation-latest' },
+          contentFilter: { hate: 'low', sexual: 'safe', violence: 'medium', selfHarm: 'safe' },
+          chaos: {
+            errorStatus: 429, retryAfter: '5', errorProbability: 0.1, truncateMode: 'MID_STREAM',
+            truncateAtFraction: 0.5, malformedSse: true, seed: 1, quotaName: 'q1', quotaLimit: 100,
+            quotaWindowMillis: 60000, quotaErrorStatus: 429, tokenQuotaLimit: 1000,
+            tokenQuotaWindowMillis: 60000, contentFilterBlockProbability: 0.2, errorKind: 'OVERLOAD',
+          },
+        },
+      },
+    },
+    baseUrl: BASE_URL,
+  },
+  {
+    // Response sequence — httpResponses + responseMode + responseWeights + switchAfter.
+    name: 'edit-response-sequence',
+    matcher: baseMatcher({ method: 'GET', path: '/seq' }),
+    action: {
+      type: 'static',
+      static: { statusCode: 200, body: '', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
+      editActionModeled: false,
+      editOriginal: {
+        httpRequest: { method: 'GET', path: '/seq' },
+        httpResponses: [
+          { statusCode: 200, body: 'first' },
+          { statusCode: 201, body: 'second', headers: { 'content-type': ['text/plain'] } },
+        ],
+        responseMode: 'WEIGHTED',
+        responseWeights: [3, 1],
+        switchAfter: 5,
+      },
+    },
+    baseUrl: BASE_URL,
+  },
+  {
+    // Object callback (response) — httpResponseObjectCallback.
+    name: 'edit-object-callback',
+    matcher: baseMatcher({ method: 'GET', path: '/cb' }),
+    action: {
+      type: 'static',
+      static: { statusCode: 200, body: '', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
+      editActionModeled: false,
+      editOriginal: {
+        httpRequest: { method: 'GET', path: '/cb' },
+        httpResponseObjectCallback: { clientId: 'client-1', responseCallback: true },
+      },
+    },
+    baseUrl: BASE_URL,
+  },
+  {
+    // Forward validate action — httpForwardValidateAction.
+    name: 'edit-forward-validate',
+    matcher: baseMatcher({ method: 'POST', path: '/validate' }),
+    action: {
+      type: 'static',
+      static: { statusCode: 200, body: '', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
+      editActionModeled: false,
+      editOriginal: {
+        httpRequest: { method: 'POST', path: '/validate' },
+        httpForwardValidateAction: {
+          specUrlOrPayload: 'https://example.com/openapi.json',
+          host: 'upstream.example.com', port: 443, scheme: 'HTTPS',
+          validateRequest: true, validateResponse: true, validationMode: 'STRICT',
+        },
+      },
+    },
+    baseUrl: BASE_URL,
+  },
+  {
+    // gRPC bidirectional streaming — grpcBidiResponse (+ rules).
+    name: 'edit-grpc-bidi',
+    matcher: baseMatcher({ method: 'POST', path: '/grpc' }),
+    action: {
+      type: 'static',
+      static: { statusCode: 200, body: '', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
+      editActionModeled: false,
+      editOriginal: {
+        httpRequest: { method: 'POST', path: '/grpc' },
+        grpcBidiResponse: {
+          statusName: 'OK',
+          headers: { 'grpc-encoding': ['identity'] },
+          messages: [{ json: '{"a":1}' }],
+          rules: [{ matchJson: '{"cmd":"ping"}', responses: [{ json: '{"pong":true}' }] }],
+          closeConnection: false,
+        },
+      },
+    },
+    baseUrl: BASE_URL,
+  },
+  {
+    // Rate limit — a NON-action sibling preserved alongside a form-modeled
+    // static action (editActionModeled: true). Also exercises `percentage`.
+    name: 'edit-rate-limit',
+    matcher: baseMatcher({ method: 'GET', path: '/rl' }),
+    action: {
+      type: 'static',
+      static: { statusCode: 200, body: 'ok', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
+      editActionModeled: true,
+      editOriginal: {
+        httpRequest: { method: 'GET', path: '/rl' },
+        httpResponse: { statusCode: 200, body: 'ok' },
+        rateLimit: {
+          name: 'api', algorithm: 'token_bucket', limit: 100, windowMillis: 60000,
+          burst: 20, refillPerSecond: 5, errorStatus: 429, retryAfter: '1',
+        },
+        percentage: 50,
+      },
+    },
+    baseUrl: BASE_URL,
+  },
+  {
+    // Cross-protocol scenarios + namespace + timestamp + percentage siblings,
+    // preserved alongside a form-modeled static action (editActionModeled: true).
+    name: 'edit-cross-protocol',
+    matcher: baseMatcher({ method: 'GET', path: '/xp' }),
+    action: {
+      type: 'static',
+      static: { statusCode: 200, body: 'ok', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
+      editActionModeled: true,
+      editOriginal: {
+        httpRequest: { method: 'GET', path: '/xp' },
+        httpResponse: { statusCode: 200, body: 'ok' },
+        crossProtocolScenarios: [
+          { trigger: 'DNS_QUERY', matchPattern: '*.example.com', scenarioName: 'dns-scn', targetState: 'RESOLVED' },
+        ],
+        namespace: 'team-a',
+        timestamp: '2026-01-01T00:00:00Z',
+        percentage: 25,
+      },
+    },
+    baseUrl: BASE_URL,
+  },
 ];
 
 // NOTE: `python` is intentionally NOT in this map. The Python emitter was

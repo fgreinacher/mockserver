@@ -167,6 +167,56 @@ const llmPreserved = {
   },
 };
 
+// (d.2) Preserved response SEQUENCE (editActionModeled === false): the standard
+//       composer form cannot model an httpResponses sequence, so an edit preserves
+//       it verbatim and standardToJava emits the typed terminal
+//       .respond(Arrays.asList(response()..., ...)) plus the selection controls
+//       (withResponseMode / withResponseWeights / withSwitchAfter). Exercises the
+//       ForwardChainExpectation sequence API so a rename fails this javac gate.
+const responseSequencePreserved = {
+  name: 'response_sequence_preserved',
+  matcher: httpMatcher({ method: 'GET', path: '/seq' }),
+  action: {
+    type: 'static',
+    static: { statusCode: 200, body: '', contentType: '' },
+    editActionModeled: false,
+    editOriginal: {
+      httpRequest: { method: 'GET', path: '/seq' },
+      httpResponses: [
+        { statusCode: 200, body: 'first' },
+        { statusCode: 201, body: 'second', headers: { 'content-type': ['text/plain'] } },
+      ],
+      responseMode: 'WEIGHTED',
+      responseWeights: [3, 1],
+      switchAfter: 5,
+    },
+  },
+};
+
+// (d.3) Preserved cross-protocol scenarios + percentage siblings alongside a
+//       form-modeled static action (editActionModeled === true): exercises
+//       withPercentage / withCrossProtocolScenario (CrossProtocolTrigger) and the
+//       honest trailing NOTE for a field the Java API cannot set (timestamp).
+const crossProtocolPreserved = {
+  name: 'cross_protocol_preserved',
+  matcher: httpMatcher({ method: 'GET', path: '/xp' }),
+  action: {
+    type: 'static',
+    static: { statusCode: 200, body: 'ok', contentType: '' },
+    editActionModeled: true,
+    editOriginal: {
+      httpRequest: { method: 'GET', path: '/xp' },
+      httpResponse: { statusCode: 200, body: 'ok' },
+      crossProtocolScenarios: [
+        { trigger: 'DNS_QUERY', matchPattern: '*.example.com', scenarioName: 'dns-scn', targetState: 'RESOLVED' },
+      ],
+      namespace: 'team-a',
+      percentage: 25,
+      timestamp: '2026-01-01T00:00:00Z',
+    },
+  },
+};
+
 // (d) Side-effect (before/after webhook) + wasm body matcher + connectionOptions-only.
 const extras = [
   {
@@ -188,7 +238,7 @@ const extras = [
   },
 ];
 
-const cases = [kitchenSink, ...terminalActions, editOverlay, llmPreserved, ...extras];
+const cases = [kitchenSink, ...terminalActions, editOverlay, llmPreserved, responseSequencePreserved, crossProtocolPreserved, ...extras];
 
 // Exhaustiveness guard (review INC-12): every StandardActionType member must be
 // exercised by exactly one terminalActions case, so a 15th action type added to

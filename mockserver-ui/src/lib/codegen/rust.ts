@@ -677,6 +677,194 @@ function renderStep(step: Record<string, unknown>, ctx: Ctx, indent: number): Re
 }
 
 // ---------------------------------------------------------------------------
+// Edit-preserved actions/siblings — typed struct literals / builders. Every
+// wire key an edit overlay can carry is emitted through the crate's typed model
+// (see model.rs) rather than an `extra.insert(serde_json::json!(...))` blob. The
+// only fields carried as `serde_json::json!` are the LLM sub-objects the model
+// itself types as `serde_json::Value` (embedding/rerank/moderation/contentFilter/
+// conversationPredicates/chaos) — that IS their typed field type.
+// ---------------------------------------------------------------------------
+
+const isObjR = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const optStr = (v: unknown): string => `Some(${rustStr(String(v))}.to_string())`;
+const optNum = (v: unknown): string => `Some(${numLit(Number(v))})`;
+const optFloat = (v: unknown): string => `Some(${floatLit(Number(v))})`;
+const optBool = (v: unknown): string => `Some(${v === true ? 'true' : 'false'})`;
+
+/** SCREAMING_SNAKE_CASE wire enum value → Rust PascalCase variant. */
+function pascalEnum(s: string): string {
+  return s.split('_').map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join('');
+}
+
+type StructSpec = Array<[wireKey: string, rustField: string, fn: (v: unknown, indent: number) => string]>;
+
+/** A `Name { field: val, ... ..Default::default() }` struct literal (for Default-deriving types). */
+function structLit(name: string, o: Record<string, unknown>, spec: StructSpec, indent: number): string {
+  const inner = pad(indent + 4);
+  const fields: string[] = [];
+  for (const [wire, field, fn] of spec) {
+    if (o[wire] != null) fields.push(`${field}: ${fn(o[wire], indent + 4)},`);
+  }
+  if (fields.length === 0) return `${name}::default()`;
+  return `${name} {\n` + fields.map((f) => inner + f).join('\n') + '\n' + inner + '..Default::default()\n' + pad(indent) + '}';
+}
+
+function llmUsageExpr(o: Record<string, unknown>, indent: number): string {
+  return structLit('LlmUsage', o, [
+    ['inputTokens', 'input_tokens', optNum], ['outputTokens', 'output_tokens', optNum],
+    ['cachedInputTokens', 'cached_input_tokens', optNum], ['cacheCreationTokens', 'cache_creation_tokens', optNum],
+    ['reasoningTokens', 'reasoning_tokens', optNum],
+  ], indent);
+}
+
+function llmStreamingPhysicsExpr(o: Record<string, unknown>, indent: number): string {
+  return structLit('LlmStreamingPhysics', o, [
+    ['timeToFirstToken', 'time_to_first_token', (v) => `Some(${delayExpr(v as Record<string, unknown>)})`],
+    ['tokensPerSecond', 'tokens_per_second', optNum], ['jitter', 'jitter', optFloat],
+    ['seed', 'seed', optNum], ['subwordStreaming', 'subword_streaming', optBool],
+  ], indent);
+}
+
+function llmToolCallsExpr(v: unknown[], indent: number): string {
+  const inner = pad(indent + 4);
+  const items = v.map((t) => inner + structLit('LlmToolCall', t as Record<string, unknown>, [
+    ['id', 'id', optStr], ['name', 'name', optStr], ['arguments', 'arguments', optStr],
+  ], indent + 4) + ',').join('\n');
+  return `vec![\n${items}\n${pad(indent)}]`;
+}
+
+function llmCompletionExpr(o: Record<string, unknown>, indent: number): string {
+  return structLit('LlmCompletion', o, [
+    ['text', 'text', optStr],
+    ['toolCalls', 'tool_calls', (v, i) => `Some(${llmToolCallsExpr(v as unknown[], i)})`],
+    ['stopReason', 'stop_reason', optStr],
+    ['usage', 'usage', (v, i) => `Some(${llmUsageExpr(v as Record<string, unknown>, i)})`],
+    ['streaming', 'streaming', optBool],
+    ['streamingPhysics', 'streaming_physics', (v, i) => `Some(${llmStreamingPhysicsExpr(v as Record<string, unknown>, i)})`],
+    ['outputSchema', 'output_schema', optStr],
+    ['enforceOutputSchema', 'enforce_output_schema', optBool],
+    ['toolChoice', 'tool_choice', optStr],
+    ['reasoningText', 'reasoning_text', optStr],
+    ['reasoningSignature', 'reasoning_signature', optStr],
+    ['model', 'model', optStr],
+  ], indent);
+}
+
+function llmResponseExpr(o: Record<string, unknown>, indent: number): string {
+  // completion is the one typed sub-struct; embedding/rerank/moderation/
+  // content_filter/conversation_predicates/chaos are Option<serde_json::Value>.
+  return structLit('HttpLlmResponse', o, [
+    ['provider', 'provider', optStr],
+    ['model', 'model', optStr],
+    ['completion', 'completion', (v, i) => `Some(${llmCompletionExpr(v as Record<string, unknown>, i)})`],
+    ['embedding', 'embedding', (v, i) => `Some(${jsonMacro(v, i)})`],
+    ['rerank', 'rerank', (v, i) => `Some(${jsonMacro(v, i)})`],
+    ['moderation', 'moderation', (v, i) => `Some(${jsonMacro(v, i)})`],
+    ['contentFilter', 'content_filter', (v, i) => `Some(${jsonMacro(v, i)})`],
+    ['conversationPredicates', 'conversation_predicates', (v, i) => `Some(${jsonMacro(v, i)})`],
+    ['chaos', 'chaos', (v, i) => `Some(${jsonMacro(v, i)})`],
+    ['delay', 'delay', (v) => `Some(${delayExpr(v as Record<string, unknown>)})`],
+    ['primary', 'primary', optBool],
+  ], indent);
+}
+
+function rateLimitExpr(o: Record<string, unknown>, indent: number): string {
+  return structLit('RateLimit', o, [
+    ['name', 'name', optStr], ['algorithm', 'algorithm', optStr], ['limit', 'limit', optNum],
+    ['windowMillis', 'window_millis', optNum], ['burst', 'burst', optNum],
+    ['refillPerSecond', 'refill_per_second', optFloat], ['errorStatus', 'error_status', optNum],
+    ['retryAfter', 'retry_after', optStr],
+  ], indent);
+}
+
+/** HttpObjectCallback — no Default; uses the `::new(client_id)` builder. */
+function objectCallbackExpr(o: Record<string, unknown>, indent: number): string {
+  const calls: string[] = [];
+  if (typeof o['responseCallback'] === 'boolean') calls.push(`.response_callback(${o['responseCallback']})`);
+  if (isObjR(o['delay'])) calls.push(`.delay(${delayExpr(o['delay'])})`);
+  if (typeof o['primary'] === 'boolean') calls.push(`.primary(${o['primary']})`);
+  return chain(`HttpObjectCallback::new(${rustStr(String(o['clientId'] ?? ''))})`, calls, indent);
+}
+
+/** HttpForwardValidateAction — no Default; all fields listed (public fields). */
+function forwardValidateExpr(o: Record<string, unknown>, indent: number): string {
+  const inner = pad(indent + 4);
+  const fields: string[] = [
+    `spec_url_or_payload: ${rustStr(String(o['specUrlOrPayload'] ?? ''))}.to_string(),`,
+    `host: ${rustStr(String(o['host'] ?? ''))}.to_string(),`,
+    `port: ${typeof o['port'] === 'number' ? `Some(${numLit(o['port'])})` : 'None'},`,
+    `scheme: ${typeof o['scheme'] === 'string' ? optStr(o['scheme']) : 'None'},`,
+    `validate_request: ${typeof o['validateRequest'] === 'boolean' ? optBool(o['validateRequest']) : 'None'},`,
+    `validate_response: ${typeof o['validateResponse'] === 'boolean' ? optBool(o['validateResponse']) : 'None'},`,
+    `validation_mode: ${typeof o['validationMode'] === 'string' ? optStr(o['validationMode']) : 'None'},`,
+    `delay: ${isObjR(o['delay']) ? `Some(${delayExpr(o['delay'])})` : 'None'},`,
+    `primary: ${typeof o['primary'] === 'boolean' ? optBool(o['primary']) : 'None'},`,
+    'extra: Default::default(),',
+  ];
+  return 'HttpForwardValidateAction {\n' + fields.map((f) => inner + f).join('\n') + '\n' + pad(indent) + '}';
+}
+
+/** `vec![ item, ... ]` across lines. */
+function vecExpr(arr: unknown[], indent: number, itemFn: (o: Record<string, unknown>, i: number) => string): string {
+  const inner = pad(indent + 4);
+  const items = arr.map((x) => inner + itemFn(x as Record<string, unknown>, indent + 4) + ',').join('\n');
+  return `vec![\n${items}\n${pad(indent)}]`;
+}
+
+/** `std::collections::HashMap::from([(k, vec![...]), ...])` for a header multimap. */
+function hashMapExpr(o: Record<string, unknown>, indent: number): string {
+  const inner = pad(indent + 4);
+  const entries = Object.entries(o).map(([k, vs]) => {
+    const vals = (Array.isArray(vs) ? vs : [vs]).map((v) => `${rustStr(String(v))}.to_string()`).join(', ');
+    return inner + `(${rustStr(k)}.to_string(), vec![${vals}]),`;
+  }).join('\n');
+  return `std::collections::HashMap::from([\n${entries}\n${pad(indent)}])`;
+}
+
+// GrpcBidiResponse/Rule/Message expose only new/message/rule/json builders (no
+// per-field setters), so the field-carrying shapes use typed struct literals.
+function grpcBidiMessageExpr(o: Record<string, unknown>, indent: number): string {
+  if (typeof o['json'] === 'string' && o['templateType'] == null && o['delay'] == null) {
+    return `GrpcBidiMessage::json(${rustStr(String(o['json']))})`;
+  }
+  return structLit('GrpcBidiMessage', o, [
+    ['json', 'json', optStr], ['templateType', 'template_type', optStr],
+    ['delay', 'delay', (v) => `Some(${delayExpr(v as Record<string, unknown>)})`],
+  ], indent);
+}
+
+function grpcBidiRuleExpr(o: Record<string, unknown>, indent: number): string {
+  return structLit('GrpcBidiRule', o, [
+    ['matchJson', 'match_json', optStr],
+    ['responses', 'responses', (v, i) => `Some(${vecExpr(v as unknown[], i, grpcBidiMessageExpr)})`],
+  ], indent);
+}
+
+function grpcBidiExpr(o: Record<string, unknown>, indent: number): string {
+  return structLit('GrpcBidiResponse', o, [
+    ['statusName', 'status_name', optStr], ['statusMessage', 'status_message', optStr],
+    ['headers', 'headers', (v, i) => `Some(${hashMapExpr(v as Record<string, unknown>, i)})`],
+    ['messages', 'messages', (v, i) => `Some(${vecExpr(v as unknown[], i, grpcBidiMessageExpr)})`],
+    ['rules', 'rules', (v, i) => `Some(${vecExpr(v as unknown[], i, grpcBidiRuleExpr)})`],
+    ['closeConnection', 'close_connection', optBool],
+    ['delay', 'delay', (v) => `Some(${delayExpr(v as Record<string, unknown>)})`],
+    ['primary', 'primary', optBool],
+  ], indent);
+}
+
+function crossProtocolExpr(arr: unknown[], indent: number): string {
+  const inner = pad(indent + 4);
+  const items = arr.map((c) => {
+    const o = c as Record<string, unknown>;
+    const trigger = `CrossProtocolTrigger::${pascalEnum(String(o['trigger'] ?? 'HTTP_REQUEST'))}`;
+    let expr = `CrossProtocolScenario::new(${trigger}, ${rustStr(String(o['scenarioName'] ?? ''))}, ${rustStr(String(o['targetState'] ?? ''))})`;
+    if (typeof o['matchPattern'] === 'string') expr += `.match_pattern(${rustStr(o['matchPattern'])})`;
+    return inner + expr + ',';
+  }).join('\n');
+  return `vec![\n${items}\n${pad(indent)}]`;
+}
+
+// ---------------------------------------------------------------------------
 // Primary action dispatch
 // ---------------------------------------------------------------------------
 
@@ -697,12 +885,27 @@ const PRIMARY_ACTION_KEYS = [
   'dnsResponse',
   'httpOverrideForwardedRequest',
   'httpForwardWithFallback',
+  'httpLlmResponse',
+  'grpcBidiResponse',
+  'httpResponseObjectCallback',
+  'httpForwardObjectCallback',
+  'httpForwardValidateAction',
 ];
 
 /** Map a top-level action-family key onto the Expectation terminal builder call. */
 function renderPrimaryAction(key: string, value: unknown, ctx: Ctx, indent: number): PrimaryRendered {
   const obj = value as Record<string, unknown>;
   switch (key) {
+    case 'httpLlmResponse':
+      return inline(`.respond_llm(${llmResponseExpr(obj, indent + 4)})`);
+    case 'grpcBidiResponse':
+      return inline(`.respond_grpc_bidi(${grpcBidiExpr(obj, indent + 4)})`);
+    case 'httpResponseObjectCallback':
+      return inline(`.respond_object_callback(${objectCallbackExpr(obj, indent + 4)})`);
+    case 'httpForwardObjectCallback':
+      return inline(`.forward_object_callback(${objectCallbackExpr(obj, indent + 4)})`);
+    case 'httpForwardValidateAction':
+      return inline(`.forward_validate(${forwardValidateExpr(obj, indent + 4)})`);
     case 'httpResponse': {
       const r = renderHttpResponse(obj, ctx, indent + 4, 'response');
       return { setup: r.setup, expr: `.respond(${r.expr})` };
@@ -783,6 +986,15 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   'priority',
   'times',
   'timeToLive',
+  // Edit-preserved siblings/actions now emitted typed (below / via primary dispatch).
+  'httpResponses',
+  'responseMode',
+  'responseWeights',
+  'switchAfter',
+  'rateLimit',
+  'crossProtocolScenarios',
+  'percentage',
+  'timestamp',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -822,6 +1034,29 @@ export function standardToRust(matcher: StandardMatcher, action: StandardActionP
       break;
     }
   }
+
+  // Response sequence — httpResponses + responseMode + responseWeights + switchAfter.
+  if (Array.isArray(exp['httpResponses'])) {
+    const seqInner = pad(8);
+    const items = (exp['httpResponses'] as unknown[]).map((r) => {
+      const rr = renderHttpResponse(r as Record<string, unknown>, ctx, 8);
+      setup.push(...rr.setup);
+      return seqInner + rr.expr + ',';
+    });
+    expCalls.push('.http_responses(vec![\n' + items.join('\n') + '\n' + pad(4) + '])');
+  }
+  if (typeof exp['responseMode'] === 'string') expCalls.push(`.response_mode(ResponseMode::${pascalEnum(exp['responseMode'])})`);
+  if (Array.isArray(exp['responseWeights'])) {
+    expCalls.push(`.response_weights(vec![${(exp['responseWeights'] as unknown[]).map((n) => numLit(Number(n))).join(', ')}])`);
+  }
+  if (typeof exp['switchAfter'] === 'number') expCalls.push(`.switch_after(${numLit(exp['switchAfter'])})`);
+
+  // Non-action siblings.
+  if (isObjR(exp['rateLimit'])) expCalls.push(`.rate_limit(${rateLimitExpr(exp['rateLimit'], 8)})`);
+  if (Array.isArray(exp['crossProtocolScenarios'])) {
+    expCalls.push(`.cross_protocol_scenarios(${crossProtocolExpr(exp['crossProtocolScenarios'], 8)})`);
+  }
+  if (typeof exp['percentage'] === 'number') expCalls.push(`.percentage(${numLit(exp['percentage'])})`);
 
   // Steps replace the primary action when present.
   if (Array.isArray(exp['steps'])) {
@@ -871,13 +1106,20 @@ export function standardToRust(matcher: StandardMatcher, action: StandardActionP
   if (exp['times'] && typeof exp['times'] === 'object') expCalls.push(`.times(${timesExpr(exp['times'] as Record<string, unknown>)})`);
   if (exp['timeToLive'] && typeof exp['timeToLive'] === 'object') expCalls.push(`.time_to_live(${ttlExpr(exp['timeToLive'] as Record<string, unknown>)})`);
 
+  // `timestamp` has a public field but no builder method — set it typed after
+  // construction (Option<String>), not via the raw `extra` map.
+  const typedPostAssigns: string[] = [];
+  if (typeof exp['timestamp'] === 'string') {
+    typedPostAssigns.push(pad(4) + `expectation.timestamp = Some(${rustStr(exp['timestamp'])}.to_string());`);
+  }
+
   // Any remaining unmodelled top-level key → the expectation's `extra` catch-all.
   for (const [k, v] of Object.entries(exp)) {
     if (!KNOWN_TOP_LEVEL_KEYS.has(k)) expectationExtras.push([k, v]);
   }
 
   // Assemble the Expectation binding.
-  const needsMut = expectationExtras.length > 0;
+  const needsMut = expectationExtras.length > 0 || typedPostAssigns.length > 0;
   const usesSerde =
     expectationExtras.length > 0 || [...setup, ...expCalls].some((l) => l.includes('serde_json::'));
 
@@ -891,6 +1133,7 @@ export function standardToRust(matcher: StandardMatcher, action: StandardActionP
   for (const line of setup) body.push(line);
   body.push('');
   body.push(pad(4) + `let ${needsMut ? 'mut ' : ''}expectation = ` + chain(`Expectation::new(${requestExpr})`, expCalls, 4) + ';');
+  for (const line of typedPostAssigns) body.push(line);
   for (const [k, v] of expectationExtras) {
     body.push(pad(4) + `expectation.extra.insert(${rustStr(k)}.to_string(), ${jsonMacro(v, 4)});`);
   }

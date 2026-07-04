@@ -855,16 +855,108 @@ export function whenArgsFromJson(json: Record<string, unknown>): WhenArgs {
   return { useFullWhen: timesLimited || ttlLimited || priority !== 0, timesExpr, ttlExpr, priority };
 }
 
+/** The org.mockserver.mock.ResponseMode enum constants. */
+const JAVA_RESPONSE_MODES: ReadonlySet<string> = new Set(['SEQUENTIAL', 'RANDOM', 'WEIGHTED', 'SWITCH']);
+
+/** The org.mockserver.model.CrossProtocolTrigger enum constants. */
+const JAVA_CROSS_PROTOCOL_TRIGGERS: ReadonlySet<string> = new Set([
+  'DNS_QUERY', 'WEBSOCKET_CONNECT', 'GRPC_REQUEST', 'HTTP_REQUEST',
+]);
+
+/**
+ * Top-level preserved wire keys the Java client API genuinely cannot set on a
+ * ForwardChainExpectation (no fluent setter exists): `rateLimit` (no
+ * withRateLimit) and `timestamp` (server-assigned). When present alongside a
+ * representable action they are named in an honest trailing NOTE rather than
+ * silently dropped — the JSON / curl / client-library tabs remain faithful.
+ */
+const JAVA_UNREPRESENTABLE_TOPLEVEL: readonly string[] = ['rateLimit', 'timestamp'];
+
+/** A `crossProtocolScenario()...` builder expression (from a wire object). */
+function crossProtocolScenarioToJava(cp: Record<string, unknown>): string {
+  const parts: string[] = ['crossProtocolScenario()'];
+  const trigger = typeof cp['trigger'] === 'string' ? cp['trigger'] : '';
+  if (trigger && JAVA_CROSS_PROTOCOL_TRIGGERS.has(trigger)) {
+    parts.push(`    .withTrigger(CrossProtocolTrigger.${trigger})`);
+  }
+  if (typeof cp['scenarioName'] === 'string') parts.push(`    .withScenarioName("${escapeJava(cp['scenarioName'] as string)}")`);
+  if (typeof cp['targetState'] === 'string') parts.push(`    .withTargetState("${escapeJava(cp['targetState'] as string)}")`);
+  if (typeof cp['matchPattern'] === 'string') parts.push(`    .withMatchPattern("${escapeJava(cp['matchPattern'] as string)}")`);
+  return parts.join('\n');
+}
+
+/**
+ * A `response()...` builder expression from a WIRE httpResponse object (used for
+ * the members of a preserved `httpResponses` sequence, which come from the edit
+ * overlay JSON rather than the form's static state). Covers the response fields a
+ * sequence commonly carries; any field without a mapping is named in `notes`.
+ */
+function wireResponseToJava(resp: Record<string, unknown>, notes: Set<string>): string {
+  const parts: string[] = ['response()'];
+  const handled = new Set<string>();
+  if (typeof resp['statusCode'] === 'number') { parts.push(`    .withStatusCode(${resp['statusCode']})`); handled.add('statusCode'); }
+  if (typeof resp['reasonPhrase'] === 'string') { parts.push(`    .withReasonPhrase("${escapeJava(resp['reasonPhrase'] as string)}")`); handled.add('reasonPhrase'); }
+  const headers = resp['headers'];
+  if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
+    for (const [k, vs] of Object.entries(headers as Record<string, unknown>)) {
+      const values = (Array.isArray(vs) ? vs : [vs]).map((v) => `"${escapeJava(String(v))}"`).join(', ');
+      parts.push(`    .withHeader("${escapeJava(k)}", ${values})`);
+    }
+    handled.add('headers');
+  }
+  const cookies = resp['cookies'];
+  if (cookies && typeof cookies === 'object' && !Array.isArray(cookies)) {
+    for (const [k, v] of Object.entries(cookies as Record<string, unknown>)) {
+      parts.push(`    .withCookie("${escapeJava(k)}", "${escapeJava(String(v))}")`);
+    }
+    handled.add('cookies');
+  }
+  if (typeof resp['body'] === 'string') { parts.push(`    .withBody("${escapeJava(resp['body'] as string)}")`); handled.add('body'); }
+  const delay = resp['delay'];
+  if (delay && typeof delay === 'object' && !Array.isArray(delay)) {
+    const d = delay as Record<string, unknown>;
+    const rawUnit = typeof d['timeUnit'] === 'string' ? d['timeUnit'] : 'MILLISECONDS';
+    const unit = JAVA_TIME_UNITS.has(rawUnit as string) ? rawUnit : 'MILLISECONDS';
+    if (typeof d['value'] === 'number') { parts.push(`    .withDelay(TimeUnit.${unit}, ${d['value']})`); handled.add('delay'); }
+  }
+  for (const k of Object.keys(resp)) if (!handled.has(k)) notes.add(`httpResponses[].${k}`);
+  return parts.join('\n');
+}
+
 /**
  * Fluent modifier lines that sit on the ForwardChainExpectation returned by
- * `when(...)`, before the terminal action: namespace, scenario bindings and
- * capture rules. Read from the built JSON so they faithfully mirror exactly what
- * is emitted to the server (including fields preserved via an edit overlay).
+ * `when(...)`, before the terminal action: namespace, percentage, scenario
+ * bindings, capture rules, response-sequence selection controls and
+ * cross-protocol scenarios. Read from the built JSON so they faithfully mirror
+ * exactly what is emitted to the server (including fields preserved via an edit
+ * overlay).
  */
 function chainModifierLines(json: Record<string, unknown>): string[] {
   const out: string[] = [];
   if (typeof json['namespace'] === 'string' && (json['namespace'] as string).trim()) {
     out.push(`  .withNamespace("${escapeJava(json['namespace'] as string)}")`);
+  }
+  if (typeof json['percentage'] === 'number') {
+    out.push(`  .withPercentage(${json['percentage']})`);
+  }
+  // Response-sequence selection controls — fluent on the ForwardChainExpectation,
+  // before the terminal .respond(List<HttpResponse>).
+  if (typeof json['responseMode'] === 'string' && JAVA_RESPONSE_MODES.has(json['responseMode'] as string)) {
+    out.push(`  .withResponseMode(ResponseMode.${json['responseMode']})`);
+  }
+  if (Array.isArray(json['responseWeights']) && (json['responseWeights'] as unknown[]).length > 0) {
+    out.push(`  .withResponseWeights(Arrays.asList(${(json['responseWeights'] as unknown[]).map((n) => Number(n)).join(', ')}))`);
+  }
+  if (typeof json['switchAfter'] === 'number') {
+    out.push(`  .withSwitchAfter(${json['switchAfter']})`);
+  }
+  const crossProtocol = json['crossProtocolScenarios'];
+  if (Array.isArray(crossProtocol)) {
+    for (const cp of crossProtocol as unknown[]) {
+      out.push('  .withCrossProtocolScenario(');
+      out.push('    ' + crossProtocolScenarioToJava(cp as Record<string, unknown>).split('\n').join('\n    '));
+      out.push('  )');
+    }
   }
   if (typeof json['scenarioName'] === 'string' && json['scenarioName']) {
     out.push(`  .withScenarioName("${escapeJava(json['scenarioName'] as string)}")`);
@@ -2959,6 +3051,29 @@ function collectJavaImports(
     imp.add('import static org.mockserver.model.CaptureRule.capture;');
     imp.add('import org.mockserver.model.CaptureRule;');
   }
+  // Preserved response SEQUENCE → .respond(Arrays.asList(response()..., ...)) with
+  // the selection controls (responseMode / responseWeights / switchAfter).
+  if (Array.isArray(json['httpResponses'])) {
+    imp.add('import static org.mockserver.model.HttpResponse.response;');
+    imp.add('import java.util.Arrays;');
+    if ((json['httpResponses'] as unknown[]).some((r) => {
+      const d = (r as Record<string, unknown> | null)?.['delay'];
+      return d && typeof d === 'object';
+    })) {
+      imp.add('import java.util.concurrent.TimeUnit;');
+    }
+  }
+  if (typeof json['responseMode'] === 'string') imp.add('import org.mockserver.mock.ResponseMode;');
+  if (Array.isArray(json['responseWeights']) && (json['responseWeights'] as unknown[]).length > 0) {
+    imp.add('import java.util.Arrays;');
+  }
+  // Cross-protocol scenarios → .withCrossProtocolScenario(crossProtocolScenario()...)
+  if (Array.isArray(json['crossProtocolScenarios']) && (json['crossProtocolScenarios'] as unknown[]).length > 0) {
+    imp.add('import static org.mockserver.model.CrossProtocolScenario.crossProtocolScenario;');
+    if ((json['crossProtocolScenarios'] as unknown[]).some((c) => typeof (c as Record<string, unknown>)?.['trigger'] === 'string')) {
+      imp.add('import org.mockserver.model.CrossProtocolTrigger;');
+    }
+  }
 
   const all = Array.from(imp);
   const statics = all.filter((i) => i.startsWith('import static ')).sort();
@@ -3028,7 +3143,9 @@ function stepToJava(step: StandardExpectationStep): string {
  * unrepresentable-fallback test so the Java tab emits real code rather than a
  * whole-action notice.
  */
-const JAVA_REPRESENTABLE_PRESERVED_KEYS: ReadonlySet<string> = new Set(['httpLlmResponse']);
+const JAVA_REPRESENTABLE_PRESERVED_KEYS: ReadonlySet<string> = new Set([
+  'httpLlmResponse', 'httpResponses', 'responseMode', 'responseWeights', 'switchAfter',
+]);
 
 /**
  * When editing an expectation whose ORIGINAL action the form could not model
@@ -3077,6 +3194,12 @@ export function standardToJava(matcher: StandardMatcher, action: StandardActionP
   // type-safe llmResponse() builder chain rather than the form's default action.
   const preservedLlm = asJsonObject(json['httpLlmResponse']);
   const llmEmit = preservedLlm ? llmResponseToJava(preservedLlm) : undefined;
+  // A preserved response SEQUENCE (httpResponses) is emitted as the typed
+  // terminal `.respond(Arrays.asList(response()..., ...))`; the selection
+  // controls (responseMode / responseWeights / switchAfter) ride on the chain
+  // modifiers above.
+  const preservedSequence = Array.isArray(json['httpResponses']) ? (json['httpResponses'] as unknown[]) : undefined;
+  const sequenceNotes = new Set<string>();
   const lines: string[] = [];
   for (const imp of collectJavaImports(matcher, action, hasChaos, json, llmEmit?.imports)) lines.push(imp);
   lines.push('');
@@ -3133,7 +3256,18 @@ export function standardToJava(matcher: StandardMatcher, action: StandardActionP
   // the 2-space wrapper that nests the call under mockServerClient, the argument aligns at
   // the same depth (4 spaces) as the matcher inside .when( ... ) — keeping request() and
   // response()/llmResponse() flush.
-  const actionLines = (llmEmit ? llmEmit.code : actionToJava(action)).split('\n');
+  let terminalCode: string;
+  if (llmEmit) {
+    terminalCode = llmEmit.code;
+  } else if (preservedSequence) {
+    const responses = preservedSequence
+      .map((r) => wireResponseToJava((r ?? {}) as Record<string, unknown>, sequenceNotes))
+      .map((r) => '    ' + r.split('\n').join('\n    '));
+    terminalCode = ['.respond(Arrays.asList(', responses.join(',\n'), '))'].join('\n');
+  } else {
+    terminalCode = actionToJava(action);
+  }
+  const actionLines = terminalCode.split('\n');
   const alignedAction = actionLines
     .map((ln, i) => (i === 0 || i === actionLines.length - 1 ? ln : ln.replace(/^ {2}/, '')))
     .map((ln) => '  ' + ln)
@@ -3142,6 +3276,15 @@ export function standardToJava(matcher: StandardMatcher, action: StandardActionP
   // Honest one-line notice naming any preserved LLM field the typed builder cannot
   // carry (normally none — every wire field has a setter).
   if (llmEmit?.note) lines.push(llmEmit.note);
+  if (sequenceNotes.size > 0) {
+    lines.push(`// NOTE: the Java preview omits response-sequence field(s) it cannot carry: ${Array.from(sequenceNotes).join(', ')} — see the JSON tab.`);
+  }
+  // Honest NOTE for preserved top-level fields the Java client API cannot set
+  // (rateLimit / timestamp) — never a silent drop.
+  const unrep = JAVA_UNREPRESENTABLE_TOPLEVEL.filter((k) => k in json && json[k] != null);
+  if (unrep.length > 0) {
+    lines.push(`// NOTE: the Java client API cannot set these preserved field(s): ${unrep.join(', ')} — see the JSON tab.`);
+  }
   return lines.join('\n');
 }
 

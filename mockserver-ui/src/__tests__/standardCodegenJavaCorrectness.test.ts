@@ -263,16 +263,36 @@ describe('preserved httpLlmResponse → type-safe llmResponse() builder chain', 
     expect(unrepresentableJavaActionKey({ type: 'static', static: { statusCode: 200, body: '', contentType: '' } })).toBeUndefined();
   });
 
-  it('a genuinely unrepresentable preserved action (httpResponses sequence) still falls back', () => {
+  it('a preserved response sequence (httpResponses) is now emitted TYPED, not noticed', () => {
     const action: StandardActionPayload = {
       type: 'static',
       static: { statusCode: 200, body: '', contentType: '' },
-      editOriginal: { httpRequest: { path: '/api' }, httpResponses: [{ statusCode: 200 }, { statusCode: 503 }] },
+      editOriginal: {
+        httpRequest: { path: '/api' },
+        httpResponses: [{ statusCode: 200, body: 'first' }, { statusCode: 503, body: 'second' }],
+        responseMode: 'WEIGHTED', responseWeights: [3, 1], switchAfter: 5,
+      },
       editActionModeled: false,
     };
-    expect(unrepresentableJavaActionKey(action)).toBe('httpResponses');
+    expect(unrepresentableJavaActionKey(action)).toBeUndefined();
     const java = standardToJava(httpMatcher(), action);
-    expect(java).toContain('httpResponses');
+    expect(java).not.toContain('cannot represent');
+    expect(java).toContain('.respond(Arrays.asList(');
+    expect(java).toContain('.withResponseMode(ResponseMode.WEIGHTED)');
+    expect(java).toContain('.withResponseWeights(Arrays.asList(3, 1))');
+    expect(java).toContain('.withSwitchAfter(5)');
+  });
+
+  it('a genuinely unrepresentable preserved action (object callback) still falls back to a notice', () => {
+    const action: StandardActionPayload = {
+      type: 'static',
+      static: { statusCode: 200, body: '', contentType: '' },
+      editOriginal: { httpRequest: { path: '/api' }, httpResponseObjectCallback: { clientId: 'c1' } },
+      editActionModeled: false,
+    };
+    expect(unrepresentableJavaActionKey(action)).toBe('httpResponseObjectCallback');
+    const java = standardToJava(httpMatcher(), action);
+    expect(java).toContain('httpResponseObjectCallback');
     expect(java).toContain('cannot represent');
     expect(java).not.toContain('mockServerClient');
   });

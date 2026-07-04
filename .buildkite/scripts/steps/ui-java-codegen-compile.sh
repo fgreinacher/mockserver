@@ -75,8 +75,8 @@ echo '--- :java: compiling emitted samples against the real client jar'
 n=\$(ls "$SAMPLES_DIR"/*.java | wc -l | tr -d ' ')
 # Coverage floor (review COR-02): a regression that silently shrinks emitter
 # output must fail loudly, not pass with reduced coverage. Bump when adding cases.
-if [ "\$n" -lt 21 ]; then
-  echo "FATAL: expected at least 21 emitted samples, found \$n" >&2
+if [ "\$n" -lt 23 ]; then
+  echo "FATAL: expected at least 23 emitted samples, found \$n" >&2
   exit 1
 fi
 echo "    compiling \$n sample(s)"

@@ -62,6 +62,21 @@ const KWARG_BY_WIRE: Record<string, string> = {
   times: 'times',
   timeToLive: 'time_to_live',
   namespace: 'namespace',
+  // Edit-preserved actions/siblings the standard form cannot model but an edit
+  // overlay carries through — each mapped to its typed Expectation kwarg.
+  httpLlmResponse: 'http_llm_response',
+  httpResponses: 'http_responses',
+  responseMode: 'response_mode',
+  responseWeights: 'response_weights',
+  switchAfter: 'switch_after',
+  httpResponseObjectCallback: 'http_response_object_callback',
+  httpForwardObjectCallback: 'http_forward_object_callback',
+  httpForwardValidateAction: 'http_forward_validate_action',
+  grpcBidiResponse: 'grpc_bidi_response',
+  rateLimit: 'rate_limit',
+  crossProtocolScenarios: 'cross_protocol_scenarios',
+  percentage: 'percentage',
+  timestamp: 'timestamp',
 };
 
 describe('standardToPython — byte-identity golden', () => {

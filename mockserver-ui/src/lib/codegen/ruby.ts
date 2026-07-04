@@ -84,14 +84,17 @@ function rbValue(v: Json, indent: number): string {
 // name that holds it in the parent; children are rendered at `indent + 2`.
 // ---------------------------------------------------------------------------
 
-interface Arg { name: string; value: string; }
+interface Arg { name: string; value: string; comment?: string; }
 
-/** `MockServer::<Class>.new(\n  arg: value,\n  ...\n)`; bare `.new` when empty. */
+/** `MockServer::<Class>.new(\n  arg: value,\n  ...\n)`; bare `.new` when empty.
+ *  An arg's optional `comment` is emitted as a Ruby `#` line above it. */
 function ctor(className: string, args: Arg[], indent: number): string {
   if (args.length === 0) return `MockServer::${className}.new`;
   const pad = ' '.repeat(indent);
   const pad2 = ' '.repeat(indent + 2);
-  const body = args.map((a) => `${pad2}${a.name}: ${a.value}`).join(',\n');
+  const body = args
+    .map((a) => (a.comment ? `${pad2}# ${a.comment}\n` : '') + `${pad2}${a.name}: ${a.value}`)
+    .join(',\n');
   return `MockServer::${className}.new(\n${body}\n${pad})`;
 }
 
@@ -495,6 +498,108 @@ function timeToLive(w: Obj, indent: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Edit-preserved actions/siblings — typed keyword-arg classes (the gem models
+// every one except the LLM action, which it stores as a verbatim Hash by design
+// — see llm() below).
+// ---------------------------------------------------------------------------
+
+function grpcStreamMessage(mo: Obj, indent: number): string {
+  const ma: Arg[] = [];
+  if ('json' in mo) ma.push({ name: 'json', value: rb(String(mo['json'])) });
+  if ('templateType' in mo) ma.push({ name: 'template_type', value: rb(String(mo['templateType'])) });
+  return ctor('GrpcStreamMessage', ma, indent);
+}
+
+function grpcBidiResponse(w: Obj, indent: number): string {
+  const args: Arg[] = [];
+  if ('statusName' in w) args.push({ name: 'status_name', value: rb(String(w['statusName'])) });
+  if ('statusMessage' in w) args.push({ name: 'status_message', value: rb(String(w['statusMessage'])) });
+  if ('headers' in w) args.push({ name: 'headers', value: kmv(w['headers'] as Obj, indent + 2) });
+  if ('messages' in w) {
+    const msgs = (w['messages'] as Json[]).map((m) => grpcStreamMessage(m as Obj, indent + 4));
+    args.push({ name: 'messages', value: arrayOf(msgs, indent + 2) });
+  }
+  if ('rules' in w) {
+    const rules = (w['rules'] as Json[]).map((r) => {
+      const ro = r as Obj;
+      const ra: Arg[] = [];
+      if ('matchJson' in ro) ra.push({ name: 'match_json', value: rb(String(ro['matchJson'])) });
+      if ('responses' in ro) {
+        const resps = (ro['responses'] as Json[]).map((rr) => grpcStreamMessage(rr as Obj, indent + 6));
+        ra.push({ name: 'responses', value: arrayOf(resps, indent + 4) });
+      }
+      return ctor('GrpcBidiRule', ra, indent + 4);
+    });
+    args.push({ name: 'rules', value: arrayOf(rules, indent + 2) });
+  }
+  if ('closeConnection' in w) args.push({ name: 'close_connection', value: scalar(w['closeConnection']) });
+  if ('delay' in w) args.push({ name: 'delay', value: delay(w['delay'] as Obj, indent + 2) });
+  if ('primary' in w) args.push({ name: 'primary', value: scalar(w['primary']) });
+  return ctor('GrpcBidiResponse', args, indent);
+}
+
+function httpObjectCallback(w: Obj, indent: number): string {
+  const args: Arg[] = [];
+  if ('clientId' in w) args.push({ name: 'client_id', value: rb(String(w['clientId'])) });
+  if ('responseCallback' in w) args.push({ name: 'response_callback', value: scalar(w['responseCallback']) });
+  if ('delay' in w) args.push({ name: 'delay', value: delay(w['delay'] as Obj, indent + 2) });
+  if ('primary' in w) args.push({ name: 'primary', value: scalar(w['primary']) });
+  return ctor('HttpObjectCallback', args, indent);
+}
+
+function httpForwardValidateAction(w: Obj, indent: number): string {
+  const spec: [string, string, 'str' | 'scalar'][] = [
+    ['specUrlOrPayload', 'spec_url_or_payload', 'str'], ['host', 'host', 'str'],
+    ['port', 'port', 'scalar'], ['scheme', 'scheme', 'str'],
+    ['validateRequest', 'validate_request', 'scalar'], ['validateResponse', 'validate_response', 'scalar'],
+    ['validationMode', 'validation_mode', 'str'], ['primary', 'primary', 'scalar'],
+  ];
+  const args: Arg[] = [];
+  for (const [wk, arg, kind] of spec) {
+    if (wk in w) args.push({ name: arg, value: kind === 'str' ? rb(String(w[wk])) : scalar(w[wk]) });
+  }
+  if ('delay' in w) args.push({ name: 'delay', value: delay(w['delay'] as Obj, indent + 2) });
+  return ctor('HttpForwardValidateAction', args, indent);
+}
+
+function rateLimit(w: Obj, indent: number): string {
+  const spec: [string, string, 'str' | 'scalar'][] = [
+    ['name', 'name', 'str'], ['algorithm', 'algorithm', 'str'], ['limit', 'limit', 'scalar'],
+    ['windowMillis', 'window_millis', 'scalar'], ['burst', 'burst', 'scalar'],
+    ['refillPerSecond', 'refill_per_second', 'scalar'], ['errorStatus', 'error_status', 'scalar'],
+    ['retryAfter', 'retry_after', 'str'],
+  ];
+  const args: Arg[] = [];
+  for (const [wk, arg, kind] of spec) {
+    if (wk in w) args.push({ name: arg, value: kind === 'str' ? rb(String(w[wk])) : scalar(w[wk]) });
+  }
+  return ctor('RateLimit', args, indent);
+}
+
+function crossProtocolScenario(w: Obj, indent: number): string {
+  const spec: [string, string][] = [
+    ['trigger', 'trigger'], ['matchPattern', 'match_pattern'],
+    ['scenarioName', 'scenario_name'], ['targetState', 'target_state'],
+  ];
+  const args: Arg[] = [];
+  for (const [wk, arg] of spec) if (wk in w) args.push({ name: arg, value: rb(String(w[wk])) });
+  return ctor('CrossProtocolScenario', args, indent);
+}
+
+/**
+ * The LLM action. The gem intentionally models `httpLlmResponse` as a verbatim
+ * Ruby Hash (MockServer::LLM builders emit Hashes; Expectation#http_llm_response
+ * stores and serialises it unchanged — see lib/mockserver/llm.rb). Its typed
+ * builders cover only a subset of the wire fields (no rerank/moderation/
+ * contentFilter, partial completion/usage), so a Hash literal — the gem's
+ * canonical, lossless input — is the faithful representation. This is a native
+ * typed Hash, NOT a JSON string / heredoc / JSON.parse blob.
+ */
+function llm(v: Json, indent: number): string {
+  return rbValue(v, indent);
+}
+
+// ---------------------------------------------------------------------------
 // Top-level Expectation assembly — wire key → { Expectation kwarg, renderer }.
 // Rendered in this fixed order for a stable, readable snippet.
 // ---------------------------------------------------------------------------
@@ -518,6 +623,20 @@ const EXPECTATION_FIELDS: [string, string, Renderer][] = [
   ['binaryResponse', 'binary_response', (v, i) => binaryResponse(v as Obj, i)],
   ['dnsResponse', 'dns_response', (v, i) => dnsResponse(v as Obj, i)],
   ['grpcStreamResponse', 'grpc_stream_response', (v, i) => grpcStreamResponse(v as Obj, i)],
+  // Edit-preserved actions/siblings the standard composer form cannot model.
+  ['httpResponses', 'http_responses', (v, i) => arrayOf((v as Json[]).map((r) => httpResponse('HttpResponse', r as Obj, i + 2)), i)],
+  ['httpResponseObjectCallback', 'http_response_object_callback', (v, i) => httpObjectCallback(v as Obj, i)],
+  ['httpForwardObjectCallback', 'http_forward_object_callback', (v, i) => httpObjectCallback(v as Obj, i)],
+  ['httpForwardValidateAction', 'http_forward_validate_action', (v, i) => httpForwardValidateAction(v as Obj, i)],
+  ['grpcBidiResponse', 'grpc_bidi_response', (v, i) => grpcBidiResponse(v as Obj, i)],
+  ['httpLlmResponse', 'http_llm_response', (v, i) => llm(v, i)],
+  ['rateLimit', 'rate_limit', (v, i) => rateLimit(v as Obj, i)],
+  ['crossProtocolScenarios', 'cross_protocol_scenarios', (v, i) => arrayOf((v as Json[]).map((c) => crossProtocolScenario(c as Obj, i + 2)), i)],
+  ['responseMode', 'response_mode', (v) => rb(String(v))],
+  ['responseWeights', 'response_weights', (v, i) => rbValue(v, i)],
+  ['switchAfter', 'switch_after', (v) => scalar(v)],
+  ['percentage', 'percentage', (v) => scalar(v)],
+  ['timestamp', 'timestamp', (v) => rb(String(v))],
   ['chaos', 'chaos', (v, i) => httpChaosProfile(v as Obj, i)],
   ['beforeActions', 'before_actions', (v, i) => arrayOf((v as Json[]).map((a) => afterAction(a as Obj, i + 2)), i)],
   ['afterActions', 'after_actions', (v, i) => arrayOf((v as Json[]).map((a) => afterAction(a as Obj, i + 2)), i)],
@@ -541,7 +660,12 @@ export function standardToRuby(matcher: StandardMatcher, action: StandardActionP
   // so its keyword args live at indent 4 and its children at indent 6.
   const args: Arg[] = [];
   for (const [wireKey, arg, render] of EXPECTATION_FIELDS) {
-    if (wireKey in wire) args.push({ name: arg, value: render(wire[wireKey], 4) });
+    if (wireKey in wire) {
+      const a: Arg = { name: arg, value: render(wire[wireKey], 4) };
+      // The gem models the LLM action as a verbatim Hash (see llm()); flag why.
+      if (wireKey === 'httpLlmResponse') a.comment = "LLM action: the gem carries httpLlmResponse as a verbatim Hash (MockServer::LLM builders emit Hashes)";
+      args.push(a);
+    }
   }
   const expectation = ctor('Expectation', args, 2);
 
