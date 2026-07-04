@@ -9,7 +9,6 @@
  * golden harness (./ruby.test.ts against ./__fixtures__/rubyGolden.ts).
  */
 import {
-  standardToPython,
   standardToGo,
   standardToCsharp,
   standardToRust,
@@ -208,8 +207,13 @@ export const combos: Combo[] = [
   },
 ];
 
+// NOTE: `python` is intentionally NOT in this map. The Python emitter was
+// rewritten to build typed client objects (see ../python.ts) rather than embed a
+// JSON dict, so it no longer reproduces the byte-for-byte from_dict golden the
+// other emitters share. It now has its own golden fixture (__fixtures__/pythonGolden.ts)
+// and its own test (../../__tests__/pythonCodegen.test.ts) which additionally
+// proves round-trip semantic equivalence by executing the generated code.
 export const emitters: Record<string, (m: StandardMatcher, a: StandardActionPayload, u: string) => string> = {
-  python: standardToPython,
   go: standardToGo,
   csharp: standardToCsharp,
   rust: standardToRust,

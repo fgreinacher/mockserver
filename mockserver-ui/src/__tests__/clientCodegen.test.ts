@@ -60,20 +60,27 @@ describe('standardToNode', () => {
 });
 
 describe('standardToPython', () => {
-  it('uses Expectation.from_dict with a Python dict literal', () => {
+  it('builds typed client objects and registers via upsert (no from_dict blob)', () => {
     const code = standardToPython(baseMatcher(), templateFileAction, BASE_URL);
-    expect(code).toContain('from mockserver import MockServerClient, Expectation');
+    expect(code).toMatch(/^from mockserver import /m);
     expect(code).toContain('MockServerClient("localhost", 1080).upsert(');
-    expect(code).toContain('Expectation.from_dict(');
-    expect(code).toContain('"templateFile": "templates/foo.vm"');
+    expect(code).toContain('Expectation(');
+    // the forward template action maps onto a typed HttpTemplate, carrying templateFile
+    expect(code).toContain('http_forward_template=HttpTemplate(');
+    expect(code).toContain('template_file="templates/foo.vm"');
+    expect(code).not.toContain('from_dict');
   });
 
-  it('renders JSON booleans/null as Python True/False/None', () => {
-    const code = standardToPython(baseMatcher({ secure: true }), {
+  it('renders a JSON body matcher as a typed Body with Python literals', () => {
+    const code = standardToPython(baseMatcher({ secure: true, bodyMatcherType: 'json', body: '{"ok":true,"n":null}' }), {
       type: 'static',
-      static: { statusCode: 200, body: '{"ok":true}', contentType: 'application/json', bodyFromFile: false, filePath: '', fileTemplateType: '' },
+      static: { statusCode: 200, body: '', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
     }, BASE_URL);
-    expect(code).toContain('"secure": True');
+    expect(code).toContain('body=Body(');
+    expect(code).toContain('"ok": True');
+    expect(code).toContain('"n": None');
+    expect(code).toContain('secure=True');
+    expect(code).not.toContain('from_dict');
     expect(code).not.toContain(': true');
   });
 });
