@@ -67,7 +67,7 @@ check_http() {
   # Send a real User-Agent: crates.io returns 403 to UA-less requests, which made
   # the crates.io checks report a misleading HTTP 403. A UA is harmless for every
   # other host, so set it unconditionally.
-  code=$(curl -sS --connect-timeout 10 --max-time 30 \
+  code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
     -A 'mockserver-release (+https://github.com/mock-server/mockserver-monorepo)' \
     -o /dev/null -w '%{http_code}' -L -I "$url" 2>/dev/null || echo "000")
   if [[ "$code" =~ ^(${expected})$ ]]; then
@@ -87,7 +87,7 @@ check_http_soft() {
   # Send a real User-Agent: crates.io returns 403 to UA-less requests, which made
   # the crates.io checks report a misleading HTTP 403. A UA is harmless for every
   # other host, so set it unconditionally.
-  code=$(curl -sS --connect-timeout 10 --max-time 30 \
+  code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
     -A 'mockserver-release (+https://github.com/mock-server/mockserver-monorepo)' \
     -o /dev/null -w '%{http_code}' -L -I "$url" 2>/dev/null || echo "000")
   if [[ "$code" =~ ^(${expected})$ ]]; then
@@ -104,7 +104,7 @@ check_http_soft() {
 check_json() {
   local label="$1" url="$2" filter="$3"
   local response
-  response=$(curl -sS --connect-timeout 10 --max-time 30 "$url" 2>/dev/null || echo "")
+  response=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 "$url" 2>/dev/null || echo "")
   if [[ -z "$response" ]]; then
     log_error "  FAIL  $label  (empty response from $url)"
     HARD_FAILS+=("$label")
@@ -123,7 +123,7 @@ check_json() {
 check_body_contains() {
   local label="$1" url="$2" pattern="$3"
   local response
-  response=$(curl -sS --connect-timeout 10 --max-time 30 "$url" 2>/dev/null || echo "")
+  response=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 "$url" 2>/dev/null || echo "")
   if [[ -z "$response" ]]; then
     log_error "  FAIL  $label  (empty response from $url)"
     HARD_FAILS+=("$label")
@@ -189,11 +189,11 @@ log_info "== GHCR mirror (soft — convenience mirror, not a release gate) =="
 # GHCR requires a bearer token even to read a public package, so fetch an
 # anonymous pull token first, then HEAD the manifest. Soft: the mirror is a
 # best-effort convenience surface (see docker.sh MIRROR_GHCR), never a gate.
-ghcr_token=$(curl -sS --max-time 20 \
+ghcr_token=$(curl -sS --retry 3 --max-time 20 \
   "https://ghcr.io/token?service=ghcr.io&scope=repository:mock-server/mockserver:pull" 2>/dev/null \
   | jq -r '.token // empty' 2>/dev/null)
 if [[ -n "$ghcr_token" ]]; then
-  ghcr_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+  ghcr_code=$(curl -sS --retry 3 -o /dev/null -w '%{http_code}' --max-time 20 \
     -H "Authorization: Bearer $ghcr_token" \
     -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
     "https://ghcr.io/v2/mock-server/mockserver/manifests/$V" 2>/dev/null)
@@ -229,7 +229,7 @@ check_body_contains "$V listed in Helm index.yaml" \
 # version (see `helm repo index --url` in helm.sh).
 log_info ""
 log_info "== Helm index integrity (every listed .tgz must resolve — issue #2282, HARD) =="
-index_body=$(curl -sS --connect-timeout 10 --max-time 30 \
+index_body=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
   "https://www.mock-server.com/index.yaml" 2>/dev/null || echo "")
 if [[ -z "$index_body" ]]; then
   log_error "  FAIL  could not fetch Helm index.yaml for integrity check"
@@ -249,7 +249,7 @@ else
     log_info "  index.yaml advertises ${#index_tgz_urls[@]} chart .tgz URL(s) — HEAD-checking each"
     index_dangling=0
     for tgz_url in "${index_tgz_urls[@]}"; do
-      tgz_code=$(curl -sS --connect-timeout 10 --max-time 30 \
+      tgz_code=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
         -A 'mockserver-release (+https://github.com/mock-server/mockserver-monorepo)' \
         -o /dev/null -w '%{http_code}' -L -I "$tgz_url" 2>/dev/null || echo "000")
       if [[ "$tgz_code" =~ ^(200|301|302)$ ]]; then
@@ -279,11 +279,11 @@ fi
 # Hub listing, so a missing publish is a release defect, not a lagging mirror.
 log_info ""
 log_info "== Helm OCI chart (ghcr.io/mock-server/charts/mockserver — issue #2281, HARD) =="
-chart_ghcr_token=$(curl -sS --max-time 20 \
+chart_ghcr_token=$(curl -sS --retry 3 --max-time 20 \
   "https://ghcr.io/token?service=ghcr.io&scope=repository:mock-server/charts/mockserver:pull" 2>/dev/null \
   | jq -r '.token // empty' 2>/dev/null)
 if [[ -n "$chart_ghcr_token" ]]; then
-  chart_ghcr_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+  chart_ghcr_code=$(curl -sS --retry 3 -o /dev/null -w '%{http_code}' --max-time 20 \
     -H "Authorization: Bearer $chart_ghcr_token" \
     -H "Accept: application/vnd.oci.image.manifest.v1+json" \
     "https://ghcr.io/v2/mock-server/charts/mockserver/manifests/$V" 2>/dev/null)
@@ -329,7 +329,7 @@ check_http "spec $API_V" \
 # Default-version check — SwaggerHub's settings/default endpoint returns
 # `{"version":"X.Y.x"}` for the current default; if swaggerhub.sh's PUT
 # /settings/default step silently failed, this is where we'd surface it.
-default_version=$(curl -sS --connect-timeout 10 --max-time 30 \
+default_version=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
   "https://api.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/settings/default" 2>/dev/null \
   | jq -r '.version // empty' 2>/dev/null)
 if [[ "$default_version" == "$API_V" ]]; then
@@ -359,9 +359,11 @@ fi
 
 log_info ""
 log_info "== Homebrew (soft — bumped asynchronously by BrewTestBot) =="
-homebrew_stable=$(curl -sS --connect-timeout 10 --max-time 30 \
+# `|| true` so a formulae.brew.sh timeout cannot abort the script under set -e
+# — soft check, must degrade to the WARN branch (same class as the MCP fix).
+homebrew_stable=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
   "https://formulae.brew.sh/api/formula/mockserver.json" 2>/dev/null \
-  | jq -r '.versions.stable // empty' 2>/dev/null)
+  | jq -r '.versions.stable // empty' 2>/dev/null || true)
 if [[ "$homebrew_stable" == "$V" ]]; then
   log_info "  PASS  Homebrew formula at $V"
 else
@@ -373,9 +375,11 @@ log_info ""
 log_info "== MCP registry (soft — discovery surface, not a release gate) =="
 # The official registry lists the server under the DNS-verified namespace.
 # Soft: publish is soft_fail and can lag the image becoming visible on Docker Hub.
-mcp_listed=$(curl -sS --connect-timeout 10 --max-time 30 \
+# `|| true` so a registry timeout (curl exit 28) cannot abort the script under
+# set -e — this is a soft check and must degrade to the WARN branch below.
+mcp_listed=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
   "https://registry.modelcontextprotocol.io/v0/servers?search=com.mock-server/mockserver" 2>/dev/null \
-  | jq -r '[.servers[]? | select(.name=="com.mock-server/mockserver") | .version] | max // empty' 2>/dev/null)
+  | jq -r '[.servers[]? | select(.name=="com.mock-server/mockserver") | .version] | max // empty' 2>/dev/null || true)
 if [[ "$mcp_listed" == "$V" ]]; then
   log_info "  PASS  MCP registry lists com.mock-server/mockserver @ $V"
 else
@@ -405,7 +409,7 @@ log_info "== PHP Client (soft — Packagist webhook may lag) =="
 # command substitution aborts the WHOLE verify run mid-PHP-check (it did, in
 # release build #50 — the step exited 1 right after this header). `|| true`
 # keeps it soft like every other check here, which use `|| echo`/`jq -r //empty`.
-php_check=$(curl -sS --connect-timeout 10 --max-time 30 \
+php_check=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
   "https://packagist.org/packages/mock-server/mockserver-client.json" 2>/dev/null \
   | jq -e ".package.versions[\"${V}\"]" 2>/dev/null || true)
 if [[ -n "$php_check" && "$php_check" != "null" ]]; then
@@ -446,7 +450,7 @@ log_info ""
 log_info "== testcontainers-mockserver (RubyGems, soft) =="
 # `any(...)` over the versions array; `|| true` keeps it soft — a jq miss under
 # set -euo pipefail would otherwise abort the whole verify run.
-tc_ruby_check=$(curl -sS --connect-timeout 10 --max-time 30 \
+tc_ruby_check=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
   "https://rubygems.org/api/v1/versions/testcontainers-mockserver.json" 2>/dev/null \
   | jq -e "any(.[]?; .number == \"$V\")" 2>/dev/null || true)
 if [[ "$tc_ruby_check" == "true" ]]; then
@@ -460,7 +464,7 @@ log_info ""
 log_info "== mockserver-testcontainers (PHP, Packagist, soft) =="
 # Soft + pending mirror-repo provisioning: publishes via a subtree-split mirror
 # repo (mock-server/mockserver-testcontainers-php). `|| true` keeps it soft.
-tc_php_check=$(curl -sS --connect-timeout 10 --max-time 30 \
+tc_php_check=$(curl -sS --retry 3 --connect-timeout 10 --max-time 30 \
   "https://packagist.org/packages/mock-server/mockserver-testcontainers.json" 2>/dev/null \
   | jq -e ".package.versions[\"${V}\"]" 2>/dev/null || true)
 if [[ -n "$tc_php_check" && "$tc_php_check" != "null" ]]; then

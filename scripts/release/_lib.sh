@@ -616,7 +616,22 @@ git_commit_and_push() {
         fi
         log_info "Push rejected (non-fast-forward) — rebasing on origin/master and retrying ($attempts)"
         git -C "$REPO_ROOT" fetch --quiet origin master
-        git -C "$REPO_ROOT" rebase origin/master
+        # Release components can leave unstaged working-tree changes (e.g. the
+        # Helm packaging step), which make `git rebase` refuse to run and turned
+        # this retry loop into a guaranteed failure. Stash around the rebase so
+        # the committed release change replays cleanly, then restore.
+        local stashed=0
+        if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
+          git -C "$REPO_ROOT" stash push --include-untracked --quiet && stashed=1
+        fi
+        if ! git -C "$REPO_ROOT" rebase origin/master; then
+          git -C "$REPO_ROOT" rebase --abort || true
+          if [[ "$stashed" == "1" ]]; then git -C "$REPO_ROOT" stash pop --quiet || log_info "stash pop after aborted rebase failed — residue left in stash"; fi
+          log_error "Rebase onto origin/master failed while retrying the push"
+          rc=1
+          break
+        fi
+        [[ "$stashed" == "1" ]] && { git -C "$REPO_ROOT" stash pop --quiet || log_info "stash pop after rebase failed — build-artifact residue left in stash (release commit unaffected)"; }
       done
       rm -f /tmp/push_err.$$
     fi
