@@ -98,6 +98,7 @@ const BODY_MATCHER_TO_SERVER_TYPE: Record<BodyMatcherType, string> = {
   'xml-schema': 'XML_SCHEMA',
   xpath: 'XPATH',
   regex: 'REGEX',
+  allOf: 'ALL_OF',
   parameters: 'PARAMETERS',
   wasm: 'WASM',
 };

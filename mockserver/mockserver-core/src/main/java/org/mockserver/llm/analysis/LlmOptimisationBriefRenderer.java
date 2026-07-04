@@ -320,11 +320,11 @@ public class LlmOptimisationBriefRenderer {
     }
 
     private static String formatTokens(long tokens) {
-        return String.format("%,d", tokens);
+        return String.format(java.util.Locale.ROOT, "%,d", tokens);
     }
 
     private static String formatUsd(double usd) {
-        return String.format("$%.4f", usd);
+        return String.format(java.util.Locale.ROOT, "$%.4f", usd);
     }
 
     private static String formatPercent(double fraction) {
