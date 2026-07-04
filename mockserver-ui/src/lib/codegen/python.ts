@@ -29,8 +29,8 @@
  * form, and `HttpOverrideForwardedRequest(http_request=...)` which serialises to
  * the `httpRequest` alias of the wire `requestOverride` field.
  */
-import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen';
-import { clientHostPort, toPythonLiteral } from './shared';
+import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen.ts';
+import { clientHostPort, toPythonLiteral } from './shared.ts';
 
 type Json = Record<string, unknown>;
 type Kw = [string, string];

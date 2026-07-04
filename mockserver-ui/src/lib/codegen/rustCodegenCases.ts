@@ -8,8 +8,8 @@
  * forward-template and forward-class-callback actions. Together they cover every
  * buildExpectationJson feature the Rust emitter must map to typed construction.
  */
-import { combos as sharedCombos, type Combo } from './extractParityCases';
-import type { StandardMatcher } from '../standardCodegen';
+import { combos as sharedCombos, type Combo } from './extractParityCases.ts';
+import type { StandardMatcher } from '../standardCodegen.ts';
 
 function baseMatcher(overrides?: Partial<StandardMatcher>): StandardMatcher {
   return {

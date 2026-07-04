@@ -30,8 +30,8 @@
  *   2. an override-forwarded-request's request override serialises under
  *      `httpRequest` (the server `@JsonAlias`) rather than `requestOverride`.
  */
-import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen';
-import { clientHostPort } from './shared';
+import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen.ts';
+import { clientHostPort } from './shared.ts';
 
 // ---------------------------------------------------------------------------
 // Small literal / formatting helpers

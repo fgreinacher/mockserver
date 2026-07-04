@@ -15,8 +15,8 @@
  * identical to {@link buildExpectationJson}; the crate's own model is the single
  * source of truth for field names and shapes (see `mockserver-client-rust/src/model.rs`).
  */
-import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen';
-import { clientHostPort } from './shared';
+import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen.ts';
+import { clientHostPort } from './shared.ts';
 
 // ---------------------------------------------------------------------------
 // Low-level literal helpers

@@ -11,8 +11,8 @@
  * (with a bogus-key negative control), so a client-type change that the literal
  * violated would fail the build rather than ship broken generated code.
  */
-import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen';
-import { clientHostPort, indentAfterFirst } from './shared';
+import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen.ts';
+import { clientHostPort, indentAfterFirst } from './shared.ts';
 
 export function standardToNode(matcher: StandardMatcher, action: StandardActionPayload, baseUrl: string): string {
   const { host, port } = clientHostPort(baseUrl);

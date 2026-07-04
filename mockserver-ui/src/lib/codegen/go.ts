@@ -23,8 +23,8 @@
  * only for genuinely interface-typed fields (HttpLlmResponse.chaos) or a fragment
  * the Go model cannot carry.
  */
-import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen';
-import { clientHostPort } from './shared';
+import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen.ts';
+import { clientHostPort } from './shared.ts';
 
 // ---------------------------------------------------------------------------
 // Struct field registry — maps each Go struct type to its [wireKey, goField,

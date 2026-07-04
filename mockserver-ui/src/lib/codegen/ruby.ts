@@ -26,8 +26,8 @@
  * passes through unchanged), preserving the exact wire shape until the gem grows a
  * typed field for it.
  */
-import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen';
-import { clientHostPort } from './shared';
+import { buildExpectationJson, type StandardMatcher, type StandardActionPayload } from '../standardCodegen.ts';
+import { clientHostPort } from './shared.ts';
 
 type Json = unknown;
 type Obj = Record<string, Json>;

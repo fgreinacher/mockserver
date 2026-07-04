@@ -3177,14 +3177,14 @@ export function standardToCurl(
 //
 // The emitters and their shared helpers live in per-language modules under
 // ./codegen/; they are re-exported here under their original names so every
-// existing import site (and test) that pulls them from './standardCodegen' keeps
+// existing import site (and test) that pulls them from './standardCodegen.ts' keeps
 // working unchanged.
 // ---------------------------------------------------------------------------
 
-export { clientHostPort, indentAfterFirst, toPythonLiteral, rustRawString } from './codegen/shared';
-export { standardToNode } from './codegen/node';
-export { standardToPython } from './codegen/python';
-export { standardToGo } from './codegen/go';
-export { standardToCsharp } from './codegen/csharp';
-export { standardToRuby } from './codegen/ruby';
-export { standardToRust } from './codegen/rust';
+export { clientHostPort, indentAfterFirst, toPythonLiteral, rustRawString } from './codegen/shared.ts';
+export { standardToNode } from './codegen/node.ts';
+export { standardToPython } from './codegen/python.ts';
+export { standardToGo } from './codegen/go.ts';
+export { standardToCsharp } from './codegen/csharp.ts';
+export { standardToRuby } from './codegen/ruby.ts';
+export { standardToRust } from './codegen/rust.ts';
