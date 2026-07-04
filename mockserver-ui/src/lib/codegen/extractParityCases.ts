@@ -4,14 +4,14 @@
  *
  * The combos are chosen to exercise the distinct buildExpectationJson branches
  * AND the per-language escaping paths (Go backtick break-out, Rust raw-string
- * hash escalation, C# verbatim quote doubling, Ruby heredoc, Python
- * literalisation of booleans/null).
+ * hash escalation, C# verbatim quote doubling, Python literalisation of
+ * booleans/null). The typed-construction Ruby emitter is exercised by its own
+ * golden harness (./ruby.test.ts against ./__fixtures__/rubyGolden.ts).
  */
 import {
   standardToPython,
   standardToGo,
   standardToCsharp,
-  standardToRuby,
   standardToRust,
   type StandardMatcher,
   type StandardActionPayload,
@@ -212,6 +212,5 @@ export const emitters: Record<string, (m: StandardMatcher, a: StandardActionPayl
   python: standardToPython,
   go: standardToGo,
   csharp: standardToCsharp,
-  ruby: standardToRuby,
   rust: standardToRust,
 };

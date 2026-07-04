@@ -101,13 +101,25 @@ describe('standardToGo', () => {
 });
 
 describe('standardToRuby', () => {
-  it('parses the JSON via a non-interpolating heredoc and Expectation.from_hash', () => {
+  it('builds a typed Expectation from model constructors and upserts it', () => {
     const code = standardToRuby(baseMatcher(), templateFileAction, BASE_URL);
     expect(code).toContain("require 'mockserver-client'");
     expect(code).toContain("MockServer::Client.new('localhost', 1080)");
-    expect(code).toContain("<<~'JSON'");
-    expect(code).toContain('MockServer::Expectation.from_hash(JSON.parse(expectation))');
-    expect(code).toContain('"templateFile": "templates/foo.vm"');
+    expect(code).toContain('client.upsert(');
+    expect(code).toContain('MockServer::Expectation.new(');
+    // typed forward-template action, not an embedded JSON payload
+    expect(code).toContain('MockServer::HttpTemplate.new(');
+    expect(code).toContain('template_file: "templates/foo.vm"');
+    // no whole-payload from_hash / heredoc round-trip anymore
+    expect(code).not.toContain('from_hash');
+    expect(code).not.toContain("<<~'JSON'");
+  });
+
+  it('carries a templated FILE body through as a typed Body', () => {
+    const code = standardToRuby(baseMatcher(), fileBodyAction, BASE_URL);
+    expect(code).toContain('MockServer::Body.new(');
+    expect(code).toContain('type: "FILE"');
+    expect(code).toContain('template_type: "MUSTACHE"');
   });
 });
 
