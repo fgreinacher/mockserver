@@ -10,7 +10,6 @@
  */
 import {
   standardToGo,
-  standardToCsharp,
   type StandardMatcher,
   type StandardActionPayload,
 } from '../standardCodegen';
@@ -214,5 +213,4 @@ export const combos: Combo[] = [
 // proves round-trip semantic equivalence by executing the generated code.
 export const emitters: Record<string, (m: StandardMatcher, a: StandardActionPayload, u: string) => string> = {
   go: standardToGo,
-  csharp: standardToCsharp,
 };

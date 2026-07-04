@@ -189,13 +189,17 @@ describe('clientHostPort (via generated snippets)', () => {
 });
 
 describe('standardToCsharp', () => {
-  it('deserializes the JSON into an Expectation and Upserts it', () => {
+  it('constructs a typed Expectation with a typed FILE body and Upserts it', () => {
     const code = standardToCsharp(baseMatcher(), fileBodyAction, BASE_URL);
     expect(code).toContain('using MockServer.Client;');
+    expect(code).toContain('using MockServer.Client.Models;');
     expect(code).toContain('new MockServerClient("localhost", 1080)');
-    expect(code).toContain('JsonSerializer.Deserialize<Expectation>(@"');
-    expect(code).toContain('client.Upsert(expectation!);');
-    // verbatim string escapes double quotes by doubling them
-    expect(code).toContain('""type"": ""FILE""');
+    expect(code).toContain('client.Upsert(new Expectation');
+    // typed construction — a FILE body is a typed FileBody, not a JSON blob
+    expect(code).toContain('Body = new FileBody');
+    expect(code).toContain('FilePath = "responses/order.json"');
+    expect(code).toContain('TemplateType = FileTemplateType.MUSTACHE');
+    // the whole-payload Deserialize<Expectation> approach is gone
+    expect(code).not.toContain('JsonSerializer.Deserialize<Expectation>');
   });
 });
