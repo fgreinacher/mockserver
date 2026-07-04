@@ -144,24 +144,38 @@ describe('standardToRuby', () => {
 });
 
 describe('standardToRust', () => {
-  it('deserializes the JSON into an Expectation and upserts it', () => {
+  it('constructs typed client objects and upserts them (no from_str of the payload)', () => {
     const code = standardToRust(baseMatcher(), fileBodyAction, BASE_URL);
-    expect(code).toContain('use mockserver_client::{ClientBuilder, Expectation};');
+    expect(code).toContain('use mockserver_client::*;');
     expect(code).toContain('ClientBuilder::new("localhost", 1080).build()?');
-    expect(code).toContain('serde_json::from_str(r#"');
+    expect(code).toContain('Expectation::new(request)');
+    expect(code).toContain('HttpRequest::new()');
+    expect(code).toContain('HttpResponse::new()');
+    expect(code).toContain('.status_code(200)');
     expect(code).toContain('client.upsert(&[expectation])?');
+    // The whole expectation is never round-tripped through serde_json::from_str.
+    expect(code).not.toContain('serde_json::from_str');
+  });
+
+  it('carries a FILE/typed-object response body through the typed extra map, not the String body field', () => {
+    // HttpResponse.body is Option<String>; a FILE body object is inserted verbatim
+    // into the public `extra` catch-all rather than deserialised from a JSON blob.
+    const code = standardToRust(baseMatcher(), fileBodyAction, BASE_URL);
+    expect(code).toContain('response.extra.insert("body".to_string(), serde_json::json!({');
+    expect(code).toContain('"type": "FILE"');
     expect(code).toContain('"templateType": "MUSTACHE"');
   });
 
-  it('bumps the raw-string hash count when the JSON contains a quote-hash sequence', () => {
-    // the body value contains `"#`, which would terminate an r#"..."# raw string early,
-    // so the wrapper must escalate to r##"..."##
-    const code = standardToRust(baseMatcher(), {
+  it('escapes body strings as normal Rust string literals (backtick and hash are literal)', () => {
+    const code = standardToRust(baseMatcher({ path: '/a`b/c"#d' }), {
       type: 'static',
       static: { statusCode: 200, body: 'a"#b', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
     }, BASE_URL);
-    expect(code).toContain('serde_json::from_str(r##"');
-    expect(code).not.toContain('serde_json::from_str(r#"');
+    // No raw-string wrapper anywhere; the quote is backslash-escaped, backtick/# are literal.
+    expect(code).not.toContain('r#"');
+    expect(code).not.toContain('r##"');
+    expect(code).toContain('.path("/a`b/c\\"#d")');
+    expect(code).toContain('.body("a\\"#b")');
   });
 });
 

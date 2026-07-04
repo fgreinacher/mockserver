@@ -11,7 +11,6 @@
 import {
   standardToGo,
   standardToCsharp,
-  standardToRust,
   type StandardMatcher,
   type StandardActionPayload,
 } from '../standardCodegen';
@@ -216,5 +215,4 @@ export const combos: Combo[] = [
 export const emitters: Record<string, (m: StandardMatcher, a: StandardActionPayload, u: string) => string> = {
   go: standardToGo,
   csharp: standardToCsharp,
-  rust: standardToRust,
 };
