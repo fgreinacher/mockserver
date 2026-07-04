@@ -6,22 +6,30 @@ import logging
 import uuid
 from typing import Any, Callable
 
-import websockets
-import websockets.exceptions
+try:  # pragma: no cover - exercised via import behaviour
+    import websockets
+    import websockets.exceptions
+except ImportError:  # websockets is only needed for WebSocket features; keep
+    # `import mockserver` working without it and fail at first use instead.
+    websockets = None
 
 # Prefer the modern asyncio client (websockets >= 13). It accepts the
 # ``additional_headers`` kwarg used below to carry the client-registration id.
 # Fall back to the legacy client on older releases, where the equivalent kwarg
 # is ``extra_headers``. ``_CONNECT_HEADERS_KWARG`` records which name to use so
 # the registration header is sent regardless of the installed version.
-try:
-    from websockets.asyncio.client import connect as _ws_connect  # type: ignore
+if websockets is not None:
+    try:
+        from websockets.asyncio.client import connect as _ws_connect  # type: ignore
 
+        _CONNECT_HEADERS_KWARG = "additional_headers"
+    except ImportError:  # pragma: no cover - exercised only on legacy websockets
+        from websockets.client import connect as _ws_connect  # type: ignore
+
+        _CONNECT_HEADERS_KWARG = "extra_headers"
+else:  # pragma: no cover - websockets not installed; fail at first use
+    _ws_connect = None
     _CONNECT_HEADERS_KWARG = "additional_headers"
-except ImportError:  # pragma: no cover - exercised only on legacy websockets
-    from websockets.client import connect as _ws_connect  # type: ignore
-
-    _CONNECT_HEADERS_KWARG = "extra_headers"
 
 from mockserver.exceptions import MockServerCallbackError, MockServerWebSocketError
 from mockserver.models import (
@@ -189,6 +197,10 @@ class MockServerWebSocketClient:
 
         registration_headers = {CLIENT_REGISTRATION_ID_HEADER: registration_id}
 
+        if _ws_connect is None:  # pragma: no cover - depends on environment
+            raise MockServerWebSocketError(
+                "the 'websockets' package is required for WebSocket callbacks: pip install websockets"
+            )
         connect_kwargs: dict[str, Any] = {
             _CONNECT_HEADERS_KWARG: registration_headers,
             "ssl": self._ssl_context if self._secure else None,

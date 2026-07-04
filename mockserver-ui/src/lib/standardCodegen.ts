@@ -2805,7 +2805,7 @@ function llmResponseToJava(llm: Record<string, unknown>): { code: string; import
   const chain: LlmJavaChain = { factory: 'llmResponse()', calls };
   const code = ['.respondWithLlm(', ...renderLlmChain(chain, '    '), ')'].join('\n');
   const note = unmapped.length > 0
-    ? `// NOTE: the Java builder preview omits httpLlmResponse field(s) it cannot carry: ${unmapped.join(', ')} — see the JSON tab.`
+    ? `// NOTE: the Java builder preview omits httpLlmResponse field(s) it cannot carry: ${unmapped.join(', ')} -- see the JSON tab.`
     : undefined;
   return { code, imports: Array.from(imports), note };
 }
@@ -3277,13 +3277,13 @@ export function standardToJava(matcher: StandardMatcher, action: StandardActionP
   // carry (normally none — every wire field has a setter).
   if (llmEmit?.note) lines.push(llmEmit.note);
   if (sequenceNotes.size > 0) {
-    lines.push(`// NOTE: the Java preview omits response-sequence field(s) it cannot carry: ${Array.from(sequenceNotes).join(', ')} — see the JSON tab.`);
+    lines.push(`// NOTE: the Java preview omits response-sequence field(s) it cannot carry: ${Array.from(sequenceNotes).join(', ')} -- see the JSON tab.`);
   }
   // Honest NOTE for preserved top-level fields the Java client API cannot set
   // (rateLimit / timestamp) — never a silent drop.
   const unrep = JAVA_UNREPRESENTABLE_TOPLEVEL.filter((k) => k in json && json[k] != null);
   if (unrep.length > 0) {
-    lines.push(`// NOTE: the Java client API cannot set these preserved field(s): ${unrep.join(', ')} — see the JSON tab.`);
+    lines.push(`// NOTE: the Java client API cannot set these preserved field(s): ${unrep.join(', ')} -- see the JSON tab.`);
   }
   return lines.join('\n');
 }

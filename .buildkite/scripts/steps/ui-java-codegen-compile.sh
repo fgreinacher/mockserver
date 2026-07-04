@@ -80,7 +80,7 @@ if [ "\$n" -lt 23 ]; then
   exit 1
 fi
 echo "    compiling \$n sample(s)"
-javac --release 17 -cp "$CLIENT_CLASSES:\$(cat "$CP_FILE")" -d "$CLASSES_DIR" "$SAMPLES_DIR"/*.java
+javac --release 17 -encoding UTF-8 -cp "$CLIENT_CLASSES:\$(cat "$CP_FILE")" -d "$CLASSES_DIR" "$SAMPLES_DIR"/*.java
 compiled=\$(ls "$CLASSES_DIR"/*.class | wc -l | tr -d ' ')
 echo "--- :white_check_mark: all generated Java compiled (\$compiled class file(s))"
 EOF
