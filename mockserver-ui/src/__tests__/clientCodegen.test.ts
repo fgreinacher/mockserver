@@ -79,24 +79,37 @@ describe('standardToPython', () => {
 });
 
 describe('standardToGo', () => {
-  it('unmarshals the JSON into a mockserver.Expectation and Upserts it', () => {
+  it('constructs a typed mockserver.Expectation and Upserts it (no embedded JSON)', () => {
     const code = standardToGo(baseMatcher(), templateFileAction, BASE_URL);
     expect(code).toContain('mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"');
     expect(code).toContain('mockserver.New("localhost", 1080)');
-    expect(code).toContain('json.Unmarshal([]byte(expectationJSON), &expectation)');
+    // typed construction — the fluent request builder and a typed action struct
+    expect(code).toContain('mockserver.Request().');
+    expect(code).toContain('expectation := mockserver.Expectation{');
+    expect(code).toContain('HttpForwardTemplate: &mockserver.HttpTemplate{');
+    expect(code).toContain('TemplateFile: "templates/foo.vm"');
     expect(code).toContain('client.Upsert(expectation)');
-    expect(code).toContain('"templateFile": "templates/foo.vm"');
+    // the whole point of the rewrite: no JSON blob is unmarshalled
+    expect(code).not.toContain('json.Unmarshal(expectationJSON');
+    expect(code).not.toContain('encoding/json');
   });
 
-  it('escapes a backtick in the JSON so the Go raw string stays valid', () => {
+  it('uses a typed FILE body constructor for a templated file response', () => {
+    const code = standardToGo(baseMatcher(), fileBodyAction, BASE_URL);
+    expect(code).toContain('Body: mockserver.FileBody{');
+    expect(code).toContain('Type: "FILE"');
+    expect(code).toContain('TemplateType: "MUSTACHE"');
+  });
+
+  it('needs no backtick break-out because Go strings are double-quoted', () => {
     const code = standardToGo(baseMatcher({ path: '/a`b' }), {
       type: 'static',
       static: { statusCode: 200, body: '', contentType: '', bodyFromFile: false, filePath: '', fileTemplateType: '' },
     }, BASE_URL);
-    // the literal backtick is broken out and concatenated as a quoted backtick
-    expect(code).toContain('` + "`" + `');
-    // no bare backtick remains inside the path value
-    expect(code).not.toContain('/a`b');
+    // the path is a normal Go double-quoted string literal (a backtick is legal inside it)
+    expect(code).toContain('Path("/a`b")');
+    // no raw-string backtick break-out remains from the old JSON-embedding emitter
+    expect(code).not.toContain('` + "`" + `');
   });
 });
 

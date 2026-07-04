@@ -21,6 +21,15 @@
 import { describe, it, expect } from 'vitest';
 import { combos, emitters } from './extractParityCases';
 import { emitterGolden } from './__fixtures__/emitterGolden';
+import { goGolden } from './__fixtures__/goGolden';
+
+// Per-language golden lookup. The typed-emitter rewrites move each language's
+// golden out of emitterGolden into its own fixture (so each rewrite is an
+// isolated diff); the maps are merged here, per-language override winning.
+const golden: Record<string, Record<string, string>> = {
+  ...emitterGolden,
+  go: goGolden,
+};
 
 describe('per-language emitter byte-identity parity', () => {
   for (const [lang, emit] of Object.entries(emitters)) {
@@ -28,7 +37,7 @@ describe('per-language emitter byte-identity parity', () => {
       for (const combo of combos) {
         it(`${combo.name}`, () => {
           const actual = emit(combo.matcher, combo.action, combo.baseUrl);
-          expect(actual).toBe(emitterGolden[lang]?.[combo.name]);
+          expect(actual).toBe(golden[lang]?.[combo.name]);
         });
       }
     });
