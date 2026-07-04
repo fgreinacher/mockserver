@@ -68,6 +68,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directly. The audit view explains the opt-in audit trail (and the demo enables it).
 
 ### Fixed
+- **Dashboard: editing an LLM or otherwise exotic expectation now generates complete typed client code in
+  every language.** Fields the composer form cannot model — LLM responses with their full completion detail,
+  response sequences, object callbacks, forward-validate, gRPC bidi, rate limits, and cross-protocol
+  scenarios — were silently dropped from generated Python and Ruby code and embedded as raw JSON in C# and
+  Rust; all languages now construct the client's typed model, guarded by a universal test asserting no wire
+  field is ever absent from generated code.
+- **Registering forward-validate, forward-with-fallback, or gRPC bidi expectations no longer fails with a
+  metrics error.** The per-action counter constants for these action types were missing, and a guard test
+  now asserts every action type has one.
 - **Generated Go code now compiles.** All Go code generators — the dashboard expectation, verification, and
   load-scenario tabs, the retrieve-as-Go endpoint, and the website examples — emitted the client import without its
   /v7 semantic-import-versioning suffix, so generated code never resolved against the published module.
