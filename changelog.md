@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dashboard: every language tab now generates typed client code.** The composer's Java, Node.js, Python, Go,
+  C#, Ruby, and Rust tabs construct each client's typed model — fluent builders and typed constructors matching
+  the website examples — instead of embedding raw JSON, including full LLM response actions in Java. Every
+  language's generated output is proven equivalent by executing or compiling it against the real client and
+  comparing the serialized expectation with the registered JSON, and a CI gate compiles the generated Java
+  against the built client on every build.
 - **Every client library now round-trips the full expectation model, proven by a shared fidelity harness.** The
   Go, Rust, C#, Python, Ruby, and Node clients gained typed support for every expectation feature they previously
   dropped silently — chaos profiles, rate limits, forward-with-fallback and forward-validate actions, gRPC bidi
