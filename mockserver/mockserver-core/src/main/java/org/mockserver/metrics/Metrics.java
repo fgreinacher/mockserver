@@ -1671,6 +1671,8 @@ public class Metrics {
         clear(Name.FORWARD_CLASS_CALLBACK_ACTIONS_COUNT);
         clear(Name.FORWARD_OBJECT_CALLBACK_ACTIONS_COUNT);
         clear(Name.FORWARD_REPLACE_ACTIONS_COUNT);
+        clear(Name.FORWARD_VALIDATE_ACTIONS_COUNT);
+        clear(Name.FORWARD_WITH_FALLBACK_ACTIONS_COUNT);
         clear(Name.RESPONSE_ACTIONS_COUNT);
         clear(Name.RESPONSE_TEMPLATE_ACTIONS_COUNT);
         clear(Name.RESPONSE_CLASS_CALLBACK_ACTIONS_COUNT);
@@ -1680,6 +1682,7 @@ public class Metrics {
         clear(Name.LLM_CHAOS_INJECTED_COUNT);
         clear(Name.WEBSOCKET_RESPONSE_ACTIONS_COUNT);
         clear(Name.GRPC_STREAM_RESPONSE_ACTIONS_COUNT);
+        clear(Name.GRPC_BIDI_RESPONSE_ACTIONS_COUNT);
         clear(Name.BINARY_RESPONSE_ACTIONS_COUNT);
         clear(Name.DNS_RESPONSE_ACTIONS_COUNT);
         clear(Name.ERROR_ACTIONS_COUNT);
@@ -1701,6 +1704,8 @@ public class Metrics {
         FORWARD_CLASS_CALLBACK_ACTIONS_COUNT("Action forward class callback count"),
         FORWARD_OBJECT_CALLBACK_ACTIONS_COUNT("Action forward object callback count"),
         FORWARD_REPLACE_ACTIONS_COUNT("Action forward replace count"),
+        FORWARD_VALIDATE_ACTIONS_COUNT("Action forward validate count"),
+        FORWARD_WITH_FALLBACK_ACTIONS_COUNT("Action forward with fallback count"),
         RESPONSE_ACTIONS_COUNT("Action response count"),
         RESPONSE_TEMPLATE_ACTIONS_COUNT("Action response template count"),
         RESPONSE_CLASS_CALLBACK_ACTIONS_COUNT("Action response class callback count"),
@@ -1710,6 +1715,7 @@ public class Metrics {
         LLM_CHAOS_INJECTED_COUNT("Action LLM chaos injected count"),
         WEBSOCKET_RESPONSE_ACTIONS_COUNT("Action WebSocket response count"),
         GRPC_STREAM_RESPONSE_ACTIONS_COUNT("Action gRPC stream response count"),
+        GRPC_BIDI_RESPONSE_ACTIONS_COUNT("Action gRPC bidi response count"),
         BINARY_RESPONSE_ACTIONS_COUNT("Action binary response count"),
         DNS_RESPONSE_ACTIONS_COUNT("Action DNS response count"),
         ERROR_ACTIONS_COUNT("Action error count"),

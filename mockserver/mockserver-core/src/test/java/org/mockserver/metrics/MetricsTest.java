@@ -768,6 +768,18 @@ public class MetricsTest {
         return 0.0;
     }
 
+    @Test
+    public void shouldHaveActionsCountConstantForEveryActionType() {
+        // Metrics builds the per-action counter name reflectively via
+        // Name.valueOf(type.name() + "_ACTIONS_COUNT"), so a new Action.Type without a
+        // matching Name constant makes expectation registration throw for that action
+        // (this happened for GRPC_BIDI_RESPONSE, FORWARD_VALIDATE, and
+        // FORWARD_WITH_FALLBACK). This guard fails at build time instead.
+        for (org.mockserver.model.Action.Type type : org.mockserver.model.Action.Type.values()) {
+            org.mockserver.metrics.Metrics.Name.valueOf(type.name() + "_ACTIONS_COUNT");
+        }
+    }
+
     private static double scrapeCounterValue(String name, String labelName, String labelValue) {
         MetricSnapshots snapshots = PrometheusRegistry.defaultRegistry.scrape();
         for (MetricSnapshot snapshot : snapshots) {
