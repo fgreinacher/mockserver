@@ -58,7 +58,7 @@ class AsyncScenarioHandle:
     async def state(self) -> str | None:
         """GET the current state of this scenario (``None`` if not yet set)."""
         result = await self._client._scenario_request(
-            "GET", f"/mockserver/scenario/{urllib.parse.quote(self._name, safe="")}"
+            "GET", f"/mockserver/scenario/{urllib.parse.quote(self._name, safe='')}"
         )
         return result.get("currentState")
 
@@ -78,7 +78,7 @@ class AsyncScenarioHandle:
             payload["nextState"] = next_state
         return await self._client._scenario_request(
             "PUT",
-            f"/mockserver/scenario/{urllib.parse.quote(self._name, safe="")}",
+            f"/mockserver/scenario/{urllib.parse.quote(self._name, safe='')}",
             json.dumps(payload),
         )
 
@@ -86,7 +86,7 @@ class AsyncScenarioHandle:
         """PUT an external trigger advancing this scenario to ``new_state``."""
         return await self._client._scenario_request(
             "PUT",
-            f"/mockserver/scenario/{urllib.parse.quote(self._name, safe="")}/trigger",
+            f"/mockserver/scenario/{urllib.parse.quote(self._name, safe='')}/trigger",
             json.dumps({"newState": new_state}),
         )
 
