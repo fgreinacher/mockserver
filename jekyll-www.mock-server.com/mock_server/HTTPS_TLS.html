@@ -504,7 +504,11 @@ curl --cacert certs/ca.pem \
 
 <p>When using <code class="inline_code">MockServerClient</code> with control-plane mTLS, configure the client certificate paths:</p>
 
-<pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
+<button id="button_client_mtls_connection" class="accordion">configure a client to connect with control-plane mTLS</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
 import org.mockserver.configuration.ConfigurationProperties;
 
 // Enable control-plane mTLS on the client side
@@ -520,6 +524,95 @@ ConfigurationProperties.controlPlaneTLSMutualAuthenticationCAChain("/path/to/ca.
 // Connect over HTTPS
 MockServerClient client = new MockServerClient("localhost", 1080)
     .withSecure(true);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+
+// tls = true connects over HTTPS; the CA verifies MockServer's server
+// certificate; clientCert/clientKey are presented for mutual TLS
+var client = mockServerClient("localhost", 1080, undefined, true, "/path/to/ca.pem", {
+    clientCertPemFilePath: "/path/to/client-cert-chain.pem",
+    clientKeyPemFilePath: "/path/to/client-key-pkcs8.pem"
+});</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient
+
+client = MockServerClient(
+    "localhost",
+    1080,
+    secure=True,                                       # connect over HTTPS
+    ca_cert_path="/path/to/ca.pem",                    # verify MockServer's server certificate
+    client_cert_path="/path/to/client-cert-chain.pem", # present client certificate for mutual TLS
+    client_key_path="/path/to/client-key-pkcs8.pem",
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080,
+    mockserver.WithTLS(),                              // connect over HTTPS
+    mockserver.WithCACertPEMPath("/path/to/ca.pem"),   // verify MockServer's server certificate
+    mockserver.WithClientCertPEM(                      // present client certificate for mutual TLS
+        "/path/to/client-cert-chain.pem",
+        "/path/to/client-key-pkcs8.pem",
+    ),
+)</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+
+// WithCaCertificate / WithClientCertificate both imply Secure() (HTTPS)
+using var client = new MockServerClientBuilder("localhost", 1080)
+    .WithCaCertificate("/path/to/ca.pem")              // verify MockServer's server certificate
+    .WithClientCertificate(                            // present client certificate for mutual TLS
+        "/path/to/client-cert-chain.pem",
+        "/path/to/client-key-pkcs8.pem")
+    .Build();</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
+
+let client = ClientBuilder::new("localhost", 1080)
+    .secure(true)                                          // connect over HTTPS
+    .ca_cert_pem_path("/path/to/ca.pem")                   // verify MockServer's server certificate
+    .client_cert_pem(                                      // present client certificate for mutual TLS
+        "/path/to/client-cert-chain.pem",
+        "/path/to/client-key-pkcs8.pem",
+    )
+    .build()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+
+// the fourth constructor argument (secure = true) connects over HTTPS
+$client = (new MockServerClient('localhost', 1080, '', true))
+    -&gt;withCaCertificate('/path/to/ca.pem')                 // verify MockServer's server certificate
+    -&gt;withClientCertificate(                                // present client certificate for mutual TLS
+        '/path/to/client-cert-chain.pem',
+        '/path/to/client-key-pkcs8.pem'
+    );</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint lang-bash code"><code class="code"># present the client certificate (--cert/--key) and trust the CA (--cacert)
+curl --cacert /path/to/ca.pem \
+     --cert /path/to/client-cert-chain.pem \
+     --key /path/to/client-key-pkcs8.pem \
+     -X PUT https://localhost:1080/mockserver/expectation \
+     -H "Content-Type: application/json" \
+     -d '[{"httpRequest": {"path": "/test"}, "httpResponse": {"body": "ok"}}]'</code></pre>
+    </div>
+</div>
+
+<p>The Ruby client can connect over HTTPS with CA verification (<code class="inline_code">MockServer::Client.new('localhost', 1080, secure: true, ca_cert_path: '/path/to/ca.pem')</code>), but does not currently support presenting a client certificate for control-plane mutual TLS &mdash; use the <code class="inline_code">curl</code> form above (or a reverse proxy) when Ruby must authenticate to an mTLS-protected control plane.</p>
 
 <a id="match_on_client_certificate" class="anchor" href="#match_on_client_certificate">&nbsp;</a>
 
@@ -535,7 +628,31 @@ MockServerClient client = new MockServerClient("localhost", 1080)
 
 <p>Each value supports the usual matching options &mdash; a plain string, a regular expression, or a negated (<code class="inline_code">"!&hellip;"</code>) value. A request that presents no client certificate never matches a <code class="inline_code">clientCertificate</code> criterion, and an expectation without a <code class="inline_code">clientCertificate</code> matcher behaves exactly as before (it matches regardless of any certificate). This is matching only &mdash; it does not enable or replace mTLS authentication (configured with <code class="inline_code">tlsMutualAuthenticationRequired</code>).</p>
 
-<pre class="prettyprint lang-json code"><code class="code">{
+<button id="button_match_on_client_certificate" class="accordion">match on the presented client certificate</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withPath("/orders")
+            .withClientCertificate(
+                new ClientCertificate()
+                    .withSubject("my-service.example.com")
+                    .withIssuer(".*Acme Internal CA.*")
+                    .withFingerprintSha256("AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89")
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("authenticated client matched")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "path": "/orders",
         "clientCertificate": {
@@ -548,7 +665,197 @@ MockServerClient client = new MockServerClient("localhost", 1080)
         "statusCode": 200,
         "body": "authenticated client matched"
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import json
+import urllib.request
+
+# the clientCertificate matcher has no typed setter in the Python client;
+# submit the raw expectation JSON via the REST API
+payload = [{
+    "httpRequest": {
+        "path": "/orders",
+        "clientCertificate": {
+            "subject": "my-service.example.com",
+            "issuer": ".*Acme Internal CA.*",
+            "fingerprintSha256": "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "authenticated client matched"
+    }
+}]
+
+req = urllib.request.Request(
+    "http://localhost:1080/mockserver/expectation",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="PUT",
+)
+urllib.request.urlopen(req)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+
+# the clientCertificate matcher has no typed setter in the Ruby client;
+# submit the raw expectation JSON via the REST API
+payload = [{
+  'httpRequest' =&gt; {
+    'path' =&gt; '/orders',
+    'clientCertificate' =&gt; {
+      'subject' =&gt; 'my-service.example.com',
+      'issuer' =&gt; '.*Acme Internal CA.*',
+      'fingerprintSha256' =&gt; 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89'
+    }
+  },
+  'httpResponse' =&gt; {
+    'statusCode' =&gt; 200,
+    'body' =&gt; 'authenticated client matched'
+  }
+}]
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = JSON.generate(payload)
+Net::HTTP.new(uri.host, uri.port).request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // the clientCertificate matcher has no typed setter in the Go client;
+    // submit the raw expectation JSON via the REST API
+    body := []byte(`[{
+    "httpRequest": {
+        "path": "/orders",
+        "clientCertificate": {
+            "subject": "my-service.example.com",
+            "issuer": ".*Acme Internal CA.*",
+            "fingerprintSha256": "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "authenticated client matched"
+    }
+}]`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.When(
+    new HttpRequest
+    {
+        Path = "/orders",
+        ClientCertificate = new ClientCertificate
+        {
+            Subject = "my-service.example.com",
+            Issuer = ".*Acme Internal CA.*",
+            FingerprintSha256 = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+        }
+    }
+).Respond(
+    HttpResponse.Response()
+        .WithStatusCode(200)
+        .WithBody("authenticated client matched")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpResponse};
+use serde_json::json;
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+
+// clientCertificate has no dedicated builder method; set it via the
+// forward-compatible `extra` catch-all, which is flattened into httpRequest
+let mut request = HttpRequest::new().path("/orders");
+request.extra.insert(
+    "clientCertificate".to_string(),
+    json!({
+        "subject": "my-service.example.com",
+        "issuer": ".*Acme Internal CA.*",
+        "fingerprintSha256": "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+    }),
+);
+
+client
+    .when(request)
+    .respond(HttpResponse::new().status_code(200).body("authenticated client matched"))
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">// the clientCertificate matcher has no typed setter in the PHP client;
+// submit the raw expectation JSON via the REST API
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
+    CURLOPT_HTTPHEADER =&gt; ['Content-Type: application/json'],
+    CURLOPT_POSTFIELDS =&gt; json_encode([[
+        'httpRequest' =&gt; [
+            'path' =&gt; '/orders',
+            'clientCertificate' =&gt; [
+                'subject' =&gt; 'my-service.example.com',
+                'issuer' =&gt; '.*Acme Internal CA.*',
+                'fingerprintSha256' =&gt; 'AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89',
+            ],
+        ],
+        'httpResponse' =&gt; [
+            'statusCode' =&gt; 200,
+            'body' =&gt; 'authenticated client matched',
+        ],
+    ]]),
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest" : {
+    "path" : "/orders",
+    "clientCertificate" : {
+      "subject" : "my-service.example.com",
+      "issuer" : ".*Acme Internal CA.*",
+      "fingerprintSha256" : "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
+    }
+  },
+  "httpResponse" : {
+    "statusCode" : 200,
+    "body" : "authenticated client matched"
+  }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <a id="bouncycastle_fips" class="anchor" href="#bouncycastle_fips">&nbsp;</a>
 

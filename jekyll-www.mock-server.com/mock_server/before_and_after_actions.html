@@ -16,7 +16,7 @@ sitemap:
 
 <p>This is useful when a request should do more than produce one response — for example mirroring traffic to a second service, fanning a request out to several systems, or calling a downstream dependency and only responding if that call succeeds.</p>
 
-<p><strong>Note:</strong> the examples below show the REST API / JSON, Java, JavaScript, Python and Ruby clients. The Go, .NET, Rust and PHP clients submit the same JSON via the REST API (<span class="inline_code">PUT /mockserver/expectation</span>) — use the <strong>REST API / JSON</strong> tab on each example as the canonical request body for those clients.</p>
+<p><strong>Note:</strong> the examples below show the REST API / JSON, Java, JavaScript, Python, Ruby, Go, .NET and Rust clients using their typed before/after-action APIs. The PHP client has no typed before/after-action builder, so its examples submit the same expectation JSON via <span class="inline_code">Expectation::fromArray(...)</span> — the <strong>REST API / JSON</strong> tab on each example is always the canonical request body.</p>
 
 <a id="when_to_use" class="anchor" href="#when_to_use">&nbsp;</a>
 
@@ -248,6 +248,74 @@ client.upsert(
 )</code></pre>
 </div>
 
+<button class="accordion"><strong>Go Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+client.Upsert(mockserver.Expectation{
+    HttpRequest:  &amp;mockserver.HttpRequest{Method: "POST", Path: "/order"},
+    HttpResponse: &amp;mockserver.HttpResponse{StatusCode: 201, Body: `{ "status": "created" }`},
+    AfterActions: []mockserver.AfterAction{
+        {HttpRequest: &amp;mockserver.HttpRequest{Method: "POST", Path: "/analytics",
+            Headers: map[string][]string{"Host": {"analytics.svc:8080"}}}},
+        {HttpRequest: &amp;mockserver.HttpRequest{Method: "POST", Path: "/audit",
+            Headers: map[string][]string{"Host": {"audit.svc:8080"}}}},
+    },
+})</code></pre>
+</div>
+
+<button class="accordion"><strong>.NET Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.Upsert(new Expectation
+{
+    HttpRequest = HttpRequest.Request().WithMethod("POST").WithPath("/order"),
+    HttpResponse = HttpResponse.Response().WithStatusCode(201).WithBody("{ \"status\": \"created\" }"),
+    AfterActions = new List&lt;AfterAction&gt;
+    {
+        new AfterAction { HttpRequest = HttpRequest.Request().WithMethod("POST").WithPath("/analytics").WithHeader("Host", "analytics.svc:8080") },
+        new AfterAction { HttpRequest = HttpRequest.Request().WithMethod("POST").WithPath("/audit").WithHeader("Host", "audit.svc:8080") }
+    }
+});</code></pre>
+</div>
+
+<button class="accordion"><strong>Rust Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, Expectation, ExpectationAction, HttpRequest, HttpResponse};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.upsert(&amp;[
+    Expectation::new(HttpRequest::new().method("POST").path("/order"))
+        .respond(HttpResponse::new().status_code(201).body(r#"{ "status": "created" }"#))
+        .after_action(ExpectationAction::request(
+            HttpRequest::new().method("POST").path("/analytics").header("Host", "analytics.svc:8080"),
+        ))
+        .after_action(ExpectationAction::request(
+            HttpRequest::new().method("POST").path("/audit").header("Host", "audit.svc:8080"),
+        )),
+]).unwrap();</code></pre>
+</div>
+
+<button class="accordion"><strong>PHP Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+use MockServer\Expectation;
+
+$client = new MockServerClient('localhost', 1080);
+$client-&gt;upsertExpectation(Expectation::fromArray([
+    'httpRequest'  =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/order'],
+    'httpResponse' =&gt; ['statusCode' =&gt; 201, 'body' =&gt; '{ "status": "created" }'],
+    'afterActions' =&gt; [
+        ['httpRequest' =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/analytics', 'headers' =&gt; ['Host' =&gt; ['analytics.svc:8080']]]],
+        ['httpRequest' =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/audit', 'headers' =&gt; ['Host' =&gt; ['audit.svc:8080']]]],
+    ],
+]));</code></pre>
+</div>
+
 <a id="example_gate" class="anchor" href="#example_gate">&nbsp;</a>
 
 <h2>Example — gate with a blocking before-action</h2>
@@ -376,11 +444,122 @@ client.upsert(
 )</code></pre>
 </div>
 
+<button class="accordion"><strong>Go Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+blocking := true
+client := mockserver.New("localhost", 1080)
+client.Upsert(mockserver.Expectation{
+    HttpRequest:  &amp;mockserver.HttpRequest{Method: "GET", Path: "/account"},
+    HttpResponse: &amp;mockserver.HttpResponse{StatusCode: 200, Body: `{ "account": "ok" }`},
+    BeforeActions: []mockserver.AfterAction{
+        {
+            HttpRequest:   &amp;mockserver.HttpRequest{Method: "GET", Path: "/auth/check",
+                Headers: map[string][]string{"Host": {"auth.svc:8080"}}},
+            Blocking:      &amp;blocking,
+            Timeout:       &amp;mockserver.Delay{TimeUnit: "SECONDS", Value: 2},
+            FailurePolicy: mockserver.FailurePolicyFailFast,
+        },
+    },
+})</code></pre>
+</div>
+
+<button class="accordion"><strong>.NET Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.Upsert(new Expectation
+{
+    HttpRequest = HttpRequest.Request().WithMethod("GET").WithPath("/account"),
+    HttpResponse = HttpResponse.Response().WithStatusCode(200).WithBody("{ \"account\": \"ok\" }"),
+    BeforeActions = new List&lt;AfterAction&gt;
+    {
+        new AfterAction
+        {
+            HttpRequest = HttpRequest.Request().WithMethod("GET").WithPath("/auth/check").WithHeader("Host", "auth.svc:8080"),
+            Blocking = true,
+            Timeout = new Delay { TimeUnit = TimeUnit.SECONDS, Value = 2 },
+            FailurePolicy = ActionFailurePolicy.FAIL_FAST
+        }
+    }
+});</code></pre>
+</div>
+
+<button class="accordion"><strong>Rust Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, Delay, Expectation, ExpectationAction, HttpRequest, HttpResponse};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.upsert(&amp;[
+    Expectation::new(HttpRequest::new().method("GET").path("/account"))
+        .respond(HttpResponse::new().status_code(200).body(r#"{ "account": "ok" }"#))
+        .before_action(ExpectationAction {
+            blocking: Some(true),
+            timeout: Some(Delay::seconds(2)),
+            failure_policy: Some("FAIL_FAST".to_string()),
+            ..ExpectationAction::request(
+                HttpRequest::new().method("GET").path("/auth/check").header("Host", "auth.svc:8080"),
+            )
+        }),
+]).unwrap();</code></pre>
+</div>
+
+<button class="accordion"><strong>PHP Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+use MockServer\Expectation;
+
+$client = new MockServerClient('localhost', 1080);
+$client-&gt;upsertExpectation(Expectation::fromArray([
+    'httpRequest'   =&gt; ['method' =&gt; 'GET', 'path' =&gt; '/account'],
+    'httpResponse'  =&gt; ['statusCode' =&gt; 200, 'body' =&gt; '{ "account": "ok" }'],
+    'beforeActions' =&gt; [
+        [
+            'httpRequest'   =&gt; ['method' =&gt; 'GET', 'path' =&gt; '/auth/check', 'headers' =&gt; ['Host' =&gt; ['auth.svc:8080']]],
+            'blocking'      =&gt; true,
+            'timeout'       =&gt; ['timeUnit' =&gt; 'SECONDS', 'value' =&gt; 2],
+            'failurePolicy' =&gt; 'FAIL_FAST',
+        ],
+    ],
+]));</code></pre>
+</div>
+
 <a id="java_client" class="anchor" href="#java_client">&nbsp;</a>
 
 <h2>Example — combined gate and mirror</h2>
 
 <p>Gate on an auth check before responding, and mirror the request to an audit service after.</p>
+
+<button class="accordion"><strong>REST API / JSON</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-java code"><code class="code">PUT /mockserver/expectation HTTP/1.1
+Content-Type: application/json
+
+{
+  "httpRequest" : {
+    "method" : "GET",
+    "path" : "/account"
+  },
+  "httpResponse" : {
+    "statusCode" : 200,
+    "body" : "{ \"account\": \"ok\" }"
+  },
+  "beforeActions" : [
+    {
+      "httpRequest"   : { "method" : "GET", "path" : "/auth/check", "headers" : { "Host" : [ "auth.svc:8080" ] } },
+      "blocking"      : true,
+      "timeout"       : { "timeUnit" : "SECONDS", "value" : 2 },
+      "failurePolicy" : "FAIL_FAST"
+    }
+  ],
+  "afterActions" : [
+    { "httpRequest" : { "method" : "POST", "path" : "/audit", "headers" : { "Host" : [ "audit.svc:8080" ] } } }
+  ]
+}</code></pre>
+</div>
 
 <button class="accordion"><strong>Java Code Example</strong></button>
 <div class="panel">
@@ -489,6 +668,103 @@ client.upsert(
     ]
   )
 )</code></pre>
+</div>
+
+<button class="accordion"><strong>Go Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+blocking := true
+client := mockserver.New("localhost", 1080)
+client.Upsert(mockserver.Expectation{
+    HttpRequest:  &amp;mockserver.HttpRequest{Method: "GET", Path: "/account"},
+    HttpResponse: &amp;mockserver.HttpResponse{StatusCode: 200, Body: `{ "account": "ok" }`},
+    BeforeActions: []mockserver.AfterAction{
+        {
+            HttpRequest:   &amp;mockserver.HttpRequest{Method: "GET", Path: "/auth/check",
+                Headers: map[string][]string{"Host": {"auth.svc:8080"}}},
+            Blocking:      &amp;blocking,
+            Timeout:       &amp;mockserver.Delay{TimeUnit: "SECONDS", Value: 2},
+            FailurePolicy: mockserver.FailurePolicyFailFast,
+        },
+    },
+    AfterActions: []mockserver.AfterAction{
+        {HttpRequest: &amp;mockserver.HttpRequest{Method: "POST", Path: "/audit",
+            Headers: map[string][]string{"Host": {"audit.svc:8080"}}}},
+    },
+})</code></pre>
+</div>
+
+<button class="accordion"><strong>.NET Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.Upsert(new Expectation
+{
+    HttpRequest = HttpRequest.Request().WithMethod("GET").WithPath("/account"),
+    HttpResponse = HttpResponse.Response().WithStatusCode(200).WithBody("{ \"account\": \"ok\" }"),
+    BeforeActions = new List&lt;AfterAction&gt;
+    {
+        new AfterAction
+        {
+            HttpRequest = HttpRequest.Request().WithMethod("GET").WithPath("/auth/check").WithHeader("Host", "auth.svc:8080"),
+            Blocking = true,
+            Timeout = new Delay { TimeUnit = TimeUnit.SECONDS, Value = 2 },
+            FailurePolicy = ActionFailurePolicy.FAIL_FAST
+        }
+    },
+    AfterActions = new List&lt;AfterAction&gt;
+    {
+        new AfterAction { HttpRequest = HttpRequest.Request().WithMethod("POST").WithPath("/audit").WithHeader("Host", "audit.svc:8080") }
+    }
+});</code></pre>
+</div>
+
+<button class="accordion"><strong>Rust Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, Delay, Expectation, ExpectationAction, HttpRequest, HttpResponse};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.upsert(&amp;[
+    Expectation::new(HttpRequest::new().method("GET").path("/account"))
+        .respond(HttpResponse::new().status_code(200).body(r#"{ "account": "ok" }"#))
+        .before_action(ExpectationAction {
+            blocking: Some(true),
+            timeout: Some(Delay::seconds(2)),
+            failure_policy: Some("FAIL_FAST".to_string()),
+            ..ExpectationAction::request(
+                HttpRequest::new().method("GET").path("/auth/check").header("Host", "auth.svc:8080"),
+            )
+        })
+        .after_action(ExpectationAction::request(
+            HttpRequest::new().method("POST").path("/audit").header("Host", "audit.svc:8080"),
+        )),
+]).unwrap();</code></pre>
+</div>
+
+<button class="accordion"><strong>PHP Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+use MockServer\Expectation;
+
+$client = new MockServerClient('localhost', 1080);
+$client-&gt;upsertExpectation(Expectation::fromArray([
+    'httpRequest'   =&gt; ['method' =&gt; 'GET', 'path' =&gt; '/account'],
+    'httpResponse'  =&gt; ['statusCode' =&gt; 200, 'body' =&gt; '{ "account": "ok" }'],
+    'beforeActions' =&gt; [
+        [
+            'httpRequest'   =&gt; ['method' =&gt; 'GET', 'path' =&gt; '/auth/check', 'headers' =&gt; ['Host' =&gt; ['auth.svc:8080']]],
+            'blocking'      =&gt; true,
+            'timeout'       =&gt; ['timeUnit' =&gt; 'SECONDS', 'value' =&gt; 2],
+            'failurePolicy' =&gt; 'FAIL_FAST',
+        ],
+    ],
+    'afterActions'  =&gt; [
+        ['httpRequest' =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/audit', 'headers' =&gt; ['Host' =&gt; ['audit.svc:8080']]]],
+    ],
+]));</code></pre>
 </div>
 
 <a id="runtime_expressions" class="anchor" href="#runtime_expressions">&nbsp;</a>
@@ -763,6 +1039,143 @@ client.when(
 # When steps is set the responder step defines the primary action.
 # Do not also call .respond() or .forward() — the server rejects steps
 # combined with a top-level response action.</code></pre>
+</div>
+
+<button class="accordion"><strong>Go Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+blocking := true
+responder := true
+client := mockserver.New("localhost", 1080)
+client.Upsert(mockserver.Expectation{
+    HttpRequest: &amp;mockserver.HttpRequest{Method: "POST", Path: "/order"},
+    Steps: []mockserver.ExpectationStep{
+        {
+            HttpRequest:   &amp;mockserver.HttpRequest{Method: "POST", Path: "/audit",
+                Headers: map[string][]string{"Host": {"audit.svc:8080"}}},
+            Blocking:      &amp;blocking,
+            Timeout:       &amp;mockserver.Delay{TimeUnit: "SECONDS", Value: 3},
+            FailurePolicy: mockserver.FailurePolicyFailFast,
+        },
+        {
+            HttpOverrideForwardedRequest: &amp;mockserver.HttpOverrideForwardedRequest{
+                RequestOverride: &amp;mockserver.HttpRequest{Headers: map[string][]string{"X-Audited": {"true"}}},
+            },
+            Responder: &amp;responder,
+        },
+        {
+            HttpRequest: &amp;mockserver.HttpRequest{Method: "POST", Path: "/analytics",
+                Headers: map[string][]string{"Host": {"analytics.svc:8080"}}},
+        },
+    },
+})
+// When steps are present the responder step defines the primary action, so
+// submit with Upsert and do not set a top-level response action.</code></pre>
+</div>
+
+<button class="accordion"><strong>.NET Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.Upsert(new Expectation
+{
+    HttpRequest = HttpRequest.Request().WithMethod("POST").WithPath("/order"),
+    Steps = new List&lt;ExpectationStep&gt;
+    {
+        new ExpectationStep
+        {
+            HttpRequest = HttpRequest.Request().WithMethod("POST").WithPath("/audit").WithHeader("Host", "audit.svc:8080"),
+            Blocking = true,
+            Timeout = new Delay { TimeUnit = TimeUnit.SECONDS, Value = 3 },
+            FailurePolicy = ActionFailurePolicy.FAIL_FAST
+        },
+        new ExpectationStep
+        {
+            HttpOverrideForwardedRequest = new HttpOverrideForwardedRequest
+            {
+                HttpRequest = HttpRequest.Request().WithHeader("X-Audited", "true")
+            },
+            Responder = true
+        },
+        new ExpectationStep
+        {
+            HttpRequest = HttpRequest.Request().WithMethod("POST").WithPath("/analytics").WithHeader("Host", "analytics.svc:8080")
+        }
+    }
+});
+// When steps are present the responder step defines the primary action, so
+// submit with Upsert and do not set a top-level response action.</code></pre>
+</div>
+
+<button class="accordion"><strong>Rust Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{
+    ClientBuilder, Delay, Expectation, ExpectationStep,
+    HttpOverrideForwardedRequest, HttpRequest,
+};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.upsert(&amp;[
+    Expectation::new(HttpRequest::new().method("POST").path("/order"))
+        .step(ExpectationStep {
+            http_request: Some(
+                HttpRequest::new().method("POST").path("/audit").header("Host", "audit.svc:8080"),
+            ),
+            blocking: Some(true),
+            timeout: Some(Delay::seconds(3)),
+            failure_policy: Some("FAIL_FAST".to_string()),
+            ..ExpectationStep::new()
+        })
+        .step(ExpectationStep {
+            http_override_forwarded_request: Some(
+                HttpOverrideForwardedRequest::new()
+                    .request_override(HttpRequest::new().header("X-Audited", "true")),
+            ),
+            responder: Some(true),
+            ..ExpectationStep::new()
+        })
+        .step(ExpectationStep {
+            http_request: Some(
+                HttpRequest::new().method("POST").path("/analytics").header("Host", "analytics.svc:8080"),
+            ),
+            ..ExpectationStep::new()
+        }),
+]).unwrap();
+// When steps are present the responder step defines the primary action, so
+// submit with upsert and do not set a top-level response action.</code></pre>
+</div>
+
+<button class="accordion"><strong>PHP Code Example</strong></button>
+<div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+use MockServer\Expectation;
+
+$client = new MockServerClient('localhost', 1080);
+$client-&gt;upsertExpectation(Expectation::fromArray([
+    'httpRequest' =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/order'],
+    'steps' =&gt; [
+        [
+            'httpRequest'   =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/audit', 'headers' =&gt; ['Host' =&gt; ['audit.svc:8080']]],
+            'blocking'      =&gt; true,
+            'timeout'       =&gt; ['timeUnit' =&gt; 'SECONDS', 'value' =&gt; 3],
+            'failurePolicy' =&gt; 'FAIL_FAST',
+        ],
+        [
+            'httpOverrideForwardedRequest' =&gt; [
+                'requestOverride' =&gt; ['headers' =&gt; ['X-Audited' =&gt; ['true']]],
+            ],
+            'responder' =&gt; true,
+        ],
+        [
+            'httpRequest' =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/analytics', 'headers' =&gt; ['Host' =&gt; ['analytics.svc:8080']]],
+        ],
+    ],
+]));
+// When steps is set the responder step defines the primary action, so do not
+// also set a top-level response action — the server rejects that combination.</code></pre>
 </div>
 
 <p><strong>Note:</strong> When <span class="inline_code">steps</span> is present, the primary action is determined by the responder step. Use <span class="inline_code">.upsert()</span> to submit the expectation without setting a redundant top-level action. Using <span class="inline_code">.respond()</span> or <span class="inline_code">.forward()</span> would set a top-level action that conflicts with the steps pipeline, and the server would reject the expectation. <span class="inline_code">afterActions</span> are still allowed alongside <span class="inline_code">steps</span> and fire after the entire steps pipeline completes.</p>

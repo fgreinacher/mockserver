@@ -21,9 +21,11 @@ sitemap:
 
 <p>For the full set of recommendations &mdash; including how the shared event log behaves under load and how to avoid intermittent failures &mdash; see <a href="/mock_server/verification.html#how_verification_works">Verify Requests &rarr; Best practices for parallel tests</a> and the <a href="/mock_server/verification.html#how_verification_works">Important notes for parallel testing</a> section.</p>
 
-<p><strong>Java</strong></p>
-
-<pre class="prettyprint lang-java code"><code class="code">String sessionId = UUID.randomUUID().toString();
+<button id="button_parallel_tests_unique_session_id" class="accordion">create expectation with a unique sessionId per test</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">String sessionId = UUID.randomUUID().toString();
 
 new MockServerClient("127.0.0.1", 1080)
     .when(
@@ -39,10 +41,10 @@ new MockServerClient("127.0.0.1", 1080)
             .withStatusCode(200)
             .withBody("{ \"name\": \"value\" }")
     );</code></pre>
-
-<p><strong>JavaScript</strong></p>
-
-<pre class="prettyprint lang-javascript code"><code class="code">function guid() {
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">function guid() {
     function s4() {
         return Math.floor((1 + Math.random()) * 0x10000)
             .toString(16)
@@ -76,10 +78,11 @@ mockServerClient("localhost", 1080)
             console.log(error);
         }
     );</code></pre>
-
-<p><strong>Python</strong></p>
-
-<pre class="prettyprint lang-python code"><code class="code">import uuid
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import uuid
 from mockserver.client import MockServerClient
 from mockserver.models import HttpRequest, HttpResponse
 
@@ -94,10 +97,10 @@ client.when(
 ).respond(
     HttpResponse.response(body='{ "name": "value" }', status_code=200)
 )</code></pre>
-
-<p><strong>Ruby</strong></p>
-
-<pre class="prettyprint lang-ruby code"><code class="code">require 'securerandom'
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'securerandom'
 require 'mockserver-client'
 
 session_id = SecureRandom.uuid
@@ -117,10 +120,10 @@ client.when(
         body: '{ "name": "value" }'
     )
 )</code></pre>
-
-<p><strong>Go</strong></p>
-
-<pre class="prettyprint lang-go code"><code class="code">import (
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import (
     "github.com/google/uuid"
     mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 )
@@ -138,10 +141,10 @@ client.When(
         StatusCode(200).
         Body(`{ "name": "value" }`),
 )</code></pre>
-
-<p><strong>.NET</strong></p>
-
-<pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 using MockServer.Client.Models;
 
 var sessionId = Guid.NewGuid().ToString();
@@ -157,10 +160,10 @@ client.When(
         .WithStatusCode(200)
         .WithBody("{ \"name\": \"value\" }")
 );</code></pre>
-
-<p><strong>Rust</strong></p>
-
-<pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpResponse};
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpResponse};
 use uuid::Uuid;
 
 let session_id = Uuid::new_v4().to_string();
@@ -176,10 +179,10 @@ client.when(
         .status_code(200)
         .body("{ \"name\": \"value\" }")
 ).unwrap();</code></pre>
-
-<p><strong>PHP</strong></p>
-
-<pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
 use MockServer\HttpRequest;
 use MockServer\HttpResponse;
 
@@ -196,3 +199,22 @@ $client-&gt;when(
         -&gt;statusCode(200)
         -&gt;body('{ "name": "value" }')
 );</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest" : {
+    "method" : "GET",
+    "path" : "/somePath",
+    "cookies" : {
+      "sessionId" : "1e2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+    }
+  },
+  "httpResponse" : {
+    "statusCode" : 200,
+    "body" : "{ \"name\": \"value\" }"
+  }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>

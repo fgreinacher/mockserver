@@ -19,13 +19,178 @@ sitemap:
 
 <p>For example, a Mustache template can echo the requested user ID straight back in the response body:</p>
 
-<pre class="prettyprint lang-json code"><code class="code">{
-  "httpRequest":  { "path": "/users/{id}" },
-  "httpResponseTemplate": {
-    "templateType": "MUSTACHE",
-    "template": "{\"id\": \"{% raw %}{{request.pathParameters.id.[0]}}{% endraw %}\", \"name\": \"User {% raw %}{{request.pathParameters.id.[0]}}{% endraw %}\"}"
-  }
+<button id="button_response_template_intro_echo" class="accordion">echo a request path parameter back in the response body</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new ClientAndServer(1080)
+    .when(
+        request()
+            .withPath("/users/{id}")
+    )
+    .respond(
+        template(
+            HttpTemplate.TemplateType.MUSTACHE,
+            "{\"id\": \"&lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\", \"name\": \"User &lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\"}"
+        )
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/users/{id}"
+    },
+    "httpResponseTemplate": {
+        "template": "{\"id\": \"&lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\", \"name\": \"User &lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\"}",
+        "templateType": "MUSTACHE"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation.from_dict({
+    "httpRequest": {
+        "path": "/users/{id}"
+    },
+    "httpResponseTemplate": {
+        "template": "{\"id\": \"&lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\", \"name\": \"User &lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\"}",
+        "templateType": "MUSTACHE"
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.upsert(MockServer::Expectation.from_hash({
+    'httpRequest' =&gt; {
+        'path' =&gt; '/users/{id}'
+    },
+    'httpResponseTemplate' =&gt; {
+        'template' =&gt; "{\"id\": \"&lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\", \"name\": \"User &lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\"}",
+        'templateType' =&gt; 'MUSTACHE'
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/users/{id}"
+    },
+    "httpResponseTemplate": {
+        "template": "{\"id\": \"&lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\", \"name\": \"User &lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\"}",
+        "templateType": "MUSTACHE"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/users/{id}""
+    },
+    ""httpResponseTemplate"": {
+        ""template"": ""{\""id\"": \""&lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\"", \""name\"": \""User &lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\""}"",
+        ""templateType"": ""MUSTACHE""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/users/{id}"
+    },
+    "httpResponseTemplate": {
+        "template": "{\"id\": \"&lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\", \"name\": \"User &lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\"}",
+        "templateType": "MUSTACHE"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "path": "/users/{id}"
+    },
+    "httpResponseTemplate": {
+        "template": "{\"id\": \"&lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\", \"name\": \"User &lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\"}",
+        "templateType": "MUSTACHE"
+    }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/users/{id}"
+    },
+    "httpResponseTemplate": {
+        "template": "{\"id\": \"&lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\", \"name\": \"User &lbrace;&lbrace;request.pathParameters.id.[0]&rbrace;&rbrace;\"}",
+        "templateType": "MUSTACHE"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <p>Templates are evaluated at request time, so the response is always fresh. See the sections below for the full template format reference, available variables, and helper objects.</p>
 
@@ -1261,7 +1426,11 @@ System.out.println("httpResponse = " + httpResponse);</code></pre>
 
 <p>The following shows a basic example for a mustache format response template</p>
 
-<pre class="prettyprint code"><code class="code">new ClientAndServer(1080)
+<button id="button_mustache_basic_template" class="accordion">basic Mustache response template</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new ClientAndServer(1080)
     .when(request().withPath("/some/path"))
     .respond(
         template(
@@ -1278,6 +1447,163 @@ System.out.println("httpResponse = " + httpResponse);</code></pre>
                 "}"
         )
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '&lbrace;&lbrace; request.headers.Session-Id.0 &rbrace;&rbrace;' }, 'headers': { 'Client-User-Agent': [ '&lbrace;&lbrace; request.headers.User-Agent.0 &rbrace;&rbrace;' ] }, 'body': '&lbrace;&lbrace; request.body &rbrace;&rbrace;' }",
+        "templateType": "MUSTACHE"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation.from_dict({
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '&lbrace;&lbrace; request.headers.Session-Id.0 &rbrace;&rbrace;' }, 'headers': { 'Client-User-Agent': [ '&lbrace;&lbrace; request.headers.User-Agent.0 &rbrace;&rbrace;' ] }, 'body': '&lbrace;&lbrace; request.body &rbrace;&rbrace;' }",
+        "templateType": "MUSTACHE"
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.upsert(MockServer::Expectation.from_hash({
+    'httpRequest' =&gt; {
+        'path' =&gt; '/some/path'
+    },
+    'httpResponseTemplate' =&gt; {
+        'template' =&gt; "{ 'statusCode': 200, 'cookies': { 'session': '&lbrace;&lbrace; request.headers.Session-Id.0 &rbrace;&rbrace;' }, 'headers': { 'Client-User-Agent': [ '&lbrace;&lbrace; request.headers.User-Agent.0 &rbrace;&rbrace;' ] }, 'body': '&lbrace;&lbrace; request.body &rbrace;&rbrace;' }",
+        'templateType' =&gt; 'MUSTACHE'
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '&lbrace;&lbrace; request.headers.Session-Id.0 &rbrace;&rbrace;' }, 'headers': { 'Client-User-Agent': [ '&lbrace;&lbrace; request.headers.User-Agent.0 &rbrace;&rbrace;' ] }, 'body': '&lbrace;&lbrace; request.body &rbrace;&rbrace;' }",
+        "templateType": "MUSTACHE"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/some/path""
+    },
+    ""httpResponseTemplate"": {
+        ""template"": ""{ 'statusCode': 200, 'cookies': { 'session': '&lbrace;&lbrace; request.headers.Session-Id.0 &rbrace;&rbrace;' }, 'headers': { 'Client-User-Agent': [ '&lbrace;&lbrace; request.headers.User-Agent.0 &rbrace;&rbrace;' ] }, 'body': '&lbrace;&lbrace; request.body &rbrace;&rbrace;' }"",
+        ""templateType"": ""MUSTACHE""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '&lbrace;&lbrace; request.headers.Session-Id.0 &rbrace;&rbrace;' }, 'headers': { 'Client-User-Agent': [ '&lbrace;&lbrace; request.headers.User-Agent.0 &rbrace;&rbrace;' ] }, 'body': '&lbrace;&lbrace; request.body &rbrace;&rbrace;' }",
+        "templateType": "MUSTACHE"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '&lbrace;&lbrace; request.headers.Session-Id.0 &rbrace;&rbrace;' }, 'headers': { 'Client-User-Agent': [ '&lbrace;&lbrace; request.headers.User-Agent.0 &rbrace;&rbrace;' ] }, 'body': '&lbrace;&lbrace; request.body &rbrace;&rbrace;' }",
+        "templateType": "MUSTACHE"
+    }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '&lbrace;&lbrace; request.headers.Session-Id.0 &rbrace;&rbrace;' }, 'headers': { 'Client-User-Agent': [ '&lbrace;&lbrace; request.headers.User-Agent.0 &rbrace;&rbrace;' ] }, 'body': '&lbrace;&lbrace; request.body &rbrace;&rbrace;' }",
+        "templateType": "MUSTACHE"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <h3>Mustache Syntax</h3>
 
@@ -1500,7 +1826,11 @@ System.out.println("httpResponse = " + httpResponse);</code></pre>
 
 <p>The following shows a basic example for a Velocity format response template</p>
 
-<pre class="prettyprint code"><code class="code">new ClientAndServer(1080)
+<button id="button_velocity_basic_template" class="accordion">basic Velocity response template</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new ClientAndServer(1080)
     .when(request().withPath("/some/path"))
     .respond(
         template(
@@ -1517,6 +1847,163 @@ System.out.println("httpResponse = " + httpResponse);</code></pre>
                 "}"
         )
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '$!request.headers['Session-Id'][0]' }, 'headers': { 'Client-User-Agent': [ '$!request.headers['User-Agent'][0]' ] }, 'body': '$!request.body' }",
+        "templateType": "VELOCITY"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation.from_dict({
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '$!request.headers['Session-Id'][0]' }, 'headers': { 'Client-User-Agent': [ '$!request.headers['User-Agent'][0]' ] }, 'body': '$!request.body' }",
+        "templateType": "VELOCITY"
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.upsert(MockServer::Expectation.from_hash({
+    'httpRequest' =&gt; {
+        'path' =&gt; '/some/path'
+    },
+    'httpResponseTemplate' =&gt; {
+        'template' =&gt; "{ 'statusCode': 200, 'cookies': { 'session': '$!request.headers['Session-Id'][0]' }, 'headers': { 'Client-User-Agent': [ '$!request.headers['User-Agent'][0]' ] }, 'body': '$!request.body' }",
+        'templateType' =&gt; 'VELOCITY'
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '$!request.headers['Session-Id'][0]' }, 'headers': { 'Client-User-Agent': [ '$!request.headers['User-Agent'][0]' ] }, 'body': '$!request.body' }",
+        "templateType": "VELOCITY"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/some/path""
+    },
+    ""httpResponseTemplate"": {
+        ""template"": ""{ 'statusCode': 200, 'cookies': { 'session': '$!request.headers['Session-Id'][0]' }, 'headers': { 'Client-User-Agent': [ '$!request.headers['User-Agent'][0]' ] }, 'body': '$!request.body' }"",
+        ""templateType"": ""VELOCITY""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '$!request.headers['Session-Id'][0]' }, 'headers': { 'Client-User-Agent': [ '$!request.headers['User-Agent'][0]' ] }, 'body': '$!request.body' }",
+        "templateType": "VELOCITY"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '$!request.headers['Session-Id'][0]' }, 'headers': { 'Client-User-Agent': [ '$!request.headers['User-Agent'][0]' ] }, 'body': '$!request.body' }",
+        "templateType": "VELOCITY"
+    }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "{ 'statusCode': 200, 'cookies': { 'session': '$!request.headers['Session-Id'][0]' }, 'headers': { 'Client-User-Agent': [ '$!request.headers['User-Agent'][0]' ] }, 'body': '$!request.body' }",
+        "templateType": "VELOCITY"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <h3>Velocity Syntax</h3>
 
@@ -1700,7 +2187,11 @@ System.out.println("httpResponse = " + httpResponse);</code></pre>
 
 <p>The following shows a basic example for a JavaScript format response template</p>
 
-<pre class="prettyprint code"><code class="code">new ClientAndServer(1080)
+<button id="button_javascript_basic_template" class="accordion">basic JavaScript response template</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new ClientAndServer(1080)
     .when(request().withPath("/some/path"))
     .respond(
         template(
@@ -1717,6 +2208,163 @@ System.out.println("httpResponse = " + httpResponse);</code></pre>
                 "};"
         )
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "return { 'statusCode': 200, 'cookies': { 'session' : request.headers['session-id'][0] }, 'headers': { 'Client-User-Agent': request.headers['User-Agent'] }, 'body': request.body };",
+        "templateType": "JAVASCRIPT"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import Expectation
+
+client = MockServerClient("localhost", 1080)
+client.upsert(Expectation.from_dict({
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "return { 'statusCode': 200, 'cookies': { 'session' : request.headers['session-id'][0] }, 'headers': { 'Client-User-Agent': request.headers['User-Agent'] }, 'body': request.body };",
+        "templateType": "JAVASCRIPT"
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.upsert(MockServer::Expectation.from_hash({
+    'httpRequest' =&gt; {
+        'path' =&gt; '/some/path'
+    },
+    'httpResponseTemplate' =&gt; {
+        'template' =&gt; "return { 'statusCode': 200, 'cookies': { 'session' : request.headers['session-id'][0] }, 'headers': { 'Client-User-Agent': request.headers['User-Agent'] }, 'body': request.body };",
+        'templateType' =&gt; 'JAVASCRIPT'
+    }
+}))</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "return { 'statusCode': 200, 'cookies': { 'session' : request.headers['session-id'][0] }, 'headers': { 'Client-User-Agent': request.headers['User-Agent'] }, 'body': request.body };",
+        "templateType": "JAVASCRIPT"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/some/path""
+    },
+    ""httpResponseTemplate"": {
+        ""template"": ""return { 'statusCode': 200, 'cookies': { 'session' : request.headers['session-id'][0] }, 'headers': { 'Client-User-Agent': request.headers['User-Agent'] }, 'body': request.body };"",
+        ""templateType"": ""JAVASCRIPT""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+let body = r#"{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "return { 'statusCode': 200, 'cookies': { 'session' : request.headers['session-id'][0] }, 'headers': { 'Client-User-Agent': request.headers['User-Agent'] }, 'body': request.body };",
+        "templateType": "JAVASCRIPT"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "return { 'statusCode': 200, 'cookies': { 'session' : request.headers['session-id'][0] }, 'headers': { 'Client-User-Agent': request.headers['User-Agent'] }, 'body': request.body };",
+        "templateType": "JAVASCRIPT"
+    }
+}
+JSON;
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/some/path"
+    },
+    "httpResponseTemplate": {
+        "template": "return { 'statusCode': 200, 'cookies': { 'session' : request.headers['session-id'][0] }, 'headers': { 'Client-User-Agent': request.headers['User-Agent'] }, 'body': request.body };",
+        "templateType": "JAVASCRIPT"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <h3>JavaScript Syntax</h3>
 

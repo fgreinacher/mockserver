@@ -91,7 +91,13 @@ keywords: OpenAPI, Swagger, OpenAPI v3, WSDL, SOAP, generate mock expectations, 
 
 <p>This is only used when the response has no explicit <span class="inline_code">body</span> — an explicit body always takes precedence — and a schema that cannot be parsed simply leaves the body unset (and is logged) rather than failing the request.</p>
 
-<pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+<p>The <span class="inline_code">generateFromSchema</span> field takes the JSON Schema as a string. The Java, .NET and Rust clients expose a typed setter (<span class="inline_code">withGenerateFromSchema</span> / the <span class="inline_code">GenerateFromSchema</span> property / <span class="inline_code">generate_from_schema</span>); JavaScript submits the raw expectation JSON directly; the remaining clients (Python, Ruby, Go, PHP) have no typed setter, so they submit the same expectation as raw JSON via the <span class="inline_code">PUT /mockserver/expectation</span> REST endpoint.</p>
+
+<button id="button_generate_response_from_json_schema" class="accordion">generate a response body from an inline json schema</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
     .when(
         request()
             .withPath("/users/1")
@@ -108,18 +114,185 @@ keywords: OpenAPI, Swagger, OpenAPI v3, WSDL, SOAP, generate mock expectations, 
                 "\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}" +
                 "}}")
     );</code></pre>
-
-<p>The same field is available in the expectation JSON, for example:</p>
-
-<pre class="prettyprint lang-java code"><code class="code">{
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "path": "/users/1"
     },
     "httpResponse": {
         "statusCode": 200,
-        "generateFromSchema": "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"},\"name\":{\"type\":\"string\"}}}"
+        "generateFromSchema": "{\"type\":\"object\",\"required\":[\"id\",\"status\"],\"properties\":{\"id\":{\"type\":\"integer\"},\"status\":{\"type\":\"string\",\"enum\":[\"ACTIVE\",\"DISABLED\"]},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}"
     }
-}</code></pre>
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import json
+import requests
+
+# The Python client's HttpResponse has no typed generateFromSchema setter,
+# so submit the same expectation as raw JSON via the REST API.
+schema = json.dumps({
+    "type": "object",
+    "required": ["id", "status"],
+    "properties": {
+        "id": {"type": "integer"},
+        "status": {"type": "string", "enum": ["ACTIVE", "DISABLED"]},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    },
+})
+
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    json={
+        "httpRequest": {"path": "/users/1"},
+        "httpResponse": {"statusCode": 200, "generateFromSchema": schema},
+    },
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'json'
+require 'net/http'
+
+# The Ruby client's HttpResponse has no typed generateFromSchema setter,
+# so submit the same expectation as raw JSON via the REST API.
+schema = JSON.generate({
+  'type' =&gt; 'object',
+  'required' =&gt; %w[id status],
+  'properties' =&gt; {
+    'id' =&gt; { 'type' =&gt; 'integer' },
+    'status' =&gt; { 'type' =&gt; 'string', 'enum' =&gt; %w[ACTIVE DISABLED] },
+    'tags' =&gt; { 'type' =&gt; 'array', 'items' =&gt; { 'type' =&gt; 'string' } }
+  }
+})
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+Net::HTTP.start(uri.host, uri.port) do |http|
+  request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+  request.body = JSON.generate(
+    'httpRequest' =&gt; { 'path' =&gt; '/users/1' },
+    'httpResponse' =&gt; { 'statusCode' =&gt; 200, 'generateFromSchema' =&gt; schema }
+  )
+  http.request(request)
+end</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import (
+    "bytes"
+    "encoding/json"
+    "net/http"
+)
+
+// The Go client's HttpResponse has no GenerateFromSchema field, so submit the
+// same expectation as raw JSON via the REST API.
+schema, _ := json.Marshal(map[string]interface{}{
+    "type":     "object",
+    "required": []string{"id", "status"},
+    "properties": map[string]interface{}{
+        "id":     map[string]string{"type": "integer"},
+        "status": map[string]interface{}{"type": "string", "enum": []string{"ACTIVE", "DISABLED"}},
+        "tags":   map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}},
+    },
+})
+payload, _ := json.Marshal(map[string]interface{}{
+    "httpRequest":  map[string]string{"path": "/users/1"},
+    "httpResponse": map[string]interface{}{"statusCode": 200, "generateFromSchema": string(schema)},
+})
+
+req, _ := http.NewRequest("PUT", "http://localhost:1080/mockserver/expectation", bytes.NewReader(payload))
+req.Header.Set("Content-Type", "application/json")
+http.DefaultClient.Do(req)</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.When(
+    HttpRequest.Request().WithPath("/users/1")
+).Respond(new HttpResponse
+{
+    StatusCode = 200,
+    GenerateFromSchema =
+        "{\"type\":\"object\"," +
+        "\"required\":[\"id\",\"status\"]," +
+        "\"properties\":{" +
+        "\"id\":{\"type\":\"integer\"}," +
+        "\"status\":{\"type\":\"string\",\"enum\":[\"ACTIVE\",\"DISABLED\"]}," +
+        "\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}" +
+        "}}"
+});</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpResponse};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.when(HttpRequest::new().path("/users/1"))
+    .respond(
+        HttpResponse::new()
+            .status_code(200)
+            .generate_from_schema(
+                r#"{"type":"object","required":["id","status"],"properties":{"id":{"type":"integer"},"status":{"type":"string","enum":["ACTIVE","DISABLED"]},"tags":{"type":"array","items":{"type":"string"}}}}"#,
+            ),
+    )
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">// The PHP client's HttpResponse has no generateFromSchema setter, so submit the
+// same expectation as raw JSON via the REST API.
+$schema = json_encode([
+    'type' =&gt; 'object',
+    'required' =&gt; ['id', 'status'],
+    'properties' =&gt; [
+        'id' =&gt; ['type' =&gt; 'integer'],
+        'status' =&gt; ['type' =&gt; 'string', 'enum' =&gt; ['ACTIVE', 'DISABLED']],
+        'tags' =&gt; ['type' =&gt; 'array', 'items' =&gt; ['type' =&gt; 'string']],
+    ],
+]);
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST =&gt; 'PUT',
+    CURLOPT_HTTPHEADER =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_POSTFIELDS =&gt; json_encode([
+        'httpRequest' =&gt; ['path' =&gt; '/users/1'],
+        'httpResponse' =&gt; ['statusCode' =&gt; 200, 'generateFromSchema' =&gt; $schema],
+    ]),
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest" : {
+    "path" : "/users/1"
+  },
+  "httpResponse" : {
+    "statusCode" : 200,
+    "generateFromSchema" : "{\"type\":\"object\",\"required\":[\"id\",\"status\"],\"properties\":{\"id\":{\"type\":\"integer\"},\"status\":{\"type\":\"string\",\"enum\":[\"ACTIVE\",\"DISABLED\"]},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}"
+  }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <a id="generate_expectation_from_openapi" class="anchor" href="#generate_expectation_from_openapi">&nbsp;</a>
 

@@ -2347,7 +2347,191 @@ curl -s -X PUT http://localhost:1080/mockserver/loadScenario \
 
 <p><strong>Checks never fail an individual request</strong> — they are observational. Each evaluated check is counted as a pass or a fail: the counts feed the <code class="inline code">mock_server_load_checks</code> metric (labelled <code class="inline code">outcome="pass"|"fail"</code>), the per-check <code class="inline code">checkResults</code> in the <a href="#summary_report">summary report</a> and live status, and the <a href="#thresholds"><code class="inline code">CHECK_FAILURE_RATE</code> threshold</a> — so you can <strong>fail a CI run</strong> when too many checks break (and, with <code class="inline code">abortOnFail</code>, stop it early). A check that can't be evaluated (a bad JSONPath, or no response at all on a connection error) simply counts as a fail. Omitting <code class="inline code">checks</code> changes nothing — it is off by default.</p>
 
-<pre class="prettyprint lang-json code"><code class="code">{
+<button id="button_load_step_checks" class="accordion">attach per-step checks and a CHECK_FAILURE_RATE threshold</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
+import org.mockserver.load.*;
+import org.mockserver.slo.SloObjective;
+
+import java.util.List;
+
+import static org.mockserver.model.HttpRequest.request;
+
+MockServerClient client = new MockServerClient("localhost", 1080);
+
+LoadScenario scenario = LoadScenario.loadScenario("checked-scenario")
+    .withProfile(LoadProfile.of(
+        LoadStage.constantVus(5, 60000)
+    ))
+    .withThresholds(
+        LoadThreshold.loadThreshold()
+            .withMetric(LoadThreshold.Metric.CHECK_FAILURE_RATE)
+            .withComparator(SloObjective.Comparator.LESS_THAN)
+            .withThreshold(0.01)
+    )
+    .withSteps(
+        LoadStep.loadStep(request().withMethod("GET").withPath("/api/orders/123")
+                .withSocketAddress("target", 8080))
+            .withChecks(List.of(
+                LoadCheck.loadCheck()
+                    .withSource(LoadCheck.Source.STATUS)
+                    .withComparator(LoadCheck.Comparator.EQUALS)
+                    .withValue("200"),
+                LoadCheck.loadCheck()
+                    .withSource(LoadCheck.Source.HEADER)
+                    .withHeaderName("Content-Type")
+                    .withComparator(LoadCheck.Comparator.CONTAINS)
+                    .withValue("application/json"),
+                LoadCheck.loadCheck()
+                    .withSource(LoadCheck.Source.BODY_JSONPATH)
+                    .withJsonPath("$.status")
+                    .withComparator(LoadCheck.Comparator.EQUALS)
+                    .withValue("CONFIRMED")
+            ))
+    );
+
+client.runLoadScenario(scenario);              // register + start (needs loadGenerationEnabled=true)
+client.stopLoadScenarios("checked-scenario");  // stop when done</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+var client = mockServerClient("localhost", 1080);
+
+// The client submits raw JSON, so `checks` is expressed inline.
+var scenario = {
+    name: 'checked-scenario',
+    profile: { stages: [ { type: 'VU', vus: 5, durationMillis: 60000 } ] },
+    thresholds: [
+        { metric: 'CHECK_FAILURE_RATE', comparator: 'LESS_THAN', threshold: 0.01 }
+    ],
+    steps: [
+        {
+            request: { method: 'GET', path: '/api/orders/123',
+                       socketAddress: { host: 'target', port: 8080 } },
+            checks: [
+                { source: 'STATUS', comparator: 'EQUALS', value: '200' },
+                { source: 'HEADER', headerName: 'Content-Type', comparator: 'CONTAINS', value: 'application/json' },
+                { source: 'BODY_JSONPATH', jsonPath: '$.status', comparator: 'EQUALS', value: 'CONFIRMED' }
+            ]
+        }
+    ]
+};
+
+(async function () {
+    await client.runLoadScenario(scenario);            // register + start (needs loadGenerationEnabled=true)
+    await client.stopLoadScenarios('checked-scenario');
+})();</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient
+
+# The typed LoadStep has no `checks` field yet, so submit the scenario as a raw dict.
+scenario = {
+    "name": "checked-scenario",
+    "profile": {"stages": [{"type": "VU", "vus": 5, "durationMillis": 60000}]},
+    "thresholds": [
+        {"metric": "CHECK_FAILURE_RATE", "comparator": "LESS_THAN", "threshold": 0.01}
+    ],
+    "steps": [
+        {
+            "request": {"method": "GET", "path": "/api/orders/123",
+                        "socketAddress": {"host": "target", "port": 8080}},
+            "checks": [
+                {"source": "STATUS", "comparator": "EQUALS", "value": "200"},
+                {"source": "HEADER", "headerName": "Content-Type", "comparator": "CONTAINS", "value": "application/json"},
+                {"source": "BODY_JSONPATH", "jsonPath": "$.status", "comparator": "EQUALS", "value": "CONFIRMED"},
+            ],
+        }
+    ],
+}
+
+with MockServerClient("localhost", 1080) as client:
+    client.run_load_scenario(scenario)             # register + start (needs loadGenerationEnabled=true)
+    client.stop_load_scenarios("checked-scenario")</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+include MockServer
+
+client = Client.new('localhost', 1080)
+
+# The typed LoadStep has no `checks` field yet, so submit the scenario as a raw Hash.
+scenario = {
+  'name' =&gt; 'checked-scenario',
+  'profile' =&gt; { 'stages' =&gt; [ { 'type' =&gt; 'VU', 'vus' =&gt; 5, 'durationMillis' =&gt; 60_000 } ] },
+  'thresholds' =&gt; [
+    { 'metric' =&gt; 'CHECK_FAILURE_RATE', 'comparator' =&gt; 'LESS_THAN', 'threshold' =&gt; 0.01 }
+  ],
+  'steps' =&gt; [
+    {
+      'request' =&gt; { 'method' =&gt; 'GET', 'path' =&gt; '/api/orders/123',
+                     'socketAddress' =&gt; { 'host' =&gt; 'target', 'port' =&gt; 8080 } },
+      'checks' =&gt; [
+        { 'source' =&gt; 'STATUS', 'comparator' =&gt; 'EQUALS', 'value' =&gt; '200' },
+        { 'source' =&gt; 'HEADER', 'headerName' =&gt; 'Content-Type', 'comparator' =&gt; 'CONTAINS', 'value' =&gt; 'application/json' },
+        { 'source' =&gt; 'BODY_JSONPATH', 'jsonPath' =&gt; '$.status', 'comparator' =&gt; 'EQUALS', 'value' =&gt; 'CONFIRMED' }
+      ]
+    }
+  ]
+}
+
+client.run_load_scenario(scenario)             # register + start (needs loadGenerationEnabled=true)
+client.stop_load_scenarios('checked-scenario')
+client.close</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "net/http"
+    "strings"
+)
+
+func main() {
+    // The typed LoadStep has no Checks field yet, so PUT the raw JSON directly.
+    scenario := `{
+      "name": "checked-scenario",
+      "profile": { "stages": [ { "type": "VU", "vus": 5, "durationMillis": 60000 } ] },
+      "thresholds": [
+        { "metric": "CHECK_FAILURE_RATE", "comparator": "LESS_THAN", "threshold": 0.01 }
+      ],
+      "steps": [
+        {
+          "request": { "method": "GET", "path": "/api/orders/123",
+                       "socketAddress": { "host": "target", "port": 8080 } },
+          "checks": [
+            { "source": "STATUS", "comparator": "EQUALS", "value": "200" },
+            { "source": "HEADER", "headerName": "Content-Type", "comparator": "CONTAINS", "value": "application/json" },
+            { "source": "BODY_JSONPATH", "jsonPath": "$.status", "comparator": "EQUALS", "value": "CONFIRMED" }
+          ]
+        }
+      ]
+    }`
+
+    base := "http://localhost:1080/mockserver"
+    reg, _ := http.NewRequest("PUT", base+"/loadScenario", strings.NewReader(scenario))
+    reg.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(reg) // 1. register (does NOT start it yet)
+
+    start, _ := http.NewRequest("PUT", base+"/loadScenario/start",
+        strings.NewReader(`{ "name": "checked-scenario" }`))
+    http.DefaultClient.Do(start) // 2. start (needs loadGenerationEnabled=true)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+// The typed LoadStep has no Checks property yet, so PUT the raw JSON directly.
+var scenario = """
+{
   "name": "checked-scenario",
   "profile": { "stages": [ { "type": "VU", "vus": 5, "durationMillis": 60000 } ] },
   "thresholds": [
@@ -2355,7 +2539,8 @@ curl -s -X PUT http://localhost:1080/mockserver/loadScenario \
   ],
   "steps": [
     {
-      "request": { "method": "GET", "path": "/api/orders/123", "socketAddress": { "host": "target", "port": 8080 } },
+      "request": { "method": "GET", "path": "/api/orders/123",
+                   "socketAddress": { "host": "target", "port": 8080 } },
       "checks": [
         { "source": "STATUS", "comparator": "EQUALS", "value": "200" },
         { "source": "HEADER", "headerName": "Content-Type", "comparator": "CONTAINS", "value": "application/json" },
@@ -2363,7 +2548,107 @@ curl -s -X PUT http://localhost:1080/mockserver/loadScenario \
       ]
     }
   ]
-}</code></pre>
+}
+""";
+
+using var http = new HttpClient();
+var body = new StringContent(scenario, Encoding.UTF8, "application/json");
+await http.PutAsync("http://localhost:1080/mockserver/loadScenario", body);           // register
+await http.PutAsync("http://localhost:1080/mockserver/loadScenario/start",            // start
+    new StringContent("{ \"name\": \"checked-scenario\" }", Encoding.UTF8, "application/json"));</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+// The typed LoadStep has no `checks` field yet, so PUT the raw JSON directly.
+let scenario = r#"{
+  "name": "checked-scenario",
+  "profile": { "stages": [ { "type": "VU", "vus": 5, "durationMillis": 60000 } ] },
+  "thresholds": [
+    { "metric": "CHECK_FAILURE_RATE", "comparator": "LESS_THAN", "threshold": 0.01 }
+  ],
+  "steps": [
+    {
+      "request": { "method": "GET", "path": "/api/orders/123",
+                   "socketAddress": { "host": "target", "port": 8080 } },
+      "checks": [
+        { "source": "STATUS", "comparator": "EQUALS", "value": "200" },
+        { "source": "HEADER", "headerName": "Content-Type", "comparator": "CONTAINS", "value": "application/json" },
+        { "source": "BODY_JSONPATH", "jsonPath": "$.status", "comparator": "EQUALS", "value": "CONFIRMED" }
+      ]
+    }
+  ]
+}"#;
+
+let http = Client::new();
+http.put("http://localhost:1080/mockserver/loadScenario")            // register
+    .header("Content-Type", "application/json").body(scenario).send().unwrap();
+http.put("http://localhost:1080/mockserver/loadScenario/start")      // start (needs loadGenerationEnabled=true)
+    .body(r#"{ "name": "checked-scenario" }"#).send().unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">require_once 'vendor/autoload.php';
+
+use MockServer\MockServerClient;
+
+$client = new MockServerClient('localhost', 1080);
+
+// The typed LoadStep has no checks setter yet, so submit the scenario as a raw array.
+$scenario = [
+    'name' =&gt; 'checked-scenario',
+    'profile' =&gt; ['stages' =&gt; [['type' =&gt; 'VU', 'vus' =&gt; 5, 'durationMillis' =&gt; 60000]]],
+    'thresholds' =&gt; [
+        ['metric' =&gt; 'CHECK_FAILURE_RATE', 'comparator' =&gt; 'LESS_THAN', 'threshold' =&gt; 0.01],
+    ],
+    'steps' =&gt; [
+        [
+            'request' =&gt; ['method' =&gt; 'GET', 'path' =&gt; '/api/orders/123',
+                          'socketAddress' =&gt; ['host' =&gt; 'target', 'port' =&gt; 8080]],
+            'checks' =&gt; [
+                ['source' =&gt; 'STATUS', 'comparator' =&gt; 'EQUALS', 'value' =&gt; '200'],
+                ['source' =&gt; 'HEADER', 'headerName' =&gt; 'Content-Type', 'comparator' =&gt; 'CONTAINS', 'value' =&gt; 'application/json'],
+                ['source' =&gt; 'BODY_JSONPATH', 'jsonPath' =&gt; '$.status', 'comparator' =&gt; 'EQUALS', 'value' =&gt; 'CONFIRMED'],
+            ],
+        ],
+    ],
+];
+
+$client-&gt;runLoadScenario($scenario);             // register + start (needs loadGenerationEnabled=true)
+$client-&gt;stopLoadScenarios('checked-scenario');</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint lang-bash code"><code class="code"># Start the server with load generation enabled:
+#   docker run -e MOCKSERVER_LOAD_GENERATION_ENABLED=true mockserver/mockserver
+
+# 1. REGISTER the scenario (does NOT run it) — PUT /mockserver/loadScenario
+curl -s -X PUT http://localhost:1080/mockserver/loadScenario \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "checked-scenario",
+    "profile": { "stages": [ { "type": "VU", "vus": 5, "durationMillis": 60000 } ] },
+    "thresholds": [
+      { "metric": "CHECK_FAILURE_RATE", "comparator": "LESS_THAN", "threshold": 0.01 }
+    ],
+    "steps": [
+      {
+        "request": { "method": "GET", "path": "/api/orders/123",
+                     "socketAddress": { "host": "target", "port": 8080 } },
+        "checks": [
+          { "source": "STATUS", "comparator": "EQUALS", "value": "200" },
+          { "source": "HEADER", "headerName": "Content-Type", "comparator": "CONTAINS", "value": "application/json" },
+          { "source": "BODY_JSONPATH", "jsonPath": "$.status", "comparator": "EQUALS", "value": "CONFIRMED" }
+        ]
+      }
+    ]
+  }'
+
+# 2. START it (requires loadGenerationEnabled=true; else 403)
+curl -s -X PUT http://localhost:1080/mockserver/loadScenario/start -d '{ "name": "checked-scenario" }'</code></pre>
+    </div>
+</div>
 
 <p>Every iteration fires the request and evaluates all three checks against the response. The status verdict flips to <code class="inline code">FAIL</code> if more than 1% of checks fail, so a service that returns <code class="inline code">200</code> but with <code class="inline code">$.status != "CONFIRMED"</code> is caught even though no request errored.</p>
 

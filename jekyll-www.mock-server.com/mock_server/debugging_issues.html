@@ -290,6 +290,91 @@ $activeExpectations = $client-&gt;retrieveActiveExpectations(
         Format.JAVA
     );</code></pre>
         </div>
+        <button class="accordion inner">JavaScript</button>
+        <div class="panel">
+            <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).retrieveExpectationsAsCode("java", {
+    "path": "/some/path",
+    "method": "POST"
+}).then(
+    function (activeExpectations) {
+        // activeExpectations is the generated Java setup code as a String
+        console.log(activeExpectations);
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+            <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/control/put_retrieve" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+        </div>
+        <button class="accordion inner">Python</button>
+        <div class="panel">
+            <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import HttpRequest
+
+client = MockServerClient("localhost", 1080)
+# returns the expectations rendered as Java setup code
+active_expectations = client.retrieve_expectations_as_code(
+    "java", HttpRequest.request(path="/some/path")
+)</code></pre>
+        </div>
+        <button class="accordion inner">Ruby</button>
+        <div class="panel">
+            <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+# returns the expectations rendered as Java setup code
+active_expectations = client.retrieve_expectations_as_code(
+    format: 'java',
+    request: MockServer::HttpRequest.new(path: '/some/path')
+)</code></pre>
+        </div>
+        <button class="accordion inner">Go</button>
+        <div class="panel">
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+// returns the expectations rendered as Java setup code
+activeExpectations, err := client.RetrieveExpectationsAsCode(
+    mockserver.Request().Path("/some/path"),
+    mockserver.FormatJava,
+)</code></pre>
+        </div>
+        <button class="accordion inner">.NET</button>
+        <div class="panel">
+            <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+// returns the expectations rendered as Java setup code
+var activeExpectations = client.RetrieveExpectationsAsCode(
+    "java",
+    HttpRequest.Request().WithPath("/some/path")
+);</code></pre>
+        </div>
+        <button class="accordion inner">Rust</button>
+        <div class="panel">
+            <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, RetrieveFormat};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+// returns the expectations rendered as Java setup code
+let active_expectations = client.retrieve_expectations_as_code(
+    RetrieveFormat::Java,
+    Some(&amp;HttpRequest::new().path("/some/path"))
+).unwrap();</code></pre>
+        </div>
+        <button class="accordion inner">PHP</button>
+        <div class="panel">
+            <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+use MockServer\HttpRequest;
+
+$client = new MockServerClient('localhost', 1080);
+// returns the expectations rendered as Java setup code
+$activeExpectations = $client-&gt;retrieveExpectationsAsCode(
+    'java',
+    HttpRequest::request()-&gt;path('/some/path')
+);</code></pre>
+        </div>
         <button class="accordion inner">REST API</button>
         <div class="panel">
             <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=ACTIVE_EXPECTATIONS&format=JAVA" -d '{
@@ -725,6 +810,13 @@ $client = new MockServerClient('localhost', 1080);
 $logMessages = $client-&gt;retrieveLogMessages(
     HttpRequest::request()-&gt;path('/some/path')
 );</code></pre>
+        </div>
+        <button class="accordion inner">REST API</button>
+        <div class="panel">
+            <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=LOGS" -d '{
+    "path": "/some/path"
+}'</code></pre>
+            <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/control/put_retrieve" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
         </div>
     </div>
 </div>

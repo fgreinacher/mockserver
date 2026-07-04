@@ -463,7 +463,29 @@ $client-&gt;when(
 </ul>
 
 <p><strong>Example - match a GraphQL query:</strong></p>
-<pre class="prettyprint lang-java code"><code class="code">{
+<button id="button_match_graphql_query" class="accordion">match a GraphQL query</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.GraphQLBody.graphQL;
+
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(graphQL("{ user(id: 1) { name email } }"))
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "POST",
         "path": "/graphql",
@@ -476,10 +498,231 @@ $client-&gt;when(
         "statusCode": 200,
         "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user(id: 1) { name email } }"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user(id: 1) { name email } }"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user(id: 1) { name email } }"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/graphql"",
+        ""body"": {
+            ""type"": ""GRAPHQL"",
+            ""query"": ""{ user(id: 1) { name email } }""
+        }
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""data\"": {\""user\"": {\""name\"": \""Alice\"", \""email\"": \""alice@example.com\""}}}""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user(id: 1) { name email } }"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user(id: 1) { name email } }"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user(id: 1) { name email } }"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <p><strong>Example - match with operation name and variables schema:</strong></p>
-<pre class="prettyprint lang-java code"><code class="code">{
+<button id="button_match_graphql_operation_name" class="accordion">match a GraphQL query by operation name and variables schema</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.GraphQLBody.graphQL;
+
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(
+                graphQL(
+                    "query GetUser($id: ID!) { user(id: $id) { name email } }",
+                    "GetUser",
+                    "{\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"]}"
+                )
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "POST",
         "path": "/graphql",
@@ -494,10 +737,244 @@ $client-&gt;when(
         "statusCode": 200,
         "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetUser($id: ID!) { user(id: $id) { name email } }",
+            "operationName": "GetUser",
+            "variablesSchema": "{\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"]}"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetUser($id: ID!) { user(id: $id) { name email } }",
+            "operationName": "GetUser",
+            "variablesSchema": "{\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"]}"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetUser($id: ID!) { user(id: $id) { name email } }",
+            "operationName": "GetUser",
+            "variablesSchema": "{\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"]}"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/graphql"",
+        ""body"": {
+            ""type"": ""GRAPHQL"",
+            ""query"": ""query GetUser($id: ID!) { user(id: $id) { name email } }"",
+            ""operationName"": ""GetUser"",
+            ""variablesSchema"": ""{\""type\"": \""object\"", \""properties\"": {\""id\"": {\""type\"": \""string\""}}, \""required\"": [\""id\""]}""
+        }
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""data\"": {\""user\"": {\""name\"": \""Alice\"", \""email\"": \""alice@example.com\""}}}""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetUser($id: ID!) { user(id: $id) { name email } }",
+            "operationName": "GetUser",
+            "variablesSchema": "{\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"]}"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetUser($id: ID!) { user(id: $id) { name email } }",
+            "operationName": "GetUser",
+            "variablesSchema": "{\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"]}"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetUser($id: ID!) { user(id: $id) { name email } }",
+            "operationName": "GetUser",
+            "variablesSchema": "{\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"]}"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {\"name\": \"Alice\", \"email\": \"alice@example.com\"}}}"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <p><strong>Example - match a mutation:</strong></p>
-<pre class="prettyprint lang-java code"><code class="code">{
+<button id="button_match_graphql_mutation" class="accordion">match a GraphQL mutation</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.GraphQLBody.graphQL;
+
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(
+                graphQL(
+                    "mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id name } }",
+                    "CreateUser"
+                )
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("{\"data\": {\"createUser\": {\"id\": \"123\", \"name\": \"Alice\"}}}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "POST",
         "path": "/graphql",
@@ -511,10 +988,237 @@ $client-&gt;when(
         "statusCode": 200,
         "body": "{\"data\": {\"createUser\": {\"id\": \"123\", \"name\": \"Alice\"}}}"
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id name } }",
+            "operationName": "CreateUser"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"createUser\": {\"id\": \"123\", \"name\": \"Alice\"}}}"
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id name } }",
+            "operationName": "CreateUser"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"createUser\": {\"id\": \"123\", \"name\": \"Alice\"}}}"
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id name } }",
+            "operationName": "CreateUser"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"createUser\": {\"id\": \"123\", \"name\": \"Alice\"}}}"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/graphql"",
+        ""body"": {
+            ""type"": ""GRAPHQL"",
+            ""query"": ""mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id name } }"",
+            ""operationName"": ""CreateUser""
+        }
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""data\"": {\""createUser\"": {\""id\"": \""123\"", \""name\"": \""Alice\""}}}""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id name } }",
+            "operationName": "CreateUser"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"createUser\": {\"id\": \"123\", \"name\": \"Alice\"}}}"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id name } }",
+            "operationName": "CreateUser"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"createUser\": {\"id\": \"123\", \"name\": \"Alice\"}}}"
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id name } }",
+            "operationName": "CreateUser"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"createUser\": {\"id\": \"123\", \"name\": \"Alice\"}}}"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <p><strong>Example - AST subset matching (match any query containing a "users" field):</strong></p>
-<pre class="prettyprint lang-java code"><code class="code">{
+<button id="button_match_graphql_ast_subset" class="accordion">match a GraphQL query using AST subset matching</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.GraphQLBody.graphQL;
+import org.mockserver.model.SelectionSetMatchType;
+
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(
+                graphQL("query { users { id } }")
+                    .withSelectionSetMatchType(SelectionSetMatchType.AST_SUBSET)
+                    .withFields("users")
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("{\"data\": {\"users\": [{\"id\": \"1\", \"name\": \"Alice\"}]}}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "POST",
         "path": "/graphql",
@@ -529,10 +1233,243 @@ $client-&gt;when(
         "statusCode": 200,
         "body": "{\"data\": {\"users\": [{\"id\": \"1\", \"name\": \"Alice\"}]}}"
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query { users { id } }",
+            "selectionSetMatchType": "AST_SUBSET",
+            "fields": ["users"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"users\": [{\"id\": \"1\", \"name\": \"Alice\"}]}}"
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query { users { id } }",
+            "selectionSetMatchType": "AST_SUBSET",
+            "fields": ["users"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"users\": [{\"id\": \"1\", \"name\": \"Alice\"}]}}"
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query { users { id } }",
+            "selectionSetMatchType": "AST_SUBSET",
+            "fields": ["users"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"users\": [{\"id\": \"1\", \"name\": \"Alice\"}]}}"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/graphql"",
+        ""body"": {
+            ""type"": ""GRAPHQL"",
+            ""query"": ""query { users { id } }"",
+            ""selectionSetMatchType"": ""AST_SUBSET"",
+            ""fields"": [""users""]
+        }
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""data\"": {\""users\"": [{\""id\"": \""1\"", \""name\"": \""Alice\""}]}}""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query { users { id } }",
+            "selectionSetMatchType": "AST_SUBSET",
+            "fields": ["users"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"users\": [{\"id\": \"1\", \"name\": \"Alice\"}]}}"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query { users { id } }",
+            "selectionSetMatchType": "AST_SUBSET",
+            "fields": ["users"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"users\": [{\"id\": \"1\", \"name\": \"Alice\"}]}}"
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query { users { id } }",
+            "selectionSetMatchType": "AST_SUBSET",
+            "fields": ["users"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"users\": [{\"id\": \"1\", \"name\": \"Alice\"}]}}"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <p><strong>Example - AST exact matching (match a query with exactly these top-level fields):</strong></p>
-<pre class="prettyprint lang-java code"><code class="code">{
+<button id="button_match_graphql_ast_exact" class="accordion">match a GraphQL query using AST exact matching</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.GraphQLBody.graphQL;
+import org.mockserver.model.SelectionSetMatchType;
+
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(
+                graphQL("query GetDashboard { user profile settings }")
+                    .withSelectionSetMatchType(SelectionSetMatchType.AST_EXACT)
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withBody("{\"data\": {\"user\": {}, \"profile\": {}, \"settings\": {}}}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "POST",
         "path": "/graphql",
@@ -546,7 +1483,207 @@ $client-&gt;when(
         "statusCode": 200,
         "body": "{\"data\": {\"user\": {}, \"profile\": {}, \"settings\": {}}}"
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetDashboard { user profile settings }",
+            "selectionSetMatchType": "AST_EXACT"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {}, \"profile\": {}, \"settings\": {}}}"
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetDashboard { user profile settings }",
+            "selectionSetMatchType": "AST_EXACT"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {}, \"profile\": {}, \"settings\": {}}}"
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetDashboard { user profile settings }",
+            "selectionSetMatchType": "AST_EXACT"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {}, \"profile\": {}, \"settings\": {}}}"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/graphql"",
+        ""body"": {
+            ""type"": ""GRAPHQL"",
+            ""query"": ""query GetDashboard { user profile settings }"",
+            ""selectionSetMatchType"": ""AST_EXACT""
+        }
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""data\"": {\""user\"": {}, \""profile\"": {}, \""settings\"": {}}}""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetDashboard { user profile settings }",
+            "selectionSetMatchType": "AST_EXACT"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {}, \"profile\": {}, \"settings\": {}}}"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetDashboard { user profile settings }",
+            "selectionSetMatchType": "AST_EXACT"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {}, \"profile\": {}, \"settings\": {}}}"
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetDashboard { user profile settings }",
+            "selectionSetMatchType": "AST_EXACT"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"data\": {\"user\": {}, \"profile\": {}, \"settings\": {}}}"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <a id="graphql_schema_responses" class="anchor" href="#graphql_schema_responses">&nbsp;</a>
 
@@ -566,7 +1703,30 @@ $client-&gt;when(
 <p>This is useful for quickly standing up a realistic GraphQL mock from an existing schema — no example payloads required. To return a specific, hand-crafted payload instead, simply provide an <span class="inline_code">httpResponse</span> body as in the matching examples above.</p>
 
 <p><strong>Example - synthesize a response from an SDL schema:</strong></p>
-<pre class="prettyprint lang-java code"><code class="code">{
+<button id="button_match_graphql_schema_synthesis" class="accordion">synthesize a GraphQL response from an SDL schema</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.GraphQLBody.graphQL;
+
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(
+                graphQL("{ user { name email } }")
+                    .withSchema("type Query { user: User } type User { id: ID name: String email: String age: Int }")
+            )
+    )
+    .respond(
+        response()
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "POST",
         "path": "/graphql",
@@ -576,7 +1736,179 @@ $client-&gt;when(
             "schema": "type Query { user: User } type User { id: ID name: String email: String age: Int }"
         }
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user { name email } }",
+            "schema": "type Query { user: User } type User { id: ID name: String email: String age: Int }"
+        }
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user { name email } }",
+            "schema": "type Query { user: User } type User { id: ID name: String email: String age: Int }"
+        }
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user { name email } }",
+            "schema": "type Query { user: User } type User { id: ID name: String email: String age: Int }"
+        }
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/graphql"",
+        ""body"": {
+            ""type"": ""GRAPHQL"",
+            ""query"": ""{ user { name email } }"",
+            ""schema"": ""type Query { user: User } type User { id: ID name: String email: String age: Int }""
+        }
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user { name email } }",
+            "schema": "type Query { user: User } type User { id: ID name: String email: String age: Int }"
+        }
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user { name email } }",
+            "schema": "type Query { user: User } type User { id: ID name: String email: String age: Int }"
+        }
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "{ user { name email } }",
+            "schema": "type Query { user: User } type User { id: ID name: String email: String age: Int }"
+        }
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <p>A request with the query <span class="inline_code">{ user { name email } }</span> yields a schema-valid response containing only the requested fields, for example:</p>
 <pre class="prettyprint code"><code class="code">{ "data": { "user": { "name": "string", "email": "string" } } }</code></pre>
@@ -606,7 +1938,35 @@ $client-&gt;when(
 </ul>
 
 <p><strong>Example - mock a GraphQL subscription that pushes two events:</strong></p>
-<pre class="prettyprint lang-java code"><code class="code">{
+<button id="button_graphql_subscription" class="accordion">mock a GraphQL subscription over WebSocket</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpWebSocketResponse.webSocketResponse;
+import static org.mockserver.model.WebSocketMessage.webSocketMessage;
+import static org.mockserver.model.GraphQLBody.graphQL;
+import org.mockserver.model.SelectionSetMatchType;
+
+mockServerClient.when(
+    request()
+        .withMethod("GET")
+        .withPath("/graphql")
+).respondWithWebSocket(
+    webSocketResponse()
+        .withSubprotocol("graphql-transport-ws")
+        .withGraphqlSubscriptionFilter(
+            graphQL("subscription { userUpdated { id name } }")
+                .withSelectionSetMatchType(SelectionSetMatchType.AST_SUBSET)
+        )
+        .withMessage(webSocketMessage("{\"id\": \"1\", \"name\": \"Alice\"}"))
+        .withMessage(webSocketMessage("{\"id\": \"2\", \"name\": \"Bob\"}"))
+);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "GET",
         "path": "/graphql"
@@ -622,23 +1982,221 @@ $client-&gt;when(
             {"text": "{\"id\": \"2\", \"name\": \"Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 500}}
         ]
     }
-}</code></pre>
-
-<p><strong>Example - Java API:</strong></p>
-<pre class="prettyprint lang-java code"><code class="code">mockServerClient.when(
-    request()
-        .withMethod("GET")
-        .withPath("/graphql")
-).respondWithWebSocket(
-    webSocketResponse()
-        .withSubprotocol("graphql-transport-ws")
-        .withGraphqlSubscriptionFilter(
-            GraphQLBody.graphQL("subscription { userUpdated { id name } }")
-                .withSelectionSetMatchType(SelectionSetMatchType.AST_SUBSET)
-        )
-        .withMessage(webSocketMessage("{\"id\": \"1\", \"name\": \"Alice\"}"))
-        .withMessage(webSocketMessage("{\"id\": \"2\", \"name\": \"Bob\"}"))
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
 );</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/graphql"
+    },
+    "httpWebSocketResponse": {
+        "subprotocol": "graphql-transport-ws",
+        "graphqlSubscriptionFilter": {
+            "query": "subscription { userUpdated { id name } }",
+            "selectionSetMatchType": "AST_SUBSET"
+        },
+        "messages": [
+            {"text": "{\"id\": \"1\", \"name\": \"Alice\"}"},
+            {"text": "{\"id\": \"2\", \"name\": \"Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 500}}
+        ]
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/graphql"
+    },
+    "httpWebSocketResponse": {
+        "subprotocol": "graphql-transport-ws",
+        "graphqlSubscriptionFilter": {
+            "query": "subscription { userUpdated { id name } }",
+            "selectionSetMatchType": "AST_SUBSET"
+        },
+        "messages": [
+            {"text": "{\"id\": \"1\", \"name\": \"Alice\"}"},
+            {"text": "{\"id\": \"2\", \"name\": \"Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 500}}
+        ]
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/graphql"
+    },
+    "httpWebSocketResponse": {
+        "subprotocol": "graphql-transport-ws",
+        "graphqlSubscriptionFilter": {
+            "query": "subscription { userUpdated { id name } }",
+            "selectionSetMatchType": "AST_SUBSET"
+        },
+        "messages": [
+            {"text": "{\"id\": \"1\", \"name\": \"Alice\"}"},
+            {"text": "{\"id\": \"2\", \"name\": \"Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 500}}
+        ]
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""GET"",
+        ""path"": ""/graphql""
+    },
+    ""httpWebSocketResponse"": {
+        ""subprotocol"": ""graphql-transport-ws"",
+        ""graphqlSubscriptionFilter"": {
+            ""query"": ""subscription { userUpdated { id name } }"",
+            ""selectionSetMatchType"": ""AST_SUBSET""
+        },
+        ""messages"": [
+            {""text"": ""{\""id\"": \""1\"", \""name\"": \""Alice\""}""},
+            {""text"": ""{\""id\"": \""2\"", \""name\"": \""Bob\""}"", ""delay"": {""timeUnit"": ""MILLISECONDS"", ""value"": 500}}
+        ]
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/graphql"
+    },
+    "httpWebSocketResponse": {
+        "subprotocol": "graphql-transport-ws",
+        "graphqlSubscriptionFilter": {
+            "query": "subscription { userUpdated { id name } }",
+            "selectionSetMatchType": "AST_SUBSET"
+        },
+        "messages": [
+            {"text": "{\"id\": \"1\", \"name\": \"Alice\"}"},
+            {"text": "{\"id\": \"2\", \"name\": \"Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 500}}
+        ]
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/graphql"
+    },
+    "httpWebSocketResponse": {
+        "subprotocol": "graphql-transport-ws",
+        "graphqlSubscriptionFilter": {
+            "query": "subscription { userUpdated { id name } }",
+            "selectionSetMatchType": "AST_SUBSET"
+        },
+        "messages": [
+            {"text": "{\"id\": \"1\", \"name\": \"Alice\"}"},
+            {"text": "{\"id\": \"2\", \"name\": \"Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 500}}
+        ]
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/graphql"
+    },
+    "httpWebSocketResponse": {
+        "subprotocol": "graphql-transport-ws",
+        "graphqlSubscriptionFilter": {
+            "query": "subscription { userUpdated { id name } }",
+            "selectionSetMatchType": "AST_SUBSET"
+        },
+        "messages": [
+            {"text": "{\"id\": \"1\", \"name\": \"Alice\"}"},
+            {"text": "{\"id\": \"2\", \"name\": \"Bob\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 500}}
+        ]
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <p>When a client connects and sends:</p>
 <pre class="prettyprint lang-java code"><code class="code">{"type": "connection_init"}
@@ -658,8 +2216,35 @@ $client-&gt;when(
 
 <p>The <strong>FUZZY</strong> body matcher matches when the request body is similar enough to an expected string, using a deterministic normalised Jaro-Winkler similarity ratio with a configurable threshold. Unlike LLM-based semantic matching, it is fully deterministic — the same inputs always produce the same result and it requires no external service.</p>
 
-<p>JSON format:</p>
-<pre class="prettyprint code"><code class="code">{
+
+<p>Fields:</p>
+<ul>
+    <li><strong>fuzzy</strong> — the expected string to compare against</li>
+    <li><strong>threshold</strong> (optional, default <code>0.8</code>) — required similarity ratio between <code>0.0</code> and <code>1.0</code>. A value of <code>1.0</code> requires an exact match; <code>0.0</code> matches anything.</li>
+    <li><strong>ignoreCase</strong> (optional, default <code>false</code>) — when <code>true</code>, both strings are trimmed and lower-cased before comparison</li>
+</ul>
+
+<button id="button_match_request_by_fuzzy_body" class="accordion">match request by body using fuzzy similarity</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.FuzzyBody.fuzzy;
+
+new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/api/search")
+            .withBody(fuzzy("find orders for user", 0.8, false))
+    )
+    .respond(
+        response().withStatusCode(200).withBody("{\"results\": []}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "POST",
         "path": "/api/search",
@@ -674,28 +2259,214 @@ $client-&gt;when(
         "statusCode": 200,
         "body": "{\"results\": []}"
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/api/search",
+        "body": {
+            "type": "FUZZY",
+            "fuzzy": "find orders for user",
+            "threshold": 0.8,
+            "ignoreCase": false
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"results\": []}"
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/api/search",
+        "body": {
+            "type": "FUZZY",
+            "fuzzy": "find orders for user",
+            "threshold": 0.8,
+            "ignoreCase": false
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"results\": []}"
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/api/search",
+        "body": {
+            "type": "FUZZY",
+            "fuzzy": "find orders for user",
+            "threshold": 0.8,
+            "ignoreCase": false
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"results\": []}"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
 
-<p>Fields:</p>
-<ul>
-    <li><strong>fuzzy</strong> — the expected string to compare against</li>
-    <li><strong>threshold</strong> (optional, default <code>0.8</code>) — required similarity ratio between <code>0.0</code> and <code>1.0</code>. A value of <code>1.0</code> requires an exact match; <code>0.0</code> matches anything.</li>
-    <li><strong>ignoreCase</strong> (optional, default <code>false</code>) — when <code>true</code>, both strings are trimmed and lower-cased before comparison</li>
-</ul>
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/api/search"",
+        ""body"": {
+            ""type"": ""FUZZY"",
+            ""fuzzy"": ""find orders for user"",
+            ""threshold"": 0.8,
+            ""ignoreCase"": false
+        }
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""body"": ""{\""results\"": []}""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
 
-<p>Java DSL:</p>
-<pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.FuzzyBody.fuzzy;
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/api/search",
+        "body": {
+            "type": "FUZZY",
+            "fuzzy": "find orders for user",
+            "threshold": 0.8,
+            "ignoreCase": false
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"results\": []}"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/api/search",
+        "body": {
+            "type": "FUZZY",
+            "fuzzy": "find orders for user",
+            "threshold": 0.8,
+            "ignoreCase": false
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"results\": []}"
+    }
+}
+JSON;
 
-new MockServerClient("localhost", 1080)
-    .when(
-        request()
-            .withMethod("POST")
-            .withPath("/api/search")
-            .withBody(fuzzy("find orders for user", 0.8, false))
-    )
-    .respond(
-        response().withStatusCode(200).withBody("{\"results\": []}")
-    );</code></pre>
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/api/search",
+        "body": {
+            "type": "FUZZY",
+            "fuzzy": "find orders for user",
+            "threshold": 0.8,
+            "ignoreCase": false
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "body": "{\"results\": []}"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <a id="conditional_request_matcher" class="anchor" href="#conditional_request_matcher">&nbsp;</a>
 
@@ -703,7 +2474,29 @@ new MockServerClient("localhost", 1080)
 
 <p>A <strong>conditionalRequestDefinition</strong> lets you combine request matchers with if/then/else logic. If the <code>if</code> guard matches the incoming request, the <code>then</code> branch must also match; otherwise the <code>else</code> branch must match (when absent, the expectation matches whenever the guard is false). Each branch can be any request definition — an <code>httpRequest</code>, an OpenAPI definition, or even a nested <code>conditionalRequestDefinition</code>.</p>
 
-<pre class="prettyprint code"><code class="code">{
+
+<p>This expectation matches either a JSON POST whose body contains an <code>orderId</code> field, or a GET request. Existing AND-only expectations are unchanged — this construct is entirely opt-in.</p>
+
+<button id="button_conditional_request_definition" class="accordion">match request using conditional if/then/else logic</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.ConditionalRequestDefinition.requestIf;
+
+new MockServerClient("localhost", 1080)
+    .when(
+        requestIf(
+            request().withMethod("POST").withHeader("content-type", "application/json"),
+            request().withBody(json("{\"orderId\": \"${json-unit.any-string}\"}")),
+            request().withMethod("GET")
+        )
+    )
+    .respond(response().withStatusCode(200));</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "conditionalRequestDefinition": {
         "if": {
             "method": "POST",
@@ -722,22 +2515,242 @@ new MockServerClient("localhost", 1080)
     "httpResponse": {
         "statusCode": 200
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "conditionalRequestDefinition": {
+        "if": {
+            "method": "POST",
+            "headers": { "content-type": ["application/json"] }
+        },
+        "then": {
+            "body": {
+                "type": "JSON_SCHEMA",
+                "jsonSchema": "{\"type\": \"object\", \"required\": [\"orderId\"]}"
+            }
+        },
+        "else": {
+            "method": "GET"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "conditionalRequestDefinition": {
+        "if": {
+            "method": "POST",
+            "headers": { "content-type": ["application/json"] }
+        },
+        "then": {
+            "body": {
+                "type": "JSON_SCHEMA",
+                "jsonSchema": "{\"type\": \"object\", \"required\": [\"orderId\"]}"
+            }
+        },
+        "else": {
+            "method": "GET"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "conditionalRequestDefinition": {
+        "if": {
+            "method": "POST",
+            "headers": { "content-type": ["application/json"] }
+        },
+        "then": {
+            "body": {
+                "type": "JSON_SCHEMA",
+                "jsonSchema": "{\"type\": \"object\", \"required\": [\"orderId\"]}"
+            }
+        },
+        "else": {
+            "method": "GET"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
 
-<p>This expectation matches either a JSON POST whose body contains an <code>orderId</code> field, or a GET request. Existing AND-only expectations are unchanged — this construct is entirely opt-in.</p>
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""conditionalRequestDefinition"": {
+        ""if"": {
+            ""method"": ""POST"",
+            ""headers"": { ""content-type"": [""application/json""] }
+        },
+        ""then"": {
+            ""body"": {
+                ""type"": ""JSON_SCHEMA"",
+                ""jsonSchema"": ""{\""type\"": \""object\"", \""required\"": [\""orderId\""]}""
+            }
+        },
+        ""else"": {
+            ""method"": ""GET""
+        }
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
 
-<p>Java DSL:</p>
-<pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.ConditionalRequestDefinition.requestIf;
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "conditionalRequestDefinition": {
+        "if": {
+            "method": "POST",
+            "headers": { "content-type": ["application/json"] }
+        },
+        "then": {
+            "body": {
+                "type": "JSON_SCHEMA",
+                "jsonSchema": "{\"type\": \"object\", \"required\": [\"orderId\"]}"
+            }
+        },
+        "else": {
+            "method": "GET"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "conditionalRequestDefinition": {
+        "if": {
+            "method": "POST",
+            "headers": { "content-type": ["application/json"] }
+        },
+        "then": {
+            "body": {
+                "type": "JSON_SCHEMA",
+                "jsonSchema": "{\"type\": \"object\", \"required\": [\"orderId\"]}"
+            }
+        },
+        "else": {
+            "method": "GET"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200
+    }
+}
+JSON;
 
-new MockServerClient("localhost", 1080)
-    .when(
-        requestIf(
-            request().withMethod("POST").withHeader("content-type", "application/json"),
-            request().withBody(json("{\"orderId\": \"${json-unit.any-string}\"}")),
-            request().withMethod("GET")
-        )
-    )
-    .respond(response().withStatusCode(200));</code></pre>
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "conditionalRequestDefinition": {
+        "if": {
+            "method": "POST",
+            "headers": { "content-type": ["application/json"] }
+        },
+        "then": {
+            "body": {
+                "type": "JSON_SCHEMA",
+                "jsonSchema": "{\"type\": \"object\", \"required\": [\"orderId\"]}"
+            }
+        },
+        "else": {
+            "method": "GET"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <a id="accept_header_matching" class="anchor" href="#accept_header_matching">&nbsp;</a>
 
@@ -747,7 +2760,28 @@ new MockServerClient("localhost", 1080)
 
 <p>Use this form as a header <em>value</em> matcher in the <code>Accept</code> header entry:</p>
 
-<pre class="prettyprint code"><code class="code">{
+<button id="button_match_request_by_accept_header" class="accordion">match request by Accept header content negotiation</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("GET")
+            .withPath("/api/resource")
+            .withHeader("Accept", "accept:application/json")
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody("{\"result\": \"json response\"}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "GET",
         "path": "/api/resource",
@@ -760,7 +2794,200 @@ new MockServerClient("localhost", 1080)
         "headers": { "Content-Type": ["application/json"] },
         "body": "{\"result\": \"json response\"}"
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/api/resource",
+        "headers": {
+            "Accept": ["accept:application/json"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"result\": \"json response\"}"
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/api/resource",
+        "headers": {
+            "Accept": ["accept:application/json"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"result\": \"json response\"}"
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/api/resource",
+        "headers": {
+            "Accept": ["accept:application/json"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"result\": \"json response\"}"
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""GET"",
+        ""path"": ""/api/resource"",
+        ""headers"": {
+            ""Accept"": [""accept:application/json""]
+        }
+    },
+    ""httpResponse"": {
+        ""statusCode"": 200,
+        ""headers"": { ""Content-Type"": [""application/json""] },
+        ""body"": ""{\""result\"": \""json response\""}""
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/api/resource",
+        "headers": {
+            "Accept": ["accept:application/json"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"result\": \"json response\"}"
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/api/resource",
+        "headers": {
+            "Accept": ["accept:application/json"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"result\": \"json response\"}"
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/api/resource",
+        "headers": {
+            "Accept": ["accept:application/json"]
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"result\": \"json response\"}"
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <p>This expectation matches requests whose <code>Accept</code> header finds <code>application/json</code> acceptable — for example <code>Accept: application/json</code>, <code>Accept: */*</code>, or <code>Accept: application/json;q=0.9, text/html;q=0.5</code>. A request sending <code>Accept: text/html</code> or <code>Accept: application/json;q=0</code> would not match.</p>
 
@@ -938,9 +3165,15 @@ new MockServerClient("localhost", 1080)
     <li><strong>fallbackOnTimeout</strong> - whether to return the fallback on connection errors or timeouts (defaults to true)</li>
 </ul>
 
-<h4>Java Client Example</h4>
+<button id="button_forward_with_fallback" class="accordion">forward with fallback response</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpForwardWithFallback.forwardWithFallback;
+import static org.mockserver.model.HttpForward.forward;
+import org.mockserver.model.HttpForward;
 
-<pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+new MockServerClient("localhost", 1080)
     .when(
         request()
             .withPath("/api/downstream")
@@ -961,10 +3194,11 @@ new MockServerClient("localhost", 1080)
             .withFallbackOnStatusCodes(500, 502, 503, 504)
             .withFallbackOnTimeout(true)
     );</code></pre>
-
-<h4>JSON Example</h4>
-
-<pre class="prettyprint lang-json code"><code class="code">{
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "path": "/api/downstream"
     },
@@ -981,7 +3215,228 @@ new MockServerClient("localhost", 1080)
         "fallbackOnStatusCodes": [500, 502, 503, 504],
         "fallbackOnTimeout": true
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "path": "/api/downstream"
+    },
+    "httpForwardWithFallback": {
+        "httpForward": {
+            "host": "downstream-service.example.com",
+            "port": 443,
+            "scheme": "HTTPS"
+        },
+        "fallbackResponse": {
+            "statusCode": 200,
+            "body": "{\"status\": \"cached\", \"data\": []}"
+        },
+        "fallbackOnStatusCodes": [500, 502, 503, 504],
+        "fallbackOnTimeout": true
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "path": "/api/downstream"
+    },
+    "httpForwardWithFallback": {
+        "httpForward": {
+            "host": "downstream-service.example.com",
+            "port": 443,
+            "scheme": "HTTPS"
+        },
+        "fallbackResponse": {
+            "statusCode": 200,
+            "body": "{\"status\": \"cached\", \"data\": []}"
+        },
+        "fallbackOnStatusCodes": [500, 502, 503, 504],
+        "fallbackOnTimeout": true
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "path": "/api/downstream"
+    },
+    "httpForwardWithFallback": {
+        "httpForward": {
+            "host": "downstream-service.example.com",
+            "port": 443,
+            "scheme": "HTTPS"
+        },
+        "fallbackResponse": {
+            "statusCode": 200,
+            "body": "{\"status\": \"cached\", \"data\": []}"
+        },
+        "fallbackOnStatusCodes": [500, 502, 503, 504],
+        "fallbackOnTimeout": true
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""path"": ""/api/downstream""
+    },
+    ""httpForwardWithFallback"": {
+        ""httpForward"": {
+            ""host"": ""downstream-service.example.com"",
+            ""port"": 443,
+            ""scheme"": ""HTTPS""
+        },
+        ""fallbackResponse"": {
+            ""statusCode"": 200,
+            ""body"": ""{\""status\"": \""cached\"", \""data\"": []}""
+        },
+        ""fallbackOnStatusCodes"": [500, 502, 503, 504],
+        ""fallbackOnTimeout"": true
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "path": "/api/downstream"
+    },
+    "httpForwardWithFallback": {
+        "httpForward": {
+            "host": "downstream-service.example.com",
+            "port": 443,
+            "scheme": "HTTPS"
+        },
+        "fallbackResponse": {
+            "statusCode": 200,
+            "body": "{\"status\": \"cached\", \"data\": []}"
+        },
+        "fallbackOnStatusCodes": [500, 502, 503, 504],
+        "fallbackOnTimeout": true
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "path": "/api/downstream"
+    },
+    "httpForwardWithFallback": {
+        "httpForward": {
+            "host": "downstream-service.example.com",
+            "port": 443,
+            "scheme": "HTTPS"
+        },
+        "fallbackResponse": {
+            "statusCode": 200,
+            "body": "{\"status\": \"cached\", \"data\": []}"
+        },
+        "fallbackOnStatusCodes": [500, 502, 503, 504],
+        "fallbackOnTimeout": true
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "path": "/api/downstream"
+    },
+    "httpForwardWithFallback": {
+        "httpForward": {
+            "host": "downstream-service.example.com",
+            "port": 443,
+            "scheme": "HTTPS"
+        },
+        "fallbackResponse": {
+            "statusCode": 200,
+            "body": "{\"status\": \"cached\", \"data\": []}"
+        },
+        "fallbackOnStatusCodes": [500, 502, 503, 504],
+        "fallbackOnTimeout": true
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <a id="error_action" class="anchor" href="#error_action">&nbsp;</a>
 
@@ -1000,9 +3455,11 @@ new MockServerClient("localhost", 1080)
 
 <p>Seven providers have full codec support: <strong>ANTHROPIC</strong>, <strong>OPENAI</strong> (Chat Completions), <strong>OPENAI_RESPONSES</strong>, <strong>GEMINI</strong>, <strong>BEDROCK</strong>, <strong>AZURE_OPENAI</strong>, and <strong>OLLAMA</strong> — each produces the byte-correct wire format for both single completions and streaming. A request naming an unrecognised provider returns a structured 400 response listing the supported providers.</p>
 
-<h4>Java Client Example</h4>
-
-<pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.client.LlmMockBuilder.llmMock;
+<button id="button_llm_completion" class="accordion">return an LLM completion (text and tool calls)</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.client.LlmMockBuilder.llmMock;
 import static org.mockserver.model.Completion.completion;
 import static org.mockserver.model.Provider.ANTHROPIC;
 import static org.mockserver.model.ToolUse.toolUse;
@@ -1030,10 +3487,11 @@ llmMock("/v1/messages")
             .withStopReason("tool_use")
     )
     .applyTo(mockServerClient);</code></pre>
-
-<h4>JSON Definition Format</h4>
-
-<pre class="prettyprint lang-java code"><code class="code">{
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "POST",
         "path": "/v1/messages"
@@ -1047,13 +3505,217 @@ llmMock("/v1/messages")
             "usage": { "inputTokens": 42, "outputTokens": 8 }
         }
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "model": "claude-sonnet-4",
+        "completion": {
+            "text": "The capital of France is Paris.",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 42, "outputTokens": 8 }
+        }
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "model": "claude-sonnet-4",
+        "completion": {
+            "text": "The capital of France is Paris.",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 42, "outputTokens": 8 }
+        }
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "model": "claude-sonnet-4",
+        "completion": {
+            "text": "The capital of France is Paris.",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 42, "outputTokens": 8 }
+        }
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/v1/messages""
+    },
+    ""httpLlmResponse"": {
+        ""provider"": ""ANTHROPIC"",
+        ""model"": ""claude-sonnet-4"",
+        ""completion"": {
+            ""text"": ""The capital of France is Paris."",
+            ""stopReason"": ""end_turn"",
+            ""usage"": { ""inputTokens"": 42, ""outputTokens"": 8 }
+        }
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "model": "claude-sonnet-4",
+        "completion": {
+            "text": "The capital of France is Paris.",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 42, "outputTokens": 8 }
+        }
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "model": "claude-sonnet-4",
+        "completion": {
+            "text": "The capital of France is Paris.",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 42, "outputTokens": 8 }
+        }
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "model": "claude-sonnet-4",
+        "completion": {
+            "text": "The capital of France is Paris.",
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 42, "outputTokens": 8 }
+        }
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <h4>Streaming with Realistic Timing</h4>
 
 <p>When <span class="inline_code">streaming</span> is enabled, MockServer expands the completion into provider-correct streaming events with configurable timing physics. Most providers use SSE (Server-Sent Events with <span class="inline_code">text/event-stream</span>) &mdash; for example, <span class="inline_code">message_start</span> through <span class="inline_code">message_stop</span> for Anthropic, and <span class="inline_code">chat.completion.chunk</span> deltas for OpenAI. Two providers use alternative wire formats: <strong>Ollama</strong> uses native <strong>NDJSON</strong> (newline-delimited JSON with <span class="inline_code">application/x-ndjson</span>), and <strong>Bedrock</strong> uses the AWS <strong>event-stream</strong> binary framing (<span class="inline_code">application/vnd.amazon.eventstream</span>) where each streaming chunk is a binary message containing a base64-wrapped JSON payload &mdash; matching the <span class="inline_code">InvokeModelWithResponseStream</span> wire format. MockServer emits the correct wire format automatically based on the provider.</p>
 
-<pre class="prettyprint lang-java code"><code class="code">import static java.util.concurrent.TimeUnit.MILLISECONDS;
+<button id="button_llm_streaming" class="accordion">stream an LLM completion with realistic timing</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.mockserver.client.Llm.jitter;
 import static org.mockserver.client.Llm.timeToFirstToken;
 import static org.mockserver.client.Llm.tokensPerSecond;
@@ -1074,12 +3736,267 @@ llmMock("/v1/chat/completions")
                 jitter(0.2))
     )
     .applyTo(mockServerClient);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/chat/completions"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "model": "gpt-4o",
+        "completion": {
+            "text": "Streaming token by token...",
+            "streaming": true,
+            "streamingPhysics": {
+                "timeToFirstToken": { "timeUnit": "MILLISECONDS", "value": 300 },
+                "tokensPerSecond": 50,
+                "jitter": 0.2
+            }
+        }
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/chat/completions"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "model": "gpt-4o",
+        "completion": {
+            "text": "Streaming token by token...",
+            "streaming": true,
+            "streamingPhysics": {
+                "timeToFirstToken": { "timeUnit": "MILLISECONDS", "value": 300 },
+                "tokensPerSecond": 50,
+                "jitter": 0.2
+            }
+        }
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/chat/completions"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "model": "gpt-4o",
+        "completion": {
+            "text": "Streaming token by token...",
+            "streaming": true,
+            "streamingPhysics": {
+                "timeToFirstToken": { "timeUnit": "MILLISECONDS", "value": 300 },
+                "tokensPerSecond": 50,
+                "jitter": 0.2
+            }
+        }
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/chat/completions"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "model": "gpt-4o",
+        "completion": {
+            "text": "Streaming token by token...",
+            "streaming": true,
+            "streamingPhysics": {
+                "timeToFirstToken": { "timeUnit": "MILLISECONDS", "value": 300 },
+                "tokensPerSecond": 50,
+                "jitter": 0.2
+            }
+        }
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/v1/chat/completions""
+    },
+    ""httpLlmResponse"": {
+        ""provider"": ""OPENAI"",
+        ""model"": ""gpt-4o"",
+        ""completion"": {
+            ""text"": ""Streaming token by token..."",
+            ""streaming"": true,
+            ""streamingPhysics"": {
+                ""timeToFirstToken"": { ""timeUnit"": ""MILLISECONDS"", ""value"": 300 },
+                ""tokensPerSecond"": 50,
+                ""jitter"": 0.2
+            }
+        }
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/chat/completions"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "model": "gpt-4o",
+        "completion": {
+            "text": "Streaming token by token...",
+            "streaming": true,
+            "streamingPhysics": {
+                "timeToFirstToken": { "timeUnit": "MILLISECONDS", "value": 300 },
+                "tokensPerSecond": 50,
+                "jitter": 0.2
+            }
+        }
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/chat/completions"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "model": "gpt-4o",
+        "completion": {
+            "text": "Streaming token by token...",
+            "streaming": true,
+            "streamingPhysics": {
+                "timeToFirstToken": { "timeUnit": "MILLISECONDS", "value": 300 },
+                "tokensPerSecond": 50,
+                "jitter": 0.2
+            }
+        }
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/chat/completions"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "model": "gpt-4o",
+        "completion": {
+            "text": "Streaming token by token...",
+            "streaming": true,
+            "streamingPhysics": {
+                "timeToFirstToken": { "timeUnit": "MILLISECONDS", "value": 300 },
+                "tokensPerSecond": 50,
+                "jitter": 0.2
+            }
+        }
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <h4>Embeddings (Deterministic from Input)</h4>
 
 <p>For OpenAI embeddings, <span class="inline_code">deterministicFromInput()</span> generates reproducible vectors seeded from the input text. Same input + same dimensions + same seed produces an identical L2-normalised vector across JVMs.</p>
 
-<pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.client.Llm.embedding;
+<button id="button_llm_embeddings" class="accordion">return deterministic LLM embeddings</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.client.Llm.embedding;
 import static org.mockserver.client.LlmMockBuilder.llmMock;
 import static org.mockserver.model.Provider.OPENAI;
 
@@ -1088,9 +4005,212 @@ llmMock("/v1/embeddings")
     .respondingWith(
         embedding()
             .withDimensions(1536)
-            .deterministicFromInput()
+            .withDeterministicFromInput(true)
     )
     .applyTo(mockServerClient);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/embeddings"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "embedding": {
+            "dimensions": 1536,
+            "deterministicFromInput": true
+        }
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/embeddings"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "embedding": {
+            "dimensions": 1536,
+            "deterministicFromInput": true
+        }
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/embeddings"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "embedding": {
+            "dimensions": 1536,
+            "deterministicFromInput": true
+        }
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/embeddings"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "embedding": {
+            "dimensions": 1536,
+            "deterministicFromInput": true
+        }
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/v1/embeddings""
+    },
+    ""httpLlmResponse"": {
+        ""provider"": ""OPENAI"",
+        ""embedding"": {
+            ""dimensions"": 1536,
+            ""deterministicFromInput"": true
+        }
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/embeddings"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "embedding": {
+            "dimensions": 1536,
+            "deterministicFromInput": true
+        }
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/embeddings"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "embedding": {
+            "dimensions": 1536,
+            "deterministicFromInput": true
+        }
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/embeddings"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "embedding": {
+            "dimensions": 1536,
+            "deterministicFromInput": true
+        }
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <h4>Structured-Output Validation</h4>
 
@@ -1098,7 +4218,11 @@ llmMock("/v1/embeddings")
 
 <p>For a stricter check, set <span class="inline_code">enforceOutputSchema</span> to <span class="inline_code">true</span> alongside the schema. This switches MockServer from fail-soft to <strong>strict enforcement</strong>: when the configured response does not conform to the schema, the mock <strong>fails loudly</strong> with a provider-correct error (HTTP <span class="inline_code">502</span>) instead of returning the non-conforming body. This models a real provider's strict <span class="inline_code">response_format: json_schema</span> mode, where the provider <em>guarantees</em> schema-valid output &mdash; so a non-conforming strict fixture is treated as a configuration error rather than passed silently. Enforcement is <strong>opt-in</strong>; the default (unset, or <span class="inline_code">false</span>) keeps the fail-soft validate-and-log behaviour, and it has no effect without an <span class="inline_code">outputSchema</span>.</p>
 
-<pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.client.LlmMockBuilder.llmMock;
+<button id="button_llm_output_schema" class="accordion">validate LLM structured output against a schema</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.client.LlmMockBuilder.llmMock;
 import static org.mockserver.model.Completion.completion;
 import static org.mockserver.model.Provider.ANTHROPIC;
 
@@ -1110,12 +4234,249 @@ llmMock("/v1/messages")
             .withOutputSchema("{\"type\":\"object\",\"required\":[\"city\",\"country\"]}")
     )
     .applyTo(mockServerClient);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "{\"city\":\"Paris\",\"country\":\"France\"}",
+            "outputSchema": "{\"type\":\"object\",\"required\":[\"city\",\"country\"]}"
+        }
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "{\"city\":\"Paris\",\"country\":\"France\"}",
+            "outputSchema": "{\"type\":\"object\",\"required\":[\"city\",\"country\"]}"
+        }
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "{\"city\":\"Paris\",\"country\":\"France\"}",
+            "outputSchema": "{\"type\":\"object\",\"required\":[\"city\",\"country\"]}"
+        }
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "{\"city\":\"Paris\",\"country\":\"France\"}",
+            "outputSchema": "{\"type\":\"object\",\"required\":[\"city\",\"country\"]}"
+        }
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/v1/messages""
+    },
+    ""httpLlmResponse"": {
+        ""provider"": ""ANTHROPIC"",
+        ""completion"": {
+            ""text"": ""{\""city\"":\""Paris\"",\""country\"":\""France\""}"",
+            ""outputSchema"": ""{\""type\"":\""object\"",\""required\"":[\""city\"",\""country\""]}""
+        }
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "{\"city\":\"Paris\",\"country\":\"France\"}",
+            "outputSchema": "{\"type\":\"object\",\"required\":[\"city\",\"country\"]}"
+        }
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "{\"city\":\"Paris\",\"country\":\"France\"}",
+            "outputSchema": "{\"type\":\"object\",\"required\":[\"city\",\"country\"]}"
+        }
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "{\"city\":\"Paris\",\"country\":\"France\"}",
+            "outputSchema": "{\"type\":\"object\",\"required\":[\"city\",\"country\"]}"
+        }
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <h4>Fault Injection &amp; Rate-Limit Quota</h4>
 
 <p>A <span class="inline_code">chaos</span> block on the LLM response injects faults for resilience testing: probabilistic provider errors (e.g. 429/529 with a <span class="inline_code">Retry-After</span> header), mid-stream truncation, malformed SSE, and a <strong>stateful request quota</strong>. The quota is a deterministic fixed-window rate limit &mdash; expectations sharing a <span class="inline_code">quotaName</span> share one counter, so requests past <span class="inline_code">quotaLimit</span> within <span class="inline_code">quotaWindowMillis</span> are rejected with <span class="inline_code">quotaErrorStatus</span> (default 429) and the <span class="inline_code">retryAfter</span> header (the count resets when the window elapses and on server reset). The <span class="inline_code">chaos</span> block is set via the JSON definition (below) or the <a href="/mock_server/ai_mcp_tools.html#mock_llm_completion"><span class="inline_code">mock_llm_completion</span></a> MCP tool, where the full field reference lives.</p>
 
-<pre class="prettyprint lang-java code"><code class="code">{
+<button id="button_llm_chaos_quota" class="accordion">inject LLM faults and a rate-limit quota</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.mock.Expectation.when;
+import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpLlmResponse.llmResponse;
+import static org.mockserver.model.LlmChaosProfile.llmChaosProfile;
+import static org.mockserver.model.Completion.completion;
+import static org.mockserver.model.Provider.ANTHROPIC;
+
+new MockServerClient("localhost", 1080).upsert(
+    when(
+        request().withMethod("POST").withPath("/v1/messages")
+    ).thenRespondWithLlm(
+        llmResponse()
+            .withProvider(ANTHROPIC)
+            .withCompletion(
+                completion().withText("The capital of France is Paris.")
+            )
+            .withChaos(
+                llmChaosProfile()
+                    .withQuotaName("anthropic-account")
+                    .withQuotaLimit(100)
+                    .withQuotaWindowMillis(60000L)
+                    .withQuotaErrorStatus(429)
+                    .withRetryAfter("30")
+            )
+    )
+);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "POST",
         "path": "/v1/messages"
@@ -1133,7 +4494,235 @@ llmMock("/v1/messages")
             "retryAfter": "30"
         }
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "The capital of France is Paris."
+        },
+        "chaos": {
+            "quotaName": "anthropic-account",
+            "quotaLimit": 100,
+            "quotaWindowMillis": 60000,
+            "quotaErrorStatus": 429,
+            "retryAfter": "30"
+        }
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "The capital of France is Paris."
+        },
+        "chaos": {
+            "quotaName": "anthropic-account",
+            "quotaLimit": 100,
+            "quotaWindowMillis": 60000,
+            "quotaErrorStatus": 429,
+            "retryAfter": "30"
+        }
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "The capital of France is Paris."
+        },
+        "chaos": {
+            "quotaName": "anthropic-account",
+            "quotaLimit": 100,
+            "quotaWindowMillis": 60000,
+            "quotaErrorStatus": 429,
+            "retryAfter": "30"
+        }
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""POST"",
+        ""path"": ""/v1/messages""
+    },
+    ""httpLlmResponse"": {
+        ""provider"": ""ANTHROPIC"",
+        ""completion"": {
+            ""text"": ""The capital of France is Paris.""
+        },
+        ""chaos"": {
+            ""quotaName"": ""anthropic-account"",
+            ""quotaLimit"": 100,
+            ""quotaWindowMillis"": 60000,
+            ""quotaErrorStatus"": 429,
+            ""retryAfter"": ""30""
+        }
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "The capital of France is Paris."
+        },
+        "chaos": {
+            "quotaName": "anthropic-account",
+            "quotaLimit": 100,
+            "quotaWindowMillis": 60000,
+            "quotaErrorStatus": 429,
+            "retryAfter": "30"
+        }
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "The capital of France is Paris."
+        },
+        "chaos": {
+            "quotaName": "anthropic-account",
+            "quotaLimit": 100,
+            "quotaWindowMillis": 60000,
+            "quotaErrorStatus": 429,
+            "retryAfter": "30"
+        }
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "completion": {
+            "text": "The capital of France is Paris."
+        },
+        "chaos": {
+            "quotaName": "anthropic-account",
+            "quotaLimit": 100,
+            "quotaWindowMillis": 60000,
+            "quotaErrorStatus": 429,
+            "retryAfter": "30"
+        }
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <p>For multi-turn LLM conversations with stateful scenario progression, see the <a href="/mock_server/stateful_scenarios.html#llm_multi_turn">multi-turn LLM conversations</a> section of <a href="/mock_server/stateful_scenarios.html">Stateful Scenarios</a>.</p>
 
@@ -1160,9 +4749,45 @@ llmMock("/v1/messages")
     <li><strong>responses</strong> — the sequence of messages to send back when this matcher fires. Each entry has a <span class="inline_code">text</span> field (and an optional <span class="inline_code">delay</span>).</li>
 </ul>
 
-<h4>JSON Definition Format</h4>
+<h4>Example</h4>
 
-<pre class="prettyprint lang-java code"><code class="code">{
+<button id="button_websocket_bidirectional" class="accordion">mock a bidirectional WebSocket with frame matchers</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpWebSocketResponse.webSocketResponse;
+import static org.mockserver.model.WebSocketMessage.webSocketMessage;
+import static org.mockserver.model.WebSocketMessageMatcher.webSocketMessageMatcher;
+import org.mockserver.model.WebSocketFrameType;
+
+new MockServerClient("localhost", 1080)
+    .when(
+        request().withMethod("GET").withPath("/ws/chat")
+    )
+    .respondWithWebSocket(
+        webSocketResponse()
+            .withMessage(webSocketMessage("{\"type\": \"connected\"}"))
+            .withMatcher(
+                webSocketMessageMatcher()
+                    .withFrameType(WebSocketFrameType.TEXT)
+                    .withText("ping")
+                    .withResponse(webSocketMessage("{\"type\": \"pong\"}"))
+            )
+            .withMatcher(
+                webSocketMessageMatcher()
+                    .withFrameType(WebSocketFrameType.TEXT)
+                    .withText("subscribe")
+                    .withResponse(webSocketMessage("{\"type\": \"ack\"}"))
+                    .withResponse(webSocketMessage("{\"type\": \"data\", \"value\": 42}"))
+            )
+            .withCloseConnection(false)
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
     "httpRequest": {
         "method": "GET",
         "path": "/ws/chat"
@@ -1190,7 +4815,305 @@ llmMock("/v1/messages")
         ],
         "closeConnection": false
     }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/ws/chat"
+    },
+    "httpWebSocketResponse": {
+        "messages": [
+            {"text": "{\"type\": \"connected\"}"}
+        ],
+        "matchers": [
+            {
+                "frameType": "TEXT",
+                "textMatcher": "ping",
+                "responses": [
+                    {"text": "{\"type\": \"pong\"}"}
+                ]
+            },
+            {
+                "frameType": "TEXT",
+                "textMatcher": "subscribe",
+                "responses": [
+                    {"text": "{\"type\": \"ack\"}"},
+                    {"text": "{\"type\": \"data\", \"value\": 42}"}
+                ]
+            }
+        ],
+        "closeConnection": false
+    }
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/ws/chat"
+    },
+    "httpWebSocketResponse": {
+        "messages": [
+            {"text": "{\"type\": \"connected\"}"}
+        ],
+        "matchers": [
+            {
+                "frameType": "TEXT",
+                "textMatcher": "ping",
+                "responses": [
+                    {"text": "{\"type\": \"pong\"}"}
+                ]
+            },
+            {
+                "frameType": "TEXT",
+                "textMatcher": "subscribe",
+                "responses": [
+                    {"text": "{\"type\": \"ack\"}"},
+                    {"text": "{\"type\": \"data\", \"value\": 42}"}
+                ]
+            }
+        ],
+        "closeConnection": false
+    }
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/ws/chat"
+    },
+    "httpWebSocketResponse": {
+        "messages": [
+            {"text": "{\"type\": \"connected\"}"}
+        ],
+        "matchers": [
+            {
+                "frameType": "TEXT",
+                "textMatcher": "ping",
+                "responses": [
+                    {"text": "{\"type\": \"pong\"}"}
+                ]
+            },
+            {
+                "frameType": "TEXT",
+                "textMatcher": "subscribe",
+                "responses": [
+                    {"text": "{\"type\": \"ack\"}"},
+                    {"text": "{\"type\": \"data\", \"value\": 42}"}
+                ]
+            }
+        ],
+        "closeConnection": false
+    }
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/expectation",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
 }</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""httpRequest"": {
+        ""method"": ""GET"",
+        ""path"": ""/ws/chat""
+    },
+    ""httpWebSocketResponse"": {
+        ""messages"": [
+            {""text"": ""{\""type\"": \""connected\""}""}
+        ],
+        ""matchers"": [
+            {
+                ""frameType"": ""TEXT"",
+                ""textMatcher"": ""ping"",
+                ""responses"": [
+                    {""text"": ""{\""type\"": \""pong\""}""}
+                ]
+            },
+            {
+                ""frameType"": ""TEXT"",
+                ""textMatcher"": ""subscribe"",
+                ""responses"": [
+                    {""text"": ""{\""type\"": \""ack\""}""},
+                    {""text"": ""{\""type\"": \""data\"", \""value\"": 42}""}
+                ]
+            }
+        ],
+        ""closeConnection"": false
+    }
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/ws/chat"
+    },
+    "httpWebSocketResponse": {
+        "messages": [
+            {"text": "{\"type\": \"connected\"}"}
+        ],
+        "matchers": [
+            {
+                "frameType": "TEXT",
+                "textMatcher": "ping",
+                "responses": [
+                    {"text": "{\"type\": \"pong\"}"}
+                ]
+            },
+            {
+                "frameType": "TEXT",
+                "textMatcher": "subscribe",
+                "responses": [
+                    {"text": "{\"type\": \"ack\"}"},
+                    {"text": "{\"type\": \"data\", \"value\": 42}"}
+                ]
+            }
+        ],
+        "closeConnection": false
+    }
+}"#;
+client.put("http://localhost:1080/mockserver/expectation")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/ws/chat"
+    },
+    "httpWebSocketResponse": {
+        "messages": [
+            {"text": "{\"type\": \"connected\"}"}
+        ],
+        "matchers": [
+            {
+                "frameType": "TEXT",
+                "textMatcher": "ping",
+                "responses": [
+                    {"text": "{\"type\": \"pong\"}"}
+                ]
+            },
+            {
+                "frameType": "TEXT",
+                "textMatcher": "subscribe",
+                "responses": [
+                    {"text": "{\"type\": \"ack\"}"},
+                    {"text": "{\"type\": \"data\", \"value\": 42}"}
+                ]
+            }
+        ],
+        "closeConnection": false
+    }
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+    "httpRequest": {
+        "method": "GET",
+        "path": "/ws/chat"
+    },
+    "httpWebSocketResponse": {
+        "messages": [
+            {"text": "{\"type\": \"connected\"}"}
+        ],
+        "matchers": [
+            {
+                "frameType": "TEXT",
+                "textMatcher": "ping",
+                "responses": [
+                    {"text": "{\"type\": \"pong\"}"}
+                ]
+            },
+            {
+                "frameType": "TEXT",
+                "textMatcher": "subscribe",
+                "responses": [
+                    {"text": "{\"type\": \"ack\"}"},
+                    {"text": "{\"type\": \"data\", \"value\": 42}"}
+                ]
+            }
+        ],
+        "closeConnection": false
+    }
+}'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
+
 
 <p>In this example, MockServer sends <span class="inline_code">{"type": "connected"}</span> immediately after the WebSocket upgrade. If the client then sends a frame containing <span class="inline_code">ping</span>, MockServer replies with <span class="inline_code">{"type": "pong"}</span>. A frame containing <span class="inline_code">subscribe</span> triggers a two-message reply sequence. Frames that match no entry are silently ignored.</p>
 
@@ -1236,20 +5159,156 @@ llmMock("/v1/messages")
     <li><strong>initialData</strong> (optional) - an array of JSON objects to pre-populate the data store</li>
 </ul>
 
-<h4>REST API</h4>
+<h4>Registering a CRUD Simulation</h4>
 
 <p>Register a CRUD simulation using <span class="inline_code">PUT /mockserver/crud</span>:</p>
-<pre class="prettyprint lang-java code"><code class="code">curl -X PUT "http://localhost:1080/mockserver/crud" \
-  -H "Content-Type: application/json" \
-  -d '{
+<button id="button_crud_register" class="accordion">register a CRUD simulation</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.model.CrudExpectationsDefinition;
+
+new MockServerClient("localhost", 1080)
+    .crud(
+        new CrudExpectationsDefinition()
+            .withBasePath("/api/users")
+            .withIdField("id")
+            .withIdStrategy(CrudExpectationsDefinition.IdStrategy.AUTO_INCREMENT)
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">// CRUD simulations register at /mockserver/crud (not an expectation)
+await fetch("http://localhost:1080/mockserver/crud", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
     "basePath": "/api/users",
     "idField": "id",
-    "idStrategy": "AUTO_INCREMENT",
-    "initialData": [
-      {"name": "Alice", "email": "alice@example.com"},
-      {"name": "Bob", "email": "bob@example.com"}
-    ]
-  }'</code></pre>
+    "idStrategy": "AUTO_INCREMENT"
+})
+});</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
+
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/crud",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "basePath": "/api/users",
+    "idField": "id",
+    "idStrategy": "AUTO_INCREMENT"
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/crud')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "basePath": "/api/users",
+    "idField": "id",
+    "idStrategy": "AUTO_INCREMENT"
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "basePath": "/api/users",
+    "idField": "id",
+    "idStrategy": "AUTO_INCREMENT"
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/crud",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""basePath"": ""/api/users"",
+    ""idField"": ""id"",
+    ""idStrategy"": ""AUTO_INCREMENT""
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/crud",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "basePath": "/api/users",
+    "idField": "id",
+    "idStrategy": "AUTO_INCREMENT"
+}"#;
+client.put("http://localhost:1080/mockserver/crud")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "basePath": "/api/users",
+    "idField": "id",
+    "idStrategy": "AUTO_INCREMENT"
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/crud');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/crud" -d '{
+    "basePath": "/api/users",
+    "idField": "id",
+    "idStrategy": "AUTO_INCREMENT"
+}'</code></pre>
+    </div>
+</div>
+
 
 <p>After registration, the endpoints are immediately available:</p>
 <pre class="prettyprint lang-java code"><code class="code"># List all users
@@ -1271,26 +5330,149 @@ curl -X PUT http://localhost:1080/api/users/1 \
 # Delete user
 curl -X DELETE http://localhost:1080/api/users/3</code></pre>
 
-<h4>Java Client Example</h4>
-<pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
-    .crud(
-        new CrudExpectationsDefinition()
-            .withBasePath("/api/users")
-            .withIdField("id")
-            .withIdStrategy(CrudExpectationsDefinition.IdStrategy.AUTO_INCREMENT)
-    );</code></pre>
 
 <h4>UUID ID Strategy Example</h4>
-<pre class="prettyprint lang-java code"><code class="code">curl -X PUT "http://localhost:1080/mockserver/crud" \
-  -H "Content-Type: application/json" \
-  -d '{
+<button id="button_crud_register_uuid" class="accordion">register a CRUD simulation with UUID ids</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.model.CrudExpectationsDefinition;
+
+new MockServerClient("localhost", 1080)
+    .crud(
+        new CrudExpectationsDefinition()
+            .withBasePath("/api/products")
+            .withIdStrategy(CrudExpectationsDefinition.IdStrategy.UUID)
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">// CRUD simulations register at /mockserver/crud (not an expectation)
+await fetch("http://localhost:1080/mockserver/crud", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
     "basePath": "/api/products",
     "idStrategy": "UUID"
-  }'
+})
+});</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import requests
 
-# Create a product - ID will be a UUID like "550e8400-e29b-41d4-a716-446655440000"
+# no typed setter — submit the raw expectation JSON over HTTP
+requests.put(
+    "http://localhost:1080/mockserver/crud",
+    headers={"Content-Type": "application/json"},
+    data='''{
+    "basePath": "/api/products",
+    "idStrategy": "UUID"
+}'''
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+
+uri = URI('http://localhost:1080/mockserver/crud')
+http = Net::HTTP.new(uri.host, uri.port)
+# no typed setter — submit the raw expectation JSON over HTTP
+request = Net::HTTP::Put.new(uri, 'Content-Type' =&gt; 'application/json')
+request.body = &lt;&lt;~'JSON'
+{
+    "basePath": "/api/products",
+    "idStrategy": "UUID"
+}
+JSON
+http.request(request)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "net/http"
+)
+
+func main() {
+    // no typed setter — submit the raw expectation JSON over HTTP
+    body := []byte(`{
+    "basePath": "/api/products",
+    "idStrategy": "UUID"
+}`)
+    req, _ := http.NewRequest("PUT",
+        "http://localhost:1080/mockserver/crud",
+        bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+
+using var httpClient = new HttpClient();
+// no typed setter — submit the raw expectation JSON over HTTP
+var json = @"{
+    ""basePath"": ""/api/products"",
+    ""idStrategy"": ""UUID""
+}";
+await httpClient.PutAsync(
+    "http://localhost:1080/mockserver/crud",
+    new StringContent(json, Encoding.UTF8, "application/json")
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use reqwest::blocking::Client;
+
+let client = Client::new();
+// no typed setter — submit the raw expectation JSON over HTTP
+let body = r#"{
+    "basePath": "/api/products",
+    "idStrategy": "UUID"
+}"#;
+client.put("http://localhost:1080/mockserver/crud")
+    .header("Content-Type", "application/json")
+    .body(body.to_string())
+    .send()
+    .unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$json = &lt;&lt;&lt;'JSON'
+{
+    "basePath": "/api/products",
+    "idStrategy": "UUID"
+}
+JSON;
+
+// no typed setter — submit the raw expectation JSON over HTTP
+$ch = curl_init('http://localhost:1080/mockserver/crud');
+curl_setopt_array($ch, [
+    CURLOPT_CUSTOMREQUEST  =&gt; 'PUT',
+    CURLOPT_POSTFIELDS     =&gt; $json,
+    CURLOPT_HTTPHEADER     =&gt; ['Content-Type: application/json; charset=utf-8'],
+    CURLOPT_RETURNTRANSFER =&gt; true,
+]);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/crud" -d '{
+    "basePath": "/api/products",
+    "idStrategy": "UUID"
+}'</code></pre>
+    </div>
+</div>
+<pre class="prettyprint code"><code class="code"># Create a product - ID will be a UUID like "550e8400-e29b-41d4-a716-446655440000"
 curl -X POST http://localhost:1080/api/products \
   -H "Content-Type: application/json" \
   -d '{"name": "Widget", "price": 9.99}'</code></pre>
+
 
 <p>CRUD simulations are independent of regular expectations and are cleared when MockServer is <a href="/mock_server/clearing_and_resetting.html">reset</a>. You can register multiple CRUD simulations with different base paths simultaneously.</p>

@@ -432,11 +432,11 @@ curl -X PUT http://localhost:1080/mockserver/breakpoint/matcher \
     alternative resolution path; PHP cannot use interactive breakpoints.
 </p>
 
-<button class="accordion"><strong>Java Code Example</strong></button>
-
+<button id="button_breakpoint_client_api" class="accordion"><strong>Breakpoint client API example</strong></button>
 <div class="panel">
-
-<pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.client.MockServerClient;
 import org.mockserver.mock.breakpoint.BreakpointPhase;
 
 MockServerClient client = new MockServerClient("localhost", 1080);
@@ -467,16 +467,11 @@ String id3 = client.addBreakpoint(
 // Manage matchers
 client.listBreakpointMatchers();
 client.removeBreakpointMatcher(id);
-client.clearBreakpointMatchers();
-</code></pre>
-
-</div>
-
-<button class="accordion"><strong>Node.js Code Example</strong></button>
-
-<div class="panel">
-
-<pre class="prettyprint lang-js code"><code class="code">const mockserver = require('mockserver-client').mockServerClient;
+client.clearBreakpointMatchers();</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">const mockserver = require('mockserver-client').mockServerClient;
 const client = mockserver('localhost', 1080);
 
 // REQUEST phase only
@@ -512,16 +507,11 @@ client.addBreakpoint(
 // Manage matchers
 client.listBreakpointMatchers().then(result => console.log(result.matchers));
 client.removeBreakpointMatcher(id);
-client.clearBreakpointMatchers();
-</code></pre>
-
-</div>
-
-<button class="accordion"><strong>Python Code Example</strong></button>
-
-<div class="panel">
-
-<pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, HttpRequest, HttpResponse
+client.clearBreakpointMatchers();</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, HttpRequest, HttpResponse
 
 client = MockServerClient("localhost", 1080)
 
@@ -551,16 +541,11 @@ matchers = client.list_breakpoint_matchers()  # {"matchers": [...]}
 client.remove_breakpoint_matcher(bp_id)
 client.clear_breakpoint_matchers()
 
-# Async client: AsyncMockServerClient exposes the same methods as coroutines
-</code></pre>
-
-</div>
-
-<button class="accordion"><strong>Ruby Code Example</strong></button>
-
-<div class="panel">
-
-<pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver'
+# Async client: AsyncMockServerClient exposes the same methods as coroutines</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver'
 
 client = MockServer::Client.new('localhost', 1080)
 
@@ -588,16 +573,11 @@ bp_id3 = client.add_breakpoint(
 # Manage matchers
 matchers = client.list_breakpoint_matchers   # {"matchers" => [...]}
 client.remove_breakpoint_matcher(bp_id)
-client.clear_breakpoint_matchers
-</code></pre>
-
-</div>
-
-<button class="accordion"><strong>Go Code Example</strong></button>
-
-<div class="panel">
-
-<pre class="prettyprint lang-go code"><code class="code">import (
+client.clear_breakpoint_matchers</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import (
     mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 )
 
@@ -624,7 +604,7 @@ id3, _ := client.AddStreamBreakpoint(
     []mockserver.BreakpointPhase{mockserver.PhaseResponseStream},
     func(frame *mockserver.PausedStreamFrame) *mockserver.StreamFrameDecision {
         d := mockserver.ContinueFrame(frame.CorrelationID)
-        return &d
+        return &amp;d
         // Other helpers: ModifyFrame, DropFrame, InjectFrame, CloseFrame
     },
 )
@@ -633,16 +613,11 @@ id3, _ := client.AddStreamBreakpoint(
 list, _ := client.ListBreakpointMatchers()
 client.RemoveBreakpointMatcher(id)
 client.ClearBreakpointMatchers()
-client.CloseBreakpointWebSocket()
-</code></pre>
-
-</div>
-
-<button class="accordion"><strong>.NET Code Example</strong></button>
-
-<div class="panel">
-
-<pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+client.CloseBreakpointWebSocket()</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 using MockServer.Client.Models;
 using System.Text.Json.Nodes;
 
@@ -672,16 +647,11 @@ var id3 = client.AddStreamBreakpoint(
 // Manage matchers
 var list = client.ListBreakpointMatchers();
 client.RemoveBreakpointMatcher(id);
-client.ClearBreakpointMatchers();
-</code></pre>
-
-</div>
-
-<button class="accordion"><strong>Rust Code Example</strong></button>
-
-<div class="panel">
-
-<pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::*;
+client.ClearBreakpointMatchers();</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::*;
 
 let client = ClientBuilder::new("localhost", 1080).build()?;
 
@@ -701,21 +671,48 @@ let id2 = client.add_request_response_breakpoint(
 // Streaming breakpoint
 let id3 = client.add_stream_breakpoint(
     HttpRequest::new().path("/stream/.*"),
-    &[phase::RESPONSE_STREAM],
+    &amp;[phase::RESPONSE_STREAM],
     Box::new(|frame| {
-        Some(StreamFrameDecision::continue_frame(&frame.correlation_id))
+        Some(StreamFrameDecision::continue_frame(&amp;frame.correlation_id))
         // Other helpers: ::modify, ::drop_frame, ::inject, ::close
     }),
 )?;
 
 // Manage matchers
 let list = client.list_breakpoint_matchers()?;
-client.remove_breakpoint_matcher(&id)?;
+client.remove_breakpoint_matcher(&amp;id)?;
 client.clear_breakpoint_matchers()?;
-client.close_breakpoint_websocket();
-</code></pre>
+client.close_breakpoint_websocket();</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code"># Registering a matcher is the REST-drivable half of the feature. Interactive
+# resolution of a paused exchange (continue / modify / abort) is delivered only
+# over the callback WebSocket, so REST alone registers matchers but cannot
+# resolve paused items — clientId must be a connected callback-WebSocket client
+# (a language client or the dashboard).
+curl -v -X PUT "http://localhost:1080/mockserver/breakpoint/matcher" -d '{
+  "httpRequest": { "path": "/api/.*" },
+  "phases": ["REQUEST", "RESPONSE"],
+  "clientId": "my-ws-client-id"
+}'
 
+# List all registered matchers
+curl -v -X PUT "http://localhost:1080/mockserver/breakpoint/matchers"
+
+# Remove a matcher by id
+curl -v -X PUT "http://localhost:1080/mockserver/breakpoint/matcher/remove" -d '{ "id": "a1b2c3d4-..." }'
+
+# Remove all matchers
+curl -v -X PUT "http://localhost:1080/mockserver/breakpoint/matcher/clear"</code></pre>
+        <p>See the <a href="#rest_api">REST API Reference</a> below for the full endpoint table.</p>
+    </div>
 </div>
+
+<p>
+    <strong>PHP:</strong> breakpoints are not available in the PHP client — they require a persistent callback
+    WebSocket connection for resolution, which the PHP client does not provide.
+</p>
 
 <a id="rest_api" class="anchor" href="#rest_api">&nbsp;</a>
 

@@ -803,8 +803,16 @@ curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
     Point your realtime SDK at MockServer&rsquo;s WebSocket URL (e.g. <span class="inline_code">ws://localhost:1080/v1/realtime</span>)
     instead of the real provider. Audio bytes in the mocked stream are short silence placeholders &mdash; the aim
     is to reproduce the <strong>event protocol</strong> faithfully (so your event-handling code is exercised), not
-    to synthesise real speech. This is a Java-client feature (<span class="inline_code">RealtimeMockBuilder</span>);
-    the same scripted turn answers every request on the connection.
+    to synthesise real speech. The same scripted turn answers every request on the connection.
+</p>
+
+<p>
+    <strong>Available in the Java client only.</strong> Realtime voice mocking is a Java-client convenience
+    (<span class="inline_code">RealtimeMockBuilder</span>): there is no dedicated realtime JSON field. The builder
+    expands the short script below into a full provider-correct
+    <span class="inline_code">httpWebSocketResponse</span> expectation (session events, streamed transcript/audio
+    deltas, and a final usage event) using the server-side realtime codecs. Reproducing that by hand in another
+    client would mean writing out every WebSocket frame, so the other client libraries do not offer this shortcut.
 </p>
 
 <button class="accordion"><strong>OpenAI Realtime &mdash; Java Code Example</strong></button>
@@ -1050,30 +1058,12 @@ geminiLive()
     from models that use prompt caching or chain-of-thought reasoning:
 </p>
 
-<pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/expectation \
-  -H "Content-Type: application/json" \
-  -d '{
-    "httpRequest":  { "method": "POST", "path": "/v1/messages" },
-    "httpLlmResponse": {
-      "provider": "ANTHROPIC",
-      "model": "claude-sonnet-4-20250514",
-      "completion": {
-        "text": "Paris is the capital of France.",
-        "stopReason": "end_turn",
-        "usage": {
-          "inputTokens": 150,
-          "outputTokens": 10,
-          "cachedInputTokens": 120,
-          "cacheCreationTokens": 0,
-          "reasoningTokens": 0
-        }
-      }
-    }
-  }'</code></pre>
-
-<p><strong>Java client example:</strong></p>
-
-<pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.Usage.usage;
+<button class="accordion"><strong>Java Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.client.LlmMockBuilder.llmMock;
+import static org.mockserver.model.Completion.completion;
+import static org.mockserver.model.Provider.ANTHROPIC;
+import static org.mockserver.model.Usage.usage;
 
 llmMock("/v1/messages")
     .withProvider(ANTHROPIC)
@@ -1092,6 +1082,255 @@ llmMock("/v1/messages")
             )
     )
     .applyTo(mockServerClient);</code></pre>
+</div>
+
+<button class="accordion"><strong>JavaScript Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/messages"
+    },
+    "httpLlmResponse": {
+        "provider": "ANTHROPIC",
+        "model": "claude-sonnet-4-20250514",
+        "completion": {
+            "text": "Paris is the capital of France.",
+            "stopReason": "end_turn",
+            "usage": {
+                "inputTokens": 150,
+                "outputTokens": 10,
+                "cachedInputTokens": 120,
+                "cacheCreationTokens": 0,
+                "reasoningTokens": 0
+            }
+        }
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+</div>
+
+<button class="accordion"><strong>Python Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-python code"><code class="code">import requests
+
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    json={
+        "httpRequest": {
+            "method": "POST",
+            "path": "/v1/messages"
+        },
+        "httpLlmResponse": {
+            "provider": "ANTHROPIC",
+            "model": "claude-sonnet-4-20250514",
+            "completion": {
+                "text": "Paris is the capital of France.",
+                "stopReason": "end_turn",
+                "usage": {
+                    "inputTokens": 150,
+                    "outputTokens": 10,
+                    "cachedInputTokens": 120,
+                    "cacheCreationTokens": 0,
+                    "reasoningTokens": 0
+                }
+            }
+        }
+    }
+)</code></pre>
+</div>
+
+<button class="accordion"><strong>Ruby Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+req = Net::HTTP::Put.new(uri.path, 'Content-Type' =&gt; 'application/json')
+req.body = JSON.generate({
+  'httpRequest' =&gt; { 'method' =&gt; 'POST', 'path' =&gt; '/v1/messages' },
+  'httpLlmResponse' =&gt; {
+    'provider' =&gt; 'ANTHROPIC',
+    'model' =&gt; 'claude-sonnet-4-20250514',
+    'completion' =&gt; {
+      'text' =&gt; 'Paris is the capital of France.',
+      'stopReason' =&gt; 'end_turn',
+      'usage' =&gt; {
+        'inputTokens' =&gt; 150,
+        'outputTokens' =&gt; 10,
+        'cachedInputTokens' =&gt; 120,
+        'cacheCreationTokens' =&gt; 0,
+        'reasoningTokens' =&gt; 0
+      }
+    }
+  }
+})
+http.request(req)</code></pre>
+</div>
+
+<button class="accordion"><strong>Go Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "net/http"
+)
+
+func createCachedUsageExpectation() {
+    body, _ := json.Marshal(map[string]interface{}{
+        "httpRequest": map[string]interface{}{
+            "method": "POST",
+            "path":   "/v1/messages",
+        },
+        "httpLlmResponse": map[string]interface{}{
+            "provider": "ANTHROPIC",
+            "model":    "claude-sonnet-4-20250514",
+            "completion": map[string]interface{}{
+                "text":       "Paris is the capital of France.",
+                "stopReason": "end_turn",
+                "usage": map[string]int{
+                    "inputTokens":         150,
+                    "outputTokens":        10,
+                    "cachedInputTokens":   120,
+                    "cacheCreationTokens": 0,
+                    "reasoningTokens":     0,
+                },
+            },
+        },
+    })
+    req, _ := http.NewRequest(http.MethodPut,
+        "http://localhost:1080/mockserver/expectation", bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+</div>
+
+<button class="accordion"><strong>.NET Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+
+var expectation = new
+{
+    httpRequest = new { method = "POST", path = "/v1/messages" },
+    httpLlmResponse = new
+    {
+        provider = "ANTHROPIC",
+        model = "claude-sonnet-4-20250514",
+        completion = new
+        {
+            text = "Paris is the capital of France.",
+            stopReason = "end_turn",
+            usage = new
+            {
+                inputTokens = 150,
+                outputTokens = 10,
+                cachedInputTokens = 120,
+                cacheCreationTokens = 0,
+                reasoningTokens = 0
+            }
+        }
+    }
+};
+using var client = new HttpClient();
+var json = JsonSerializer.Serialize(expectation);
+await client.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json"));</code></pre>
+</div>
+
+<button class="accordion"><strong>Rust Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-rust code"><code class="code">use serde_json::json;
+
+let client = reqwest::blocking::Client::new();
+client.put("http://localhost:1080/mockserver/expectation")
+    .json(&amp;json!({
+        "httpRequest": {
+            "method": "POST",
+            "path": "/v1/messages"
+        },
+        "httpLlmResponse": {
+            "provider": "ANTHROPIC",
+            "model": "claude-sonnet-4-20250514",
+            "completion": {
+                "text": "Paris is the capital of France.",
+                "stopReason": "end_turn",
+                "usage": {
+                    "inputTokens": 150,
+                    "outputTokens": 10,
+                    "cachedInputTokens": 120,
+                    "cacheCreationTokens": 0,
+                    "reasoningTokens": 0
+                }
+            }
+        }
+    }))
+    .send()
+    .unwrap();</code></pre>
+</div>
+
+<button class="accordion"><strong>PHP Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-php code"><code class="code">&lt;?php
+$expectation = [
+    'httpRequest' =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/v1/messages'],
+    'httpLlmResponse' =&gt; [
+        'provider' =&gt; 'ANTHROPIC',
+        'model' =&gt; 'claude-sonnet-4-20250514',
+        'completion' =&gt; [
+            'text' =&gt; 'Paris is the capital of France.',
+            'stopReason' =&gt; 'end_turn',
+            'usage' =&gt; [
+                'inputTokens' =&gt; 150,
+                'outputTokens' =&gt; 10,
+                'cachedInputTokens' =&gt; 120,
+                'cacheCreationTokens' =&gt; 0,
+                'reasoningTokens' =&gt; 0,
+            ],
+        ],
+    ],
+];
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($expectation));
+curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+</div>
+
+<button class="accordion"><strong>REST API / curl</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-bash code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/v1/messages"
+  },
+  "httpLlmResponse": {
+    "provider": "ANTHROPIC",
+    "model": "claude-sonnet-4-20250514",
+    "completion": {
+      "text": "Paris is the capital of France.",
+      "stopReason": "end_turn",
+      "usage": {
+        "inputTokens": 150,
+        "outputTokens": 10,
+        "cachedInputTokens": 120,
+        "cacheCreationTokens": 0,
+        "reasoningTokens": 0
+      }
+    }
+  }
+}'</code></pre>
+</div>
 
 <p>
     When MockServer proxies traffic to a real LLM provider, these fields are decoded from the provider's
@@ -1379,12 +1618,17 @@ curl_close($ch);</code></pre>
 <h2>Java Client API (Simple Completion)</h2>
 
 <p>
-    The Java client provides a typed fluent API for creating LLM expectations without hand-assembling JSON:
+    The simplest LLM expectation returns a single completion for a request. The Java client uses the typed
+    <span class="inline_code">when(...).respond(llmResponse()...)</span> fluent API; all other clients send the
+    same expectation as raw JSON:
 </p>
 
+<button class="accordion"><strong>Java Code Example</strong></button>
+<div class="panel">
 <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpLlmResponse.llmResponse;
 import static org.mockserver.model.Completion.completion;
+import org.mockserver.model.Provider;
 
 mockServerClient
     .when(
@@ -1402,6 +1646,198 @@ mockServerClient
                     .withStopReason("stop")
             )
     );</code></pre>
+</div>
+
+<button class="accordion"><strong>JavaScript Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/v1/chat/completions"
+    },
+    "httpLlmResponse": {
+        "provider": "OPENAI",
+        "model": "gpt-4o",
+        "completion": {
+            "text": "Hello from MockServer!",
+            "stopReason": "stop"
+        }
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+</div>
+
+<button class="accordion"><strong>Python Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-python code"><code class="code">import requests
+
+requests.put(
+    "http://localhost:1080/mockserver/expectation",
+    json={
+        "httpRequest": {
+            "method": "POST",
+            "path": "/v1/chat/completions"
+        },
+        "httpLlmResponse": {
+            "provider": "OPENAI",
+            "model": "gpt-4o",
+            "completion": {
+                "text": "Hello from MockServer!",
+                "stopReason": "stop"
+            }
+        }
+    }
+)</code></pre>
+</div>
+
+<button class="accordion"><strong>Ruby Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-ruby code"><code class="code">require 'net/http'
+require 'json'
+
+uri = URI('http://localhost:1080/mockserver/expectation')
+http = Net::HTTP.new(uri.host, uri.port)
+req = Net::HTTP::Put.new(uri.path, 'Content-Type' =&gt; 'application/json')
+req.body = JSON.generate({
+  'httpRequest' =&gt; { 'method' =&gt; 'POST', 'path' =&gt; '/v1/chat/completions' },
+  'httpLlmResponse' =&gt; {
+    'provider' =&gt; 'OPENAI',
+    'model' =&gt; 'gpt-4o',
+    'completion' =&gt; {
+      'text' =&gt; 'Hello from MockServer!',
+      'stopReason' =&gt; 'stop'
+    }
+  }
+})
+http.request(req)</code></pre>
+</div>
+
+<button class="accordion"><strong>Go Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-go code"><code class="code">package main
+
+import (
+    "bytes"
+    "encoding/json"
+    "net/http"
+)
+
+func createLlmExpectation() {
+    body, _ := json.Marshal(map[string]interface{}{
+        "httpRequest": map[string]interface{}{
+            "method": "POST",
+            "path":   "/v1/chat/completions",
+        },
+        "httpLlmResponse": map[string]interface{}{
+            "provider": "OPENAI",
+            "model":    "gpt-4o",
+            "completion": map[string]interface{}{
+                "text":       "Hello from MockServer!",
+                "stopReason": "stop",
+            },
+        },
+    })
+    req, _ := http.NewRequest(http.MethodPut,
+        "http://localhost:1080/mockserver/expectation", bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+    http.DefaultClient.Do(req)
+}</code></pre>
+</div>
+
+<button class="accordion"><strong>.NET Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-csharp code"><code class="code">using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+
+var expectation = new
+{
+    httpRequest = new { method = "POST", path = "/v1/chat/completions" },
+    httpLlmResponse = new
+    {
+        provider = "OPENAI",
+        model = "gpt-4o",
+        completion = new
+        {
+            text = "Hello from MockServer!",
+            stopReason = "stop"
+        }
+    }
+};
+using var client = new HttpClient();
+var json = JsonSerializer.Serialize(expectation);
+await client.PutAsync(
+    "http://localhost:1080/mockserver/expectation",
+    new StringContent(json, Encoding.UTF8, "application/json"));</code></pre>
+</div>
+
+<button class="accordion"><strong>Rust Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-rust code"><code class="code">use serde_json::json;
+
+let client = reqwest::blocking::Client::new();
+client.put("http://localhost:1080/mockserver/expectation")
+    .json(&amp;json!({
+        "httpRequest": {
+            "method": "POST",
+            "path": "/v1/chat/completions"
+        },
+        "httpLlmResponse": {
+            "provider": "OPENAI",
+            "model": "gpt-4o",
+            "completion": {
+                "text": "Hello from MockServer!",
+                "stopReason": "stop"
+            }
+        }
+    }))
+    .send()
+    .unwrap();</code></pre>
+</div>
+
+<button class="accordion"><strong>PHP Code Example</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-php code"><code class="code">&lt;?php
+$expectation = [
+    'httpRequest' =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/v1/chat/completions'],
+    'httpLlmResponse' =&gt; [
+        'provider' =&gt; 'OPENAI',
+        'model' =&gt; 'gpt-4o',
+        'completion' =&gt; [
+            'text' =&gt; 'Hello from MockServer!',
+            'stopReason' =&gt; 'stop',
+        ],
+    ],
+];
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($expectation));
+curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+</div>
+
+<button class="accordion"><strong>REST API / curl</strong></button>
+<div class="panel">
+<pre class="prettyprint lang-bash code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest": {
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  "httpLlmResponse": {
+    "provider": "OPENAI",
+    "model": "gpt-4o",
+    "completion": {
+      "text": "Hello from MockServer!",
+      "stopReason": "stop"
+    }
+  }
+}'</code></pre>
+</div>
 
 <h2>Related Pages</h2>
 

@@ -973,7 +973,11 @@ curl_close($ch);</code></pre>{% endraw %}
 
 <p>Forward a specific method to an upstream gRPC server:</p>
 
-<pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+<button id="button_grpc_forward" class="accordion title"><strong>Forward gRPC Call Code Examples</strong></button>
+<div class="panel title">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+    <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
     .when(
         request()
             .withPath("/com.example.grpc.GreetingService/Greeting")
@@ -983,17 +987,249 @@ curl_close($ch);</code></pre>{% endraw %}
             .withHost("upstream-grpc.example.com")
             .withPort(50051)
     );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "path": "/com.example.grpc.GreetingService/Greeting"
+    },
+    "httpForward": {
+        "host": "upstream-grpc.example.com",
+        "port": 50051
+    }
+}).then(
+    function () { console.log("expectation created"); },
+    function (error) { console.log(error); }
+);</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+    <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, HttpRequest, HttpForward
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest(path="/com.example.grpc.GreetingService/Greeting")
+).forward(
+    HttpForward(host="upstream-grpc.example.com", port=50051)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+include MockServer
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+  HttpRequest.new(path: '/com.example.grpc.GreetingService/Greeting')
+).forward(
+  HttpForward.new(host: 'upstream-grpc.example.com', port: 50051)
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+client.When(
+    mockserver.Request().Path("/com.example.grpc.GreetingService/Greeting"),
+).Forward(
+    mockserver.Forward().
+        Host("upstream-grpc.example.com").
+        Port(50051),
+)</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.When(
+    HttpRequest.Request().WithPath("/com.example.grpc.GreetingService/Greeting")
+).Forward(
+    HttpForward.Forward()
+        .WithHost("upstream-grpc.example.com")
+        .WithPort(50051)
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpForward};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.when(
+    HttpRequest::new().path("/com.example.grpc.GreetingService/Greeting")
+).forward(
+    HttpForward::new("upstream-grpc.example.com", 50051)
+).unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+use MockServer\HttpRequest;
+use MockServer\HttpForward;
+
+$client = new MockServerClient('localhost', 1080);
+$client-&gt;when(
+    HttpRequest::request()
+        -&gt;path('/com.example.grpc.GreetingService/Greeting')
+)-&gt;forward(
+    HttpForward::forward()
+        -&gt;host('upstream-grpc.example.com')
+        -&gt;port(50051)
+);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+    <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+  "httpRequest": {
+    "path": "/com.example.grpc.GreetingService/Greeting"
+  },
+  "httpForward": {
+    "host": "upstream-grpc.example.com",
+    "port": 50051
+  }
+}'</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <p>Provided a <a href="#loading_proto_descriptors">proto descriptor</a> is loaded, the forwarded exchange is recorded with the decoded gRPC method path, status, and message JSON. Retrieve the recording as replayable expectations and re-apply it later to serve the same responses without the upstream:</p>
 
-<pre class="prettyprint lang-java code"><code class="code">// after driving traffic through the proxy, snapshot what was forwarded
-Expectation[] recorded = mockServerClient
+<button id="button_grpc_record_replay" class="accordion title"><strong>Record &amp; Replay gRPC Calls Code Examples</strong></button>
+<div class="panel title">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+    <pre class="prettyprint lang-java code"><code class="code">// after driving traffic through the proxy, snapshot what was forwarded
+Expectation[] recorded = new MockServerClient("localhost", 1080)
     .retrieveRecordedExpectations(
         request().withPath("/com.example.grpc.GreetingService/Greeting")
     );
 
 // (later, offline) replay the captured responses as mocks
-mockServerClient.upsert(recorded);</code></pre>
+new MockServerClient("localhost", 1080).upsert(recorded);</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+    <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+var client = mockServerClient("localhost", 1080);
+
+// after driving traffic through the proxy, snapshot what was forwarded
+client.retrieveRecordedExpectations({
+    "path": "/com.example.grpc.GreetingService/Greeting"
+}).then(function (recorded) {
+    // (later, offline) replay the captured responses as mocks
+    recorded.forEach(function (expectation) {
+        client.mockAnyResponse(expectation);
+    });
+});</code></pre>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+    <pre class="prettyprint lang-python code"><code class="code">from mockserver import MockServerClient, HttpRequest
+
+client = MockServerClient("localhost", 1080)
+
+# after driving traffic through the proxy, snapshot what was forwarded
+recorded = client.retrieve_recorded_expectations(
+    HttpRequest(path="/com.example.grpc.GreetingService/Greeting")
+)
+
+# (later, offline) replay the captured responses as mocks
+client.upsert(*recorded)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+    <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+include MockServer
+
+client = MockServer::Client.new('localhost', 1080)
+
+# after driving traffic through the proxy, snapshot what was forwarded
+recorded = client.retrieve_recorded_expectations(
+  request: HttpRequest.new(path: '/com.example.grpc.GreetingService/Greeting')
+)
+
+# (later, offline) replay the captured responses as mocks
+client.upsert(*recorded)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+    <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+
+// after driving traffic through the proxy, snapshot what was forwarded
+recorded, _ := client.RetrieveRecordedExpectations(
+    mockserver.Request().Path("/com.example.grpc.GreetingService/Greeting"),
+)
+
+// (later, offline) replay the captured responses as mocks
+client.Upsert(recorded...)</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+    <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+
+// after driving traffic through the proxy, snapshot what was forwarded
+var recorded = client.RetrieveRecordedExpectations(
+    HttpRequest.Request().WithPath("/com.example.grpc.GreetingService/Greeting")
+);
+
+// (later, offline) replay the captured responses as mocks
+client.Upsert(recorded.ToArray());</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+    <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+
+// after driving traffic through the proxy, snapshot what was forwarded
+let recorded = client.retrieve_recorded_expectations(
+    Some(&amp;HttpRequest::new().path("/com.example.grpc.GreetingService/Greeting"))
+).unwrap();
+
+// (later, offline) replay the captured responses as mocks
+client.upsert(&amp;recorded).unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+    <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+use MockServer\HttpRequest;
+use MockServer\Expectation;
+
+$client = new MockServerClient('localhost', 1080);
+
+// after driving traffic through the proxy, snapshot what was forwarded
+$recorded = $client-&gt;retrieveRecordedExpectations(
+    HttpRequest::request()
+        -&gt;path('/com.example.grpc.GreetingService/Greeting')
+);
+
+// (later, offline) replay the captured responses as mocks
+foreach ($recorded as $expectation) {
+    $client-&gt;upsertExpectation(Expectation::fromArray($expectation));
+}</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+    <pre class="prettyprint code"><code class="code"># after driving traffic through the proxy, snapshot what was forwarded
+curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=RECORDED_EXPECTATIONS&amp;format=JSON" -d '{
+  "path": "/com.example.grpc.GreetingService/Greeting"
+}' &gt; recorded-expectations.json
+
+# (later, offline) replay the captured responses as mocks
+curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d @recorded-expectations.json</code></pre>
+        <p>See <a href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <p><strong>What is supported:</strong></p>
 

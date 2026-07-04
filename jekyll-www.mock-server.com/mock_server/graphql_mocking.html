@@ -162,7 +162,178 @@ curl -s -X PUT "http://localhost:1080/mockserver/graphql" \
 
 <h3>Match a specific query string and return an explicit response</h3>
 
-<pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/expectation \
+<button id="button_graphql_match_query_string" class="accordion">match a specific GraphQL query string and return an explicit response</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(
+                GraphQLBody.graphQL("query GetUser($id: ID!) { user(id: $id) { name email } }")
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody("{\"data\":{\"user\":{\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query GetUser($id: ID!) { user(id: $id) { name email } }"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"data\":{\"user\":{\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import HttpRequest, HttpResponse, GraphQLBody, KeyToMultiValue
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest(
+        method="POST",
+        path="/graphql",
+        body=GraphQLBody(query="query GetUser($id: ID!) { user(id: $id) { name email } }"),
+    )
+).respond(
+    HttpResponse(
+        status_code=200,
+        headers=[KeyToMultiValue(name="Content-Type", values=["application/json"])],
+        body='{"data":{"user":{"name":"Alice","email":"alice@example.com"}}}',
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.new(
+        method: 'POST',
+        path: '/graphql',
+        body: MockServer::GraphQLBody.new(
+            query: 'query GetUser($id: ID!) { user(id: $id) { name email } }'
+        )
+    )
+).respond(
+    MockServer::HttpResponse.new(
+        status_code: 200,
+        headers: [MockServer::KeyToMultiValue.new(name: 'Content-Type', values: ['application/json'])],
+        body: '{"data":{"user":{"name":"Alice","email":"alice@example.com"}}}'
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+client.Upsert(mockserver.Expectation{
+    HttpRequest: &amp;mockserver.HttpRequest{
+        Method: "POST",
+        Path:   "/graphql",
+        Body:   mockserver.GraphQLBody("query GetUser($id: ID!) { user(id: $id) { name email } }", ""),
+    },
+    HttpResponse: &amp;mockserver.HttpResponse{
+        StatusCode: 200,
+        Headers:    map[string][]string{"Content-Type": {"application/json"}},
+        Body:       `{"data":{"user":{"name":"Alice","email":"alice@example.com"}}}`,
+    },
+})</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.Upsert(new Expectation
+{
+    HttpRequest = new HttpRequest
+    {
+        Method = "POST",
+        Path = "/graphql",
+        Body = Body.OfGraphQl("query GetUser($id: ID!) { user(id: $id) { name email } }")
+    },
+    HttpResponse = new HttpResponse
+    {
+        StatusCode = 200,
+        Headers = new() { ["Content-Type"] = new() { "application/json" } },
+        Body = "{\"data\":{\"user\":{\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"
+    }
+});</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpResponse, Body};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.when(
+    HttpRequest::new()
+        .method("POST")
+        .path("/graphql")
+        .body_value(Body::graphql("query GetUser($id: ID!) { user(id: $id) { name email } }")),
+).respond(
+    HttpResponse::new()
+        .status_code(200)
+        .header("Content-Type", "application/json")
+        .body("{\"data\":{\"user\":{\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"),
+).unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
+// no typed GRAPHQL body setter — submit the raw expectation JSON via HTTP PUT
+$json = '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": { "type": "GRAPHQL", "query": "query GetUser($id: ID!) { user(id: $id) { name email } }" }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"data\":{\"user\":{\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"
+    }
+}';
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+curl_setopt($ch, CURLOPT_POSTFIELDS, $json);
+curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/expectation \
   -H "Content-Type: application/json" \
   -d '{
     "httpRequest": {
@@ -179,10 +350,199 @@ curl -s -X PUT "http://localhost:1080/mockserver/graphql" \
       "body": "{\"data\":{\"user\":{\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"
     }
   }'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <h3>Match any query that includes a specific field (subset AST)</h3>
 
-<pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/expectation \
+<button id="button_graphql_match_ast_subset" class="accordion">match any query that includes a specific field (subset AST)</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(
+                GraphQLBody.graphQL("query { user { email } }")
+                    .withSelectionSetMatchType(SelectionSetMatchType.AST_SUBSET)
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody("{\"data\":{\"user\":{\"id\":\"1\",\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query { user { email } }",
+            "selectionSetMatchType": "AST_SUBSET"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"data\":{\"user\":{\"id\":\"1\",\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import HttpRequest, HttpResponse, GraphQLBody, KeyToMultiValue
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest(
+        method="POST",
+        path="/graphql",
+        body=GraphQLBody(
+            query="query { user { email } }",
+            selection_set_match_type="AST_SUBSET",
+        ),
+    )
+).respond(
+    HttpResponse(
+        status_code=200,
+        headers=[KeyToMultiValue(name="Content-Type", values=["application/json"])],
+        body='{"data":{"user":{"id":"1","name":"Alice","email":"alice@example.com"}}}',
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.new(
+        method: 'POST',
+        path: '/graphql',
+        body: MockServer::GraphQLBody.new(
+            query: 'query { user { email } }',
+            selection_set_match_type: 'AST_SUBSET'
+        )
+    )
+).respond(
+    MockServer::HttpResponse.new(
+        status_code: 200,
+        headers: [MockServer::KeyToMultiValue.new(name: 'Content-Type', values: ['application/json'])],
+        body: '{"data":{"user":{"id":"1","name":"Alice","email":"alice@example.com"}}}'
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+client.Upsert(mockserver.Expectation{
+    HttpRequest: &amp;mockserver.HttpRequest{
+        Method: "POST",
+        Path:   "/graphql",
+        Body: &amp;mockserver.TypedBody{
+            Type:                  "GRAPHQL",
+            Query:                 "query { user { email } }",
+            SelectionSetMatchType: "AST_SUBSET",
+        },
+    },
+    HttpResponse: &amp;mockserver.HttpResponse{
+        StatusCode: 200,
+        Headers:    map[string][]string{"Content-Type": {"application/json"}},
+        Body:       `{"data":{"user":{"id":"1","name":"Alice","email":"alice@example.com"}}}`,
+    },
+})</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+var body = Body.OfGraphQl("query { user { email } }");
+body.SelectionSetMatchType = "AST_SUBSET";
+client.Upsert(new Expectation
+{
+    HttpRequest = new HttpRequest { Method = "POST", Path = "/graphql", Body = body },
+    HttpResponse = new HttpResponse
+    {
+        StatusCode = 200,
+        Headers = new() { ["Content-Type"] = new() { "application/json" } },
+        Body = "{\"data\":{\"user\":{\"id\":\"1\",\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"
+    }
+});</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpResponse, Body};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+// Body::graphql covers only the query — use Body::object for selectionSetMatchType / schema
+let body = Body::object(
+    serde_json::json!({
+        "type": "GRAPHQL",
+        "query": "query { user { email } }",
+        "selectionSetMatchType": "AST_SUBSET"
+    })
+    .as_object()
+    .unwrap()
+    .clone(),
+);
+client.when(
+    HttpRequest::new().method("POST").path("/graphql").body_value(body),
+).respond(
+    HttpResponse::new()
+        .status_code(200)
+        .header("Content-Type", "application/json")
+        .body("{\"data\":{\"user\":{\"id\":\"1\",\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"),
+).unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
+// no typed GRAPHQL body setter — submit the raw expectation JSON via HTTP PUT
+$json = '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": { "type": "GRAPHQL", "query": "query { user { email } }", "selectionSetMatchType": "AST_SUBSET" }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"data\":{\"user\":{\"id\":\"1\",\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"
+    }
+}';
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+curl_setopt($ch, CURLOPT_POSTFIELDS, $json);
+curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/expectation \
   -H "Content-Type: application/json" \
   -d '{
     "httpRequest": {
@@ -200,10 +560,213 @@ curl -s -X PUT "http://localhost:1080/mockserver/graphql" \
       "body": "{\"data\":{\"user\":{\"id\":\"1\",\"name\":\"Alice\",\"email\":\"alice@example.com\"}}}"
     }
   }'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <h3>Match by operation name and validate variables with JSON Schema</h3>
 
-<pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/expectation \
+<button id="button_graphql_match_operation_name_variables" class="accordion">match by operation name and validate variables with JSON Schema</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(
+                GraphQLBody.graphQL(
+                    "mutation CreateOrder($input: OrderInput!) { createOrder(input: $input) { id status } }",
+                    "CreateOrder",
+                    "{\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"object\",\"required\":[\"productId\",\"quantity\"]}},\"required\":[\"input\"]}"
+                )
+            )
+    )
+    .respond(
+        response()
+            .withStatusCode(200)
+            .withHeader("Content-Type", "application/json")
+            .withBody("{\"data\":{\"createOrder\":{\"id\":\"order-42\",\"status\":\"PENDING\"}}}")
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "mutation CreateOrder($input: OrderInput!) { createOrder(input: $input) { id status } }",
+            "operationName": "CreateOrder",
+            "variablesSchema": "{\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"object\",\"required\":[\"productId\",\"quantity\"]}},\"required\":[\"input\"]}"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"data\":{\"createOrder\":{\"id\":\"order-42\",\"status\":\"PENDING\"}}}"
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import HttpRequest, HttpResponse, GraphQLBody, KeyToMultiValue
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest(
+        method="POST",
+        path="/graphql",
+        body=GraphQLBody(
+            query="mutation CreateOrder($input: OrderInput!) { createOrder(input: $input) { id status } }",
+            operation_name="CreateOrder",
+            variables_schema='{"type":"object","properties":{"input":{"type":"object","required":["productId","quantity"]}},"required":["input"]}',
+        ),
+    )
+).respond(
+    HttpResponse(
+        status_code=200,
+        headers=[KeyToMultiValue(name="Content-Type", values=["application/json"])],
+        body='{"data":{"createOrder":{"id":"order-42","status":"PENDING"}}}',
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.new(
+        method: 'POST',
+        path: '/graphql',
+        body: MockServer::GraphQLBody.new(
+            query: 'mutation CreateOrder($input: OrderInput!) { createOrder(input: $input) { id status } }',
+            operation_name: 'CreateOrder',
+            variables_schema: '{"type":"object","properties":{"input":{"type":"object","required":["productId","quantity"]}},"required":["input"]}'
+        )
+    )
+).respond(
+    MockServer::HttpResponse.new(
+        status_code: 200,
+        headers: [MockServer::KeyToMultiValue.new(name: 'Content-Type', values: ['application/json'])],
+        body: '{"data":{"createOrder":{"id":"order-42","status":"PENDING"}}}'
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+client.Upsert(mockserver.Expectation{
+    HttpRequest: &amp;mockserver.HttpRequest{
+        Method: "POST",
+        Path:   "/graphql",
+        Body: &amp;mockserver.TypedBody{
+            Type:            "GRAPHQL",
+            Query:           "mutation CreateOrder($input: OrderInput!) { createOrder(input: $input) { id status } }",
+            OperationName:   "CreateOrder",
+            VariablesSchema: `{"type":"object","properties":{"input":{"type":"object","required":["productId","quantity"]}},"required":["input"]}`,
+        },
+    },
+    HttpResponse: &amp;mockserver.HttpResponse{
+        StatusCode: 200,
+        Headers:    map[string][]string{"Content-Type": {"application/json"}},
+        Body:       `{"data":{"createOrder":{"id":"order-42","status":"PENDING"}}}`,
+    },
+})</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+var body = Body.OfGraphQl("mutation CreateOrder($input: OrderInput!) { createOrder(input: $input) { id status } }");
+body.OperationName = "CreateOrder";
+body.VariablesSchema = "{\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"object\",\"required\":[\"productId\",\"quantity\"]}},\"required\":[\"input\"]}";
+client.Upsert(new Expectation
+{
+    HttpRequest = new HttpRequest { Method = "POST", Path = "/graphql", Body = body },
+    HttpResponse = new HttpResponse
+    {
+        StatusCode = 200,
+        Headers = new() { ["Content-Type"] = new() { "application/json" } },
+        Body = "{\"data\":{\"createOrder\":{\"id\":\"order-42\",\"status\":\"PENDING\"}}}"
+    }
+});</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpResponse, Body};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+// Body::graphql covers only the query — use Body::object for operationName / variablesSchema
+let body = Body::object(
+    serde_json::json!({
+        "type": "GRAPHQL",
+        "query": "mutation CreateOrder($input: OrderInput!) { createOrder(input: $input) { id status } }",
+        "operationName": "CreateOrder",
+        "variablesSchema": "{\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"object\",\"required\":[\"productId\",\"quantity\"]}},\"required\":[\"input\"]}"
+    })
+    .as_object()
+    .unwrap()
+    .clone(),
+);
+client.when(
+    HttpRequest::new().method("POST").path("/graphql").body_value(body),
+).respond(
+    HttpResponse::new()
+        .status_code(200)
+        .header("Content-Type", "application/json")
+        .body("{\"data\":{\"createOrder\":{\"id\":\"order-42\",\"status\":\"PENDING\"}}}"),
+).unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
+// no typed GRAPHQL body setter — submit the raw expectation JSON via HTTP PUT
+$json = '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "mutation CreateOrder($input: OrderInput!) { createOrder(input: $input) { id status } }",
+            "operationName": "CreateOrder",
+            "variablesSchema": "{\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"object\",\"required\":[\"productId\",\"quantity\"]}},\"required\":[\"input\"]}"
+        }
+    },
+    "httpResponse": {
+        "statusCode": 200,
+        "headers": { "Content-Type": ["application/json"] },
+        "body": "{\"data\":{\"createOrder\":{\"id\":\"order-42\",\"status\":\"PENDING\"}}}"
+    }
+}';
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+curl_setopt($ch, CURLOPT_POSTFIELDS, $json);
+curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/expectation \
   -H "Content-Type: application/json" \
   -d '{
     "httpRequest": {
@@ -222,12 +785,184 @@ curl -s -X PUT "http://localhost:1080/mockserver/graphql" \
       "body": "{\"data\":{\"createOrder\":{\"id\":\"order-42\",\"status\":\"PENDING\"}}}"
     }
   }'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <h3>Schema-attached expectation (response synthesized from query)</h3>
 
 <p>Provide a schema on the body and omit the response body — MockServer synthesizes a schema-valid response for whatever fields the client requests:</p>
 
-<pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/expectation \
+<button id="button_graphql_schema_attached" class="accordion">schema-attached expectation (response synthesized from query)</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("POST")
+            .withPath("/graphql")
+            .withBody(
+                GraphQLBody.graphQL("query { }")
+                    .withSelectionSetMatchType(SelectionSetMatchType.AST_SUBSET)
+                    .withSchema("type Query { user(id: ID!): User } type User { id: ID! name: String email: String }")
+            )
+    )
+    .respond(
+        response()
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query { }",
+            "selectionSetMatchType": "AST_SUBSET",
+            "schema": "type Query { user(id: ID!): User } type User { id: ID! name: String email: String }"
+        }
+    },
+    "httpResponse": {}
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import HttpRequest, HttpResponse, GraphQLBody
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest(
+        method="POST",
+        path="/graphql",
+        body=GraphQLBody(
+            query="query { }",
+            selection_set_match_type="AST_SUBSET",
+            schema="type Query { user(id: ID!): User } type User { id: ID! name: String email: String }",
+        ),
+    )
+).respond(
+    HttpResponse()
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+# GraphQLBody has no typed schema setter — pass a raw body hash for the schema field
+client.when(
+    MockServer::HttpRequest.new(
+        method: 'POST',
+        path: '/graphql',
+        body: {
+            'type' => 'GRAPHQL',
+            'query' => 'query { }',
+            'selectionSetMatchType' => 'AST_SUBSET',
+            'schema' => 'type Query { user(id: ID!): User } type User { id: ID! name: String email: String }'
+        }
+    )
+).respond(
+    MockServer::HttpResponse.new
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+client.Upsert(mockserver.Expectation{
+    HttpRequest: &amp;mockserver.HttpRequest{
+        Method: "POST",
+        Path:   "/graphql",
+        Body: &amp;mockserver.TypedBody{
+            Type:                  "GRAPHQL",
+            Query:                 "query { }",
+            SelectionSetMatchType: "AST_SUBSET",
+            Schema:                "type Query { user(id: ID!): User } type User { id: ID! name: String email: String }",
+        },
+    },
+    HttpResponse: &amp;mockserver.HttpResponse{},
+})</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+var body = Body.OfGraphQl("query { }");
+body.SelectionSetMatchType = "AST_SUBSET";
+body.Schema = "type Query { user(id: ID!): User } type User { id: ID! name: String email: String }";
+client.Upsert(new Expectation
+{
+    HttpRequest = new HttpRequest { Method = "POST", Path = "/graphql", Body = body },
+    HttpResponse = new HttpResponse()
+});</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpResponse, Body};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+// Body::graphql covers only the query — use Body::object for selectionSetMatchType / schema
+let body = Body::object(
+    serde_json::json!({
+        "type": "GRAPHQL",
+        "query": "query { }",
+        "selectionSetMatchType": "AST_SUBSET",
+        "schema": "type Query { user(id: ID!): User } type User { id: ID! name: String email: String }"
+    })
+    .as_object()
+    .unwrap()
+    .clone(),
+);
+client.when(
+    HttpRequest::new().method("POST").path("/graphql").body_value(body),
+).respond(
+    HttpResponse::new(),
+).unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
+// no typed GRAPHQL body setter — submit the raw expectation JSON via HTTP PUT
+$json = '{
+    "httpRequest": {
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "type": "GRAPHQL",
+            "query": "query { }",
+            "selectionSetMatchType": "AST_SUBSET",
+            "schema": "type Query { user(id: ID!): User } type User { id: ID! name: String email: String }"
+        }
+    },
+    "httpResponse": {}
+}';
+
+$ch = curl_init('http://localhost:1080/mockserver/expectation');
+curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+curl_setopt($ch, CURLOPT_POSTFIELDS, $json);
+curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+curl_exec($ch);
+curl_close($ch);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -s -X PUT http://localhost:1080/mockserver/expectation \
   -H "Content-Type: application/json" \
   -d '{
     "httpRequest": {
@@ -242,6 +977,9 @@ curl -s -X PUT "http://localhost:1080/mockserver/graphql" \
     },
     "httpResponse": {}
   }'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <a id="graphql_error_injection" class="anchor" href="#graphql_error_injection">&nbsp;</a>
 
@@ -259,7 +997,168 @@ curl -s -X PUT "http://localhost:1080/mockserver/graphql" \
 
 <p>A minimal subscription expectation that completes the <code class="inline code">graphql-ws</code> handshake and then streams two events:</p>
 
-<pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
+<button id="button_graphql_subscription" class="accordion">subscription expectation that streams events over a WebSocket</button>
+<div class="panel">
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">new MockServerClient("localhost", 1080)
+    .when(
+        request()
+            .withMethod("GET")
+            .withPath("/graphql")
+    )
+    .respondWithWebSocket(
+        webSocketResponse()
+            .withSubprotocol("graphql-ws")
+            .withMessage(webSocketMessage("{\"type\":\"connection_ack\"}"))
+            .withMessage(webSocketMessage("{\"type\":\"next\",\"id\":\"1\",\"payload\":{\"data\":{\"messageAdded\":{\"id\":\"1\",\"text\":\"hello\"}}}}"))
+            .withMessage(webSocketMessage("{\"type\":\"complete\",\"id\":\"1\"}").withDelay(TimeUnit.MILLISECONDS, 200L))
+            .withCloseConnection(true)
+    );</code></pre>
+    </div>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080).mockAnyResponse({
+    "httpRequest": { "method": "GET", "path": "/graphql" },
+    "httpWebSocketResponse": {
+        "subprotocol": "graphql-ws",
+        "messages": [
+            { "text": "{\"type\":\"connection_ack\"}" },
+            { "text": "{\"type\":\"next\",\"id\":\"1\",\"payload\":{\"data\":{\"messageAdded\":{\"id\":\"1\",\"text\":\"hello\"}}}}" },
+            { "text": "{\"type\":\"complete\",\"id\":\"1\"}", "delay": {"timeUnit": "MILLISECONDS", "value": 200} }
+        ],
+        "closeConnection": true
+    }
+}).then(
+    function () {
+        console.log("expectation created");
+    },
+    function (error) {
+        console.log(error);
+    }
+);</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+from mockserver.models import HttpRequest, HttpWebSocketResponse, WebSocketMessage, Delay
+
+client = MockServerClient("localhost", 1080)
+client.when(
+    HttpRequest(method="GET", path="/graphql")
+).respond_with_websocket(
+    HttpWebSocketResponse(
+        subprotocol="graphql-ws",
+        messages=[
+            WebSocketMessage(text='{"type":"connection_ack"}'),
+            WebSocketMessage(text='{"type":"next","id":"1","payload":{"data":{"messageAdded":{"id":"1","text":"hello"}}}}'),
+            WebSocketMessage(text='{"type":"complete","id":"1"}', delay=Delay(time_unit="MILLISECONDS", value=200)),
+        ],
+        close_connection=True,
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+client.when(
+    MockServer::HttpRequest.new(method: 'GET', path: '/graphql')
+).respond_with_websocket(
+    MockServer::HttpWebSocketResponse.new(
+        subprotocol: 'graphql-ws',
+        messages: [
+            MockServer::WebSocketMessage.new(text: '{"type":"connection_ack"}'),
+            MockServer::WebSocketMessage.new(text: '{"type":"next","id":"1","payload":{"data":{"messageAdded":{"id":"1","text":"hello"}}}}'),
+            MockServer::WebSocketMessage.new(text: '{"type":"complete","id":"1"}', delay: MockServer::Delay.new(time_unit: 'MILLISECONDS', value: 200))
+        ],
+        close_connection: true
+    )
+)</code></pre>
+    </div>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+client.When(
+    mockserver.Request().Method("GET").Path("/graphql"),
+).RespondWebSocket(
+    mockserver.WebSocketResponse().
+        Subprotocol("graphql-ws").
+        TextMessage(`{"type":"connection_ack"}`).
+        TextMessage(`{"type":"next","id":"1","payload":{"data":{"messageAdded":{"id":"1","text":"hello"}}}}`).
+        AddMessage(mockserver.WebSocketMessage{
+            Text:  `{"type":"complete","id":"1"}`,
+            Delay: &amp;mockserver.Delay{TimeUnit: "MILLISECONDS", Value: 200},
+        }).
+        CloseConnection(true),
+)</code></pre>
+    </div>
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+using MockServer.Client.Models;
+
+using var client = new MockServerClient("localhost", 1080);
+client.When(
+    HttpRequest.Request().WithMethod("GET").WithPath("/graphql")
+).RespondWithWebSocket(
+    HttpWebSocketResponse.Response()
+        .WithSubprotocol("graphql-ws")
+        .WithTextMessage("{\"type\":\"connection_ack\"}")
+        .WithTextMessage("{\"type\":\"next\",\"id\":\"1\",\"payload\":{\"data\":{\"messageAdded\":{\"id\":\"1\",\"text\":\"hello\"}}}}")
+        .WithMessage(new WebSocketMessage
+        {
+            Text = "{\"type\":\"complete\",\"id\":\"1\"}",
+            Delay = new Delay { TimeUnit = TimeUnit.MILLISECONDS, Value = 200 }
+        })
+        .WithCloseConnection(true)
+);</code></pre>
+    </div>
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, HttpRequest, HttpWebSocketResponse, WebSocketMessage, Delay};
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+client.when(
+    HttpRequest::new().method("GET").path("/graphql"),
+).respond_with_web_socket(
+    HttpWebSocketResponse::new()
+        .subprotocol("graphql-ws")
+        .message(WebSocketMessage::text("{\"type\":\"connection_ack\"}"))
+        .message(WebSocketMessage::text("{\"type\":\"next\",\"id\":\"1\",\"payload\":{\"data\":{\"messageAdded\":{\"id\":\"1\",\"text\":\"hello\"}}}}"))
+        .message(WebSocketMessage::text("{\"type\":\"complete\",\"id\":\"1\"}").delay(Delay::milliseconds(200)))
+        .close_connection(true),
+).unwrap();</code></pre>
+    </div>
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">&lt;?php
+use MockServer\MockServerClient;
+use MockServer\HttpRequest;
+use MockServer\HttpWebSocketResponse;
+use MockServer\WebSocketMessage;
+use MockServer\Delay;
+
+$client = new MockServerClient('localhost', 1080);
+$client-&gt;when(
+    HttpRequest::request()-&gt;method('GET')-&gt;path('/graphql')
+)-&gt;respondWithWebSocket(
+    HttpWebSocketResponse::response()
+        -&gt;subprotocol('graphql-ws')
+        -&gt;message(WebSocketMessage::text('{"type":"connection_ack"}'))
+        -&gt;message(WebSocketMessage::text('{"type":"next","id":"1","payload":{"data":{"messageAdded":{"id":"1","text":"hello"}}}}'))
+        -&gt;message(WebSocketMessage::text('{"type":"complete","id":"1"}')-&gt;withDelay(Delay::milliseconds(200)))
+        -&gt;closeConnection(true)
+);</code></pre>
+    </div>
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d '{
     "httpRequest": { "method": "GET", "path": "/graphql" },
     "httpWebSocketResponse": {
         "subprotocol": "graphql-ws",
@@ -271,6 +1170,9 @@ curl -s -X PUT "http://localhost:1080/mockserver/graphql" \
         "closeConnection": true
     }
 }'</code></pre>
+        <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/expectation/put_expectation" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+    </div>
+</div>
 
 <p>See the <a href="/mock_server/creating_expectations.html">Creating Expectations</a> page for the full <code class="inline code">httpWebSocketResponse</code> reference (per-message delays, binary frames, response matchers, and <code class="inline code">graphqlSubscriptionFilter</code>).</p>
 
