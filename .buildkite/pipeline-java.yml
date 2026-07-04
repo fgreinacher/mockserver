@@ -54,6 +54,26 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
+  # Compile the dashboard composer's GENERATED Java against the real client jar.
+  # standardToJava() (mockserver-ui) is otherwise only verified by string-assertion
+  # tests, so a rename of a client/model fluent method (mockserver-core or
+  # mockserver-client-java) would ship broken generated code silently. This gate
+  # emits a kitchen-sink matrix of standardToJava outputs and javac-compiles them.
+  # Runs in THIS parallel group (alongside the 60-min build, on its own agent) so
+  # it adds no critical-path time; it does its own quick client-java install
+  # (-DskipTests) reusing the restored maven cache. The mockserver-java pipeline is
+  # already path-gated (generate-pipeline.sh) to mockserver/ + mockserver-ui/
+  # changes — the two drift inputs — so no per-step path filter is needed.
+  - label: ":test_tube: dashboard generated-Java compile gate"
+    command: ".buildkite/scripts/steps/ui-java-codegen-compile.sh"
+    timeout_in_minutes: 20
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
   - wait: ~
     continue_on_failure: true
 
