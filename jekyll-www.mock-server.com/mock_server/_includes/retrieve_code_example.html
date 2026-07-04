@@ -238,6 +238,16 @@ $recordedExpectations = $client-&gt;retrieveRecordedExpectations(
     </div>
     <button id="button_retrieve_recorded_expectations_as_go" class="accordion">retrieve recorded expectations as go</button>
     <div class="panel">
+        <button class="accordion inner">Java</button>
+        <div class="panel">
+            <pre class="prettyprint lang-java code"><code class="code">String recordedExpectations = new MockServerClient("localhost", 1080)
+    .retrieveRecordedExpectations(
+        request()
+            .withPath("/some/path")
+            .withMethod("POST"),
+        Format.GO
+    );</code></pre>
+        </div>
         <button class="accordion inner">REST API</button>
         <div class="panel">
             <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=RECORDED_EXPECTATIONS&format=GO" -d '{
@@ -249,6 +259,16 @@ $recordedExpectations = $client-&gt;retrieveRecordedExpectations(
     </div>
     <button id="button_retrieve_recorded_expectations_as_csharp" class="accordion">retrieve recorded expectations as csharp</button>
     <div class="panel">
+        <button class="accordion inner">Java</button>
+        <div class="panel">
+            <pre class="prettyprint lang-java code"><code class="code">String recordedExpectations = new MockServerClient("localhost", 1080)
+    .retrieveRecordedExpectations(
+        request()
+            .withPath("/some/path")
+            .withMethod("POST"),
+        Format.CSHARP
+    );</code></pre>
+        </div>
         <button class="accordion inner">REST API</button>
         <div class="panel">
             <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=RECORDED_EXPECTATIONS&format=CSHARP" -d '{
@@ -260,6 +280,16 @@ $recordedExpectations = $client-&gt;retrieveRecordedExpectations(
     </div>
     <button id="button_retrieve_recorded_expectations_as_ruby" class="accordion">retrieve recorded expectations as ruby</button>
     <div class="panel">
+        <button class="accordion inner">Java</button>
+        <div class="panel">
+            <pre class="prettyprint lang-java code"><code class="code">String recordedExpectations = new MockServerClient("localhost", 1080)
+    .retrieveRecordedExpectations(
+        request()
+            .withPath("/some/path")
+            .withMethod("POST"),
+        Format.RUBY
+    );</code></pre>
+        </div>
         <button class="accordion inner">REST API</button>
         <div class="panel">
             <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=RECORDED_EXPECTATIONS&format=RUBY" -d '{
@@ -271,6 +301,16 @@ $recordedExpectations = $client-&gt;retrieveRecordedExpectations(
     </div>
     <button id="button_retrieve_recorded_expectations_as_rust" class="accordion">retrieve recorded expectations as rust</button>
     <div class="panel">
+        <button class="accordion inner">Java</button>
+        <div class="panel">
+            <pre class="prettyprint lang-java code"><code class="code">String recordedExpectations = new MockServerClient("localhost", 1080)
+    .retrieveRecordedExpectations(
+        request()
+            .withPath("/some/path")
+            .withMethod("POST"),
+        Format.RUST
+    );</code></pre>
+        </div>
         <button class="accordion inner">REST API</button>
         <div class="panel">
             <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=RECORDED_EXPECTATIONS&format=RUST" -d '{
@@ -282,6 +322,16 @@ $recordedExpectations = $client-&gt;retrieveRecordedExpectations(
     </div>
     <button id="button_retrieve_recorded_expectations_as_php" class="accordion">retrieve recorded expectations as php</button>
     <div class="panel">
+        <button class="accordion inner">Java</button>
+        <div class="panel">
+            <pre class="prettyprint lang-java code"><code class="code">String recordedExpectations = new MockServerClient("localhost", 1080)
+    .retrieveRecordedExpectations(
+        request()
+            .withPath("/some/path")
+            .withMethod("POST"),
+        Format.PHP
+    );</code></pre>
+        </div>
         <button class="accordion inner">REST API</button>
         <div class="panel">
             <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=RECORDED_EXPECTATIONS&format=PHP" -d '{

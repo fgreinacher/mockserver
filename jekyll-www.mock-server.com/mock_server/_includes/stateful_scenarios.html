@@ -61,62 +61,7 @@
 <div class="panel title">
     <p>Three expectations share the <span class="inline_code">LoginFlow</span> scenario. The POST /login expectation matches only in the <span class="inline_code">Started</span> state, returns a token, and advances the scenario to <span class="inline_code">LoggedIn</span> (with <span class="inline_code">times.remainingTimes: 1</span> so it fires exactly once). The GET /profile expectations are gated on the current state and return a different response before and after login.</p>
 
-    <button class="accordion"><strong>JSON</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">[
-  {
-    "httpRequest": { "method": "POST", "path": "/login" },
-    "httpResponse": { "statusCode": 200, "body": "{\"token\": \"abc123\"}" },
-    "scenarioName": "LoginFlow",
-    "scenarioState": "Started",
-    "newScenarioState": "LoggedIn",
-    "times": { "remainingTimes": 1 }
-  },
-  {
-    "httpRequest": { "method": "GET", "path": "/profile" },
-    "httpResponse": { "statusCode": 200, "body": "{\"name\": \"Alice\"}" },
-    "scenarioName": "LoginFlow",
-    "scenarioState": "LoggedIn"
-  },
-  {
-    "httpRequest": { "method": "GET", "path": "/profile" },
-    "httpResponse": { "statusCode": 401, "body": "{\"error\": \"Not authenticated\"}" },
-    "scenarioName": "LoginFlow",
-    "scenarioState": "Started"
-  }
-]</code></pre>
-    </div>
-
-    <button class="accordion"><strong>REST (curl)</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-bash code"><code class="code"># Step 1: login returns a token once, advancing Started -&gt; LoggedIn
-curl -X PUT http://localhost:1080/mockserver/expectation -d '{
-  "httpRequest": { "method": "POST", "path": "/login" },
-  "httpResponse": { "statusCode": 200, "body": "{\"token\": \"abc123\"}" },
-  "scenarioName": "LoginFlow",
-  "scenarioState": "Started",
-  "newScenarioState": "LoggedIn",
-  "times": { "remainingTimes": 1 }
-}'
-
-# Step 2: once LoggedIn, GET /profile returns the user
-curl -X PUT http://localhost:1080/mockserver/expectation -d '{
-  "httpRequest": { "method": "GET", "path": "/profile" },
-  "httpResponse": { "statusCode": 200, "body": "{\"name\": \"Alice\"}" },
-  "scenarioName": "LoginFlow",
-  "scenarioState": "LoggedIn"
-}'
-
-# Step 3: before login (Started), GET /profile is unauthorised
-curl -X PUT http://localhost:1080/mockserver/expectation -d '{
-  "httpRequest": { "method": "GET", "path": "/profile" },
-  "httpResponse": { "statusCode": 401, "body": "{\"error\": \"Not authenticated\"}" },
-  "scenarioName": "LoginFlow",
-  "scenarioState": "Started"
-}'</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Java</strong></button>
+    <button class="accordion inner">Java</button>
     <div class="panel">
         <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
@@ -143,9 +88,9 @@ mockServerClient
     .respond(response().withStatusCode(401).withBody(json("{\"error\":\"Not authenticated\"}")));</code></pre>
     </div>
 
-    <button class="accordion"><strong>JavaScript</strong></button>
+    <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
 var client = mockServerClient('localhost', 1080);
 
 await client.mockAnyResponse([
@@ -172,7 +117,7 @@ await client.mockAnyResponse([
 ]);</code></pre>
     </div>
 
-    <button class="accordion"><strong>Python</strong></button>
+    <button class="accordion inner">Python</button>
     <div class="panel">
         <pre class="prettyprint lang-python code"><code class="code">from mockserver import Expectation, HttpRequest, HttpResponse, MockServerClient, Times
 
@@ -202,7 +147,7 @@ client.upsert(
 )</code></pre>
     </div>
 
-    <button class="accordion"><strong>Ruby</strong></button>
+    <button class="accordion inner">Ruby</button>
     <div class="panel">
         <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
 include MockServer
@@ -233,7 +178,7 @@ client.upsert(
 )</code></pre>
     </div>
 
-    <button class="accordion"><strong>Go</strong></button>
+    <button class="accordion inner">Go</button>
     <div class="panel">
         <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
 
@@ -262,7 +207,7 @@ client.Upsert(
 )</code></pre>
     </div>
 
-    <button class="accordion"><strong>.NET</strong></button>
+    <button class="accordion inner">.NET</button>
     <div class="panel">
         <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
 using MockServer.Client.Models;
@@ -286,7 +231,7 @@ client.When(HttpRequest.Request().WithMethod("GET").WithPath("/profile"))
     .Respond(HttpResponse.Response().WithStatusCode(401).WithBody("{\"error\":\"Not authenticated\"}"));</code></pre>
     </div>
 
-    <button class="accordion"><strong>Rust</strong></button>
+    <button class="accordion inner">Rust</button>
     <div class="panel">
         <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{ClientBuilder, Expectation, HttpRequest, HttpResponse, Times};
 
@@ -311,7 +256,7 @@ let expectations = vec![
 client.upsert(&amp;expectations).unwrap();</code></pre>
     </div>
 
-    <button class="accordion"><strong>PHP</strong></button>
+    <button class="accordion inner">PHP</button>
     <div class="panel">
         <pre class="prettyprint lang-php code"><code class="code">use MockServer\Expectation;
 use MockServer\HttpRequest;
@@ -346,6 +291,35 @@ $client-&gt;upsertExpectation(
 );</code></pre>
     </div>
 
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint lang-bash code"><code class="code"># Step 1: login returns a token once, advancing Started -&gt; LoggedIn
+curl -X PUT http://localhost:1080/mockserver/expectation -d '{
+  "httpRequest": { "method": "POST", "path": "/login" },
+  "httpResponse": { "statusCode": 200, "body": "{\"token\": \"abc123\"}" },
+  "scenarioName": "LoginFlow",
+  "scenarioState": "Started",
+  "newScenarioState": "LoggedIn",
+  "times": { "remainingTimes": 1 }
+}'
+
+# Step 2: once LoggedIn, GET /profile returns the user
+curl -X PUT http://localhost:1080/mockserver/expectation -d '{
+  "httpRequest": { "method": "GET", "path": "/profile" },
+  "httpResponse": { "statusCode": 200, "body": "{\"name\": \"Alice\"}" },
+  "scenarioName": "LoginFlow",
+  "scenarioState": "LoggedIn"
+}'
+
+# Step 3: before login (Started), GET /profile is unauthorised
+curl -X PUT http://localhost:1080/mockserver/expectation -d '{
+  "httpRequest": { "method": "GET", "path": "/profile" },
+  "httpResponse": { "statusCode": 401, "body": "{\"error\": \"Not authenticated\"}" },
+  "scenarioName": "LoginFlow",
+  "scenarioState": "Started"
+}'</code></pre>
+    </div>
+
     <p>Runnable example: <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/curl/scenario">examples/curl/scenario</a> (and the same under <span class="inline_code">examples/&lt;language&gt;/scenario</span>).</p>
 </div>
 
@@ -369,7 +343,7 @@ $client-&gt;upsertExpectation(
 <div class="panel title">
     <p>The first expectation captures <span class="inline_code">$.id</span> from the request body into the scenario state key <span class="inline_code">orderId</span>. A later expectation reads it back in its response template, so the id sent in step 1 appears in the response body of step 3. The <strong>capture step is identical for every template engine</strong> &mdash; only the step-3 template differs, so the three template tabs below are interchangeable.</p>
 
-    <button class="accordion"><strong>Step 1 &mdash; capture the value (JSON)</strong></button>
+    <button class="accordion inner">Step 1 &mdash; capture the value (JSON)</button>
     <div class="panel">
         <pre class="prettyprint lang-java code"><code class="code">{
   "httpRequest": { "method": "POST", "path": "/order/step1" },
@@ -380,7 +354,7 @@ $client-&gt;upsertExpectation(
 }</code></pre>
     </div>
 
-    <button class="accordion"><strong>Step 3 &mdash; Velocity template</strong></button>
+    <button class="accordion inner">Step 3 &mdash; Velocity template</button>
     <div class="panel">
         <p>Read the captured value with <span class="inline_code">$!scenario.get('orderId')</span>.</p>
         <pre class="prettyprint lang-java code"><code class="code">{
@@ -392,7 +366,7 @@ $client-&gt;upsertExpectation(
 }</code></pre>
     </div>
 
-    <button class="accordion"><strong>Step 3 &mdash; JavaScript template</strong></button>
+    <button class="accordion inner">Step 3 &mdash; JavaScript template</button>
     <div class="panel">
         <p>Read the captured value with <span class="inline_code">scenario.get('orderId')</span> (often cleaner for building a JSON body).</p>
         <pre class="prettyprint lang-java code"><code class="code">{
@@ -404,7 +378,7 @@ $client-&gt;upsertExpectation(
 }</code></pre>
     </div>
 
-    <button class="accordion"><strong>Step 3 &mdash; Mustache template</strong></button>
+    <button class="accordion inner">Step 3 &mdash; Mustache template</button>
     <div class="panel">
         <p>Read the captured value with the section form <span class="inline_code">{% raw %}{{#scenario.get}}orderId{{/scenario.get}}{% endraw %}</span> &mdash; the state name is the section body. Reading scenario state from a Mustache template is supported in recent MockServer versions (Velocity and JavaScript work from 7.4.0).</p>
         <pre class="prettyprint lang-java code"><code class="code">{
@@ -416,7 +390,7 @@ $client-&gt;upsertExpectation(
 }</code></pre>
     </div>
 
-    <button class="accordion"><strong>REST (curl) &mdash; run the full flow</strong></button>
+    <button class="accordion inner">REST (curl) &mdash; run the full flow</button>
     <div class="panel">
         <pre class="prettyprint lang-bash code"><code class="code"># Step 1: capture the order id from the request body into scenario state "orderId"
 curl -X PUT http://localhost:1080/mockserver/expectation -d '{
@@ -464,33 +438,7 @@ curl -X POST http://localhost:1080/order/step3
 <div class="panel title">
     <p>Use <span class="inline_code">httpResponses</span> (plural) with <span class="inline_code">responseMode: "SEQUENTIAL"</span>. The first request returns the first response, the second returns the second, and so on. After the last response the cycle restarts. The fourth call below wraps back to the first (200).</p>
 
-    <button class="accordion"><strong>JSON</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">{
-  "httpRequest": { "path": "/api/status" },
-  "httpResponses": [
-    { "statusCode": 200, "body": "{\"status\": \"ok\"}" },
-    { "statusCode": 503, "body": "{\"status\": \"degraded\"}" },
-    { "statusCode": 200, "body": "{\"status\": \"ok\"}" }
-  ],
-  "responseMode": "SEQUENTIAL"
-}</code></pre>
-    </div>
-
-    <button class="accordion"><strong>REST (curl)</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-bash code"><code class="code">curl -X PUT http://localhost:1080/mockserver/expectation -d '{
-  "httpRequest": { "path": "/api/status" },
-  "httpResponses": [
-    { "statusCode": 200, "body": "{\"status\": \"ok\"}" },
-    { "statusCode": 503, "body": "{\"status\": \"degraded\"}" },
-    { "statusCode": 200, "body": "{\"status\": \"ok\"}" }
-  ]
-}'
-# GET /api/status 4 times -&gt; 200, 503, 200, 200 (4th cycles back to first)</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Java</strong></button>
+    <button class="accordion inner">Java</button>
     <div class="panel">
         <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
@@ -508,9 +456,9 @@ mockServerClient
     ));</code></pre>
     </div>
 
-    <button class="accordion"><strong>JavaScript</strong></button>
+    <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">await client.mockAnyResponse({
+        <pre class="prettyprint lang-javascript code"><code class="code">await client.mockAnyResponse({
     httpRequest: { method: 'GET', path: '/api/status' },
     httpResponses: [
         { statusCode: 200, body: JSON.stringify({ status: 'ok' }) },
@@ -521,7 +469,7 @@ mockServerClient
 });</code></pre>
     </div>
 
-    <button class="accordion"><strong>Python</strong></button>
+    <button class="accordion inner">Python</button>
     <div class="panel">
         <pre class="prettyprint lang-python code"><code class="code">from mockserver import Expectation, HttpRequest, HttpResponse, MockServerClient, ResponseMode
 
@@ -538,7 +486,7 @@ client.upsert(
 )</code></pre>
     </div>
 
-    <button class="accordion"><strong>Ruby</strong></button>
+    <button class="accordion inner">Ruby</button>
     <div class="panel">
         <pre class="prettyprint lang-ruby code"><code class="code">client.upsert(
   Expectation.new(
@@ -553,7 +501,7 @@ client.upsert(
 )</code></pre>
     </div>
 
-    <button class="accordion"><strong>Go</strong></button>
+    <button class="accordion inner">Go</button>
     <div class="panel">
         <pre class="prettyprint lang-go code"><code class="code">client.
     When(mockserver.Request().Method("GET").Path("/api/status")).
@@ -565,7 +513,7 @@ client.upsert(
     )</code></pre>
     </div>
 
-    <button class="accordion"><strong>.NET</strong></button>
+    <button class="accordion inner">.NET</button>
     <div class="panel">
         <pre class="prettyprint lang-csharp code"><code class="code">client.When(HttpRequest.Request().WithMethod("GET").WithPath("/api/status"))
     .WithResponseMode(ResponseMode.SEQUENTIAL)
@@ -577,7 +525,7 @@ client.upsert(
     });</code></pre>
     </div>
 
-    <button class="accordion"><strong>Rust</strong></button>
+    <button class="accordion inner">Rust</button>
     <div class="panel">
         <pre class="prettyprint lang-rust code"><code class="code">let expectation = Expectation::new(HttpRequest::new().method("GET").path("/api/status"))
     .http_responses(vec![
@@ -589,7 +537,7 @@ client.upsert(
 client.upsert(&amp;[expectation]).unwrap();</code></pre>
     </div>
 
-    <button class="accordion"><strong>PHP</strong></button>
+    <button class="accordion inner">PHP</button>
     <div class="panel">
         <pre class="prettyprint lang-php code"><code class="code">$client-&gt;upsertExpectation(
     (new Expectation())
@@ -603,6 +551,19 @@ client.upsert(&amp;[expectation]).unwrap();</code></pre>
 );</code></pre>
     </div>
 
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint lang-bash code"><code class="code">curl -X PUT http://localhost:1080/mockserver/expectation -d '{
+  "httpRequest": { "path": "/api/status" },
+  "httpResponses": [
+    { "statusCode": 200, "body": "{\"status\": \"ok\"}" },
+    { "statusCode": 503, "body": "{\"status\": \"degraded\"}" },
+    { "statusCode": 200, "body": "{\"status\": \"ok\"}" }
+  ]
+}'
+# GET /api/status 4 times -&gt; 200, 503, 200, 200 (4th cycles back to first)</code></pre>
+    </div>
+
     <p>Runnable example: <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/curl/scenario">examples/curl/scenario</a> (and the same under <span class="inline_code">examples/&lt;language&gt;/scenario</span>).</p>
 </div>
 
@@ -610,20 +571,120 @@ client.upsert(&amp;[expectation]).unwrap();</code></pre>
 <div class="panel title">
     <p>With <span class="inline_code">responseMode: "SWITCH"</span> and <span class="inline_code">switchAfter: 3</span>, the first three requests return the first response and every subsequent request returns the second. Useful for modelling a service that works for a while and then degrades, without needing a full named scenario.</p>
 
-    <button class="accordion"><strong>JSON</strong></button>
+    <button class="accordion inner">Java</button>
     <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">{
-  "httpRequest": { "path": "/api/orders" },
-  "httpResponses": [
-    { "statusCode": 200, "body": "{\"status\": \"ok\"}" },
-    { "statusCode": 503, "body": "{\"status\": \"unavailable\"}" }
-  ],
-  "responseMode": "SWITCH",
-  "switchAfter": 3
-}</code></pre>
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpResponse.response;
+import static org.mockserver.model.JsonBody.json;
+import org.mockserver.mock.ResponseMode;
+import java.util.Arrays;
+
+mockServerClient
+    .when(request().withMethod("GET").withPath("/api/orders"))
+    .withResponseMode(ResponseMode.SWITCH)
+    .withSwitchAfter(3)
+    .withHttpResponses(Arrays.asList(
+        response().withStatusCode(200).withBody(json("{\"status\":\"ok\"}")),
+        response().withStatusCode(503).withBody(json("{\"status\":\"unavailable\"}"))
+    ));</code></pre>
     </div>
 
-    <button class="accordion"><strong>REST (curl)</strong></button>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">await client.mockAnyResponse({
+    httpRequest: { method: 'GET', path: '/api/orders' },
+    httpResponses: [
+        { statusCode: 200, body: JSON.stringify({ status: 'ok' }) },
+        { statusCode: 503, body: JSON.stringify({ status: 'unavailable' }) }
+    ],
+    responseMode: 'SWITCH',
+    switchAfter: 3
+});</code></pre>
+    </div>
+
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import Expectation, HttpRequest, HttpResponse, ResponseMode
+
+client.upsert(
+    Expectation(
+        http_request=HttpRequest(method='GET', path='/api/orders'),
+        http_responses=[
+            HttpResponse().with_status_code(200).with_body('{"status":"ok"}'),
+            HttpResponse().with_status_code(503).with_body('{"status":"unavailable"}'),
+        ],
+        response_mode=ResponseMode.SWITCH,
+        switch_after=3,
+    )
+)</code></pre>
+    </div>
+
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">client.upsert(
+  Expectation.new(
+    http_request: HttpRequest.new(method: 'GET', path: '/api/orders'),
+    http_responses: [
+      HttpResponse.new(status_code: 200, body: '{"status":"ok"}'),
+      HttpResponse.new(status_code: 503, body: '{"status":"unavailable"}')
+    ],
+    response_mode: ResponseMode::SWITCH,
+    switch_after: 3
+  )
+)</code></pre>
+    </div>
+
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">client.
+    When(mockserver.Request().Method("GET").Path("/api/orders")).
+    WithResponseMode(mockserver.ResponseModeSwitch).
+    WithSwitchAfter(3).
+    RespondMultiple(
+        mockserver.Response().StatusCode(200).JSONBody(`{"status":"ok"}`),
+        mockserver.Response().StatusCode(503).JSONBody(`{"status":"unavailable"}`),
+    )</code></pre>
+    </div>
+
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">client.When(HttpRequest.Request().WithMethod("GET").WithPath("/api/orders"))
+    .WithResponseMode(ResponseMode.SWITCH)
+    .WithSwitchAfter(3)
+    .Respond(new[]
+    {
+        HttpResponse.Response().WithStatusCode(200).WithBody("{\"status\":\"ok\"}").Build(),
+        HttpResponse.Response().WithStatusCode(503).WithBody("{\"status\":\"unavailable\"}").Build()
+    });</code></pre>
+    </div>
+
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">let expectation = Expectation::new(HttpRequest::new().method("GET").path("/api/orders"))
+    .http_responses(vec![
+        HttpResponse::new().status_code(200).body(r#"{"status":"ok"}"#),
+        HttpResponse::new().status_code(503).body(r#"{"status":"unavailable"}"#),
+    ])
+    .response_mode(ResponseMode::Switch)
+    .switch_after(3);
+client.upsert(&amp;[expectation]).unwrap();</code></pre>
+    </div>
+
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$client-&gt;upsertExpectation(
+    (new Expectation())
+        -&gt;httpRequest(HttpRequest::request()-&gt;method('GET')-&gt;path('/api/orders'))
+        -&gt;responseMode(ResponseMode::SWITCH)
+        -&gt;switchAfter(3)
+        -&gt;httpResponses(
+            HttpResponse::response()-&gt;statusCode(200)-&gt;body('{"status":"ok"}'),
+            HttpResponse::response()-&gt;statusCode(503)-&gt;body('{"status":"unavailable"}'),
+        )
+);</code></pre>
+    </div>
+
+    <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint lang-bash code"><code class="code">curl -X PUT http://localhost:1080/mockserver/expectation -d '{
   "httpRequest": { "path": "/api/orders" },
@@ -644,20 +705,120 @@ client.upsert(&amp;[expectation]).unwrap();</code></pre>
 <div class="panel title">
     <p>With <span class="inline_code">responseMode: "WEIGHTED"</span>, each response is selected probabilistically using the relative weights in <span class="inline_code">responseWeights</span> (index-aligned with <span class="inline_code">httpResponses</span>). Weights do not need to sum to 100 &mdash; they are normalised internally. A weight of <span class="inline_code">[4, 1]</span> and <span class="inline_code">[80, 20]</span> both produce an 80% / 20% split.</p>
 
-    <button class="accordion"><strong>JSON</strong></button>
+    <button class="accordion inner">Java</button>
     <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">{
-  "httpRequest": { "path": "/api/payments" },
-  "httpResponses": [
-    { "statusCode": 200, "body": "{\"status\": \"ok\"}" },
-    { "statusCode": 503, "body": "{\"status\": \"unavailable\"}" }
-  ],
-  "responseMode": "WEIGHTED",
-  "responseWeights": [80, 20]
-}</code></pre>
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpResponse.response;
+import static org.mockserver.model.JsonBody.json;
+import org.mockserver.mock.ResponseMode;
+import java.util.Arrays;
+
+mockServerClient
+    .when(request().withMethod("GET").withPath("/api/payments"))
+    .withResponseMode(ResponseMode.WEIGHTED)
+    .withResponseWeights(Arrays.asList(80, 20))
+    .withHttpResponses(Arrays.asList(
+        response().withStatusCode(200).withBody(json("{\"status\":\"ok\"}")),
+        response().withStatusCode(503).withBody(json("{\"status\":\"unavailable\"}"))
+    ));</code></pre>
     </div>
 
-    <button class="accordion"><strong>REST (curl)</strong></button>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">await client.mockAnyResponse({
+    httpRequest: { method: 'GET', path: '/api/payments' },
+    httpResponses: [
+        { statusCode: 200, body: JSON.stringify({ status: 'ok' }) },
+        { statusCode: 503, body: JSON.stringify({ status: 'unavailable' }) }
+    ],
+    responseMode: 'WEIGHTED',
+    responseWeights: [80, 20]
+});</code></pre>
+    </div>
+
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import Expectation, HttpRequest, HttpResponse, ResponseMode
+
+client.upsert(
+    Expectation(
+        http_request=HttpRequest(method='GET', path='/api/payments'),
+        http_responses=[
+            HttpResponse().with_status_code(200).with_body('{"status":"ok"}'),
+            HttpResponse().with_status_code(503).with_body('{"status":"unavailable"}'),
+        ],
+        response_mode=ResponseMode.WEIGHTED,
+        response_weights=[80, 20],
+    )
+)</code></pre>
+    </div>
+
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code">client.upsert(
+  Expectation.new(
+    http_request: HttpRequest.new(method: 'GET', path: '/api/payments'),
+    http_responses: [
+      HttpResponse.new(status_code: 200, body: '{"status":"ok"}'),
+      HttpResponse.new(status_code: 503, body: '{"status":"unavailable"}')
+    ],
+    response_mode: ResponseMode::WEIGHTED,
+    response_weights: [80, 20]
+  )
+)</code></pre>
+    </div>
+
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">client.
+    When(mockserver.Request().Method("GET").Path("/api/payments")).
+    WithResponseMode(mockserver.ResponseModeWeighted).
+    WithResponseWeights(80, 20).
+    RespondMultiple(
+        mockserver.Response().StatusCode(200).JSONBody(`{"status":"ok"}`),
+        mockserver.Response().StatusCode(503).JSONBody(`{"status":"unavailable"}`),
+    )</code></pre>
+    </div>
+
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">client.When(HttpRequest.Request().WithMethod("GET").WithPath("/api/payments"))
+    .WithResponseMode(ResponseMode.WEIGHTED)
+    .WithResponseWeights(new[] { 80, 20 })
+    .Respond(new[]
+    {
+        HttpResponse.Response().WithStatusCode(200).WithBody("{\"status\":\"ok\"}").Build(),
+        HttpResponse.Response().WithStatusCode(503).WithBody("{\"status\":\"unavailable\"}").Build()
+    });</code></pre>
+    </div>
+
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">let expectation = Expectation::new(HttpRequest::new().method("GET").path("/api/payments"))
+    .http_responses(vec![
+        HttpResponse::new().status_code(200).body(r#"{"status":"ok"}"#),
+        HttpResponse::new().status_code(503).body(r#"{"status":"unavailable"}"#),
+    ])
+    .response_mode(ResponseMode::Weighted)
+    .response_weights(vec![80, 20]);
+client.upsert(&amp;[expectation]).unwrap();</code></pre>
+    </div>
+
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">$client-&gt;upsertExpectation(
+    (new Expectation())
+        -&gt;httpRequest(HttpRequest::request()-&gt;method('GET')-&gt;path('/api/payments'))
+        -&gt;responseMode(ResponseMode::WEIGHTED)
+        -&gt;responseWeights(80, 20)
+        -&gt;httpResponses(
+            HttpResponse::response()-&gt;statusCode(200)-&gt;body('{"status":"ok"}'),
+            HttpResponse::response()-&gt;statusCode(503)-&gt;body('{"status":"unavailable"}'),
+        )
+);</code></pre>
+    </div>
+
+    <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint lang-bash code"><code class="code">curl -X PUT http://localhost:1080/mockserver/expectation -d '{
   "httpRequest": { "path": "/api/payments" },
@@ -679,7 +840,7 @@ client.upsert(&amp;[expectation]).unwrap();</code></pre>
 <div class="panel title">
     <p>Given the <span class="inline_code">SEQUENTIAL</span> expectation above (200 then 503), send <span class="inline_code">x-mockserver-response-index: 1</span> to force the second response for this request, regardless of where the rotation currently sits.</p>
 
-    <button class="accordion"><strong>REST (curl)</strong></button>
+    <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint lang-bash code"><code class="code">curl -H 'x-mockserver-response-index: 1' http://localhost:1080/api/payments
 # -> 503 { "status": "unavailable" }  (the sequence position is unchanged for the next caller)</code></pre>
@@ -696,23 +857,98 @@ client.upsert(&amp;[expectation]).unwrap();</code></pre>
 <div class="panel title">
     <p>Register expectations for each state, then call <span class="inline_code">PUT /mockserver/scenario/{name}</span> with <span class="inline_code">state</span>, <span class="inline_code">transitionAfterMs</span>, and <span class="inline_code">nextState</span>. The scenario enters the state immediately and automatically advances after the delay. The transition only fires if the scenario is still in the expected state when the timer expires &mdash; any intervening manual trigger or expectation match cancels it.</p>
 
-    <button class="accordion"><strong>JSON</strong></button>
+    <button class="accordion inner">Java</button>
     <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">// First register state-gated expectations:
-// { "httpRequest": { "path": "/status" }, "httpResponse": { "body": "deploying" },
-//   "scenarioName": "DeployFlow", "scenarioState": "Deploying" }
-// { "httpRequest": { "path": "/status" }, "httpResponse": { "body": "complete" },
-//   "scenarioName": "DeployFlow", "scenarioState": "Deployed" }
+        <pre class="prettyprint lang-java code"><code class="code">// Register expectations for each state first ...
 
-// Then PUT to /mockserver/scenario/DeployFlow:
-{
-  "state": "Deploying",
-  "transitionAfterMs": 1000,
-  "nextState": "Deployed"
-}</code></pre>
+// Then schedule the timed transition:
+mockServerClient.scenario("DeployFlow").set("Deploying", 1000L, "Deployed");
+
+// GET /status returns "deploying" immediately, "complete" after ~1s
+Thread.sleep(1300L);
+// now "complete"</code></pre>
     </div>
 
-    <button class="accordion"><strong>REST (curl)</strong></button>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">// Register expectations for each state first ...
+
+// Set the starting state with a timed auto-transition:
+await client.scenario('DeployFlow').set('Deploying', { transitionAfterMs: 1000, nextState: 'Deployed' });
+
+await new Promise(resolve =&gt; setTimeout(resolve, 1300));
+// GET /status now returns "complete"</code></pre>
+    </div>
+
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code">import time
+
+# Register expectations for each state first ...
+
+client.scenario('DeployFlow').set(
+    'Deploying', transition_after_ms=1000, next_state='Deployed'
+)
+
+time.sleep(1.3)
+# GET /status now returns "complete"</code></pre>
+    </div>
+
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code"># Register expectations for each state first ...
+
+client.scenario('DeployFlow').set('Deploying', transition_after_ms: 1000, next_state: 'Deployed')
+
+sleep(1.3)
+# GET /status now returns "complete"</code></pre>
+    </div>
+
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import "time"
+
+// Register expectations for each state first ...
+
+client.Scenario("DeployFlow").SetTimed("Deploying", 1000, "Deployed")
+
+time.Sleep(1300 * time.Millisecond)
+// GET /status now returns "complete"</code></pre>
+    </div>
+
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">// Register expectations for each state first ...
+
+client.Scenario("DeployFlow").Set("Deploying", 1000, "Deployed");
+
+await Task.Delay(1300);
+// GET /status now returns "complete"</code></pre>
+    </div>
+
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use std::time::Duration;
+
+// Register expectations for each state first ...
+
+client.scenario("DeployFlow").set_timed("Deploying", 1000, "Deployed").unwrap();
+
+std::thread::sleep(Duration::from_millis(1300));
+// GET /status now returns "complete"</code></pre>
+    </div>
+
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">// Register expectations for each state first ...
+
+$client-&gt;scenario('DeployFlow')-&gt;set('Deploying', 1000, 'Deployed');
+
+usleep(1_300_000);
+// GET /status now returns "complete"</code></pre>
+    </div>
+
+    <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint lang-bash code"><code class="code"># Register the two expectations (one per state):
 curl -X PUT http://localhost:1080/mockserver/expectation -d '{
@@ -736,97 +972,6 @@ curl -X PUT http://localhost:1080/mockserver/scenario/DeployFlow \
 # GET /status returns "deploying" now, "complete" after ~1s</code></pre>
     </div>
 
-    <button class="accordion"><strong>Java</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">// Register expectations for each state first ...
-
-// Then schedule the timed transition:
-mockServerClient.scenario("DeployFlow").set("Deploying", 1000L, "Deployed");
-
-// GET /status returns "deploying" immediately, "complete" after ~1s
-Thread.sleep(1300L);
-// now "complete"</code></pre>
-    </div>
-
-    <button class="accordion"><strong>JavaScript</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">// Register expectations for each state first ...
-
-// Set the starting state with a timed auto-transition:
-await client.scenario('DeployFlow').set('Deploying', { transitionAfterMs: 1000, nextState: 'Deployed' });
-
-await new Promise(resolve =&gt; setTimeout(resolve, 1300));
-// GET /status now returns "complete"</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Python</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code">import time
-
-# Register expectations for each state first ...
-
-client.scenario('DeployFlow').set(
-    'Deploying', transition_after_ms=1000, next_state='Deployed'
-)
-
-time.sleep(1.3)
-# GET /status now returns "complete"</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Ruby</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code"># Register expectations for each state first ...
-
-client.scenario('DeployFlow').set('Deploying', transition_after_ms: 1000, next_state: 'Deployed')
-
-sleep(1.3)
-# GET /status now returns "complete"</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Go</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">import "time"
-
-// Register expectations for each state first ...
-
-client.Scenario("DeployFlow").SetTimed("Deploying", 1000, "Deployed")
-
-time.Sleep(1300 * time.Millisecond)
-// GET /status now returns "complete"</code></pre>
-    </div>
-
-    <button class="accordion"><strong>.NET</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">// Register expectations for each state first ...
-
-client.Scenario("DeployFlow").Set("Deploying", 1000, "Deployed");
-
-await Task.Delay(1300);
-// GET /status now returns "complete"</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Rust</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">use std::time::Duration;
-
-// Register expectations for each state first ...
-
-client.scenario("DeployFlow").set_timed("Deploying", 1000, "Deployed").unwrap();
-
-std::thread::sleep(Duration::from_millis(1300));
-// GET /status now returns "complete"</code></pre>
-    </div>
-
-    <button class="accordion"><strong>PHP</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">// Register expectations for each state first ...
-
-$client-&gt;scenario('DeployFlow')-&gt;set('Deploying', 1000, 'Deployed');
-
-usleep(1_300_000);
-// GET /status now returns "complete"</code></pre>
-    </div>
-
     <p>Runnable example: <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/curl/scenario">examples/curl/scenario</a> (and the same under <span class="inline_code">examples/&lt;language&gt;/scenario</span>).</p>
 </div>
 
@@ -834,13 +979,63 @@ usleep(1_300_000);
 <div class="panel title">
     <p>Call <span class="inline_code">PUT /mockserver/scenario/{name}/trigger</span> with <span class="inline_code">{"newState": "..."}</span> to jump the scenario to any state immediately. This is ideal for simulating failure injection, CI pipeline gates, or test teardown without waiting for a timer.</p>
 
-    <button class="accordion"><strong>JSON</strong></button>
+    <button class="accordion inner">Java</button>
     <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">// PUT to /mockserver/scenario/HealthFlow/trigger:
-{ "newState": "Down" }</code></pre>
+        <pre class="prettyprint lang-java code"><code class="code">// Register expectations first ...
+
+mockServerClient.scenario("HealthFlow").trigger("Down");</code></pre>
     </div>
 
-    <button class="accordion"><strong>REST (curl)</strong></button>
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">// Register expectations first ...
+
+await client.scenario('HealthFlow').trigger('Down');</code></pre>
+    </div>
+
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code"># Register expectations first ...
+
+client.scenario('HealthFlow').trigger('Down')</code></pre>
+    </div>
+
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code"># Register expectations first ...
+
+client.scenario('HealthFlow').trigger('Down')</code></pre>
+    </div>
+
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">// Register expectations first ...
+
+client.Scenario("HealthFlow").Trigger("Down")</code></pre>
+    </div>
+
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">// Register expectations first ...
+
+client.Scenario("HealthFlow").Trigger("Down");</code></pre>
+    </div>
+
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">// Register expectations first ...
+
+client.scenario("HealthFlow").trigger("Down").unwrap();</code></pre>
+    </div>
+
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">// Register expectations first ...
+
+$client-&gt;scenario('HealthFlow')-&gt;trigger('Down');</code></pre>
+    </div>
+
+    <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint lang-bash code"><code class="code"># Register expectations first:
 curl -X PUT http://localhost:1080/mockserver/expectation -d '{
@@ -866,62 +1061,6 @@ curl -X PUT http://localhost:1080/mockserver/scenario/HealthFlow/trigger \
 # GET /health -&gt; 503 down</code></pre>
     </div>
 
-    <button class="accordion"><strong>Java</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">// Register expectations first ...
-
-mockServerClient.scenario("HealthFlow").trigger("Down");</code></pre>
-    </div>
-
-    <button class="accordion"><strong>JavaScript</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">// Register expectations first ...
-
-await client.scenario('HealthFlow').trigger('Down');</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Python</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code"># Register expectations first ...
-
-client.scenario('HealthFlow').trigger('Down')</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Ruby</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code"># Register expectations first ...
-
-client.scenario('HealthFlow').trigger('Down')</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Go</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">// Register expectations first ...
-
-client.Scenario("HealthFlow").Trigger("Down")</code></pre>
-    </div>
-
-    <button class="accordion"><strong>.NET</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">// Register expectations first ...
-
-client.Scenario("HealthFlow").Trigger("Down");</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Rust</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">// Register expectations first ...
-
-client.scenario("HealthFlow").trigger("Down").unwrap();</code></pre>
-    </div>
-
-    <button class="accordion"><strong>PHP</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">// Register expectations first ...
-
-$client-&gt;scenario('HealthFlow')-&gt;trigger('Down');</code></pre>
-    </div>
-
     <p>Runnable example: <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/curl/scenario">examples/curl/scenario</a> (and the same under <span class="inline_code">examples/&lt;language&gt;/scenario</span>).</p>
 </div>
 
@@ -945,59 +1084,7 @@ $client-&gt;scenario('HealthFlow')-&gt;trigger('Down');</code></pre>
 <div class="panel title">
     <p>The first expectation handles GET /events and carries a <span class="inline_code">crossProtocolScenarios</span> entry with <span class="inline_code">trigger: "HTTP_REQUEST"</span> that advances <span class="inline_code">ConnFlow</span> to <span class="inline_code">Connected</span>. The second expectation gates on that state, so it only matches after /events has been called. The same mechanism works with <span class="inline_code">WEBSOCKET_CONNECT</span>, <span class="inline_code">DNS_QUERY</span>, and <span class="inline_code">GRPC_REQUEST</span> triggers.</p>
 
-    <button class="accordion"><strong>JSON</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">[
-  {
-    "httpRequest": { "method": "GET", "path": "/events" },
-    "httpResponse": { "statusCode": 200, "body": "event-stream" },
-    "crossProtocolScenarios": [
-      {
-        "trigger": "HTTP_REQUEST",
-        "matchPattern": "/events",
-        "scenarioName": "ConnFlow",
-        "targetState": "Connected"
-      }
-    ]
-  },
-  {
-    "httpRequest": { "method": "GET", "path": "/api/conn-status" },
-    "httpResponse": { "statusCode": 200, "body": "connected" },
-    "scenarioName": "ConnFlow",
-    "scenarioState": "Connected"
-  }
-]</code></pre>
-    </div>
-
-    <button class="accordion"><strong>REST (curl)</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-bash code"><code class="code"># Expectation 1: /events fires the cross-protocol trigger
-curl -X PUT http://localhost:1080/mockserver/expectation -d '{
-  "httpRequest": { "method": "GET", "path": "/events" },
-  "httpResponse": { "statusCode": 200, "body": "event-stream" },
-  "crossProtocolScenarios": [
-    {
-      "trigger": "HTTP_REQUEST",
-      "matchPattern": "/events",
-      "scenarioName": "ConnFlow",
-      "targetState": "Connected"
-    }
-  ]
-}'
-
-# Expectation 2: only active once ConnFlow is Connected
-curl -X PUT http://localhost:1080/mockserver/expectation -d '{
-  "httpRequest": { "method": "GET", "path": "/api/conn-status" },
-  "httpResponse": { "statusCode": 200, "body": "connected" },
-  "scenarioName": "ConnFlow",
-  "scenarioState": "Connected"
-}'
-
-# Before /events: GET /api/conn-status -&gt; 404 (unmatched)
-# After  /events: GET /api/conn-status -&gt; 200</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Java</strong></button>
+    <button class="accordion inner">Java</button>
     <div class="panel">
         <pre class="prettyprint lang-java code"><code class="code">import org.mockserver.model.CrossProtocolScenario;
 
@@ -1014,9 +1101,9 @@ mockServerClient
     .respond(response().withStatusCode(200).withBody(json("{\"status\":\"connected\"}")));</code></pre>
     </div>
 
-    <button class="accordion"><strong>JavaScript</strong></button>
+    <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">await client.mockAnyResponse([
+        <pre class="prettyprint lang-javascript code"><code class="code">await client.mockAnyResponse([
     {
         httpRequest: { method: 'GET', path: '/events' },
         httpResponse: { statusCode: 200, body: JSON.stringify({ stream: 'open' }) },
@@ -1028,7 +1115,7 @@ mockServerClient
         }]
     },
     {
-        httpRequest: { method: 'GET', path: '/api/status' },
+        httpRequest: { method: 'GET', path: '/api/conn-status' },
         httpResponse: { statusCode: 200, body: JSON.stringify({ status: 'connected' }) },
         scenarioName: 'ConnFlow',
         scenarioState: 'Connected'
@@ -1036,7 +1123,7 @@ mockServerClient
 ]);</code></pre>
     </div>
 
-    <button class="accordion"><strong>Python</strong></button>
+    <button class="accordion inner">Python</button>
     <div class="panel">
         <pre class="prettyprint lang-python code"><code class="code">from mockserver import CrossProtocolScenario, Expectation, HttpRequest, HttpResponse, MockServerClient
 
@@ -1062,7 +1149,7 @@ client.upsert(
 )</code></pre>
     </div>
 
-    <button class="accordion"><strong>Ruby</strong></button>
+    <button class="accordion inner">Ruby</button>
     <div class="panel">
         <pre class="prettyprint lang-ruby code"><code class="code">client.upsert(
   Expectation.new(
@@ -1086,7 +1173,7 @@ client.upsert(
 )</code></pre>
     </div>
 
-    <button class="accordion"><strong>Go</strong></button>
+    <button class="accordion inner">Go</button>
     <div class="panel">
         <pre class="prettyprint lang-go code"><code class="code">client.
     When(mockserver.Request().Method("GET").Path("/events")).
@@ -1108,7 +1195,7 @@ client.Upsert(mockserver.Expectation{
 })</code></pre>
     </div>
 
-    <button class="accordion"><strong>.NET</strong></button>
+    <button class="accordion inner">.NET</button>
     <div class="panel">
         <pre class="prettyprint lang-csharp code"><code class="code">client.When(HttpRequest.Request().WithMethod("GET").WithPath("/events"))
     .WithCrossProtocolScenario(new CrossProtocolScenario
@@ -1126,7 +1213,7 @@ client.When(HttpRequest.Request().WithMethod("GET").WithPath("/api/conn-status")
     .Respond(HttpResponse.Response().WithStatusCode(200).WithBody("{\"status\":\"connected\"}"));</code></pre>
     </div>
 
-    <button class="accordion"><strong>Rust</strong></button>
+    <button class="accordion inner">Rust</button>
     <div class="panel">
         <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{CrossProtocolScenario, CrossProtocolTrigger, Expectation, HttpRequest, HttpResponse};
 
@@ -1145,7 +1232,7 @@ let expectations = vec![
 client.upsert(&amp;expectations).unwrap();</code></pre>
     </div>
 
-    <button class="accordion"><strong>PHP</strong></button>
+    <button class="accordion inner">PHP</button>
     <div class="panel">
         <pre class="prettyprint lang-php code"><code class="code">use MockServer\CrossProtocolScenario;
 use MockServer\CrossProtocolTrigger;
@@ -1168,6 +1255,34 @@ $client-&gt;upsertExpectation(
         -&gt;scenarioState('Connected')
         -&gt;httpResponse(HttpResponse::response()-&gt;statusCode(200)-&gt;body('{"status":"connected"}'))
 );</code></pre>
+    </div>
+
+    <button class="accordion inner">REST API</button>
+    <div class="panel">
+        <pre class="prettyprint lang-bash code"><code class="code"># Expectation 1: /events fires the cross-protocol trigger
+curl -X PUT http://localhost:1080/mockserver/expectation -d '{
+  "httpRequest": { "method": "GET", "path": "/events" },
+  "httpResponse": { "statusCode": 200, "body": "event-stream" },
+  "crossProtocolScenarios": [
+    {
+      "trigger": "HTTP_REQUEST",
+      "matchPattern": "/events",
+      "scenarioName": "ConnFlow",
+      "targetState": "Connected"
+    }
+  ]
+}'
+
+# Expectation 2: only active once ConnFlow is Connected
+curl -X PUT http://localhost:1080/mockserver/expectation -d '{
+  "httpRequest": { "method": "GET", "path": "/api/conn-status" },
+  "httpResponse": { "statusCode": 200, "body": "connected" },
+  "scenarioName": "ConnFlow",
+  "scenarioState": "Connected"
+}'
+
+# Before /events: GET /api/conn-status -&gt; 404 (unmatched)
+# After  /events: GET /api/conn-status -&gt; 200</code></pre>
     </div>
 
     <p>Runnable example: <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/curl/scenario">examples/curl/scenario</a> (and the same under <span class="inline_code">examples/&lt;language&gt;/scenario</span>).</p>
@@ -1219,7 +1334,151 @@ $client-&gt;upsertExpectation(
 <button class="accordion title"><strong>REST API Reference</strong> &mdash; inspect and control scenarios with curl</button>
 <div class="panel title">
 
-    <button class="accordion"><strong>REST (curl)</strong></button>
+    <button class="accordion inner">Java</button>
+    <div class="panel">
+        <pre class="prettyprint lang-java code"><code class="code">// Inspect state:
+String state = mockServerClient.scenario("DeployFlow").state();
+
+// Set state immediately:
+mockServerClient.scenario("DeployFlow").set("Deploying");
+
+// Set state with timed auto-transition (transitionAfterMs, nextState):
+mockServerClient.scenario("DeployFlow").set("Deploying", 5000L, "Deployed");
+
+// Jump to a state immediately:
+mockServerClient.scenario("DeployFlow").trigger("Failed");
+
+// List all scenarios:
+List&lt;ScenarioState&gt; all = mockServerClient.scenarios();</code></pre>
+    </div>
+
+    <button class="accordion inner">JavaScript</button>
+    <div class="panel">
+        <pre class="prettyprint lang-javascript code"><code class="code">// Get state:
+const state = await client.scenario('DeployFlow').state();
+
+// Set state immediately:
+await client.scenario('DeployFlow').set('Deploying');
+
+// Set state with timed auto-transition:
+await client.scenario('DeployFlow').set('Deploying', { transitionAfterMs: 5000, nextState: 'Deployed' });
+
+// Jump immediately:
+await client.scenario('DeployFlow').trigger('Failed');
+
+// List all:
+const all = await client.scenarios();</code></pre>
+    </div>
+
+    <button class="accordion inner">Python</button>
+    <div class="panel">
+        <pre class="prettyprint lang-python code"><code class="code"># Get state:
+state = client.scenario('DeployFlow').state()
+
+# Set state immediately:
+client.scenario('DeployFlow').set('Deploying')
+
+# Set state with timed auto-transition:
+client.scenario('DeployFlow').set('Deploying', transition_after_ms=5000, next_state='Deployed')
+
+# Jump immediately:
+client.scenario('DeployFlow').trigger('Failed')
+
+# List all:
+all_scenarios = client.scenarios()</code></pre>
+    </div>
+
+    <button class="accordion inner">Ruby</button>
+    <div class="panel">
+        <pre class="prettyprint lang-ruby code"><code class="code"># Get state:
+state = client.scenario('DeployFlow').state
+
+# Set state immediately:
+client.scenario('DeployFlow').set('Deploying')
+
+# Set state with timed auto-transition:
+client.scenario('DeployFlow').set('Deploying', transition_after_ms: 5000, next_state: 'Deployed')
+
+# Jump immediately:
+client.scenario('DeployFlow').trigger('Failed')
+
+# List all:
+all = client.scenarios</code></pre>
+    </div>
+
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">// Get state:
+state, err := client.Scenario("DeployFlow").State()
+
+// Set state immediately:
+client.Scenario("DeployFlow").Set("Deploying")
+
+// Set state with timed auto-transition:
+client.Scenario("DeployFlow").SetTimed("Deploying", 5000, "Deployed")
+
+// Jump immediately:
+client.Scenario("DeployFlow").Trigger("Failed")
+
+// List all:
+all, err := client.Scenarios()</code></pre>
+    </div>
+
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">// Get state:
+var state = client.Scenario("DeployFlow").State();
+
+// Set state immediately:
+client.Scenario("DeployFlow").Set("Deploying");
+
+// Set state with timed auto-transition:
+client.Scenario("DeployFlow").Set("Deploying", 5000, "Deployed");
+
+// Jump immediately:
+client.Scenario("DeployFlow").Trigger("Failed");
+
+// List all:
+var all = client.Scenarios();</code></pre>
+    </div>
+
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">// Get state:
+let state = client.scenario("DeployFlow").state().unwrap();
+
+// Set state immediately:
+client.scenario("DeployFlow").set("Deploying").unwrap();
+
+// Set state with timed auto-transition:
+client.scenario("DeployFlow").set_timed("Deploying", 5000, "Deployed").unwrap();
+
+// Jump immediately:
+client.scenario("DeployFlow").trigger("Failed").unwrap();
+
+// List all:
+let all = client.scenarios().unwrap();</code></pre>
+    </div>
+
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <pre class="prettyprint lang-php code"><code class="code">// Get state:
+$state = $client-&gt;scenario('DeployFlow')-&gt;state();
+
+// Set state immediately:
+$client-&gt;scenario('DeployFlow')-&gt;set('Deploying');
+
+// Set state with timed auto-transition:
+$client-&gt;scenario('DeployFlow')-&gt;set('Deploying', 5000, 'Deployed');
+
+// Jump immediately:
+$client-&gt;scenario('DeployFlow')-&gt;trigger('Failed');
+
+// List all:
+$all = $client-&gt;scenarios();</code></pre>
+    </div>
+
+    <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint lang-bash code"><code class="code"># List all scenarios and their current state:
 curl -X GET http://localhost:1080/mockserver/scenario
@@ -1242,150 +1501,6 @@ curl -X PUT http://localhost:1080/mockserver/scenario/DeployFlow \
 curl -X PUT http://localhost:1080/mockserver/scenario/DeployFlow/trigger \
   -H "Content-Type: application/json" \
   -d '{"newState": "Failed"}'</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Java</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">// Inspect state:
-String state = mockServerClient.scenario("DeployFlow").state();
-
-// Set state immediately:
-mockServerClient.scenario("DeployFlow").set("Deploying");
-
-// Set state with timed auto-transition (transitionAfterMs, nextState):
-mockServerClient.scenario("DeployFlow").set("Deploying", 5000L, "Deployed");
-
-// Jump to a state immediately:
-mockServerClient.scenario("DeployFlow").trigger("Failed");
-
-// List all scenarios:
-List&lt;ScenarioState&gt; all = mockServerClient.scenarios();</code></pre>
-    </div>
-
-    <button class="accordion"><strong>JavaScript</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">// Get state:
-const state = await client.scenario('DeployFlow').state();
-
-// Set state immediately:
-await client.scenario('DeployFlow').set('Deploying');
-
-// Set state with timed auto-transition:
-await client.scenario('DeployFlow').set('Deploying', { transitionAfterMs: 5000, nextState: 'Deployed' });
-
-// Jump immediately:
-await client.scenario('DeployFlow').trigger('Failed');
-
-// List all:
-const all = await client.scenarios();</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Python</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-python code"><code class="code"># Get state:
-state = client.scenario('DeployFlow').state()
-
-# Set state immediately:
-client.scenario('DeployFlow').set('Deploying')
-
-# Set state with timed auto-transition:
-client.scenario('DeployFlow').set('Deploying', transition_after_ms=5000, next_state='Deployed')
-
-# Jump immediately:
-client.scenario('DeployFlow').trigger('Failed')
-
-# List all:
-all_scenarios = client.scenarios()</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Ruby</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-ruby code"><code class="code"># Get state:
-state = client.scenario('DeployFlow').state
-
-# Set state immediately:
-client.scenario('DeployFlow').set('Deploying')
-
-# Set state with timed auto-transition:
-client.scenario('DeployFlow').set('Deploying', transition_after_ms: 5000, next_state: 'Deployed')
-
-# Jump immediately:
-client.scenario('DeployFlow').trigger('Failed')
-
-# List all:
-all = client.scenarios</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Go</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-go code"><code class="code">// Get state:
-state, err := client.Scenario("DeployFlow").State()
-
-// Set state immediately:
-client.Scenario("DeployFlow").Set("Deploying")
-
-// Set state with timed auto-transition:
-client.Scenario("DeployFlow").SetTimed("Deploying", 5000, "Deployed")
-
-// Jump immediately:
-client.Scenario("DeployFlow").Trigger("Failed")
-
-// List all:
-all, err := client.Scenarios()</code></pre>
-    </div>
-
-    <button class="accordion"><strong>.NET</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-csharp code"><code class="code">// Get state:
-var state = client.Scenario("DeployFlow").State();
-
-// Set state immediately:
-client.Scenario("DeployFlow").Set("Deploying");
-
-// Set state with timed auto-transition:
-client.Scenario("DeployFlow").Set("Deploying", 5000, "Deployed");
-
-// Jump immediately:
-client.Scenario("DeployFlow").Trigger("Failed");
-
-// List all:
-var all = client.Scenarios();</code></pre>
-    </div>
-
-    <button class="accordion"><strong>Rust</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-rust code"><code class="code">// Get state:
-let state = client.scenario("DeployFlow").state().unwrap();
-
-// Set state immediately:
-client.scenario("DeployFlow").set("Deploying").unwrap();
-
-// Set state with timed auto-transition:
-client.scenario("DeployFlow").set_timed("Deploying", 5000, "Deployed").unwrap();
-
-// Jump immediately:
-client.scenario("DeployFlow").trigger("Failed").unwrap();
-
-// List all:
-let all = client.scenarios().unwrap();</code></pre>
-    </div>
-
-    <button class="accordion"><strong>PHP</strong></button>
-    <div class="panel">
-        <pre class="prettyprint lang-php code"><code class="code">// Get state:
-$state = $client-&gt;scenario('DeployFlow')-&gt;state();
-
-// Set state immediately:
-$client-&gt;scenario('DeployFlow')-&gt;set('Deploying');
-
-// Set state with timed auto-transition:
-$client-&gt;scenario('DeployFlow')-&gt;set('Deploying', 5000, 'Deployed');
-
-// Jump immediately:
-$client-&gt;scenario('DeployFlow')-&gt;trigger('Failed');
-
-// List all:
-$all = $client-&gt;scenarios();</code></pre>
     </div>
 
     <p>Runnable example: <a target="_blank" href="https://github.com/mock-server/mockserver-monorepo/tree/master/examples/curl/scenario">examples/curl/scenario</a> (and the same under <span class="inline_code">examples/&lt;language&gt;/scenario</span>).</p>
