@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+## [7.4.0] - 2026-07-04
+
+### Added
 - **Dashboard: every language tab now generates typed client code.** The composer's Java, Node.js, Python, Go,
   C#, Ruby, and Rust tabs construct each client's typed model — fluent builders and typed constructors matching
   the website examples — instead of embedding raw JSON, including full LLM response actions in Java. Every

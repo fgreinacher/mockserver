@@ -80,7 +80,7 @@ that degradation IS the point. The output JSON shape is a hard contract:
 }
 ```
 
-A committed sample (a real run against MockServer 7.3.0 on Docker Desktop, ladder
+A committed sample (a real run against MockServer 7.4.0 on Docker Desktop, ladder
 `500…16000` rps) lives at `k6/fixtures/sample-perf-sweep.json` — used to build
 and test the docs-site knee-curve chart without re-running a load test.
 

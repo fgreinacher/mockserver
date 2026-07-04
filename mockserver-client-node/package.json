@@ -54,7 +54,7 @@
     "c8": "~11.0.0",
     "grunt-contrib-jshint": "~3.2.0",
     "grunt-exec": "~3.0.0",
-    "mockserver-node": "7.3.0",
+    "mockserver-node": "7.4.0",
     "typescript": "~6.0.3"
   },
   "keywords": [
