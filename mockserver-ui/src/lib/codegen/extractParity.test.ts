@@ -2,12 +2,15 @@
  * Byte-identity parity harness for the per-language client-code emitters.
  *
  * The committed golden fixture ({@link ./__fixtures__/emitterGolden.ts}) was
- * generated from the code BEFORE the six non-Java emitters (standardToNode /
- * Python / Go / Csharp / Ruby / Rust) were extracted out of standardCodegen.ts
- * into per-language modules under lib/codegen/. This test asserts every emitter
- * reproduces that golden output character-for-character across the extraction
- * refactor, and permanently guards the emitters against accidental output drift
- * during the subsequent typed-emitter rewrites.
+ * generated from the code BEFORE the six non-Java emitters (standardToPython /
+ * Go / Csharp / Ruby / Rust — plus Node, now split out) were extracted out of
+ * standardCodegen.ts into per-language modules under lib/codegen/. This test
+ * asserts every emitter reproduces that golden output character-for-character
+ * across the extraction refactor, and permanently guards the emitters against
+ * accidental output drift during the subsequent typed-emitter rewrites.
+ *
+ * The Node emitter has its own byte-identity check (plus a client-type typecheck
+ * proof) in ../node.test.ts, so it is no longer part of this shared harness.
  *
  * It drives the emitters via extractParityCases, which imports them from
  * '../standardCodegen' (their canonical re-export surface), so the import path is

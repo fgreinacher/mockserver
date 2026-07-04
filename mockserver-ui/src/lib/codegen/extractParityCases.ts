@@ -8,7 +8,6 @@
  * literalisation of booleans/null).
  */
 import {
-  standardToNode,
   standardToPython,
   standardToGo,
   standardToCsharp,
@@ -210,7 +209,6 @@ export const combos: Combo[] = [
 ];
 
 export const emitters: Record<string, (m: StandardMatcher, a: StandardActionPayload, u: string) => string> = {
-  node: standardToNode,
   python: standardToPython,
   go: standardToGo,
   csharp: standardToCsharp,
