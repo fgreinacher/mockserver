@@ -341,56 +341,191 @@ curl -X PUT http://localhost:1080/mockserver/expectation -d '{
 
 <button class="accordion title"><strong>Three-Step Order Flow</strong> &mdash; capture the order id in step 1, then return it in the response body of step 3</button>
 <div class="panel title">
-    <p>The first expectation captures <span class="inline_code">$.id</span> from the request body into the scenario state key <span class="inline_code">orderId</span>. A later expectation reads it back in its response template, so the id sent in step 1 appears in the response body of step 3. The <strong>capture step is identical for every template engine</strong> &mdash; only the step-3 template differs, so the three template tabs below are interchangeable.</p>
+    <p>The first expectation captures <span class="inline_code">$.id</span> from the request body into the scenario state key <span class="inline_code">orderId</span>. The second expectation reads it back in a <strong>JavaScript response template</strong>, so the id sent in step 1 appears in the response body of step 3. Each client tab below registers both expectations in one go. The step-3 template uses the JavaScript engine; the <strong>Velocity</strong> and <strong>Mustache</strong> equivalents of the <span class="inline_code">scenario.get('orderId')</span> read-back are shown in the bullet list above &mdash; swap the <span class="inline_code">templateType</span> and <span class="inline_code">template</span> fields to use them instead.</p>
 
-    <button class="accordion inner">Step 1 &mdash; capture the value (JSON)</button>
+    <button class="accordion inner">Java</button>
     <div class="panel">
-        <pre class="prettyprint lang-java code"><code class="code">{
-  "httpRequest": { "method": "POST", "path": "/order/step1" },
-  "capture": [
-    { "source": "jsonPath", "expression": "$.id", "into": "orderId" }
-  ],
-  "httpResponse": { "statusCode": 200, "body": "{\"step\": 1}" }
-}</code></pre>
+        <pre class="prettyprint lang-java code"><code class="code">import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpResponse.response;
+import static org.mockserver.model.HttpTemplate.template;
+import org.mockserver.model.HttpTemplate;
+import org.mockserver.model.CaptureRule;
+
+// Step 1: capture the order id from the request body into scenario state "orderId"
+mockServerClient
+    .when(request().withMethod("POST").withPath("/order/step1"))
+    .withCapture(CaptureRule.capture(CaptureRule.Source.jsonPath, "$.id", "orderId"))
+    .respond(response().withStatusCode(200).withBody("{\"step\": 1}"));
+
+// Step 3: read the captured id back in a JavaScript response template
+mockServerClient
+    .when(request().withMethod("POST").withPath("/order/step3"))
+    .respond(template(HttpTemplate.TemplateType.JAVASCRIPT,
+        "return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };"));</code></pre>
     </div>
 
-    <button class="accordion inner">Step 3 &mdash; Velocity template</button>
+    <button class="accordion inner">JavaScript</button>
     <div class="panel">
-        <p>Read the captured value with <span class="inline_code">$!scenario.get('orderId')</span>.</p>
-        <pre class="prettyprint lang-java code"><code class="code">{
-  "httpRequest": { "method": "POST", "path": "/order/step3" },
-  "httpResponseTemplate": {
-    "templateType": "VELOCITY",
-    "template": "{ \"statusCode\": 200, \"body\": \"{\\\"orderId\\\": \\\"$!scenario.get('orderId')\\\", \\\"status\\\": \\\"complete\\\"}\" }"
-  }
-}</code></pre>
+        <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+var client = mockServerClient('localhost', 1080);
+
+await client.mockAnyResponse([
+    {
+        httpRequest: { method: 'POST', path: '/order/step1' },
+        httpResponse: { statusCode: 200, body: JSON.stringify({ step: 1 }) },
+        capture: [
+            { source: 'jsonPath', expression: '$.id', into: 'orderId' }
+        ]
+    },
+    {
+        httpRequest: { method: 'POST', path: '/order/step3' },
+        httpResponseTemplate: {
+            templateType: 'JAVASCRIPT',
+            template: "return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };"
+        }
+    }
+]);</code></pre>
     </div>
 
-    <button class="accordion inner">Step 3 &mdash; JavaScript template</button>
+    <button class="accordion inner">Python</button>
     <div class="panel">
-        <p>Read the captured value with <span class="inline_code">scenario.get('orderId')</span> (often cleaner for building a JSON body).</p>
-        <pre class="prettyprint lang-java code"><code class="code">{
-  "httpRequest": { "method": "POST", "path": "/order/step3" },
-  "httpResponseTemplate": {
-    "templateType": "JAVASCRIPT",
-    "template": "return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };"
-  }
-}</code></pre>
+        <pre class="prettyprint lang-python code"><code class="code">from mockserver import (
+    CaptureRule, CaptureSource, Expectation, HttpRequest,
+    HttpResponse, HttpTemplate, MockServerClient,
+)
+
+client = MockServerClient('localhost', 1080)
+
+client.upsert(
+    Expectation(
+        http_request=HttpRequest(method='POST', path='/order/step1'),
+        http_response=HttpResponse().with_status_code(200).with_body('{"step":1}'),
+        capture=[CaptureRule(source=CaptureSource.JSON_PATH, expression='$.id', into='orderId')],
+    ),
+    Expectation(
+        http_request=HttpRequest(method='POST', path='/order/step3'),
+        http_response_template=HttpTemplate(
+            template_type='JAVASCRIPT',
+            template="return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };",
+        ),
+    ),
+)</code></pre>
     </div>
 
-    <button class="accordion inner">Step 3 &mdash; Mustache template</button>
+    <button class="accordion inner">Ruby</button>
     <div class="panel">
-        <p>Read the captured value with the section form <span class="inline_code">{% raw %}{{#scenario.get}}orderId{{/scenario.get}}{% endraw %}</span> &mdash; the state name is the section body. Reading scenario state from a Mustache template is supported in recent MockServer versions (Velocity and JavaScript work from 7.4.0).</p>
-        <pre class="prettyprint lang-java code"><code class="code">{
-  "httpRequest": { "method": "POST", "path": "/order/step3" },
-  "httpResponseTemplate": {
-    "templateType": "MUSTACHE",
-    "template": "{ \"statusCode\": 200, \"body\": \"{\\\"orderId\\\": \\\"{% raw %}{{#scenario.get}}orderId{{/scenario.get}}{% endraw %}\\\", \\\"status\\\": \\\"complete\\\"}\" }"
-  }
-}</code></pre>
+        <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+include MockServer
+
+client = Client.new('localhost', 1080)
+
+client.upsert(
+  Expectation.new(
+    http_request: HttpRequest.new(method: 'POST', path: '/order/step1'),
+    http_response: HttpResponse.new(status_code: 200, body: '{"step":1}'),
+    capture: [CaptureRule.new(source: 'jsonPath', expression: '$.id', into: 'orderId')]
+  ),
+  Expectation.new(
+    http_request: HttpRequest.new(method: 'POST', path: '/order/step3'),
+    http_response_template: HttpTemplate.new(
+      template_type: 'JAVASCRIPT',
+      template: "return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };"
+    )
+  )
+)</code></pre>
     </div>
 
-    <button class="accordion inner">REST (curl) &mdash; run the full flow</button>
+    <button class="accordion inner">Go</button>
+    <div class="panel">
+        <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+
+step1Req := mockserver.Request().Method("POST").Path("/order/step1").Build()
+step1Resp := mockserver.Response().StatusCode(200).JSONBody(`{"step":1}`).Build()
+step1Capture := mockserver.NewCaptureRule(mockserver.CaptureSourceJSONPath, "$.id", "orderId")
+
+step3Req := mockserver.Request().Method("POST").Path("/order/step3").Build()
+step3Tmpl := mockserver.ResponseTemplate("JAVASCRIPT").
+    Template(`return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };`).
+    Build()
+
+client.Upsert(
+    mockserver.Expectation{
+        HttpRequest:  &amp;step1Req,
+        HttpResponse: &amp;step1Resp,
+        Capture:      []mockserver.CaptureRule{step1Capture},
+    },
+    mockserver.Expectation{
+        HttpRequest:          &amp;step3Req,
+        HttpResponseTemplate: &amp;step3Tmpl,
+    },
+)</code></pre>
+    </div>
+
+    <button class="accordion inner">.NET</button>
+    <div class="panel">
+        <pre class="prettyprint lang-csharp code"><code class="code">using System.Collections.Generic;
+using MockServer.Client;
+using MockServer.Client.Models;
+
+var client = new MockServerClient("localhost", 1080);
+
+// Step 1 — capture rule (model-object form; capture has no fluent setter)
+client.Upsert(new Expectation
+{
+    HttpRequest = HttpRequest.Request().WithMethod("POST").WithPath("/order/step1"),
+    HttpResponse = HttpResponse.Response().WithStatusCode(200).WithBody("{\"step\":1}"),
+    Capture = new List&lt;CaptureRule&gt; { CaptureRule.Of("jsonPath", "$.id", "orderId") },
+});
+
+// Step 3 — JavaScript response template (fluent form)
+client.When(HttpRequest.Request().WithMethod("POST").WithPath("/order/step3"))
+    .RespondWithTemplate(HttpTemplate.OfType(TemplateType.JAVASCRIPT)
+        .WithTemplate("return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };"));</code></pre>
+    </div>
+
+    <button class="accordion inner">Rust</button>
+    <div class="panel">
+        <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::{
+    CaptureRule, ClientBuilder, Expectation, HttpRequest, HttpResponse, HttpTemplate,
+};
+
+let client = ClientBuilder::new("localhost".to_string(), 1080).build().unwrap();
+
+let expectations = vec![
+    Expectation::new(HttpRequest::new().method("POST").path("/order/step1"))
+        .capture_rule(CaptureRule::new("jsonPath", "$.id", "orderId"))
+        .respond(HttpResponse::new().status_code(200).body(r#"{"step":1}"#)),
+    Expectation::new(HttpRequest::new().method("POST").path("/order/step3"))
+        .respond_template(HttpTemplate::new(
+            "JAVASCRIPT",
+            r#"return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };"#,
+        )),
+];
+client.upsert(&amp;expectations).unwrap();</code></pre>
+    </div>
+
+    <button class="accordion inner">PHP</button>
+    <div class="panel">
+        <p>The PHP client has no typed <span class="inline_code">capture</span> or response-template model, so it submits the same expectations as raw JSON via <span class="inline_code">Expectation::fromArray(...)</span>.</p>
+        <pre class="prettyprint lang-php code"><code class="code">$client-&gt;upsertExpectation(Expectation::fromArray([
+    'httpRequest'  =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/order/step1'],
+    'httpResponse' =&gt; ['statusCode' =&gt; 200, 'body' =&gt; '{"step":1}'],
+    'capture'      =&gt; [
+        ['source' =&gt; 'jsonPath', 'expression' =&gt; '$.id', 'into' =&gt; 'orderId'],
+    ],
+]));
+$client-&gt;upsertExpectation(Expectation::fromArray([
+    'httpRequest'          =&gt; ['method' =&gt; 'POST', 'path' =&gt; '/order/step3'],
+    'httpResponseTemplate' =&gt; [
+        'templateType' =&gt; 'JAVASCRIPT',
+        'template'     =&gt; "return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };",
+    ],
+]));</code></pre>
+    </div>
+
+    <button class="accordion inner">REST API</button>
     <div class="panel">
         <pre class="prettyprint lang-bash code"><code class="code"># Step 1: capture the order id from the request body into scenario state "orderId"
 curl -X PUT http://localhost:1080/mockserver/expectation -d '{
@@ -401,12 +536,13 @@ curl -X PUT http://localhost:1080/mockserver/expectation -d '{
   "httpResponse": { "statusCode": 200, "body": "{\"step\": 1}" }
 }'
 
-# Step 3: read the captured id back in a response template (Velocity shown; swap templateType/template for JavaScript or Mustache)
+# Step 3: read the captured id back in a JavaScript response template
+#         (swap templateType/template for Velocity or Mustache to use those engines)
 curl -X PUT http://localhost:1080/mockserver/expectation -d '{
   "httpRequest": { "method": "POST", "path": "/order/step3" },
   "httpResponseTemplate": {
-    "templateType": "VELOCITY",
-    "template": "{ \"statusCode\": 200, \"body\": \"{\\\"orderId\\\": \\\"$!scenario.get('orderId')\\\", \\\"status\\\": \\\"complete\\\"}\" }"
+    "templateType": "JAVASCRIPT",
+    "template": "return { statusCode: 200, body: JSON.stringify({ orderId: scenario.get('orderId'), status: 'complete' }) };"
   }
 }'
 
