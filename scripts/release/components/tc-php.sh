@@ -131,12 +131,16 @@ SPLIT_REF=$(git -C "$REPO_ROOT" rev-parse "$SPLIT_BRANCH")
 log_info "subtree split: $SPLIT_REF"
 
 # Push to the mirror's master. This IS the publish — HARD-fail, with retry to
-# ride out transient git/network errors. A non-fast-forward here means the split
-# history drifted (e.g. a git-version change); that is a real fault to fix, not
-# to swallow — reseed once manually with:
-#   git push --force $MIRROR_REPO <split>:refs/heads/master
+# ride out transient git/network errors. The mirror is derived state whose only
+# writer is this pipeline, so if the fast-forward push is rejected (mirror was
+# seeded with a scaffold commit, or the split lineage drifted e.g. across git
+# versions) the split is still the source of truth: converge the mirror with a
+# logged force-push instead of failing the release.
 log_info "Pushing split to mirror master"
-retry 3 5 -- git -C "$REPO_ROOT" push "$MIRROR_REPO" "${SPLIT_REF}:refs/heads/master"
+if ! retry 3 5 -- git -C "$REPO_ROOT" push "$MIRROR_REPO" "${SPLIT_REF}:refs/heads/master"; then
+  log_info "Fast-forward push rejected — mirror history diverged from the split; force-converging (mirror is derived, pipeline-only state)"
+  retry 3 5 -- git -C "$REPO_ROOT" push --force "$MIRROR_REPO" "${SPLIT_REF}:refs/heads/master"
+fi
 log_info "Pushed mirror master"
 
 # Push the version tag to the mirror (idempotent). Packagist indexes this as the

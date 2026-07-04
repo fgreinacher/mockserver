@@ -210,6 +210,11 @@ retry 3 5 -- "$MCP_BIN" publish >"$PUBLISH_LOG" 2>&1 || publish_rc=$?
 if [[ "$publish_rc" -eq 0 ]]; then
   log_info "MCP server published: $SERVER_NAME @ $RELEASE_VERSION"
   rm -f "$PUBLISH_LOG"
+elif grep -qi 'duplicate version' "$PUBLISH_LOG"; then
+  # Idempotent rerun: this exact version is already live in the registry (a
+  # previous build published it). That IS the desired end state — succeed.
+  log_info "MCP registry already has $SERVER_NAME @ $RELEASE_VERSION (duplicate version) — treating as published"
+  rm -f "$PUBLISH_LOG"
 elif grep -qiE 'image .*not found|label .*not found|ownership|not.*visible|no such (image|manifest)|denied.*manifest' "$PUBLISH_LOG"; then
   # Eventually-consistent: the ownership-labelled image has not propagated yet.
   # Surface, don't swallow — the docker step already pushed it; it will appear.

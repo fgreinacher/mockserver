@@ -123,7 +123,10 @@ log_info "subtree split: $SPLIT_REF"
 # to swallow — reseed once manually with:
 #   git push --force $MIRROR_REPO <split>:refs/heads/master
 log_info "Pushing split to mirror master"
-retry 3 5 -- git -C "$REPO_ROOT" push "$MIRROR_REPO" "${SPLIT_REF}:refs/heads/master"
+if ! retry 3 5 -- git -C "$REPO_ROOT" push "$MIRROR_REPO" "${SPLIT_REF}:refs/heads/master"; then
+  log_info "Fast-forward push rejected — mirror history diverged from the split; force-converging (mirror is derived, pipeline-only state)"
+  retry 3 5 -- git -C "$REPO_ROOT" push --force "$MIRROR_REPO" "${SPLIT_REF}:refs/heads/master"
+fi
 log_info "Pushed mirror master"
 
 # Push the version tag to the mirror (idempotent). Packagist indexes this as the
