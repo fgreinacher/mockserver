@@ -35,7 +35,7 @@ RUN wget --max-redirect=10 -O mockserver-netty-jar-with-dependencies.jar "$REPOS
     && wget --max-redirect=10 -qO- "${REPOSITORY_URL}.sha256" > /tmp/expected.sha256 \
     && echo "$(cat /tmp/expected.sha256)  mockserver-netty-jar-with-dependencies.jar" | sha256sum -c -
 ARG TARGETARCH=amd64
-ARG NETTY_TCNATIVE=2.0.77.Final
+ARG NETTY_TCNATIVE=2.0.78.Final
 RUN if [ "$TARGETARCH" = "amd64" ]; \
     then TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-x86_64.jar"; \
     else TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-aarch_64.jar"; \
@@ -66,7 +66,7 @@ RUN if [ -s /tmp/local-ca.pem ]; then \
 RUN printf 'tries=5\ntimeout=60\nwaitretry=10\nretry_on_host_error=on\nretry_connrefused=on\n' >> /etc/wgetrc
 COPY mockserver-netty-jar-with-dependencies.jar .
 ARG TARGETARCH=amd64
-ARG NETTY_TCNATIVE=2.0.77.Final
+ARG NETTY_TCNATIVE=2.0.78.Final
 # Audit finding F-DKR-06: SHA256-verify tcnative download from Maven Central.
 RUN if [ "$TARGETARCH" = "amd64" ]; \
     then TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-x86_64.jar"; \

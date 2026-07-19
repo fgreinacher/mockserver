@@ -82,7 +82,7 @@
         <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
         <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
         <!-- also update NETTY_TCNATIVE in docker/*/Dockerfile download stages -->
-        <netty-tcnative-boringssl-static.version>2.0.77.Final</netty-tcnative-boringssl-static.version>
+        <netty-tcnative-boringssl-static.version>2.0.78.Final</netty-tcnative-boringssl-static.version>
         <protobuf.version>4.35.1</protobuf.version>
         <chicory.version>1.7.5</chicory.version>
         <hdrhistogram.version>2.2.2</hdrhistogram.version>

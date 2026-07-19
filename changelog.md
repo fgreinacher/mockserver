@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 ### Fixed
+- Fixed a broken build caused by a Maven dependency convergence error: `netty-tcnative-boringssl-static` was
+  pinned to `2.0.77.Final` while the Netty `4.2.16.Final` upgrade pulled its native classifier artifacts in
+  transitively at `2.0.78.Final`. Aligned the pinned version (and the matching `NETTY_TCNATIVE` Docker build
+  args) to `2.0.78.Final`.
 
 ## [7.4.0] - 2026-07-04
 
