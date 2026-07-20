@@ -718,11 +718,18 @@ public class JsonSchemaExpectationValidatorTest {
             "}");
 
         // then
-        assertThat(result, startsWith("11 error"));
+        assertThat(result, startsWith("13 error"));
         assertThat(result, containsString("$.httpRequest.headers[0].name: integer found, string expected"));
         assertThat(result, containsString("$.httpRequest.headers: array found, object expected"));
         assertThat(result, containsString("$.httpResponse.headers[0].values[0]: integer found, string expected"));
         assertThat(result, containsString("$.httpResponse.headers: array found, object expected"));
+        // The array branch's `name` and `values` are now `stringOrJsonSchema` (a oneOf) rather than
+        // a bare string, so that they can carry the object form for a name/value whose first
+        // character is a marker. An invalid entry therefore reports the failing branch AND the
+        // enclosing oneOf — two lines instead of one, which is what raised this count from 11.
+        // The map branch has always reported this way; the array branch now matches it.
+        assertThat(result, containsString("$.httpRequest.headers[0].name: should be valid to one and only one schema, but 0 are valid"));
+        assertThat(result, containsString("$.httpResponse.headers[0].values[0]: should be valid to one and only one schema, but 0 are valid"));
     }
 
     @Test
@@ -808,11 +815,17 @@ public class JsonSchemaExpectationValidatorTest {
             "}");
 
         // then
-        assertThat(result, startsWith("11 error"));
+        assertThat(result, startsWith("13 error"));
         assertThat(result, containsString("$.httpRequest.cookies[0].name: integer found, string expected"));
         assertThat(result, containsString("$.httpRequest.cookies: array found, object expected"));
         assertThat(result, containsString("$.httpResponse.cookies[0].value: integer found, string expected"));
         assertThat(result, containsString("$.httpResponse.cookies: array found, object expected"));
+        // the array branch now types name/value as stringOrJsonSchema (a oneOf), so an invalid
+        // entry reports the failing branch AND the enclosing oneOf — these are the lines that
+        // raised the count above, asserted explicitly so an unintended extra error cannot hide
+        // inside the number
+        assertThat(result, containsString("$.httpRequest.cookies[0].name: should be valid to one and only one schema, but 0 are valid"));
+        assertThat(result, containsString("$.httpResponse.cookies[0].value: should be valid to one and only one schema, but 0 are valid"));
     }
 
     @Test
@@ -837,10 +850,15 @@ public class JsonSchemaExpectationValidatorTest {
             "}");
 
         // then
-        assertThat(result, startsWith("9 error"));
+        assertThat(result, startsWith("10 error"));
         assertThat(result, containsString("$.httpRequest.queryStringParameters[0].name: integer found, string expected"));
         assertThat(result, containsString("$.httpRequest.queryStringParameters: array found, object expected"));
         assertThat(result, containsString("$.httpResponse.body: should match one of its valid types"));
+        // the array branch now types name/value as stringOrJsonSchema (a oneOf), so an invalid
+        // entry reports the failing branch AND the enclosing oneOf — these are the lines that
+        // raised the count above, asserted explicitly so an unintended extra error cannot hide
+        // inside the number
+        assertThat(result, containsString("$.httpRequest.queryStringParameters[0].name: should be valid to one and only one schema, but 0 are valid"));
     }
 
     @Test
@@ -872,10 +890,17 @@ public class JsonSchemaExpectationValidatorTest {
             "}");
 
         // then
-        assertThat(result, startsWith("14 error"));
+        assertThat(result, startsWith("17 error"));
         assertThat(result, containsString("$.httpRequest.queryStringParameters[0].name: integer found, string expected"));
         assertThat(result, containsString("$.httpRequest.headers[0].values[0]: integer found, string expected"));
         assertThat(result, containsString("$.httpResponse.cookies[0].name: integer found, string expected"));
+        // the array branch now types name/value as stringOrJsonSchema (a oneOf), so an invalid
+        // entry reports the failing branch AND the enclosing oneOf — these are the lines that
+        // raised the count above, asserted explicitly so an unintended extra error cannot hide
+        // inside the number
+        assertThat(result, containsString("$.httpRequest.queryStringParameters[0].name: should be valid to one and only one schema, but 0 are valid"));
+        assertThat(result, containsString("$.httpRequest.headers[0].values[0]: should be valid to one and only one schema, but 0 are valid"));
+        assertThat(result, containsString("$.httpResponse.cookies[0].name: should be valid to one and only one schema, but 0 are valid"));
     }
 
     @Test

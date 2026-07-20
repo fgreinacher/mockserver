@@ -47,8 +47,13 @@ public class NottableStringSerializer extends StdSerializer<NottableString> {
      * True when re-reading the plain-string form would not reproduce this value, negation and
      * optionality. Determined by actually re-parsing rather than by enumerating prefixes, so it
      * stays correct for compound markers ("?!", "!?") and any future marker character.
+     * <p>
+     * Public because the same question has to be asked of collection KEYS: a header, query
+     * parameter or cookie NAME goes on the wire as a JSON field name, which has no object form,
+     * so {@link org.mockserver.serialization.serializers.collections.KeysToMultiValuesSerializer}
+     * uses this to decide when the whole collection must fall back to the array form.
      */
-    private static boolean isAmbiguousAsPlainString(NottableString nottableString) {
+    public static boolean isAmbiguousAsPlainString(NottableString nottableString) {
         if (nottableString.isBlank()) {
             // a blank/null value serialises to "" and has no marker to misread; it also cannot be
             // expressed in the object form, whose deserialiser ignores a blank `value`

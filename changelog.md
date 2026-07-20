@@ -171,6 +171,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **A header, query-parameter or cookie whose name literally begins with `!` or `?` is no longer inverted
+  when an expectation is serialised and re-read.** Collection keys go on the wire as JSON field names, and
+  the plain-string encoding prefixes `!` for negation and `?` for optional — markers the reader strips
+  unconditionally. A stored expectation whose header name was literally `!foo` was therefore written as the
+  field name `"!foo"` and read back as "name is NOT foo", matching every request that does **not** carry
+  that header: the exact inverse of what was asked. The same applied to `?`-prefixed names and to all three
+  collections (headers, query parameters, cookies). Collections containing such a name are now written in
+  the array form (`[{"name": {"value": "!foo"}, ...}]`), whose name the reader takes verbatim; every other
+  collection is byte-identical to before, because the array form is used only where the compact form would
+  corrupt the value. The cookie reader was extended to accept an object-form name inside an array item,
+  which it previously could not.
+
+  **Scope — this does not yet make such a name matchable end-to-end.** The fix covers serialisation and
+  re-reading only. The inbound request parser still strips the marker, so a request carrying a header named
+  `!foo` arrives as `foo` and a literal `!foo` matcher will not match it; a follow-up covering the
+  request-parsing path is required for that. `?`-prefixed header names are unreachable regardless, since
+  `?` is not a legal `tchar` in RFC 7230 and such a header does not survive the transport. Query-parameter
+  names do arrive intact, but end-to-end behaviour there is **unverified**: a retrieved `"!q"` is
+  byte-identical whether the stored key is a literal `!q` or a negated `q`, so the two cannot be told apart
+  from the outside — the same blindness this fix addresses, one layer further out.
+
+  **Note for anyone validating expectations against the published JSON schema:** the array forms of
+  `keyToMultiValue` and `keyToValue` now type `name` and `values`/`value` as `stringOrJsonSchema` rather
+  than plain strings, so a malformed entry reports both the failing branch and the enclosing `oneOf` — one
+  extra line per bad entry, matching how the map form has always reported.
 - **The Go client can now match a header, query parameter, cookie or path parameter whose value starts
   with `!` or `?`.** MockServer's plain-string matcher form encodes negation as a leading `!` and
   optionality as a leading `?`, and the server strips those markers unconditionally when reading. A value

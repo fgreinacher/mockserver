@@ -69,8 +69,20 @@ public class CookiesDeserializer extends StdDeserializer<Cookies> {
                 case JsonTokenId.ID_END_ARRAY:
                     return headers;
                 case JsonTokenId.ID_START_OBJECT:
-                    key = null;
-                    value = null;
+                    // Inside an array item, an object under "name"/"value" is the NottableString
+                    // object form — the only way to express a name whose first character is a
+                    // marker, since the plain-string form has that character stripped on read.
+                    // Any other object start is the beginning of the next array item.
+                    if ("name".equals(fieldName)) {
+                        key = ctxt.readValue(jsonParser, NottableString.class);
+                        fieldName = null;
+                    } else if ("value".equals(fieldName)) {
+                        value = ctxt.readValue(jsonParser, NottableString.class);
+                        fieldName = null;
+                    } else {
+                        key = null;
+                        value = null;
+                    }
                     break;
                 case JsonTokenId.ID_FIELD_NAME:
                     fieldName = jsonParser.getText();
@@ -84,6 +96,9 @@ public class CookiesDeserializer extends StdDeserializer<Cookies> {
                     break;
                 case JsonTokenId.ID_END_OBJECT:
                     headers.withEntry(key, value);
+                    // reset so the NEXT item's START_OBJECT is recognised as a new item rather
+                    // than as an object-form value for this item's last field name
+                    fieldName = null;
                     break;
                 default:
                     throw new RuntimeException("Unexpected token: \"" + t + "\" id: \"" + t.id() + "\" text: \"" + jsonParser.getText());

@@ -8,10 +8,10 @@
         "additionalProperties": false,
         "properties": {
           "name": {
-            "type": "string"
+            "$ref": "#/definitions/stringOrJsonSchema"
           },
           "value": {
-            "type": "string"
+            "$ref": "#/definitions/stringOrJsonSchema"
           }
         }
       }
