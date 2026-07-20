@@ -77,10 +77,10 @@ Validation principle: prefer executable verification over static inspection. Whe
 Changes to the controls AI is judged by (rules, agent prompts, `opencode.jsonc`, the review constitution, CI/test gates) MUST run the evaluation harness as a gate:
 
 ```bash
-bash .opencode/evals/run-evals.sh    # exits non-zero on a regressed golden task or a malformed fixture
+STRICT=1 bash .opencode/evals/run-evals.sh    # exits non-zero on a regressed golden task, a malformed fixture, OR a fixture with no recorded baseline
 ```
 
-A **regression** (a recorded `.result` flips from its expected verdict) or a malformed fixture **blocks** the change ([[evaluation-harness]]). Where the baseline for an affected agent is missing (fixtures show `PENDING`), establish it — run the agent on the relevant fixtures and record the results — or record the gap as residual risk for the user's gated approval. (This is in addition to the per-category validations above, e.g. `docs`/`config` link and JSON checks.)
+A **regression** (a recorded `.result` flips from its expected verdict), a malformed fixture, or a fixture with **no recorded baseline** (`PENDING`) **blocks** the change ([[evaluation-harness]]). `STRICT=1` is mandatory here: without it a `PENDING` fixture prints in a green log and the gate exits `0`, so a missing baseline would pass silently — the exact vacuous-pass this gate must prevent. Where a baseline is missing, establish it — run the named agent on the fixture and record the verdict to `tasks/<id>.result` — before the gate can pass; a genuinely un-runnable baseline must be recorded as residual risk for the user's gated approval, not skipped. Baselines are *recorded* verdicts, not live re-runs, so after a model/provider change a flipped baseline must first be triaged as possible **model drift** before it is treated as a true control regression ([[evaluation-harness]]) — this matters here because the two harnesses run the same agents on different model families. (This is in addition to the per-category validations above, e.g. `docs`/`config` link and JSON checks.)
 
 ### Java changes (`java`)
 1. Identify affected Maven modules from file paths (see testing-policy.md for module mapping)
