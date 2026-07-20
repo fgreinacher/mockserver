@@ -114,12 +114,44 @@ function build_clustered_docker() {
   fi
 }
 
+# test <test_case> [non_blocking]
+#
+# Runs a test case. Blocking by default: an unaccounted-for non-zero exit is
+# recorded as a FAILURE. Pass "non_blocking" as the second argument for a test
+# that is deliberately advisory (new/known-flaky), which routes the same
+# unaccounted-for exit to the WARN log instead.
+#
+# The opt-out MUST be explicit. A caller-side `|| true` cannot suppress it:
+# the record is written as a side effect before this function returns, so the
+# caller never gets the chance. Making the mode an argument keeps the intent
+# visible at the call site instead of silently defeated by it.
 function test() {
   export TEST_CASE="${1}"
+  local blocking_mode="${2:-blocking}"
   printMessage "Running Test: \"${TEST_CASE}\""
-  runCommand "cd ${SCRIPT_DIR}/${TEST_CASE}"
-  runCommand "./integration_test.sh" || return 1
-  runCommand "cd ${SCRIPT_DIR}"
+  local rc=0
+  runCommand "cd ${SCRIPT_DIR}/${TEST_CASE}" || rc=1
+  if [[ ${rc} -eq 0 ]]; then
+    runCommand "./integration_test.sh" || rc=1
+  fi
+  runCommand "cd ${SCRIPT_DIR}" || true
+
+  # Fail closed. Every per-test result is recorded by the test script itself
+  # calling logTestResult. A script that crashed BEFORE reaching that call —
+  # missing file, `set -e` abort in start-up, docker unavailable, a bad `cd` —
+  # left no record at all: not in PASS_LOG, not in FAIL_LOG. run_all_tests only
+  # sets EXIT_CODE from a non-empty FAIL_LOG, so the suite exited 0 having run
+  # nothing. Record any unaccounted-for non-zero exit here.
+  if [[ ${rc} -ne 0 ]] && ! grep -qF -- "- ${TEST_CASE}" "${FAIL_LOG_FILE}" 2>/dev/null; then
+    if [[ "${blocking_mode}" == "non_blocking" ]]; then
+      printMessageWithColourAndBorders >&2 "Warning (non-blocking): ${TEST_CASE} exited ${rc} without recording a result" "\e[0;33m"
+      printMessageWithColour >&2 "  - ${TEST_CASE} (crashed without recording a result)" "\e[0;33m" >>"${WARN_LOG_FILE}" 2>&1
+    else
+      printFailureMessage "Failed (test script exited ${rc} without recording a result): ${TEST_CASE}"
+      printPlainFailureMessage "  - ${TEST_CASE} (crashed without recording a result)" >>"${FAIL_LOG_FILE}" 2>&1
+    fi
+  fi
+  return ${rc}
 }
 
 # 5c.4 - build each published variant Dockerfile and confirm it boots and
@@ -508,7 +540,12 @@ function run_all_tests() {
       if [[ "${SKIP_CLUSTERED_TEST:-}" != "true" ]]; then
         # Import the -clustered image into k3d so pods can pull it locally
         k3d image import --cluster "${CLUSTER_NAME}" mockserver/mockserver:integration_testing_clustered 2>/dev/null || true
-        test "helm_clustered_convergence" || true
+        # non_blocking: a `set -e` abort before this test reaches
+        # logTestResultNonBlocking (kubectl timeout, pod-not-ready, k3d
+        # image-import race) must warn, not red the suite. A caller-side
+        # `|| true` cannot express that — test() records the result as a side
+        # effect before returning — so the mode is passed explicitly.
+        test "helm_clustered_convergence" non_blocking || true
       fi
       tear-down-k8s
     fi
@@ -516,6 +553,23 @@ function run_all_tests() {
   fi
 
   printMessage "TEST SUMMARY"
+
+  # Fail closed on an empty run. EXIT_CODE is only ever set from a non-empty
+  # FAIL_LOG, so a suite where NOTHING was recorded — harness crash, docker
+  # daemon down, every test dying before it could log — reported success while
+  # testing nothing. A run that recorded no pass and no failure is a failure.
+  # (SKIP_ALL_TESTS / SKIP_DOCKER_TESTS+SKIP_HELM_TESTS are explicit opt-outs
+  # and remain legitimately green.)
+  local recorded_pass=0 recorded_fail=0
+  [[ -s "${PASS_LOG_FILE}" ]] && recorded_pass=1
+  [[ -s "${FAIL_LOG_FILE}" ]] && recorded_fail=1
+  if [[ "${SKIP_ALL_TESTS:-}" != "true" \
+     && ! ( "${SKIP_DOCKER_TESTS:-}" == "true" && "${SKIP_HELM_TESTS:-}" == "true" ) \
+     && ${recorded_pass} -eq 0 && ${recorded_fail} -eq 0 ]]; then
+    printFailureMessage "NO TESTS RECORDED A RESULT — the harness ran nothing. Failing closed."
+    EXIT_CODE=1
+  fi
+
   if [[ -s "${PASS_LOG_FILE}" ]]; then
     NUMBER_OF_PASSED_TESTS=$(cat "${PASS_LOG_FILE}" | wc -l | sed -r 's/( )+//g')
     printMessage "PASSED: ${NUMBER_OF_PASSED_TESTS}"
