@@ -27,6 +27,12 @@ class MockServerIntegrationTest extends TestCase
     {
         $url = getenv('MOCKSERVER_URL');
         if ($url === false || $url === '') {
+            // A skip reports green, which is indistinguishable from a pass.
+            // CI sets MOCKSERVER_REQUIRE_SERVER=true so a missing server fails
+            // the build loudly instead of quietly testing nothing.
+            if (getenv('MOCKSERVER_REQUIRE_SERVER') === 'true') {
+                self::fail('MOCKSERVER_REQUIRE_SERVER=true but MOCKSERVER_URL is not set — refusing to skip.');
+            }
             $this->markTestSkipped('MOCKSERVER_URL environment variable not set — skipping integration tests.');
         }
 

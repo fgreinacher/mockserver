@@ -31,15 +31,34 @@ const path = require('path');
 
 const PORT = parseInt(process.env.MOCKSERVER_PORT, 10) || 1080;
 const TARGET_DIR = path.resolve(__dirname, '..', '..', 'mockserver', 'mockserver-netty', 'target');
-const TEST_FILES = [
-    'test/no_proxy/scenario_helper_test.js',
-    'test/no_proxy/roundtrip_fidelity_identity_test.js',
-    'test/no_proxy/class_callback_test.js',
-    'test/no_proxy/llm_builder_test.js',
-    'test/no_proxy/mcp_mock_builder_test.js',
-    'test/no_proxy/mock_server_node_client_test.js',
-    'test/with_proxy/proxy_client_node_test.js'
-];
+// Test files are DISCOVERED, not hand-listed. Three divergent hand-maintained
+// lists (this file, package.json's test:external/test:coverage, and the CI
+// step) each missed a different subset, so test files added later silently
+// never ran anywhere — sre_slo_chaos_test.js covered a real verification bug
+// while running in neither `npm test` nor CI. Discovery keeps them in lockstep.
+function discoverTestFiles() {
+    return ['test/no_proxy', 'test/with_proxy']
+        .flatMap((dir) => {
+            const abs = path.resolve(__dirname, '..', dir);
+            let entries;
+            try {
+                entries = fs.readdirSync(abs);
+            } catch (err) {
+                return [];
+            }
+            return entries
+                .filter((f) => f.endsWith('_test.js'))
+                .sort()
+                .map((f) => dir + '/' + f);
+        });
+}
+
+const TEST_FILES = discoverTestFiles();
+if (TEST_FILES.length === 0) {
+    console.error('ERROR: no *_test.js files discovered under test/no_proxy or test/with_proxy');
+    process.exit(1);
+}
+console.log('Discovered ' + TEST_FILES.length + ' test file(s)');
 
 function findServerJar() {
     let files;

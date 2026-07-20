@@ -3,7 +3,13 @@ steps:
     command: ".buildkite/scripts/steps/rust-unit-test.sh"
     timeout_in_minutes: 15
 
+  # tests/integration_test.rs is entirely #[ignore]d; without `-- --ignored`
+  # cargo test reported success having run none of it.
+  - label: ":rust: :docker: Rust client integration tests"
+    command: ".buildkite/scripts/steps/rust-integration-test.sh"
+    timeout_in_minutes: 20
+
+  # soft_fail removed: a failing testcontainers suite reported green.
   - label: ":rust: :docker: Rust testcontainers tests"
     command: ".buildkite/scripts/steps/rust-testcontainers-test.sh"
     timeout_in_minutes: 15
-    soft_fail: true

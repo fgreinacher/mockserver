@@ -2,3 +2,9 @@ steps:
   - label: ":php: PHP client unit tests"
     command: ".buildkite/scripts/steps/php-unit-test.sh"
     timeout_in_minutes: 10
+
+  # php-unit-test.sh runs `--testsuite Unit` only, so tests/Integration/ never
+  # ran in CI. This runs it against a live MockServer built from HEAD.
+  - label: ":php: :docker: PHP client integration tests"
+    command: ".buildkite/scripts/steps/php-integration-test.sh"
+    timeout_in_minutes: 20

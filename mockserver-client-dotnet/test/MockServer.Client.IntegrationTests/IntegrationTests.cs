@@ -35,6 +35,16 @@ public class IntegrationTests : IDisposable
 
     private void SkipIfNoServer()
     {
+        // A skip reports green, which is indistinguishable from a pass. CI sets
+        // MOCKSERVER_REQUIRE_SERVER=true so a missing server fails the build
+        // loudly instead of quietly testing nothing.
+        if (_client == null
+            && Environment.GetEnvironmentVariable("MOCKSERVER_REQUIRE_SERVER") == "true")
+        {
+            throw new InvalidOperationException(
+                "MOCKSERVER_REQUIRE_SERVER=true but MOCKSERVER_URL is not set — refusing to skip.");
+        }
+
         Skip.If(_client == null, "MOCKSERVER_URL environment variable not set; skipping integration test.");
     }
 

@@ -43,8 +43,8 @@
     "typecheck": "tsc",
     "pretest": "npm run typecheck",
     "test": "node test/run_with_local_server.js",
-    "test:external": "node --test --test-force-exit --test-concurrency=1 test/no_proxy/roundtrip_fidelity_identity_test.js test/no_proxy/scenario_helper_test.js test/no_proxy/class_callback_test.js test/no_proxy/when_dsl_test.js test/no_proxy/dispose_test.js test/no_proxy/llm_builder_test.js test/no_proxy/mcp_mock_builder_test.js test/no_proxy/a2a_mock_builder_test.js test/no_proxy/sre_slo_chaos_test.js test/no_proxy/drift_test.js test/no_proxy/mock_server_node_client_test.js test/with_proxy/proxy_client_node_test.js",
-    "test:coverage": "c8 --check-coverage --lines 68 --functions 83 --branches 74 node --test --test-force-exit --test-concurrency=1 test/no_proxy/roundtrip_fidelity_identity_test.js test/no_proxy/scenario_helper_test.js test/no_proxy/class_callback_test.js test/no_proxy/when_dsl_test.js test/no_proxy/dispose_test.js test/no_proxy/llm_builder_test.js test/no_proxy/mcp_mock_builder_test.js test/no_proxy/a2a_mock_builder_test.js test/no_proxy/sre_slo_chaos_test.js test/no_proxy/drift_test.js test/no_proxy/mock_server_node_client_test.js test/with_proxy/proxy_client_node_test.js",
+    "test:external": "node --test --test-force-exit --test-concurrency=1 test/no_proxy/*_test.js test/with_proxy/*_test.js",
+    "test:coverage": "c8 --check-coverage --lines 84 --functions 90 --branches 80 node --test --test-force-exit --test-concurrency=1 test/no_proxy/*_test.js test/with_proxy/*_test.js",
     "test:browser": "npx playwright test --config test/browser/playwright.config.js",
     "build:server": "cd ../mockserver && ./mvnw -q -pl mockserver-netty -am package -DskipTests"
   },

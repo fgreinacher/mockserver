@@ -10,22 +10,38 @@ import (
 
 // skipIfNoServer skips the test if MOCKSERVER_URL is not set or the server
 // is unreachable.
+//
+// Set MOCKSERVER_REQUIRE_SERVER=true to turn every skip into a hard failure.
+// CI does this: a skip that reports green is indistinguishable from a pass,
+// so on CI a missing or unreachable server must fail the build loudly rather
+// than quietly test nothing.
 func skipIfNoServer(t *testing.T) *mockserver.Client {
 	t.Helper()
-	msURL := os.Getenv("MOCKSERVER_URL")
-	if msURL == "" {
-		t.Skip("MOCKSERVER_URL not set; skipping integration test")
+
+	strict := os.Getenv("MOCKSERVER_REQUIRE_SERVER") == "true"
+	bail := func(format string, args ...interface{}) {
+		t.Helper()
+		if strict {
+			t.Fatalf("MOCKSERVER_REQUIRE_SERVER=true, refusing to skip: "+format, args...)
+		}
+		t.Skipf(format+"; skipping integration test", args...)
 	}
 
-	u, err := url.Parse(msURL)
-	if err != nil {
-		t.Skipf("MOCKSERVER_URL is not a valid URL: %v", err)
+	msURL := os.Getenv("MOCKSERVER_URL")
+	if msURL == "" {
+		bail("MOCKSERVER_URL not set")
+		return nil
 	}
-	_ = u
+
+	if _, err := url.Parse(msURL); err != nil {
+		bail("MOCKSERVER_URL is not a valid URL: %v", err)
+		return nil
+	}
 
 	client := mockserver.NewFromURL(msURL)
 	if !client.IsRunning() {
-		t.Skipf("MockServer at %s is not reachable; skipping integration test", msURL)
+		bail("MockServer at %s is not reachable", msURL)
+		return nil
 	}
 	return client
 }

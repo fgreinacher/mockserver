@@ -3,7 +3,15 @@ steps:
     command: ".buildkite/scripts/steps/go-unit-test.sh"
     timeout_in_minutes: 10
 
+  # Runs the integration suite against a live MockServer built from HEAD.
+  # Without this the suite skipped on every build (skipIfNoServer needs
+  # MOCKSERVER_URL, which CI never set) while reporting green.
+  - label: ":golang: :docker: Go client integration tests"
+    command: ".buildkite/scripts/steps/go-integration-test.sh"
+    timeout_in_minutes: 20
+
+  # soft_fail removed: a failing testcontainers suite reported green, which is
+  # the same silent-skip defect in another form.
   - label: ":golang: :docker: Go testcontainers tests"
     command: ".buildkite/scripts/steps/go-testcontainers-test.sh"
     timeout_in_minutes: 15
-    soft_fail: true

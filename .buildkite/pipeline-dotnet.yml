@@ -3,7 +3,14 @@ steps:
     command: ".buildkite/scripts/steps/dotnet-unit-test.sh"
     timeout_in_minutes: 15
 
+  # Runs the integration suite against a live MockServer built from HEAD.
+  # Without this every [SkippableFact] skipped (MOCKSERVER_URL was never set)
+  # while the step reported green.
+  - label: ":dotnet: :docker: .NET client integration tests"
+    command: ".buildkite/scripts/steps/dotnet-integration-test.sh"
+    timeout_in_minutes: 20
+
+  # soft_fail removed: a failing testcontainers suite reported green.
   - label: ":dotnet: :docker: .NET testcontainers tests"
     command: ".buildkite/scripts/steps/dotnet-testcontainers-test.sh"
     timeout_in_minutes: 15
-    soft_fail: true
