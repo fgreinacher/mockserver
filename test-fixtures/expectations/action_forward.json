@@ -9,6 +9,7 @@
     "delay": {
       "timeUnit": "MILLISECONDS",
       "value": 10
-    }
+    },
+    "primary": true
   }
 }

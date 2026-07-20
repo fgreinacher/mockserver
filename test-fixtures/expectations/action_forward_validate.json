@@ -9,6 +9,11 @@
     "specUrlOrPayload": "https://example.com/openapi.json",
     "validateRequest": true,
     "validateResponse": true,
-    "validationMode": "STRICT"
+    "validationMode": "STRICT",
+    "delay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 10
+    },
+    "primary": true
   }
 }

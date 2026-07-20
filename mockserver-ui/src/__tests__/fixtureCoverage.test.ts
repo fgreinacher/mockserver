@@ -37,6 +37,30 @@ const schemaModules = import.meta.glob(
   { eager: true, import: 'default' },
 ) as Record<string, { properties: Record<string, unknown> }>;
 
+// Every schema file, so the gate can reach BELOW the top level. The original gate compared only
+// depth-0 keys, which is why nested fields (templateType, primary, graphqlSubscriptionFilter) were
+// expressible by zero clients while known-gaps.json read clean — no fixture ever probed them.
+//
+// Globbed wholesale and then filtered by ACTION_FAMILY_KEYS rather than named in a brace list: a
+// hand-maintained list of schemas sitting next to the check that reads it is the exact shape of
+// blind spot this gate exists to remove — it would silently stop covering any action added later.
+const allSchemaModules = import.meta.glob(
+  '../../../mockserver/mockserver-core/src/main/resources/org/mockserver/model/schema/*.json',
+  { eager: true, import: 'default' },
+) as Record<string, { properties?: Record<string, unknown> }>;
+
+const schemaNameOf = (path: string) => path.split('/').pop()!.replace('.json', '');
+
+const actionSchemaModules = Object.fromEntries(
+  Object.entries(allSchemaModules).filter(
+    ([path, schema]) =>
+      ACTION_FAMILY_KEYS.includes(schemaNameOf(path)) &&
+      // a handful of action-family keys are expectation-level constructs (httpResponses,
+      // responseMode, responseWeights, switchAfter) with no schema file of their own
+      schema && typeof schema.properties === 'object',
+  ),
+) as Record<string, { properties: Record<string, unknown> }>;
+
 const fixtures = Object.entries(fixtureModules)
   .filter(([p]) => !p.endsWith(MANIFEST))
   .sort(([a], [b]) => a.localeCompare(b))
@@ -129,6 +153,64 @@ describe('client fidelity fixtures — coverage gate', () => {
       .filter(([, jsonKey]) => !covered.has(jsonKey))
       .map(([t]) => t);
     expect(missing, `StandardActionType kinds not exercised: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  // Depth-1 gate: for each action schema, every property it declares must appear as a key
+  // somewhere under the matching action key in some fixture. Catches the class of gap where a
+  // field exists server-side, no fixture sets it, so no client is ever forced to express it.
+  it('exercises every property of every action schema, not just the top-level key', () => {
+    const gaps: string[] = [];
+    for (const [path, actionSchema] of Object.entries(actionSchemaModules)) {
+      const actionKey = schemaNameOf(path);
+      const seen = new Set<string>();
+      for (const { json } of fixtures) {
+        const action = json[actionKey];
+        if (action && typeof action === 'object') {
+          for (const k of Object.keys(action as Record<string, unknown>)) seen.add(k);
+        }
+      }
+      // an action with no fixture at all is already caught by the ACTION_FAMILY_KEYS gate above
+      if (seen.size === 0) continue;
+      for (const property of Object.keys(actionSchema.properties)) {
+        if (!seen.has(property)) gaps.push(`${actionKey}.${property}`);
+      }
+    }
+
+    expect(gaps, `action schema properties not exercised by any fixture: ${gaps.join(', ')}`).toEqual([]);
+  });
+
+  // Booleans are the sharpest instance of the depth-0 blind spot: a fixture that only ever sets a
+  // flag to `true` cannot catch a truthiness guard that silently drops `false` — which is exactly
+  // how `closeConnection: false` was dropped by the dashboard codegen for all 8 languages, masked
+  // by an SSE fixture that only ever used `true`.
+  //
+  // Scoped to booleans declared directly by an action schema. Those are the ones a client or the
+  // codegen must round-trip faithfully in both directions; widening this to every boolean anywhere
+  // in the tree is a worthwhile but much larger fixture-authoring job (see report).
+  it('exercises both true and false for every action-level boolean', () => {
+    const oneSided: string[] = [];
+    for (const [path, actionSchema] of Object.entries(actionSchemaModules)) {
+      const actionKey = schemaNameOf(path);
+      const booleanProps = Object.entries(actionSchema.properties)
+        .filter(([, spec]) => (spec as { type?: string }).type === 'boolean')
+        .map(([name]) => name);
+
+      for (const prop of booleanProps) {
+        const seen = new Set<boolean>();
+        for (const { json } of fixtures) {
+          const action = json[actionKey] as Record<string, unknown> | undefined;
+          if (action && typeof action === 'object' && typeof action[prop] === 'boolean') {
+            seen.add(action[prop] as boolean);
+          }
+        }
+        if (seen.size === 1) oneSided.push(`${actionKey}.${prop} (only ${[...seen][0]})`);
+      }
+    }
+
+    expect(
+      oneSided,
+      `action-level booleans exercised with only one value — a truthiness bug in the unexercised direction would be invisible: ${oneSided.join(', ')}`,
+    ).toEqual([]);
   });
 
   it('exercises every BodyMatcherType (via its server body type)', () => {

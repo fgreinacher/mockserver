@@ -288,7 +288,17 @@ fn load_gaps() -> Vec<String> {
 /// which loses the WHOLE expectation, not just one field). Kept as a single opaque
 /// token (no `.` so it is one path segment) so it is excused in isolation and never
 /// masks the precise per-field drops of OTHER, parseable fixtures.
+///
+/// SCOPED PER FIXTURE (`<unrepresentable-expectation>:<fixture-stem>`). An unscoped token would be
+/// excused globally by one ledger entry, so a SECOND fixture becoming unparseable later would be
+/// silently absorbed and the ratchet would never re-arm — a gap entry that quietly widens its own
+/// scope over time.
 const UNREPRESENTABLE: &str = "<unrepresentable-expectation>";
+
+/// Build the per-fixture sentinel for `name` (a fixture file name such as `foo.json`).
+fn unrepresentable_for(name: &str) -> String {
+    format!("{}:{}", UNREPRESENTABLE, name.trim_end_matches(".json"))
+}
 
 /// Deserialize a fixture into the model and re-serialize it back to a JSON value.
 /// Returns `None` when the model cannot even parse the fixture (see `UNREPRESENTABLE`).
@@ -303,7 +313,10 @@ fn all_diffs() -> Vec<(String, Vec<String>)> {
     load_fixtures()
         .into_iter()
         .map(|(name, input)| match round_trip(&input) {
-            None => (name, vec![UNREPRESENTABLE.to_string()]),
+            None => {
+                let sentinel = unrepresentable_for(&name);
+                (name, vec![sentinel])
+            }
             Some(output) => {
                 let mut raw = Vec::new();
                 diffs(&norm(&input, None), &norm(&output, None), "", &mut raw);

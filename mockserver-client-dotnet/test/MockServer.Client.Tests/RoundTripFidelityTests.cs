@@ -141,6 +141,25 @@ public class RoundTripFidelityTests
     // Round-trip + comparator (exact port of .tmp/reference_compare.py)
     // ---------------------------------------------------------------------------------------------
 
+    /// <summary>
+    /// Sentinel diff path emitted when the model cannot deserialize a fixture at all (System.Text.Json
+    /// hard-errors — e.g. a matcher shape the model's field types reject, which loses the WHOLE
+    /// expectation rather than one field). Without this the exception escapes and the fixture cannot be
+    /// excused by the known-gaps ledger at all, so a genuine, recorded model limitation reads as a crash.
+    /// Kept as a single opaque token (no '.') so it is excused in isolation and never masks the precise
+    /// per-field drops of other, parseable fixtures. Mirrors the Rust harness.
+    /// </summary>
+    private const string Unrepresentable = "<unrepresentable-expectation>";
+
+    /// <summary>
+    /// Per-fixture form of <see cref="Unrepresentable"/>: <c>&lt;unrepresentable-expectation&gt;:name</c>.
+    /// An unscoped token would be excused globally by one ledger entry, so a SECOND fixture becoming
+    /// unparseable later would be silently absorbed and the ratchet would never re-arm — a gap entry
+    /// that quietly widens its own scope over time.
+    /// </summary>
+    private static string UnrepresentableFor(string fixtureName) =>
+        $"{Unrepresentable}:{Path.GetFileNameWithoutExtension(fixtureName)}";
+
     private static List<string> ComputeDiffs(string fixturePath)
     {
         var inputText = File.ReadAllText(fixturePath);
@@ -148,7 +167,16 @@ public class RoundTripFidelityTests
 
         // Deserialize with the client's real options and re-serialize. Unknown fields are ignored and
         // modeled fields must survive intact — any dropped/mutated field surfaces as a diff below.
-        var expectation = JsonSerializer.Deserialize<Expectation>(inputText, JsonOptions);
+        Expectation? expectation;
+        try
+        {
+            expectation = JsonSerializer.Deserialize<Expectation>(inputText, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return new List<string> { UnrepresentableFor(Path.GetFileName(fixturePath)) };
+        }
+
         var outputText = JsonSerializer.Serialize(expectation, JsonOptions);
 
         var input = Norm(original, null);

@@ -1,0 +1,15 @@
+{
+  "httpRequest": {
+    "path": "/validate/response-only"
+  },
+  "httpForwardValidateAction": {
+    "host": "backend.example.com",
+    "port": 443,
+    "scheme": "HTTPS",
+    "specUrlOrPayload": "https://example.com/openapi.json",
+    "validateRequest": false,
+    "validateResponse": false,
+    "validationMode": "LENIENT",
+    "primary": false
+  }
+}

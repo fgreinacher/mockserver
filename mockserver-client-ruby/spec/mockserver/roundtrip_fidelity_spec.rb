@@ -161,7 +161,9 @@ RSpec.describe 'JSON round-trip fidelity' do
   GAPS = C.load_gaps.freeze
 
   it 'discovers the full fixture set (sanity check)' do
-    expect(FIXTURES.length).to eq(44)
+    # lower bound, not an exact count: the shared corpus grows whenever a server feature gains a
+    # probe, and an exact count turns every such addition into an unrelated failure in every client
+    expect(FIXTURES.length).to be >= 44
   end
 
   if ENV['FIDELITY_DISCOVER'] == '1'

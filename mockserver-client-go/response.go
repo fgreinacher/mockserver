@@ -16,6 +16,8 @@ type HttpResponse struct {
 	// response (a deterministic retry/backoff recovery primitive).
 	RecoverAfter      *RecoverAfter      `json:"recoverAfter,omitempty"`
 	ConnectionOptions *ConnectionOptions `json:"connectionOptions,omitempty"`
+	// Primary marks this as the primary action when multiple are present.
+	Primary *bool `json:"primary,omitempty"`
 }
 
 // Delay represents a response delay. Value/TimeUnit give a fixed delay;

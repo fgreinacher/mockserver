@@ -27,6 +27,11 @@ public sealed class HttpForward
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Delay? Delay { get; set; }
 
+    /// <summary>Marks this as the primary action when the expectation configures more than one.</summary>
+    [JsonPropertyName("primary")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Primary { get; set; }
+
     /// <summary>
     /// Creates a new HttpForward builder.
     /// </summary>

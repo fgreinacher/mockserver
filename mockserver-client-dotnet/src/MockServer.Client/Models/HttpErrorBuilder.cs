@@ -25,6 +25,23 @@ public sealed class HttpErrorBuilder
         return this;
     }
 
+    /// <summary>
+    /// Resets the matched request stream with this error code instead of returning a response.
+    /// Takes precedence over <c>WithDropConnection</c>.
+    /// </summary>
+    public HttpErrorBuilder WithStreamError(long code)
+    {
+        _error.StreamError = code;
+        return this;
+    }
+
+    /// <summary>Marks this as the primary action when the expectation configures more than one.</summary>
+    public HttpErrorBuilder WithPrimary(bool primary = true)
+    {
+        _error.Primary = primary;
+        return this;
+    }
+
     public HttpError Build() => _error;
 
     /// <summary>

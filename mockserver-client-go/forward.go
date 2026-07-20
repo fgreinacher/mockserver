@@ -6,6 +6,8 @@ type HttpForward struct {
 	Port   int    `json:"port,omitempty"`
 	Scheme string `json:"scheme,omitempty"`
 	Delay  *Delay `json:"delay,omitempty"`
+	// Primary marks this as the primary action when multiple are present.
+	Primary *bool `json:"primary,omitempty"`
 }
 
 // HttpOverrideForwardedRequest forwards the matched request to an overridden
@@ -45,6 +47,8 @@ type HttpError struct {
 	// response; it takes precedence over DropConnection.
 	StreamError *int64 `json:"streamError,omitempty"`
 	Delay       *Delay `json:"delay,omitempty"`
+	// Primary marks this as the primary action when multiple are present.
+	Primary *bool `json:"primary,omitempty"`
 }
 
 // ForwardBuilder provides a fluent API for building HttpForward actions.

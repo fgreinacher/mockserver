@@ -53,7 +53,8 @@
       "X-Trailer": [
         "end"
       ]
-    }
+    },
+    "primary": true
   },
   "times": {
     "remainingTimes": 5,

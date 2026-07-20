@@ -31,6 +31,13 @@ public sealed class HttpForwardBuilder
         return this;
     }
 
+    /// <summary>Marks this as the primary action when the expectation configures more than one.</summary>
+    public HttpForwardBuilder WithPrimary(bool primary = true)
+    {
+        _forward.Primary = primary;
+        return this;
+    }
+
     public HttpForward Build() => _forward;
 
     /// <summary>

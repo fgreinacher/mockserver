@@ -7,6 +7,8 @@
     "delay": {
       "timeUnit": "MILLISECONDS",
       "value": 20
-    }
+    },
+    "dropConnection": false,
+    "primary": true
   }
 }

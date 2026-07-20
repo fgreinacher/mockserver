@@ -44,6 +44,7 @@
       "tokenQuotaWindowMillis": 60000,
       "contentFilterBlockProbability": 0.2,
       "errorKind": "overloaded"
-    }
+    },
+    "primary": false
   }
 }

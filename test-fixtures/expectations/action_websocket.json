@@ -27,6 +27,11 @@
         ]
       }
     ],
-    "closeConnection": false
+    "closeConnection": true,
+    "delay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 10
+    },
+    "primary": false
   }
 }

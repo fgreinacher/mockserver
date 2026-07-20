@@ -1,0 +1,35 @@
+{
+  "httpRequest": {
+    "path": "/ws/graphql"
+  },
+  "httpWebSocketResponse": {
+    "subprotocol": "graphql-transport-ws",
+    "templateType": "MUSTACHE",
+    "graphqlSubscriptionFilter": {
+      "query": "subscription OnMessage { messageAdded { id body } }",
+      "operationName": "OnMessage",
+      "selectionSetMatchType": "AST_SUBSET",
+      "fields": [
+        "messageAdded"
+      ]
+    },
+    "messages": [
+      {
+        "text": "{\"type\":\"next\",\"payload\":{\"data\":{\"messageAdded\":{\"id\":\"1\"}}}}"
+      }
+    ],
+    "matchers": [
+      {
+        "frameType": "TEXT",
+        "textMatcher": "!ping",
+        "responses": [
+          {
+            "text": "not-a-ping"
+          }
+        ]
+      }
+    ],
+    "closeConnection": false,
+    "primary": true
+  }
+}

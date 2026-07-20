@@ -1,14 +1,47 @@
 {
   "_README": "Machine-readable ledger of client-model fidelity GAPS. Each language key maps to a list of JSON paths (dot notation; '*' = any array index) that the client's Expectation model currently DROPS or MUTATES on a JSON round-trip, so its round-trip fidelity test can excuse exactly those paths and land green today. This file is the backlog for the model-completion wave: when a client model is fixed to carry a field, REMOVE its path here and the per-client test's ratchet re-arms the assertion (a stale entry that no longer excuses any diff fails CI). Keys beginning with '_' are metadata and are ignored by tests. See .opencode (roundtrip-spec) / the per-client test headers for the exact comparator algorithm. php has verbatim rawData replay, so it has zero gaps. NOTE: 'node' entries document the generated mockServer.d.ts TYPE gaps enforced at compile time via isolated // @ts-expect-error markers in test/roundtrip_fidelity_types.ts (the type test does NOT read this file); removing a .d.ts gap makes its marker unused and fails tsc. 'php' is empty because the PHP client replays decoded JSON verbatim.",
   "_notation": "segment.segment ; array index as a literal index in a diff but written as '*' here so entries are fixture-length independent. A shorter entry excuses its whole subtree.",
-  "python": [],
-"ruby": [],
+  "python": [
+    "httpResponse.generateFromSchema",
+    "httpResponse.recoverAfter",
+    "httpResponse.statusCodeRange",
+    "httpSseResponse.templateType",
+    "httpWebSocketResponse.templateType",
+    "httpWebSocketResponse.graphqlSubscriptionFilter"
+  ],
+  "ruby": [
+    "httpResponse.generateFromSchema",
+    "httpResponse.recoverAfter",
+    "httpResponse.statusCodeRange",
+    "httpSseResponse.templateType",
+    "httpWebSocketResponse.templateType",
+    "httpWebSocketResponse.graphqlSubscriptionFilter"
+  ],
   "_go_note": "httpRequest.pathParameters is a pre-existing model limitation, not a droppable field: HttpRequest.PathParametersList is typed map[string][]string and the public builder RequestBuilder.PathParameter(name string, values ...string) writes into it, but the schema-matcher wire form is { name: [ { schema: {...} } ] }, which []string cannot hold. Widening the field (or the builder) to carry schema objects is a breaking type/signature change, disallowed by the additive-only contract, so this one path is retained. All other go gaps were closed by additively adding typed fields.",
   "go": [
-    "httpRequest.pathParameters"
+    "httpRequest.pathParameters",
+    "httpResponse.generateFromSchema",
+    "httpSseResponse.templateType",
+    "httpWebSocketResponse.templateType",
+    "httpWebSocketResponse.graphqlSubscriptionFilter",
+    "httpRequest.path",
+    "httpRequest.method",
+    "httpRequest.headers.X-Literal.*",
+    "httpRequest.headers.X-Negated.*",
+    "httpRequest.queryStringParameters.flag.*"
   ],
-  "rust": [],
-  "dotnet": [],
+  "rust": [
+    "<unrepresentable-expectation>:matcher_request_literal_not"
+  ],
+  "dotnet": [
+    "httpSseResponse.templateType",
+    "httpWebSocketResponse.templateType",
+    "httpWebSocketResponse.graphqlSubscriptionFilter",
+    "<unrepresentable-expectation>:matcher_request_literal_not"
+  ],
   "node": [],
-  "php": []
+  "php": [],
+  "_nottable_object_form_note": "WHY (not an oversight, a deliberate deferral): a matcher value whose first character is '!' or '?' cannot be sent as a bare JSON string, because the receiver reads those characters as the negation / optional markers and strips them \u2014 so \"path IS !foo\" would arrive as \"path is NOT foo\". Such values are therefore sent in the NottableString OBJECT form ({\"not\":false,\"value\":\"!foo\"}), which the server reads verbatim and which the published stringOrJsonSchema has always permitted. matcher_request_literal_not.json is the probe, and the ledger entry is SCOPED to it (<unrepresentable-expectation>:matcher_request_literal_not) so a second fixture becoming unparseable is NOT silently excused by this entry. node, python and ruby accept the object form because their matcher fields are dynamically typed. go models path/method/header values as string (and so DROPS them); rust models them as Option<String> and dotnet as string, and BOTH hard-fail deserialization of the whole expectation rather than dropping one field. In practice that is worse than one expectation: retrieveActiveExpectations() deserializes a LIST, so a SINGLE object-form expectation created by a Java or Node user poisons the ENTIRE retrieve for every Rust and .NET consumer, not just the offending entry. Still preferable to the silent inversion it replaces \u2014 a hard failure is diagnosable \u2014 but the blast radius is the whole call. Closing this requires a NottableString UNION field type (string | object) in the go, rust and dotnet models. That is a breaking change to the type of a public field, which the additive-only client contract forbids, so it is recorded here rather than done silently \u2014 it needs its own major-version change. Note the failure mode is loud, not silent: before, such a value was inverted and looked correct; now it is rejected and is diagnosable.",
+  "_action_field_gaps_note": "WHY (straightforward, just out of scope for the unit that added the probes): these are fields the server schema declares and the client model does not carry, so they are dropped on a round-trip. Unlike the nottable gaps below they need NO field-type change \u2014 they are purely ADDITIVE model additions, so they are compatible with the additive-only client contract and can be closed at any time. Remaining: the streaming-action fields (httpSseResponse.templateType, httpWebSocketResponse.templateType and .graphqlSubscriptionFilter) missing from python, ruby, go and dotnet; and httpResponse.generateFromSchema / recoverAfter / statusCodeRange missing from various clients. These stay recorded because they are differently-shaped fields across several clients, not a single defect class. NOTE two entries that WERE in this list have been CLOSED rather than deleted silently: the `primary` action-selector flag (rust, go, dotnet) and `httpError.streamError` (rust, dotnet). Both were fixed because leaving an identical data-loss defect recorded in some clients while fixed in others is incoherent \u2014 `primary` selects which action runs when several are configured, so dropping it can silently change behaviour on re-submit. All of these were invisible until the fixture coverage gate was deepened below depth-0; graphqlSubscriptionFilter was expressible by ZERO clients including Java until rust gained it.",
+  "_nottable_marker_in_names_note": "NOT FIXED, and not fixable the same way \u2014 header / query-parameter / cookie NAMES. The object-form fix described above applies to matcher VALUES only. A name is serialised as a JSON field name (KeysToMultiValuesSerializer writes it via jgen.writeFieldName, CookiesSerializer likewise), and a JSON field name is a string by construction \u2014 it cannot carry {\"not\":false,\"value\":...}. So header(string(\"!X-Foo\", false), \"bar\") still serialises the NAME as bare \"!X-Foo\" and the receiver reads it as NOT X-Foo: the identical inversion, still live. This is PRE-EXISTING and was not introduced by the value fix. Closing it needs a schema change \u2014 keyToMultiValue.json's array form types `name` as a plain string, so the fix is to allow the object form there and teach the key serialisers/deserialisers to use it, across all 8 clients. That is a wire-format change of the same class as the value fix but with a larger blast radius, so it is recorded here rather than bundled in. No fixture probes it deliberately: adding one would fail every client at once for a defect none of them can currently express."
 }

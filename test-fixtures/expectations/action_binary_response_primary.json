@@ -1,0 +1,9 @@
+{
+  "httpRequest": {
+    "path": "/download/primary"
+  },
+  "binaryResponse": {
+    "binaryData": "UHJpbWFyeQ==",
+    "primary": true
+  }
+}

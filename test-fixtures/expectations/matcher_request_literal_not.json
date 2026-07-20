@@ -1,0 +1,38 @@
+{
+  "httpRequest": {
+    "path": {
+      "not": false,
+      "value": "!/literal-bang-path"
+    },
+    "method": {
+      "not": true,
+      "value": "POST"
+    },
+    "headers": {
+      "X-Literal": [
+        {
+          "not": false,
+          "value": "!not-negated"
+        }
+      ],
+      "X-Negated": [
+        {
+          "not": true,
+          "value": "forbidden"
+        }
+      ]
+    },
+    "queryStringParameters": {
+      "flag": [
+        {
+          "not": false,
+          "value": "?not-optional"
+        }
+      ]
+    }
+  },
+  "httpResponse": {
+    "statusCode": 200,
+    "body": "literal marker characters survived the wire"
+  }
+}

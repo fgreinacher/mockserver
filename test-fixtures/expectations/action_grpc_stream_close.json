@@ -1,0 +1,15 @@
+{
+  "httpRequest": {
+    "path": "/grpc/StreamClose"
+  },
+  "grpcStreamResponse": {
+    "statusName": "OK",
+    "messages": [
+      {
+        "json": "{\"id\":9}"
+      }
+    ],
+    "closeConnection": true,
+    "primary": true
+  }
+}

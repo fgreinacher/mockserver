@@ -1,0 +1,10 @@
+{
+  "httpRequest": {
+    "path": "/err/stream-reset"
+  },
+  "httpError": {
+    "streamError": 2,
+    "dropConnection": true,
+    "primary": false
+  }
+}

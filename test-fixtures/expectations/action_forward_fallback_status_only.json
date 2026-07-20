@@ -1,6 +1,6 @@
 {
   "httpRequest": {
-    "path": "/fb"
+    "path": "/fb/status-only"
   },
   "httpForwardWithFallback": {
     "httpForward": {
@@ -13,15 +13,9 @@
       "body": "unavailable"
     },
     "fallbackOnStatusCodes": [
-      500,
-      502,
-      503
+      500
     ],
-    "fallbackOnTimeout": true,
-    "delay": {
-      "timeUnit": "MILLISECONDS",
-      "value": 10
-    },
-    "primary": true
+    "fallbackOnTimeout": false,
+    "primary": false
   }
 }

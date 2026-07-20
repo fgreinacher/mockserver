@@ -177,9 +177,11 @@ FIXTURES = fixture_files()
 # Tests
 # ---------------------------------------------------------------------------
 def test_fixture_set_present():
-    # Guard against a wrong glob/path silently testing nothing (spec: 44 fixtures).
-    assert len(FIXTURES) == 44, (
-        f"expected 44 fixtures under {FIXTURE_DIR}, found {len(FIXTURES)}"
+    # Guard against a wrong glob/path silently testing nothing. A lower bound rather than an
+    # exact count: the shared corpus grows whenever a server feature gains a probe, and an exact
+    # count turns every such addition into an unrelated failure in every client at once.
+    assert len(FIXTURES) >= 44, (
+        f"expected at least 44 fixtures under {FIXTURE_DIR}, found {len(FIXTURES)}"
     )
 
 

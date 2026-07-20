@@ -1,0 +1,20 @@
+{
+  "httpRequest": {
+    "dnsName": "secondary.example.com",
+    "dnsType": "A",
+    "dnsClass": "IN"
+  },
+  "dnsResponse": {
+    "responseCode": "NOERROR",
+    "answerRecords": [
+      {
+        "name": "secondary.example.com",
+        "type": "A",
+        "dnsClass": "IN",
+        "ttl": 60,
+        "value": "93.184.216.36"
+      }
+    ],
+    "primary": false
+  }
+}

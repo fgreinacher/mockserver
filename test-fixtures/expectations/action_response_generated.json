@@ -1,0 +1,17 @@
+{
+  "httpRequest": {
+    "path": "/generated"
+  },
+  "httpResponse": {
+    "statusCodeRange": "200-299",
+    "generateFromSchema": "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}}}",
+    "recoverAfter": {
+      "failTimes": 2,
+      "failResponse": {
+        "statusCode": 503
+      },
+      "idempotencyHeader": "X-Idempotency-Key"
+    },
+    "primary": false
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "httpRequest": {
+    "path": "/forward/secondary"
+  },
+  "httpForward": {
+    "scheme": "HTTP",
+    "host": "other.example.com",
+    "port": 8080,
+    "primary": false
+  }
+}

@@ -23,6 +23,11 @@
         }
       }
     ],
-    "closeConnection": false
+    "closeConnection": false,
+    "delay": {
+      "timeUnit": "MILLISECONDS",
+      "value": 10
+    },
+    "primary": false
   }
 }

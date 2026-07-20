@@ -1,6 +1,6 @@
 {
   "httpRequest": {
-    "path": "/events"
+    "path": "/events/keep-open"
   },
   "httpSseResponse": {
     "statusCode": 200,
@@ -14,19 +14,10 @@
         "event": "message",
         "data": "one",
         "id": "1"
-      },
-      {
-        "event": "message",
-        "data": "two",
-        "id": "2",
-        "retry": 5000
       }
     ],
-    "closeConnection": true,
-    "delay": {
-      "timeUnit": "MILLISECONDS",
-      "value": 10
-    },
-    "primary": false
+    "templateType": "MUSTACHE",
+    "closeConnection": false,
+    "primary": true
   }
 }

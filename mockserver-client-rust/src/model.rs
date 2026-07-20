@@ -1028,6 +1028,14 @@ pub struct HttpForward {
     /// Delay applied before the request is forwarded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    /// Catch-all for server fields this client does not model yet, so a
+    /// retrieve -> re-submit cycle cannot silently destroy them.
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl HttpForward {
@@ -1038,6 +1046,8 @@ impl HttpForward {
             port: Some(port),
             scheme: None,
             delay: None,
+            primary: None,
+            extra: Extra::default(),
         }
     }
 
@@ -1050,6 +1060,12 @@ impl HttpForward {
     /// Set a delay applied before the request is forwarded.
     pub fn delay(mut self, delay: Delay) -> Self {
         self.delay = Some(delay);
+        self
+    }
+
+    /// Mark this action as the primary action of the expectation.
+    pub fn primary(mut self, primary: bool) -> Self {
+        self.primary = Some(primary);
         self
     }
 }
@@ -1186,6 +1202,20 @@ pub struct HttpError {
     /// Delay applied before the error is returned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<Delay>,
+
+    /// Reset the matched request stream with this error code (HTTP/2 RST_STREAM /
+    /// HTTP/3 RESET_STREAM) instead of returning a response. Takes precedence over
+    /// `drop_connection`; HTTP/1.1 has no stream concept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_error: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    /// Catch-all for server fields this client does not model yet, so a
+    /// retrieve -> re-submit cycle cannot silently destroy them.
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl HttpError {
@@ -1209,6 +1239,18 @@ impl HttpError {
     /// Set a delay applied before the error is returned.
     pub fn delay(mut self, delay: Delay) -> Self {
         self.delay = Some(delay);
+        self
+    }
+
+    /// Reset the matched request stream with this error code instead of responding.
+    pub fn stream_error(mut self, code: i64) -> Self {
+        self.stream_error = Some(code);
+        self
+    }
+
+    /// Mark this action as the primary action of the expectation.
+    pub fn primary(mut self, primary: bool) -> Self {
+        self.primary = Some(primary);
         self
     }
 }
@@ -1307,6 +1349,17 @@ pub struct HttpSseResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_type: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    /// Catch-all for server fields this client does not model yet, so a
+    /// retrieve -> re-submit cycle cannot silently destroy them.
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl HttpSseResponse {
@@ -1351,10 +1404,80 @@ impl HttpSseResponse {
         self.delay = Some(delay);
         self
     }
+
+    /// Set the template type (`VELOCITY`, `JAVASCRIPT` or `MUSTACHE`).
+    pub fn template_type(mut self, template_type: impl Into<String>) -> Self {
+        self.template_type = Some(template_type.into());
+        self
+    }
+
+    /// Mark this action as the primary action of the expectation.
+    pub fn primary(mut self, primary: bool) -> Self {
+        self.primary = Some(primary);
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
-// HttpWebSocketResponse
+// GraphqlSubscriptionFilter
+// ---------------------------------------------------------------------------
+
+/// GraphQL subscription query filter for the `graphql-transport-ws` protocol.
+///
+/// When set on an [`HttpWebSocketResponse`], incoming subscribe messages are
+/// AST-matched against this filter.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphqlSubscriptionFilter {
+    pub query: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_name: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variables_schema: Option<String>,
+
+    /// One of `NORMALISED_STRING`, `AST_EXACT`, `AST_SUBSET`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection_set_match_type: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+
+    #[serde(flatten, default)]
+    pub extra: Extra,
+}
+
+impl GraphqlSubscriptionFilter {
+    /// Create a filter for the given subscription query.
+    pub fn new(query: impl Into<String>) -> Self {
+        Self { query: query.into(), ..Default::default() }
+    }
+
+    /// Set the operation name.
+    pub fn operation_name(mut self, operation_name: impl Into<String>) -> Self {
+        self.operation_name = Some(operation_name.into());
+        self
+    }
+
+    /// Set the variables JSON schema.
+    pub fn variables_schema(mut self, variables_schema: impl Into<String>) -> Self {
+        self.variables_schema = Some(variables_schema.into());
+        self
+    }
+
+    /// Set the selection-set match type.
+    pub fn selection_set_match_type(mut self, selection_set_match_type: impl Into<String>) -> Self {
+        self.selection_set_match_type = Some(selection_set_match_type.into());
+        self
+    }
+
+    /// Set the fields to match.
+    pub fn fields(mut self, fields: Vec<String>) -> Self {
+        self.fields = Some(fields);
+        self
+    }
+}
 // ---------------------------------------------------------------------------
 
 /// A single WebSocket message in an [`HttpWebSocketResponse`].
@@ -1466,6 +1589,10 @@ impl WebSocketMatcher {
     }
 }
 
+// ---------------------------------------------------------------------------
+// HttpWebSocketResponse
+// ---------------------------------------------------------------------------
+
 /// Builder for a WebSocket streaming response action.
 ///
 /// Serialized as the `httpWebSocketResponse` action in an expectation.
@@ -1499,6 +1626,21 @@ pub struct HttpWebSocketResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_type: Option<String>,
+
+    /// GraphQL subscription query filter for the graphql-transport-ws protocol.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graphql_subscription_filter: Option<GraphqlSubscriptionFilter>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    /// Catch-all for server fields this client does not model yet, so a
+    /// retrieve -> re-submit cycle cannot silently destroy them.
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl HttpWebSocketResponse {
@@ -1546,6 +1688,24 @@ impl HttpWebSocketResponse {
     /// Set a delay before the response starts.
     pub fn delay(mut self, delay: Delay) -> Self {
         self.delay = Some(delay);
+        self
+    }
+
+    /// Set the template type (`VELOCITY`, `JAVASCRIPT` or `MUSTACHE`).
+    pub fn template_type(mut self, template_type: impl Into<String>) -> Self {
+        self.template_type = Some(template_type.into());
+        self
+    }
+
+    /// Set the GraphQL subscription filter.
+    pub fn graphql_subscription_filter(mut self, filter: GraphqlSubscriptionFilter) -> Self {
+        self.graphql_subscription_filter = Some(filter);
+        self
+    }
+
+    /// Mark this action as the primary action of the expectation.
+    pub fn primary(mut self, primary: bool) -> Self {
+        self.primary = Some(primary);
         self
     }
 }
@@ -1687,6 +1847,14 @@ pub struct DnsResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    /// Catch-all for server fields this client does not model yet, so a
+    /// retrieve -> re-submit cycle cannot silently destroy them.
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl DnsResponse {
@@ -1736,6 +1904,12 @@ impl DnsResponse {
         self.delay = Some(delay);
         self
     }
+
+    /// Mark this action as the primary action of the expectation.
+    pub fn primary(mut self, primary: bool) -> Self {
+        self.primary = Some(primary);
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1762,6 +1936,14 @@ pub struct BinaryResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    /// Catch-all for server fields this client does not model yet, so a
+    /// retrieve -> re-submit cycle cannot silently destroy them.
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl BinaryResponse {
@@ -1775,6 +1957,7 @@ impl BinaryResponse {
         Self {
             binary_data: Some(BASE64.encode(data.as_ref())),
             delay: None,
+            ..Default::default()
         }
     }
 
@@ -1783,6 +1966,7 @@ impl BinaryResponse {
         Self {
             binary_data: Some(base64.into()),
             delay: None,
+            ..Default::default()
         }
     }
 
@@ -1795,6 +1979,12 @@ impl BinaryResponse {
     /// Set a delay before the response is returned.
     pub fn delay(mut self, delay: Delay) -> Self {
         self.delay = Some(delay);
+        self
+    }
+
+    /// Mark this action as the primary action of the expectation.
+    pub fn primary(mut self, primary: bool) -> Self {
+        self.primary = Some(primary);
         self
     }
 }
@@ -1875,6 +2065,14 @@ pub struct GrpcStreamResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<Delay>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+
+    /// Catch-all for server fields this client does not model yet, so a
+    /// retrieve -> re-submit cycle cannot silently destroy them.
+    #[serde(flatten, default)]
+    pub extra: Extra,
 }
 
 impl GrpcStreamResponse {
@@ -1923,6 +2121,12 @@ impl GrpcStreamResponse {
     /// Set a delay before the response starts.
     pub fn delay(mut self, delay: Delay) -> Self {
         self.delay = Some(delay);
+        self
+    }
+
+    /// Mark this action as the primary action of the expectation.
+    pub fn primary(mut self, primary: bool) -> Self {
+        self.primary = Some(primary);
         self
     }
 }

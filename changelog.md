@@ -154,6 +154,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema, so a phantom property cannot be reintroduced. The PHP client's docblock, which documented
   the same non-existent key, is corrected — PHP passes the profile through verbatim, so it never sent
   the property itself.
+- **The Rust, Go and .NET clients silently dropped fields on a retrieve-then-resubmit cycle.** `HttpSseResponse`
+  was missing `templateType` and `primary`, `HttpWebSocketResponse` was missing `templateType`,
+  `graphqlSubscriptionFilter` and `primary`, and `GrpcStreamResponse`, `BinaryResponse` and
+  `DnsResponse` were missing `primary`. All are now modelled, `graphqlSubscriptionFilter` gains a
+  typed `GraphqlSubscriptionFilter`, and each of these types gains the `#[serde(flatten)]` catch-all
+  the other response types already had, so unmodelled server fields survive rather than being
+  discarded. The same `primary` action-selector drop was present in the Go client (`HttpError`,
+  `HttpForward`, `HttpResponse`) and the .NET client (`HttpError`, `HttpForward`) and is fixed in both,
+  with `WithPrimary(...)` builder methods on .NET matching the existing convention. `primary` selects
+  which action runs when an expectation configures more than one, so losing it on a round-trip could
+  silently change which action a re-submitted expectation executes. The .NET client was also missing
+  `httpError.streamError` (the HTTP/2 `RST_STREAM` / HTTP/3 `RESET_STREAM` code, which takes precedence
+  over `dropConnection`), now modelled with a `WithStreamError(...)` builder.
+- **The client fidelity coverage gate only inspected top-level keys, so nested fields were never
+  probed** — which is why `known-gaps.json` read clean while `graphqlSubscriptionFilter` was
+  expressible by no client at all, including Java. The gate now also requires every property of every
+  action schema to be exercised by some fixture, and requires action-level booleans to be exercised
+  with **both** `true` and `false` (the `closeConnection` defect above was masked by an SSE fixture
+  that only ever used `true`). The newly-probing fixtures exposed real gaps in four more clients;
+  those are now recorded explicitly in `test-fixtures/expectations/known-gaps.json` rather than
+  silently passing — `httpSseResponse.templateType`, `httpWebSocketResponse.templateType` and
+  `httpWebSocketResponse.graphqlSubscriptionFilter` are dropped by Python, Ruby, Go and .NET
+  (additive model additions, straightforward to close), and the NottableString object form is
+  unrepresentable in Go, Rust and .NET (a breaking field-type change, deliberately deferred). The
+  .NET harness gained the `<unrepresentable-expectation>` sentinel the Rust one already had, so a
+  fixture the model cannot deserialize at all is a recorded gap rather than an unexcusable crash. The
+  Python and Ruby harnesses' exact fixture-count assertions are now lower bounds, so growing the
+  shared corpus no longer fails every client at once.
 - **Verification could miss a just-forwarded request (race on every forward path).** The visibility guarantee
   for `verify`/`retrieve` rests on disruptor FIFO ordering — `drainDisruptor()` waits only for entries already
   *published*, so it cannot wait for one that has not been published yet. The mocked-response path logs before

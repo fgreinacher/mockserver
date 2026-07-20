@@ -1,0 +1,25 @@
+{
+  "httpRequest": {
+    "path": "/grpc/BidiKeepOpen"
+  },
+  "grpcBidiResponse": {
+    "statusName": "OK",
+    "messages": [
+      {
+        "json": "{\"greeting\":\"hi\"}"
+      }
+    ],
+    "rules": [
+      {
+        "matchJson": "!{\"name\":\"ignored\"}",
+        "responses": [
+          {
+            "json": "{\"reply\":\"anything but ignored\"}"
+          }
+        ]
+      }
+    ],
+    "closeConnection": false,
+    "primary": false
+  }
+}
