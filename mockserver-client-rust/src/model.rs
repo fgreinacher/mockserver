@@ -81,6 +81,314 @@ impl From<Vec<String>> for ParameterValues {
 }
 
 // ---------------------------------------------------------------------------
+// MatcherValue
+// ---------------------------------------------------------------------------
+
+/// The markers MockServer strips from the front of a plain matcher string:
+/// `!` negates the matcher and `?` makes it optional.
+const NOT_CHAR: char = '!';
+const OPTIONAL_CHAR: char = '?';
+
+/// A single matcher value for a request header, query-string parameter, cookie
+/// or path parameter.
+///
+/// MockServer's plain-string wire form encodes negation and optionality as
+/// leading markers — `!` negates and `?` marks optional — and the server strips
+/// them unconditionally when reading. A value whose own first character is `!`
+/// or `?` therefore cannot be sent as a bare string:
+/// [`header("X-Tag", "!foo")`](HttpRequest::header) is read back as "`X-Tag` is
+/// anything but `foo`", which matches almost every request, so the expectation
+/// silently passes for the wrong reason instead of failing.
+///
+/// `MatcherValue` keeps the value and the flags apart and serialises to the
+/// object form (`{"not":false,"value":"!foo"}`) only when the plain form would
+/// be misread. Every value that already round-trips through the plain form stays
+/// byte-identical on the wire, so existing expectations are unaffected.
+///
+/// Use [`literal`](Self::literal) for an exact value, [`not_literal`](Self::not_literal)
+/// to negate one, and [`optional_literal`](Self::optional_literal) for an
+/// optional exact value:
+///
+/// ```
+/// use mockserver_client::{HttpRequest, MatcherValue};
+///
+/// let request = HttpRequest::new()
+///     .header_matcher("X-Tag", MatcherValue::literal("!foo"))   // X-Tag IS "!foo"
+///     .header_matcher("X-Env", MatcherValue::not_literal("dev")); // X-Env is NOT "dev"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MatcherValue {
+    /// The matcher text, taken verbatim — markers in it are not parsed.
+    pub value: String,
+    /// Negate the matcher (`"not": true`).
+    pub not: bool,
+    /// Mark the header/parameter/cookie as optional (`"optional": true`).
+    pub optional: bool,
+}
+
+/// Mirrors Java's `StringUtils.isBlank`: empty or whitespace only.
+fn is_blank(s: &str) -> bool {
+    s.trim().is_empty()
+}
+
+impl MatcherValue {
+    /// A matcher for exactly `value`, even when it starts with `!` or `?`.
+    pub fn literal(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            not: false,
+            optional: false,
+        }
+    }
+
+    /// A matcher that matches anything except exactly `value`.
+    pub fn not_literal(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            not: true,
+            optional: false,
+        }
+    }
+
+    /// A matcher for exactly `value` that need not be present.
+    pub fn optional_literal(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            not: false,
+            optional: true,
+        }
+    }
+
+    /// Render the plain-string form, matching `NottableString.serialise()`.
+    fn serialise(&self) -> String {
+        let mut s = String::new();
+        if self.optional {
+            s.push(OPTIONAL_CHAR);
+        }
+        if self.not {
+            s.push(NOT_CHAR);
+        }
+        if !is_blank(&self.value) {
+            s.push_str(&self.value);
+        }
+        s
+    }
+
+    /// Parse a plain wire string exactly as the server would, mirroring
+    /// `NottableString.string(String)`: strip an optional marker, then a not
+    /// marker, then an optional marker again.
+    fn parse_plain(s: &str) -> Self {
+        let mut optional = false;
+        let mut not = false;
+        let mut rest = s;
+        if !is_blank(s) {
+            if let Some(r) = rest.strip_prefix(OPTIONAL_CHAR) {
+                optional = true;
+                rest = r;
+            }
+            if let Some(r) = rest.strip_prefix(NOT_CHAR) {
+                not = true;
+                rest = r;
+            }
+            if let Some(r) = rest.strip_prefix(OPTIONAL_CHAR) {
+                optional = true;
+                rest = r;
+            }
+        }
+        Self {
+            value: rest.to_string(),
+            not,
+            optional,
+        }
+    }
+
+    /// Whether re-reading the plain form would change the value, the negation or
+    /// the optionality. Decided by actually re-parsing rather than by testing
+    /// for a leading marker, so it stays correct for compound markers (`?!`,
+    /// `!?`) and any marker added later.
+    fn ambiguous(&self) -> bool {
+        if is_blank(&self.value) {
+            // A blank value has no marker to misread, and it cannot be expressed
+            // in the object form either: the server's object-form reader ignores
+            // a blank "value", so escaping one would silently drop the matcher.
+            return false;
+        }
+        let reparsed = Self::parse_plain(&self.serialise());
+        reparsed.not != self.not
+            || reparsed.optional != self.optional
+            || reparsed.value != self.value
+    }
+}
+
+impl From<String> for MatcherValue {
+    /// Parse a plain wire string, so an existing `"!foo"` keeps meaning "not
+    /// foo". The meaning is preserved; only the representation changes.
+    fn from(s: String) -> Self {
+        Self::parse_plain(&s)
+    }
+}
+
+impl From<&str> for MatcherValue {
+    fn from(s: &str) -> Self {
+        Self::parse_plain(s)
+    }
+}
+
+impl std::fmt::Display for MatcherValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.serialise())
+    }
+}
+
+impl Serialize for MatcherValue {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if !self.ambiguous() {
+            return serializer.serialize_str(&self.serialise());
+        }
+        use serde::ser::SerializeMap;
+        // "not" is written even when false so the intent is unmistakable to a
+        // reader and to the other clients, rather than relying on absent==false.
+        let count = if self.optional { 3 } else { 2 };
+        let mut map = serializer.serialize_map(Some(count))?;
+        map.serialize_entry("not", &self.not)?;
+        if self.optional {
+            map.serialize_entry("optional", &self.optional)?;
+        }
+        map.serialize_entry("value", &self.value)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for MatcherValue {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // A hand-written visitor rather than an `#[serde(untagged)]` enum: an
+        // untagged enum re-buffers into `Content`, which does not compose with
+        // the `Content` buffering that `#[serde(flatten)]` already applies to
+        // the enclosing `HttpRequest`, so the object form is misread as a string
+        // inside a flattened struct. `visit_str`/`visit_map` dispatch directly
+        // and work in both contexts.
+        struct MatcherValueVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for MatcherValueVisitor {
+            type Value = MatcherValue;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a matcher string or an object with a \"value\" field")
+            }
+
+            fn visit_str<E>(self, v: &str) -> std::result::Result<MatcherValue, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(MatcherValue::parse_plain(v))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<MatcherValue, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut value: Option<String> = None;
+                let mut not = false;
+                let mut optional = false;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "value" => value = Some(map.next_value()?),
+                        "not" => not = map.next_value()?,
+                        "optional" => optional = map.next_value()?,
+                        // Ignore any other key so the object form stays
+                        // forward-compatible with fields added later.
+                        _ => {
+                            let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                let value = value.ok_or_else(|| serde::de::Error::missing_field("value"))?;
+                Ok(MatcherValue {
+                    value,
+                    not,
+                    optional,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(MatcherValueVisitor)
+    }
+}
+
+/// Lenient deserializer for `path` / `method`, which this model represents as
+/// plain strings. When an expectation carries their object (nottable) form —
+/// which the plain-string field cannot hold — the object is discarded rather
+/// than failing the whole expectation, so the rest of the request (headers,
+/// query parameters, the enclosing response, …) still decodes. The dropped
+/// field is recorded in the round-trip fidelity harness's known-gaps ledger as
+/// `httpRequest.path` / `httpRequest.method`.
+fn de_lenient_optional_string<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct LenientString;
+
+    impl<'de> serde::de::Visitor<'de> for LenientString {
+        type Value = Option<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a string, or an object matcher form that is discarded")
+        }
+
+        fn visit_str<E>(self, v: &str) -> std::result::Result<Option<String>, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Some(v.to_owned()))
+        }
+
+        fn visit_none<E>(self) -> std::result::Result<Option<String>, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Option<String>, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> std::result::Result<Option<String>, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_any(self)
+        }
+
+        fn visit_map<A>(self, mut map: A) -> std::result::Result<Option<String>, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            // The object (nottable) form cannot be represented as a plain string;
+            // drain it and discard so the surrounding decode still succeeds.
+            while map
+                .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                .is_some()
+            {}
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(LenientString)
+}
+
+// ---------------------------------------------------------------------------
 // HttpRequest
 // ---------------------------------------------------------------------------
 
@@ -97,61 +405,280 @@ impl From<Vec<String>> for ParameterValues {
 ///     .query_param("page", "1")
 ///     .body("{}");
 /// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+/// `Serialize`/`Deserialize` are implemented by hand (see below) rather than
+/// derived, so the additive `*_matchers` fields can stand in for their plain
+/// counterparts under the same wire key — the same shape the Go client uses.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct HttpRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Query-string parameters to match, multiple values per key (plain form).
     pub query_string_parameters: Option<HashMap<String, Vec<String>>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Headers to match, multiple values per key (plain form).
     pub headers: Option<HashMap<String, Vec<String>>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<Body>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub jwt: Option<Jwt>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_address: Option<SocketAddress>,
 
     /// Negate the whole request matcher (`"not": true`).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub not: Option<bool>,
 
     /// Match only requests received over TLS (`"secure"`).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub secure: Option<bool>,
 
     /// Match only keep-alive requests (`"keepAlive"`).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_alive: Option<bool>,
 
     /// Match the request protocol (e.g. `"HTTP_1_1"`, `"HTTP_2"`, `"HTTP_3"`).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
 
     /// Path parameters (`/users/{id}` style), multiple values per key.
     ///
     /// Each key's value is a [`ParameterValues`], accepting both the plain
     /// string-list form and the schema/nottable matcher form.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub path_parameters: Option<HashMap<String, ParameterValues>>,
 
-    /// Cookies to match (single value per name).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Cookies to match (single value per name, plain form).
     pub cookies: Option<HashMap<String, String>>,
+
+    /// Header matchers whose values are taken verbatim, expressing a value that
+    /// the plain [`headers`](Self::headers) map cannot: one starting with `!` or
+    /// `?`. When non-empty this REPLACES [`headers`](Self::headers) on the wire
+    /// under the same `headers` key. Additive — the plain map keeps its type and
+    /// meaning. Populate via [`header_matcher`](Self::header_matcher).
+    pub header_matchers: Option<HashMap<String, Vec<MatcherValue>>>,
+
+    /// Query-string parameter matchers. See [`header_matchers`](Self::header_matchers)
+    /// and [`query_param_matcher`](Self::query_param_matcher).
+    pub query_string_parameter_matchers: Option<HashMap<String, Vec<MatcherValue>>>,
+
+    /// Cookie matchers (single value per name). See
+    /// [`header_matchers`](Self::header_matchers) and
+    /// [`cookie_matcher`](Self::cookie_matcher).
+    pub cookie_matchers: Option<HashMap<String, MatcherValue>>,
 
     /// Forward-compatibility catch-all for request fields the typed model does
     /// not yet name (e.g. `clientCertificate`, `localAddress`, `remoteAddress`).
-    #[serde(flatten, default)]
     pub extra: Extra,
+}
+
+/// Convert a plain multi-value map to matcher values by parsing each string
+/// exactly as the server would, so an existing `"!foo"` keeps meaning "not foo".
+/// The meaning is preserved; only the representation changes.
+fn plain_multi_as_matchers(
+    map: &HashMap<String, Vec<String>>,
+) -> HashMap<String, Vec<MatcherValue>> {
+    map.iter()
+        .map(|(k, vs)| {
+            (
+                k.clone(),
+                vs.iter().map(|v| MatcherValue::from(v.clone())).collect(),
+            )
+        })
+        .collect()
+}
+
+/// The effective multi-value map for the wire: the matcher map when it carries
+/// anything, otherwise the plain map re-expressed as matcher values (which
+/// serialise back to the identical plain strings).
+fn effective_multi(
+    plain: &Option<HashMap<String, Vec<String>>>,
+    matchers: &Option<HashMap<String, Vec<MatcherValue>>>,
+) -> Option<HashMap<String, Vec<MatcherValue>>> {
+    match matchers {
+        Some(m) if !m.is_empty() => Some(m.clone()),
+        _ => plain.as_ref().map(plain_multi_as_matchers),
+    }
+}
+
+/// The effective single-value (cookie) map for the wire. See [`effective_multi`].
+fn effective_single(
+    plain: &Option<HashMap<String, String>>,
+    matchers: &Option<HashMap<String, MatcherValue>>,
+) -> Option<HashMap<String, MatcherValue>> {
+    match matchers {
+        Some(m) if !m.is_empty() => Some(m.clone()),
+        _ => plain.as_ref().map(|p| {
+            p.iter()
+                .map(|(k, v)| (k.clone(), MatcherValue::from(v.clone())))
+                .collect()
+        }),
+    }
+}
+
+/// A decoded multi-value field split into (plain map, matcher map) — at most one
+/// is `Some`.
+type SplitMulti = (
+    Option<HashMap<String, Vec<String>>>,
+    Option<HashMap<String, Vec<MatcherValue>>>,
+);
+
+/// A decoded single-value (cookie) field split into (plain map, matcher map).
+type SplitSingle = (
+    Option<HashMap<String, String>>,
+    Option<HashMap<String, MatcherValue>>,
+);
+
+/// Split a decoded multi-value matcher map into the plain map (when every value
+/// round-trips through the plain form) or the matcher map (when any value needs
+/// the object form). Mirrors the Go client's `decodeMultiValueMatchers`: the
+/// choice is per-FIELD, not per-value, because both share one wire key.
+fn split_multi(decoded: Option<HashMap<String, Vec<MatcherValue>>>) -> SplitMulti {
+    let Some(map) = decoded else {
+        return (None, None);
+    };
+    if map.values().flatten().any(MatcherValue::ambiguous) {
+        return (None, Some(map));
+    }
+    let plain = map
+        .into_iter()
+        .map(|(k, vs)| (k, vs.iter().map(MatcherValue::serialise).collect()))
+        .collect();
+    (Some(plain), None)
+}
+
+/// [`split_multi`] for a single-value (cookie) field.
+fn split_single(decoded: Option<HashMap<String, MatcherValue>>) -> SplitSingle {
+    let Some(map) = decoded else {
+        return (None, None);
+    };
+    if map.values().any(MatcherValue::ambiguous) {
+        return (None, Some(map));
+    }
+    let plain = map.into_iter().map(|(k, v)| (k, v.serialise())).collect();
+    (Some(plain), None)
+}
+
+impl Serialize for HttpRequest {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            method: &'a Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            path: &'a Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            query_string_parameters: Option<HashMap<String, Vec<MatcherValue>>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            headers: Option<HashMap<String, Vec<MatcherValue>>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            body: &'a Option<Body>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            jwt: &'a Option<Jwt>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            socket_address: &'a Option<SocketAddress>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            not: &'a Option<bool>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            secure: &'a Option<bool>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            keep_alive: &'a Option<bool>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            protocol: &'a Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            path_parameters: &'a Option<HashMap<String, ParameterValues>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            cookies: Option<HashMap<String, MatcherValue>>,
+            #[serde(flatten)]
+            extra: &'a Extra,
+        }
+
+        Wire {
+            method: &self.method,
+            path: &self.path,
+            query_string_parameters: effective_multi(
+                &self.query_string_parameters,
+                &self.query_string_parameter_matchers,
+            ),
+            headers: effective_multi(&self.headers, &self.header_matchers),
+            body: &self.body,
+            jwt: &self.jwt,
+            socket_address: &self.socket_address,
+            not: &self.not,
+            secure: &self.secure,
+            keep_alive: &self.keep_alive,
+            protocol: &self.protocol,
+            path_parameters: &self.path_parameters,
+            cookies: effective_single(&self.cookies, &self.cookie_matchers),
+            extra: &self.extra,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for HttpRequest {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            #[serde(default, deserialize_with = "de_lenient_optional_string")]
+            method: Option<String>,
+            #[serde(default, deserialize_with = "de_lenient_optional_string")]
+            path: Option<String>,
+            #[serde(default)]
+            query_string_parameters: Option<HashMap<String, Vec<MatcherValue>>>,
+            #[serde(default)]
+            headers: Option<HashMap<String, Vec<MatcherValue>>>,
+            #[serde(default)]
+            body: Option<Body>,
+            #[serde(default)]
+            jwt: Option<Jwt>,
+            #[serde(default)]
+            socket_address: Option<SocketAddress>,
+            #[serde(default)]
+            not: Option<bool>,
+            #[serde(default)]
+            secure: Option<bool>,
+            #[serde(default)]
+            keep_alive: Option<bool>,
+            #[serde(default)]
+            protocol: Option<String>,
+            #[serde(default)]
+            path_parameters: Option<HashMap<String, ParameterValues>>,
+            #[serde(default)]
+            cookies: Option<HashMap<String, MatcherValue>>,
+            #[serde(flatten)]
+            extra: Extra,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let (headers, header_matchers) = split_multi(wire.headers);
+        let (query_string_parameters, query_string_parameter_matchers) =
+            split_multi(wire.query_string_parameters);
+        let (cookies, cookie_matchers) = split_single(wire.cookies);
+        Ok(HttpRequest {
+            method: wire.method,
+            path: wire.path,
+            query_string_parameters,
+            headers,
+            body: wire.body,
+            jwt: wire.jwt,
+            socket_address: wire.socket_address,
+            not: wire.not,
+            secure: wire.secure,
+            keep_alive: wire.keep_alive,
+            protocol: wire.protocol,
+            path_parameters: wire.path_parameters,
+            cookies,
+            header_matchers,
+            query_string_parameter_matchers,
+            cookie_matchers,
+            extra: wire.extra,
+        })
+    }
 }
 
 impl HttpRequest {
@@ -183,6 +710,12 @@ impl HttpRequest {
     }
 
     /// Add a query string parameter (multiple values per key supported).
+    ///
+    /// A leading `!` in the value negates and a leading `?` marks it optional —
+    /// the server's marker syntax, and the existing meaning. To match a value
+    /// that literally starts with `!` or `?`, use
+    /// [`query_param_matcher`](Self::query_param_matcher) with
+    /// [`MatcherValue::literal`].
     pub fn query_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let params = self
             .query_string_parameters
@@ -191,10 +724,67 @@ impl HttpRequest {
         self
     }
 
+    /// Add a query string parameter matcher whose value is taken verbatim, so a
+    /// value starting with `!` or `?` means itself rather than being read as a
+    /// negation or optionality marker.
+    ///
+    /// Use one style per field: once any `query_param_matcher` call is made, the
+    /// matcher map replaces the plain [`query_param`](Self::query_param) map for
+    /// the whole `queryStringParameters` field on the wire, so a plain
+    /// `query_param` call made AFTER this one is ignored.
+    pub fn query_param_matcher(mut self, key: impl Into<String>, value: MatcherValue) -> Self {
+        if self.query_string_parameter_matchers.is_none() {
+            let migrated = self
+                .query_string_parameters
+                .take()
+                .map(|m| plain_multi_as_matchers(&m))
+                .unwrap_or_default();
+            self.query_string_parameter_matchers = Some(migrated);
+        }
+        self.query_string_parameter_matchers
+            .as_mut()
+            .unwrap()
+            .entry(key.into())
+            .or_default()
+            .push(value);
+        self
+    }
+
     /// Add a header (multiple values per key supported).
+    ///
+    /// A leading `!` in the value negates and a leading `?` marks it optional —
+    /// the server's marker syntax, and the existing meaning. To match a value
+    /// that literally starts with `!` or `?`, use
+    /// [`header_matcher`](Self::header_matcher) with [`MatcherValue::literal`].
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let headers = self.headers.get_or_insert_with(HashMap::new);
         headers.entry(key.into()).or_default().push(value.into());
+        self
+    }
+
+    /// Add a header matcher whose value is taken verbatim, so a value starting
+    /// with `!` or `?` means itself rather than being read as a negation or
+    /// optionality marker.
+    ///
+    /// Use one style per field: once any `header_matcher` call is made, the
+    /// matcher map replaces the plain [`header`](Self::header) map for the whole
+    /// `headers` field on the wire, so a plain `header` call made AFTER this one
+    /// is ignored.
+    pub fn header_matcher(mut self, key: impl Into<String>, value: MatcherValue) -> Self {
+        if self.header_matchers.is_none() {
+            let migrated = self
+                .headers
+                .take()
+                .map(|m| plain_multi_as_matchers(&m))
+                .unwrap_or_default();
+            self.header_matchers = Some(migrated);
+        }
+        self.header_matchers
+            .as_mut()
+            .unwrap()
+            .entry(key.into())
+            .or_default()
+            .push(value);
         self
     }
 
@@ -300,9 +890,67 @@ impl HttpRequest {
     }
 
     /// Add a cookie to match (single value per name).
+    ///
+    /// A leading `!` in the value negates and a leading `?` marks it optional —
+    /// the server's marker syntax, and the existing meaning. To match a value
+    /// that literally starts with `!` or `?`, use
+    /// [`cookie_matcher`](Self::cookie_matcher) with [`MatcherValue::literal`].
     pub fn cookie(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         let cookies = self.cookies.get_or_insert_with(HashMap::new);
         cookies.insert(name.into(), value.into());
+        self
+    }
+
+    /// Add a cookie matcher whose value is taken verbatim, so a value starting
+    /// with `!` or `?` means itself rather than being read as a negation or
+    /// optionality marker.
+    ///
+    /// Use one style per field: once any `cookie_matcher` call is made, the
+    /// matcher map replaces the plain [`cookie`](Self::cookie) map for the whole
+    /// `cookies` field on the wire, so a plain `cookie` call made AFTER this one
+    /// is ignored.
+    pub fn cookie_matcher(mut self, name: impl Into<String>, value: MatcherValue) -> Self {
+        if self.cookie_matchers.is_none() {
+            let migrated = self
+                .cookies
+                .take()
+                .map(|m| {
+                    m.into_iter()
+                        .map(|(k, v)| (k, MatcherValue::from(v)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.cookie_matchers = Some(migrated);
+        }
+        self.cookie_matchers
+            .as_mut()
+            .unwrap()
+            .insert(name.into(), value);
+        self
+    }
+
+    /// Add a path parameter matcher whose value is taken verbatim, so a value
+    /// starting with `!` or `?` means itself rather than being read as a
+    /// negation or optionality marker.
+    ///
+    /// Path parameters are carried as [`ParameterValues`]; a literal value is
+    /// stored in the schema-matcher (object) form so the server reads it exactly
+    /// as written. Calling this for a key that already holds plain
+    /// [`path_param`](Self::path_param) values REPLACES them with the matcher
+    /// form, so use one style per key.
+    pub fn path_param_matcher(mut self, key: impl Into<String>, value: MatcherValue) -> Self {
+        let element = serde_json::to_value(&value)
+            .expect("BUG: MatcherValue::serialize returned Err for an in-memory value");
+        let params = self.path_parameters.get_or_insert_with(HashMap::new);
+        match params
+            .entry(key.into())
+            .or_insert_with(|| ParameterValues::Matcher(serde_json::Value::Array(Vec::new())))
+        {
+            ParameterValues::Matcher(serde_json::Value::Array(values)) => values.push(element),
+            slot => {
+                *slot = ParameterValues::Matcher(serde_json::Value::Array(vec![element]));
+            }
+        }
         self
     }
 }

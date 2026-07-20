@@ -171,6 +171,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **The Rust client can now match a header, query parameter, cookie or path parameter whose value starts
+  with `!` or `?`.** MockServer's plain-string matcher form encodes negation as a leading `!` and
+  optionality as a leading `?`, and the server strips those markers unconditionally when reading. A value
+  whose own first character is a marker therefore could not be expressed: asking for "`X-Tag` is exactly
+  `!foo`" went over the wire bare and was read back as "`X-Tag` is anything but `foo`" — which matches
+  almost every request, so the expectation silently passed for the wrong reason rather than failing. A new
+  `MatcherValue` type (with `literal`, `not_literal` and `optional_literal` constructors) holds the value
+  and the flags apart, and the request builder gains `header_matcher`, `query_param_matcher`,
+  `cookie_matcher` and `path_param_matcher`; a value that the plain form would misread is sent as the
+  object form (`{"not":false,"value":"!foo"}`), which the server reads verbatim. This matches the escape
+  the Java and Go clients already had. The change is additive — no existing public field changed type: the
+  plain `headers`/`query_string_parameters`/`cookies` maps keep their `String` value types and their
+  marker-parsing meaning, and new `header_matchers`/`query_string_parameter_matchers`/`cookie_matchers`
+  fields carry the escaped values, with a hand-written `Serialize`/`Deserialize` on `HttpRequest` letting a
+  matcher map stand in for its plain counterpart under the same wire key. Ambiguity is decided by
+  re-parsing the plain form rather than by testing for a leading marker, so every value that already
+  round-tripped stays byte-identical on the wire — including `not_literal("!foo")`, which still serialises
+  as the shorter `"!!foo"`. The read path decodes both wire forms, so an expectation carrying an escaped
+  value survives being read back through `retrieve_active_expectations` and `retrieve_recorded_requests` —
+  including one written by a MockServer or another client that emits the object form itself.
 - **The gRPC fail-safe diagnostics are no longer silent at global log level WARN or ERROR.** When decoding
   an upstream gRPC response fails, or a descriptor directory / proto file cannot be loaded, MockServer
   deliberately swallows the error and carries on — but logs a WARN so the fallback is diagnosable. Those
