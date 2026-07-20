@@ -525,6 +525,16 @@ Configuration via `HttpForwardWithFallback`:
 - `fallbackOnStatusCodes` -- list of status codes that trigger fallback (default: 500-599)
 - `fallbackOnTimeout` -- whether to fall back on connection errors/timeouts (default: true)
 
+> **An absent `fallbackOnTimeout` is not the same as `false`.**
+> `HttpForwardWithFallbackActionHandler` reads it as
+> `action.getFallbackOnTimeout() == null || action.getFallbackOnTimeout()`, so **absent means
+> `true`** — and no schema declares a `default`, so the handler is the only authority. A client
+> that omits the field to mean "off" gets fallback anyway. Anything generating or round-tripping
+> this action must emit the value explicitly rather than omitting it when false; the dashboard
+> code generator did the latter and produced snippets that contradicted the UI selection.
+> This is the same asymmetry as `closeConnection` on the streaming actions (see
+> [ai-protocol-mocking.md](ai-protocol-mocking.md)).
+
 ### Forward Retry & Per-Upstream Circuit Breaker
 
 All matched FORWARD-class actions (`FORWARD`, `FORWARD_TEMPLATE`, `FORWARD_CLASS_CALLBACK`, `FORWARD_REPLACE`, `FORWARD_VALIDATE`, `FORWARD_WITH_FALLBACK`, `FORWARD_OBJECT_CALLBACK`) funnel through `HttpForwardAction.sendRequest(...)`, the single place that calls `NettyHttpClient`. Two **opt-in, default-off** resilience controls wrap that call so existing behaviour (forward exactly once, always attempt) is byte-for-byte unchanged unless configured.

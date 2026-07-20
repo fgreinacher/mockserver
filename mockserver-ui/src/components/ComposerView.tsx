@@ -1504,7 +1504,11 @@ function actionFromExpectation(item: JsonListItem): ActionPrefill | null {
         fallbackStatusCode: typeof fbResp['statusCode'] === 'number' ? (fbResp['statusCode'] as number) : 200,
         fallbackBody: unwrapBody(fbResp['body']),
         fallbackOnStatusCodes: codes,
-        fallbackOnTimeout: fwf['fallbackOnTimeout'] === true,
+        // Absent means TRUE on the server (HttpForwardWithFallbackActionHandler reads
+        // `== null || value`), so an absent field must load as ON. Loading it as OFF would
+        // both misreport the live behaviour and — since the generator now always emits the
+        // value — silently turn fallback OFF when the expectation is re-saved.
+        fallbackOnTimeout: fwf['fallbackOnTimeout'] !== false,
       },
     };
   }
@@ -1532,7 +1536,9 @@ function actionFromExpectation(item: JsonListItem): ActionPrefill | null {
       websocketState: {
         subprotocol: typeof ws['subprotocol'] === 'string' ? (ws['subprotocol'] as string) : '',
         messages: msgs,
-        closeConnection: ws['closeConnection'] === true,
+        // Absent means CLOSE for WebSocket (HttpWebSocketResponseActionHandler reads
+        // `== null || value`), so an absent field must load as ON — see the SSE note below.
+        closeConnection: ws['closeConnection'] !== false,
         matchers,
       },
     };
@@ -1554,7 +1560,11 @@ function actionFromExpectation(item: JsonListItem): ActionPrefill | null {
         statusCode: typeof sse['statusCode'] === 'number' ? (sse['statusCode'] as number) : 200,
         headers: headersToText(sse['headers']),
         events: events.length > 0 ? events : [{ event: '', data: '', id: '', retry: '' }],
-        closeConnection: sse['closeConnection'] === true,
+        // Absent means CLOSE for SSE (HttpSseResponseActionHandler reads `== null || value`).
+        // Loading absent as OFF would misreport the live behaviour, and because the generator
+        // now always emits the value, re-saving an untouched expectation would write
+        // `closeConnection: false` and silently stop it closing the stream.
+        closeConnection: sse['closeConnection'] !== false,
       },
     };
   }
@@ -1619,6 +1629,8 @@ function actionFromExpectation(item: JsonListItem): ActionPrefill | null {
         statusMessage: typeof grpc['statusMessage'] === 'string' ? (grpc['statusMessage'] as string) : '',
         headers: headersToText(grpc['headers']),
         messages: msgs,
+        // Deliberately `=== true`, unlike SSE/WebSocket above: GrpcStreamResponseActionHandler
+        // reads `!= null && value`, so for gRPC an ABSENT closeConnection means DON'T close.
         closeConnection: grpc['closeConnection'] === true,
       },
     };

@@ -202,6 +202,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accepted and stored it, plus asserts the rejection path via `.then(onFulfilled, onRejected)` rather than
   `await`, so a regression of the single-argument `.then()` bug that once turned failed verifications into
   passes cannot hide behind `await`'s own reject path.
+- **The dashboard code generator no longer drops a `false` for the booleans where absent and `false` mean
+  opposite things — C#, Rust, and every language for `fallbackOnTimeout`.** A non-optional boolean guarded on
+  truthiness silently omits `false`, which only matters when the server reads an absent field as something
+  other than `false` — and for these fields it does. `fallbackOnTimeout` is read as
+  `getFallbackOnTimeout() == null || getFallbackOnTimeout()`, so unticking "Fallback on timeout / connection
+  error" produced code that still fell back; it was dropped by the shared payload builder and so by all nine
+  tabs. `closeConnection` was fixed earlier for the shared builder and the Java tab, but the C# and Rust
+  emitters are independent transducers over the generated JSON and each carried its own `=== true` guard, so
+  both still dropped it for SSE, WebSocket, and gRPC streaming. The generator now emits the actual value at
+  every site. Loading an existing expectation for editing was inverted the same way: an absent
+  `closeConnection` (SSE/WebSocket) or `fallbackOnTimeout` loaded as OFF, which both misreported the live
+  behaviour and — now that the value is always written back — would have silently flipped it on the next save;
+  these now load as ON, matching the server. gRPC streaming is deliberately left reading absent as "don't
+  close", which is what its handler does. `secure` was reviewed and deliberately left alone: its matcher
+  treats absent as a wildcard and the switch means "HTTPS only", so omitting `false` is correct there.
 - **WASM custom rules now actually work in the standalone jar and the Docker images — previously they never
   matched.** The chicory WASM interpreter was declared an optional dependency of `mockserver-core`. Maven
   keeps an optional dependency on its own module's classpath but does not propagate it to consumers, so

@@ -418,7 +418,9 @@ function renderForwardWithFallback(fb: Record<string, unknown>, indent: number, 
   if (Array.isArray(fb['fallbackOnStatusCodes'])) {
     props.push(`FallbackOnStatusCodes = new List<int> { ${(fb['fallbackOnStatusCodes'] as unknown[]).map((n) => csNumber(Number(n))).join(', ')} }`);
   }
-  if (fb['fallbackOnTimeout'] === true) props.push('FallbackOnTimeout = true');
+  // Emitted whenever present, including `false` — an absent fallbackOnTimeout means TRUE
+  // on the server, so dropping an explicit `false` would invert the selection.
+  if (typeof fb['fallbackOnTimeout'] === 'boolean') props.push(`FallbackOnTimeout = ${fb['fallbackOnTimeout'] ? 'true' : 'false'}`);
   if (isObject(fb['delay'])) props.push(`Delay = ${renderDelay(fb['delay'] as Record<string, unknown>)}`);
   return csObjectInit('HttpForwardWithFallback', props, indent);
 }
@@ -468,7 +470,11 @@ function renderWebSocket(ws: Record<string, unknown>, indent: number, ctx: Ctx):
   if (Array.isArray(ws['matchers'])) {
     props.push(`Matchers = ${renderList(ws['matchers'] as unknown[], 'WebSocketFrameMatcher', renderWsMatcher, indent + 4)}`);
   }
-  if (ws['closeConnection'] === true) props.push('CloseConnection = true');
+  // Emitted whenever present, including `false`. An ABSENT closeConnection is not
+  // equivalent to `false`: the server reads absent as "close" for WebSocket and SSE
+  // (and as "don't close" for gRPC streaming), so dropping an explicit `false` would
+  // generate code that closes the connection the user asked to keep open.
+  if (typeof ws['closeConnection'] === 'boolean') props.push(`CloseConnection = ${ws['closeConnection'] ? 'true' : 'false'}`);
   if (isObject(ws['delay'])) props.push(`Delay = ${renderDelay(ws['delay'] as Record<string, unknown>)}`);
   return csObjectInit('HttpWebSocketResponse', props, indent);
 }
@@ -491,7 +497,8 @@ function renderSse(sse: Record<string, unknown>, indent: number, ctx: Ctx): stri
   if (Array.isArray(sse['events'])) {
     props.push(`Events = ${renderList(sse['events'] as unknown[], 'SseEvent', renderSseEvent, indent + 4)}`);
   }
-  if (sse['closeConnection'] === true) props.push('CloseConnection = true');
+  // Emitted whenever present, including `false` — see renderWebSocket.
+  if (typeof sse['closeConnection'] === 'boolean') props.push(`CloseConnection = ${sse['closeConnection'] ? 'true' : 'false'}`);
   if (isObject(sse['delay'])) props.push(`Delay = ${renderDelay(sse['delay'] as Record<string, unknown>)}`);
   return csObjectInit('HttpSseResponse', props, indent);
 }
@@ -558,7 +565,8 @@ function renderGrpc(grpc: Record<string, unknown>, indent: number, ctx: Ctx): st
   if (Array.isArray(grpc['messages'])) {
     props.push(`Messages = ${renderList(grpc['messages'] as unknown[], 'GrpcStreamMessage', renderGrpcMessage, indent + 4)}`);
   }
-  if (grpc['closeConnection'] === true) props.push('CloseConnection = true');
+  // Emitted whenever present, including `false` — see renderWebSocket.
+  if (typeof grpc['closeConnection'] === 'boolean') props.push(`CloseConnection = ${grpc['closeConnection'] ? 'true' : 'false'}`);
   if (isObject(grpc['delay'])) props.push(`Delay = ${renderDelay(grpc['delay'] as Record<string, unknown>)}`);
   return csObjectInit('GrpcStreamResponse', props, indent);
 }

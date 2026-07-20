@@ -460,7 +460,11 @@ function sseExpr(sse: Record<string, unknown>, indent: number): string {
   }
   const events = sse['events'];
   if (Array.isArray(events)) for (const ev of events) calls.push(`.event(${sseEventExpr(ev as Record<string, unknown>, indent + 4)})`);
-  if (sse['closeConnection'] === true) calls.push('.close_connection(true)');
+  // Emitted whenever present, including `false`. An ABSENT closeConnection is not
+  // equivalent to `false`: the server reads absent as "close" for SSE and WebSocket
+  // (and as "don't close" for gRPC streaming), so dropping an explicit `false` would
+  // generate code that closes the connection the user asked to keep open.
+  if (typeof sse['closeConnection'] === 'boolean') calls.push(`.close_connection(${sse['closeConnection'] ? 'true' : 'false'})`);
   if (sse['delay'] && typeof sse['delay'] === 'object') calls.push(`.delay(${delayExpr(sse['delay'] as Record<string, unknown>)})`);
   return chain('HttpSseResponse::new()', calls, indent);
 }
@@ -486,7 +490,8 @@ function webSocketExpr(ws: Record<string, unknown>, indent: number): string {
   if (Array.isArray(messages)) for (const m of messages) calls.push(`.message(${wsMessageExpr(m as Record<string, unknown>)})`);
   const matchers = ws['matchers'];
   if (Array.isArray(matchers)) for (const m of matchers) calls.push(`.matcher(${wsMatcherExpr(m as Record<string, unknown>, indent + 4)})`);
-  if (ws['closeConnection'] === true) calls.push('.close_connection(true)');
+  // Emitted whenever present, including `false` — see sseExpr.
+  if (typeof ws['closeConnection'] === 'boolean') calls.push(`.close_connection(${ws['closeConnection'] ? 'true' : 'false'})`);
   if (ws['delay'] && typeof ws['delay'] === 'object') calls.push(`.delay(${delayExpr(ws['delay'] as Record<string, unknown>)})`);
   return chain('HttpWebSocketResponse::new()', calls, indent);
 }
@@ -552,7 +557,8 @@ function grpcStreamExpr(grpc: Record<string, unknown>, indent: number): string {
       calls.push(`.message(${call})`);
     }
   }
-  if (grpc['closeConnection'] === true) calls.push('.close_connection(true)');
+  // Emitted whenever present, including `false` — see sseExpr.
+  if (typeof grpc['closeConnection'] === 'boolean') calls.push(`.close_connection(${grpc['closeConnection'] ? 'true' : 'false'})`);
   if (grpc['delay'] && typeof grpc['delay'] === 'object') calls.push(`.delay(${delayExpr(grpc['delay'] as Record<string, unknown>)})`);
   return chain('GrpcStreamResponse::new()', calls, indent);
 }
@@ -961,7 +967,9 @@ function renderPrimaryAction(key: string, value: unknown, ctx: Ctx, indent: numb
       const calls: string[] = [];
       const codes = obj['fallbackOnStatusCodes'];
       if (Array.isArray(codes)) calls.push(`.fallback_on_status_codes(vec![${codes.map((c) => numLit(Number(c))).join(', ')}])`);
-      if (obj['fallbackOnTimeout'] === true) calls.push('.fallback_on_timeout(true)');
+      // Emitted whenever present, including `false` — an absent fallbackOnTimeout means TRUE
+      // on the server, so dropping an explicit `false` would invert the selection.
+      if (typeof obj['fallbackOnTimeout'] === 'boolean') calls.push(`.fallback_on_timeout(${obj['fallbackOnTimeout'] ? 'true' : 'false'})`);
       const head = `HttpForwardWithFallback::new(${forwardExpr(fwd, indent + 4)}, ${fbRendered.expr})`;
       return { setup, expr: `.forward_with_fallback(${chain(head, calls, indent + 4)})` };
     }

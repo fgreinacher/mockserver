@@ -1255,7 +1255,11 @@ export function buildExpectationJson(
           .map((s) => parseInt(s.trim(), 10))
           .filter((n) => !isNaN(n));
         if (codes.length > 0) fwdPayload['fallbackOnStatusCodes'] = codes;
-        if (fb.fallbackOnTimeout) fwdPayload['fallbackOnTimeout'] = true;
+        // Always emitted, including `false`. HttpForwardWithFallbackActionHandler reads
+        // `getFallbackOnTimeout() == null || getFallbackOnTimeout()`, so an ABSENT value means
+        // TRUE — omitting an explicit `false` would generate code that still falls back on
+        // timeout, the opposite of the unticked switch. Same asymmetry as closeConnection.
+        fwdPayload['fallbackOnTimeout'] = fb.fallbackOnTimeout;
         out['httpForwardWithFallback'] = fwdPayload;
       }
       break;
@@ -2326,7 +2330,7 @@ function actionToJava(action: StandardActionPayload): string {
       lines.push(`        .withFallback(${respParts.join('')})`);
       const codes = fb.fallbackOnStatusCodes.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
       if (codes.length > 0) lines.push(`        .withFallbackOnStatusCodes(${codes.join(', ')})`);
-      if (fb.fallbackOnTimeout) lines.push('        .withFallbackOnTimeout(true)');
+      lines.push(`        .withFallbackOnTimeout(${fb.fallbackOnTimeout})`);
       lines.push(')');
       return lines.join('\n');
     }
