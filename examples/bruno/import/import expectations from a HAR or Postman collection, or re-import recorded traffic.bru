@@ -1,5 +1,5 @@
 meta {
-  name: import expectations from a HAR or Postman collection
+  name: import expectations from a HAR or Postman collection, or re-import recorded traffic
   type: http
   seq: 1
 }
@@ -16,6 +16,10 @@ headers {
 
 params:query {
   ~format: har
+  ~source: disk
+  ~redactSensitiveData: True
+  ~additionalRedactedHeaders: 
+  ~additionalRedactedBodyFields: 
 }
 
 body:json {
@@ -45,6 +49,8 @@ body:json {
 
 docs {
   Converts an HTTP Archive (HAR) export or a Postman collection into MockServer expectations and adds them. The format is auto-detected from the document structure or can be forced with the format query parameter.
+  
+  With format=recording this instead re-imports a persisted NDJSON archive of recorded request/response pairs (one per line) back into the event log, so they become retrievable like in-memory recordings. That mode creates log entries rather than expectations.
   
   HAR or Postman collection JSON document to import
   

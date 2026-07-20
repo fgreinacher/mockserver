@@ -392,6 +392,26 @@
                   "key": "type",
                   "value": "logs",
                   "disabled": true
+                },
+                {
+                  "key": "correlationId",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "namespace",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "fanInLocalOnly",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "forwardUnmatchedTo",
+                  "value": "",
+                  "disabled": true
                 }
               ]
             },
@@ -887,7 +907,7 @@
       "name": "import",
       "item": [
         {
-          "name": "import expectations from a HAR or Postman collection",
+          "name": "import expectations from a HAR or Postman collection, or re-import recorded traffic",
           "request": {
             "method": "PUT",
             "header": [
@@ -910,10 +930,30 @@
                   "key": "format",
                   "value": "har",
                   "disabled": true
+                },
+                {
+                  "key": "source",
+                  "value": "disk",
+                  "disabled": true
+                },
+                {
+                  "key": "redactSensitiveData",
+                  "value": "True",
+                  "disabled": true
+                },
+                {
+                  "key": "additionalRedactedHeaders",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "additionalRedactedBodyFields",
+                  "value": "",
+                  "disabled": true
                 }
               ]
             },
-            "description": "Converts an HTTP Archive (HAR) export or a Postman collection into MockServer expectations and adds them. The format is auto-detected from the document structure or can be forced with the format query parameter.\n\nHAR or Postman collection JSON document to import\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "description": "Converts an HTTP Archive (HAR) export or a Postman collection into MockServer expectations and adds them. The format is auto-detected from the document structure or can be forced with the format query parameter.\n\nWith format=recording this instead re-imports a persisted NDJSON archive of recorded request/response pairs (one per line) back into the event log, so they become retrievable like in-memory recordings. That mode creates log entries rather than expectations.\n\nHAR or Postman collection JSON document to import\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"entries\": [\n      {\n        \"request\": {\n          \"method\": \"GET\",\n          \"url\": \"http://example.com/api/users\",\n          \"headers\": [],\n          \"queryString\": []\n        },\n        \"response\": {\n          \"status\": 200,\n          \"headers\": [],\n          \"content\": {\n            \"text\": \"{\\\"users\\\":[{\\\"id\\\":1,\\\"name\\\":\\\"Alice\\\"}]}\"\n          }\n        }\n      }\n    ]\n  }\n}",
