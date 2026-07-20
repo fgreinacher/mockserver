@@ -126,6 +126,120 @@ public class GrpcWebTranslatorTest {
         assertThat(trailerText, containsString("grpc-status: 0\r\n"));
     }
 
+    // ---- Trailer-frame grpc-message encoding (the call site, not the function) ----
+
+    /**
+     * Every other fixture in this class uses a plain-ASCII, escape-free message
+     * ({@code "internal error"}, {@code "not found"}), which percent-encoding leaves byte-identical.
+     * That makes them blind to whether {@code buildTrailerFrame} encodes at all: dropping the
+     * {@code percentEncodeMessage} call keeps every test in this class -- and in
+     * {@code GrpcWebHandlerTest} -- green. {@code GrpcPercentEncodingTest} covers the function in
+     * isolation but never this wiring, so the only thing that caught the dropped call lived in
+     * another module ({@code GrpcToHttpResponseHandlerTest} in mockserver-netty): a core-only change
+     * would not have been caught by a core build.
+     * <p>
+     * The three cases below are the three failure modes the encoding defends against, each asserted
+     * on the frame BYTES a gRPC-Web client actually receives:
+     * <ol>
+     *   <li>a literal {@code %} the client would otherwise mis-decode;</li>
+     *   <li>non-ASCII, which the {@code US_ASCII} write below would silently turn into {@code ?};</li>
+     *   <li>CRLF, which would inject a second trailer line into this CRLF-delimited block.</li>
+     * </ol>
+     */
+    @Test
+    public void shouldPercentEncodeAPercentSignInTheTrailerFrame() {
+        String message = "invalid escape %41 in pattern";
+
+        String trailerText = trailerFrameText(GrpcWebTranslator.buildTrailerFrame("8", message));
+
+        assertThat("the % must be escaped on the wire",
+            trailerText, containsString("grpc-message: invalid escape %2541 in pattern\r\n"));
+        assertThat("and a single client-side decode must recover the original exactly",
+            GrpcStatusMapper.percentDecodeMessage(grpcMessageFrom(trailerText)), is(message));
+    }
+
+    @Test
+    public void shouldPercentEncodeNonAsciiInTheTrailerFrame() {
+        String message = "paiement refusé — solde insuffisant 🚫";
+
+        String trailerText = trailerFrameText(GrpcWebTranslator.buildTrailerFrame("9", message));
+
+        assertThat("the frame is written as US_ASCII, so unencoded non-ASCII becomes a literal '?'",
+            trailerText, not(containsString("?")));
+        assertThat(GrpcStatusMapper.percentDecodeMessage(grpcMessageFrom(trailerText)), is(message));
+    }
+
+    @Test
+    public void shouldPercentEncodeCrLfSoItCannotInjectASecondTrailer() {
+        String message = "denied\r\ngrpc-status: 0\r\ngrpc-message: ok";
+
+        String trailerText = trailerFrameText(GrpcWebTranslator.buildTrailerFrame("7", message));
+
+        // The injected text is still PRESENT (it is legitimate message content); what defeats the
+        // injection is that no CRLF survives to start a new trailer line. So assert on LINES.
+        String[] lines = trailerText.split("\r\n");
+        assertThat("an unescaped CRLF would inject extra trailer lines and turn an error into a success",
+            lines.length, is(2));
+        assertThat(lines[0], is("grpc-status: 7"));
+        assertThat(lines[1], startsWith("grpc-message: "));
+        assertThat("the injection text survives as literal message content, not as a second trailer",
+            GrpcStatusMapper.percentDecodeMessage(grpcMessageFrom(trailerText)), is(message));
+    }
+
+    /**
+     * The same three payloads must survive the full {@code encodeResponseBody} path a gRPC-Web
+     * response actually takes, including the base64 text variant -- not just the frame builder.
+     */
+    @Test
+    public void shouldCarryHostileGrpcMessagesThroughEncodeResponseBody() {
+        for (String message : new String[]{
+            "quota 50% exceeded",
+            "paiement refusé",
+            "denied\r\ngrpc-status: 0"
+        }) {
+            byte[] binary = GrpcWebTranslator.encodeResponseBody(null, "13", message, false);
+            assertThat("binary variant: " + message,
+                GrpcStatusMapper.percentDecodeMessage(grpcMessageFrom(trailerFrameText(binary))), is(message));
+
+            byte[] text = GrpcWebTranslator.encodeResponseBody(null, "13", message, true);
+            byte[] decodedText = Base64.getDecoder().decode(text);
+            assertThat("text variant: " + message,
+                GrpcStatusMapper.percentDecodeMessage(grpcMessageFrom(trailerFrameText(decodedText))), is(message));
+        }
+    }
+
+    /**
+     * Extracts the trailer frame's ASCII text from a body, skipping any leading message frames.
+     */
+    private static String trailerFrameText(byte[] body) {
+        ByteBuffer buf = ByteBuffer.wrap(body);
+        while (buf.remaining() >= 5) {
+            byte flag = buf.get();
+            int length = buf.getInt();
+            if ((flag & 0x80) != 0) {
+                byte[] trailerBody = new byte[length];
+                buf.get(trailerBody);
+                return new String(trailerBody, StandardCharsets.US_ASCII);
+            }
+            buf.position(buf.position() + length);
+        }
+        throw new AssertionError("no gRPC-Web trailer frame found");
+    }
+
+    /**
+     * Reads the raw (still percent-encoded) grpc-message line, the way a gRPC-Web client's trailer
+     * parser would, before it applies its own single decode.
+     */
+    private static String grpcMessageFrom(String trailerText) {
+        for (String line : trailerText.split("\r\n")) {
+            if (line.regionMatches(true, 0, GrpcStatusMapper.GRPC_MESSAGE_HEADER + ":", 0,
+                GrpcStatusMapper.GRPC_MESSAGE_HEADER.length() + 1)) {
+                return line.substring(GrpcStatusMapper.GRPC_MESSAGE_HEADER.length() + 1).trim();
+            }
+        }
+        throw new AssertionError("no grpc-message trailer in: " + trailerText);
+    }
+
     // ---- Response body encoding (binary) ----
 
     @Test

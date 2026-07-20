@@ -60,6 +60,48 @@ public class GrpcHealthCheckHandlerTest {
         assertThat(handler.decodeServiceName(framed), is("my.Service"));
     }
 
+    /**
+     * The length prefix is a protobuf VARINT, so a service name of 128 bytes or more is encoded as
+     * two bytes, not one. Every fixture above is short enough for a single-byte length, which leaves
+     * the varint continuation loop untested -- a decoder that read only one length byte would return
+     * a truncated name (and so resolve the wrong service's health status) while staying green.
+     */
+    @Test
+    public void shouldDecodeAServiceNameRequiringAMultiByteVarintLength() {
+        StringBuilder name = new StringBuilder("com.example.averylongpackagename.");
+        while (name.length() < 300) {
+            name.append("segment.");
+        }
+        name.append("HealthService");
+
+        assertThat("this guard is only meaningful above the one-byte varint boundary",
+            name.length(), is(greaterThan(127)));
+        assertThat(handler.decodeServiceName(healthCheckRequest(name.toString())), is(name.toString()));
+    }
+
+    /**
+     * Builds a correctly-framed {@code HealthCheckRequest} using protobuf's own encoder, so the
+     * varint length prefix and the 4-byte big-endian frame length are both right by construction.
+     */
+    private static byte[] healthCheckRequest(String serviceName) {
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        try {
+            com.google.protobuf.CodedOutputStream cos = com.google.protobuf.CodedOutputStream.newInstance(baos);
+            cos.writeString(1, serviceName);
+            cos.flush();
+        } catch (java.io.IOException e) {
+            throw new AssertionError(e);
+        }
+        byte[] proto = baos.toByteArray();
+        byte[] framed = new byte[5 + proto.length];
+        framed[1] = (byte) ((proto.length >> 24) & 0xFF);
+        framed[2] = (byte) ((proto.length >> 16) & 0xFF);
+        framed[3] = (byte) ((proto.length >> 8) & 0xFF);
+        framed[4] = (byte) (proto.length & 0xFF);
+        System.arraycopy(proto, 0, framed, 5, proto.length);
+        return framed;
+    }
+
     @Test
     public void shouldDecodeEmptyServiceNameFromEmptyBody() {
         // HealthCheckRequest with no service field = empty body

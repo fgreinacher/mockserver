@@ -125,15 +125,25 @@ public class GrpcServerReflectionHandlerTest {
         assertThat(fdProto.getName(), is("greeting.proto"));
     }
 
+    /**
+     * "not null and longer than 5 bytes" is true of EVERY reflection response, so it cannot tell an
+     * error envelope from a successful list-services or file-descriptor response. Assert the actual
+     * {@code error_response} (field 5) with its NOT_FOUND code and message, which is what a client
+     * such as {@code grpcurl} surfaces to the user.
+     */
     @Test
     public void shouldReturnErrorForUnknownSymbol() throws IOException {
         byte[] requestBody = buildFileContainingSymbolRequest("com.example.NonExistent");
         byte[] responseBody = handler.handleReflectionRequest(requestBody);
 
         assertThat(responseBody, is(notNullValue()));
-        // Should have an error_response (field 5 of ServerReflectionResponse)
-        // Verify it's a valid gRPC frame with content
         assertThat(responseBody.length, is(greaterThan(5)));
+
+        ErrorResponse error = parseErrorResponse(responseBody);
+        assertThat("the response must carry error_response (field 5), not a success oneof",
+            error, is(notNullValue()));
+        assertThat(error.code, is(5)); // NOT_FOUND
+        assertThat(error.message, is("symbol not found: com.example.NonExistent"));
     }
 
     // --- file_by_filename ---
@@ -161,6 +171,45 @@ public class GrpcServerReflectionHandlerTest {
 
         assertThat(responseBody, is(notNullValue()));
         assertThat(responseBody.length, is(greaterThan(5)));
+
+        ErrorResponse error = parseErrorResponse(responseBody);
+        assertThat("the response must carry error_response (field 5), not a success oneof",
+            error, is(notNullValue()));
+        assertThat(error.code, is(5)); // NOT_FOUND
+        assertThat(error.message, is("file not found: nonexistent.proto"));
+    }
+
+    /**
+     * A successful response must NOT be an error envelope -- the negative half of the guard above,
+     * so swapping the two response shapes cannot pass both tests.
+     */
+    @Test
+    public void shouldNotReturnAnErrorEnvelopeForAKnownSymbol() throws IOException {
+        byte[] responseBody = handler.handleReflectionRequest(
+            buildFileContainingSymbolRequest("com.example.grpc.GreetingService"));
+
+        assertThat(parseErrorResponse(responseBody), is(nullValue()));
+    }
+
+    // --- valid_host echo ---
+
+    /**
+     * The reflection protocol requires the response to echo the request's {@code host} in
+     * {@code valid_host} (field 1). The request-side decode is asserted above, but nothing pinned
+     * the response side, so dropping the echo entirely stayed green.
+     */
+    @Test
+    public void shouldEchoValidHostOnTheResponse() throws IOException {
+        byte[] responseBody = handler.handleReflectionRequest(buildListServicesRequest("myhost.example.com"));
+
+        assertThat(parseValidHost(responseBody), is("myhost.example.com"));
+    }
+
+    @Test
+    public void shouldOmitValidHostWhenTheRequestCarriedNoHost() throws IOException {
+        byte[] responseBody = handler.handleReflectionRequest(buildListServicesRequest(""));
+
+        assertThat(parseValidHost(responseBody), is(nullValue()));
     }
 
     // --- edge cases ---
@@ -228,6 +277,61 @@ public class GrpcServerReflectionHandlerTest {
         int length = ((framed[1] & 0xFF) << 24) | ((framed[2] & 0xFF) << 16)
             | ((framed[3] & 0xFF) << 8) | (framed[4] & 0xFF);
         assertThat(length, is(proto.length));
+    }
+
+    /**
+     * The 7-byte payload above cannot see the length bytes at all: {@code framed[1..3]} are zero for
+     * any payload under 256 bytes, so they are indistinguishable from default array initialisation
+     * and deleting the three high-order length assignments keeps that test green. Production
+     * payloads are not that small -- the real {@code file_containing_symbol} response is several
+     * hundred bytes (asserted below), which without the high byte would under-declare its length
+     * and be truncated by every real gRPC client.
+     * <p>
+     * The fixtures below are sized so {@code framed[3]} and {@code framed[2]} each carry a non-zero
+     * value. {@code framed[1]} would need a payload above 16 MiB to observe, which is not worth
+     * allocating in a unit test; it is left to the shared arithmetic with the bytes that ARE pinned.
+     */
+    @Test
+    public void shouldEncodeFrameLengthAcrossAllLengthBytes() {
+        assertFrameDeclaresLength(300);     // exercises framed[3] (0x01) and framed[4] (0x2C)
+        assertFrameDeclaresLength(70_000);  // exercises framed[2] (0x01)
+    }
+
+    private static void assertFrameDeclaresLength(int payloadLength) {
+        byte[] proto = new byte[payloadLength];
+        for (int i = 0; i < payloadLength; i++) {
+            proto[i] = (byte) (i % 251);
+        }
+
+        byte[] framed = GrpcServerReflectionHandler.grpcFrame(proto);
+
+        assertThat(framed.length, is(5 + payloadLength));
+        assertThat(framed[0], is((byte) 0));
+        int declared = ((framed[1] & 0xFF) << 24) | ((framed[2] & 0xFF) << 16)
+            | ((framed[3] & 0xFF) << 8) | (framed[4] & 0xFF);
+        assertThat("the declared frame length must match the payload a client will read",
+            declared, is(payloadLength));
+        // and the payload must still be intact after the header
+        byte[] payload = new byte[payloadLength];
+        System.arraycopy(framed, 5, payload, 0, payloadLength);
+        assertThat(payload, is(proto));
+    }
+
+    /**
+     * The real reflection responses must declare their own length correctly, not just a synthetic
+     * fixture. The {@code file_containing_symbol} response for {@code greeting.dsc} is several
+     * hundred bytes, which is exactly the size at which a dropped high-order length byte truncates.
+     */
+    @Test
+    public void shouldDeclareCorrectFrameLengthForRealReflectionResponse() throws IOException {
+        byte[] responseBody = handler.handleReflectionRequest(
+            buildFileContainingSymbolRequest("com.example.grpc.GreetingService"));
+
+        assertThat("this guard is only meaningful if the payload exceeds one length byte",
+            responseBody.length - 5, is(greaterThan(255)));
+        int declared = ((responseBody[1] & 0xFF) << 24) | ((responseBody[2] & 0xFF) << 16)
+            | ((responseBody[3] & 0xFF) << 8) | (responseBody[4] & 0xFF);
+        assertThat(declared, is(responseBody.length - 5));
     }
 
     // --- Helper methods to build gRPC-framed ServerReflectionRequest messages ---
@@ -363,9 +467,80 @@ public class GrpcServerReflectionHandlerTest {
         return protos;
     }
 
+    /** The reflection {@code ErrorResponse}: field 1 = error_code, field 2 = error_message. */
+    private static final class ErrorResponse {
+        private final int code;
+        private final String message;
+
+        private ErrorResponse(int code, String message) {
+            this.code = code;
+            this.message = message;
+        }
+    }
+
+    /**
+     * Returns the {@code error_response} (ServerReflectionResponse field 5), or {@code null} when
+     * the response carries a success oneof instead.
+     */
+    private ErrorResponse parseErrorResponse(byte[] grpcFramed) throws IOException {
+        CodedInputStream cis = CodedInputStream.newInstance(stripGrpcFrame(grpcFramed));
+        while (!cis.isAtEnd()) {
+            int tag = cis.readTag();
+            if (WireFormat.getTagFieldNumber(tag) == 5) {
+                CodedInputStream error = CodedInputStream.newInstance(cis.readByteArray());
+                int code = 0;
+                String message = null;
+                while (!error.isAtEnd()) {
+                    int errorTag = error.readTag();
+                    switch (WireFormat.getTagFieldNumber(errorTag)) {
+                        case 1:
+                            code = error.readInt32();
+                            break;
+                        case 2:
+                            message = error.readString();
+                            break;
+                        default:
+                            error.skipField(errorTag);
+                            break;
+                    }
+                }
+                return new ErrorResponse(code, message);
+            }
+            cis.skipField(tag);
+        }
+        return null;
+    }
+
+    /**
+     * Returns the echoed {@code valid_host} (ServerReflectionResponse field 1), or {@code null}.
+     */
+    private String parseValidHost(byte[] grpcFramed) throws IOException {
+        CodedInputStream cis = CodedInputStream.newInstance(stripGrpcFrame(grpcFramed));
+        while (!cis.isAtEnd()) {
+            int tag = cis.readTag();
+            if (WireFormat.getTagFieldNumber(tag) == GrpcServerReflectionHandler.RESP_VALID_HOST_FIELD) {
+                return cis.readString();
+            }
+            cis.skipField(tag);
+        }
+        return null;
+    }
+
+    /**
+     * Reads the payload the way a real gRPC client does: by trusting the DECLARED length in the
+     * 5-byte header rather than by assuming "everything after offset 5". Copying blindly from
+     * offset 5 made every reflection test blind to the frame length header entirely, so a frame
+     * that under-declared its length still parsed here while truncating on the wire.
+     */
     private byte[] stripGrpcFrame(byte[] grpcFramed) {
-        byte[] proto = new byte[grpcFramed.length - 5];
-        System.arraycopy(grpcFramed, 5, proto, 0, proto.length);
+        assertThat("a gRPC frame needs at least a 5-byte header", grpcFramed.length, is(greaterThanOrEqualTo(5)));
+        assertThat("compression flag must be unset", grpcFramed[0], is((byte) 0));
+        int declared = ((grpcFramed[1] & 0xFF) << 24) | ((grpcFramed[2] & 0xFF) << 16)
+            | ((grpcFramed[3] & 0xFF) << 8) | (grpcFramed[4] & 0xFF);
+        assertThat("the frame must declare the length a client will actually read",
+            declared, is(grpcFramed.length - 5));
+        byte[] proto = new byte[declared];
+        System.arraycopy(grpcFramed, 5, proto, 0, declared);
         return proto;
     }
 }

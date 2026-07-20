@@ -30,6 +30,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockserver.model.HttpRequest.request;
@@ -618,6 +619,74 @@ public class GrpcToHttpResponseHandlerTest {
         assertThat(result.getTrailerMultimap() == null || result.getTrailerMultimap().isEmpty(), is(true));
     }
 
+    /**
+     * The message must be percent-encoded EXACTLY ONCE on the gRPC-Web path.
+     * <p>
+     * {@code setGrpcTrailers} already encodes, and {@code buildTrailerFrame} encodes again, so
+     * passing the trailer value straight through double-encoded it: an authored
+     * {@code "quota 50% exceeded"} reached the browser as {@code "quota 50%25 exceeded"} after its
+     * single decode. Note the two fixtures nearby ({@code "no such greeting"}, {@code "denied"}) are
+     * idempotent under encode/decode and so cannot see this at all -- the guard that does is
+     * {@code shouldPercentEncodeGrpcWebMessageExactlyOnce} below.
+     * <p>
+     * This case widens that guard along the axes it does not cover: the {@code %NN} escape form
+     * (which a lenient decoder treats differently from a bare {@code %}), astral-plane characters,
+     * and a multi-line message -- and it asserts the frame's structural invariants (line count, no
+     * {@code US_ASCII} substitution) rather than only the round-trip.
+     */
+    @Test
+    public void shouldEncodeGrpcWebMessageExactlyOnce() {
+        assertGrpcWebMessageSurvivesASingleDecode("quota 50% exceeded");
+        assertGrpcWebMessageSurvivesASingleDecode("invalid escape %41 in pattern");
+        assertGrpcWebMessageSurvivesASingleDecode("paiement refusé — solde insuffisant");
+        assertGrpcWebMessageSurvivesASingleDecode("service unavailable 🚫 retry later");
+        assertGrpcWebMessageSurvivesASingleDecode("validation failed:\r\n - name is required");
+    }
+
+    /**
+     * Same contract on the base64 text variant, which browsers use when a proxy would mangle binary.
+     */
+    @Test
+    public void shouldEncodeGrpcWebTextMessageExactlyOnce() {
+        EmbeddedChannel channel = responseOnlyChannel();
+        recordServiceMethod(channel, SERVICE, METHOD);
+        String message = "quota 50% exceeded — café 🚫";
+
+        channel.writeOutbound(HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER, "RESOURCE_EXHAUSTED")
+            .withHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER, message)
+            .withHeader("x-grpc-web-content-type", "application/grpc-web-text"));
+
+        HttpResponse result = channel.readOutbound();
+        byte[] decodedBody = java.util.Base64.getDecoder().decode(result.getBodyAsRawBytes());
+        String trailerText = trailerFrameText(decodedBody);
+        assertThat(GrpcStatusMapper.percentDecodeMessage(rawGrpcMessageFrom(trailerText)), is(message));
+    }
+
+    private void assertGrpcWebMessageSurvivesASingleDecode(String message) {
+        EmbeddedChannel channel = responseOnlyChannel();
+        recordServiceMethod(channel, SERVICE, METHOD);
+
+        channel.writeOutbound(HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER, "PERMISSION_DENIED")
+            .withHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER, message)
+            .withHeader("x-grpc-web-content-type", GrpcWebTranslator.GRPC_WEB_CONTENT_TYPE));
+
+        HttpResponse result = channel.readOutbound();
+        String trailerText = trailerFrameText(result.getBodyAsRawBytes());
+
+        assertThat("the status must not be corrupted by the message: " + message,
+            trailerText, containsString("grpc-status: 7\r\n"));
+        assertThat("a CRLF in the message must not inject a second trailer line: " + message,
+            trailerText.split("\r\n").length, is(2));
+        assertThat("US_ASCII framing turns unencoded non-ASCII into '?': " + message,
+            trailerText, not(containsString("?")));
+        assertThat("the client's single percent-decode must recover the authored message exactly",
+            GrpcStatusMapper.percentDecodeMessage(rawGrpcMessageFrom(trailerText)), is(message));
+    }
+
     // ---- direct-response paths must not be double-framed ----
 
     /**
@@ -713,6 +782,20 @@ public class GrpcToHttpResponseHandlerTest {
             buf.position(buf.position() + length);
         }
         throw new AssertionError("no gRPC-Web trailer frame found in response body");
+    }
+
+    /**
+     * Reads the still-percent-encoded {@code grpc-message} line from the trailer frame, the way a
+     * gRPC-Web client's trailer parser does before applying its own single decode.
+     */
+    private static String rawGrpcMessageFrom(String trailerText) {
+        String prefix = GrpcStatusMapper.GRPC_MESSAGE_HEADER + ": ";
+        for (String line : trailerText.split("\r\n")) {
+            if (line.startsWith(prefix)) {
+                return line.substring(prefix.length());
+            }
+        }
+        throw new AssertionError("no grpc-message trailer line in: " + trailerText);
     }
 
     // ---- grpc-timeout: the deadline response must actually reach the wire ----

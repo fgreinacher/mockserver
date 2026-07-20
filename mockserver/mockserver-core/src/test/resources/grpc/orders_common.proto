@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package com.example.orders.common;
+
+option java_package = "com.example.orders.common";
+option java_outer_classname = "OrderCommonProtos";
+
+// Imported by orders.proto, so that loading orders.dsc exercises
+// GrpcProtoDescriptorStore's dependency-resolution recursion. greeting.proto and
+// catalog.proto have no imports, so that recursion was previously never entered.
+message Money {
+  string currency_code = 1;
+  int64 units = 2;
+}

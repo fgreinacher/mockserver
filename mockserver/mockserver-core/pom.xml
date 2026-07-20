@@ -830,6 +830,9 @@
                         <exclude>**/OpenAiResponsesStateTest.java</exclude>
                         <!-- Mutates the global mockserver.fixtureBodyRedactFields ConfigurationProperties -->
                         <exclude>**/LlmDatasetExporterTest.java</exclude>
+                        <!-- Mutates the process-global GrpcHealthRegistry.getInstance() singleton
+                             (setStatus/removeStatus) and resets it in @After -->
+                        <exclude>**/GrpcHealthRegistryTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -959,6 +962,7 @@
                                 <include>**/BCKeyAndCertificateFactoryLazyProviderTest.java</include>
                                 <include>**/OpenAiResponsesStateTest.java</include>
                                 <include>**/LlmDatasetExporterTest.java</include>
+                                <include>**/GrpcHealthRegistryTest.java</include>
                             </includes>
                         </configuration>
                     </execution>

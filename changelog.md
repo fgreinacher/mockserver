@@ -144,6 +144,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"denied\r\ngrpc-status: 0"` could inject a second `grpc-status` line and — depending on the client's
   first-wins/last-wins parse — turn an error into a success. Percent-encoding escapes CR/LF, and trailer
   names/values are CRLF-stripped as a second layer.
+- A gRPC forward-proxy response that cannot be decoded is now logged at WARN with the service and method
+  instead of falling back silently. The fallback itself is unchanged — the upstream response is still
+  forwarded untouched — but a genuine decode failure previously left no trace at all, so it was
+  indistinguishable from the upstream simply returning protobuf.
 - gRPC requests whose message exceeds the maximum size now return `grpc-status: 8 RESOURCE_EXHAUSTED`
   instead of `13 INTERNAL`, matching the specification and grpc-java/grpc-go. The limit is now configurable
   via **`maxGrpcMessageSize`** (default 4 MiB, unchanged) instead of being hard-coded, and the constant is

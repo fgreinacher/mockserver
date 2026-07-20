@@ -200,7 +200,23 @@ public class GrpcForwardTranslator {
             }
             return decoded;
         } catch (Exception e) {
-            // fail-safe: leave the response unchanged rather than break the forward
+            // fail-safe: leave the response unchanged rather than break the forward.
+            //
+            // This catch is deliberately wide, so it must not be silent: it covers protobuf
+            // deframing, the protobuf-to-JSON conversion and the grpc-message sanitisation above,
+            // and swallowing all of that without a trace makes a genuine decode bug look like
+            // "the upstream just returned protobuf". Log at WARN with the service/method so the
+            // fallback is at least diagnosable. (Narrowing the catch is a separate change: some of
+            // what it currently absorbs may be load-bearing on the proxy path.)
+            if (store.getMockServerLogger() != null) {
+                store.getMockServerLogger().logEvent(
+                    new org.mockserver.log.model.LogEntry()
+                        .setType(org.mockserver.log.model.LogEntry.LogMessageType.WARN)
+                        .setMessageFormat("failed to decode upstream gRPC response for {}/{}, "
+                            + "forwarding it unchanged:{}")
+                        .setArguments(service, method, e.getMessage())
+                );
+            }
             return response;
         }
     }

@@ -42,6 +42,59 @@ public class GrpcExampleSynthesizerTest {
             .build();
     }
 
+    /**
+     * The protobuf well-known types must render in their CANONICAL JSON forms -- an RFC-3339 string
+     * for {@code Timestamp}, {@code "0s"} for {@code Duration}, and a bare scalar for each wrapper --
+     * not as the raw {@code {seconds, nanos}} / {@code {value}} objects the generic recursion would
+     * produce. Nothing referenced these types before, so {@code wellKnownValue} was entirely
+     * unexercised; it needs a descriptor set that imports {@code google/protobuf/*}, which the
+     * import-free {@code greeting}/{@code catalog} fixtures cannot provide.
+     * <p>
+     * This one test loads a committed {@code .dsc} rather than building descriptors inline (see the
+     * class note above) because the well-known descriptors have to come from protoc's own bundled
+     * definitions to be the real thing. {@code protoc} is still not needed to RUN the test -- only
+     * to regenerate the fixture; see {@code src/test/resources/grpc/README.md}.
+     */
+    @Test
+    public void shouldSynthesizeCanonicalJsonForWellKnownTypes() throws Exception {
+        GrpcProtoDescriptorStore store = new GrpcProtoDescriptorStore(new org.mockserver.logging.MockServerLogger());
+        store.loadDescriptorSetFromPath(java.nio.file.Paths.get("src/test/resources/grpc/orders.dsc"));
+
+        String json = store.synthesizeResponseJson("com.example.orders.OrderService", "GetOrder");
+        assertThat(json, is(notNullValue()));
+        JsonNode node = OBJECT_MAPPER.readTree(json);
+
+        // NOTE on what actually discriminates here: protobuf's JsonFormat printer special-cases the
+        // well-known types itself, so the RFC-3339 SHAPE survives even if wellKnownValue stops
+        // handling Timestamp -- the type assertion alone would pass. What fails is the VALUE: with
+        // the case removed the field falls back to the default instant. Assert the exact value.
+        assertThat("Timestamp must be an RFC-3339 string, not {seconds,nanos}",
+            node.get("placedAt").isTextual(), is(true));
+        assertThat("the synthesized instant must be the chosen example, not the epoch default",
+            node.get("placedAt").asText(), is("2020-01-01T00:00:00Z"));
+
+        // Duration is a documented BLIND SPOT rather than a guard: its canonical example value
+        // (0 seconds) is also its default, so removing wellKnownValue's Duration case produces
+        // byte-identical output and this assertion cannot detect it. It is kept to pin the rendered
+        // FORM ("0s", not {seconds,nanos}) against a printer/serialisation change, and is
+        // deliberately not claimed as coverage of wellKnownValue itself.
+        assertThat("Duration must render as a duration string, not {seconds,nanos}",
+            node.get("processingTime").isTextual(), is(true));
+        assertThat(node.get("processingTime").asText(), is("0s"));
+
+        assertThat("StringValue must flatten to a bare string, not {value:...}",
+            node.get("note").isTextual(), is(true));
+        assertThat(node.get("note").asText(), is("string"));
+
+        assertThat("BoolValue must flatten to a bare boolean", node.get("expedited").isBoolean(), is(true));
+        assertThat("Int32Value must flatten to a bare number", node.get("quantity").isNumber(), is(true));
+
+        // a NON-well-known imported message must still use the ordinary recursion
+        assertThat("an ordinary imported message must remain an object",
+            node.get("total").isObject(), is(true));
+        assertThat(node.get("total").get("currencyCode").isTextual(), is(true));
+    }
+
     private static FieldDescriptorProto enumField(String name, int number, String typeName) {
         return FieldDescriptorProto.newBuilder()
             .setName(name)

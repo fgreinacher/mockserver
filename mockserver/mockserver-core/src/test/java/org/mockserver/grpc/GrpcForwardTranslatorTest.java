@@ -188,6 +188,92 @@ public class GrpcForwardTranslatorTest {
             decoded.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER), is(""));
     }
 
+    // --- upstream grpc-message: percent-decoded, then sanitised ---
+
+    /**
+     * A real gRPC server percent-encodes {@code grpc-message} per the wire spec, so the proxy must
+     * decode it into the model. Without decoding, the event log, persisted log, verifications and
+     * dashboard all show the escaped form, and re-emitting it to the client double-encodes it.
+     */
+    @Test
+    public void shouldPercentDecodeUpstreamGrpcMessage() {
+        HttpResponse decoded = decodeWithUpstreamMessage("paiement refus%C3%A9 %E2%80%94 solde insuffisant");
+
+        assertThat(decoded.getFirstHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER),
+            is("paiement refusé — solde insuffisant"));
+    }
+
+    /**
+     * {@code %0D%0A} decodes to a REAL CRLF. This value comes from the upstream — the party a proxy
+     * treats as untrusted — and flows into {@code LogEntry}, the persisted log, verifications and
+     * the dashboard, where an embedded CRLF lets a hostile upstream forge log lines. The printable
+     * text must survive; the control characters must not.
+     */
+    @Test
+    public void shouldStripCrLfDecodedFromAHostileUpstreamGrpcMessage() {
+        HttpResponse decoded = decodeWithUpstreamMessage(
+            "denied%0D%0A2026-07-20 12:00:00 INFO forged log line");
+
+        String message = decoded.getFirstHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER);
+        assertThat("a decoded CR must not reach the log", message, not(containsString("\r")));
+        assertThat("a decoded LF must not reach the log", message, not(containsString("\n")));
+        assertThat("the printable text is preserved", message,
+            is("denied2026-07-20 12:00:00 INFO forged log line"));
+    }
+
+    /**
+     * {@code %00} decodes to a real NUL, which truncates C-style consumers and renders unpredictably
+     * in the dashboard.
+     */
+    @Test
+    public void shouldStripNulDecodedFromAHostileUpstreamGrpcMessage() {
+        HttpResponse decoded = decodeWithUpstreamMessage("truncated%00hidden");
+
+        String message = decoded.getFirstHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER);
+        assertThat("a decoded NUL must not reach the log", message, not(containsString(String.valueOf((char) 0))));
+        assertThat(message, is("truncatedhidden"));
+    }
+
+    /**
+     * Every C0 control and DEL must go, not merely CR/LF/NUL, and non-control non-ASCII must stay.
+     */
+    @Test
+    public void shouldStripAllC0ControlsButPreserveNonAsciiText() {
+        HttpResponse decoded = decodeWithUpstreamMessage("a%01b%08c%1Fd%7Fe caf%C3%A9");
+
+        String message = decoded.getFirstHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER);
+        assertThat(message, is("abcde café"));
+        for (int i = 0; i < message.length(); i++) {
+            char c = message.charAt(i);
+            assertThat("no C0 control or DEL may survive: U+" + Integer.toHexString(c),
+                c >= 0x20 && c != 0x7F, is(true));
+        }
+    }
+
+    /**
+     * A plain message with no escapes and no controls must pass through byte-identical -- the
+     * sanitisation must not damage the ordinary case.
+     */
+    @Test
+    public void shouldLeaveAnOrdinaryUpstreamGrpcMessageUnchanged() {
+        HttpResponse decoded = decodeWithUpstreamMessage("greeting not found");
+
+        assertThat(decoded.getFirstHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER), is("greeting not found"));
+    }
+
+    private HttpResponse decodeWithUpstreamMessage(String upstreamGrpcMessage) {
+        HttpResponse upstream = response()
+            .withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER, "5")
+            .withHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER, upstreamGrpcMessage)
+            .withBody(new byte[0]);
+
+        HttpResponse decoded = GrpcForwardTranslator.decodeResponseFromUpstream(upstream, SERVICE, "Greeting", store);
+
+        assertThat("the translator must not have bailed out to the fail-safe pass-through",
+            decoded, is(not(sameInstance(upstream))));
+        return decoded;
+    }
+
     @Test
     public void shouldPassThroughResponseWhenMethodUnknown() {
         HttpResponse upstream = response().withBody("anything");

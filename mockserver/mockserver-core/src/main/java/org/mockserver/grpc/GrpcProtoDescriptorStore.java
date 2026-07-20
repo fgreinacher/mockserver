@@ -139,6 +139,15 @@ public class GrpcProtoDescriptorStore {
         return Collections.unmodifiableMap(new LinkedHashMap<>(services));
     }
 
+    /**
+     * The logger this store was constructed with, so the stateless translators that take a store
+     * (for example {@link GrpcForwardTranslator}) can report a fail-safe fallback instead of
+     * swallowing it silently.
+     */
+    public MockServerLogger getMockServerLogger() {
+        return mockServerLogger;
+    }
+
     public GrpcJsonMessageConverter getConverter() {
         return converter;
     }

@@ -114,4 +114,46 @@ public class GrpcProtoDescriptorStoreTest {
         store.loadDescriptorDirectory(null);
         assertThat(store.hasServices(), is(false));
     }
+
+    // --- dependency resolution ---
+
+    /**
+     * {@code greeting.proto} and {@code catalog.proto} have no imports, so
+     * {@code resolveAndRegister}'s recursion over {@code getDependencyList()} was never entered by
+     * any test -- a descriptor set whose files depend on one another would have failed to build
+     * with nothing catching it. {@code orders.proto} imports a local file AND three well-known
+     * type files, so loading it walks the dependency graph.
+     */
+    @Test
+    public void shouldResolveDescriptorsWithImportedDependencies() {
+        store.loadDescriptorSetFromPath(Paths.get("src/test/resources/grpc/orders.dsc"));
+
+        assertThat(store.hasServices(), is(true));
+        Descriptors.MethodDescriptor getOrder = store.getMethod("com.example.orders.OrderService", "GetOrder");
+        assertThat(getOrder, is(notNullValue()));
+
+        // a field whose type lives in the IMPORTED file must resolve -- this is what fails if the
+        // dependency was not registered before the dependent file was built
+        Descriptors.FieldDescriptor total = getOrder.getOutputType().findFieldByName("total");
+        assertThat(total, is(notNullValue()));
+        assertThat(total.getMessageType().getFullName(), is("com.example.orders.common.Money"));
+        assertThat("the imported file must itself be registered",
+            total.getMessageType().getFile().getName(), is("orders_common.proto"));
+
+        // and a well-known type imported from google/protobuf must resolve too
+        Descriptors.FieldDescriptor placedAt = getOrder.getOutputType().findFieldByName("placed_at");
+        assertThat(placedAt.getMessageType().getFullName(), is("google.protobuf.Timestamp"));
+    }
+
+    /**
+     * Loading the whole directory must resolve the dependent set as well as the flat ones,
+     * regardless of the order the files happen to be streamed in.
+     */
+    @Test
+    public void shouldResolveImportedDependenciesWhenLoadingTheDirectory() {
+        store.loadDescriptorDirectory(Paths.get("src/test/resources/grpc"));
+
+        assertThat(store.getService("com.example.orders.OrderService"), is(notNullValue()));
+        assertThat(store.getService("com.example.grpc.GreetingService"), is(notNullValue()));
+    }
 }

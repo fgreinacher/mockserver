@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package com.example.orders;
+
+import "orders_common.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+
+option java_package = "com.example.orders";
+option java_outer_classname = "OrderProtos";
+
+// Fixture for the two things greeting.proto/catalog.proto cannot reach:
+//   1. a LOCAL import (orders_common.proto), so GrpcProtoDescriptorStore's
+//      dependency-resolution recursion is exercised;
+//   2. the protobuf WELL-KNOWN types, so GrpcExampleSynthesizer.wellKnownValue is
+//      exercised -- these must render as their canonical JSON forms (an RFC-3339
+//      string for Timestamp, "0s" for Duration, a bare scalar for the wrappers)
+//      rather than as {seconds, nanos} / {value} objects.
+service OrderService {
+  rpc GetOrder (GetOrderRequest) returns (Order);
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message Order {
+  string order_id = 1;
+  com.example.orders.common.Money total = 2;
+  google.protobuf.Timestamp placed_at = 3;
+  google.protobuf.Duration processing_time = 4;
+  google.protobuf.StringValue note = 5;
+  google.protobuf.BoolValue expedited = 6;
+  google.protobuf.Int32Value quantity = 7;
+}

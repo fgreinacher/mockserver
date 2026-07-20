@@ -5,6 +5,7 @@ import org.mockserver.configuration.Configuration;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.is;
 
 /**
@@ -55,6 +56,52 @@ public class GrpcMessageSizeConfigurationTest {
             is(org.mockserver.configuration.ConfigurationProperties.maxGrpcMessageSize()));
         assertThat(GrpcFrameCodec.maxMessageSize(Configuration.configuration()),
             is(org.mockserver.configuration.ConfigurationProperties.maxGrpcMessageSize()));
+    }
+
+    /**
+     * The class doc above promises the limit reaches "the bidi streaming decoder too", but every
+     * test here went through {@link GrpcFrameCodec#decode} -- the unary path. Production wires
+     * {@link IncrementalGrpcFrameDecoder#IncrementalGrpcFrameDecoder(Configuration)} in four places
+     * and no test used that constructor at all, so the streaming half of the promise was unverified.
+     */
+    @Test
+    public void shouldEnforceTheConfiguredLimitInTheStreamingDecoder() {
+        IncrementalGrpcFrameDecoder decoder =
+            new IncrementalGrpcFrameDecoder(Configuration.configuration().maxGrpcMessageSize(16));
+
+        try {
+            decoder.feed(frameOfSize(1024));
+            throw new AssertionError("expected the configured limit to be enforced while streaming");
+        } catch (GrpcException e) {
+            assertThat(e.getStatusCode(), is(GrpcStatusMapper.GrpcStatusCode.RESOURCE_EXHAUSTED));
+            assertThat(e.getMessage(), containsString("16"));
+        }
+    }
+
+    @Test
+    public void shouldAcceptStreamedMessagesWithinTheConfiguredLimit() {
+        IncrementalGrpcFrameDecoder decoder =
+            new IncrementalGrpcFrameDecoder(Configuration.configuration().maxGrpcMessageSize(4096));
+
+        assertThat(decoder.feed(frameOfSize(1024)).size(), is(1));
+    }
+
+    /**
+     * A limit larger than the 8 MiB floor must also raise the decoder's buffer ceiling, or a message
+     * the limit permits could never be assembled across feeds.
+     */
+    @Test
+    public void shouldSizeTheStreamingBufferFromTheConfiguredLimit() {
+        int limit = 12 * 1024 * 1024;
+        IncrementalGrpcFrameDecoder decoder =
+            new IncrementalGrpcFrameDecoder(Configuration.configuration().maxGrpcMessageSize(limit));
+
+        // feed the 5-byte header alone: the decoder must buffer it rather than reject the declared
+        // size, which it would if the limit had not reached the streaming path
+        byte[] frame = frameOfSize(limit - 1024);
+        byte[] header = new byte[5];
+        System.arraycopy(frame, 0, header, 0, 5);
+        assertThat(decoder.feed(header), is(empty()));
     }
 
     /**
