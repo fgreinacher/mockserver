@@ -8,6 +8,7 @@ import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.mockserver.state.BlobStore;
 import org.mockserver.state.contract.BlobStoreContract;
+import org.mockserver.test.DockerAvailability;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -36,9 +37,12 @@ public class AzureBlobStoreContractTest extends BlobStoreContract {
 
     @BeforeClass
     public static void startAzurite() {
+        // Wrapped: DockerClientFactory.isDockerAvailable() THROWS rather than returning
+        // false for post-connection failures (e.g. Ryuk rejected by a user-namespace
+        // remapped daemon), which would turn this skip into a hard ERROR.
         Assume.assumeTrue(
             "Docker is not available -- skipping Azure integration test",
-            DockerClientFactory.instance().isDockerAvailable()
+            DockerAvailability.isAvailable(() -> DockerClientFactory.instance().isDockerAvailable())
         );
 
         azuriteContainer = new GenericContainer<>(AZURITE_IMAGE)

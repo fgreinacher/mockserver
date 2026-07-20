@@ -18,6 +18,7 @@ import org.mockserver.async.subscribe.KafkaMessageSubscriber;
 import org.mockserver.async.subscribe.RecordedMessage;
 import org.mockserver.async.AsyncApiMockOrchestrator;
 import org.mockserver.async.MessageExampleGenerator;
+import org.mockserver.test.DockerAvailability;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -44,11 +45,11 @@ public class KafkaLiveBrokerIntegrationTest {
 
     @BeforeClass
     public static void checkDockerAndStartKafka() {
-        try {
-            dockerAvailable = org.testcontainers.DockerClientFactory.instance().isDockerAvailable();
-        } catch (Exception e) {
-            dockerAvailable = false;
-        }
+        // Shared fail-safe wrapper: the local catch(Exception) here missed Errors (e.g. a broken
+        // test classpath surfacing as NoClassDefFoundError), and duplicating the guard per module
+        // is how it drifts. See DockerAvailability for why the probe must never propagate.
+        dockerAvailable = DockerAvailability.isAvailable(
+            () -> org.testcontainers.DockerClientFactory.instance().isDockerAvailable());
         Assume.assumeTrue("Docker is not available — skipping Kafka integration tests", dockerAvailable);
 
         kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));

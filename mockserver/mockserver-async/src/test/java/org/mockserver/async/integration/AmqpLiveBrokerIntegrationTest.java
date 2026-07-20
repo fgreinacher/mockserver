@@ -19,6 +19,7 @@ import org.mockserver.async.asyncapi.AsyncApiSpec;
 import org.mockserver.async.publish.AmqpMessagePublisher;
 import org.mockserver.async.subscribe.AmqpMessageSubscriber;
 import org.mockserver.async.subscribe.RecordedMessage;
+import org.mockserver.test.DockerAvailability;
 import org.testcontainers.containers.RabbitMQContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -43,11 +44,11 @@ public class AmqpLiveBrokerIntegrationTest {
 
     @BeforeClass
     public static void checkDockerAndStartRabbit() {
-        try {
-            dockerAvailable = org.testcontainers.DockerClientFactory.instance().isDockerAvailable();
-        } catch (Exception e) {
-            dockerAvailable = false;
-        }
+        // Shared fail-safe wrapper: the local catch(Exception) here missed Errors (e.g. a broken
+        // test classpath surfacing as NoClassDefFoundError), and duplicating the guard per module
+        // is how it drifts. See DockerAvailability for why the probe must never propagate.
+        dockerAvailable = DockerAvailability.isAvailable(
+            () -> org.testcontainers.DockerClientFactory.instance().isDockerAvailable());
         Assume.assumeTrue("Docker is not available — skipping AMQP integration tests", dockerAvailable);
 
         rabbit = new RabbitMQContainer(DockerImageName.parse("rabbitmq:3.13-management"));

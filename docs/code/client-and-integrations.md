@@ -450,7 +450,11 @@ The `mockserver-testcontainers` module (`org.mock-server:mockserver-testcontaine
 | Arbitrary properties | `withProperty(k,v)` / `withProperties(Map)` | Passed through as MockServer env vars |
 | Log level | `withLogLevel(String)` | `MOCKSERVER_LOG_LEVEL` |
 
-The builder helpers configure env vars, exposed ports, and Linux capabilities **before** the container starts, so they are introspectable in unit tests without a running Docker daemon (`MockServerContainerConfigTest`). The Docker-dependent `MockServerContainerIT` is gated on `DockerClientFactory.instance().isDockerAvailable()` and runs in CI.
+The builder helpers configure env vars, exposed ports, and Linux capabilities **before** the container starts, so they are introspectable in unit tests without a running Docker daemon (`MockServerContainerConfigTest`).
+
+The Docker-dependent `MockServerContainerIT` is gated on `DockerAvailability.isAvailable(() -> DockerClientFactory.instance().isDockerAvailable())`. Gate on that wrapper (from `mockserver-testing`) rather than calling `DockerClientFactory.instance().isDockerAvailable()` directly: the raw probe converts only `IllegalStateException` into `false` and **throws** for every other failure — Ryuk rejection on a user-namespace-remapped daemon, an unpullable Ryuk image, or an `Error` from an incomplete test classpath — which turns "no usable Docker" into a hard ERROR instead of a skip. See `org.mockserver.test.DockerAvailability`.
+
+> **`MockServerContainerIT` does not currently execute in the Maven build.** Surefire is configured for `**/*Test.java` and Failsafe for `**/*IntegrationTest.java`; a class ending in `IT` matches neither, and `mockserver-testcontainers` declares no override. The class is therefore dormant — it compiles but never runs, locally or in CI. Renaming it to `MockServerContainerIntegrationTest` (or adding a Failsafe include for `**/*IT.java`) would activate it; until then, treat its coverage as absent rather than assumed.
 
 Typical usage:
 ```java

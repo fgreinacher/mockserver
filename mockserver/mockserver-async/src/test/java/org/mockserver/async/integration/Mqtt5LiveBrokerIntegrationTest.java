@@ -12,6 +12,7 @@ import org.mockserver.async.publish.Mqtt5MessagePublisher;
 import org.mockserver.async.publish.PublishOptions;
 import org.mockserver.async.subscribe.Mqtt5MessageSubscriber;
 import org.mockserver.async.subscribe.RecordedMessage;
+import org.mockserver.test.DockerAvailability;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.Transferable;
@@ -40,11 +41,11 @@ public class Mqtt5LiveBrokerIntegrationTest {
 
     @BeforeClass
     public static void checkDockerAndStartMosquitto() {
-        try {
-            dockerAvailable = org.testcontainers.DockerClientFactory.instance().isDockerAvailable();
-        } catch (Exception e) {
-            dockerAvailable = false;
-        }
+        // Shared fail-safe wrapper: the local catch(Exception) here missed Errors (e.g. a broken
+        // test classpath surfacing as NoClassDefFoundError), and duplicating the guard per module
+        // is how it drifts. See DockerAvailability for why the probe must never propagate.
+        dockerAvailable = DockerAvailability.isAvailable(
+            () -> org.testcontainers.DockerClientFactory.instance().isDockerAvailable());
         Assume.assumeTrue("Docker is not available — skipping MQTT 5 integration tests", dockerAvailable);
 
         String mosquittoConfig = "listener " + MQTT_PORT + "\nallow_anonymous true\n";

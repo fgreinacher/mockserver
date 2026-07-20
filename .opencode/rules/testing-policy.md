@@ -15,9 +15,16 @@ After making code changes, ALWAYS run unit tests for the affected module(s).
 
 **Docker is available locally** (Docker Desktop on the developer Mac) — see `AGENTS.md` → "Local Development Environment".
 
-- Tests guarded by `Assume.assumeTrue(DockerClientFactory.instance().isDockerAvailable())` (Testcontainers live-broker tests, `NET_ADMIN` transparent-proxy e2e, QUIC/HTTP-3 client tests, etc.) **actually run here** — when validating such a change, run it and confirm it PASSES, not merely that it skips.
-- **Keep the `assumeTrue(...isDockerAvailable())` gating in place** regardless. It is still correct so the suite degrades gracefully on machines/CI agents without Docker. Docker being present changes how we *validate*, not how we *write* the tests.
-- The `DockerClientFactory.isDockerAvailable()` probe works correctly with Testcontainers 1.21.4+ (docker-java 3.4.2) on Docker Desktop 4.67 / Engine 29.x / API 1.54. Always confirm a Docker-gated test actually RAN (not skipped) before claiming local validation.
+- Tests guarded by `Assume.assumeTrue(DockerAvailability.isAvailable(...))` (Testcontainers live-broker tests, `NET_ADMIN` transparent-proxy e2e, QUIC/HTTP-3 client tests, etc.) **actually run here** — when validating such a change, run it and confirm it PASSES, not merely that it skips.
+- **Keep the `assumeTrue(...)` gating in place** regardless. It is still correct so the suite degrades gracefully on machines/CI agents without Docker. Docker being present changes how we *validate*, not how we *write* the tests.
+- **Gate on `org.mockserver.test.DockerAvailability` (in `mockserver-testing`); NEVER call `DockerClientFactory.instance().isDockerAvailable()` directly.** That method converts only `IllegalStateException` into `false` and **throws** for every other failure — it starts the Ryuk reaper and runs version/mount checks, so a `BadRequestException` (privileged Ryuk rejected by a user-namespace-remapped daemon), a `ContainerFetchException`, or an `Error` like `NoClassDefFoundError` from an incomplete test classpath escapes it. That converts "no usable Docker" into a hard ERROR and defeats the guard, and Testcontainers caches the failure and rethrows it for the rest of the JVM. A `catch (Exception e)` around the call is NOT sufficient — it misses the `Error` cases. Write:
+  ```java
+  Assume.assumeTrue("Docker is not available",
+      DockerAvailability.isAvailable(() -> DockerClientFactory.instance().isDockerAvailable()));
+  ```
+  Pass a **lambda, not a method reference**, so `instance()` is evaluated inside the wrapper's try/catch.
+- **If the suite runs in CI, add a fail-closed assertion.** A fail-safe probe turns unusable Docker into a SKIP; in CI that is a silent false positive. Cover the suite's surefire reports with `.buildkite/scripts/steps/assert-suite-ran.sh` so a skip fails the build loudly. Always confirm a Docker-gated test actually RAN (not skipped) before claiming local validation — check the surefire XML for named, non-skipped test cases, since a `@BeforeClass` assumption failure reports the whole class as a single anonymous skipped entry.
+- Testcontainers 1.21.4+ (docker-java 3.4.2) works on Docker Desktop 4.67 / Engine 29.x / API 1.54. (Testcontainers 1.20.6 / docker-java 3.4.1 got a 400 on the info endpoint and reported Docker unavailable even though it worked.)
 - `docker build` / `docker run` are available for Dockerfile smoke checks (see `commit-workflow.md`).
 
 ## Before Committing (MANDATORY)

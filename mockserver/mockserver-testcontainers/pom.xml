@@ -40,6 +40,13 @@
         </dependency>
 
         <!-- test -->
+        <!-- shared fail-safe Docker probe wrapper (org.mockserver.test.DockerAvailability);
+             mockserver-testing depends only on JUnit and Hamcrest, both already test deps here -->
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>mockserver-testing</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>

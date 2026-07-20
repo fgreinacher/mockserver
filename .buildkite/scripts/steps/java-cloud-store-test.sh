@@ -18,10 +18,52 @@
 #   in the log rather than hidden behind an `Assume`.
 #
 # These three suites are Docker-gated via
-# `Assume.assumeTrue(DockerClientFactory.instance().isDockerAvailable())`.
+# `Assume.assumeTrue(DockerAvailability.isAvailable(...))`.
 # That guard is correct and stays — it makes the suite degrade gracefully
 # off-CI. The defect it was masking was that CI never satisfied it, so the
 # suites skipped on 100% of builds while reporting green.
+#
+# WHY TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false:
+#
+#   Once the socket was mounted the suites ran for real and failed at once:
+#     BadRequestException: Status 400: privileged mode is incompatible with
+#     user namespaces. You must run the container in the host namespace when
+#     running privileged mode
+#   Testcontainers-Java starts its Ryuk reaper with Privileged=true by default
+#   (TestcontainersConfiguration.isRyukPrivileged() defaults the
+#   `ryuk.container.privileged` property to "true"), and the elastic-ci-stack
+#   agents run dockerd with user-namespace remapping, which rejects privileged
+#   containers outright.
+#
+#   Ryuk does not need privileged mode to reap: it reaps through the mounted
+#   Docker socket. Dropping only the privileged flag keeps the reaper — and so
+#   keeps container cleanup on abnormal termination — while satisfying the
+#   daemon. Verified locally: with this variable set Ryuk starts with
+#   HostConfig.Privileged=false and the probe reports Docker available.
+#
+#   NOTE the exact variable name. Testcontainers maps a property to an env var
+#   by uppercasing and replacing dots, then prefixing TESTCONTAINERS_, so
+#   `ryuk.container.privileged` becomes TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED.
+#   The intuitive-looking TESTCONTAINERS_RYUK_PRIVILEGED is NOT read by anything
+#   and silently has no effect (confirmed locally: Ryuk still came up
+#   Privileged=true) — it would have looked like a fix and changed nothing.
+#
+#   REJECTED — TESTCONTAINERS_RYUK_DISABLED=true: also makes the probe succeed,
+#   but turns off the reaper, so containers leak whenever the JVM dies without
+#   running its shutdown hooks. The leak is bounded on these ephemeral,
+#   scale-to-zero agents, but it is an unnecessary cost when only the privileged
+#   flag is actually objectionable to the daemon.
+#
+#   REJECTED — disabling user-namespace remapping on the agent daemon: userns
+#   remap is a deliberate security boundary of the elastic-ci-stack AMI that this
+#   repo actively builds around (see run-in-docker.sh --harden, and the ownership
+#   workaround in vscode-test.sh). Weakening it repo-wide to satisfy one test step
+#   is the wrong trade, and it is upstream-module configuration rather than a
+#   repo-level fix.
+#
+#   REJECTED — running Ryuk in the host namespace (what the error message
+#   suggests): Testcontainers-Java exposes no setting for Ryuk's userns mode, so
+#   this is not reachable without patching Testcontainers.
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -35,6 +77,7 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -m 4g \
   --cache maven \
   --docker-socket \
+  -e TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false \
   -- bash -ec "
     # Build the modules' dependencies without running their tests — the main
     # build step already covers those, and this step must stay scoped to the

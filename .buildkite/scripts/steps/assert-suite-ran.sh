@@ -2,10 +2,15 @@
 # ──────────────────────────────────────────────────────────────────────
 # Fail closed when a Docker-gated test suite skipped instead of running.
 #
-# Suites guarded by `Assume.assumeTrue(DockerClientFactory...isDockerAvailable())`
+# Suites guarded by `Assume.assumeTrue(DockerAvailability.isAvailable(...))`
 # report as SKIPPED and let Maven exit 0 when Docker is unusable. A CI step
 # that only checks Maven's exit code therefore reports green having tested
 # nothing. This asserts the suite actually executed non-skipped tests.
+#
+# This is the necessary counterpart to a fail-SAFE probe: the probe degrades an
+# unusable Docker to a SKIP (rather than an ERROR, which would defeat the guard
+# off-CI), and this script turns that SKIP back into a loud failure in CI, where
+# skipping silently is exactly the false positive we are removing.
 #
 # Usage:
 #   assert-suite-ran.sh <surefire-report-glob> [<surefire-report-glob> ...]
