@@ -150,6 +150,16 @@ Test-scoped only, and never bundled in released artifacts. Added so the gRPC wir
 
 `grpc-netty-shaded` is used in preference to `grpc-netty` deliberately: grpc-java targets Netty 4.1.x while MockServer runs Netty 4.2, and the shaded artifact bundles its own relocated Netty so the test client can neither be broken by, nor break, the server's Netty version. These artifacts pull `com.google.api.grpc:proto-google-common-protos` transitively; all are test scope in a single module. **Note that `grpc-netty-shaded` bundles a *relocated* copy of Netty inside its own jar, which Dependabot, CodeQL and Snyk cannot see into — it is effectively unscannable rather than narrowly scanned.** That is acceptable here only because it is test-scoped and never reaches a released artifact; it would not be acceptable at compile scope. If a Netty CVE is announced, the shaded copy must be checked manually by bumping `grpc.version` rather than relying on tooling to flag it.
 
+### Test Dependencies (DNS Client)
+
+Test-scoped only, and never bundled in released artifacts. Added for the same reason as the gRPC client above: the DNS wire contract was asserted against MockServer's own model objects and an internal cache, never against bytes a resolver would receive. `DnsRequestHandlerTest` built its `EmbeddedChannel` without the `DatagramDnsResponseEncoder` that `MockServer#bindDnsPort` installs and never called `readOutbound()`, so no test had ever produced a single DNS byte — concealing six RFC 1035 conformance defects, including a label-length bug that turned into a compression pointer and corrupted whole packets.
+
+| Dependency | Version | Module | Purpose |
+|------------|---------|--------|---------|
+| `dnsjava:dnsjava` | 3.6.3 | `mockserver-netty` (test) | Independent DNS message parser for `DnsRequestHandlerWireTest` — parses MockServer's emitted datagrams exactly as a real resolver would (rcode, header flags, per-record RDATA, TXT character-string splitting) |
+
+dnsjava is a mature pure-Java resolver library. Its only non-optional compile-scope dependency is `org.slf4j:slf4j-api`, which MockServer already depends on; `net.java.dev.jna:jna` and `jna-platform` are declared `<optional>true</optional>` and so are not pulled transitively (MockServer already manages `jna` for `SoOriginalDstResolver` in any case). It targets Java 8+, so it sits comfortably under the Java 17 floor. It is used only to *decode* MockServer's output in assertions — it is never on a production code path and never bundled into a released artifact.
+
 ### Maven Dependency Graph Submission
 
 GitHub's built-in dependency graph automatically indexes all manifest files (`pom.xml`, `package.json`, `Gemfile`, `requirements.txt`) and their transitive dependencies. This enables Dependabot vulnerability alerts for the full dependency tree -- currently tracking 2000+ packages including 347 Maven dependencies.

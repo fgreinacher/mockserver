@@ -64,6 +64,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which cannot carry the object form, so `header(string("!X-Foo", false), "bar")` still inverts. That
   is pre-existing rather than a regression, needs a schema change to fix, and is recorded with the
   reasoning in `test-fixtures/expectations/known-gaps.json`.
+- **A DNS record that cannot be encoded on the wire now returns `SERVFAIL` instead of being silently dropped
+  or emitted as corrupt bytes.** Previously an unparseable IP address dropped that one record and still
+  returned `NOERROR` (so the client saw a successful, empty answer), and an over-long label or mismatched
+  address width was written to the wire unchecked. Configuration that cannot produce a conformant response is
+  now reported as a server failure, with the reason logged at ERROR. If a suite depended on a malformed
+  record being quietly skipped, it will now see `SERVFAIL` — the record needs correcting.
+- **DNS TXT values longer than 255 octets are now split across multiple character-strings rather than
+  truncated.** Resolvers concatenate them, so the value a client reads is now the full configured value. A
+  test that asserted on the truncated 255-octet prefix will need updating — it was asserting on corruption.
 - **BREAKING BEHAVIOUR: `verify(never())` and other upper-bound verifications now FAIL instead of passing once
   the event log has evicted entries. Suites that are green today may legitimately go red — that is the point.**
   Previously, when the event log rolled over, the entries proving a request had happened were silently
@@ -195,6 +204,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture the model cannot deserialize at all is a recorded gap rather than an unexcusable crash. The
   Python and Ruby harnesses' exact fixture-count assertions are now lower bounds, so growing the
   shared corpus no longer fails every client at once.
+- **DNS mock responses were not RFC 1035 conformant on the wire, in six ways.** No test had ever encoded a
+  single DNS byte — `DnsRequestHandlerTest` built its `EmbeddedChannel` without the response encoder the
+  production pipeline installs and never read the outbound datagram, so every assertion was on an internal
+  cache rather than on what a resolver receives. The defects this hid:
+  - **A record value containing a label of 192 octets or more corrupted the entire packet.** The label length
+    was written as a single unchecked octet; at 192+ the two high bits are set, which RFC 1035 §4.1.4 defines
+    as a **compression pointer**, so a resolver reinterpreted the next 14 bits as a message offset and
+    misparsed everything following. Labels are now validated against the 63-octet limit (RFC 1035 §2.3.4) and
+    the whole name against the 255-octet limit. Netty validates individual *label* lengths on a record's own
+    owner name, which is why the label half went unnoticed there; it does **not** validate *total* name
+    length, and names embedded in RDATA (CNAME, PTR, MX and SRV targets) bypass its checks entirely. An owner
+    name built from legal 63-octet labels but totalling more than 255 octets previously threw after the
+    response had been handed to the pipeline, so the client received **no response at all** and timed out;
+    it now returns `SERVFAIL`.
+  - **TXT values longer than 255 octets were truncated rather than split.** RFC 1035 §3.3.14 requires a long
+    value to be split across multiple `<character-string>`s, which resolvers concatenate. Truncating at 255
+    silently corrupted the two commonest real TXT payloads — DKIM public keys and long SPF records — and could
+    also cut through the middle of a multi-byte UTF-8 sequence.
+  - **`A` records configured with an IPv6 value (and `AAAA` with IPv4) emitted a mismatched RDLENGTH.**
+    Address parsing returns whichever width the literal happens to be, so an `A` record went out as
+    `TYPE=A, RDLENGTH=16`, violating RFC 1035 §3.4.1.
+  - **A record with no explicit `name` was published into the root zone.** It encoded as `""`, so the client
+    received `NOERROR` with `ANCOUNT=1` and no answer for the name it had asked about — a response that looks
+    successful and is useless. An absent owner name now defaults to the queried name.
+  - **Oversized responses were sent with the TC bit clear.** A UDP response exceeding the client's payload
+    limit is now sent truncated with TC set (RFC 1035 §4.2.1) so the resolver knows to retry, and an EDNS(0)
+    client's advertised buffer size is honoured before truncating (RFC 6891 §6.1.2).
+  - **`RA` was never set and `RD` was never echoed.** `systemd-resolved` and other stub resolvers read `RA=0`
+    as "this server offers no recursion" and skip to the next configured server, so the DNS mock could be
+    bypassed entirely. Responses now echo `RD` and set `RA` and `AA`.
+
+  Non-ASCII characters in a name were also being silently replaced with `?` (US-ASCII encoding); they are now
+  encoded as UTF-8 octets with a correct length octet. Note an asymmetry that remains: an **owner** name is
+  punycoded by Netty (`héllo.example.com.` is emitted as `xn--hllo-bpa.example.com.`), whereas the same string
+  used as **RDATA** — a CNAME, PTR, MX or SRV target — is emitted as raw UTF-8 octets. A CNAME whose target is
+  an internationalised name therefore will not line up with the owner name of the record it points at. Supply
+  IDNA/punycode names explicitly on both sides if you need internationalised names to chain correctly or to
+  resolve against real infrastructure. One consequence worth calling out: length limits are now checked
+  against the name as configured, before Netty applies punycoding, so a label longer than 63 octets in UTF-8
+  whose punycoded form would have fitted (for example 40 accented characters, which punycode to a legal
+  44-octet `xn--` label) is now rejected with `SERVFAIL` rather than emitted. This is deliberately
+  fail-closed and the reason is logged; supply the `xn--` form directly if you need such a name.
+
+  These paths are now covered by wire-level tests that parse MockServer's output with **dnsjava**, an
+  independent resolver implementation, rather than with MockServer's own model objects.
 - **Verification could miss a just-forwarded request (race on every forward path).** The visibility guarantee
   for `verify`/`retrieve` rests on disruptor FIFO ordering — `drainDisruptor()` waits only for entries already
   *published*, so it cannot wait for one that has not been published yet. The mocked-response path logs before

@@ -729,6 +729,15 @@
                 <version>1.1.10.8</version>
             </dependency>
 
+            <!-- dnsjava (test scope only) — independent DNS wire parser used to verify that the
+                 bytes MockServer's DNS mock emits are decodable by a real third-party resolver -->
+            <dependency>
+                <groupId>dnsjava</groupId>
+                <artifactId>dnsjava</artifactId>
+                <version>3.6.3</version>
+                <scope>test</scope>
+            </dependency>
+
             <!-- opentelemetry (optional metrics export; off by default) -->
             <dependency>
                 <groupId>io.opentelemetry</groupId>

@@ -2,6 +2,7 @@ package org.mockserver.netty.dns;
 
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.dns.DatagramDnsQuery;
+import io.netty.handler.codec.dns.DatagramDnsResponseEncoder;
 import io.netty.handler.codec.dns.DefaultDnsQuestion;
 import io.netty.handler.codec.dns.DnsRecordType;
 import io.netty.handler.codec.dns.DnsSection;
@@ -39,7 +40,7 @@ public class DnsRequestHandlerTest {
         Scheduler scheduler = new Scheduler(configuration, logger);
         httpState = new HttpState(configuration, logger, scheduler);
         DnsRequestHandler handler = new DnsRequestHandler(logger, httpState);
-        channel = new EmbeddedChannel(handler);
+        channel = new EmbeddedChannel(new DatagramDnsResponseEncoder(), handler);
     }
 
     @After

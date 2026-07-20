@@ -33,3 +33,11 @@
     <p>Example:</p>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.dnsPort="5353"</code></pre>
 </div>
+
+<button id="button_configuration_dns_response_limits" class="accordion title"><strong>DNS Response Size and Record Limits</strong></button>
+<div class="panel title">
+    <p>The DNS mock listens on <strong>UDP only</strong>. A DNS response that does not fit the client's UDP payload limit is sent truncated, with the <span class="inline_code">TC</span> ("truncated") flag set, carrying as many complete records as fit. The limit is 512 bytes, or the larger buffer size the client advertises if it uses EDNS(0) — most modern resolvers advertise 4096.</p>
+    <p>Standard resolvers respond to the <span class="inline_code">TC</span> flag by retrying the query over TCP. Because MockServer does not currently serve DNS over TCP, that retry has nowhere to go. If you need to return many records, keep the response under the limit or make sure your client uses EDNS(0).</p>
+    <p><span class="inline_code">TXT</span> values longer than 255 bytes are split across multiple character-strings, as RFC 1035 requires; resolvers rejoin them, so a long value such as a DKIM key is delivered intact.</p>
+    <p>A record that cannot be encoded as valid DNS — an unparseable IP address, an <span class="inline_code">A</span> record given an IPv6 value, a name label longer than 63 bytes, or a name longer than 255 bytes — causes the query to be answered with <span class="inline_code">SERVFAIL</span>, and the reason is logged. This is deliberate: returning a successful-looking response built from unencodable configuration would hide the mistake.</p>
+</div>

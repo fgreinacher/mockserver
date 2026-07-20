@@ -101,6 +101,13 @@
             <groupId>io.netty</groupId>
             <artifactId>netty-codec-dns</artifactId>
         </dependency>
+        <!-- independent DNS wire parser — verifies MockServer's DNS bytes against a real resolver
+             implementation rather than against MockServer's own encoder. Test scope only. -->
+        <dependency>
+            <groupId>dnsjava</groupId>
+            <artifactId>dnsjava</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-tcnative-boringssl-static</artifactId>
