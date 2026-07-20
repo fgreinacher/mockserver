@@ -18,16 +18,22 @@ import static org.mockserver.model.HttpResponse.response;
 /**
  * Mock OIDC/OAuth2 introspection endpoint (RFC 7662).
  *
- * <p>When the provider issues opaque access tokens
- * ({@link OidcProviderConfiguration#isOpaqueAccessToken()}), the only way to validate them is
- * introspection. This callback resolves the presented {@code token} form parameter against the
- * opaque tokens recorded by {@link OidcTokenMinter}:
+ * <p>The presented {@code token} form parameter is always validated — introspection is a security
+ * control, so it fails closed:
  * <ul>
+ *   <li>no {@code token} parameter → {@code 400 invalid_request} (RFC 7662 §2.1);</li>
+ *   <li>revoked token → {@code {"active":false}} (RFC 7009);</li>
  *   <li>known, unexpired opaque token → {@code {"active":true, ...claims}};</li>
- *   <li>unknown or expired opaque token → {@code {"active":false}};</li>
- *   <li>no opaque token presented (or no opaque tokens issued) → the provider's static introspection
- *       result, with {@code active} driven by {@code issueExpiredToken} (preserving Wave-1 behaviour).</li>
+ *   <li>JWT token that verifies against the provider's signing key and is inside its validity
+ *       window → {@code {"active":true, ...claims from the token}};</li>
+ *   <li>anything else — garbage, expired, tampered, another provider's token → {@code {"active":false}}
+ *       and nothing else (RFC 7662 §2.2).</li>
  * </ul>
+ *
+ * <p><b>Behaviour change.</b> This endpoint previously ignored the token entirely for JWT providers
+ * (the default) and reported {@code active} from static configuration, so every string introspected as
+ * active. Tests asserting that an application rejects an expired or revoked token passed while proving
+ * nothing; such tests will now correctly fail if the application does not in fact reject them.
  */
 public class OidcIntrospectionCallback implements ExpectationResponseCallback {
 
@@ -46,50 +52,69 @@ public class OidcIntrospectionCallback implements ExpectationResponseCallback {
         Map<String, String> form = parseFormBody(request.getBodyAsString());
         String token = emptyToNull(form.get("token"));
 
-        // Opaque-token resolution path: if a token was presented and it matches a stored opaque token,
-        // report it active with its claims; if it was presented but unknown/expired, report inactive.
-        if (token != null) {
-            OidcAuthorizationStore.OpaqueToken opaque = store.lookupOpaqueToken(token);
-            if (opaque != null && !opaque.isExpired(System.currentTimeMillis())) {
-                Map<String, Object> body = new LinkedHashMap<>();
-                body.put("active", true);
-                body.putAll(opaque.claims);
-                return json(body);
-            }
-            if (provider != null && provider.config.isOpaqueAccessToken()) {
-                // The provider issues opaque tokens but this one is unknown/expired → inactive.
-                Map<String, Object> body = new LinkedHashMap<>();
-                body.put("active", false);
-                return json(body);
-            }
+        // RFC 7662 §2.1: `token` is REQUIRED. A request without one is an invalid_request, not an
+        // introspection result — answering it with `active:true` would be the strongest possible form
+        // of the fabricated-success defect.
+        if (token == null) {
+            return error(400, "invalid_request", "the 'token' parameter is REQUIRED (RFC 7662 section 2.1)");
         }
-
-        // Fallback: static introspection result (Wave-1 behaviour).
-        return json(staticIntrospection(provider));
+        // Revoked / opaque / JWT resolution lives in OidcTokenResolver so this endpoint and
+        // /userinfo cannot reach different verdicts about the same token.
+        Map<String, Object> claims = OidcTokenResolver.resolveActiveClaims(provider, token);
+        return claims == null ? inactive() : active(claims);
     }
 
-    private Map<String, Object> staticIntrospection(OidcAuthorizationStore.Provider provider) {
+    /**
+     * An active-token response: {@code active:true} plus the token's own claims.
+     *
+     * <p>The claims come from the token itself, never from static provider configuration, so
+     * introspection describes the token that was actually presented.
+     */
+    private HttpResponse active(Map<String, Object> claims) {
         Map<String, Object> body = new LinkedHashMap<>();
-        if (provider == null) {
-            body.put("active", false);
-            return body;
-        }
-        OidcProviderConfiguration config = provider.config;
-        body.put("active", !config.isIssueExpiredToken());
-        body.put("sub", config.getSubject());
-        body.put("iss", config.getIssuer());
-        body.put("aud", config.getAudience());
-        body.put("scope", String.join(" ", config.getScopes()));
-        if (config.getAdditionalClaims() != null) {
-            body.putAll(config.getAdditionalClaims());
-        }
-        return body;
+        body.put("active", true);
+        body.putAll(claims);
+        return json(body);
+    }
+
+    /**
+     * An inactive-token response.
+     *
+     * <p>RFC 7662 §2.2: "If the introspection call is properly authorized but the token is not
+     * active [...] the authorization server MUST return an introspection response with the
+     * {@code active} field set to {@code false}. Note that to avoid disclosing too much of the
+     * authorization server's state to a third party, the authorization server SHOULD NOT include any
+     * additional information about an inactive token." So this body carries {@code active:false} and
+     * nothing else — previously an inactive result still leaked {@code sub}, {@code iss},
+     * {@code aud}, {@code scope} and every configured additional claim.
+     */
+    private HttpResponse inactive() {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("active", false);
+        return json(body);
+    }
+
+    private HttpResponse error(int statusCode, String error, String description) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("error", error);
+        body.put("error_description", description);
+        return response()
+            .withStatusCode(statusCode)
+            .withHeader("content-type", JSON_CONTENT_TYPE)
+            .withHeader("cache-control", "no-store")
+            .withHeader("pragma", "no-cache")
+            .withBody(serializeToJson(body));
     }
 
     private HttpResponse json(Object body) {
         return response()
             .withStatusCode(200)
             .withHeader("content-type", JSON_CONTENT_TYPE)
+            // RFC 7662 §2.2 / RFC 6749 §5.1: introspection responses carry token state and MUST NOT be
+            // cached, otherwise an intermediary can serve a stale `active:true` for a token that has
+            // since expired or been revoked.
+            .withHeader("cache-control", "no-store")
+            .withHeader("pragma", "no-cache")
             .withBody(serializeToJson(body));
     }
 

@@ -54,6 +54,21 @@ public class OidcProviderGeneratorTest {
      * Returns the token response a client receives from the /token endpoint for a non
      * authorization-code grant (e.g. client_credentials) — exercising the real callback.
      */
+    /**
+     * Renders the discovery document. Discovery is now served by {@link OidcDiscoveryCallback} rather
+     * than a static response, so the issuer can be derived per request from the Host header (OIDC
+     * Discovery 4.3 requires it to match the URL the relying party used). These tests previously read
+     * a pre-baked body off the expectation.
+     */
+    private JsonNode discoveryDocument() throws Exception {
+        return objectMapper.readTree(new OidcDiscoveryCallback()
+            .handle(request()
+                .withMethod("GET")
+                .withPath("/.well-known/openid-configuration")
+                .withHeader("host", "localhost:1080"))
+            .getBodyAsString());
+    }
+
     private String tokenResponseBody() throws Exception {
         return new OidcTokenCallback()
             .handle(request().withMethod("POST").withPath("/token").withBody("grant_type=client_credentials"))
@@ -88,10 +103,12 @@ public class OidcProviderGeneratorTest {
         assertThat(request.getMethod().getValue(), is("GET"));
         assertThat(request.getPath().getValue(), is("/.well-known/openid-configuration"));
 
-        HttpResponse response = discovery.getHttpResponse();
-        assertThat(response.getStatusCode(), is(200));
+        // Discovery is a class callback so the issuer can be resolved per request; when an issuer is
+        // configured explicitly (as here) it still wins, so the endpoint URLs are unchanged.
+        assertThat(discovery.getHttpResponseClassCallback().getCallbackClass(),
+            is(OidcDiscoveryCallback.class.getName()));
 
-        JsonNode doc = objectMapper.readTree(response.getBodyAsString());
+        JsonNode doc = discoveryDocument();
         assertThat(doc.get("issuer").asText(), is("https://idp.example.com"));
         assertThat(doc.get("jwks_uri").asText(), is("https://idp.example.com/.well-known/jwks.json"));
         assertThat(doc.get("token_endpoint").asText(), is("https://idp.example.com/token"));
@@ -139,7 +156,7 @@ public class OidcProviderGeneratorTest {
             .setRevokePath("/custom/revoke");
 
         List<Expectation> expectations = generator.generate(config);
-        JsonNode doc = objectMapper.readTree(expectations.get(0).getHttpResponse().getBodyAsString());
+        JsonNode doc = discoveryDocument();
 
         assertThat(doc.get("jwks_uri").asText(), is("https://auth.test/custom/jwks"));
         assertThat(doc.get("token_endpoint").asText(), is("https://auth.test/custom/token"));
@@ -250,8 +267,15 @@ public class OidcProviderGeneratorTest {
         assertTrue(tokenResponse.has("id_token"));
     }
 
+    /**
+     * This previously read the claims straight off a <b>static</b> userinfo response — i.e. it asserted
+     * that userinfo serves the subject and every configured claim <b>without any token being
+     * presented</b>, documenting the fail-open as if it were the contract. Userinfo is an OAuth2
+     * protected resource (OIDC Core §5.3), so the claims are now only served to a caller holding a
+     * valid bearer token; the rejection paths are covered by {@link OidcUserinfoCallbackTest}.
+     */
     @Test
-    public void userinfoReturnsSubjectAndAdditionalClaims() throws Exception {
+    public void userinfoReturnsSubjectAndAdditionalClaimsForAValidToken() throws Exception {
         Map<String, Serializable> additional = new HashMap<>();
         additional.put("email", "user@example.com");
         additional.put("name", "Test User");
@@ -266,15 +290,44 @@ public class OidcProviderGeneratorTest {
         HttpRequest request = (HttpRequest) userinfo.getHttpRequest();
         assertThat(request.getMethod().getValue(), is("GET"));
         assertThat(request.getPath().getValue(), is("/userinfo"));
+        assertThat(userinfo.getHttpResponseClassCallback().getCallbackClass(),
+            is(OidcUserinfoCallback.class.getName()));
 
-        JsonNode body = objectMapper.readTree(userinfo.getHttpResponse().getBodyAsString());
+        String accessToken = objectMapper.readTree(tokenResponseBody()).get("access_token").asText();
+        HttpResponse response = new OidcUserinfoCallback().handle(request()
+            .withMethod("GET").withPath("/userinfo")
+            .withHeader("authorization", "Bearer " + accessToken));
+        assertThat(response.getStatusCode(), is(200));
+
+        JsonNode body = objectMapper.readTree(response.getBodyAsString());
         assertThat(body.get("sub").asText(), is("sub-123"));
         assertThat(body.get("email").asText(), is("user@example.com"));
         assertThat(body.get("name").asText(), is("Test User"));
     }
 
+    /**
+     * The counterpart the old static-response test could not have: userinfo must refuse a caller with
+     * no bearer token rather than handing over the subject and claims.
+     */
     @Test
-    public void introspectionReturnsActiveTrue() throws Exception {
+    public void userinfoRejectsRequestWithoutABearerToken() {
+        generator.generate(new OidcProviderConfiguration().setSubject("sub-123"));
+
+        HttpResponse response = new OidcUserinfoCallback().handle(request()
+            .withMethod("GET").withPath("/userinfo"));
+
+        assertThat(response.getStatusCode(), is(401));
+        assertThat(response.getBodyAsString(), not(containsString("sub-123")));
+    }
+
+    /**
+     * Previously named {@code introspectionReturnsActiveTrue}, this asserted that introspecting with
+     * <b>no token at all</b> returned {@code active:true} and {@code sub:mock-user} — i.e. it pinned the
+     * defect in place: the endpoint reported a token active without being shown a token. RFC 7662 §2.1
+     * makes {@code token} REQUIRED, so the corrected behaviour is {@code 400 invalid_request}.
+     */
+    @Test
+    public void introspectionRequiresATokenParameter() throws Exception {
         List<Expectation> expectations = generator.generate(new OidcProviderConfiguration());
         Expectation introspect = expectations.get(5);
 
@@ -284,23 +337,56 @@ public class OidcProviderGeneratorTest {
         assertThat(introspect.getHttpResponseClassCallback().getCallbackClass(),
             is(OidcIntrospectionCallback.class.getName()));
 
-        // Drive the introspection callback with no token => static active:true result.
         HttpResponse response = new OidcIntrospectionCallback().handle(
             request().withMethod("POST").withPath("/introspect").withBody(""));
+        assertThat(response.getStatusCode(), is(400));
+        assertThat(response.getBodyAsString(), containsString("invalid_request"));
+    }
+
+    /**
+     * The positive counterpart the old {@code introspectionReturnsActiveTrue} never had: a token that
+     * the provider actually minted introspects as active, and the claims come from that token.
+     */
+    @Test
+    public void introspectionReportsAMintedTokenActive() throws Exception {
+        generator.generate(new OidcProviderConfiguration());
+
+        String accessToken = objectMapper.readTree(tokenResponseBody()).get("access_token").asText();
+
+        HttpResponse response = new OidcIntrospectionCallback().handle(
+            request().withMethod("POST").withPath("/introspect").withBody("token=" + enc(accessToken)));
         JsonNode body = objectMapper.readTree(response.getBodyAsString());
         assertThat(body.get("active").asBoolean(), is(true));
         assertThat(body.get("sub").asText(), is("mock-user"));
     }
 
+    /**
+     * Previously asserted only that {@code /revoke} was a static expectation returning 200 — which it
+     * was, and which is exactly why revocation did nothing: a revoked token kept introspecting as
+     * active. It is now a class callback that records the revocation (RFC 7009). The 200 is retained
+     * (RFC 7009 §2.2 returns 200 whether or not the token was recognised, so the endpoint is not a
+     * token oracle); what is new is that the revocation takes effect.
+     */
     @Test
-    public void revocationReturns200() {
+    public void revocationIsAClassCallbackAndReturns200() throws Exception {
         List<Expectation> expectations = generator.generate(new OidcProviderConfiguration());
         Expectation revoke = expectations.get(6);
 
         HttpRequest request = (HttpRequest) revoke.getHttpRequest();
         assertThat(request.getMethod().getValue(), is("POST"));
         assertThat(request.getPath().getValue(), is("/revoke"));
-        assertThat(revoke.getHttpResponse().getStatusCode(), is(200));
+        assertThat(revoke.getHttpResponseClassCallback().getCallbackClass(),
+            is(OidcRevocationCallback.class.getName()));
+
+        String accessToken = objectMapper.readTree(tokenResponseBody()).get("access_token").asText();
+        HttpResponse response = new OidcRevocationCallback().handle(
+            request().withMethod("POST").withPath("/revoke").withBody("token=" + enc(accessToken)));
+        assertThat(response.getStatusCode(), is(200));
+
+        JsonNode afterRevocation = objectMapper.readTree(new OidcIntrospectionCallback().handle(
+            request().withMethod("POST").withPath("/introspect").withBody("token=" + enc(accessToken)))
+            .getBodyAsString());
+        assertThat(afterRevocation.get("active").asBoolean(), is(false));
     }
 
     // --- Authorize endpoint / authorization-code flow ---
@@ -531,15 +617,23 @@ public class OidcProviderGeneratorTest {
         assertThat("exp should be in the past", expEpoch, lessThan(Instant.now().getEpochSecond()));
     }
 
+    /**
+     * Previously introspected with an <b>empty body</b> and relied on {@code active} being copied from
+     * the {@code issueExpiredToken} config flag — so it passed without an expired token ever being
+     * presented, and would have passed identically had the endpoint been shown a perfectly valid token.
+     * It now presents the actual expired token and asserts it is rejected on its own {@code exp}.
+     */
     @Test
-    public void issueExpiredTokenSetsIntrospectionActiveToFalse() throws Exception {
+    public void issueExpiredTokenIntrospectsAsInactive() throws Exception {
         OidcProviderConfiguration config = new OidcProviderConfiguration()
             .setIssueExpiredToken(true);
 
         generator.generate(config);
 
+        String expiredToken = objectMapper.readTree(tokenResponseBody()).get("access_token").asText();
+
         HttpResponse response = new OidcIntrospectionCallback().handle(
-            request().withMethod("POST").withPath("/introspect").withBody(""));
+            request().withMethod("POST").withPath("/introspect").withBody("token=" + enc(expiredToken)));
         JsonNode introspection = objectMapper.readTree(response.getBodyAsString());
         assertThat(introspection.get("active").asBoolean(), is(false));
     }
@@ -561,7 +655,7 @@ public class OidcProviderGeneratorTest {
         assertThat(tokenIssuer, is("https://correct.issuer/wrong"));
 
         // But the discovery document should still report the correct issuer
-        JsonNode discovery = objectMapper.readTree(expectations.get(0).getHttpResponse().getBodyAsString());
+        JsonNode discovery = discoveryDocument();
         assertThat(discovery.get("issuer").asText(), is("https://correct.issuer"));
     }
 
@@ -743,7 +837,7 @@ public class OidcProviderGeneratorTest {
         assertTrue("ES256 id token should verify against the EC JWKS", idToken.verify(verifier));
 
         // discovery should reflect the configured algorithm
-        JsonNode discovery = objectMapper.readTree(expectations.get(0).getHttpResponse().getBodyAsString());
+        JsonNode discovery = discoveryDocument();
         assertThat(discovery.get("id_token_signing_alg_values_supported").get(0).asText(), is("ES256"));
     }
 

@@ -1,7 +1,12 @@
 package org.mockserver.oidc;
 
 import com.fasterxml.jackson.databind.ObjectWriter;
+import com.nimbusds.jose.JWSObject;
+import com.nimbusds.jose.JWSVerifier;
+import com.nimbusds.jose.crypto.ECDSAVerifier;
+import com.nimbusds.jose.crypto.RSASSAVerifier;
 import org.mockserver.authentication.jwt.JWTGenerator;
+import org.mockserver.keys.AsymmetricKeyConverter;
 import org.mockserver.keys.AsymmetricKeyPair;
 import org.mockserver.serialization.ObjectMapperFactory;
 
@@ -40,11 +45,115 @@ public class OidcTokenMinter {
     private final OidcProviderConfiguration config;
     private final JWTGenerator jwtGenerator;
     private final String jwsAlgorithm;
+    private final AsymmetricKeyPair keyPair;
 
     public OidcTokenMinter(OidcProviderConfiguration config, AsymmetricKeyPair keyPair) {
         this.config = config;
         this.jwtGenerator = new JWTGenerator(keyPair);
         this.jwsAlgorithm = keyPair.getAlgorithm().getJwtAlgorithm();
+        this.keyPair = keyPair;
+    }
+
+    /**
+     * Verifies a JWT access token that this minter issued, returning its claims when the token is
+     * genuinely valid and {@code null} when it is not.
+     *
+     * <p>This is the validation path behind {@link OidcIntrospectionCallback}. Introspection
+     * previously ignored the presented token entirely for JWT providers and reported {@code active}
+     * from static configuration, so <em>any</em> string — garbage, expired, tampered or revoked —
+     * introspected as active. A test asserting "my application rejects a revoked token" therefore
+     * passed while proving nothing. Introspection is a security control, so it must fail closed:
+     * anything that does not verify against this provider's signing key, within its validity window,
+     * is inactive.
+     *
+     * <p>Checks applied, all of which must pass:
+     * <ul>
+     *   <li>the token parses as a JWS and its signature verifies against this provider's key pair
+     *       (so a token minted by another provider, or one whose signature was tampered with, fails);</li>
+     *   <li>{@code exp} is in the future and {@code nbf}/{@code iat} are not in the future, allowing
+     *       {@link #CLOCK_SKEW_SECONDS} of skew.</li>
+     * </ul>
+     *
+     * @param token the presented access token
+     * @return the token's claims when valid, otherwise {@code null}
+     */
+    public Map<String, Object> verifyAccessToken(String token) {
+        if (token == null || token.isEmpty()) {
+            return null;
+        }
+        try {
+            JWSObject jws = JWSObject.parse(token);
+            if (!jws.verify(verifier())) {
+                return null;
+            }
+            Map<String, Object> claims = jws.getPayload().toJSONObject();
+            if (claims == null || !withinValidityWindow(claims)) {
+                return null;
+            }
+            return claims;
+        } catch (Exception e) {
+            // A malformed token, an unparseable payload or an unsupported algorithm are all simply
+            // "not a valid token" for introspection purposes — fail closed rather than propagating.
+            return null;
+        }
+    }
+
+    /** Tolerance applied to {@code exp}/{@code nbf}/{@code iat}, matching common OIDC library defaults. */
+    static final long CLOCK_SKEW_SECONDS = 60L;
+
+    /** The JWS algorithm this provider signs with, advertised in the discovery document. */
+    public String getJwsAlgorithm() {
+        return jwsAlgorithm;
+    }
+
+    private JWSVerifier verifier() throws Exception {
+        byte[] publicKeyBytes = keyPair.getKeyPair().getPublic().getEncoded();
+        switch (keyPair.getAlgorithm()) {
+            case EC256_SHA256:
+            case EC384_SHA384:
+            case ECP512_SHA512:
+                return new ECDSAVerifier(AsymmetricKeyConverter.getECPublicKey(publicKeyBytes));
+            case RSA2048_SHA256:
+            case RSA3072_SHA384:
+            case RSA4096_SHA512:
+                return new RSASSAVerifier(AsymmetricKeyConverter.getRSAPublicKey(publicKeyBytes));
+            default:
+                throw new IllegalArgumentException("Error invalid algorithm has been provided");
+        }
+    }
+
+    private static boolean withinValidityWindow(Map<String, Object> claims) {
+        long now = Instant.now().getEpochSecond();
+        Long exp = asEpochSeconds(claims.get("exp"));
+        // `exp` is REQUIRED (RFC 7519 §4.1.4 for the id_token, RFC 9068 §2.2 for a JWT access token).
+        // Treating a token with no expiry as valid would make a non-expiring token the easiest way to
+        // pass validation — fail closed on its absence rather than granting unlimited lifetime.
+        if (exp == null) {
+            return false;
+        }
+        if (now > exp + CLOCK_SKEW_SECONDS) {
+            return false;
+        }
+        Long nbf = asEpochSeconds(claims.get("nbf"));
+        if (nbf != null && now + CLOCK_SKEW_SECONDS < nbf) {
+            return false;
+        }
+        Long iat = asEpochSeconds(claims.get("iat"));
+        return iat == null || now + CLOCK_SKEW_SECONDS >= iat;
+    }
+
+    private static Long asEpochSeconds(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Long.parseLong(((String) value).trim());
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
     }
 
     /**
@@ -56,7 +165,31 @@ public class OidcTokenMinter {
      * @param includeRefresh whether to include a refresh_token (authorization_code + refresh_token grants)
      * @return the serialized token-endpoint response
      */
+    /**
+     * Mints a token response without a request to derive the issuer from.
+     *
+     * <p>Prefer {@link #mintTokenResponse(String, String, boolean, String)} whenever a request is
+     * available. With no request, {@link OidcIssuerResolver} can only fall back to the configured
+     * issuer or, when none is configured, to its hardcoded default — which is precisely the value the
+     * per-request derivation exists to avoid. This overload is therefore only appropriate off the
+     * request path (e.g. a test minting a token directly).
+     */
     public String mintTokenResponse(String requestedScope, String nonce, boolean includeRefresh) {
+        return mintTokenResponse(requestedScope, nonce, includeRefresh,
+            OidcIssuerResolver.resolve(config, null));
+    }
+
+    /**
+     * Mints a token-endpoint response using an explicitly resolved issuer.
+     *
+     * <p>The issuer is passed in rather than read from configuration because it is resolved per
+     * request from the {@code Host} header (see {@link OidcIssuerResolver}) — the {@code iss} claim in
+     * a minted token must match the issuer advertised by the discovery document, or every conformant
+     * relying party rejects the token.
+     *
+     * @param issuer the issuer resolved for this request
+     */
+    public String mintTokenResponse(String requestedScope, String nonce, boolean includeRefresh, String issuer) {
         String scopeString = (requestedScope != null && !requestedScope.trim().isEmpty())
             ? requestedScope.trim()
             : String.join(" ", config.getScopes());
@@ -69,7 +202,7 @@ public class OidcTokenMinter {
             ? now.minusSeconds(3600).getEpochSecond()
             : now.plusSeconds(config.getTokenExpirySeconds()).getEpochSecond();
 
-        String effectiveIssuer = config.isWrongIssuer() ? config.getIssuer() + "/wrong" : config.getIssuer();
+        String effectiveIssuer = config.isWrongIssuer() ? issuer + "/wrong" : issuer;
 
         Map<String, Serializable> accessTokenClaims = buildAccessTokenClaims(effectiveIssuer, scopeString, iat, exp);
 

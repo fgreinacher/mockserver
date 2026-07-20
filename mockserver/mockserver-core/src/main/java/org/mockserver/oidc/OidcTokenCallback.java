@@ -60,8 +60,13 @@ public class OidcTokenCallback implements ExpectationResponseCallback {
             }
         }
 
+        // The `iss` claim minted into the tokens must match the issuer advertised by the discovery
+        // document, which is resolved per request from the Host header — otherwise every conformant
+        // relying party rejects the token.
+        String issuer = OidcIssuerResolver.resolve(provider.config, request);
+
         if (DEVICE_CODE_GRANT_TYPE.equals(grantType)) {
-            return handleDeviceCodeGrant(store, provider, form);
+            return handleDeviceCodeGrant(store, provider, form, issuer);
         }
 
         if (!"authorization_code".equals(grantType)) {
@@ -69,7 +74,7 @@ public class OidcTokenCallback implements ExpectationResponseCallback {
             // the requested scope is honoured. No nonce/id_token for client_credentials unless the
             // openid scope is requested; the refresh_token grant returns a fresh refresh_token.
             boolean refreshGrant = "refresh_token".equals(grantType);
-            String tokenResponse = provider.tokenMinter.mintTokenResponse(form.get("scope"), null, refreshGrant);
+            String tokenResponse = provider.tokenMinter.mintTokenResponse(form.get("scope"), null, refreshGrant, issuer);
             return tokenSuccess(tokenResponse);
         }
 
@@ -97,7 +102,7 @@ public class OidcTokenCallback implements ExpectationResponseCallback {
         // Mint at exchange time so the id_token carries the nonce echoed from /authorize. The
         // authorization_code grant always returns a refresh_token.
         String tokenResponse = provider.tokenMinter.mintTokenResponse(
-            authorizationCode.scope, authorizationCode.nonce, true);
+            authorizationCode.scope, authorizationCode.nonce, true, issuer);
         return tokenSuccess(tokenResponse);
     }
 
@@ -109,7 +114,8 @@ public class OidcTokenCallback implements ExpectationResponseCallback {
      */
     private HttpResponse handleDeviceCodeGrant(OidcAuthorizationStore store,
                                                OidcAuthorizationStore.Provider provider,
-                                               Map<String, String> form) {
+                                               Map<String, String> form,
+                                               String issuer) {
         String deviceCode = form.get("device_code");
         OidcAuthorizationStore.DeviceCode pending = store.peekDeviceCode(deviceCode);
         if (pending == null) {
@@ -128,7 +134,7 @@ public class OidcTokenCallback implements ExpectationResponseCallback {
         if (approved == null) {
             return tokenError("expired_token", "device_code is unknown, expired, or already redeemed", 400);
         }
-        String tokenResponse = provider.tokenMinter.mintTokenResponse(approved.scope, null, true);
+        String tokenResponse = provider.tokenMinter.mintTokenResponse(approved.scope, null, true, issuer);
         return tokenSuccess(tokenResponse);
     }
 
@@ -187,28 +193,40 @@ public class OidcTokenCallback implements ExpectationResponseCallback {
     }
 
     private HttpResponse invalidClient() {
-        return response()
+        return noStore(response()
             .withStatusCode(401)
             .withHeader("content-type", JSON_CONTENT_TYPE)
             .withHeader("WWW-Authenticate", "Basic")
-            .withBody("{\"error\":\"invalid_client\",\"error_description\":\"client authentication failed\"}");
+            .withBody("{\"error\":\"invalid_client\",\"error_description\":\"client authentication failed\"}"));
     }
 
     private HttpResponse tokenSuccess(String tokenResponse) {
-        return response()
+        return noStore(response()
             .withStatusCode(200)
             .withHeader("content-type", JSON_CONTENT_TYPE)
-            .withBody(tokenResponse);
+            .withBody(tokenResponse));
     }
 
     private HttpResponse tokenError(String error, String description, int statusCode) {
         // RFC 6749 §5.2 error envelope: error, error_description, and an optional error_uri.
         String errorUri = "https://www.mock-server.com/mock_server/mock_openid_connect_provider.html";
-        return response()
+        return noStore(response()
             .withStatusCode(statusCode)
             .withHeader("content-type", JSON_CONTENT_TYPE)
             .withBody("{\"error\":\"" + error + "\",\"error_description\":\"" + description
-                + "\",\"error_uri\":\"" + errorUri + "\"}");
+                + "\",\"error_uri\":\"" + errorUri + "\"}"));
+    }
+
+    /**
+     * Applies the RFC 6749 §5.1 caching directives. The token endpoint returns credentials, so
+     * "The authorization server MUST include the HTTP 'Cache-Control' response header field with a
+     * value of 'no-store' [...] and 'Pragma' with a value of 'no-cache'" — otherwise an intermediary
+     * or client HTTP cache can replay a token response, including after the token has expired.
+     */
+    private static HttpResponse noStore(HttpResponse response) {
+        return response
+            .withHeader("cache-control", "no-store")
+            .withHeader("pragma", "no-cache");
     }
 
     /**

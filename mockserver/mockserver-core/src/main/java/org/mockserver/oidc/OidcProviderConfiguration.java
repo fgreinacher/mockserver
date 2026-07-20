@@ -21,7 +21,12 @@ import java.util.Map;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class OidcProviderConfiguration implements Serializable {
 
-    private String issuer = "http://localhost:1080";
+    // Null by default, meaning "derive the issuer per request from the Host header"
+    // (see OidcIssuerResolver). OIDC Discovery §4.3 requires the advertised issuer to be identical to
+    // the URL the relying party used, so a hardcoded default broke every client running the mock on a
+    // random port (Testcontainers) — Spring Security, nimbus and pac4j all reject the mismatch. An
+    // explicitly configured issuer still wins.
+    private String issuer = null;
     private String jwksPath = "/.well-known/jwks.json";
     private String tokenPath = "/token";
     private String authorizePath = "/authorize";

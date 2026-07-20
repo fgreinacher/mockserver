@@ -64,7 +64,9 @@ public class OidcDeviceAuthorizationCallback implements ExpectationResponseCallb
         store.putDeviceCode(deviceCode, new OidcAuthorizationStore.DeviceCode(
             userCode, scope, Math.max(0, provider.config.getDeviceCodePendingPolls())));
 
-        String issuer = provider.config.getIssuer();
+        // Resolved per request from the Host header so the verification URI points at the address the
+        // client actually reached, not a hardcoded one (see OidcIssuerResolver).
+        String issuer = OidcIssuerResolver.resolve(provider.config, request);
         String verificationUri = issuer + "/device";
         String verificationUriComplete = verificationUri + "?user_code=" + userCode;
 

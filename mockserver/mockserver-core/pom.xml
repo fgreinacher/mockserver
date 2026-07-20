@@ -138,6 +138,12 @@
             <groupId>com.nimbusds</groupId>
             <artifactId>nimbus-jose-jwt</artifactId>
         </dependency>
+        <!-- independent OIDC implementation used to verify provider conformance (test scope only) -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>oauth2-oidc-sdk</artifactId>
+            <scope>test</scope>
+        </dependency>
 
         <!-- templating -->
         <dependency>
@@ -737,6 +743,11 @@
                         <exclude>**/OidcProviderGeneratorTest.java</exclude>
                         <!-- OidcTokenCallback test registers providers into the OidcAuthorizationStore singleton -->
                         <exclude>**/OidcTokenCallbackTest.java</exclude>
+                        <!-- introspection/discovery tests register providers into, revoke tokens in, and
+                             reset the OidcAuthorizationStore singleton -->
+                        <exclude>**/OidcIntrospectionCallbackTest.java</exclude>
+                        <exclude>**/OidcDiscoveryCallbackTest.java</exclude>
+                        <exclude>**/OidcUserinfoCallbackTest.java</exclude>
                         <!-- WS7.7 SAML SSO test mutates the SamlAssertionStore singleton -->
                         <exclude>**/SamlProviderGeneratorTest.java</exclude>
                         <!-- Wave4 SCIM tests mutate the ScimResourceStore singleton -->
@@ -905,6 +916,9 @@
                                 <include>**/CaptureProcessorTest.java</include>
                                 <include>**/OidcProviderGeneratorTest.java</include>
                                 <include>**/OidcTokenCallbackTest.java</include>
+                                <include>**/OidcIntrospectionCallbackTest.java</include>
+                                <include>**/OidcDiscoveryCallbackTest.java</include>
+                                <include>**/OidcUserinfoCallbackTest.java</include>
                                 <include>**/SamlProviderGeneratorTest.java</include>
                                 <include>**/ScimProviderGeneratorTest.java</include>
                                 <include>**/ScimResourceStoreTest.java</include>

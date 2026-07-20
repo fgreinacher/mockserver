@@ -44,9 +44,9 @@ keywords: mock oidc provider, mock identity provider, openid connect mock, oauth
     <tr><td>JWKS</td><td><code>/.well-known/jwks.json</code></td><td>Public signing key(s)</td></tr>
     <tr><td>Token</td><td><code>/token</code></td><td>Issues tokens for all supported grants</td></tr>
     <tr><td>Authorize</td><td><code>/authorize</code></td><td>Authorization-code grant (issues a code, supports PKCE + nonce)</td></tr>
-    <tr><td>Userinfo</td><td><code>/userinfo</code></td><td>Returns the subject and additional claims</td></tr>
+    <tr><td>Userinfo</td><td><code>/userinfo</code></td><td>Returns the subject and additional claims &mdash; requires a valid <code>Authorization: Bearer</code> access token, otherwise <code>401</code></td></tr>
     <tr><td>Introspection</td><td><code>/introspect</code></td><td>RFC 7662 token introspection</td></tr>
-    <tr><td>Revocation</td><td><code>/revoke</code></td><td>RFC 7009 token revocation</td></tr>
+    <tr><td>Revocation</td><td><code>/revoke</code></td><td>RFC 7009 token revocation &mdash; a revoked token then introspects as <code>{"active":false}</code></td></tr>
     <tr><td>End-session (logout)</td><td><code>/logout</code></td><td>RP-initiated logout (302 to <code>post_logout_redirect_uri</code> or 200)</td></tr>
     <tr><td>Device authorization</td><td><code>/device_authorization</code></td><td>RFC 8628 device-code grant (issues a <code>device_code</code> + <code>user_code</code>)</td></tr>
     </tbody>
@@ -57,9 +57,17 @@ keywords: mock oidc provider, mock identity provider, openid connect mock, oauth
 <h2>Create the provider</h2>
 
 <p>A single control-plane call to <code>PUT /mockserver/oidc</code> generates the whole provider. Use defaults
-    (issuer <code>http://localhost:1080</code>, RS256 signing) with an empty body, or supply configuration. The
+    (RS256 signing, standard endpoint paths) with an empty body, or supply configuration. The
     Java client exposes a typed one-call method; every other language sends the JSON body to the
     <code>/mockserver/oidc</code> endpoint.</p>
+
+<p><strong>The issuer is derived automatically from the address you call the provider on.</strong> If you do
+    not set <code>issuer</code>, MockServer builds it per request from the <code>Host</code> header — so a
+    provider running on a random or container-mapped port (Testcontainers, Docker) advertises the URL your
+    client actually used. This matters because the OpenID Connect specification requires the
+    <code>issuer</code> in the discovery document to match the URL the document was fetched from, and
+    libraries such as Spring Security, Nimbus and pac4j will refuse to start if it does not. Set
+    <code>issuer</code> explicitly only when you need a fixed, externally-meaningful value.</p>
 
 <button id="button_create_oidc_provider" class="accordion">create OIDC / OAuth2 provider</button>
 <div class="panel">
@@ -845,8 +853,23 @@ curl_close($ch);</code></pre>
     </div>
 </div>
 
-<p>Validate an opaque token by introspecting it (RFC 7662): a known, unexpired token returns
-    <code>{"active":true, ...claims}</code> and an unknown or expired token returns <code>{"active":false}</code>.</p>
+<p>Validate a token by introspecting it (RFC 7662): a valid, unexpired token returns
+    <code>{"active":true, ...claims}</code> and anything else returns <code>{"active":false}</code>.</p>
+
+<p><strong>Introspection checks the token you present.</strong> This works for both token types: an opaque
+    token is looked up by reference, and a JWT is verified against the provider's signing key and its own
+    expiry. A token that is unknown, expired, tampered with, revoked, or issued by a different provider
+    reports <code>{"active":false}</code> — and an inactive response contains nothing but
+    <code>active</code>, so it cannot leak claims about a token the caller does not hold. A request with no
+    <code>token</code> parameter returns <code>400 invalid_request</code>.</p>
+
+<p class="note"><strong>Behaviour change.</strong> Introspection previously ignored the presented token when
+    the provider issued JWTs (the default) and answered from static configuration, so any string reported
+    <code>active:true</code>. The <code>/userinfo</code> endpoint likewise served claims to any caller without
+    checking for a bearer token. If a test of yours starts failing after upgrading — for example one asserting
+    that your application rejects an expired or revoked token, or that it handles a <code>401</code> from
+    <code>/userinfo</code> — that test was previously passing without exercising the behaviour it claimed to
+    cover. See the changelog for the release this lands in.</p>
 
 <button id="button_introspect_token" class="accordion">introspect (validate) an opaque token</button>
 <div class="panel">
@@ -978,7 +1001,7 @@ curl_close($ch);
     <tr><th>Field</th><th>Default</th><th>Description</th></tr>
     </thead>
     <tbody>
-    <tr><td><code>issuer</code></td><td><code>http://localhost:1080</code></td><td>Issuer URL; used to build every endpoint URL in the discovery document</td></tr>
+    <tr><td><code>issuer</code></td><td>derived from the <code>Host</code> header</td><td>Issuer URL; used to build every endpoint URL in the discovery document. Leave unset so it matches whatever address the client reaches the provider on (required by the spec, and essential on random/mapped ports); set it to pin a fixed value. <code>X-Forwarded-Proto</code> is honoured behind a TLS-terminating proxy.</td></tr>
     <tr><td><code>jwksPath</code> / <code>tokenPath</code> / <code>authorizePath</code> / <code>userinfoPath</code> / <code>introspectPath</code> / <code>revokePath</code> / <code>deviceAuthorizationPath</code></td><td>standard paths</td><td>Override individual endpoint paths</td></tr>
     <tr><td><code>subject</code></td><td><code>mock-user</code></td><td><code>sub</code> claim in tokens and userinfo</td></tr>
     <tr><td><code>clientId</code></td><td><code>mock-client</code></td><td>Audience of the <code>id_token</code> and <code>client_id</code> in the <code>access_token</code></td></tr>

@@ -486,6 +486,19 @@
                 <artifactId>nimbus-jose-jwt</artifactId>
                 <version>10.9.1</version>
             </dependency>
+            <!--
+                OAuth2/OIDC SDK - TEST SCOPE ONLY. An independent, spec-driven implementation used to
+                assert that the mock OIDC provider's discovery, token and introspection responses are
+                actually conformant. MockServer's OIDC conformance was previously asserted only against
+                MockServer's own objects, which is how introspection came to report active:true for
+                arbitrary tokens without a single test failing.
+            -->
+            <dependency>
+                <groupId>com.nimbusds</groupId>
+                <artifactId>oauth2-oidc-sdk</artifactId>
+                <version>11.23.1</version>
+                <scope>test</scope>
+            </dependency>
 
             <!-- templating -->
             <dependency>

@@ -112,6 +112,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-blank), so this was only reachable through the Java client. **Control-plane filters are unaffected** —
   `clear`, `retrieve` and `verify` by request definition keep the "empty filter matches all" semantic, which
   is correct and intended there. A spec that fails to *parse* was already safe and is unchanged.
+- **BREAKING BEHAVIOUR: the mock OIDC provider's `/introspect` endpoint now validates the presented token.
+  Tests that are green today may correctly go red — that is the point.** Previously, when the provider issued
+  JWT access tokens (the default), introspection **ignored the token entirely** and reported `active` from
+  static configuration, so *any* string — garbage, an expired token, a tampered token, a token minted by a
+  different provider, or one that had just been revoked — introspected as `active: true`. A test asserting
+  "my application rejects a revoked token" therefore passed while proving nothing. Introspection now fails
+  closed: a token is active only if it verifies against the provider's signing key and is inside its validity
+  window (or, for opaque providers, resolves to a recorded unexpired token). Additionally:
+  - **`/revoke` now actually revokes.** It previously returned `200` and did nothing, so a revoked token kept
+    introspecting as active. Revoked tokens are now recorded and report `active: false` (RFC 7009).
+  - **Inactive responses no longer leak claims.** An inactive result now contains `{"active": false}` and
+    nothing else; previously it still returned `sub`, `iss`, `aud`, `scope` and every configured additional
+    claim (RFC 7662 §2.2).
+  - **A request with no `token` parameter now returns `400 invalid_request`** rather than an introspection
+    result (RFC 7662 §2.1).
+  - **`/token`, `/introspect` and `/revoke` now send `Cache-Control: no-store` and `Pragma: no-cache`**
+    (RFC 6749 §5.1), so an intermediary cannot replay a token or a stale `active: true`.
+
+  If a test starts failing, it was asserting against a fabricated success and the application behaviour it
+  claimed to cover was never exercised.
+- **BREAKING BEHAVIOUR: the mock OIDC provider's `/userinfo` endpoint now requires a valid bearer access
+  token.** It was previously a static response that returned the subject and every configured additional
+  claim to *any* caller, with no inspection of the `Authorization` header at all — the same defect as
+  introspection, one endpoint over. Two common tests could therefore never fail: "my application handles a
+  `401` from userinfo when the access token has expired" never saw a `401`, and "my application only calls
+  userinfo with a valid token" passed unconditionally. Userinfo is an OAuth2 protected resource (OIDC Core
+  §5.3), so it now returns `401` with `WWW-Authenticate: Bearer error="invalid_token"` when the token is
+  missing, malformed, expired, revoked, or issued by a different provider, and the `401` body carries no
+  claims. The `sub` in a successful response is taken from the presented token rather than from static
+  configuration. Token validation for `/userinfo` and `/introspect` is now a single shared code path, so the
+  two endpoints cannot drift into disagreeing about the same token.
+- **BREAKING BEHAVIOUR: the mock OIDC provider's `issuer` is now derived per request from the `Host` header
+  instead of being hardcoded to `http://localhost:1080`.** OIDC Discovery §4.3 requires the advertised issuer
+  to be identical to the URL the relying party used to fetch the discovery document, and every conformant
+  client validates it — so the hardcoded default broke the most common way people run a mock OIDC provider:
+  a Testcontainers-mapped random port, where Spring Security, nimbus and pac4j all rejected the mismatch.
+  The `iss` claim minted into tokens, and the device-authorization `verification_uri`, are derived the same
+  way, and `X-Forwarded-Proto` is honoured so a provider behind a TLS-terminating ingress advertises `https`.
+  **Setting `issuer` explicitly still wins**, so pin it if you need a stable, externally-meaningful value.
+  Also, discovery now advertises only `response_types_supported: ["code"]` — the implicit and hybrid flows
+  were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
 - **Trailers on a body-less response no longer produce a malformed HTTP/1.1 message.** A response carrying

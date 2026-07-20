@@ -8,10 +8,7 @@ import org.mockserver.model.HttpClassCallback;
 import org.mockserver.serialization.ObjectMapperFactory;
 
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
@@ -63,7 +60,7 @@ public class OidcProviderGenerator {
         List<Expectation> expectations = new ArrayList<>();
 
         // 1. Discovery document
-        expectations.add(buildDiscoveryExpectation(config, keyPair));
+        expectations.add(buildDiscoveryExpectation());
 
         // 2. JWKS endpoint
         expectations.add(buildJwksExpectation(config, jwksJson));
@@ -102,46 +99,18 @@ public class OidcProviderGenerator {
         return expectations;
     }
 
-    private Expectation buildDiscoveryExpectation(OidcProviderConfiguration config, AsymmetricKeyPair keyPair) {
-        String issuer = config.getIssuer();
-        String signingAlg = keyPair.getAlgorithm().getJwtAlgorithm();
-        Map<String, Object> discovery = new LinkedHashMap<>();
-        discovery.put("issuer", issuer);
-        discovery.put("authorization_endpoint", issuer + config.getAuthorizePath());
-        discovery.put("token_endpoint", issuer + config.getTokenPath());
-        discovery.put("userinfo_endpoint", issuer + config.getUserinfoPath());
-        discovery.put("jwks_uri", issuer + config.getJwksPath());
-        discovery.put("introspection_endpoint", issuer + config.getIntrospectPath());
-        discovery.put("revocation_endpoint", issuer + config.getRevokePath());
-        discovery.put("end_session_endpoint", issuer + LOGOUT_PATH);
-        discovery.put("device_authorization_endpoint", issuer + config.getDeviceAuthorizationPath());
-        discovery.put("response_types_supported", Arrays.asList("code", "token", "id_token", "code token", "code id_token"));
-        // Advertise the implemented grants, including the RFC 8628 device-code grant.
-        discovery.put("grant_types_supported", Arrays.asList(
-            "authorization_code", "client_credentials", "refresh_token",
-            "urn:ietf:params:oauth:grant-type:device_code"
-        ));
-        discovery.put("code_challenge_methods_supported", Arrays.asList("S256", "plain"));
-        discovery.put("token_endpoint_auth_methods_supported",
-            Arrays.asList("client_secret_basic", "client_secret_post", "none"));
-        discovery.put("id_token_signing_alg_values_supported", Arrays.asList(signingAlg));
-        discovery.put("scopes_supported", config.getScopes());
-        discovery.put("subject_types_supported", Arrays.asList("public"));
-        discovery.put("claims_supported", Arrays.asList(
-            "iss", "sub", "aud", "exp", "iat", "nbf", "nonce", "at_hash",
-            "name", "preferred_username", "email", "email_verified", "scope"
-        ));
-
+    private Expectation buildDiscoveryExpectation() {
+        // A class callback so the issuer (and every endpoint URL derived from it) is resolved per
+        // request from the Host header. OIDC Discovery 4.3 requires the advertised issuer to match the
+        // URL the relying party used; a fixed issuer baked in at generate time breaks every client
+        // running the mock on a random port.
         return new Expectation(
             request()
                 .withMethod("GET")
                 .withPath("/.well-known/openid-configuration")
         )
             .withId("oidc.discovery")
-            .thenRespond(response()
-                .withStatusCode(200)
-                .withHeader("content-type", APPLICATION_JSON)
-                .withBody(serializeToJson(discovery)));
+            .thenRespond(HttpClassCallback.callback(OidcDiscoveryCallback.class.getName()));
     }
 
     private Expectation buildJwksExpectation(OidcProviderConfiguration config, String jwksJson) {
@@ -183,29 +152,27 @@ public class OidcProviderGenerator {
     }
 
     private Expectation buildUserinfoExpectation(OidcProviderConfiguration config) {
-        Map<String, Object> userinfo = new LinkedHashMap<>();
-        userinfo.put("sub", config.getSubject());
-        if (config.getAdditionalClaims() != null) {
-            userinfo.putAll(config.getAdditionalClaims());
-        }
-
+        // A class callback because userinfo is an OAuth2 protected resource (OIDC Core §5.3): it must
+        // require a bearer access token and return 401 when that token is missing or invalid. As a
+        // static response it returned the subject and every configured claim to any caller without
+        // looking at the Authorization header, so a test asserting "my app handles a 401 from userinfo"
+        // could never fail.
         return new Expectation(
             request()
                 .withMethod("GET")
                 .withPath(config.getUserinfoPath())
         )
             .withId("oidc.userinfo")
-            .thenRespond(response()
-                .withStatusCode(200)
-                .withHeader("content-type", APPLICATION_JSON)
-                .withBody(serializeToJson(userinfo)));
+            .thenRespond(HttpClassCallback.callback(OidcUserinfoCallback.class.getName()));
     }
 
     private Expectation buildIntrospectionExpectation(OidcProviderConfiguration config) {
-        // A class callback so introspection can resolve opaque access tokens (RFC 7662): when the
-        // presented `token` is a stored opaque token it echoes the stored claims (active:true), an
-        // unknown/expired opaque token yields active:false, and otherwise it falls back to the
-        // provider's static introspection result (active driven by issueExpiredToken).
+        // A class callback so introspection validates the presented token (RFC 7662): a revoked token
+        // is inactive; an opaque token is resolved by reference against what the minter recorded; a JWT
+        // is verified against this provider's signing key and its validity window. Anything that does
+        // not verify — garbage, an expired or tampered token, or one minted by a different provider —
+        // is reported inactive, and an inactive response carries `active:false` and nothing else
+        // (RFC 7662 §2.2). It never falls back to a static result.
         return new Expectation(
             request()
                 .withMethod("POST")
@@ -228,16 +195,16 @@ public class OidcProviderGenerator {
     }
 
     private Expectation buildRevocationExpectation(OidcProviderConfiguration config) {
+        // A class callback so revocation actually revokes (RFC 7009): the presented token is recorded
+        // in the store so /introspect reports it inactive. A static 200 that did nothing meant a
+        // revoked token still introspected as active.
         return new Expectation(
             request()
                 .withMethod("POST")
                 .withPath(config.getRevokePath())
         )
             .withId("oidc.revoke")
-            .thenRespond(response()
-                .withStatusCode(200)
-                .withHeader("content-type", APPLICATION_JSON)
-                .withBody(""));
+            .thenRespond(HttpClassCallback.callback(OidcRevocationCallback.class.getName()));
     }
 
     private Expectation buildLogoutExpectation() {

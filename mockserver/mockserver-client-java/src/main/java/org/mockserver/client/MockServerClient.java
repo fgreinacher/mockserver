@@ -2207,7 +2207,8 @@ public class MockServerClient implements Stoppable {
 
     /**
      * Mock a complete OpenID Connect / OAuth2 identity provider with a single call, using the default
-     * configuration (issuer {@code http://localhost:1080}, standard endpoint paths, RS256 signing).
+     * configuration (standard endpoint paths, RS256 signing, and an issuer derived per request from the
+     * {@code Host} header so the provider works unchanged on a random/mapped port).
      *
      * <p>This generates and upserts the discovery document, JWKS, token, authorize, userinfo,
      * introspection, revocation, and end-session endpoints, all signed with a freshly generated key

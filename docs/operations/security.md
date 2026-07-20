@@ -160,6 +160,16 @@ Test-scoped only, and never bundled in released artifacts. Added for the same re
 
 dnsjava is a mature pure-Java resolver library. Its only non-optional compile-scope dependency is `org.slf4j:slf4j-api`, which MockServer already depends on; `net.java.dev.jna:jna` and `jna-platform` are declared `<optional>true</optional>` and so are not pulled transitively (MockServer already manages `jna` for `SoOriginalDstResolver` in any case). It targets Java 8+, so it sits comfortably under the Java 17 floor. It is used only to *decode* MockServer's output in assertions — it is never on a production code path and never bundled into a released artifact.
 
+### Test Dependencies (OIDC Provider Conformance)
+
+Test-scoped only, and never bundled in released artifacts. Added for the same reason as the gRPC client above: the mock OIDC provider's conformance was asserted only against MockServer's own model objects, which is how `/introspect` came to report `active: true` for arbitrary tokens — and `/userinfo` came to serve claims to unauthenticated callers — without a single test failing.
+
+| Dependency | Version | Module | Purpose |
+|------------|---------|--------|---------|
+| `com.nimbusds:oauth2-oidc-sdk` | 11.23.1 | `mockserver-core` (test) | Independent, spec-driven parsing/validation of the discovery document (`OIDCProviderMetadata.parse`) and introspection responses (`TokenIntrospectionResponse.parse`) in `OidcDiscoveryCallbackTest` and `OidcIntrospectionCallbackTest` |
+
+This is the same code path Spring Security, Nimbus-based resource servers and pac4j use, so a response that parses here is one a real relying party accepts. It shares the `com.nimbusds` group with the already-present compile-scoped `nimbus-jose-jwt` (used to sign and verify tokens) but is a separate artifact and stays test scope — it must not become a compile dependency, since the provider itself deliberately implements OIDC rather than delegating to an SDK. Pulls `com.nimbusds:content-type` and `com.nimbusds:lang-tag` transitively; all test scope in a single module. Requires Java 11+, so it is within the Java 17 floor with no ceiling needed.
+
 ### Maven Dependency Graph Submission
 
 GitHub's built-in dependency graph automatically indexes all manifest files (`pom.xml`, `package.json`, `Gemfile`, `requirements.txt`) and their transitive dependencies. This enables Dependabot vulnerability alerts for the full dependency tree -- currently tracking 2000+ packages including 347 Maven dependencies.

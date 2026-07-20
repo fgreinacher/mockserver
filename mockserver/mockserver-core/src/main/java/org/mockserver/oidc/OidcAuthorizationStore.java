@@ -68,6 +68,19 @@ public class OidcAuthorizationStore {
     private final Map<String, AuthorizationCode> codes = new ConcurrentHashMap<>();
     private final Map<String, DeviceCode> deviceCodes = new ConcurrentHashMap<>();
     private final Map<String, OpaqueToken> opaqueTokens = new ConcurrentHashMap<>();
+    /**
+     * Tokens revoked via {@code /revoke} (RFC 7009). Used as a set; the value is always
+     * {@link Boolean#TRUE}. Bounded by {@link #MAX_OUTSTANDING} like the other data-plane-reachable
+     * maps — entries have no natural TTL (a revocation is permanent for the life of the mock), so the
+     * hard cap is the only bound.
+     *
+     * <p><b>Scope:</b> this set is global, not per-provider, so a token revoked through any provider's
+     * {@code /revoke} is treated as revoked everywhere. That is deliberate — tokens are opaque strings
+     * or self-contained JWTs with no provider tag to key on, and revoking more than strictly necessary
+     * fails <em>closed</em>. A test that registers several providers and expects a revocation to affect
+     * only one of them will not get that behaviour; reset the store between such tests.
+     */
+    private final Map<String, Boolean> revokedTokens = new ConcurrentHashMap<>();
 
     OidcAuthorizationStore() {
     }
@@ -130,6 +143,28 @@ public class OidcAuthorizationStore {
     public Provider providerForDeviceAuthorizationPath(String deviceAuthorizationPath) {
         for (Provider provider : providers) {
             if (pathsEqual(provider.deviceAuthorizationPath, deviceAuthorizationPath)) {
+                return provider;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The most recently registered provider, or {@code null} if none. Used by the discovery endpoint,
+     * whose path ({@code /.well-known/openid-configuration}) is fixed by the spec and therefore cannot
+     * be used to disambiguate between providers; the latest registration wins, matching
+     * {@link #registerProvider}.
+     */
+    public Provider latestProvider() {
+        return providers.isEmpty() ? null : providers.get(0);
+    }
+
+    /**
+     * Finds the provider serving the given userinfo path, or {@code null} if none registered.
+     */
+    public Provider providerForUserinfoPath(String userinfoPath) {
+        for (Provider provider : providers) {
+            if (provider.config.getUserinfoPath().equals(userinfoPath)) {
                 return provider;
             }
         }
@@ -298,11 +333,53 @@ public class OidcAuthorizationStore {
         return opaqueTokens.size();
     }
 
+    // --- Token revocation (RFC 7009) ---
+
+    /**
+     * Records a token as revoked so {@link OidcIntrospectionCallback} reports it inactive.
+     *
+     * <p>Before this existed, {@code /revoke} returned 200 and did nothing, so a token introspected
+     * as active immediately after being revoked. That made "my application rejects a revoked token"
+     * a test that passes while proving nothing — the exact failure mode this store exists to close.
+     *
+     * <p>Revocation is recorded rather than the token being deleted because JWT access tokens are
+     * self-contained and are not held anywhere to delete; the revocation list is the only way to
+     * make a still-cryptographically-valid JWT introspect as inactive. Opaque tokens are also removed
+     * outright so they stop resolving.
+     */
+    public void revokeToken(String token) {
+        if (token == null || token.isEmpty()) {
+            return;
+        }
+        opaqueTokens.remove(token);
+        // DELIBERATE TRADE-OFF, called out because this unit exists to close silent fail-opens:
+        // revocations have no natural TTL, so the only bound on this map is the MAX_OUTSTANDING cap.
+        // Past the cap, evicting an entry means that token stops being reported as revoked — i.e.
+        // revocation fails OPEN rather than closed. The alternative (refusing new revocations at the
+        // cap) fails closed on the wrong token and is no safer. It is accepted here because reaching
+        // 10,000 distinct revoked tokens in a mock provider's lifetime is not a realistic test
+        // scenario, and an unbounded map is a worse risk on a data-plane-reachable endpoint. If a
+        // suite ever does approach the cap, reset the mock between tests.
+        trimToCap(revokedTokens);
+        revokedTokens.put(token, Boolean.TRUE);
+    }
+
+    /** Whether the token has been revoked via {@link #revokeToken(String)}. */
+    public boolean isRevoked(String token) {
+        return token != null && revokedTokens.containsKey(token);
+    }
+
+    /** Number of revoked tokens currently retained (test visibility). */
+    int revokedTokenCount() {
+        return revokedTokens.size();
+    }
+
     public void reset() {
         providers.clear();
         codes.clear();
         deviceCodes.clear();
         opaqueTokens.clear();
+        revokedTokens.clear();
     }
 
     /**
@@ -325,6 +402,14 @@ public class OidcAuthorizationStore {
             this.deviceAuthorizationPath = deviceAuthorizationPath;
             this.config = config;
             this.tokenMinter = tokenMinter;
+        }
+
+        public OidcProviderConfiguration getConfig() {
+            return config;
+        }
+
+        public OidcTokenMinter getTokenMinter() {
+            return tokenMinter;
         }
     }
 

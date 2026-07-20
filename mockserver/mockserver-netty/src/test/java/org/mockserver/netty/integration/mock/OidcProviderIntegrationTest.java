@@ -25,6 +25,7 @@ import java.security.MessageDigest;
 import java.util.Base64;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.Assert.assertTrue;
@@ -77,6 +78,116 @@ public class OidcProviderIntegrationTest {
         Expectation[] expectations = mockServer.mockOpenIdProvider(
             new OidcProviderConfiguration().setIssuer(base()));
         assertThat(expectations.length, is(9));
+    }
+
+    /**
+     * The Testcontainers case: no issuer configured, server on an ephemeral port. The issuer must be
+     * derived from the address the client actually used, because OIDC Discovery §4.3 requires the
+     * advertised issuer to be identical to the URL the document was fetched from — every conformant
+     * relying party rejects a mismatch. A hardcoded {@code http://localhost:1080} default made this the
+     * most common way to fail to use the mock provider.
+     *
+     * <p>Note that every other test in this class pins {@code setIssuer(base())} explicitly, which is
+     * precisely why the hardcoded default survived: nothing exercised the default path.
+     */
+    @Test
+    public void issuerIsDerivedFromTheAddressTheClientUsedWhenNotConfigured() throws Exception {
+        mockServer.mockOpenIdProvider(new OidcProviderConfiguration());
+
+        JsonNode discovery = objectMapper.readTree(get("/.well-known/openid-configuration"));
+
+        assertThat(discovery.get("issuer").asText(), is(base()));
+        assertThat(discovery.get("token_endpoint").asText(), is(base() + "/token"));
+        assertThat(discovery.get("jwks_uri").asText(), is(base() + "/.well-known/jwks.json"));
+
+        // The iss claim minted into tokens must match the advertised issuer, or the relying party
+        // rejects the token even though discovery validated.
+        JsonNode tokenResponse = objectMapper.readTree(
+            postForm(base() + "/token", "grant_type=client_credentials&scope=openid").body());
+        SignedJWT accessToken = SignedJWT.parse(tokenResponse.get("access_token").asText());
+        assertThat(accessToken.getJWTClaimsSet().getIssuer(), is(base()));
+    }
+
+    /**
+     * Introspection over real HTTP must reject a token it never issued. Before this, introspection
+     * ignored the presented token entirely for JWT providers (the default) and reported {@code active}
+     * from static configuration, so a "my application rejects a bad token" test passed while proving
+     * nothing.
+     */
+    @Test
+    public void introspectionRejectsAnArbitraryTokenOverHttp() throws Exception {
+        mockServer.mockOpenIdProvider(new OidcProviderConfiguration().setIssuer(base()));
+
+        HttpResponse<String> response = postForm(base() + "/introspect", "token=not-a-real-token");
+        JsonNode body = objectMapper.readTree(response.body());
+
+        assertThat(body.get("active").asBoolean(), is(false));
+        // RFC 7662 §2.2: an inactive response must not describe the token.
+        assertThat(body.has("sub"), is(false));
+        // RFC 6749 §5.1 caching directives.
+        assertThat(response.headers().firstValue("cache-control").orElse(null), is("no-store"));
+    }
+
+    /**
+     * Userinfo is an OAuth2 protected resource (OIDC Core §5.3). It was previously a static response
+     * that handed the subject and every configured claim to any caller, so "my application handles a
+     * 401 from userinfo" was a test that could not fail.
+     */
+    @Test
+    public void userinfoRequiresAValidBearerTokenOverHttp() throws Exception {
+        mockServer.mockOpenIdProvider(new OidcProviderConfiguration()
+            .setIssuer(base())
+            .setSubject("integration-sub"));
+
+        // no credentials → 401 with a bare challenge, and no claims in the body
+        HttpResponse<String> anonymous = get(base() + "/userinfo", null);
+        assertThat(anonymous.statusCode(), is(401));
+        assertThat(anonymous.headers().firstValue("WWW-Authenticate").orElse(null), is("Bearer"));
+        assertThat(anonymous.body().contains("integration-sub"), is(false));
+
+        // a bad token → 401 naming the reason
+        HttpResponse<String> badToken = get(base() + "/userinfo", "Bearer not-a-real-token");
+        assertThat(badToken.statusCode(), is(401));
+        assertThat(badToken.headers().firstValue("WWW-Authenticate").orElse(""),
+            containsString("invalid_token"));
+
+        // a real token → 200 with the subject
+        String accessToken = objectMapper.readTree(
+            postForm(base() + "/token", "grant_type=client_credentials&scope=openid").body())
+            .get("access_token").asText();
+        HttpResponse<String> authorised = get(base() + "/userinfo", "Bearer " + accessToken);
+        assertThat(authorised.statusCode(), is(200));
+        assertThat(objectMapper.readTree(authorised.body()).get("sub").asText(), is("integration-sub"));
+    }
+
+    private HttpResponse<String> get(String url, String authorization) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder().uri(URI.create(url)).GET();
+        if (authorization != null) {
+            builder = builder.header("Authorization", authorization);
+        }
+        return httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * The scenario named in the audit: a revoked token must stop introspecting as active. {@code /revoke}
+     * previously returned 200 and did nothing.
+     */
+    @Test
+    public void revokedTokenIntrospectsAsInactiveOverHttp() throws Exception {
+        mockServer.mockOpenIdProvider(new OidcProviderConfiguration().setIssuer(base()));
+
+        String accessToken = objectMapper.readTree(
+            postForm(base() + "/token", "grant_type=client_credentials&scope=openid").body())
+            .get("access_token").asText();
+
+        assertThat("precondition: a freshly minted token introspects as active",
+            objectMapper.readTree(postForm(base() + "/introspect", "token=" + enc(accessToken)).body())
+                .get("active").asBoolean(), is(true));
+
+        postForm(base() + "/revoke", "token=" + enc(accessToken));
+
+        assertThat(objectMapper.readTree(postForm(base() + "/introspect", "token=" + enc(accessToken)).body())
+            .get("active").asBoolean(), is(false));
     }
 
     @Test

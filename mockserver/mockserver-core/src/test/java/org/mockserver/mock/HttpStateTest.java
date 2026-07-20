@@ -4680,11 +4680,18 @@ public class HttpStateTest {
             request("/device_authorization").withMethod("POST")
         ), is(notNullValue()));
 
-        // Verify the discovery endpoint is now matchable
-        HttpResponse discoveryResponse = httpState.firstMatchingExpectation(
-            request("/.well-known/openid-configuration").withMethod("GET")
-        ).getHttpResponse();
-        assertThat(discoveryResponse, is(notNullValue()));
+        // Verify the discovery endpoint is now matchable. It is served by a class callback rather
+        // than a static response so the issuer can be derived per request from the Host header (OIDC
+        // Discovery 4.3 requires the advertised issuer to match the URL the client fetched it from);
+        // this previously asserted against a pre-baked response body.
+        org.mockserver.mock.Expectation discoveryExpectation = httpState.firstMatchingExpectation(
+            request("/.well-known/openid-configuration").withMethod("GET"));
+        assertThat(discoveryExpectation, is(notNullValue()));
+        assertThat(discoveryExpectation.getHttpResponseClassCallback().getCallbackClass(),
+            is(org.mockserver.oidc.OidcDiscoveryCallback.class.getName()));
+
+        HttpResponse discoveryResponse = new org.mockserver.oidc.OidcDiscoveryCallback().handle(
+            request("/.well-known/openid-configuration").withMethod("GET").withHeader("host", "localhost:1080"));
         assertThat(discoveryResponse.getStatusCode(), is(200));
         assertThat(discoveryResponse.getBodyAsString(), containsString("\"issuer\""));
     }
