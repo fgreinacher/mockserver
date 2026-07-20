@@ -90,7 +90,10 @@ describe('buildExpectationJson SSE response', () => {
     const sse = result['httpSseResponse'] as Record<string, unknown>;
     expect(sse).toBeDefined();
     expect(sse['headers']).toBeUndefined();
-    expect(sse['closeConnection']).toBeUndefined();
+    // closeConnection is emitted even when false: the server treats an ABSENT closeConnection on
+    // SSE (and WebSocket) as "close", so omitting false would generate code that does the opposite
+    // of what the composer shows
+    expect(sse['closeConnection']).toBe(false);
     const events = sse['events'] as Record<string, unknown>[];
     expect(events[0]).toEqual({ data: 'hello' });
   });
@@ -244,7 +247,10 @@ describe('buildExpectationJson gRPC stream response', () => {
     expect(grpc).toBeDefined();
     expect(grpc['statusName']).toBeUndefined();
     expect(grpc['messages']).toBeUndefined();
-    expect(grpc['closeConnection']).toBeUndefined();
+    // emitted explicitly rather than omitted — gRPC happens to default to "don't close" server-side,
+    // but relying on that asymmetry across the three streaming actions is exactly the trap that made
+    // the SSE/WebSocket case wrong
+    expect(grpc['closeConnection']).toBe(false);
   });
 });
 

@@ -1268,7 +1268,7 @@ export function buildExpectationJson(
         if (msgLines.length > 0) {
           wsPayload['messages'] = msgLines.map((text) => ({ text }));
         }
-        if (ws.closeConnection) wsPayload['closeConnection'] = true;
+        wsPayload['closeConnection'] = ws.closeConnection;
         if (ws.matchers.length > 0) {
           wsPayload['matchers'] = ws.matchers.map((m) => {
             const matcherObj: Record<string, unknown> = { frameType: m.frameType };
@@ -1303,7 +1303,7 @@ export function buildExpectationJson(
               return evObj;
             });
         }
-        if (sse.closeConnection) ssePayload['closeConnection'] = true;
+        ssePayload['closeConnection'] = sse.closeConnection;
         out['httpSseResponse'] = ssePayload;
       }
       break;
@@ -1364,7 +1364,7 @@ export function buildExpectationJson(
         if (grpcMsgLines.length > 0) {
           grpcPayload['messages'] = grpcMsgLines.map((json) => ({ json }));
         }
-        if (grpc.closeConnection) grpcPayload['closeConnection'] = true;
+        grpcPayload['closeConnection'] = grpc.closeConnection;
         out['grpcStreamResponse'] = grpcPayload;
       }
       break;
@@ -2347,7 +2347,7 @@ function actionToJava(action: StandardActionPayload): string {
         for (const r of respLines) lines.push(`                .withResponse(webSocketMessage("${escapeJava(r)}"))`);
         lines.push('        )');
       }
-      if (ws.closeConnection) lines.push('        .withCloseConnection(true)');
+      lines.push(`        .withCloseConnection(${ws.closeConnection})`);
       lines.push(')');
       return lines.join('\n');
     }
@@ -2367,7 +2367,7 @@ function actionToJava(action: StandardActionPayload): string {
           lines.push(`        .withEvent(${evChain})`);
         }
       }
-      if (sse.closeConnection) lines.push('        .withCloseConnection(true)');
+      lines.push(`        .withCloseConnection(${sse.closeConnection})`);
       lines.push(')');
       return lines.join('\n');
     }
@@ -2435,7 +2435,7 @@ function actionToJava(action: StandardActionPayload): string {
       }
       const grpcMsgLines = grpc.messages.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
       for (const msg of grpcMsgLines) lines.push(`        .withMessage("${escapeJava(msg)}")`);
-      if (grpc.closeConnection) lines.push('        .withCloseConnection(true)');
+      lines.push(`        .withCloseConnection(${grpc.closeConnection})`);
       lines.push(')');
       return lines.join('\n');
     }

@@ -134,6 +134,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own `expectation.json` schema by a test, and the client no longer materialises an empty
   `httpResponse` when it has no default headers to add — so a future unlisted action degrades to
   "default headers not applied" rather than a hard failure.
+- **Unticking "close connection" in the dashboard generated code that closed the connection anyway,
+  in all 8 languages.** The code generator guarded a non-optional boolean on truthiness, so
+  `closeConnection: false` was dropped from the generated snippet; for SSE and WebSocket the server
+  treats an absent value as "close", making the generated code do the opposite of what was selected.
+  All six generation sites now emit the actual value. (The underlying server-side inconsistency —
+  SSE and WebSocket treat absent as "close" while gRPC treats it as "don't close" — is documented
+  with a recommendation in `docs/code/ai-protocol-mocking.md` and left for its own change.)
 - **BREAKING (Go): `ServiceChaosProfile.ConnectionDrop` is replaced by `DropConnectionProbability`.**
   Following the removal of the phantom `connectionDrop` property from the OpenAPI specification
   (below), the Go client — which was generated against that specification — still sent

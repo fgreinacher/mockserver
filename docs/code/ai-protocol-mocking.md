@@ -83,6 +83,20 @@ flowchart TB
 3. Formats each event per the SSE specification — multi-line `data` values are split into multiple `data:` lines; `id`, `event`, and `retry` fields are written when non-null
 4. Writes `LastHttpContent.EMPTY_LAST_CONTENT` to terminate the chunked stream, then closes the channel if `closeConnection` is `true` (or null, which defaults to closing)
 
+> **Known inconsistency — an absent `closeConnection` does not mean the same thing across the three
+> streaming actions.** SSE (`HttpSseResponseActionHandler`) and WebSocket
+> (`HttpWebSocketResponseActionHandler`) treat an absent value as **close**; gRPC streaming
+> (`GrpcStreamResponseActionHandler`) treats it as **don't close**. None of the schemas declares a
+> `default`, so a client that omits the field gets opposite behaviour depending on the action.
+>
+> **Recommendation (deferred, not yet actioned): normalise all three to "absent = don't close".**
+> Closing is the surprising direction for an action whose whole purpose is to hold a stream open, and
+> gRPC already behaves that way. This is deliberately *not* bundled with the fixes that exposed it,
+> because it changes server behaviour for existing SSE/WebSocket users who rely on the current
+> default, so it needs its own change, review and prominent changelog entry. Deferring is safe
+> because the dashboard code generator now always emits `closeConnection` explicitly, so generated
+> snippets no longer depend on the default in either direction.
+
 Since T1.2, streaming payloads can be **templated**: setting an optional `templateType` (`VELOCITY`/`MUSTACHE`/`JAVASCRIPT`) on the `httpSseResponse` (or `httpWebSocketResponse`, or per-message on `grpcStreamResponse`) renders each event's `data` (each WebSocket text frame / each gRPC message `json`) as a response template against the triggering request via the shared `StreamTemplateRenderer` — same request/template context as `httpResponseTemplate` (`$!request.body`, `$jsonPath(...)`, built-in helpers, `faker`, `scenario`). Rendering is per event/message and opt-in; with no `templateType` payloads are emitted byte-for-byte unchanged. See *Templated streaming payloads* in [request-processing.md](request-processing.md).
 
 ```mermaid
