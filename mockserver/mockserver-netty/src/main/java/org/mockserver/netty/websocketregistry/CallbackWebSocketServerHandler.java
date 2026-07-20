@@ -15,6 +15,7 @@ import org.mockserver.codec.MockServerHttpServerCodec;
 import org.mockserver.dashboard.DashboardWebSocketHandler;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.mappers.Http2StreamIds;
 import org.mockserver.mock.HttpState;
 import org.mockserver.netty.HttpRequestHandler;
 import org.mockserver.uuid.UUIDService;
@@ -59,7 +60,12 @@ public class CallbackWebSocketServerHandler extends ChannelInboundHandlerAdapter
                                 .setArguments(ctx.channel().localAddress())
                         );
                     }
-                    ctx.channel().writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_IMPLEMENTED, Unpooled.EMPTY_BUFFER));
+                    // This branch fires ONLY on HTTP/2, so the 501 must carry the request's stream
+                    // id - otherwise it goes out on a phantom server-initiated stream and the client
+                    // hangs instead of being told cleanly that WebSocket upgrade is unsupported.
+                    DefaultFullHttpResponse notImplemented = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_IMPLEMENTED, Unpooled.EMPTY_BUFFER);
+                    Http2StreamIds.stampFromNettyRequest(notImplemented, (FullHttpRequest) msg);
+                    ctx.channel().writeAndFlush(notImplemented);
                 } else {
                     upgradeChannel(ctx, (FullHttpRequest) msg);
                     ctx.channel().attr(CHANNEL_UPGRADED_FOR_CALLBACK_WEB_SOCKET).set(true);

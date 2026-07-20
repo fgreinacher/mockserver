@@ -217,6 +217,7 @@ graph LR
 | HttpContentLengthRemover | `o.m.netty.unification` | Strips empty Content-Length headers |
 | EarlyMatchingHandler | `o.m.netty.unification` | On the first `HttpRequest` (headers only), checks for an expectation with `respondBeforeBody=true` whose matcher has no body component. If found, dispatches the response (and any close) and discards remaining `HttpContent`, so the response can be sent before the body is read. Reproduces scenarios like okhttp/okhttp#1001 (issue #1831). Skipped for `CONNECT` and HTTP/2 |
 | HttpObjectAggregator | Netty built-in | Aggregates HTTP chunks into `FullHttpRequest` |
+| Http2StreamIdAuditHandler | `o.m.netty.unification` | **HTTP/2 pipelines only.** Sits immediately downstream of `HttpToHttp2ConnectionHandler`, so every outbound response head from the handlers below passes through it. Logs a WARN (once per connection) when a head lacks `x-http2-stream-id`, which the HTTP/2 codec would otherwise silently route onto a new server-initiated stream — delivering nothing to the client. Detection only: it never repairs the head, because the correct stream id cannot be inferred safely on a multiplexed connection (see below) |
 | CallbackWebSocketServerHandler | `o.m.netty.websocketregistry` | Intercepts `/_mockserver_callback_websocket` |
 | DashboardWebSocketHandler | `o.m.dashboard` | Intercepts `/_mockserver_ui_websocket` |
 | McpStreamableHttpHandler | `o.m.netty.mcp` | Intercepts `/mockserver/mcp` for MCP (Model Context Protocol) Streamable HTTP transport. Only added when `ConfigurationProperties.mcpEnabled()` is true. POST requests are offloaded to a dedicated executor (`McpSessionManager.getExecutor()`) to avoid blocking the Netty event loop during blocking tool calls (e.g., `Future.get()`) |
@@ -231,7 +232,8 @@ graph LR
 (conditional)"]
     TCH --> H2C["HttpToHttp2ConnectionHandler
 with InboundHttp2ToHttpAdapter"]
-    H2C --> F[CallbackWebSocketServerHandler]
+    H2C --> AUDIT[Http2StreamIdAuditHandler]
+    AUDIT --> F[CallbackWebSocketServerHandler]
     F --> G[DashboardWebSocketHandler]
     G --> MCP["McpStreamableHttpHandler
 (conditional)"]
@@ -241,13 +243,38 @@ with InboundHttp2ToHttpAdapter"]
 
 HTTP/2 frames are converted to HTTP/1.1 objects via `InboundHttp2ToHttpAdapter`, allowing the same `HttpRequestHandler` to process both protocols uniformly. When MCP is enabled (`ConfigurationProperties.mcpEnabled()`), the `McpStreamableHttpHandler` is also inserted in the HTTP/2 pipeline.
 
+##### Outbound stream-id routing
+
+Because this pipeline uses `HttpToHttp2ConnectionHandler` on a **single connection channel** (rather
+than `Http2MultiplexHandler`), an outbound response is routed onto its HTTP/2 stream by the
+`x-http2-stream-id` header. When that header is absent Netty does not fail — it allocates a fresh
+*server-initiated* stream, so the requesting client receives nothing and hangs while the server logs
+a normal successful response. This silent failure mode caused issue #2419 (server-streaming gRPC
+delivering zero messages) and the same bug in the SSE, streaming-body, metrics and MCP handlers.
+
+Any handler that writes a **raw Netty response** rather than a MockServer model object must therefore
+stamp the id itself, via `org.mockserver.mappers.Http2StreamIds`. Model responses are stamped for
+free by `MockServerHttpResponseToFullHttpResponse`.
+
+`Http2StreamIdAuditHandler` detects a missing id but deliberately does **not** repair it. Repair is
+unsafe here: one connection multiplexes many concurrent streams, and a streaming response is written
+asynchronously long after its request was read, so any id inferred from "the most recent inbound
+request" would sometimes belong to another client's stream — leaking one client's data to another,
+which is worse than the hang it would fix.
+
+Known limitation: Netty routes continuation `HttpContent` frames using a `currentStreamId` latched
+from the last `HttpMessage` written. Two responses interleaving on one connection can therefore still
+cross, independently of the stamping above. This is inherent to the non-multiplex pipeline (see the
+`TODO(jamesdbloom)` in `PortUnificationHandler#switchToHttp2` about adopting `Http2MultiplexHandler`).
+
 #### gRPC Pipeline (over HTTP/2)
 
 When gRPC is enabled and the `GrpcProtoDescriptorStore` has loaded services, two additional handlers are inserted into both the h2c and TLS-negotiated HTTP/2 pipelines:
 
 ```mermaid
 graph LR
-    H2C["HttpToHttp2ConnectionHandler\nwith InboundHttp2ToHttpAdapter"] --> CB[CallbackWebSocketServerHandler]
+    H2C["HttpToHttp2ConnectionHandler\nwith InboundHttp2ToHttpAdapter"] --> AUDIT[Http2StreamIdAuditHandler]
+    AUDIT --> CB[CallbackWebSocketServerHandler]
     CB --> DASH[DashboardWebSocketHandler]
     DASH --> MCP["McpStreamableHttpHandler\n(conditional)"]
     MCP --> CODEC[MockServerHttpServerCodec]

@@ -4,7 +4,6 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.cookie.DefaultCookie;
-import io.netty.handler.codec.http2.HttpConversionUtil;
 import org.mockserver.codec.BodyDecoderEncoder;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
@@ -100,7 +99,13 @@ public class MockServerHttpResponseToFullHttpResponse {
                     .setArguments(httpResponse)
                     .setThrowable(throwable)
             );
-            return Collections.singletonList(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, getStatus(httpResponse)));
+            // Stamp the error response too: encoding threw, but the client is still waiting on its
+            // HTTP/2 stream. Without the id this status goes out on a phantom server-initiated
+            // stream and the client hangs rather than seeing the error - turning a visible failure
+            // into an invisible one, which is the worse of the two.
+            DefaultFullHttpResponse errorResponse = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, getStatus(httpResponse));
+            Http2StreamIds.stamp(errorResponse, httpResponse.getStreamId());
+            return Collections.singletonList(errorResponse);
         }
     }
 
@@ -313,18 +318,11 @@ public class MockServerHttpResponseToFullHttpResponse {
             }
         }
 
-        // HTTP2 extension headers
-        // Belt-and-braces: strip any x-http2-stream-id that may have leaked in as an ordinary model
-        // header (e.g. from a forwarded/proxied HTTP/2 response) BEFORE deriving the stream id from
-        // the protocol-guarded field. The field is the single source of truth for the outbound stream
-        // id; a leaked header carrying a foreign (upstream) stream id would otherwise make the server
-        // HTTP/2 codec write on the wrong stream, triggering a PROTOCOL_ERROR / GOAWAY that hangs an
-        // HTTP/2 client.
-        response.headers().remove(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text());
-        Integer streamId = httpResponse.getStreamId();
-        if (streamId != null) {
-            response.headers().add(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text(), streamId);
-        }
+        // HTTP2 extension headers - the protocol-guarded streamId field is the single source of
+        // truth for the outbound stream id, and Http2StreamIds strips any x-http2-stream-id that
+        // leaked in as an ordinary model header before stamping it (see that class for why both
+        // the missing and the foreign stream id hang an HTTP/2 client).
+        Http2StreamIds.stamp(response, httpResponse.getStreamId());
     }
 
     private void setCookies(HttpResponse httpResponse, DefaultHttpResponse response) {

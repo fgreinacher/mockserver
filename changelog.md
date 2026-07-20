@@ -475,6 +475,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   These paths are now covered by wire-level tests that parse MockServer's output with **dnsjava**, an
   independent resolver implementation, rather than with MockServer's own model objects.
+- **SSE, streaming bodies, Prometheus metrics and MCP delivered NOTHING to an HTTP/2 client.** These are the
+  direct siblings of the server-streaming gRPC bug in issue #2419, and they failed the same silent way: the
+  server logged a perfectly normal successful response while the client received zero bytes and hung until its
+  own timeout. Netty's HTTP/2 codec routes an outbound response onto a stream via an `x-http2-stream-id`
+  header, and when that header is absent it does not fail - it quietly allocates a fresh *server-initiated*
+  stream that the requesting client is not listening to. Only the response mapper ever added that header, so
+  every handler that built a Netty response by hand bypassed it: the SSE action, the metrics endpoint and the
+  MCP handler never had the id at all, and the streaming-body writer *had* it but dropped it, because it copied
+  only the header map and the id lives in a separate field. The #2419 fix funnelled writes through one place in
+  the gRPC module only; every known direct-write site — SSE, the streaming-body writer, metrics, MCP, the gRPC
+  stream handler and the two WebSocket-upgrade rejections — now goes through a single shared `Http2StreamIds`
+  helper, and a new `Http2StreamIdAuditHandler` logs a WARN (once per connection) whenever an HTTP/2 response
+  head still goes out without a stream id, so the next instance of this class is discovered on the first test
+  run rather than in production. If you use SSE, streaming responses, `GET /mockserver/metrics` or MCP over
+  HTTP/2, these now work; over HTTP/1.1 nothing changes. **One limitation remains and is not fixed here:**
+  Netty routes the continuation frames of a response using a stream id latched from the last response head
+  written on that connection, so two responses interleaving on a single HTTP/2 connection can still cross.
+  That is inherent to MockServer's non-multiplexed HTTP/2 pipeline rather than to this change — but it is
+  more reachable now than before, because a long-lived SSE stream that previously delivered nothing at all
+  now stays open long enough for another response head to flip the latched id mid-stream. It is bounded to a
+  single connection; use separate connections for concurrent long-lived streams if this affects you.
 - **Verification could miss a just-forwarded request (race on every forward path).** The visibility guarantee
   for `verify`/`retrieve` rests on disruptor FIFO ordering — `drainDisruptor()` waits only for entries already
   *published*, so it cannot wait for one that has not been published yet. The mocked-response path logs before

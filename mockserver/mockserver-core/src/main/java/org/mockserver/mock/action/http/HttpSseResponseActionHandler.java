@@ -8,6 +8,7 @@ import org.mockserver.llm.StreamingFormat;
 import org.mockserver.llm.codec.BedrockEventStreamEncoder;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.mappers.Http2StreamIds;
 import org.mockserver.model.Delay;
 import org.mockserver.model.HttpSseResponse;
 import org.mockserver.model.SseEvent;
@@ -66,6 +67,13 @@ public class HttpSseResponseActionHandler {
                 )
             );
         }
+
+        // Send the response head down the HTTP/2 stream the request arrived on. Without this the
+        // HTTP/2 codec allocates a fresh server-initiated stream for the head (and every subsequent
+        // chunk follows it), so the client receives nothing at all and hangs until it times out.
+        // This handler builds a Netty response by hand and so never reaches the response mapper,
+        // which is the only other place that stamps the id - see Http2StreamIds.
+        Http2StreamIds.stampFromRequest(initialResponse, request);
 
         ctx.writeAndFlush(initialResponse);
 

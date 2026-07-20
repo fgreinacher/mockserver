@@ -23,6 +23,7 @@ import java.net.Socket;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.hasItemInArray;
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.*;
 import static org.mockito.MockitoAnnotations.openMocks;
@@ -312,6 +313,91 @@ public class NettyResponseWriterTest {
             assertThat("a LastHttpContent must be written at stream completion", lastContent != null, is(true));
             assertThat(lastContent.trailingHeaders().get("x-checksum"), is("abc123"));
             assertThat(lastContent.trailingHeaders().get("x-signature"), is("deadbeef"));
+            if (head instanceof ReferenceCounted) {
+                ((ReferenceCounted) head).release();
+            }
+        } finally {
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    /**
+     * A streaming response over HTTP/2 delivers nothing unless its head carries the stream id.
+     * <p>
+     * This path is subtler than the SSE one: {@code ResponseWriter.writeResponse} HAS already copied
+     * the request's stream id onto the model response, but {@code writeStreamingResponse} builds the
+     * Netty head by copying only {@code getHeaderMultimap()} — and the stream id lives in a separate
+     * protocol-guarded field, so it was dropped on the floor. The non-streaming sibling in the same
+     * class writes the model object and so has always been correct. Same defect class as #2419.
+     */
+    @Test
+    public void shouldSendStreamingResponseHeadDownTheRequestHttp2Stream() throws Exception {
+        // given - a streaming-body response to a request that arrived on HTTP/2 stream 5
+        EmbeddedChannel channel = new EmbeddedChannel(new ChannelOutboundHandlerAdapter());
+        try {
+            org.mockserver.model.StreamingBody streamingBody = new org.mockserver.model.StreamingBody(1024);
+            streamingBody.setEventLoop(channel.eventLoop());
+
+            org.mockserver.model.HttpResponse response = response()
+                .withStatusCode(200)
+                .withStreamingBody(streamingBody);
+
+            // when - written through writeResponse so the stream id is copied from the request, as
+            // it is in production (sendResponse alone would not exercise that copy)
+            channel.eventLoop().execute(() ->
+                new NettyResponseWriter(configuration(), new MockServerLogger(), channel.pipeline().firstContext(), scheduler)
+                    .writeResponse(request("/stream").withStreamId(5), response, false)
+            );
+            channel.runPendingTasks();
+            channel.eventLoop().execute(streamingBody::complete);
+            channel.runPendingTasks();
+
+            // then - the head is routed back onto stream 5, so the client actually receives the stream
+            io.netty.handler.codec.http.HttpResponse head = channel.readOutbound();
+            assertThat("a response head must be written", head != null, is(true));
+            assertThat(head.headers().getInt(org.mockserver.mappers.Http2StreamIds.STREAM_ID_HEADER), is(5));
+
+            Object outbound;
+            while ((outbound = channel.readOutbound()) != null) {
+                ReferenceCountUtil.release(outbound);
+            }
+            if (head instanceof ReferenceCounted) {
+                ((ReferenceCounted) head).release();
+            }
+        } finally {
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    public void shouldNotAddStreamIdHeaderToStreamingResponseOnHttp1() throws Exception {
+        // given - an HTTP/1.1 request has no stream id
+        EmbeddedChannel channel = new EmbeddedChannel(new ChannelOutboundHandlerAdapter());
+        try {
+            org.mockserver.model.StreamingBody streamingBody = new org.mockserver.model.StreamingBody(1024);
+            streamingBody.setEventLoop(channel.eventLoop());
+
+            org.mockserver.model.HttpResponse response = response()
+                .withStatusCode(200)
+                .withStreamingBody(streamingBody);
+
+            channel.eventLoop().execute(() ->
+                new NettyResponseWriter(configuration(), new MockServerLogger(), channel.pipeline().firstContext(), scheduler)
+                    .writeResponse(request("/stream"), response, false)
+            );
+            channel.runPendingTasks();
+            channel.eventLoop().execute(streamingBody::complete);
+            channel.runPendingTasks();
+
+            // then - no HTTP/2 extension header leaks onto an HTTP/1.1 response
+            io.netty.handler.codec.http.HttpResponse head = channel.readOutbound();
+            assertThat("a response head must be written", head != null, is(true));
+            assertThat(head.headers().get(org.mockserver.mappers.Http2StreamIds.STREAM_ID_HEADER), nullValue());
+
+            Object outbound;
+            while ((outbound = channel.readOutbound()) != null) {
+                ReferenceCountUtil.release(outbound);
+            }
             if (head instanceof ReferenceCounted) {
                 ((ReferenceCounted) head).release();
             }

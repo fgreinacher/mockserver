@@ -369,6 +369,11 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
                     http2ConnectionHandlerBuilder.frameLogger(new Http2FrameLogger(LogLevel.TRACE, PortUnificationHandler.class.getName()));
                 }
                 addLastIfNotPresent(pipeline, http2ConnectionHandlerBuilder.connection(connection).build());
+                // Immediately downstream of the HTTP/2 connection handler, so every outbound response
+                // head from the handlers below passes through it. Warns when a head lacks
+                // x-http2-stream-id, which the codec would otherwise silently mis-route onto a new
+                // server-initiated stream (a hang the client sees but the server never reports).
+                addLastIfNotPresent(pipeline, new Http2StreamIdAuditHandler(mockServerLogger));
                 addLastIfNotPresent(pipeline, new CallbackWebSocketServerHandler(httpState));
                 addLastIfNotPresent(pipeline, new DashboardWebSocketHandler(httpState, false, false));
                 if (configuration.mcpEnabled()) {
@@ -426,6 +431,11 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
                     http2ConnectionHandlerBuilder.frameLogger(new Http2FrameLogger(LogLevel.TRACE, PortUnificationHandler.class.getName()));
                 }
                 addLastIfNotPresent(pipeline, http2ConnectionHandlerBuilder.connection(connection).build());
+                // Immediately downstream of the HTTP/2 connection handler, so every outbound response
+                // head from the handlers below passes through it. Warns when a head lacks
+                // x-http2-stream-id, which the codec would otherwise silently mis-route onto a new
+                // server-initiated stream (a hang the client sees but the server never reports).
+                addLastIfNotPresent(pipeline, new Http2StreamIdAuditHandler(mockServerLogger));
                 // TODO(jamesdbloom) consider Http2MultiplexHandler and test behaviour when multiple requests sent over the same connection
                 addLastIfNotPresent(pipeline, new CallbackWebSocketServerHandler(httpState));
                 addLastIfNotPresent(pipeline, new DashboardWebSocketHandler(httpState, isSslEnabledUpstream(ctx.channel()), false));

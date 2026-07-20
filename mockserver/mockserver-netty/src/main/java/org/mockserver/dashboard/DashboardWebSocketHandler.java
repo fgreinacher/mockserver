@@ -26,6 +26,7 @@ import org.mockserver.log.MockServerEventLog;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mappers.FullHttpRequestToMockServerHttpRequest;
+import org.mockserver.mappers.Http2StreamIds;
 import org.mockserver.mock.HttpState;
 import org.mockserver.mock.RequestMatchers;
 import org.mockserver.mock.listeners.MockServerLogListener;
@@ -161,7 +162,12 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                                 .setArguments(ctx.channel().localAddress())
                         );
                     }
-                    ctx.channel().writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_IMPLEMENTED, Unpooled.EMPTY_BUFFER));
+                    // This branch fires ONLY on HTTP/2, so the 501 must carry the request's stream
+                    // id - otherwise it goes out on a phantom server-initiated stream and the
+                    // dashboard hangs instead of being told WebSocket upgrade is unsupported.
+                    DefaultFullHttpResponse notImplemented = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_IMPLEMENTED, Unpooled.EMPTY_BUFFER);
+                    Http2StreamIds.stampFromNettyRequest(notImplemented, (FullHttpRequest) msg);
+                    ctx.channel().writeAndFlush(notImplemented);
                 } else if (!webSocketUpgradeAuthenticated(ctx, (FullHttpRequest) msg)) {
                     // control-plane auth is configured and this upgrade did not present valid
                     // credentials (or the principal lacks the required role): the rejection

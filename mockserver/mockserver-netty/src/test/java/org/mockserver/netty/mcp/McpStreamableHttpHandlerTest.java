@@ -1695,4 +1695,46 @@ public class McpStreamableHttpHandlerTest {
         response.release();
         fixture.channel.close();
     }
+
+    /**
+     * MCP over HTTP/2 gets no reply unless the response carries the request's stream id.
+     * <p>
+     * This handler builds a raw Netty response and writes it straight to the channel, so it never
+     * reaches the response mapper — the only other place that emits {@code x-http2-stream-id}.
+     * Without it the HTTP/2 codec routes the reply onto a fresh server-initiated stream and the MCP
+     * client hangs. Same defect class as GitHub #2419 (server-streaming gRPC delivering zero
+     * messages) and the SSE / streaming-body / metrics siblings.
+     */
+    @Test
+    public void shouldSendMcpResponseDownTheRequestHttp2Stream() {
+        // given - a POST that arrived on HTTP/2 stream 7
+        FullHttpRequest request = new DefaultFullHttpRequest(
+            HttpVersion.HTTP_1_1,
+            HttpMethod.POST,
+            "/mockserver/mcp",
+            Unpooled.copiedBuffer("{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{},\"id\":1}", StandardCharsets.UTF_8)
+        );
+        request.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+        request.headers().set(org.mockserver.mappers.Http2StreamIds.STREAM_ID_HEADER, 7);
+
+        // when
+        channel.writeInbound(request);
+        FullHttpResponse response = awaitOutbound();
+
+        // then - the reply is routed back onto stream 7
+        assertThat(response, notNullValue());
+        assertThat(response.headers().getInt(org.mockserver.mappers.Http2StreamIds.STREAM_ID_HEADER), is(7));
+        response.release();
+    }
+
+    @Test
+    public void shouldNotAddStreamIdHeaderToMcpResponseOnHttp1() {
+        // given - an HTTP/1.1 MCP POST has no stream id
+        FullHttpResponse response = sendPost("{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{},\"id\":1}");
+
+        // then - no HTTP/2 extension header leaks onto an HTTP/1.1 response
+        assertThat(response, notNullValue());
+        assertThat(response.headers().get(org.mockserver.mappers.Http2StreamIds.STREAM_ID_HEADER), nullValue());
+        response.release();
+    }
 }

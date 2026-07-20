@@ -16,6 +16,7 @@ import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mappers.JDKCertificateToMockServerX509Certificate;
 import org.mockserver.mock.HttpState;
+import org.mockserver.mappers.Http2StreamIds;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.socket.tls.SniHandler;
 import org.slf4j.event.Level;
@@ -111,29 +112,34 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
         String origin = request.headers().get(HttpHeaderNames.ORIGIN);
         ctx.channel().attr(CORS_ORIGIN).set(origin);
         ctx.channel().attr(CORS_REQUEST_HEADERS).set(request.headers().get(HttpHeaderNames.ACCESS_CONTROL_REQUEST_HEADERS));
+        // On HTTP/2 the response must be written on the stream the request arrived on, so capture
+        // the inbound stream id once and thread it through every write path below. It is captured as
+        // a plain Integer rather than by holding the request, because the POST path answers from a
+        // background executor after the request buffer has been released. Null on HTTP/1.1.
+        final Integer streamId = Http2StreamIds.streamIdOf(request);
         HttpMethod method = request.method();
         if (method.equals(HttpMethod.OPTIONS) && origin != null && !origin.isEmpty()) {
             // CORS preflight from a browser
             McpRequestProcessor.McpResult result = processor.handleOptions(true);
-            writeMcpResult(ctx, result);
+            writeMcpResult(ctx, result, streamId);
         } else if (method.equals(HttpMethod.POST)) {
-            handlePost(ctx, request);
+            handlePost(ctx, request, streamId);
         } else if (method.equals(HttpMethod.GET)) {
-            if (!authenticateRequest(ctx, request)) {
+            if (!authenticateRequest(ctx, request, streamId)) {
                 return;
             }
             McpRequestProcessor.McpResult result = processor.handleGet();
-            writeMcpResult(ctx, result);
+            writeMcpResult(ctx, result, streamId);
         } else if (method.equals(HttpMethod.DELETE)) {
-            if (!authenticateRequest(ctx, request)) {
+            if (!authenticateRequest(ctx, request, streamId)) {
                 return;
             }
             String sessionId = request.headers().get("Mcp-Session-Id");
             McpRequestProcessor.McpResult result = processor.handleDelete(sessionId);
-            writeMcpResult(ctx, result);
+            writeMcpResult(ctx, result, streamId);
         } else {
             McpRequestProcessor.McpResult result = processor.handleOptions(false);
-            writeMcpResult(ctx, result);
+            writeMcpResult(ctx, result, streamId);
         }
     }
 
@@ -155,8 +161,8 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
         response.headers().set(HttpHeaderNames.ACCESS_CONTROL_MAX_AGE, "300");
     }
 
-    private boolean authenticateRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
-        return authenticate(ctx, request) != null;
+    private boolean authenticateRequest(ChannelHandlerContext ctx, FullHttpRequest request, Integer streamId) {
+        return authenticate(ctx, request, streamId) != null;
     }
 
     /**
@@ -166,7 +172,7 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
      * rejection when it fails. When no authentication handler is configured, returns an
      * authenticated-but-anonymous result (no scopes) so the caller proceeds unchanged.
      */
-    private AuthenticationResult authenticate(ChannelHandlerContext ctx, FullHttpRequest request) {
+    private AuthenticationResult authenticate(ChannelHandlerContext ctx, FullHttpRequest request, Integer streamId) {
         AuthenticationHandler authHandler = httpState.getControlPlaneAuthenticationHandler();
         if (authHandler == null) {
             return AuthenticationResult.authenticated(null, "none", java.util.Map.of(), java.util.Set.of());
@@ -190,7 +196,7 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
             // drive per-tool control-plane authorization.
             AuthenticationResult result = authHandler.authenticate(mockRequest);
             if (!result.isAuthenticated()) {
-                writeUnauthorized(ctx);
+                writeUnauthorized(ctx, streamId);
                 return null;
             }
             return result;
@@ -202,13 +208,13 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
                     .setArguments(e.getMessage())
                     .setThrowable(e)
             );
-            writeUnauthorized(ctx);
+            writeUnauthorized(ctx, streamId);
             return null;
         }
     }
 
-    private void handlePost(ChannelHandlerContext ctx, FullHttpRequest request) {
-        AuthenticationResult authenticationResult = authenticate(ctx, request);
+    private void handlePost(ChannelHandlerContext ctx, FullHttpRequest request, Integer streamId) {
+        AuthenticationResult authenticationResult = authenticate(ctx, request, streamId);
         if (authenticationResult == null) {
             return;
         }
@@ -222,7 +228,7 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
                     String body = request.content().toString(StandardCharsets.UTF_8);
                     String mcpSessionId = request.headers().get("Mcp-Session-Id");
                     McpRequestProcessor.McpResult result = processor.handlePost(body, mcpSessionId, scopes);
-                    writeMcpResult(ctx, result);
+                    writeMcpResult(ctx, result, streamId);
                 } finally {
                     request.release();
                 }
@@ -232,11 +238,11 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
             McpRequestProcessor.McpResult busy = new McpRequestProcessor.McpResult(503,
                 "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Server is busy, try again later\"},\"id\":null}".getBytes(StandardCharsets.UTF_8),
                 null);
-            writeMcpResult(ctx, busy);
+            writeMcpResult(ctx, busy, streamId);
         }
     }
 
-    private void writeUnauthorized(ChannelHandlerContext ctx) {
+    private void writeUnauthorized(ChannelHandlerContext ctx, Integer streamId) {
         byte[] body;
         try {
             body = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsBytes(
@@ -245,14 +251,14 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
             body = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Unauthorized for control plane\"},\"id\":null}".getBytes(StandardCharsets.UTF_8);
         }
         McpRequestProcessor.McpResult result = new McpRequestProcessor.McpResult(401, body, null);
-        writeMcpResult(ctx, result);
+        writeMcpResult(ctx, result, streamId);
     }
 
     /**
      * Translate a transport-neutral {@link McpRequestProcessor.McpResult} into a
      * Netty HTTP/1.1 response and write it to the channel.
      */
-    private void writeMcpResult(ChannelHandlerContext ctx, McpRequestProcessor.McpResult result) {
+    private void writeMcpResult(ChannelHandlerContext ctx, McpRequestProcessor.McpResult result, Integer streamId) {
         HttpResponseStatus status = HttpResponseStatus.valueOf(result.getStatusCode());
         DefaultFullHttpResponse response;
         if (result.hasBody()) {
@@ -272,6 +278,10 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
             response.headers().set("Mcp-Session-Id", result.getSessionId());
         }
         addCorsHeaders(ctx, response);
+        // This handler builds a raw Netty response and never reaches the response mapper, so it must
+        // stamp the HTTP/2 stream id itself - otherwise the HTTP/2 codec routes the reply onto a new
+        // server-initiated stream and the MCP client hangs waiting for a response that never lands.
+        Http2StreamIds.stamp(response, streamId);
         ctx.writeAndFlush(response);
     }
 }

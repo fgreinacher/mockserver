@@ -11,6 +11,7 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.mappers.Http2StreamIds;
 import org.mockserver.metrics.Metrics;
 import org.mockserver.mock.action.http.TcpChaosRegistry;
 import org.mockserver.mock.breakpoint.PausedStreamFrame;
@@ -130,6 +131,13 @@ public class NettyResponseWriter extends ResponseWriter {
                 nettyResponse.headers().add(entry.getKey().getValue(), entry.getValue().getValue())
             );
         }
+
+        // The stream id lives in a protocol-guarded field, NOT in the header multimap copied above,
+        // so copying headers alone drops it - and an HTTP/2 client then receives nothing for the
+        // whole streaming response. ResponseWriter.writeResponse has already populated the field
+        // from the request; this is the only place that turns it back into the wire header on this
+        // path, because a streaming response never reaches the response mapper (see Http2StreamIds).
+        Http2StreamIds.stamp(nettyResponse, response.getStreamId());
 
         // Ensure chunked transfer encoding
         if (!nettyResponse.headers().contains(HttpHeaderNames.TRANSFER_ENCODING)) {

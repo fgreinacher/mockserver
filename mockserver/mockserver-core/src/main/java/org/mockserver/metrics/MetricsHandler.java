@@ -49,6 +49,11 @@ public class MetricsHandler {
         // including the disabled-state 404 (which the UI needs to read to show
         // its "metrics disabled" guidance rather than a fetch error).
         corsHeaders.addCORSHeaders(request, response);
+        // Because this endpoint bypasses ResponseWriter (see above) nothing has copied the request's
+        // HTTP/2 stream id onto the response, and the response mapper reads that field rather than a
+        // header - so on HTTP/2 the scrape would go out on a fresh server-initiated stream and
+        // Prometheus would hang instead of receiving metrics. Null on HTTP/1.1, where it is a no-op.
+        response.withStreamId(request.getStreamId());
         if (!request.isKeepAlive()) {
             ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
         } else {

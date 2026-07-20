@@ -660,4 +660,31 @@ public class MockServerHttpResponseToFullHttpResponseTest {
             }
         }
     }
+
+    /**
+     * The catch-all encoding-failure path must stamp the stream id too. It is the last write in this
+     * class that bypassed the stamping the rest of it does, and it is the worst one to miss: encoding
+     * has already failed, and an unstamped error response goes out on a phantom server-initiated
+     * stream, so an HTTP/2 client hangs instead of seeing the failure — turning a visible error into
+     * an invisible one.
+     */
+    @Test
+    public void shouldStampStreamIdOnTheEncodingFailureResponse() {
+        // given - a response whose encoding throws on the very first access
+        org.mockserver.model.HttpResponse broken = org.mockito.Mockito.mock(org.mockserver.model.HttpResponse.class);
+        org.mockito.Mockito.when(broken.getConnectionOptions()).thenThrow(new RuntimeException("encoding blew up"));
+        org.mockito.Mockito.when(broken.getStatusCode()).thenReturn(500);
+        org.mockito.Mockito.when(broken.getReasonPhrase()).thenReturn(null);
+        org.mockito.Mockito.when(broken.getStreamId()).thenReturn(5);
+
+        // when
+        List<DefaultHttpObject> httpObjects =
+            new MockServerHttpResponseToFullHttpResponse(new MockServerLogger()).mapMockServerResponseToNettyResponse(broken);
+
+        // then - the error still reaches the client, on its own stream
+        assertThat(httpObjects.size(), is(1));
+        io.netty.handler.codec.http.HttpResponse errorResponse = (io.netty.handler.codec.http.HttpResponse) httpObjects.get(0);
+        assertThat(errorResponse.status().code(), is(500));
+        assertThat(errorResponse.headers().getInt(Http2StreamIds.STREAM_ID_HEADER), is(5));
+    }
 }
