@@ -43,7 +43,29 @@ any time autonomous work should pause.
 
 ## Where it is checked
 
-The commit gate ([[commit-workflow]]) checks the halt before acquiring the commit
-lock, and the worktree merge ([[worktree-workflow]]) before rebasing to master, so
-no reintegration happens while halted. Long-running / autonomous loops should
-check it between iterations.
+**Mechanically, before every consequential tool call.** Both harnesses run the
+halt check regardless of whether an agent remembers to — the enforcement does not
+rely on agent compliance:
+
+- **Claude Code:** a `PreToolUse` hook (`.opencode/scripts/check-halt-hook.sh`,
+  wired in `.claude/settings.json`) runs on `Bash`/`Write`/`Edit`/`MultiEdit`/
+  `NotebookEdit`/`Task`/`Agent`. If a halt is engaged it blocks the call
+  (exit 2); otherwise it allows.
+- **opencode:** the `operator-halt.ts` plugin's `tool.execute.before` hook throws
+  on the gated tools (`bash`/`write`/`edit`/`patch`/`task`) when a halt is engaged.
+
+Both call the same source of truth, `check-halt.sh`, and both **fail open**: if the
+check itself cannot run, the tool proceeds — a per-call gate must never wedge a
+session (or the concurrent worktree sessions). Read-only tools are not gated
+(pausing investigation adds no safety). The hooks check the **global** sentinel
+only; scoped sentinels are enforced by the gates that own them.
+
+Because a global halt gates `Bash`, an agent cannot clear the sentinel itself —
+**the operator clears it directly on disk** at the main-checkout root (see
+`check-halt.sh`), not through the agent. That is intentional for a kill-switch, not
+a deadlock.
+
+**Procedurally**, the commit gate ([[commit-workflow]]) checks the halt (with the
+`commit` scope) before acquiring the commit lock, and the worktree merge
+([[worktree-workflow]]) before rebasing to master, so no reintegration happens
+while halted. Long-running / autonomous loops should check it between iterations.
