@@ -126,8 +126,10 @@ public class Http3ResponseWriter extends ResponseWriter implements StreamErrorWr
                 .setArguments(request)
         );
 
-        // Send the response headers immediately (without SHUTDOWN_OUTPUT)
-        DefaultHttp3HeadersFrame headersFrame = Http3RequestBridge.toHttp3HeadersFrame(response);
+        // Send the response headers immediately (without SHUTDOWN_OUTPUT). Dropping content-length:
+        // a streamed body's length is unknown at header time, and one copied from a relayed upstream
+        // response describes a different body than the one actually streamed.
+        DefaultHttp3HeadersFrame headersFrame = Http3RequestBridge.toHttp3HeadersFrame(response, true);
         ctx.writeAndFlush(headersFrame);
 
         // Subscribe to the streaming body to forward chunks as HTTP/3 DATA frames.

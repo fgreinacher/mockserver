@@ -188,6 +188,41 @@ public class Http3ResponseWriterTest {
             allWrites.get(1), instanceOf(DefaultHttp3DataFrame.class));
     }
 
+    /**
+     * The streaming path must ask the bridge to drop content-length. A stale content-length -
+     * typically copied from a relayed upstream response - describes a different body than the one
+     * actually streamed, which a conforming HTTP/3 client treats as malformed. Asserting it here
+     * (rather than only on the bridge) pins the call site, which is the half that can silently
+     * regress by passing the wrong flag.
+     */
+    @Test
+    public void shouldNotAnnounceContentLengthOnStreamingResponse() {
+        // given
+        ChannelHandlerContext ctx = mockCtxWithActiveChannel();
+        Http3ResponseWriter writer = new Http3ResponseWriter(CONFIGURATION, LOGGER, ctx);
+
+        StreamingBody streamingBody = new StreamingBody(8192);
+
+        HttpRequest req = request().withPath("/streaming_content_length");
+        HttpResponse resp = response()
+            .withStatusCode(200)
+            .withHeader("content-length", "1234")
+            .withHeader("x-custom", "kept")
+            .withStreamingBody(streamingBody);
+
+        // when
+        writer.sendResponse(req, resp);
+
+        // then
+        ArgumentCaptor<DefaultHttp3HeadersFrame> headersCaptor = ArgumentCaptor.forClass(DefaultHttp3HeadersFrame.class);
+        verify(ctx).writeAndFlush(headersCaptor.capture());
+        DefaultHttp3HeadersFrame headers = headersCaptor.getValue();
+        assertThat(headers.headers().get("content-length"), is(nullValue()));
+        assertThat(headers.headers().get("x-custom").toString(), is("kept"));
+
+        streamingBody.complete();
+    }
+
     @Test
     public void shouldNotWriteOnCompleteWhenChannelInactive() {
         // given -- channel becomes inactive before onComplete

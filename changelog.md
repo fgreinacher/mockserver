@@ -496,6 +496,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   more reachable now than before, because a long-lived SSE stream that previously delivered nothing at all
   now stays open long enough for another response head to flip the latched id mid-stream. It is bounded to a
   single connection; use separate connections for concurrent long-lived streams if this affects you.
+- **HTTP/3 responses could be rejected as malformed by a conforming client.** The HTTP/3 header conversion
+  stripped only two of the five connection-specific header fields RFC 9114 section 4.2 forbids, so
+  `keep-alive`, `upgrade` and `proxy-connection` were emitted on the wire, and `TE` was passed through with any
+  value rather than only `trailers`. The reachable case is proxy/forward mode: an upstream response's headers
+  are copied onto the model response wholesale, so an HTTP/1.1 origin answering with
+  `Keep-Alive: timeout=5, max=100` had it relayed verbatim onto an HTTP/3 response. An expectation setting such
+  a header explicitly does the same. A receiver "MUST treat" such a message as malformed, so this could fail a whole
+  response rather than merely adding a useless header. HTTP/3 streaming responses also announced a
+  `content-length` copied from the model response, describing a different body than the one actually streamed;
+  it is now omitted on the streaming path, and still sent for non-streaming responses.
 - **Verification could miss a just-forwarded request (race on every forward path).** The visibility guarantee
   for `verify`/`retrieve` rests on disruptor FIFO ordering — `drainDisruptor()` waits only for entries already
   *published*, so it cannot wait for one that has not been published yet. The mocked-response path logs before

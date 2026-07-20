@@ -205,6 +205,64 @@ public class Http3RequestBridgeTest {
         assertThat(headersFrame.headers().get("x-custom").toString(), is("kept"));
     }
 
+    /**
+     * RFC 9114 section 4.2 forbids five connection-specific fields on an HTTP/3 message and a
+     * receiver MUST treat a message carrying one as malformed. Only {@code connection} and
+     * {@code transfer-encoding} used to be filtered, so {@code keep-alive}, {@code upgrade} and
+     * {@code proxy-connection} leaked onto the wire. {@code keep-alive} is the reachable one: in
+     * proxy/forward mode the upstream response's headers are copied onto the model response
+     * wholesale (only HTTP/2 extension headers are stripped), so an HTTP/1.1 origin answering with
+     * {@code Keep-Alive: timeout=5, max=100} had it relayed verbatim onto an HTTP/3 response.
+     */
+    @Test
+    public void shouldFilterEveryConnectionSpecificHeaderForbiddenByRfc9114() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader("connection", "keep-alive")
+            .withHeader("keep-alive", "timeout=5")
+            .withHeader("proxy-connection", "keep-alive")
+            .withHeader("transfer-encoding", "chunked")
+            .withHeader("upgrade", "websocket")
+            .withHeader("x-custom", "kept");
+
+        DefaultHttp3HeadersFrame headersFrame = Http3RequestBridge.toHttp3HeadersFrame(response);
+
+        assertThat(headersFrame.headers().get("connection"), is(nullValue()));
+        assertThat(headersFrame.headers().get("keep-alive"), is(nullValue()));
+        assertThat(headersFrame.headers().get("proxy-connection"), is(nullValue()));
+        assertThat(headersFrame.headers().get("transfer-encoding"), is(nullValue()));
+        assertThat(headersFrame.headers().get("upgrade"), is(nullValue()));
+        assertThat(headersFrame.headers().get("x-custom").toString(), is("kept"));
+    }
+
+    @Test
+    public void shouldAllowTeOnlyWithTrailersValue() {
+        // RFC 9114 section 4.2 permits TE, but with the single value "trailers"
+        HttpResponse allowed = HttpResponse.response().withStatusCode(200).withHeader("te", "trailers");
+        assertThat(Http3RequestBridge.toHttp3HeadersFrame(allowed).headers().get("te").toString(), is("trailers"));
+
+        HttpResponse forbidden = HttpResponse.response().withStatusCode(200).withHeader("te", "gzip");
+        assertThat(Http3RequestBridge.toHttp3HeadersFrame(forbidden).headers().get("te"), is(nullValue()));
+    }
+
+    @Test
+    public void shouldDropContentLengthOnStreamingResponsesOnly() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader("content-length", "1234")
+            .withHeader("x-custom", "kept");
+
+        // a streamed body's length is unknown at header time, and a stale one (e.g. copied from a
+        // relayed upstream response) describes a different body than the one actually streamed
+        DefaultHttp3HeadersFrame streaming = Http3RequestBridge.toHttp3HeadersFrame(response, true);
+        assertThat(streaming.headers().get("content-length"), is(nullValue()));
+        assertThat(streaming.headers().get("x-custom").toString(), is("kept"));
+
+        // a non-streaming response keeps its content-length
+        DefaultHttp3HeadersFrame nonStreaming = Http3RequestBridge.toHttp3HeadersFrame(response, false);
+        assertThat(nonStreaming.headers().get("content-length").toString(), is("1234"));
+    }
+
     @Test
     public void shouldDefaultToStatus200WhenNull() {
         HttpResponse response = HttpResponse.response();

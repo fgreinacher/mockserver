@@ -138,6 +138,17 @@ public final class Http3RequestBridge {
      * Convert a MockServer {@link HttpResponse} into an HTTP/3 headers frame.
      */
     public static DefaultHttp3HeadersFrame toHttp3HeadersFrame(HttpResponse response) {
+        return toHttp3HeadersFrame(response, false);
+    }
+
+    /**
+     * As {@link #toHttp3HeadersFrame(HttpResponse)}, additionally dropping {@code content-length}
+     * when {@code streaming} is true. A streamed response's length is not known when the headers are
+     * sent, and a {@code content-length} copied from (for example) a relayed upstream response
+     * describes a different body than the one actually streamed - which a conforming client treats
+     * as a malformed message rather than merely ignoring.
+     */
+    public static DefaultHttp3HeadersFrame toHttp3HeadersFrame(HttpResponse response, boolean streaming) {
         DefaultHttp3HeadersFrame headersFrame = new DefaultHttp3HeadersFrame();
         int statusCode = response.getStatusCode() != null ? response.getStatusCode() : 200;
         headersFrame.headers().status(String.valueOf(statusCode));
@@ -145,15 +156,53 @@ public final class Http3RequestBridge {
 
         if (response.getHeaderMultimap() != null) {
             response.getHeaderMultimap().entries().forEach(entry -> {
-                String name = entry.getKey().getValue().toLowerCase();
-                // skip connection-oriented headers that are meaningless in HTTP/3
-                if (!"connection".equals(name) && !"transfer-encoding".equals(name)) {
-                    headersFrame.headers().add(name, entry.getValue().getValue());
+                // Locale.ROOT: under a Turkish default locale "CONNECTION" folds to "connectıon"
+                // and the forbidden-header filter below is silently bypassed entirely
+                String name = entry.getKey().getValue().toLowerCase(java.util.Locale.ROOT);
+                if (isForbiddenHttp3ResponseHeader(name, entry.getValue().getValue())
+                    || (streaming && CONTENT_LENGTH.equals(name))) {
+                    return;
                 }
+                headersFrame.headers().add(name, entry.getValue().getValue());
             });
         }
 
         return headersFrame;
+    }
+
+    private static final String CONTENT_LENGTH = "content-length";
+
+    /**
+     * Whether a header field is one HTTP/3 forbids on a response.
+     * <p>
+     * RFC 9114 section 4.2 bans the connection-specific fields {@code Connection}, {@code Keep-Alive},
+     * {@code Proxy-Connection}, {@code Transfer-Encoding} and {@code Upgrade} outright, and permits
+     * {@code TE} only with the exact value {@code trailers}. A receiver "MUST treat" a message
+     * carrying any of them "as malformed", so letting one through does not merely add a useless
+     * header - it can make a conforming client reject the whole response.
+     * <p>
+     * This previously filtered only {@code connection} and {@code transfer-encoding}. The other
+     * three reach a model {@link HttpResponse} two ways: an expectation can set any header
+     * explicitly, and — more importantly — in proxy/forward mode
+     * {@code FullHttpResponseToMockServerHttpResponse} copies an upstream response's headers onto
+     * the model wholesale, stripping only the HTTP/2 extension headers. An HTTP/1.1 origin commonly
+     * answers with {@code Keep-Alive: timeout=5, max=100}, which was therefore relayed verbatim
+     * onto an HTTP/3 response.
+     */
+    private static boolean isForbiddenHttp3ResponseHeader(String lowerCaseName, String value) {
+        switch (lowerCaseName) {
+            case "connection":
+            case "keep-alive":
+            case "proxy-connection":
+            case "transfer-encoding":
+            case "upgrade":
+                return true;
+            case "te":
+                // TE is allowed, but only with the single value "trailers"
+                return !"trailers".equalsIgnoreCase(value);
+            default:
+                return false;
+        }
     }
 
     /**
