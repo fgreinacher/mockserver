@@ -163,10 +163,29 @@ public class MqttMessageSubscriber implements MessageSubscriber {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Messages are recorded under the <b>concrete</b> topic they arrived on, but a
+     * subscription may have used a wildcard <b>filter</b>. When the requested channel is a
+     * wildcard filter, every recorded topic matching it (per MQTT 3.1.1 §4.7) is returned —
+     * without this a wildcard subscription would record messages that could never be
+     * retrieved, and verification would always report zero matches.
+     */
     @Override
     public List<RecordedMessage> getRecordedMessages(String channel) {
-        BoundedMessageStore store = recordedMessages.get(channel);
-        return store != null ? Collections.unmodifiableList(store.snapshot()) : Collections.emptyList();
+        if (!MqttTopicFilter.containsWildcard(channel)) {
+            BoundedMessageStore store = recordedMessages.get(channel);
+            return store != null ? Collections.unmodifiableList(store.snapshot()) : Collections.emptyList();
+        }
+        List<RecordedMessage> matched = new ArrayList<>();
+        for (Map.Entry<String, BoundedMessageStore> entry : recordedMessages.entrySet()) {
+            if (MqttTopicFilter.matches(channel, entry.getKey())) {
+                matched.addAll(entry.getValue().snapshot());
+            }
+        }
+        matched.sort(Comparator.comparing(RecordedMessage::getTimestamp));
+        return Collections.unmodifiableList(matched);
     }
 
     @Override

@@ -50,6 +50,8 @@ public class AsyncApiMockOrchestratorTest {
 
         verify(publisher).publish(eq("users"), eq("{\"userId\":\"abc\"}"), any(PublishOptions.class));
         verify(publisher).publish(eq("orders"), eq("{\"orderId\":42}"), any(PublishOptions.class));
+        // delivery must be confirmed before publishAll() returns
+        verify(publisher).flush();
         verifyNoMoreInteractions(publisher);
     }
 
@@ -235,6 +237,7 @@ public class AsyncApiMockOrchestratorTest {
         ArgumentCaptor<PublishOptions> optionsCaptor = ArgumentCaptor.forClass(PublishOptions.class);
         verify(publisher, times(1)).publish(eq("single"), eq("{\"v\":1}"), optionsCaptor.capture());
         assertThat(optionsCaptor.getValue().getKey(), is("single-key"));
+        verify(publisher).flush();
         verifyNoMoreInteractions(publisher);
     }
 

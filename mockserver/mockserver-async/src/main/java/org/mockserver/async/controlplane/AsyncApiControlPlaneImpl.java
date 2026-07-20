@@ -169,7 +169,7 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
 
             // One-shot publish
             if (brokerConfig.publishOnLoad) {
-                orchestrator.publishAll();
+                publishOnLoadSurvivingFailure(orchestrator, "kafka");
             }
             // Scheduled publish
             if (brokerConfig.publishIntervalMillis > 0) {
@@ -182,7 +182,8 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
                     ? brokerConfig.kafkaGroupId : "mockserver-async-consumer";
                 MessageSubscriber subscriber = avro
                     ? new KafkaAvroMessageSubscriber(brokerConfig.kafkaBootstrapServers, groupId,
-                        maxRecordedMessages, brokerConfig.kafkaSecurity, registryClient, brokerConfig.avroSchema)
+                        maxRecordedMessages, brokerConfig.kafkaSecurity, registryClient,
+                        brokerConfig.avroSchema, brokerConfig.avroSchemaId)
                     : new KafkaMessageSubscriber(brokerConfig.kafkaBootstrapServers, groupId,
                         maxRecordedMessages, brokerConfig.kafkaSecurity);
                 activeSubscribers.add(subscriber);
@@ -200,7 +201,7 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
             activeOrchestrators.add(orchestrator);
 
             if (brokerConfig.publishOnLoad) {
-                orchestrator.publishAll();
+                publishOnLoadSurvivingFailure(orchestrator, "amqp");
             }
             if (brokerConfig.publishIntervalMillis > 0) {
                 orchestrator.startPublishing(brokerConfig.publishIntervalMillis);
@@ -231,7 +232,7 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
             activeOrchestrators.add(orchestrator);
 
             if (brokerConfig.publishOnLoad) {
-                orchestrator.publishAll();
+                publishOnLoadSurvivingFailure(orchestrator, "mqtt");
             }
             if (brokerConfig.publishIntervalMillis > 0) {
                 orchestrator.startPublishing(brokerConfig.publishIntervalMillis);
@@ -282,6 +283,7 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
 
         result.put("publishers", activePublishers.size());
         result.put("subscribers", activeSubscribers.size());
+        putLastPublishFailure(result);
 
         // Recorded messages from subscribers
         ArrayNode recordedArray = result.putArray("recordedMessages");
@@ -557,6 +559,48 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
     }
 
     /**
+     * Run the load-time one-shot publish, recording any failure as a validation issue instead of
+     * letting it fail the spec load.
+     * <p>
+     * This call sits inside the {@code try} whose {@code catch} calls {@link #resetInternal()}, so
+     * an escaping exception would tear down every publisher, subscriber and orchestrator across
+     * <em>all</em> brokers and fail {@code PUT /mockserver/asyncapi} outright. Since
+     * {@code publishOnLoad} defaults to true, that would make the default path for an
+     * exchange-routed AMQP channel with no queue yet bound a total rollback — a bootstrap
+     * deadlock, because the consumer that binds the queue cannot start until the mock is up.
+     * The broker connections themselves are already established and valid at this point; only the
+     * first publish failed, so the mock stays loaded and the failure is reported in the load
+     * response under {@code validationIssues}.
+     */
+    private void publishOnLoadSurvivingFailure(AsyncApiMockOrchestrator orchestrator, String broker) {
+        try {
+            orchestrator.publishAll();
+        } catch (Exception e) {
+            String detail = (e.getMessage() != null && !e.getMessage().isBlank())
+                ? e.getMessage() : e.getClass().getSimpleName();
+            // attribute to the broker whose publish failed — "*" would be ambiguous once a spec
+            // is loaded against more than one broker
+            addValidationIssue(new SchemaValidationRecord(broker, "publish_on_load", detail));
+            LOG.warn("Load-time publish to {} failed; the mock remains loaded and later publishes "
+                + "can still succeed once the cause is resolved: {}", broker, detail, e);
+        }
+    }
+
+    /**
+     * Report the most recent scheduled-publish failure, if any, so a mock that has stopped
+     * producing messages can be diagnosed from the status response rather than from the log.
+     */
+    private void putLastPublishFailure(ObjectNode result) {
+        for (AsyncApiMockOrchestrator orchestrator : activeOrchestrators) {
+            String failure = orchestrator.getLastPublishFailure();
+            if (failure != null) {
+                result.put("lastPublishFailure", failure);
+                return;
+            }
+        }
+    }
+
+    /**
      * Add a validation issue, enforcing the bounded cap.
      */
     private void addValidationIssue(SchemaValidationRecord record) {
@@ -585,6 +629,7 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
 
         result.put("publishers", activePublishers.size());
         result.put("subscribers", activeSubscribers.size());
+        putLastPublishFailure(result);
 
         if (!validationIssues.isEmpty()) {
             ArrayNode issuesArray = result.putArray("validationIssues");

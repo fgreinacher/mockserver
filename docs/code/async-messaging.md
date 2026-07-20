@@ -56,7 +56,7 @@ The control-plane uses an **SPI/registry pattern** (Option A from the design spe
 | `MessageExampleGenerator` | `o.m.async` | Schema-aware example generation (enum, default, format, min/max, minLength, const); per-channel and per-message |
 | `AsyncApiSchemaValidator` | `o.m.async.validation` | Validates payloads against channel JSON Schemas using core's `JsonSchemaValidator` |
 | `PublishOptions` | `o.m.async.publish` | Immutable carrier for per-message publish-time options: Kafka key, MQTT qos, MQTT retain, message headers (e.g. correlation ID) |
-| `MessagePublisher` | `o.m.async.publish` | Interface: `publish(channel, payload)`, `publish(channel, key, payload, headers)`, `publish(channel, payload, options)`, `close()` |
+| `MessagePublisher` | `o.m.async.publish` | Interface: `publish(channel, payload)`, `publish(channel, key, payload, headers)`, `publish(channel, payload, options)`, `flush()`, `close()`. `flush()` blocks until the broker has acknowledged every send and rethrows the first delivery failure — a caller reporting publish success must call it first, since Kafka sends asynchronously |
 | `KafkaMessagePublisher` | `o.m.async.publish` | Wraps `KafkaProducer`; supports keys and headers |
 | `MqttMessagePublisher` | `o.m.async.publish` | Wraps Paho **v3** `MqttClient`; supports configurable QoS (0/1/2) and binary payloads |
 | `Mqtt5MessagePublisher` | `o.m.async.publish` | Wraps Paho **v5** `MqttClient`; QoS/retain/binary as v3 plus MQTT 5 user properties (headers) from `PublishOptions.getHeaders()` |
@@ -64,6 +64,7 @@ The control-plane uses an **SPI/registry pattern** (Option A from the design spe
 | `AmqpMessagePublisher` | `o.m.async.publish` | Wraps the RabbitMQ `com.rabbitmq.client.Channel`; derives the exchange + routing key from each channel's `AmqpBinding`, declares the exchange/queue idempotently, and emits headers (e.g. correlation IDs) as AMQP message properties |
 | `AmqpBinding` | `o.m.async.asyncapi` | Immutable model of the AsyncAPI AMQP channel binding (`is`, exchange name/type/durable, queue name/durable, routing key) |
 | `MessageSubscriber` | `o.m.async.subscribe` | Interface: `subscribe(channel)`, `unsubscribe(channel)`, `getRecordedMessages()`, `close()` |
+| `MqttTopicFilter` | `o.m.async.subscribe` | MQTT 3.1.1 §4.7 topic-filter matching (`+`, `#`, reserved `$` topics), so wildcard subscriptions are retrievable by the filter they were subscribed with |
 | `KafkaMessageSubscriber` | `o.m.async.subscribe` | Wraps `KafkaConsumer` with background poll loop; all consumer access confined to the poll thread via a queued-ops pattern; records messages in bounded stores |
 | `KafkaAvroMessageSubscriber` | `o.m.async.subscribe` | Wraps `KafkaConsumer<String,byte[]>`; strips the Confluent wire-format header, resolves the schema (registry by id, or inline), and decodes Avro binary to JSON before recording; falls back to raw string for non-Avro bytes |
 | `MqttMessageSubscriber` | `o.m.async.subscribe` | Wraps Paho **v3** `MqttClient` callback; records messages in bounded stores |
@@ -286,6 +287,8 @@ Recorded messages include:
 
 Recorded messages are stored in a **bounded** `BoundedMessageStore` per channel (default 1000 messages). When the cap is reached, the oldest message is evicted (FIFO). This prevents unbounded memory growth under high message volume.
 
+**MQTT wildcard subscriptions.** A broker delivers each message on a **concrete** topic, so messages are recorded under that topic — but a subscription may have been made with a wildcard **filter**, and verification asks for the filter. `MqttTopicFilter` reconciles the two by matching concrete topics against the filter per MQTT 3.1.1 §4.7 (`+` matches exactly one level; `#` must be the last level and matches that level and everything beneath it, so `sport/#` also matches `sport`; a leading wildcard does not match reserved `$` topics). Both the MQTT 3.1.1 and MQTT 5 subscribers apply it in `getRecordedMessages(channel)`, and the recorded `channel` remains the concrete topic. Without this a wildcard subscription records messages that can never be retrieved and every verification against it silently reports zero matches.
+
 ## Message Keys, QoS, and Headers
 
 - **Kafka**: `KafkaMessagePublisher.publish(channel, key, payload, headers)` supports configurable record keys and arbitrary headers
@@ -314,9 +317,11 @@ flowchart LR
 | Mode | Trigger | Publish schema id | Consume schema resolution |
 |------|---------|-------------------|---------------------------|
 | Registry-backed | `kafkaSchemaRegistryUrl` set | schema registered under `<topic>-value`, returned id embedded | fetched by embedded id via `GET /schemas/ids/{id}` (cached) |
-| Registry-less | no `kafkaSchemaRegistryUrl` | fixed `avroSchemaId` (default 1) embedded | the inline `avroSchema` (id ignored) |
+| Registry-less | no `kafkaSchemaRegistryUrl` | fixed `avroSchemaId` (default 1) embedded | the inline `avroSchema`, **only for messages carrying `avroSchemaId`** |
 
-Both modes require an `avroSchema` (inline) for the **publish** path (encoding needs a schema) and for **registry-less consume** (decoding without a registry needs the inline schema). Consumed bytes that are not wire-format-framed, or that fail to decode, are recorded as their raw UTF-8 string rather than dropped. Because the recorded payload is JSON, the existing `PUT /mockserver/asyncapi/verify` substring / JSON-path checks work unchanged against Avro messages.
+Both modes require an `avroSchema` (inline) for the **publish** path (encoding needs a schema) and for **registry-less consume** (decoding without a registry needs the inline schema). Consumed bytes that are not wire-format-framed, or that fail to decode, are recorded as their raw UTF-8 string rather than dropped.
+
+In registry-less mode the inline schema describes exactly one writer schema id, so the embedded id **must** match `avroSchemaId`. Avro binary carries no field names or types — only values in schema order — so decoding a message written with a different schema of the same shape succeeds and yields **silently transposed values**. A message framed with any other id is therefore recorded undecoded (raw UTF-8) with a warning, rather than decoded incorrectly; configure a Schema Registry, or align `avroSchemaId` with the producer, to decode it. Because the recorded payload is JSON, the existing `PUT /mockserver/asyncapi/verify` substring / JSON-path checks work unchanged against Avro messages.
 
 **JSON encoding note:** Avro's JSON representation is stricter than plain JSON for union-typed (nullable/optional) fields, which need the `{"fieldType": value}` form. Flat records of primitive fields — the common case for AsyncAPI example payloads — map straight across.
 
@@ -351,7 +356,17 @@ When a channel has **no** `bindings.amqp`, the publisher falls back to the defau
 
 **Supported binding fields:** `is`, `exchange.name`, `exchange.type`, `exchange.durable`, `queue.name`, `queue.durable`, and an explicit `routingKey` extension. Correlation-ID/`PublishOptions` headers are emitted as AMQP message properties.
 
-**Deferred (not applied at publish time):** `exchange.autoDelete`, `exchange.vhost`, `queue.exclusive`, `queue.autoDelete`, `queue.vhost`, and operation/message-level AMQP bindings (`cc`, `bcc`, `deliveryMode`, `mandatory`, `replyTo`, `priority`, `timestamp`, `expiration`).
+**Unroutable messages.** Declaring an exchange does not bind any queue to it, so an exchange-routed publish can still reach no consumer — and per AMQP 0-9-1 §3.1.3 the broker discards such a message *silently* unless `mandatory` is set. Every publish is therefore sent with `mandatory=true` on a channel in publisher-confirm mode: the publish blocks for the confirm, and a `basic.return` (nothing bound for the routing key) raises an error rather than being reported as a successful publish.
+
+**Publisher confirms are a RabbitMQ extension**, not part of AMQP 0-9-1. A broker that does not implement `confirm.select` answers `540 NOT_IMPLEMENTED`, which is a **channel-level** error — the broker closes the channel, and a closed AMQP channel can never be reopened, only replaced. The publisher therefore records `confirmsEnabled = false` *and* replaces the dead channel from the connection (`replaceClosedChannel()`, clearing `declaredExchanges`/`declaredQueues` since topology does not carry over), then publishes without `mandatory` and without waiting for a confirm. Both the flag and the wait are guarded by `confirmsEnabled`; waiting for a confirm that was never selected would otherwise throw `IllegalStateException("Confirms not selected")` on *every* publish. If the channel cannot be replaced the constructor fails loudly rather than returning a publisher that cannot publish.
+
+> **Verification status:** this fallback is covered by a unit test that models the broker's response (`confirmSelect()` raising, channel reporting closed, replacement obtained from the connection). It is **not** exercised against a real confirm-less broker — there is no non-RabbitMQ AMQP 0-9-1 container in the test suite. Treat RabbitMQ as the supported broker and this path as best-effort degradation.
+
+**Never `waitForConfirmsOrDie`.** In amqp-client 5.x that method calls `close(...)` on the channel for both a nack and a timeout, and an application-initiated close is not auto-recovered by `AutorecoveringChannel`. A single confirm timeout — RabbitMQ stalls confirms indefinitely under a memory or disk alarm — would therefore leave every subsequent publish throwing `AlreadyClosedException` for the lifetime of the mock, defeating the scheduled-cycle recovery described below. `waitForConfirms(timeout)` is used instead and the publish fails on `false` or `TimeoutException` without destroying the channel.
+
+**Failure containment.** Because a publish can now throw, `publishAll()` contains failures **per message** — it records the failure, continues to the remaining channels, flushes, and then throws an aggregate naming every channel that failed. Without that, the first unroutable channel would abort the whole cycle, and since each cycle restarts at channel #1 a 10-channel spec whose first channel has no bound queue would publish nothing at all, on any channel, forever — strictly worse than the silent single-channel drop being fixed. Both callers of `publishAll()` are then guarded in turn. `startPublishing` wraps each cycle so a failure is logged and the schedule survives — `ScheduledExecutorService.scheduleAtFixedRate` cancels the task permanently once an execution throws, and the throwable is buried in a `ScheduledFuture` nobody reads, so an unguarded cycle would stop periodic publishing for good and stay stopped even after the cause cleared. The load-time `publishOnLoad` call is wrapped in `publishOnLoadSurvivingFailure`, which records a `validationIssue` instead of propagating: that call sits inside the `try` whose `catch` calls `resetInternal()`, so an escaping exception would tear down every broker's publishers, subscribers and orchestrators and fail `PUT /mockserver/asyncapi` — and since `publishOnLoad` defaults to true, an exchange-routed AMQP channel with no queue yet bound would deadlock at bootstrap (the consumer that binds the queue cannot start until the mock is up).
+
+**Deferred (not applied at publish time):** `exchange.autoDelete`, `exchange.vhost`, `queue.exclusive`, `queue.autoDelete`, `queue.vhost`, and operation/message-level AMQP bindings (`cc`, `bcc`, `deliveryMode`, `replyTo`, `priority`, `timestamp`, `expiration`).
 
 ### Kafka Key Extraction
 
@@ -518,12 +533,15 @@ The `mockserver-async` module is wired into the running server:
 | `PublishOptionsTest` | PublishOptions construction, validation, isEmpty, qos range checking |
 | `AsyncApiMockOrchestratorTest` | Orchestrator publish/schedule lifecycle, PublishOptions threading (mocked publisher) |
 | `KafkaMessagePublisherTest` | Basic Kafka publishing (mocked producer) |
+| `KafkaMessagePublisherDeliveryFailureTest` | `flush()` drains the producer and reports an async delivery failure to the caller rather than only logging it |
 | `KafkaMessagePublisherKeyHeadersTest` | Kafka keys, headers, and PublishOptions (key from bindings) (mocked producer) |
 | `MqttMessagePublisherTest` | Basic MQTT publishing (mocked client) |
 | `MqttMessagePublisherQosTest` | MQTT QoS, binary payloads, and PublishOptions (retain, qos override) (mocked client) |
 | `BoundedMessageStoreTest` | Bounded FIFO store: capacity, eviction, snapshot isolation, edge cases |
 | `KafkaMessageSubscriberTest` | Kafka subscribing, message recording, bounded eviction, queued-ops pattern (mocked consumer) |
 | `MqttMessageSubscriberTest` | MQTT subscribing, message recording, bounded eviction (mocked client) |
+| `MqttTopicFilterTest` | MQTT 3.1.1 §4.7 worked examples: `+`/`#` levels, `#` including the parent level, reserved `$` topics, malformed filters |
+| `MqttWildcardSubscriptionTest` | Wildcard subscriptions are retrievable by filter for both MQTT 3.1.1 and MQTT 5 (mocked clients) |
 | `AsyncApiSchemaValidatorTest` | Schema validation (required, type, enum, min/max, pattern) |
 | `AsyncApiFirstMessageExampleValidationTest` | Per-message first-example schema validation at load time: conforming, non-conforming, no-schema, no-example, multi-message, first-only scope, context naming |
 | `AsyncApiControlPlaneImplTest` | Control-plane load/status/reset lifecycle (no real broker) |
@@ -535,9 +553,9 @@ The `mockserver-async` module is wired into the running server:
 | `KafkaMessageSubscriberSecurityTest` | `buildConsumerProperties()` with SASL_SSL, SCRAM, null, empty security |
 | `MqttSecurityOptionsTest` | `MqttSecurityOptions.buildConnectOptions()`: username/password, SSL properties, null/empty security |
 | `AmqpBindingParserTest` | AsyncAPI AMQP `bindings.amqp` parsing (routingKey/queue, exchange/queue fields, defaults, no-binding, explicit routingKey, isolation from Kafka/MQTT) |
-| `AmqpMessagePublisherTest` | AMQP destination derivation and publishing via a mocked RabbitMQ `Channel` (no broker): exchange/queue/routing-key resolution, idempotent declare, header properties, close |
+| `AmqpMessagePublisherTest` | AMQP destination derivation and publishing via a mocked RabbitMQ `Channel` (no broker): exchange/queue/routing-key resolution, idempotent declare, header properties, close, `mandatory` + publisher confirms, and unroutable-return reporting |
 | `KafkaLiveBrokerIntegrationTest` | Docker-gated (Testcontainers): publish/consume via real Kafka, subscriber recording, orchestrator end-to-end |
-| `MqttLiveBrokerIntegrationTest` | Docker-gated (Testcontainers): publish/receive via real Mosquitto, subscriber recording, orchestrator end-to-end, round-trip |
+| `MqttLiveBrokerIntegrationTest` | Docker-gated (Testcontainers): publish/receive via real Mosquitto, subscriber recording, wildcard subscription recorded on concrete topics and retrieved by filter, orchestrator end-to-end, round-trip |
 | `AmqpMessageSubscriberTest` | AMQP subscribe with a mocked RabbitMQ `Channel` (no broker): queue resolution (queue-based, exchange/routing-key, no-binding), `basicConsume` registration, DeliverCallback recording, header extraction, unsubscribe cancel, bounded eviction |
 | `Mqtt5MessagePublisherTest` | MQTT 5 publish with a mocked v5 client: QoS/retain, binary payloads, user-property (header) delivery, invalid-QoS guard |
 | `Mqtt5MessageSubscriberTest` | MQTT 5 subscribe with a mocked v5 client: recording, user-properties-as-headers, disconnect health, bounded eviction |
@@ -547,9 +565,10 @@ The `mockserver-async` module is wired into the running server:
 | `SchemaRegistryClientTest` | Schema Registry REST client with a stubbed `HttpClient`: get-by-id, register, caching, non-200 handling, blank-URL guard |
 | `KafkaAvroMessagePublisherTest` | Confluent framing via a mocked producer: registry-less fixed id, registry id, key/headers, missing-schema and schema-mismatch errors |
 | `AsyncApiControlPlaneParityConfigTest` | `parseBrokerConfig` of the parity fields: MQTT protocol version, Kafka Avro value format, Schema Registry URL, inline Avro schema (string or object) |
-| `AmqpLiveBrokerIntegrationTest` | Docker-gated (Testcontainers): publish **and subscribe/record** against a real RabbitMQ broker — queue-bound channel, exchange + routing-key channel, orchestrator end-to-end from a parsed spec |
+| `AmqpLiveBrokerIntegrationTest` | Docker-gated (Testcontainers): publish **and subscribe/record** against a real RabbitMQ broker — queue-bound channel, exchange + routing-key channel, orchestrator end-to-end from a parsed spec, and an **unbound** exchange asserting an unroutable publish fails rather than silently succeeding (the other exchange tests build their own topology, so they prove the broker routes, not that MockServer notices when it does not) |
 | `Mqtt5LiveBrokerIntegrationTest` | Docker-gated (Testcontainers/Mosquitto): MQTT 5 publish/receive, user-property round-trip, subscriber recording, adapter round-trip |
-| `KafkaAvroLiveBrokerIntegrationTest` | Docker-gated (Testcontainers/Kafka): registry-less Confluent-framed Avro publish readable by a plain byte[] consumer, and end-to-end round-trip through the MockServer Avro publisher/subscriber |
+| `KafkaAvroLiveBrokerIntegrationTest` | Docker-gated (Testcontainers/Kafka): registry-less Confluent-framed Avro publish readable by a plain byte[] consumer, end-to-end round-trip through the MockServer Avro publisher/subscriber, and a message written under a different schema id recorded undecoded rather than mis-decoded |
+| `KafkaAvroSchemaIdMismatchTest` | Registry-less decode honours the embedded schema id: a same-shape schema under a different id is not decoded into transposed values |
 
 ## Configuration Properties (Async Defaults)
 

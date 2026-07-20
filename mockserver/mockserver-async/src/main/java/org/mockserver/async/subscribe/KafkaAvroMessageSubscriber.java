@@ -44,11 +44,23 @@ public class KafkaAvroMessageSubscriber implements MessageSubscriber {
     private static final Logger LOG = LoggerFactory.getLogger(KafkaAvroMessageSubscriber.class);
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(100);
     private static final int MAX_LOG_PAYLOAD_LENGTH = 100;
+    /** Default registry-less schema id, matching the control plane's {@code avroSchemaId} default. */
+    static final int DEFAULT_SCHEMA_ID = 1;
 
     private final KafkaConsumer<String, byte[]> consumer;
     private final int maxRecordedMessages;
     private final SchemaRegistryClient registryClient;
     private final Schema inlineSchema;
+
+    /**
+     * In registry-less mode the inline schema describes exactly one writer schema id — the
+     * one the matching publisher frames its messages with (see
+     * {@link org.mockserver.async.publish.KafkaAvroMessagePublisher}). Avro binary carries no
+     * field names or types, so decoding a message written with a <i>different</i> schema
+     * against the inline schema yields silently wrong values rather than an error. Messages
+     * carrying any other schema id are therefore left undecoded instead of mis-decoded.
+     */
+    private final int expectedSchemaId;
     private final ConcurrentMap<Integer, Schema> schemaCache = new ConcurrentHashMap<>();
 
     private final ConcurrentMap<String, BoundedMessageStore> recordedMessages = new ConcurrentHashMap<>();
@@ -69,9 +81,27 @@ public class KafkaAvroMessageSubscriber implements MessageSubscriber {
     public KafkaAvroMessageSubscriber(String bootstrapServers, String groupId, int maxRecordedMessages,
                                       KafkaSecurity security, SchemaRegistryClient registryClient,
                                       String inlineSchemaJson) {
+        this(bootstrapServers, groupId, maxRecordedMessages, security, registryClient,
+            inlineSchemaJson, DEFAULT_SCHEMA_ID);
+    }
+
+    /**
+     * @param bootstrapServers    comma-separated host:port pairs
+     * @param groupId             the consumer group id
+     * @param maxRecordedMessages max recorded messages per channel
+     * @param security            Kafka security (may be null)
+     * @param registryClient      Schema Registry client, or null for registry-less mode
+     * @param inlineSchemaJson    inline Avro schema for registry-less decoding (may be null when a registry is used)
+     * @param expectedSchemaId    the schema id the inline schema corresponds to; messages framed
+     *                            with any other id are not decoded with it (registry-less mode only)
+     */
+    public KafkaAvroMessageSubscriber(String bootstrapServers, String groupId, int maxRecordedMessages,
+                                      KafkaSecurity security, SchemaRegistryClient registryClient,
+                                      String inlineSchemaJson, int expectedSchemaId) {
         this.consumer = new KafkaConsumer<>(buildConsumerProperties(bootstrapServers, groupId, security));
         this.maxRecordedMessages = maxRecordedMessages;
         this.registryClient = registryClient;
+        this.expectedSchemaId = expectedSchemaId;
         this.inlineSchema = inlineSchemaJson != null ? AvroPayloadCodec.parseSchema(inlineSchemaJson) : null;
         this.pollExecutor = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "async-kafka-avro-subscriber");
@@ -85,9 +115,20 @@ public class KafkaAvroMessageSubscriber implements MessageSubscriber {
      */
     KafkaAvroMessageSubscriber(KafkaConsumer<String, byte[]> consumer, int maxRecordedMessages,
                                SchemaRegistryClient registryClient, String inlineSchemaJson) {
+        this(consumer, maxRecordedMessages, registryClient, inlineSchemaJson, DEFAULT_SCHEMA_ID);
+    }
+
+    /**
+     * Package-private constructor for injecting a mock consumer with an explicit
+     * registry-less schema id in tests.
+     */
+    KafkaAvroMessageSubscriber(KafkaConsumer<String, byte[]> consumer, int maxRecordedMessages,
+                               SchemaRegistryClient registryClient, String inlineSchemaJson,
+                               int expectedSchemaId) {
         this.consumer = consumer;
         this.maxRecordedMessages = maxRecordedMessages;
         this.registryClient = registryClient;
+        this.expectedSchemaId = expectedSchemaId;
         this.inlineSchema = inlineSchemaJson != null ? AvroPayloadCodec.parseSchema(inlineSchemaJson) : null;
         this.pollExecutor = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "async-kafka-avro-subscriber-test");
@@ -224,7 +265,7 @@ public class KafkaAvroMessageSubscriber implements MessageSubscriber {
      * when the bytes are not wire-format-framed (so non-Avro messages are still
      * recorded rather than dropped).
      */
-    private String decodeToJson(byte[] value) {
+    String decodeToJson(byte[] value) {
         if (value == null) {
             return null;
         }
@@ -248,6 +289,14 @@ public class KafkaAvroMessageSubscriber implements MessageSubscriber {
 
     private Schema resolveSchema(int schemaId) {
         if (registryClient == null) {
+            // registry-less: the inline schema describes only its own schema id. Decoding a
+            // different writer schema against it would produce wrong values with no error.
+            if (schemaId != expectedSchemaId) {
+                LOG.warn("Consumed message carries Avro schema id {} but the configured inline schema "
+                    + "is id {}; not decoding with a mismatched schema (configure a schema registry, "
+                    + "or set avroSchemaId to match the producer)", schemaId, expectedSchemaId);
+                return null;
+            }
             return inlineSchema;
         }
         return schemaCache.computeIfAbsent(schemaId,

@@ -192,6 +192,18 @@ public class Mqtt5MessageSubscriber implements MessageSubscriber {
 
     @Override
     public List<RecordedMessage> getRecordedMessages(String channel) {
+        if (MqttTopicFilter.containsWildcard(channel)) {
+            // messages are recorded under the concrete topic they arrived on, so a wildcard
+            // subscription must be resolved by filter matching (MQTT 3.1.1 §4.7, shared by MQTT 5)
+            List<RecordedMessage> matched = new ArrayList<>();
+            for (Map.Entry<String, BoundedMessageStore> entry : recordedMessages.entrySet()) {
+                if (MqttTopicFilter.matches(channel, entry.getKey())) {
+                    matched.addAll(entry.getValue().snapshot());
+                }
+            }
+            matched.sort(Comparator.comparing(RecordedMessage::getTimestamp));
+            return Collections.unmodifiableList(matched);
+        }
         BoundedMessageStore store = recordedMessages.get(channel);
         return store != null ? Collections.unmodifiableList(store.snapshot()) : Collections.emptyList();
     }

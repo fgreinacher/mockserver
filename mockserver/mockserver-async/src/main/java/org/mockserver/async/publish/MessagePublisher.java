@@ -45,6 +45,22 @@ public interface MessagePublisher {
     }
 
     /**
+     * Block until every message published so far has been acknowledged by the broker,
+     * throwing if any of them failed to be delivered.
+     * <p>
+     * Implementations that send asynchronously (notably Kafka) would otherwise let a caller
+     * report a successful publish before the broker has accepted — or rejected — the message.
+     * Callers that report publish success to a user must call this first.
+     * <p>
+     * The default implementation is a no-op, for publishers that deliver synchronously.
+     *
+     * @throws RuntimeException if any message published since the last flush failed to deliver
+     */
+    default void flush() {
+        // no-op: synchronous publishers have already delivered
+    }
+
+    /**
      * Release any resources held by this publisher (producer connections, etc.).
      */
     void close();

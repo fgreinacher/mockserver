@@ -215,6 +215,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assembled artifacts — embedding `mockserver-core` directly and declaring chicory yourself worked
   throughout. The failure was already fail-closed and logged a `WARNING` naming the missing class; it did
   not hang or drop connections.
+- **AsyncAPI MQTT wildcard subscriptions no longer verify as zero matches.** A message is delivered on a
+  concrete topic, so it was recorded under that topic — but a subscription made with a wildcard filter was
+  verified under the *filter*, and the two were compared by string equality. Any subscription containing `+`
+  or `#` therefore recorded messages that could never be retrieved, and every verification against it
+  reported zero matches while the mock appeared healthy. Retrieval now matches concrete topics against the
+  filter per MQTT 3.1.1 §4.7 (`+` single level, `#` multi-level including the parent level, and no wildcard
+  match for reserved `$` topics), for both the MQTT 3.1.1 and MQTT 5 subscribers. **Behaviour change:** a
+  verification against a wildcard channel that previously found nothing may now legitimately match, so a
+  suite that asserted `atMost`/`exactly 0` against a wildcard channel can start failing correctly.
+- **AsyncAPI AMQP publishes that reach no queue are now reported instead of silently discarded.** Messages
+  were published without the `mandatory` flag and without publisher confirms, so per AMQP 0-9-1 §3.1.3 a
+  message routed to an exchange with no bound queue was dropped by the broker with no error — while
+  MockServer reported a successful publish. Declaring an exchange does not bind any queue to it, so this was
+  the default outcome for an exchange-routed channel with no consumer attached. Publishes now use
+  `mandatory=true` on a channel in publisher-confirm mode and raise an error when the broker returns the
+  message as unroutable. Publisher confirms are a RabbitMQ extension rather than part of AMQP 0-9-1, and
+  a broker refusing `confirm.select` closes the channel; the publisher replaces the dead channel and
+  continues without confirms rather than failing every publish, though that fallback is verified only
+  against a modelled broker response and not a live non-RabbitMQ broker — RabbitMQ is the supported broker.
+  The confirm wait uses `waitForConfirms` rather than `waitForConfirmsOrDie`, which closes the channel on a
+  nack or timeout and would leave every later publish failing for the lifetime of the mock. **Behaviour change:** publishing to an exchange-routed channel
+  with nothing bound now fails rather than silently succeeding. A load-time (`publishOnLoad`) failure no
+  longer aborts the spec load — the mock stays loaded and the failure is reported under `validationIssues`,
+  so a consumer that binds its queue after MockServer starts is not locked out — and a failed scheduled
+  publish cycle is logged without cancelling the schedule, which would otherwise stop periodic publishing
+  permanently and silently.
+- **Kafka publish no longer reports success before delivery is known.** `KafkaProducer.send` is asynchronous
+  and its failure callback only logged a warning, so the control plane could answer a successful publish for
+  a message the broker never accepted. `MessagePublisher` gained a `flush()` which blocks until every
+  in-flight send is acknowledged and rethrows the first delivery failure; the AsyncAPI orchestrator calls it
+  before returning from `publishAll()`. Because a publish can now throw, both callers of `publishAll()` are
+  guarded: a failed scheduled cycle no longer cancels the schedule (`scheduleAtFixedRate` suppresses all
+  later executions once a task throws, which would have stopped periodic publishing permanently and
+  silently), and a failed load-time publish no longer rolls back the whole mock. Failures are contained
+  per message, so one unroutable channel no longer prevents every other channel in the spec from
+  publishing; the remaining channels are published and an aggregate error names those that failed. The `asyncMessagePublished`
+  metric is now incremented after delivery is confirmed rather than before, so a rejected send no longer
+  counts as published. **Behaviour change:** a publish that fails at the broker now surfaces as an error
+  rather than a logged warning behind a success response.
+- **Registry-less Avro decoding no longer mis-decodes messages written with a different schema.** The schema
+  id embedded in the Confluent wire-format header was ignored and every message was decoded with the
+  configured inline schema. Avro binary carries no field names or types, so a message written with a
+  different schema of the same shape decoded without error into **silently transposed values**. The inline
+  schema is now only applied to messages carrying its schema id (`avroSchemaId`, default `1`, which the
+  control plane also passes to the subscriber so both sides agree); a message framed with any other id is
+  recorded undecoded with a warning rather than decoded incorrectly. **Behaviour change:** code constructing
+  `KafkaAvroMessageSubscriber` directly while publishing under a non-default schema id must now pass the
+  matching id to the new constructor overload.
 - **Trailers on a body-less response no longer produce a malformed HTTP/1.1 message.** A response carrying
   trailers was unconditionally forced to `Transfer-Encoding: chunked` with a `Trailer` announcement header.
   For a body-less status (`1xx`, `204`, `205`, `304`) Netty's encoder emits neither a chunked body nor the

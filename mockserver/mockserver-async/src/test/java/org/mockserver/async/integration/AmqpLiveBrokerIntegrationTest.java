@@ -113,6 +113,69 @@ public class AmqpLiveBrokerIntegrationTest {
     }
 
     /**
+     * A publish that reaches no queue must be reported as a failure, not as a success.
+     *
+     * <p>The other exchange test binds its own consumer queue, which proves the broker
+     * routes correctly but hides whether MockServer would notice a message going nowhere.
+     * Here nothing is bound to the exchange, so per AMQP 0-9-1 §3.1.3 the broker discards
+     * the message; without {@code mandatory} + publisher confirms MockServer would report
+     * a successful publish for a message that vanished.
+     */
+    @Test
+    public void shouldFailPublishWhenNoQueueIsBoundToExchange() throws Exception {
+        String exchange = "live-unrouted-events";
+        String channelName = "orders.unrouted";
+
+        AmqpBinding binding = new AmqpBinding(
+            AmqpBinding.ChannelType.ROUTING_KEY, exchange, "topic", true, null, true, null);
+        AsyncApiSpec spec = specWithChannel(channelName, binding);
+
+        AmqpMessagePublisher publisher = new AmqpMessagePublisher(amqpUri, spec);
+        try {
+            RuntimeException failure = null;
+            try {
+                publisher.publish(channelName, "{\"orderId\":1}");
+            } catch (RuntimeException e) {
+                failure = e;
+            }
+            assertThat("publishing to an exchange with no bound queue must not report success",
+                failure, is(notNullValue()));
+            assertThat(failure.getMessage(), containsString("was not routed to any queue"));
+        } finally {
+            publisher.close();
+        }
+    }
+
+    /**
+     * The routable case must still succeed once a queue is bound — the unroutable
+     * detection must not reject legitimate publishes.
+     */
+    @Test
+    public void shouldSucceedOnceAQueueIsBoundToTheExchange() throws Exception {
+        String exchange = "live-rebound-events";
+        String channelName = "orders.rebound";
+        String boundQueue = "live-rebound-consumer";
+
+        AmqpBinding binding = new AmqpBinding(
+            AmqpBinding.ChannelType.ROUTING_KEY, exchange, "topic", true, null, true, null);
+        AsyncApiSpec spec = specWithChannel(channelName, binding);
+
+        ConnectionFactory factory = new ConnectionFactory();
+        factory.setUri(amqpUri);
+        try (Connection connection = factory.newConnection(); Channel ch = connection.createChannel()) {
+            ch.exchangeDeclare(exchange, "topic", true);
+            ch.queueDeclare(boundQueue, true, false, false, null);
+            ch.queueBind(boundQueue, exchange, channelName);
+
+            AmqpMessagePublisher publisher = new AmqpMessagePublisher(amqpUri, spec);
+            publisher.publish(channelName, "{\"orderId\":2}");
+            publisher.close();
+
+            assertThat(pollQueue(ch, boundQueue), is("{\"orderId\":2}"));
+        }
+    }
+
+    /**
      * End-to-end through the orchestrator + a spec parsed from JSON (queue binding),
      * asserting the schema-generated/example payload lands on the broker.
      */

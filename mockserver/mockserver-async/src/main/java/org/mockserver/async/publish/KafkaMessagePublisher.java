@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A {@link MessagePublisher} that delegates to a Kafka {@link KafkaProducer}.
@@ -26,6 +27,12 @@ public class KafkaMessagePublisher implements MessagePublisher {
     private static final Logger LOG = LoggerFactory.getLogger(KafkaMessagePublisher.class);
 
     private final KafkaProducer<String, String> producer;
+
+    /**
+     * First delivery failure reported by the async send callback since the last
+     * {@link #flush()}, so it can be surfaced to the caller rather than only logged.
+     */
+    private final AtomicReference<DeliveryFailure> deliveryFailure = new AtomicReference<>();
 
     /**
      * Create a publisher connected to the given Kafka bootstrap servers
@@ -114,15 +121,31 @@ public class KafkaMessagePublisher implements MessagePublisher {
                 record.headers().add(new RecordHeader(header.getKey(), value));
             }
         }
-        // Asynchronous send with a callback so delivery failures are surfaced rather than
-        // silently swallowed. The publish-success metric is incremented by
-        // AsyncApiMockOrchestrator.publishAll(); on Kafka the actual broker delivery is
-        // asynchronous, so a logged failure here may follow a counted publish attempt.
+        // Asynchronous send: the failure is captured so that flush() can report it to the
+        // caller. Logging alone is not enough — the control plane would answer "published"
+        // before the broker had accepted or rejected the message.
         producer.send(record, (metadata, exception) -> {
             if (exception != null) {
                 LOG.warn("Failed to deliver message to Kafka topic '{}': {}", channel, exception.getMessage());
+                deliveryFailure.compareAndSet(null,
+                    new DeliveryFailure(channel, exception));
             }
         });
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Blocks until the producer's buffer has been drained and every in-flight send has
+     * been acknowledged, then rethrows the first delivery failure seen since the last flush.
+     */
+    @Override
+    public void flush() {
+        producer.flush();
+        DeliveryFailure failure = deliveryFailure.getAndSet(null);
+        if (failure != null) {
+            throw failure.asRuntimeException("message");
+        }
     }
 
     @Override

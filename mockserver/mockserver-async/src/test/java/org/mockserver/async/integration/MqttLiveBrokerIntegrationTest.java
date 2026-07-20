@@ -170,6 +170,52 @@ public class MqttLiveBrokerIntegrationTest {
         msSubscriber.close();
     }
 
+    /**
+     * A wildcard subscription must be retrievable by the filter it was subscribed with.
+     *
+     * <p>The broker delivers each message on its concrete topic, so messages are recorded
+     * under that topic — retrieving by the wildcard filter must match them (MQTT 3.1.1 §4.7).
+     * Otherwise a wildcard subscription records messages that can never be retrieved and every
+     * verification against it silently reports zero matches.
+     */
+    @Test
+    public void subscriberShouldRecordWildcardSubscriptionFromLiveBroker() throws Exception {
+        String filter = "wildcard/+/events";
+
+        MqttMessageSubscriber msSubscriber = new MqttMessageSubscriber(
+            brokerUrl, "test-wildcard-subscriber"
+        );
+        msSubscriber.subscribe(filter);
+        Thread.sleep(500);
+
+        MqttClient publisher = new MqttClient(brokerUrl, "test-wildcard-publisher");
+        publisher.connect();
+        publisher.publish("wildcard/alpha/events",
+            new MqttMessage("{\"n\":1}".getBytes(StandardCharsets.UTF_8)));
+        publisher.publish("wildcard/beta/events",
+            new MqttMessage("{\"n\":2}".getBytes(StandardCharsets.UTF_8)));
+        publisher.disconnect();
+        publisher.close();
+
+        List<RecordedMessage> messages = List.of();
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(10);
+        while (System.currentTimeMillis() < deadline) {
+            messages = msSubscriber.getRecordedMessages(filter);
+            if (messages.size() >= 2) break;
+            Thread.sleep(200);
+        }
+
+        assertThat("messages delivered on concrete topics must be retrievable by the wildcard filter",
+            messages.size(), is(2));
+        assertThat(messages.stream().map(RecordedMessage::getPayload).toList(),
+            containsInAnyOrder("{\"n\":1}", "{\"n\":2}"));
+        assertThat("recorded channel is the concrete topic the broker delivered on",
+            messages.stream().map(RecordedMessage::getChannel).toList(),
+            containsInAnyOrder("wildcard/alpha/events", "wildcard/beta/events"));
+
+        msSubscriber.close();
+    }
+
     @Test
     public void orchestratorShouldPublishExamplesToLiveMqttBroker() throws Exception {
         String topic = "test/orchestrator";

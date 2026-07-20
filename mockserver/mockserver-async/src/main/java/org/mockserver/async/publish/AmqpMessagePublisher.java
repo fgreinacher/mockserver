@@ -11,6 +11,7 @@ import org.mockserver.async.asyncapi.AsyncApiSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyManagementException;
@@ -19,6 +20,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A {@link MessagePublisher} that delivers messages to an AMQP 0.9.1 broker
@@ -48,6 +50,13 @@ import java.util.Set;
  * (default {@code direct}) and durability. For queue-based channels the named queue
  * is declared once. This makes the mock self-sufficient against a fresh broker.
  *
+ * <h2>Unroutable messages</h2>
+ * Declaring an exchange does not create any queue bound to it, so a publish to an
+ * exchange-routed channel can still reach no consumer. Per AMQP 0-9-1 §3.1.3 the broker
+ * discards such a message <i>silently</i> unless {@code mandatory} is set. Every publish is
+ * therefore sent with {@code mandatory=true} on a channel in publisher-confirm mode, and an
+ * unroutable message raises an error instead of being reported as a successful publish.
+ *
  * <h2>Supported binding fields</h2>
  * {@code is}, {@code exchange.name}, {@code exchange.type}, {@code exchange.durable},
  * {@code queue.name}, {@code queue.durable}, and an explicit {@code routingKey}.
@@ -55,7 +64,7 @@ import java.util.Set;
  * <h2>Deferred</h2>
  * {@code exchange.autoDelete}/{@code vhost}, {@code queue.exclusive}/{@code autoDelete}/{@code vhost},
  * and operation/message-level AMQP bindings ({@code cc}, {@code bcc}, {@code deliveryMode},
- * {@code mandatory}, {@code priority}, {@code expiration}, …). See {@link AmqpBinding}.
+ * {@code priority}, {@code expiration}, …). See {@link AmqpBinding}.
  */
 public class AmqpMessagePublisher implements MessagePublisher {
 
@@ -65,11 +74,50 @@ public class AmqpMessagePublisher implements MessagePublisher {
     // fail fast instead of blocking the scheduler thread for the OS TCP timeout when the broker is unreachable
     private static final int CONNECTION_TIMEOUT_MILLIS = 5000;
 
+    /**
+     * How long to wait for the broker to confirm a single publish before treating it as failed.
+     * Applied per message, so a spec publishing N messages can block a caller for up to N times
+     * this value; there is no aggregate budget across a publish cycle.
+     */
+    private static final int CONFIRM_TIMEOUT_MILLIS = 5000;
+
     private final Connection connection;
-    private final Channel channel;
+    /**
+     * Not final: a channel-level AMQP error closes the channel, and a closed channel can never be
+     * reopened — only replaced from the connection. {@link #enableUnroutableDetection()} recreates
+     * it when {@code confirm.select} is refused, so the publisher degrades instead of being dead
+     * on arrival against a broker without publisher confirms.
+     *
+     * <p><b>Invariant: written only during construction.</b> {@link #replaceClosedChannel()} is
+     * called solely from {@link #enableUnroutableDetection()}, which is called solely from the
+     * constructors — so this field is never reassigned after the object escapes, and the loss of
+     * the final-field freeze costs nothing today. It is {@code volatile} to keep that true under
+     * future edits: recovering a channel killed mid-publish would write it under the {@code publish}
+     * monitor while {@link #close()} — which is not synchronized — reads it without, and volatile
+     * closes that race in advance. Do not reassign outside construction without also making
+     * {@link #close()} safe.
+     */
+    private volatile Channel channel;
     private final Map<String, AmqpBinding> bindingsByChannel;
     private final Set<String> declaredExchanges = new HashSet<>();
     private final Set<String> declaredQueues = new HashSet<>();
+
+    /**
+     * Set by the broker's {@code basic.return} callback when a {@code mandatory} publish
+     * could not be routed to any queue. Cleared before each publish and read after the
+     * publisher confirm, which the broker always sends after any return for that message.
+     */
+    private final AtomicReference<String> unroutableReturn = new AtomicReference<>();
+
+    /**
+     * Whether the channel is in publisher-confirm mode. Publisher confirms are a RabbitMQ
+     * extension rather than part of AMQP 0-9-1, so a broker that does not implement them
+     * (e.g. Qpid) leaves this false — in which case publishes are sent without {@code mandatory}
+     * and without waiting for a confirm, exactly as before this detection existed. Unroutable
+     * messages then go undetected, which is what the warning in
+     * {@link #enableUnroutableDetection()} reports.
+     */
+    private volatile boolean confirmsEnabled;
 
     /**
      * Connect to an AMQP broker from a connection URI (e.g.
@@ -106,6 +154,7 @@ public class AmqpMessagePublisher implements MessagePublisher {
             conn = factory.newConnection();
             this.connection = conn;
             this.channel = conn.createChannel();
+            enableUnroutableDetection();
         } catch (Exception e) {
             // if the connection opened but createChannel failed, close it so it isn't orphaned
             if (conn != null) {
@@ -126,6 +175,59 @@ public class AmqpMessagePublisher implements MessagePublisher {
         this.connection = connection;
         this.channel = channel;
         this.bindingsByChannel = buildBindingMap(spec);
+        enableUnroutableDetection();
+    }
+
+    /**
+     * Put the channel into publisher-confirm mode and register a return listener, so that a
+     * {@code mandatory} publish which the broker cannot route to any queue is reported rather
+     * than dropped. Per AMQP 0-9-1 §3.1.3 an unroutable message is silently discarded by the
+     * broker unless {@code mandatory} is set, which would let MockServer report a successful
+     * publish for a message that reached no queue.
+     */
+    private void enableUnroutableDetection() {
+        try {
+            channel.confirmSelect();
+            channel.addReturnListener((replyCode, replyText, exchange, routingKey, properties, body) ->
+                unroutableReturn.set("no queue is bound to exchange '" + exchange
+                    + "' for routing key '" + routingKey + "' (broker returned "
+                    + replyCode + " " + replyText + ")"));
+            confirmsEnabled = true;
+        } catch (Exception e) {
+            confirmsEnabled = false;
+            // A broker that does not implement confirm.select answers 540 NOT_IMPLEMENTED, which is
+            // a channel-level error: the channel is now closed and cannot be reopened. Replace it,
+            // otherwise the "publishing continues" degradation promised below is a lie and every
+            // publish fails with AlreadyClosedException.
+            if (!replaceClosedChannel()) {
+                throw new RuntimeException("Failed to enable AMQP publisher confirms and could not "
+                    + "recover the channel: " + e.getMessage(), e);
+            }
+            LOG.warn("Could not enable AMQP publisher confirms (they are a RabbitMQ extension, not "
+                + "part of AMQP 0-9-1); publishing without confirms, so unroutable messages will "
+                + "not be detected and may be silently discarded by the broker: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Replace the channel if the broker closed it, so publishing can continue without confirms.
+     *
+     * @return true if a usable channel is available afterwards
+     */
+    private boolean replaceClosedChannel() {
+        try {
+            if (channel != null && channel.isOpen()) {
+                return true;
+            }
+            channel = connection.createChannel();
+            // topology declared on the dead channel does not carry over to the new one
+            declaredExchanges.clear();
+            declaredQueues.clear();
+            return channel != null;
+        } catch (Exception e) {
+            LOG.warn("Could not replace the closed AMQP channel: {}", e.getMessage());
+            return false;
+        }
     }
 
     private static Map<String, AmqpBinding> buildBindingMap(AsyncApiSpec spec) {
@@ -196,7 +298,7 @@ public class AmqpMessagePublisher implements MessagePublisher {
      * @param options     per-message publish options (may be null)
      */
     @Override
-    public void publish(String channelName, String payload, PublishOptions options) {
+    public synchronized void publish(String channelName, String payload, PublishOptions options) {
         Destination destination = resolveDestination(channelName, bindingsByChannel.get(channelName));
         try {
             ensureTopologyDeclared(channelName, bindingsByChannel.get(channelName), destination);
@@ -209,11 +311,32 @@ public class AmqpMessagePublisher implements MessagePublisher {
 
             LOG.debug("Publishing to AMQP exchange '{}' with routing key '{}': {}",
                 destination.exchange, destination.routingKey, payload);
-            channel.basicPublish(destination.exchange, destination.routingKey, props,
+            unroutableReturn.set(null);
+            // mandatory=true so the broker returns the message instead of discarding it when no
+            // queue is bound; the confirm below guarantees any such return has arrived. Both are
+            // skipped when the broker does not support publisher confirms, since waiting for a
+            // confirm that was never selected would fail every publish.
+            channel.basicPublish(destination.exchange, destination.routingKey, confirmsEnabled, props,
                 payload.getBytes(StandardCharsets.UTF_8));
+            if (confirmsEnabled) {
+                // deliberately NOT waitForConfirmsOrDie: that closes the channel on both a nack and
+                // a timeout (ChannelN.waitForConfirmsOrDie in amqp-client 5.x), and a closed channel
+                // is never auto-recovered for an application-initiated close — so a single confirm
+                // timeout (RabbitMQ stalls confirms indefinitely under a memory or disk alarm) would
+                // make every later publish throw AlreadyClosedException for the lifetime of the mock
+                if (!channel.waitForConfirms(CONFIRM_TIMEOUT_MILLIS)) {
+                    throw new IOException("broker nacked the message");
+                }
+            }
         } catch (Exception e) {
             throw new RuntimeException("Failed to publish to AMQP channel '" + channelName + "': "
                 + e.getMessage(), e);
+        }
+
+        String unroutable = unroutableReturn.getAndSet(null);
+        if (unroutable != null) {
+            throw new RuntimeException("Message published to AMQP channel '" + channelName
+                + "' was not routed to any queue: " + unroutable);
         }
     }
 

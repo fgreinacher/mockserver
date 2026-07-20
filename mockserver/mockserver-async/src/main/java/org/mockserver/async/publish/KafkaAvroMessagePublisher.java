@@ -41,6 +41,13 @@ public class KafkaAvroMessagePublisher implements MessagePublisher {
     private static final Logger LOG = LoggerFactory.getLogger(KafkaAvroMessagePublisher.class);
 
     private final KafkaProducer<String, byte[]> producer;
+
+    /**
+     * First delivery failure reported by the async send callback since the last
+     * {@link #flush()}, so it can be surfaced to the caller rather than only logged.
+     */
+    private final java.util.concurrent.atomic.AtomicReference<DeliveryFailure> deliveryFailure =
+        new java.util.concurrent.atomic.AtomicReference<>();
     private final Schema schema;
     private final String schemaJson;
     private final SchemaRegistryClient registryClient;
@@ -107,11 +114,29 @@ public class KafkaAvroMessagePublisher implements MessagePublisher {
             }
         }
         LOG.debug("Publishing Avro message to Kafka topic '{}': key={}, {} bytes", channel, key, framed.length);
+        // the failure is captured, not just logged, so flush() can report it to the caller
+        // before a publish is reported as successful
         producer.send(record, (metadata, exception) -> {
             if (exception != null) {
                 LOG.warn("Failed to deliver Avro message to Kafka topic '{}': {}", channel, exception.getMessage());
+                deliveryFailure.compareAndSet(null, new DeliveryFailure(channel, exception));
             }
         });
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Blocks until every in-flight send has been acknowledged, then rethrows the first
+     * delivery failure seen since the last flush.
+     */
+    @Override
+    public void flush() {
+        producer.flush();
+        DeliveryFailure failure = deliveryFailure.getAndSet(null);
+        if (failure != null) {
+            throw failure.asRuntimeException("Avro message");
+        }
     }
 
     /**

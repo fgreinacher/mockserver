@@ -13,6 +13,7 @@ import org.mockserver.metrics.Metrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +46,9 @@ public class AsyncApiMockOrchestrator {
     private final MessagePublisher publisher;
     private final MessageExampleGenerator generator;
     private volatile ScheduledExecutorService scheduler;
+
+    /** Failure message from the most recent scheduled publish cycle; null when the last one succeeded. */
+    private volatile String lastPublishFailure;
     private final Supplier<String> correlationIdSupplier;
 
     public AsyncApiMockOrchestrator(AsyncApiSpec spec, MessagePublisher publisher) {
@@ -80,6 +84,10 @@ public class AsyncApiMockOrchestrator {
      * identically to the previous single-publish behavior.
      */
     public void publishAll() {
+        // channels are counted only after flush() confirms delivery, so a send the broker later
+        // rejects does not inflate the published metric
+        List<String> publishedChannels = new ArrayList<>();
+        List<String> failures = new ArrayList<>();
         for (AsyncApiChannel ch : spec.getChannels()) {
             List<AsyncApiMessage> messages = ch.getMessages();
             for (AsyncApiMessage msg : messages) {
@@ -109,10 +117,45 @@ public class AsyncApiMockOrchestrator {
 
                 PublishOptions options = buildPublishOptions(ch, msg, correlationHeaders);
                 LOG.debug("Publishing example to channel '{}': {}", ch.getName(), payload);
-                publisher.publish(ch.getName(), payload, options);
-                Metrics.incrementAsyncMessagePublished(ch.getName());
+                // Contain per message: a publish can now fail (an AMQP message reaching no queue),
+                // and without this the first failing channel would abort the whole cycle, so a
+                // 10-channel spec whose first channel has no bound queue would publish nothing at
+                // all — on any channel — rather than losing just the one.
+                try {
+                    publisher.publish(ch.getName(), payload, options);
+                    publishedChannels.add(ch.getName());
+                } catch (Exception e) {
+                    failures.add(ch.getName() + ": " + describe(e));
+                    LOG.warn("Failed to publish to channel '{}'; continuing with the remaining "
+                        + "channels: {}", ch.getName(), describe(e));
+                }
             }
         }
+
+        if (!publishedChannels.isEmpty()) {
+            // Block until the broker has acknowledged every send, so a caller that reports
+            // "published" is not doing so before delivery is known (asynchronous on Kafka).
+            try {
+                publisher.flush();
+                publishedChannels.forEach(Metrics::incrementAsyncMessagePublished);
+            } catch (Exception e) {
+                // Kafka's flush reports only the first failure and carries no per-message
+                // attribution, so the successfully-delivered messages in this cycle cannot be
+                // identified and none are counted. See docs/code/metrics.md.
+                failures.add("delivery confirmation failed: " + describe(e));
+            }
+        }
+
+        if (!failures.isEmpty()) {
+            throw new RuntimeException("Publish cycle completed with "
+                + failures.size() + " failure(s): " + String.join("; ", failures));
+        }
+    }
+
+    /** Exception description that never renders a literal "null" for a message-less exception. */
+    private static String describe(Exception e) {
+        String message = e.getMessage();
+        return (message != null && !message.isBlank()) ? message : e.getClass().getSimpleName();
     }
 
     /**
@@ -213,8 +256,38 @@ public class AsyncApiMockOrchestrator {
             t.setDaemon(true);
             return t;
         });
-        scheduler.scheduleAtFixedRate(this::publishAll, 0, intervalMillis, TimeUnit.MILLISECONDS);
+        scheduler.scheduleAtFixedRate(this::publishAllSurvivingFailure, 0, intervalMillis,
+            TimeUnit.MILLISECONDS);
         LOG.info("Started scheduled publishing every {} ms", intervalMillis);
+    }
+
+    /**
+     * Run one publish cycle, containing any failure so the schedule survives it.
+     * <p>
+     * {@link java.util.concurrent.ScheduledExecutorService#scheduleAtFixedRate} cancels the task
+     * permanently if an execution throws, and the throwable is buried in a {@code ScheduledFuture}
+     * nobody reads. Letting a publish failure escape would therefore stop periodic publishing for
+     * good — silently, and with no recovery once the underlying cause (an AMQP queue not yet bound,
+     * a Kafka broker briefly unavailable) has cleared. A failed cycle is logged and the next cycle
+     * retries.
+     */
+    private void publishAllSurvivingFailure() {
+        try {
+            publishAll();
+            lastPublishFailure = null;
+        } catch (Exception e) {
+            lastPublishFailure = e.getMessage();
+            LOG.warn("Scheduled publish cycle failed; the schedule continues and the next cycle "
+                + "will retry: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * The failure message from the most recent scheduled publish cycle, or null if the last cycle
+     * succeeded. Exposed so a stalled or failing mock can be diagnosed without reading the log.
+     */
+    public String getLastPublishFailure() {
+        return lastPublishFailure;
     }
 
     /**

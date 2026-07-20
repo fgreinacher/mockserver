@@ -120,9 +120,10 @@ public class KafkaAvroLiveBrokerIntegrationTest {
         publisher.publish(topic, "{\"orderId\":9,\"item\":\"gadget\"}", null);
         publisher.close();
 
-        // registry-less subscriber decodes with the inline schema and records JSON
+        // registry-less subscriber decodes with the inline schema and records JSON; the schema id
+        // must match the one the producer framed with, since the inline schema describes only that id
         KafkaAvroMessageSubscriber subscriber = new KafkaAvroMessageSubscriber(
-            kafka.getBootstrapServers(), "avro-roundtrip-group", 100, null, null, AVRO_SCHEMA);
+            kafka.getBootstrapServers(), "avro-roundtrip-group", 100, null, null, AVRO_SCHEMA, 55);
         subscriber.subscribe(topic);
 
         List<RecordedMessage> messages = Collections.emptyList();
@@ -136,6 +137,46 @@ public class KafkaAvroLiveBrokerIntegrationTest {
         assertThat("subscriber should record the decoded Avro message", messages.size(), greaterThanOrEqualTo(1));
         assertThat(MAPPER.readTree(messages.get(0).getPayload()),
             is(MAPPER.readTree("{\"orderId\":9,\"item\":\"gadget\"}")));
+
+        subscriber.close();
+    }
+
+    /**
+     * A producer writing a <i>different</i> schema under a different schema id must not be
+     * decoded against the configured inline schema. Avro binary carries no field names, so the
+     * mismatched decode succeeds and transposes the values — recording plausible but wrong data.
+     */
+    @Test
+    public void shouldNotDecodeMessageWrittenWithADifferentSchemaId() throws Exception {
+        String topic = "avro-schema-id-mismatch";
+        // same wire shape as AVRO_SCHEMA (long, string) but different field meanings
+        String otherSchema = "{\"type\":\"record\",\"name\":\"Order\",\"fields\":["
+            + "{\"name\":\"quantity\",\"type\":\"long\"},"
+            + "{\"name\":\"customer\",\"type\":\"string\"}]}";
+
+        KafkaAvroMessagePublisher publisher = new KafkaAvroMessagePublisher(
+            kafka.getBootstrapServers(), null, otherSchema, null, 98);
+        publisher.publish(topic, "{\"quantity\":3,\"customer\":\"acme\"}", null);
+        publisher.close();
+
+        // subscriber configured for AVRO_SCHEMA under id 55 — it must refuse id 98
+        KafkaAvroMessageSubscriber subscriber = new KafkaAvroMessageSubscriber(
+            kafka.getBootstrapServers(), "avro-mismatch-group", 100, null, null, AVRO_SCHEMA, 55);
+        subscriber.subscribe(topic);
+
+        List<RecordedMessage> messages = Collections.emptyList();
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(30);
+        while (System.currentTimeMillis() < deadline) {
+            messages = subscriber.getRecordedMessages(topic);
+            if (!messages.isEmpty()) break;
+            Thread.sleep(200);
+        }
+
+        assertThat("the message should still be recorded", messages.size(), greaterThanOrEqualTo(1));
+        String payload = messages.get(0).getPayload();
+        assertThat("a mismatched schema must not be decoded into the configured schema's fields",
+            payload, not(containsString("\"orderId\":3")));
+        assertThat(payload, not(containsString("\"item\":\"acme\"")));
 
         subscriber.close();
     }

@@ -318,10 +318,16 @@ Two Prometheus `Counter`s track broker message flow for the optional `mockserver
 
 | Metric Name | Incremented When |
 |-------------|------------------|
-| `mock_server_async_messages_published_total` | MockServer publishes an example message to a broker — one increment per message in `AsyncApiMockOrchestrator.publishAll()` (covers both publish-on-load and scheduled publishing) |
+| `mock_server_async_messages_published_total` | MockServer publishes an example message to a broker — one increment per message in `AsyncApiMockOrchestrator.publishAll()` (covers both publish-on-load and scheduled publishing), incremented **after** `MessagePublisher.flush()` confirms delivery |
 | `mock_server_async_messages_consumed_total` | MockServer records a message consumed from a broker subscription — one increment per message in the `KafkaMessageSubscriber` / `MqttMessageSubscriber` record path |
 
 `mockserver-async` depends on `mockserver-core` (optional scope) and calls the static `Metrics.incrementAsyncMessagePublished(channel)` / `Metrics.incrementAsyncMessageConsumed(channel)` methods directly; both are null-safe no-ops when metrics are disabled, so the async hot paths pay nothing when metrics are off. These counters only move when a real broker is connected (`brokerConfig` with `kafkaBootstrapServers`/`mqttBrokerUrl`); a broker-less spec load leaves them at zero.
+
+**Counted after delivery is confirmed.** Kafka sends asynchronously, so incrementing at the point of `publish()` would count messages the broker might still reject — the counter would over-report success. The increment therefore happens after `flush()` returns.
+
+`publishAll()` contains failures **per message**, so a channel whose publish throws (e.g. an AMQP message reaching no queue) is recorded as a failure and the loop continues to the remaining channels. The cycle is therefore never truncated by one bad channel, and every channel that published successfully is counted.
+
+The one remaining inaccuracy is **a failed `flush()`**: Kafka's `flush()` surfaces only the first delivery failure and carries no per-message attribution, so the messages in that cycle which *did* reach the broker cannot be identified and none of them are counted. That under-count is deliberate. An over-count would make the metric lie in the reassuring direction — the precise failure this module was hardened against — whereas an under-count arrives alongside a thrown exception and a `WARN` log that make the truth recoverable. **Do not "fix" this by moving the increment back before the flush.** Narrowing it further would require per-message delivery attribution from the publisher, not a reordering here.
 
 The dashboard **Metrics** view renders these on a dedicated **"Async message activity (cumulative)"** chart — kept separate from the HTTP **"HTTP request activity"** chart because broker message counts and HTTP request counts have different semantics. The two series (Published, Consumed) are summed across all channels client-side via `gaugeSeriesSum`; the panel is hidden until at least one async counter has data.
 
