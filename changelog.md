@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 ### Fixed
+- **The OpenAPI specification served at `GET /mockserver/openapi.yaml` described 14 of MockServer's 68
+  control-plane paths; it now describes all of them.** The specification exists in the repository twice —
+  the copy published on the website and the copy bundled into the jar — and nothing compared the two, so
+  they drifted apart in both directions. The served copy was missing 54 paths, including `/chaosExperiment`,
+  `/loadScenario*`, `/breakpoint/*`, `/drift`, `/verifySLO`, `/files/*`, `/cassettes`, `/wasm/modules`,
+  `/grpc/*`, `/crud`, `/mode`, `/preemption` and `/scenario/*`, so anything generated from it — client
+  bindings, API explorers, request collections — silently omitted those endpoints. The website copy was
+  in turn missing model properties the served copy had. Because every schema is declared
+  `additionalProperties: false`, the gap was not merely cosmetic: the specification actively **rejected**
+  valid MockServer payloads. Validating five realistic expectations against the published website copy
+  failed all five (SSE, WebSocket, `namespace`/`scenarioName`, `chaos`, `statusCodeRange`); the bundled
+  copy rejected two of the five. The two copies are now one reconciled specification, stored in both
+  places and held identical by a test, so neither can drift again. The reconciliation is a pure union —
+  no path, schema, operation, property, enum value or union branch was dropped from either side. The
+  `/retrieve` query parameters `correlationId`, `namespace`, `fanInLocalOnly` and `forwardUnmatchedTo`,
+  the `format=recording` import mode with its `source` and redaction parameters, and the format-by-type
+  applicability constraints are all now documented.
+- **BEHAVIOUR: the OpenAPI specification no longer documents `connectionDrop` on `HttpChaosProfile`.** That
+  property does not exist in MockServer and never did; the real property is `dropConnectionProbability`
+  (a probability between 0.0 and 1.0). The schema was also missing 18 further chaos properties that do
+  exist, including `retryAfter`, `succeedFirst`, `failRequestCount`, `outageAfterMillis`, `malformedBody`,
+  `slowResponseChunkSize` and the `quota*` family. Anything generated from the specification against
+  `connectionDrop` was generating a field MockServer would ignore.
 - **BEHAVIOUR: the Node client no longer silently converts a FAILED verification into a passing one.**
   Every `verify*` method (`verify`, `verifyById`, `verifySequence`, `verifySequenceById`, `verifyResponse`,
   `verifyRequestAndResponse`, `verifySequenceWithResponses`, `verifyZeroInteractions`) and `verifySLO`
