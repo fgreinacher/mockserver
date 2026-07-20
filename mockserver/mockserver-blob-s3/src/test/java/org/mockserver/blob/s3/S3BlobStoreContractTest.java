@@ -13,10 +13,15 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import java.net.URI;
 import java.time.Duration;
 import java.util.UUID;
+
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
 
 /**
  * Runs the shared {@link BlobStoreContract} against a real MinIO
@@ -84,5 +89,28 @@ public class S3BlobStoreContractTest extends BlobStoreContract {
         // Use a unique key prefix per test to isolate test data
         String prefix = "test-" + UUID.randomUUID() + "/";
         return new S3BlobStore(s3Client, TEST_BUCKET, prefix);
+    }
+
+    /**
+     * S3 carries user metadata in {@code x-amz-meta-*} HTTP headers, and header field names are
+     * ASCII tokens (RFC 9110 &sect;5.1), so a key containing characters above {@code U+00FF}
+     * cannot be represented. S3 correctly refuses the write rather than storing something else.
+     */
+    @Override
+    protected boolean supportsNonAsciiMetadataKeys() {
+        return false;
+    }
+
+    /**
+     * Pins the rejection to a genuine "this request is invalid" response from S3, so the contract
+     * cannot be satisfied by an unrelated failure (a stopped container, a bad credential, a
+     * connection reset) that merely happens to throw.
+     */
+    @Override
+    protected void assertNonAsciiMetadataKeyRejection(RuntimeException rejection) {
+        assertThat("expected S3 to reject the unrepresentable metadata key, but got: " + rejection,
+            rejection, instanceOf(S3Exception.class));
+        assertThat("expected a 4xx invalid-request rejection, not a transport or auth failure",
+            ((S3Exception) rejection).statusCode(), is(400));
     }
 }

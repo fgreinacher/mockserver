@@ -123,6 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer announce trailers they cannot deliver. The trailers remain attached to the response so HTTP/2 and
   HTTP/3, which can legitimately carry trailers on a body-less response via a trailing HEADERS frame, still
   deliver them.
+- **Azure blob metadata keys containing characters above `U+00FF` are no longer corrupted.** The key escape
+  formatted with `%02x`, which silently widens to four hex digits above `0xFF`, while the decoder always
+  consumed exactly two — so a metadata key of `中文` was written as `_4e2d_6587` and read back as `N2de87`.
+  Escapes are now a fixed four hex digits and round-trip for all keys, including non-ASCII and emoji. Keys
+  written by an earlier version that contain escaped characters will not decode correctly; blob metadata is
+  ephemeral mock state, so clear the container if this matters. The shared blob-store contract suite now
+  covers non-ASCII metadata keys for every backend, asserting that a store either round-trips them exactly or
+  rejects the write — never silently stores a different key. S3 legitimately rejects them, since it carries
+  metadata in `x-amz-meta-*` HTTP headers whose field names are ASCII tokens.
 - **SECURITY: enabling control-plane authentication at runtime now actually takes effect.** The mTLS, JWT and
   OIDC handler chain was built once during server bootstrap, so enabling
   `controlPlaneJWTAuthenticationRequired`, `controlPlaneTLSMutualAuthenticationRequired` or

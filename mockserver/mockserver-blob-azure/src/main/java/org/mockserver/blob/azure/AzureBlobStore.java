@@ -142,22 +142,28 @@ public class AzureBlobStore implements BlobStore {
      * {@code [a-zA-Z_][a-zA-Z0-9_]*}. Original keys may contain
      * characters like {@code -}, {@code =}, {@code .}, etc.
      * <p>
-     * Encoding scheme (prefix-hex escape):
+     * Encoding scheme (fixed-width prefix-hex escape):
      * <ul>
-     *   <li>Literal underscore {@code _} is escaped to {@code _5f}
-     *       (its lowercase hex code point)</li>
+     *   <li>Literal underscore {@code _} is escaped to {@code _005f}
+     *       (its lowercase hex code unit)</li>
      *   <li>Any other character outside {@code [a-zA-Z0-9]} is
-     *       escaped to {@code _XX} where {@code XX} is the two-digit
-     *       lowercase hex of the character's code point</li>
-     *   <li>Letters and digits pass through unescaped</li>
-     *   <li>If the encoded key starts with a digit, it is prefixed
-     *       with {@code _00} (decoded back to empty string on read)</li>
+     *       escaped to {@code _XXXX} where {@code XXXX} is the
+     *       FOUR-digit lowercase hex of the character's UTF-16 code
+     *       unit</li>
+     *   <li>Letters pass through unescaped; digits pass through
+     *       unless leading, since an Azure key may not start with a
+     *       digit</li>
      * </ul>
      * <p>
-     * This is fully reversible: {@code decode(encode(k)).equals(k)}
-     * for all keys with code points in {@code [0x00, 0xFF]}. Keys
+     * This is fully reversible for ALL keys: {@code decode(encode(k)).equals(k)}
+     * for every string, including non-ASCII and non-BMP keys. Keys
      * with the same characters never collide because the escape is
      * injective (underscore itself is always escaped).
+     * <p>
+     * The escape width is deliberately fixed. An earlier version formatted with
+     * {@code %02x}, which widens to four digits above {@code 0xFF} while the
+     * decoder consumed exactly two, corrupting every non-Latin-1 key
+     * ({@code 中文} decoded back as {@code N2de87}).
      *
      * @param metadata the original metadata map
      * @return a new map with Azure-safe encoded keys
@@ -187,60 +193,87 @@ public class AzureBlobStore implements BlobStore {
     }
 
     /**
+     * Number of hex digits in a single escape sequence. Fixed at four so that every UTF-16 code
+     * unit -- not just those below {@code 0x100} -- encodes and decodes unambiguously.
+     */
+    private static final int ESCAPE_HEX_DIGITS = 4;
+    /**
+     * Total length of an escape sequence: the {@code _} marker plus its hex digits.
+     */
+    private static final int ESCAPE_LENGTH = 1 + ESCAPE_HEX_DIGITS;
+
+    /**
      * Encode a single metadata key to an Azure-safe identifier.
+     * <p>
+     * Every non-alphanumeric character becomes {@code _XXXX}, a FIXED four-digit lowercase hex
+     * escape of its UTF-16 code unit. The width is fixed at four because a variable-width escape
+     * is not decodable: the previous implementation formatted with {@code %02x}, which silently
+     * widened to four digits for any code point above {@code 0xFF} while the decoder always
+     * consumed exactly two -- so {@code 中文} encoded to {@code _4e2d_6587} and decoded back to
+     * {@code N2de87}, corrupting the key. Four digits covers the whole UTF-16 range; characters
+     * outside the BMP are encoded as their two surrogate code units and recombine on decode.
+     * <p>
+     * A leading digit is escaped as well, because an Azure metadata key must begin with a letter
+     * or an underscore -- escaping it makes the result start with {@code _} and removes the need
+     * for the separate {@code _00} guard prefix the previous implementation used (that prefix is
+     * ambiguous against a four-digit escape, which can itself begin {@code _00}).
      */
     private static String encodeKey(String key) {
-        StringBuilder sb = new StringBuilder(key.length() * 2);
+        StringBuilder sb = new StringBuilder(key.length() * ESCAPE_LENGTH);
         for (int i = 0; i < key.length(); i++) {
             char c = key.charAt(i);
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+            boolean alphabetic = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+            boolean digit = c >= '0' && c <= '9';
+            // a digit passes through unless it is first: an Azure key may not start with one
+            if (alphabetic || (digit && i > 0)) {
                 sb.append(c);
             } else {
-                // Escape as _XX (two-digit lowercase hex)
                 sb.append('_');
-                sb.append(String.format("%02x", (int) c));
+                sb.append(String.format("%0" + ESCAPE_HEX_DIGITS + "x", (int) c));
             }
         }
-        String encoded = sb.toString();
-        // Azure keys must start with a letter or underscore. If the
-        // encoded result starts with a digit, prefix with _00 (which
-        // decodes to an empty character and is stripped on decode).
-        if (!encoded.isEmpty() && Character.isDigit(encoded.charAt(0))) {
-            encoded = "_00" + encoded;
-        }
-        return encoded;
+        return sb.toString();
     }
 
     /**
-     * Decode a single Azure metadata key back to the original.
+     * Decode a single Azure metadata key back to the original, reversing {@link #encodeKey}.
+     * <p>
+     * Guarantees {@code decodeKey(encodeKey(k)).equals(k)} for every {@link String} {@code k},
+     * including non-ASCII and non-BMP keys.
      */
     private static String decodeKey(String encoded) {
-        // Strip the _00 leading-digit guard prefix if present
-        if (encoded.startsWith("_00") && encoded.length() > 3
-            && Character.isDigit(encoded.charAt(3))) {
-            encoded = encoded.substring(3);
-        }
         StringBuilder sb = new StringBuilder(encoded.length());
         int i = 0;
         while (i < encoded.length()) {
             char c = encoded.charAt(i);
-            if (c == '_' && i + 2 < encoded.length()) {
-                String hex = encoded.substring(i + 1, i + 3);
-                try {
-                    int codePoint = Integer.parseInt(hex, 16);
-                    sb.append((char) codePoint);
-                    i += 3;
-                } catch (NumberFormatException e) {
-                    // Not a valid escape sequence; pass through literally
-                    sb.append(c);
-                    i++;
-                }
+            if (c == '_' && i + ESCAPE_LENGTH <= encoded.length()
+                && isHex(encoded, i + 1, i + ESCAPE_LENGTH)) {
+                sb.append((char) Integer.parseInt(encoded.substring(i + 1, i + ESCAPE_LENGTH), 16));
+                i += ESCAPE_LENGTH;
             } else {
+                // Not a valid escape sequence; pass through literally
                 sb.append(c);
                 i++;
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * Whether {@code [from, to)} of {@code value} is entirely hex digits. Checked explicitly
+     * rather than relying on {@link Integer#parseInt} throwing, because {@code parseInt} also
+     * accepts a leading {@code +} or {@code -}, which would let a non-escape sequence such as
+     * {@code _-12f} decode as if it were one.
+     */
+    private static boolean isHex(String value, int from, int to) {
+        for (int i = from; i < to; i++) {
+            char c = value.charAt(i);
+            boolean hexDigit = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!hexDigit) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

@@ -201,6 +201,99 @@ public abstract class BlobStoreContract {
             retrievedMeta.size(), is(3));
     }
 
+    /**
+     * Whether this backend can represent metadata keys containing characters above
+     * {@code U+00FF}. Backends that can MUST round-trip them exactly; backends that cannot MUST
+     * reject the write (see {@link #shouldNeverSilentlyCorruptMetadataKeysAboveLatin1()}).
+     * <p>
+     * Declaring this per backend, rather than accepting "it threw something" universally, keeps
+     * the contract honest: a backend cannot pass by failing for an unrelated reason.
+     *
+     * @return {@code true} by default -- Azure, GCS, filesystem and in-memory all round-trip;
+     *     only S3 overrides this, because it carries metadata in {@code x-amz-meta-*} HTTP
+     *     headers whose field names are ASCII tokens
+     */
+    protected boolean supportsNonAsciiMetadataKeys() {
+        return true;
+    }
+
+    /**
+     * Asserts that {@code rejection} is a genuine "cannot represent this key" response rather
+     * than an unrelated failure. Only called for backends that return {@code false} from
+     * {@link #supportsNonAsciiMetadataKeys()}; the base implementation asserts nothing so that
+     * backends which round-trip need not implement it.
+     */
+    protected void assertNonAsciiMetadataKeyRejection(RuntimeException rejection) {
+        // overridden by backends that declare they cannot represent these keys
+    }
+
+    /**
+     * A metadata key containing characters ABOVE {@code U+00FF} must EITHER round-trip exactly OR
+     * be rejected loudly. What no backend may do is accept the write and return a different key.
+     * <p>
+     * The contract is deliberately "never silently corrupt" rather than "always round-trip",
+     * because the backends genuinely differ in what they can represent and that is legitimate:
+     * <ul>
+     *   <li>Azure, GCS, filesystem and in-memory round-trip these keys (Azure by escaping them,
+     *       GCS via JSON metadata, filesystem via {@code Properties} {@code \\uXXXX} escapes);</li>
+     *   <li>S3 rejects them with a 400, because it transports metadata as {@code x-amz-meta-*}
+     *       HTTP headers and header field names are ASCII tokens. Refusing the write is a correct,
+     *       safe response to a key it cannot represent.</li>
+     * </ul>
+     * This case exists because the Azure backend used to do the forbidden third thing: its escape
+     * formatted with two hex digits, which silently widened to four above {@code 0xFF} while the
+     * decoder always consumed exactly two, so {@code 中文} was stored as {@code _4e2d_6587} and
+     * read back as {@code N2de87} with no error anywhere. The pre-existing fixtures were
+     * ASCII-only and could not see it.
+     * <p>
+     * Note the weaker assertion does NOT weaken the guard against that bug: silent corruption
+     * returns a wrong key without throwing, which still fails here.
+     */
+    @Test
+    public void shouldNeverSilentlyCorruptMetadataKeysAboveLatin1() {
+        Map<String, String> meta = new HashMap<>();
+        meta.put("中文", "chinese");
+        meta.put("café", "latin1-accent");
+        meta.put("plain", "ascii");
+
+        String key = "roundtrip-meta-non-ascii";
+
+        if (!supportsNonAsciiMetadataKeys()) {
+            // This backend has DECLARED it cannot represent such keys. It must then reject the
+            // write outright. Deliberately not a blanket `catch (RuntimeException)`: that would
+            // also pass for a container that never started, an expired credential or a network
+            // blip, turning this into a test that asserts nothing.
+            RuntimeException rejection = null;
+            try {
+                store.put(key, "payload".getBytes(StandardCharsets.UTF_8), meta);
+            } catch (RuntimeException e) {
+                rejection = e;
+            }
+            assertThat("a backend that cannot represent non-ASCII metadata keys must REJECT the "
+                    + "write, not accept it and store something else",
+                rejection, is(notNullValue()));
+            // subclass asserts the rejection is a genuine "cannot represent this key" response
+            // (e.g. an HTTP 400) rather than any other failure that happens to throw
+            assertNonAsciiMetadataKeyRejection(rejection);
+            assertFalse("a rejected write must not have partially landed",
+                store.get(key).isPresent());
+            return;
+        }
+
+        store.put(key, "payload".getBytes(StandardCharsets.UTF_8), meta);
+        Optional<Blob> result = store.get(key);
+
+        assertTrue("blob should be present", result.isPresent());
+        Map<String, String> retrievedMeta = result.get().getMetadata();
+        assertThat("a key above U+00FF must round-trip exactly, not be corrupted",
+            retrievedMeta.get("中文"), is("chinese"));
+        assertThat("a Latin-1 accented key must round-trip exactly",
+            retrievedMeta.get("café"), is("latin1-accent"));
+        assertThat("the ascii key should round-trip", retrievedMeta.get("plain"), is("ascii"));
+        assertThat("metadata should have exactly 3 entries (no key collision or loss)",
+            retrievedMeta.size(), is(3));
+    }
+
     // --- empty and large data ---
 
     @Test
