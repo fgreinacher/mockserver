@@ -63,14 +63,22 @@ fi
   -e "MOCKSERVER_HOST=$MOCKSERVER_NAME" \
   -e "MOCKSERVER_PORT=1080" \
   --network "$NETWORK_NAME" \
-  `# Test files are discovered, NOT hand-listed. A hand-maintained list silently` \
-  `# drops any test file added later: this step previously named 7 files while the` \
-  `# suite had 15, so class_callback, sre_slo_chaos, control_plane_auth_tls, drift,` \
-  `# a2a, dispose and setup_mock_server never ran in CI and their failures were` \
-  `# invisible. Globbing keeps CI and \`npm test\` in lockstep by construction.` \
-  `# Thresholds re-measured against the FULL 15-file suite (2026-07): actual is` \
+  `# Runs npm run test:coverage rather than spelling out the node --test command,` \
+  `# so CI, \`npm test\` and \`npm run test:external\` all go through ONE definition.` \
+  `# This step used to carry its own copy of the invocation, which is how it came` \
+  `# to name 7 files while the suite had 15 -- class_callback, sre_slo_chaos,` \
+  `# control_plane_auth_tls, drift, a2a, dispose and setup_mock_server never ran` \
+  `# in CI and their failures were invisible. Discovery now lives in` \
+  `# test/discover_test_files.js and the run in test/run_node_tests.js.` \
+  `#` \
+  `# test/run_node_tests.js fails on a \`not ok\` TAP line as well as on a non-zero` \
+  `# exit: node --test reports "# fail 0" AND exits 0 when a suite throws while` \
+  `# being constructed (a throw inside describe()), so an exit-code-only gate` \
+  `# passes a run in which no test executed at all.` \
+  `#` \
+  `# Coverage thresholds re-measured against the FULL suite (2026-07): actual is` \
   `# lines 86.91 / branches 84.11 / functions 92.92, so the gate sits ~2-3 points` \
   `# under each. The old 68/72/74 were calibrated for a 7-file list and left so` \
   `# much slack that the gate could not fail — a larger suite must not come with` \
   `# a weaker threshold. Re-measure and raise these when the suite grows again.` \
-  -- bash -c 'npm ci && npx c8 --check-coverage --lines 84 --functions 90 --branches 80 node --test --test-force-exit --test-concurrency=1 test/no_proxy/*_test.js test/with_proxy/*_test.js'
+  -- bash -c 'npm ci && npm run test:coverage'

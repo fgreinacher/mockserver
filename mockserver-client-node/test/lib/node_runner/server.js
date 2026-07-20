@@ -33,7 +33,7 @@ var routing = function () {
         var uri = url.parse(req.url).pathname,
             filename = "";
 
-        if (uri === '/' && req.method == 'GET') {
+        if (uri === '/' && req.method === 'GET') {
             uri = "/index.html";
         }
 
@@ -63,7 +63,7 @@ var routing = function () {
                 target: 'http://localhost:' + MOCK_SERVER_PORT
             });
         }
-    }
+    };
 };
 
 http.createServer(routing(false)).listen(PORT);

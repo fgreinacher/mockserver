@@ -43,8 +43,8 @@
     "typecheck": "tsc",
     "pretest": "npm run typecheck",
     "test": "node test/run_with_local_server.js",
-    "test:external": "node --test --test-force-exit --test-concurrency=1 test/no_proxy/*_test.js test/with_proxy/*_test.js",
-    "test:coverage": "c8 --check-coverage --lines 84 --functions 90 --branches 80 node --test --test-force-exit --test-concurrency=1 test/no_proxy/*_test.js test/with_proxy/*_test.js",
+    "test:external": "node test/run_node_tests.js",
+    "test:coverage": "c8 --check-coverage --lines 84 --functions 90 --branches 80 node test/run_node_tests.js",
     "test:browser": "npx playwright test --config test/browser/playwright.config.js",
     "build:server": "cd ../mockserver && ./mvnw -q -pl mockserver-netty -am package -DskipTests"
   },

@@ -14,8 +14,8 @@
         var fs = require('fs');
 
         var defer = function () {
-            var promise = (global.protractor && protractor.promise.USE_PROMISE_MANAGER !== false)
-                ? protractor.promise
+            var promise = (global.protractor && global.protractor.promise.USE_PROMISE_MANAGER !== false)
+                ? global.protractor.promise
                 : Q;
             var deferred = promise.defer();
 

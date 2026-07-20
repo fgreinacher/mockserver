@@ -31,27 +31,9 @@ const path = require('path');
 
 const PORT = parseInt(process.env.MOCKSERVER_PORT, 10) || 1080;
 const TARGET_DIR = path.resolve(__dirname, '..', '..', 'mockserver', 'mockserver-netty', 'target');
-// Test files are DISCOVERED, not hand-listed. Three divergent hand-maintained
-// lists (this file, package.json's test:external/test:coverage, and the CI
-// step) each missed a different subset, so test files added later silently
-// never ran anywhere — sre_slo_chaos_test.js covered a real verification bug
-// while running in neither `npm test` nor CI. Discovery keeps them in lockstep.
-function discoverTestFiles() {
-    return ['test/no_proxy', 'test/with_proxy']
-        .flatMap((dir) => {
-            const abs = path.resolve(__dirname, '..', dir);
-            let entries;
-            try {
-                entries = fs.readdirSync(abs);
-            } catch (err) {
-                return [];
-            }
-            return entries
-                .filter((f) => f.endsWith('_test.js'))
-                .sort()
-                .map((f) => dir + '/' + f);
-        });
-}
+// Discovery lives in test/discover_test_files.js so this script, package.json
+// and the CI step cannot drift apart -- see the comment there.
+const { discoverTestFiles } = require('./discover_test_files.js');
 
 const TEST_FILES = discoverTestFiles();
 if (TEST_FILES.length === 0) {
@@ -153,9 +135,12 @@ function waitForServer(retriesRemaining, onReady) {
 // up to ~60s (300 * 200ms) to allow for a cold JVM start
 waitForServer(300, () => {
     console.log('MockServer is ready on port ' + PORT + ' — running tests');
+    // Delegated to run_node_tests.js, which fails on a `not ok` TAP line as well
+    // as on a non-zero exit -- node reports "# fail 0" and exit 0 when a suite
+    // throws during construction, so the exit code alone is not a gate.
     const tests = spawn(
         process.execPath,
-        ['--test', '--test-force-exit', '--test-concurrency=1', ...TEST_FILES],
+        [path.resolve(__dirname, 'run_node_tests.js'), ...TEST_FILES],
         { stdio: 'inherit', cwd: path.resolve(__dirname, '..') }
     );
     tests.on('exit', (code) => {

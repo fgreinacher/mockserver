@@ -21,10 +21,43 @@ module.exports = function (grunt) {
             options: {
                 jshintrc: '.jshintrc'
             },
+            // These globs previously pointed at 'js/**/*.js', a directory that does
+            // not exist in this package, so the task linted exactly one file --
+            // Gruntfile.js itself -- and reported "1 file lint free". No client
+            // source and no test was ever linted, making every "jshint clean"
+            // claim from this client vacuous. They now name the real sources.
+            //
+            // test/browser is deliberately excluded: those are Playwright specs
+            // carrying `// @ts-check` and are covered by `npm run test:browser`
+            // plus tsc. jshint cannot parse them (it reports an unrecoverable
+            // syntax error part-way through) so including them would be noise,
+            // not coverage. The exclusion is recorded here rather than left
+            // implicit, which is the difference from the situation above.
+            //
+            // Fallout from enabling this for the first time, measured against the
+            // 48 files these globs select (pristine sources, before any fix):
+            //   327 findings with the .jshintrc as it stood
+            //    17 findings with `esversion: 11` alone   <- the real fallout
+            // The 310-finding difference was ES-version parse artefacts: the config
+            // set no `esversion`, so jshint read an ES2017+ codebase as ES5. Of the
+            // residual 17, five were genuine defects (two undeclared globals, a
+            // missing semicolon, a `==`, and a late-defined function -- all fixed),
+            // eleven were multi-line ternaries (see `laxbreak` in .jshintrc) and one
+            // was the legacy `unescape` global (declared there).
+            //
+            // Derive that number as the COMPLEMENT -- what survives the fix -- not by
+            // counting the version-message category. jshint phrases those findings
+            // three different ways ("is available in ES6", "is only available in
+            // ES6", "is only available in ES8"), and version-only parsing also
+            // induces unrelated knock-on errors, so grepping for any one form
+            // undercounts. The complement needs no such enumeration to be correct.
             user_defaults: [
                 'Gruntfile.js',
-                'js/**/*.js',
-                '!js/lib/**/*.js'
+                '*.js',
+                'test/**/*.js',
+                'examples/**/*.js',
+                '!test/browser/**/*.js',
+                '!**/node_modules/**/*.js'
             ]
         },
         start_mockserver: {

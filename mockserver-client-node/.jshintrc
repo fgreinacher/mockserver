@@ -1,4 +1,17 @@
 {
+  // This config previously set no `esversion`, so jshint parsed an ES2017+
+  // codebase as ES5 and reported the whole language as an error.
+  "esversion": 11,
+  // NOTE: broader than its motivating case. `laxbreak` suppresses the
+  // "misleading line break" warning for ALL operator-first continuations, not
+  // only the multi-line ternaries it was enabled for. That includes leading `+`
+  // and `-`, which -- unlike `?` -- CAN begin a statement and so are genuine ASI
+  // hazards. It is accepted because the linted set currently contains 10
+  // leading-`?` continuations and ZERO leading `+`/`-`. Re-check that claim by
+  // dropping this line and running `npx grunt jshint`: anything reported as
+  // "Misleading line break before '+'" (or '-') is a real hazard this is hiding
+  // and should be fixed at the source rather than covered here.
+  "laxbreak": true,
   "curly": true,
   "eqeqeq": true,
   "immed": true,
@@ -21,6 +34,7 @@
     "beforeEach": true,
     "afterEach": true,
     "it": true,
-    "navigator": true
+    "navigator": true,
+    "unescape": true
   }
 }

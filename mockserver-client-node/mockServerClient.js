@@ -1067,6 +1067,38 @@ var mockServerClient;
             return callbackClassOrAction;
         };
         /**
+         * Build the expectation object shared by all advanced response builders.
+         * The requestMatcher may be a path string or a full request matcher object.
+         * The supplied responseAction is set on the expectation under the given
+         * top-level action property name (matching the MockServer JSON model).
+         */
+        var createAdvancedResponseExpectation = function (responseActionProperty, requestMatcher, responseAction, times, priority, timeToLive, id) {
+            var request = (typeof requestMatcher === "string") ? createRequestMatcher(requestMatcher) : requestMatcher;
+            var timesObject;
+            if (typeof times === "number") {
+                timesObject = {
+                    remainingTimes: times,
+                    unlimited: false
+                };
+            } else if (typeof times === "object" && times !== null) {
+                timesObject = times;
+            } else {
+                timesObject = {
+                    remainingTimes: 1,
+                    unlimited: false
+                };
+            }
+            var expectation = {
+                id: typeof id === "string" ? id : undefined,
+                priority: typeof priority === "number" ? priority : undefined,
+                httpRequest: request,
+                times: timesObject,
+                timeToLive: (typeof timeToLive === "object" && timeToLive !== null) ? timeToLive : undefined
+            };
+            expectation[responseActionProperty] = responseAction;
+            return expectation;
+        };
+        /**
          * Setup an expectation that delegates the response to a server-side
          * class implementing the MockServer ExpectationResponseCallback
          * interface (a "class callback"). This is a pure-JSON, REST-only
@@ -1264,38 +1296,6 @@ var mockServerClient;
                 }
             };
             return chain;
-        };
-        /**
-         * Build the expectation object shared by all advanced response builders.
-         * The requestMatcher may be a path string or a full request matcher object.
-         * The supplied responseAction is set on the expectation under the given
-         * top-level action property name (matching the MockServer JSON model).
-         */
-        var createAdvancedResponseExpectation = function (responseActionProperty, requestMatcher, responseAction, times, priority, timeToLive, id) {
-            var request = (typeof requestMatcher === "string") ? createRequestMatcher(requestMatcher) : requestMatcher;
-            var timesObject;
-            if (typeof times === "number") {
-                timesObject = {
-                    remainingTimes: times,
-                    unlimited: false
-                };
-            } else if (typeof times === "object" && times !== null) {
-                timesObject = times;
-            } else {
-                timesObject = {
-                    remainingTimes: 1,
-                    unlimited: false
-                };
-            }
-            var expectation = {
-                id: typeof id === "string" ? id : undefined,
-                priority: typeof priority === "number" ? priority : undefined,
-                httpRequest: request,
-                times: timesObject,
-                timeToLive: (typeof timeToLive === "object" && timeToLive !== null) ? timeToLive : undefined
-            };
-            expectation[responseActionProperty] = responseAction;
-            return expectation;
         };
         /**
          * Setup an expectation that responds with a Server-Sent Events (SSE) stream
