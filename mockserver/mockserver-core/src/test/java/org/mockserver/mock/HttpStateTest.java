@@ -704,6 +704,207 @@ public class HttpStateTest {
         assertThat(body, containsString("http://example.com/api/test"));
     }
 
+    // -----------------------------------------------------------------------------------------
+    // Coverage for the (type, format) retrieve-dispatch branches that ship export/collection
+    // formats but previously had no HttpState-level test. Each assertion below checks a
+    // format-appropriate marker so that a regression which fell through to the plain-text
+    // "not supported" branch would fail the test rather than pass silently.
+    // -----------------------------------------------------------------------------------------
+
+    private HttpRequest retrieveRequest(RetrieveType type, String format, HttpRequest matcher) {
+        HttpRequest retrieveRequest = request("/mockserver/retrieve")
+            .withMethod("PUT")
+            .withQueryStringParameter("type", type.name())
+            .withQueryStringParameter("format", format);
+        if (matcher != null) {
+            retrieveRequest.withBody(requestDefinitionSerializer.serialize(matcher));
+        }
+        return retrieveRequest;
+    }
+
+    @Test
+    public void shouldHandleRetrieveRequestsInExportFormats() {
+        // given
+        httpState.log(
+            new LogEntry()
+                .setType(RECEIVED_REQUEST)
+                .setHttpRequest(request("/api/test").withMethod("GET").withHeader("host", "example.com"))
+        );
+
+        // OPENAPI
+        FakeResponseWriter openApiWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.REQUESTS, "OPENAPI", request("/api/test")), openApiWriter, false), is(true));
+        assertThat(openApiWriter.response.getStatusCode(), is(200));
+        String openApiBody = openApiWriter.response.getBodyAsString();
+        assertThat(openApiBody, not(containsString("not supported")));
+        assertThat(openApiBody, containsString("\"openapi\""));
+        assertThat(openApiBody, containsString("\"info\""));
+
+        // POSTMAN
+        FakeResponseWriter postmanWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.REQUESTS, "POSTMAN", request("/api/test")), postmanWriter, false), is(true));
+        assertThat(postmanWriter.response.getStatusCode(), is(200));
+        String postmanBody = postmanWriter.response.getBodyAsString();
+        assertThat(postmanBody, not(containsString("not supported")));
+        assertThat(postmanBody, containsString("\"item\""));
+        assertThat(postmanBody, containsString("schema.getpostman.com"));
+
+        // BRUNO — zip download, assert headers rather than body equality
+        FakeResponseWriter brunoWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.REQUESTS, "BRUNO", request("/api/test")), brunoWriter, false), is(true));
+        assertThat(brunoWriter.response.getStatusCode(), is(200));
+        assertThat(brunoWriter.response.getFirstHeader("content-type"), is("application/zip"));
+        assertThat(brunoWriter.response.getFirstHeader("content-disposition"), containsString("attachment"));
+        assertThat(brunoWriter.response.getFirstHeader("content-disposition"), containsString(".bruno.zip"));
+
+        // HAR
+        FakeResponseWriter harWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.REQUESTS, "HAR", request("/api/test")), harWriter, false), is(true));
+        assertThat(harWriter.response.getStatusCode(), is(200));
+        String harBody = harWriter.response.getBodyAsString();
+        assertThat(harBody, not(containsString("not supported")));
+        assertThat(harBody, containsString("\"version\" : \"1.2\""));
+        assertThat(harBody, containsString("\"entries\""));
+        assertThat(harBody, containsString("/api/test"));
+    }
+
+    @Test
+    public void shouldHandleRetrieveRequestResponsesInExportFormats() {
+        // given
+        httpState.log(
+            new LogEntry()
+                .setType(FORWARDED_REQUEST)
+                .setHttpRequest(request("/api/test").withMethod("GET").withHeader("host", "example.com"))
+                .setHttpResponse(response().withStatusCode(200).withReasonPhrase("OK").withBody("hello"))
+                .setExpectation(new Expectation(request("/api/test"), Times.once(), TimeToLive.unlimited(), 0).withId("key_one").thenRespond(response().withStatusCode(200).withReasonPhrase("OK").withBody("hello")))
+        );
+
+        // OPENAPI
+        FakeResponseWriter openApiWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(REQUEST_RESPONSES, "OPENAPI", request("/api/test")), openApiWriter, false), is(true));
+        assertThat(openApiWriter.response.getStatusCode(), is(200));
+        String openApiBody = openApiWriter.response.getBodyAsString();
+        assertThat(openApiBody, not(containsString("not supported")));
+        assertThat(openApiBody, containsString("\"openapi\""));
+        assertThat(openApiBody, containsString("\"info\""));
+
+        // POSTMAN
+        FakeResponseWriter postmanWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(REQUEST_RESPONSES, "POSTMAN", request("/api/test")), postmanWriter, false), is(true));
+        assertThat(postmanWriter.response.getStatusCode(), is(200));
+        String postmanBody = postmanWriter.response.getBodyAsString();
+        assertThat(postmanBody, not(containsString("not supported")));
+        assertThat(postmanBody, containsString("\"item\""));
+        assertThat(postmanBody, containsString("schema.getpostman.com"));
+
+        // BRUNO — zip download, assert headers rather than body equality
+        FakeResponseWriter brunoWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(REQUEST_RESPONSES, "BRUNO", request("/api/test")), brunoWriter, false), is(true));
+        assertThat(brunoWriter.response.getStatusCode(), is(200));
+        assertThat(brunoWriter.response.getFirstHeader("content-type"), is("application/zip"));
+        assertThat(brunoWriter.response.getFirstHeader("content-disposition"), containsString("attachment"));
+        assertThat(brunoWriter.response.getFirstHeader("content-disposition"), containsString(".bruno.zip"));
+    }
+
+    @Test
+    public void shouldHandleRetrieveRecordedExpectationsInExportFormats() {
+        // given
+        httpState.log(
+            new LogEntry()
+                .setType(FORWARDED_REQUEST)
+                .setHttpRequest(request("/api/test").withMethod("GET").withHeader("host", "example.com"))
+                .setHttpResponse(response().withStatusCode(200).withReasonPhrase("OK").withBody("hello"))
+                .setExpectation(new Expectation(request("/api/test"), Times.once(), TimeToLive.unlimited(), 0).withId("key_one").thenRespond(response().withStatusCode(200).withReasonPhrase("OK").withBody("hello")))
+        );
+
+        // LOG_ENTRIES — serialized recorded-expectation log entries (JSON array)
+        FakeResponseWriter logEntriesWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.RECORDED_EXPECTATIONS, "LOG_ENTRIES", request("/api/test")), logEntriesWriter, false), is(true));
+        assertThat(logEntriesWriter.response.getStatusCode(), is(200));
+        String logEntriesBody = logEntriesWriter.response.getBodyAsString();
+        assertThat(logEntriesBody, not(containsString("not supported")));
+        assertThat(logEntriesBody.trim(), startsWith("["));
+        assertThat(logEntriesBody, containsString("/api/test"));
+
+        // OPENAPI
+        FakeResponseWriter openApiWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.RECORDED_EXPECTATIONS, "OPENAPI", request("/api/test")), openApiWriter, false), is(true));
+        assertThat(openApiWriter.response.getStatusCode(), is(200));
+        String openApiBody = openApiWriter.response.getBodyAsString();
+        assertThat(openApiBody, not(containsString("not supported")));
+        assertThat(openApiBody, containsString("\"openapi\""));
+        assertThat(openApiBody, containsString("\"info\""));
+
+        // POSTMAN
+        FakeResponseWriter postmanWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.RECORDED_EXPECTATIONS, "POSTMAN", request("/api/test")), postmanWriter, false), is(true));
+        assertThat(postmanWriter.response.getStatusCode(), is(200));
+        String postmanBody = postmanWriter.response.getBodyAsString();
+        assertThat(postmanBody, not(containsString("not supported")));
+        assertThat(postmanBody, containsString("\"item\""));
+        assertThat(postmanBody, containsString("schema.getpostman.com"));
+
+        // BRUNO — zip download, assert headers rather than body equality
+        FakeResponseWriter brunoWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.RECORDED_EXPECTATIONS, "BRUNO", request("/api/test")), brunoWriter, false), is(true));
+        assertThat(brunoWriter.response.getStatusCode(), is(200));
+        assertThat(brunoWriter.response.getFirstHeader("content-type"), is("application/zip"));
+        assertThat(brunoWriter.response.getFirstHeader("content-disposition"), containsString("attachment"));
+        assertThat(brunoWriter.response.getFirstHeader("content-disposition"), containsString(".bruno.zip"));
+
+        // HAR
+        FakeResponseWriter harWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.RECORDED_EXPECTATIONS, "HAR", request("/api/test")), harWriter, false), is(true));
+        assertThat(harWriter.response.getStatusCode(), is(200));
+        String harBody = harWriter.response.getBodyAsString();
+        assertThat(harBody, not(containsString("not supported")));
+        assertThat(harBody, containsString("\"version\" : \"1.2\""));
+        assertThat(harBody, containsString("\"entries\""));
+        assertThat(harBody, containsString("/api/test"));
+    }
+
+    @Test
+    public void shouldHandleRetrieveActiveExpectationsInExportFormats() {
+        // given
+        httpState.add(new Expectation(request("/api/test").withMethod("GET")).withId("key_one").thenRespond(response().withStatusCode(200).withBody("hello")));
+
+        // OPENAPI
+        FakeResponseWriter openApiWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.ACTIVE_EXPECTATIONS, "OPENAPI", request("/api/test")), openApiWriter, false), is(true));
+        assertThat(openApiWriter.response.getStatusCode(), is(200));
+        String openApiBody = openApiWriter.response.getBodyAsString();
+        assertThat(openApiBody, not(containsString("not supported")));
+        assertThat(openApiBody, containsString("\"openapi\""));
+        assertThat(openApiBody, containsString("\"info\""));
+
+        // POSTMAN
+        FakeResponseWriter postmanWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.ACTIVE_EXPECTATIONS, "POSTMAN", request("/api/test")), postmanWriter, false), is(true));
+        assertThat(postmanWriter.response.getStatusCode(), is(200));
+        String postmanBody = postmanWriter.response.getBodyAsString();
+        assertThat(postmanBody, not(containsString("not supported")));
+        assertThat(postmanBody, containsString("\"item\""));
+        assertThat(postmanBody, containsString("schema.getpostman.com"));
+
+        // BRUNO — zip download, assert headers rather than body equality
+        FakeResponseWriter brunoWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.ACTIVE_EXPECTATIONS, "BRUNO", request("/api/test")), brunoWriter, false), is(true));
+        assertThat(brunoWriter.response.getStatusCode(), is(200));
+        assertThat(brunoWriter.response.getFirstHeader("content-type"), is("application/zip"));
+        assertThat(brunoWriter.response.getFirstHeader("content-disposition"), containsString("attachment"));
+        assertThat(brunoWriter.response.getFirstHeader("content-disposition"), containsString(".bruno.zip"));
+
+        // HAR
+        FakeResponseWriter harWriter = new FakeResponseWriter();
+        assertThat(httpState.handle(retrieveRequest(RetrieveType.ACTIVE_EXPECTATIONS, "HAR", request("/api/test")), harWriter, false), is(true));
+        assertThat(harWriter.response.getStatusCode(), is(200));
+        String harBody = harWriter.response.getBodyAsString();
+        assertThat(harBody, not(containsString("not supported")));
+        assertThat(harBody, containsString("\"version\" : \"1.2\""));
+        assertThat(harBody, containsString("\"entries\""));
+        assertThat(harBody, containsString("/api/test"));
+    }
+
     @Test
     public void shouldRejectCurlForActiveExpectations() {
         // given
