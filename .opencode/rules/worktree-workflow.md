@@ -186,6 +186,17 @@ CHANGED_MODULES="$(git diff --name-only origin/master... \
     -Djacoco.skip=true
 ```
 
+**Full module, not just the unit's test.** `-Dtest=<ClassName>` scoping
+runs only one test class and misses related/dependent tests in the same
+module that the change may have broken. Always run the **full module
+test suite** (`./mvnw test -pl <module>`) as the merge gate; use
+`-Dtest=` only for rapid iteration DURING development, not as a
+substitute for the pre-merge run.
+
+**Concurrency limit.** Launch at most **2 `isolation:worktree` agents
+in parallel** — more creates disk and CPU contention that causes
+spurious test failures and build timeouts.
+
 **Gate 2 — Lint / checkstyle / type checks.** Maven's `validate` phase
 already runs checkstyle. For frontend changes in `mockserver-ui` or
 `mockserver-client-node`, also run `npm run lint` and `npm run build`
@@ -213,6 +224,18 @@ the worktree unmerged for inspection.
 
 ### Step 7 — Atomic merge via flock
 
+**Pre-merge scope check.** Before acquiring the lock, confirm ONLY this
+session's commits are present on the branch:
+
+```bash
+git log --oneline origin/master..HEAD
+```
+
+If commits from another session appear (two sessions inadvertently
+shared a tree), do NOT merge — cherry-pick only this session's commits
+onto a fresh branch. Two sessions sharing a tree have silently rebased
+away gate-passed commits that were recovered only via reflog.
+
 ```bash
 # Respect the operator halt before any reintegration (see [[operator-halt]]).
 .opencode/scripts/check-halt.sh || { echo "operator halt engaged — not merging"; exit 1; }
@@ -230,6 +253,19 @@ flock --timeout 300 "${LOCK_FILE}" bash -c '
 timeout exceeded, fail with a clear error: *"Rebase lock held for >5m
 by another session — retry in a few minutes or check `lsof
 .git/agent-rebase.lock` for the holder."*
+
+**Post-push changelog verification.** `changelog.md` uses a union merge
+driver that silently drops a bullet added in this session when a
+`Rebasing (n/n) skip` line appears during rebase. After any
+rebase+push that touched `changelog.md`, verify the bullet actually
+landed:
+
+```bash
+git show origin/master:changelog.md | grep -F "<your bullet text>"
+```
+
+If the bullet is absent, re-add it with a single-file fixup commit and
+push immediately.
 
 **Re-verify the integrated result (spec §8.4).** If the rebase pulled in
 other units' commits (master advanced since this branch was cut), re-run the

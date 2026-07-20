@@ -32,6 +32,7 @@ Multiple opencode sessions may be running concurrently on the same repository. T
 7. **Pull before push.** Push happens autonomously once the gate chain passes (or when the user asks). Always run `git pull --rebase` first — another session may have pushed commits since your last check.
 8. **Lock-sensitive operations.** Terraform state is locked via DynamoDB. If `terraform plan` or `terraform apply` fails with a lock error, another session is running Terraform — do not retry, inform the user.
 9. **Branch awareness.** If working on a feature branch, verify you are on the correct branch before committing. Another session may have switched branches.
+10. **Check master build first.** When a PR, Dependabot, or feature-branch CI build fails, inspect the **master** build BEFORE investigating the change — failures are frequently inherited from an already-broken master (e.g. an enforcer / dependency-convergence break), not caused by the PR itself. Check: `gh api repos/<org>/<repo>/commits/master/status` or the most recent master Buildkite build.
 
 ## Step 1: Classify Changed Files
 

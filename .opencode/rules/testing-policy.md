@@ -76,3 +76,11 @@ If unit tests already passed earlier in this conversation for the exact same cha
 - **New tests:** Follow existing test patterns in the module. Use JUnit 5 (Jupiter) only in `mockserver-junit-jupiter`; all other modules use JUnit 4.
 - **Flaky tests:** Never just re-run — investigate root cause. Common causes: port contention, timing-dependent assertions, shared mutable state.
 - Descriptive test names that explain the expected behavior.
+
+## Local-First Verification
+
+**Prove fixes locally before pushing.** Reproduce the failure and confirm the fix passes locally before pushing. Do not push speculatively and rely on CI to confirm correctness — CI runs under a PTY and some repros require `pty.fork`; a green CI run is not a substitute for a local prove-out.
+
+## Observable-Behaviour Tests
+
+**Prefer tests that assert observable behaviour** over tests coupled to implementation details (specific class names, shaded-jar contents, internal field values). Observable-behaviour tests assert what the system *does* — HTTP response codes, JSON payloads, log entries, emitted events — so they survive safe refactors without false-failure noise.
