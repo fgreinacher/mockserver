@@ -2727,12 +2727,13 @@ public class HttpActionHandler {
                         final long breakpointResponseTimeMs = effectiveForwardLatencyMs(response, responseTimeMs);
                         if (attemptResponseBreakpoint(responseBreakpoint3, request, effectiveResponse,
                             action != null ? action.getExpectationId() : null, responseWriter, continuationExecutor, responseToWrite -> {
-                            responseWriter.writeResponse(request, responseToWrite, false);
                             HttpResponse logResponse = responseToWrite.clone();
                             logResponse.withHeader(RESPONSE_TIME_HEADER, String.valueOf(breakpointResponseTimeMs));
                             String logMessageFormat = capturedChaosErrorInjected
                                 ? "returning chaos-injected error response:{}replacing forwarded response" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}for action:{}from expectation:{}"
                                 : "returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}for action:{}from expectation:{}";
+                            // Log before write — see the non-streaming writeCommand below for why the
+                            // FIFO visibility guarantee requires publishing ahead of the client write.
                             mockServerLogger.logEvent(
                                 new LogEntry()
                                     .setType(FORWARDED_REQUEST)
@@ -2745,6 +2746,7 @@ public class HttpActionHandler {
                                     .setMessageFormat(logMessageFormat)
                                     .setArguments(logResponse, responseFuture.getHttpRequest(), httpRequestToCurlSerializer.toCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress()), action, action != null ? action.getExpectationId() : null)
                             );
+                            responseWriter.writeResponse(request, responseToWrite, false);
                         }, postProcessor)) {
                             // Return immediately — do NOT block the scheduler worker thread
                             return;
@@ -2765,12 +2767,17 @@ public class HttpActionHandler {
                     // Non-streaming path: GenAI span already emitted above (before breakpoint check)
                     final long nonStreamingResponseTimeMs = effectiveForwardLatencyMs(response, responseTimeMs);
                     writeCommand = () -> {
-                        responseWriter.writeResponse(request, effectiveResponse, false);
                         HttpResponse logResponse = effectiveResponse.clone();
                         logResponse.withHeader(RESPONSE_TIME_HEADER, String.valueOf(nonStreamingResponseTimeMs));
                         String logMessageFormat = chaosErrorInjected
                             ? "returning chaos-injected error response:{}replacing forwarded response" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}for action:{}from expectation:{}"
                             : "returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}for action:{}from expectation:{}";
+                        // Log BEFORE writing the response, matching the mocked-response path. The
+                        // visibility guarantee for verify/retrieve rests on disruptor FIFO ordering:
+                        // drainDisruptor can only wait for entries already published, so publishing
+                        // after the client has been given the response leaves a window in which a
+                        // client that immediately verifies (or retrieves recorded requests) misses
+                        // this exchange. Publishing first closes that window.
                         mockServerLogger.logEvent(
                             new LogEntry()
                                 .setType(FORWARDED_REQUEST)
@@ -2783,6 +2790,7 @@ public class HttpActionHandler {
                                 .setMessageFormat(logMessageFormat)
                                 .setArguments(logResponse, responseFuture.getHttpRequest(), httpRequestToCurlSerializer.toCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress()), action, action.getExpectationId())
                         );
+                        responseWriter.writeResponse(request, effectiveResponse, false);
                         if (postProcessor != null) {
                             postProcessor.run();
                         }
@@ -2812,6 +2820,15 @@ public class HttpActionHandler {
         final StreamingBody streamingBody = response.getStreamingBody();
 
         // Write the response head through the response writer (which will subscribe to the streaming body)
+        //
+        // NOTE — deliberate exception to the "log before write" ordering used by every other forward
+        // path. The FORWARDED_REQUEST entry for a streaming response carries the captured body
+        // (streamingBody.capturedBytes()) and the total stream duration, neither of which exists until
+        // the stream has completed — so the entry cannot be published ahead of the write without
+        // logging an empty, mistimed exchange. The consequence is that a client which starts consuming
+        // a stream and verifies before the stream ends may not yet see this entry; that is inherent to
+        // streaming (the exchange genuinely is not finished) rather than a lost race. Verifications
+        // against streamed exchanges should await stream completion.
         responseWriter.writeResponse(request, response, false);
 
         // Register a completion callback on the streaming body to write the log entry
@@ -2865,7 +2882,9 @@ public class HttpActionHandler {
 
     void writeForwardActionResponse(final HttpResponse response, final ResponseWriter responseWriter, final HttpRequest request, final Action action) {
         try {
-            responseWriter.writeResponse(request, response, false);
+            // Log before write — the verify/retrieve visibility guarantee depends on the log entry
+            // being published to the disruptor before the client can observe the response and act
+            // on it (see the non-streaming forward writeCommand for the full rationale).
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setType(FORWARDED_REQUEST)
@@ -2878,6 +2897,7 @@ public class HttpActionHandler {
                     .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}for action:{}from expectation:{}")
                     .setArguments(response, response, httpRequestToCurlSerializer.toCurl(request), action, action.getExpectationId())
             );
+            responseWriter.writeResponse(request, response, false);
         } catch (Throwable throwable) {
             mockServerLogger.logEvent(
                 new LogEntry()

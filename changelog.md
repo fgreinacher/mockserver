@@ -7,10 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Event-log eviction is now observable.** `MockServerEventLog.getEvictedLogEntryCount()` reports how many
+  entries have been discarded because the log reached `maxLogEntries` (or `maxEventLogSizeInBytes`), a WARN is
+  logged once on the first eviction (naming the current `maxLogEntries` and the fact that verifications are
+  affected), and the count is mirrored to the `mock_server_evicted_log_entries` Prometheus counter when
+  metrics are enabled. Previously eviction was completely silent — no counter, no log line, no metric.
+  The count includes only true evictions: an explicit `reset()`/`clear()` resets it to zero.
 
 ### Changed
+- **BREAKING BEHAVIOUR: `verify(never())` and other upper-bound verifications now FAIL instead of passing once
+  the event log has evicted entries. Suites that are green today may legitimately go red — that is the point.**
+  Previously, when the event log rolled over, the entries proving a request had happened were silently
+  discarded and `verify(never())` began passing on its own: "this endpoint was never called" turned green
+  because the evidence was gone, with no warning anywhere. For a verification tool this is the worst possible
+  failure mode, and it got more reachable the more expectations were loaded (see the log-entry accounting fix
+  below). A verification can no longer claim more than it knows: when the log has evicted, any verification
+  asserting an **upper** bound fails with an explicit message naming the eviction count and `maxLogEntries`,
+  instead of passing on an incomplete record. **This includes `once()`** — `once()` asserts *exactly* one call,
+  so eviction could be hiding a second one; if you use the common `verify(request("/orders"), once())` idiom,
+  this is the change that affects you. The strictness is deliberately asymmetric: eviction can only ever make
+  the observed count too *low*, so `atLeast(n)` — and therefore the bare `verify(request)`, which defaults to
+  `atLeast(1)` — is unaffected and keeps passing, and a verification that already failed can never be turned
+  into a pass. In short: **affected** = `never()`, `atMost(n)`, `exactly(n)`, `once()`, `between(a,b)`;
+  **unaffected** = `atLeast(n)` and bare `verify(request)`. If a verification starts failing after this
+  upgrade, the log was already incomplete and the previous pass was not trustworthy — increase `maxLogEntries`,
+  or `reset()` the event log between tests (a reset, and a clear-everything, clear the eviction state; a
+  filtered clear deliberately does not). The new `failVerificationOnEvictedLog` property (default `true`)
+  restores the previous, unsound behaviour when set to `false`.
 
 ### Fixed
+- **Verification could miss a just-forwarded request (race on every forward path).** The visibility guarantee
+  for `verify`/`retrieve` rests on disruptor FIFO ordering — `drainDisruptor()` waits only for entries already
+  *published*, so it cannot wait for one that has not been published yet. The mocked-response path logs before
+  writing to the client, but every forward/proxy path did the opposite: it wrote the response first and logged
+  the `FORWARDED_REQUEST` entry afterwards, leaving a window in which a client that received the response and
+  immediately verified or retrieved would not see the exchange. Plain `verify(once())` hid the bug because
+  `RECEIVED_REQUEST` is published early in the pipeline, but record-then-retrieve, `withResponse`,
+  `withDisposition` and verify-by-expectation-id genuinely raced. The three non-streaming forward paths now log
+  before writing, matching the mocked path. The streaming path is a deliberate exception: its log entry carries
+  the captured body and total stream duration, neither of which exists until the stream completes, so
+  verifications against streamed exchanges should await stream completion.
+- **Docs: log entries per request were understated by an order of magnitude, causing `maxLogEntries` to be
+  under-sized.** `docs/code/memory-management.md` claimed a flat 2-3 entries per request. The matching scan also
+  emits one `EXPECTATION_NOT_MATCHED` entry at `INFO` (the default level) for every expectation evaluated before
+  a match, so the real cost is up to ~N+2 with N expectations loaded (~N+3 on a no-match with a closest-match
+  diagnostic). The doc now gives the per-case breakdown and explains why under-sizing is a correctness concern,
+  not just a memory one.
 - **The OpenAPI specification served at `GET /mockserver/openapi.yaml` described 14 of MockServer's 68
   control-plane paths; it now describes all of them.** The specification exists in the repository twice —
   the copy published on the website and the copy bundled into the jar — and nothing compared the two, so

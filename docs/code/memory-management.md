@@ -84,7 +84,27 @@ The table below shows the computed defaults for different JVM heap configuration
 | 2 GB | 614 MB | 1,401,856 | 100,000 (capped) | 15,000 (capped) |
 | 4 GB | 1,229 MB | 2,843,648 | 100,000 (capped) | 15,000 (capped) |
 
-With the default Docker image (no `-Xmx` set, JVM defaults to ~256 MB), users get roughly **20,000 log entries**. Since each HTTP request generates 2-3 log entries (RECEIVED_REQUEST + EXPECTATION_MATCHED + EXPECTATION_RESPONSE), this means approximately **~7,000-10,000 HTTP requests** are retained before eviction begins.
+With the default Docker image (no `-Xmx` set, JVM defaults to ~256 MB), users get roughly **20,000 log entries**.
+
+#### Log entries per request — budget for the expectation count, not a constant
+
+A request does **not** cost a fixed 2-3 entries. The floor is 2-3 (`RECEIVED_REQUEST` + `EXPECTATION_MATCHED` + `EXPECTATION_RESPONSE`), but the matching scan in `RequestMatchers` also emits **one `EXPECTATION_NOT_MATCHED` entry at `INFO` for every expectation it evaluates before finding a match** (`HttpRequestPropertiesMatcher`). `INFO` is the default level, so this is on unless the level is raised.
+
+The scan runs in sorted order and short-circuits at the first match, so the real cost per request is:
+
+| Case | Entries per request |
+|------|--------------------|
+| Matches the first expectation evaluated | ~3 |
+| Matches the k-th expectation evaluated | ~k + 2 |
+| Matches nothing (N expectations) | ~N + 3 (N misses + `RECEIVED_REQUEST` + `NO_MATCH_RESPONSE` + the closest-match diagnostic) — or ~N + 2 when the closest-match diagnostic does not fire |
+
+The closest-match diagnostic is the one entry worth being precise about, because it is easy to miscount in either direction. `RequestMatchers` emits exactly **one** additional `EXPECTATION_NOT_MATCHED` summary ("closest expectation matched X/Y fields"), and only when `matchedExpectation == null && closestMatchExpectation != null` at `INFO`. Its numerator is computed by re-evaluating the closest matcher without fail-fast, and that re-evaluation calls `suppressMatchResultLogging()` — so the re-evaluation itself emits nothing. That suppression is what keeps the summary from being *duplicated*; it does not remove the summary. So: one extra entry when a closest match is identified, none when there are no expectations, none below `INFO`.
+
+With N expectations loaded, budget **up to ~N+2 entries per request**, not 2-3. A suite with 200 expectations whose requests mostly match late can burn ~200 entries per request, exhausting a 20,000-entry log in ~100 requests rather than the ~7,000-10,000 a flat 2-3 estimate implies.
+
+Two mitigations reduce the multiplier at scale but do not remove it: above a size threshold the scan narrows to a `(method, exact-path)` candidate bucket rather than the full list, and raising the log level above `INFO` suppresses the not-matched entries entirely.
+
+**Why this matters beyond memory:** under-sizing `maxLogEntries` causes eviction, and eviction silently destroys the evidence that verifications reason about. `verify(never())` and `verify(atMost(n))` cannot distinguish "never happened" from "evicted", so MockServer now **fails** such verifications once the log has evicted rather than passing them on an incomplete record (see [event-system.md](event-system.md) and the `failVerificationOnEvictedLog` property). Sizing this correctly is therefore a correctness concern, not only a memory one.
 
 ### Dev Mode Override
 

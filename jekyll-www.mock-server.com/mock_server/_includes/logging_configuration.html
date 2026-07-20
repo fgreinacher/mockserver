@@ -19,6 +19,7 @@
         <tr><td><a href="#button_configuration_log_level_overrides"><code>logLevelOverrides</code></a></td><td>Per-type/category log level overrides</td><td><code>{}</code></td></tr>
         <tr><td><a href="#button_configuration_detailed_match_failures"><code>detailedMatchFailures</code></a></td><td>Include per-field match failure reasons</td><td><code>true</code></td></tr>
         <tr><td><a href="#button_configuration_detailed_verification_failures"><code>detailedVerificationFailures</code></a></td><td>Include per-field diff in verification failures</td><td><code>true</code></td></tr>
+        <tr><td><a href="#button_configuration_fail_verification_on_evicted_log"><code>failVerificationOnEvictedLog</code></a></td><td>Fail <code>never()</code> / <code>atMost</code> verifications when the event log has discarded entries</td><td><code>true</code></td></tr>
         <tr><td><a href="#button_configuration_launch_ui__debug"><code>launchUIForLogLevelDebug</code></a></td><td>Auto-open UI when log level is DEBUG</td><td><code>false</code></td></tr>
         <tr><td><a href="#button_configuration_enabled_metrics"><code>metricsEnabled</code></a></td><td>Prometheus metrics endpoint</td><td><code>false</code></td></tr>
         <tr><td><a href="#button_configuration_slow_request_threshold_millis"><code>slowRequestThresholdMillis</code></a></td><td>Flag forwarded requests slower than this threshold</td><td><code>0</code> (disabled)</td></tr>
@@ -179,6 +180,44 @@
     <pre class="code" style="padding: 2px;"><code class="code">mockserver.detailedVerificationFailures=...</code></pre>
     <p>Example:</p>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.detailedVerificationFailures="false"</code></pre>
+</div>
+
+<button id="button_configuration_fail_verification_on_evicted_log" class="accordion title"><strong>Fail Verification When Event Log Has Evicted Entries</strong></button>
+<div class="panel title">
+    <p>The event log holds at most <a href="#button_configuration_max_log_entries"><code>maxLogEntries</code></a> entries. Once it is full, the oldest entries are discarded to make room for new ones. Those discarded entries are gone — they can no longer be retrieved or verified.</p>
+    <p>This matters for verifications that assert something did <strong>not</strong> happen. If you call <span class="inline_code">verify(request, never())</span> and the matching entries have been discarded, MockServer cannot tell the difference between "this request was never made" and "this request was made, but the record of it was thrown away". Previously it reported success, so a test asserting an endpoint was never called could quietly turn green simply because the log had filled up.</p>
+    <p>If true (the default) a verification that asserts an <strong>upper</strong> bound will fail, rather than pass, when the event log has discarded entries. The failure message tells you how many entries were discarded and the current <code>maxLogEntries</code>.</p>
+    <table>
+        <thead><tr><th>Verification</th><th>Affected?</th><th>Why</th></tr></thead>
+        <tbody>
+            <tr><td><span class="inline_code">never()</span></td><td>Yes</td><td>Asserts at most 0 calls</td></tr>
+            <tr><td><span class="inline_code">atMost(n)</span></td><td>Yes</td><td>Asserts at most n calls</td></tr>
+            <tr><td><span class="inline_code">exactly(n)</span></td><td>Yes</td><td>Asserts at most n calls</td></tr>
+            <tr><td><span class="inline_code">once()</span></td><td><strong>Yes</strong></td><td>Asserts <em>exactly</em> one call, so a discarded second call would go unnoticed</td></tr>
+            <tr><td><span class="inline_code">between(a, b)</span></td><td>Yes</td><td>Asserts at most b calls</td></tr>
+            <tr><td><span class="inline_code">atLeast(n)</span></td><td>No</td><td>No upper bound to violate</td></tr>
+            <tr><td><span class="inline_code">verify(request)</span> (no times)</td><td>No</td><td>Defaults to <span class="inline_code">atLeast(1)</span></td></tr>
+        </tbody>
+    </table>
+    <p><span class="inline_code">once()</span> is worth calling out: it is a very common way to verify a request, and although it reads like "this happened", it actually asserts "this happened <em>exactly once</em>" — an upper bound. Discarding entries can only ever make the observed count too low, never too high, which is why lower-bound verifications are safe and upper-bound ones are not.</p>
+    <p>If a verification starts failing for this reason, the fix is usually one of:</p>
+    <ul>
+        <li>increase <a href="#button_configuration_max_log_entries"><code>maxLogEntries</code></a> — note each request can log up to one entry per expectation, plus two, because every expectation that does not match logs an entry at <code>INFO</code>;</li>
+        <li>clear or reset the event log between tests, which also clears the discarded-entry state;</li>
+        <li>raise the log level above <code>INFO</code> to stop non-matching expectations logging at all.</li>
+    </ul>
+    <p>Set to false to restore the previous behaviour, where these verifications could pass against an incomplete log.</p>
+    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">true</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.failVerificationOnEvictedLog(boolean enable)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.failVerificationOnEvictedLog=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_FAIL_VERIFICATION_ON_EVICTED_LOG=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.failVerificationOnEvictedLog=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.failVerificationOnEvictedLog="false"</code></pre>
 </div>
 
 <button id="button_configuration_launch_ui__debug" class="accordion title"><strong>ClientAndServer launches UI when log level DEBUG</strong></button>

@@ -155,6 +155,11 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     // mock_server_dropped_log_events Prometheus counter) makes the cliff observable.
     private final AtomicLong droppedLogEvents = new AtomicLong(0);
     private final AtomicBoolean droppedLogEventWarned = new AtomicBoolean(false);
+    // Set once the event log has evicted at least one entry to stay within maxLogEntries /
+    // maxEventLogSizeInBytes, so the WARN below is emitted exactly once rather than per eviction.
+    // The authoritative count lives on the deque (eventLog.getEvictedCount()); this is only the
+    // "have we told the user yet" latch, and it is reset alongside the deque's counter on clear.
+    private final AtomicBoolean evictedLogEntryWarned = new AtomicBoolean(false);
     // Header name added to the in-memory (and, if it ran before disk-write, persisted) copy of a
     // request/response body that was truncated by maxLoggedBodyBytes; its value is the original
     // (pre-truncation) body length in bytes.
@@ -239,6 +244,21 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
      */
     public long getDroppedLogEventCount() {
         return droppedLogEvents.get();
+    }
+
+    /**
+     * Number of log entries evicted from the event log because it reached {@code maxLogEntries} (or
+     * {@code maxEventLogSizeInBytes}), since startup or the last {@link #reset()}.
+     * <p>
+     * A non-zero value means the log is no longer a complete record: requests that genuinely
+     * happened may have been discarded. Verifications that assert an <em>upper</em> bound
+     * ({@code never()}, {@code atMost(n)}, and the upper half of {@code exactly}/{@code between})
+     * cannot be trusted once this is non-zero, because "not found" may mean "discarded" rather than
+     * "never happened" — {@link #verify} therefore fails such verifications instead of passing them.
+     * Counts only true evictions: an explicit {@code reset()}/{@code clear()} resets it to zero.
+     */
+    public long getEvictedLogEntryCount() {
+        return eventLog.getEvictedCount();
     }
 
     private void startRingBuffer() {
@@ -330,6 +350,22 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         // add() weighs the (possibly truncated) entry via LogEntry::estimatedHeapSize for the byte
         // budget — truncation has already run, and the estimate is computed lazily inside add().
         eventLog.add(logEntry);
+        // Make eviction observable. Runs on the single disruptor consumer thread, so this is an
+        // uncontended read of an AtomicLong plus (after the first eviction) an already-set
+        // AtomicBoolean — negligible on the hot path.
+        if (eventLog.getEvictedCount() > 0 && evictedLogEntryWarned.compareAndSet(false, true)) {
+            Metrics.incrementEvictedLogEntries();
+            logger.warn(
+                "event log full — discarding the oldest entries (maxLogEntries=" + configuration.maxLogEntries() + "). "
+                    + "Requests that have been evicted are no longer visible to retrieve or verify, so any verification "
+                    + "asserting an upper bound — never(), atMost(n), exactly(n), once() and between(a,b) — can no longer "
+                    + "prove absence and will now FAIL rather than pass on missing evidence. Note this includes once(), "
+                    + "which asserts exactly one call. atLeast(n), and the bare verify(request) which defaults to "
+                    + "atLeast(1), are unaffected. Increase maxLogEntries, or clear/reset the log between tests. "
+                    + "Note each request can log up to (number of expectations + 2) entries, because a non-matching "
+                    + "expectation logs EXPECTATION_NOT_MATCHED at INFO."
+            );
+        }
         notifyListeners(this, false);
         writeToSystemOut(logger, logEntry, configuration);
     }
@@ -411,7 +447,10 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         disruptor.publishEvent(new LogEntry()
             .setType(RUNNABLE)
             .setConsumer(() -> {
+                // clear() also zeroes the deque's eviction counter; re-arm the warn-once latch so a
+                // fresh round of eviction after this reset is reported again.
                 eventLog.clear();
+                evictedLogEntryWarned.set(false);
                 future.complete("done");
                 notifyListeners(this, false);
             })
@@ -474,6 +513,18 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                             eventLog.removeItem(logEntry);
                         }
                     }
+                }
+                if (clearEverything) {
+                    // "Clear everything" declares the whole recorded history irrelevant, exactly as
+                    // reset() does, so it must also clear the eviction taint — otherwise a suite that
+                    // uses clear() rather than reset() between tests would stay permanently unable to
+                    // prove absence after the log rolled over once. Note this path TOMBSTONES entries
+                    // when logging at INFO rather than emptying the deque, so eventLog.clear() (which
+                    // resets the counter itself) is not called here and the counter is reset directly.
+                    // A FILTERED clear deliberately does not reset it: removing some entries says
+                    // nothing about the other evidence eviction already destroyed.
+                    eventLog.resetEvictedCount();
+                    evictedLogEntryWarned.set(false);
                 }
                 if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
                     mockServerLogger.logEvent(
@@ -914,6 +965,28 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                         resultConsumer.accept(failureMessage);
                     });
                 } else {
+                    // The count satisfies the expected times — but a PASS that rests on an UPPER
+                    // bound (never(), atMost(n), and the upper half of exactly/between) is only
+                    // sound while the event log is a complete record. Once entries have been
+                    // evicted, "found 0 times" may mean "the evidence was discarded", so passing
+                    // here would be a silent false green — the single worst failure mode for a
+                    // verification tool. Refuse to certify what we can no longer see.
+                    String evictionFailure = upperBoundUnprovableAfterEviction(verification);
+                    if (evictionFailure != null) {
+                        if (logResult && mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setType(VERIFICATION_FAILED)
+                                    .setLogLevel(Level.INFO)
+                                    .setCorrelationId(logCorrelationId)
+                                    .setHttpRequest(verification.getHttpRequest())
+                                    .setMessageFormat("request:{}could not be verified " + verification.getTimes() + " because the event log has evicted entries")
+                                    .setArguments(verification.getHttpRequest())
+                            );
+                        }
+                        resultConsumer.accept(evictionFailure);
+                        return;
+                    }
                     if (logResult && mockServerLogger.isEnabledForInstance(Level.INFO)) {
                         mockServerLogger.logEvent(
                             new LogEntry()
@@ -939,6 +1012,49 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                 resultConsumer.accept("exception while processing verification" + (isNotBlank(throwable.getMessage()) ? " " + throwable.getMessage() : ""));
             }
         });
+    }
+
+    /**
+     * Decide whether a would-be PASS is actually unprovable because the event log has evicted
+     * entries, returning the failure message when so and {@code null} when the PASS stands.
+     * <p>
+     * Only verifications carrying an <strong>upper</strong> bound are affected. The asymmetry is the
+     * whole point: eviction can only ever make the observed count too LOW, so
+     * <ul>
+     *   <li>Affected (an upper bound is asserted, and the requests we did NOT see may simply have
+     *       been discarded): {@code never()}, {@code atMost(n)}, {@code exactly(n)},
+     *       {@code once()} and {@code between(a,b)}. Note {@code once()} is
+     *       {@code VerificationTimes(1, 1)} — it asserts "exactly one", so eviction could be hiding
+     *       a second call and it must fail closed like any other upper bound.</li>
+     *   <li>Unaffected (no upper bound; we saw the requests and eviction cannot manufacture
+     *       evidence): {@code atLeast(n)}, and therefore the bare {@code verify(request)} whose
+     *       default is {@link org.mockserver.verify.VerificationTimes#atLeast(int) atLeast(1)}
+     *       ({@code Verification.times}). These keep passing.</li>
+     * </ul>
+     * A FAIL is never converted to a pass here, so this can only ever make verification stricter.
+     */
+    private String upperBoundUnprovableAfterEviction(Verification verification) {
+        return upperBoundUnprovableAfterEviction(verification, "Request");
+    }
+
+    private String upperBoundUnprovableAfterEviction(Verification verification, String subject) {
+        if (!configuration.failVerificationOnEvictedLog()) {
+            return null;
+        }
+        int atMost = verification.getTimes() != null ? verification.getTimes().getAtMost() : -1;
+        if (atMost == -1) {
+            // no upper bound asserted — eviction cannot invalidate this pass
+            return null;
+        }
+        long evicted = eventLog.getEvictedCount();
+        if (evicted <= 0) {
+            return null;
+        }
+        return subject + " could not be verified " + verification.getTimes() + " because the event log has discarded "
+            + evicted + " entr" + (evicted == 1 ? "y" : "ies") + " after reaching its maximum size (maxLogEntries="
+            + configuration.maxLogEntries() + "), so absence cannot be proven — the matching requests may have been"
+            + " evicted rather than never made. Increase maxLogEntries, reset the event log between tests, or set"
+            + " failVerificationOnEvictedLog=false to restore the previous (unsound) behaviour.";
     }
 
     private void verifyResponse(Verification verification, String logCorrelationId, boolean logResult, Consumer<String> resultConsumer) {
@@ -1000,6 +1116,25 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                     }
                     resultConsumer.accept(failureMessage);
                 } else {
+                    // Same soundness rule as the request side: an upper-bound PASS is not provable
+                    // once the log has evicted, because the responses we did not find may simply
+                    // have been discarded. See upperBoundUnprovableAfterEviction.
+                    String evictionFailure = upperBoundUnprovableAfterEviction(verification, "Response");
+                    if (evictionFailure != null) {
+                        if (logResult && mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setType(VERIFICATION_FAILED)
+                                    .setLogLevel(Level.INFO)
+                                    .setCorrelationId(logCorrelationId)
+                                    .setHttpRequest(verification.getHttpRequest())
+                                    .setMessageFormat("response:{}could not be verified " + verification.getTimes() + " because the event log has evicted entries")
+                                    .setArguments(verification.getHttpResponse())
+                            );
+                        }
+                        resultConsumer.accept(evictionFailure);
+                        return;
+                    }
                     if (logResult && mockServerLogger.isEnabledForInstance(Level.INFO)) {
                         mockServerLogger.logEvent(
                             new LogEntry()

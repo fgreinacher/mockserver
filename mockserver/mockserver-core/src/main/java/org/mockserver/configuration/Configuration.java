@@ -267,6 +267,7 @@ public class Configuration {
     // verification
     private Integer maximumNumberOfRequestToReturnInVerificationFailure;
     private Boolean detailedVerificationFailures;
+    private Boolean failVerificationOnEvictedLog;
     private Boolean attachMismatchDiagnosticToResponse;
     private Boolean closestMatchHintEnabled;
 
@@ -3959,6 +3960,23 @@ public class Configuration {
      */
     public Configuration detailedVerificationFailures(Boolean detailedVerificationFailures) {
         this.detailedVerificationFailures = detailedVerificationFailures;
+        return this;
+    }
+
+    public Boolean failVerificationOnEvictedLog() {
+        if (failVerificationOnEvictedLog == null) {
+            return ConfigurationProperties.failVerificationOnEvictedLog();
+        }
+        return failVerificationOnEvictedLog;
+    }
+
+    /**
+     * If true (the default) a verification that asserts an upper bound (never(), atMost(n), exactly(n), between(a,b)) fails rather than passes if the event log has evicted entries, because absence cannot be proven once evidence has been discarded. Set to false to restore the previous behaviour where such verifications could pass on an incomplete log.
+     *
+     * @param failVerificationOnEvictedLog enabled failing upper-bound verifications when the event log has evicted entries
+     */
+    public Configuration failVerificationOnEvictedLog(Boolean failVerificationOnEvictedLog) {
+        this.failVerificationOnEvictedLog = failVerificationOnEvictedLog;
         return this;
     }
 

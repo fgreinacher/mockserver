@@ -46,6 +46,10 @@ public class Metrics {
     // Null until metrics are enabled. Makes the (previously silent for INFO/DEBUG) ring-buffer
     // saturation cliff observable under load.
     private static volatile Counter droppedLogEventsTotal;
+    // Counter for event-log entries evicted because the event log reached its maximum size.
+    // Null until metrics are enabled. Makes silent loss of retained evidence observable, which
+    // matters because an evicted log can no longer prove the absence of a request.
+    private static volatile Counter evictedLogEntriesTotal;
     // Per-upstream forwarded-request observability. Histogram of forward/proxy
     // latency labeled by upstream host, plus a count labeled by host + status
     // class. Both null until metrics are enabled. Cardinality is bounded by the
@@ -207,6 +211,10 @@ public class Metrics {
                     droppedLogEventsTotal = Counter.builder()
                         .name("mock_server_dropped_log_events")
                         .help("Total number of log events dropped because the event-log ring buffer was full")
+                        .register();
+                    evictedLogEntriesTotal = Counter.builder()
+                        .name("mock_server_evicted_log_entries")
+                        .help("Number of event log entries evicted because the event log reached its maximum size")
                         .register();
                     forwardRequestDurationSeconds = Histogram.builder()
                         .name("mock_server_forward_request_duration_seconds")
@@ -478,6 +486,7 @@ public class Metrics {
             requestDurationByMethodSeconds = null;
             slowRequestTotal = null;
             droppedLogEventsTotal = null;
+            evictedLogEntriesTotal = null;
             forwardRequestDurationSeconds = null;
             forwardRequestsTotal = null;
             forwardUpstreamProtocolTotal = null;
@@ -617,6 +626,25 @@ public class Metrics {
      */
     public static long getDroppedLogEventCount() {
         Counter counter = droppedLogEventsTotal;
+        return counter != null ? (long) counter.get() : 0L;
+    }
+
+    /**
+     * Increment the evicted-log-entries counter (event log reached its maximum
+     * size). No-op unless metrics are enabled (the counter is null otherwise).
+     */
+    public static void incrementEvictedLogEntries() {
+        Counter counter = evictedLogEntriesTotal;
+        if (counter != null) {
+            counter.inc();
+        }
+    }
+
+    /**
+     * Return the current evicted-log-entries count, or 0 if metrics are disabled.
+     */
+    public static long getEvictedLogEntryCount() {
+        Counter counter = evictedLogEntriesTotal;
         return counter != null ? (long) counter.get() : 0L;
     }
 

@@ -260,6 +260,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Integer streamIdleTimeoutSeconds;
     private Boolean validateRequestsAgainstOpenApiSpec;
     private Boolean detailedVerificationFailures;
+    private Boolean failVerificationOnEvictedLog;
     private Long globalResponseDelayMillis;
     private Boolean forwardAdjustHostHeader;
     private String forwardDefaultHostHeader;
@@ -567,6 +568,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.streamIdleTimeoutSeconds = configuration.streamIdleTimeoutSeconds();
             this.validateRequestsAgainstOpenApiSpec = configuration.validateRequestsAgainstOpenApiSpec();
             this.detailedVerificationFailures = configuration.detailedVerificationFailures();
+            this.failVerificationOnEvictedLog = configuration.failVerificationOnEvictedLog();
             this.globalResponseDelayMillis = configuration.globalResponseDelayMillis();
             this.forwardAdjustHostHeader = configuration.forwardAdjustHostHeader();
             this.forwardDefaultHostHeader = configuration.forwardDefaultHostHeader();
@@ -927,6 +929,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.streamIdleTimeoutSeconds(streamIdleTimeoutSeconds);
         configuration.validateRequestsAgainstOpenApiSpec(validateRequestsAgainstOpenApiSpec);
         configuration.detailedVerificationFailures(detailedVerificationFailures);
+        configuration.failVerificationOnEvictedLog(failVerificationOnEvictedLog);
         configuration.globalResponseDelayMillis(globalResponseDelayMillis);
         configuration.forwardAdjustHostHeader(forwardAdjustHostHeader);
         configuration.forwardDefaultHostHeader(forwardDefaultHostHeader);
@@ -1648,6 +1651,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (detailedVerificationFailures != null) {
             target.detailedVerificationFailures(detailedVerificationFailures);
+        }
+        if (failVerificationOnEvictedLog != null) {
+            target.failVerificationOnEvictedLog(failVerificationOnEvictedLog);
         }
         if (globalResponseDelayMillis != null) {
             target.globalResponseDelayMillis(globalResponseDelayMillis);
@@ -3800,6 +3806,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setDetailedVerificationFailures(Boolean detailedVerificationFailures) {
         this.detailedVerificationFailures = detailedVerificationFailures;
+        return this;
+    }
+
+    public Boolean getFailVerificationOnEvictedLog() {
+        return failVerificationOnEvictedLog;
+    }
+
+    public ConfigurationDTO setFailVerificationOnEvictedLog(Boolean failVerificationOnEvictedLog) {
+        this.failVerificationOnEvictedLog = failVerificationOnEvictedLog;
         return this;
     }
 

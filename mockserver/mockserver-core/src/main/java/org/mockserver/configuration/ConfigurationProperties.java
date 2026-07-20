@@ -337,6 +337,7 @@ public class ConfigurationProperties {
     // verification
     private static final String MOCKSERVER_MAXIMUM_NUMBER_OF_REQUESTS_TO_RETURN_IN_VERIFICATION_FAILURE = "mockserver.maximumNumberOfRequestToReturnInVerificationFailure";
     private static final String MOCKSERVER_DETAILED_VERIFICATION_FAILURES = "mockserver.detailedVerificationFailures";
+    private static final String MOCKSERVER_FAIL_VERIFICATION_ON_EVICTED_LOG = "mockserver.failVerificationOnEvictedLog";
     private static final String MOCKSERVER_ATTACH_MISMATCH_DIAGNOSTIC_TO_RESPONSE = "mockserver.attachMismatchDiagnosticToResponse";
     private static final String MOCKSERVER_CLOSEST_MATCH_HINT_ENABLED = "mockserver.closestMatchHintEnabled";
 
@@ -4433,6 +4434,19 @@ public class ConfigurationProperties {
      */
     public static void detailedVerificationFailures(boolean enable) {
         setProperty(MOCKSERVER_DETAILED_VERIFICATION_FAILURES, "" + enable);
+    }
+
+    public static boolean failVerificationOnEvictedLog() {
+        return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_FAIL_VERIFICATION_ON_EVICTED_LOG, "MOCKSERVER_FAIL_VERIFICATION_ON_EVICTED_LOG", "" + true));
+    }
+
+    /**
+     * If true (the default) a verification that asserts an upper bound (never(), atMost(n), exactly(n), between(a,b)) fails rather than passes if the event log has evicted entries, because absence cannot be proven once evidence has been discarded. Set to false to restore the previous behaviour where such verifications could pass on an incomplete log.
+     *
+     * @param enable enabled failing upper-bound verifications when the event log has evicted entries
+     */
+    public static void failVerificationOnEvictedLog(boolean enable) {
+        setProperty(MOCKSERVER_FAIL_VERIFICATION_ON_EVICTED_LOG, "" + enable);
     }
 
     public static boolean attachMismatchDiagnosticToResponse() {

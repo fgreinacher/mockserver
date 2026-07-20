@@ -35,6 +35,15 @@ import java.util.function.ToLongFunction;
  * the byte-eviction loop stops once the deque is empty so we never reject the incoming element. The
  * budget is disabled when {@code maxBytes <= 0} or the weigher is {@code null}, in which case the
  * deque behaves exactly as the count-bounded version.
+ * <p>
+ * <strong>Eviction accounting:</strong> {@link #getEvictedCount()} reports how many elements this
+ * deque has silently discarded to stay within its bounds. This deque is the only layer that can
+ * distinguish an <em>eviction</em> (evidence lost because the buffer was full) from an intentional
+ * {@link #clear()} or a targeted {@link #removeItem(Object)} — both of which invoke the same
+ * eviction callback but are deliberate, not lossy. Only {@link #pollAndEvict()} increments the
+ * counter; {@link #clear()} resets it, because after an explicit clear the caller has declared the
+ * previous contents irrelevant. MockServer's event log surfaces this count so a verification can
+ * tell "this never happened" apart from "the evidence was discarded".
  *
  * @author jamesdbloom
  */
@@ -51,6 +60,9 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
     // Running total of element weights (per the weigher), kept consistent alongside count so the
     // byte-budget check is O(1). Zero/unused when the budget is disabled.
     private final AtomicLong totalBytes = new AtomicLong(0);
+    // Number of elements discarded to stay within maxSize/maxBytes — see class javadoc. Incremented
+    // ONLY by pollAndEvict (real eviction), never by clear() or removeItem() (deliberate removal).
+    private final AtomicLong evictedCount = new AtomicLong(0);
 
     public CircularConcurrentLinkedDeque(int maxSize, Consumer<E> onEvictCallback) {
         this(maxSize, 0, null, onEvictCallback);
@@ -166,6 +178,7 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
             return false;
         }
         count.decrementAndGet();
+        evictedCount.incrementAndGet();
         if (weigher != null) {
             totalBytes.addAndGet(-weigher.applyAsLong(evicted));
         }
@@ -173,6 +186,26 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
             onEvictCallback.accept(evicted);
         }
         return true;
+    }
+
+    /**
+     * Number of elements silently discarded to stay within {@code maxSize}/{@code maxBytes} since
+     * construction or the last {@link #clear()}. A non-zero value means this deque no longer holds
+     * a complete record of what was added to it — any consumer that reasons about absence (e.g. a
+     * "this never happened" verification) must treat its answer as unreliable.
+     */
+    public long getEvictedCount() {
+        return evictedCount.get();
+    }
+
+    /**
+     * Forget past evictions without touching the contents. Used when a caller declares everything
+     * recorded so far irrelevant but does not (or cannot) physically empty the deque — e.g.
+     * MockServer's "clear everything" path, which tombstones entries rather than removing them.
+     * Without this, one rollover would taint every later query for the lifetime of the process.
+     */
+    public void resetEvictedCount() {
+        evictedCount.set(0);
     }
 
     @Override
@@ -187,6 +220,11 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
         // drained — reset the byte accounting in one shot (avoids relying on per-element weights of
         // elements the callback may already have cleared).
         totalBytes.set(0);
+        // An explicit clear declares the previous contents irrelevant, so past evictions no longer
+        // taint anything a caller asks about the (now empty) deque. Resetting here is what keeps a
+        // per-test `reset()` from permanently poisoning every later verification in a long-running
+        // server — see MockServerEventLog.
+        evictedCount.set(0);
     }
 
     /**

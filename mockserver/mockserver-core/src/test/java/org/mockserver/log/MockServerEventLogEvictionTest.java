@@ -16,6 +16,8 @@ import java.util.concurrent.CompletableFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.not;
@@ -23,8 +25,11 @@ import static org.junit.Assert.fail;
 import static org.mockserver.configuration.Configuration.configuration;
 import static org.mockserver.log.model.LogEntry.LogMessageType.RECEIVED_REQUEST;
 import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpResponse.response;
 import static org.mockserver.verify.Verification.verification;
+import static org.mockserver.verify.VerificationTimes.atLeast;
 import static org.mockserver.verify.VerificationTimes.exactly;
+import static org.mockserver.verify.VerificationTimes.never;
 
 /**
  * Covers eviction of the bounded event-log ring (the {@code CircularConcurrentLinkedDeque} backing
@@ -155,19 +160,197 @@ public class MockServerEventLogEvictionTest {
         // then - exactly two remain in the deque
         assertThat(mockServerEventLog.size(), is(2));
 
-        // then - verification counts only the retained window (2), not the 3 originally added
+        // then - the retained window is 2, but an exactly(2) verification asserts an UPPER bound and
+        // the log has evicted, so it can no longer be certified: the true count was 3. This is the
+        // behaviour change - previously this passed, which was a false green.
         assertThat(verify(
             verification()
                 .withRequest(request("/repeated"))
                 .withTimes(exactly(2))
-        ), is(""));
+        ), is(not("")));
 
-        // and verifying for 3 now fails because the oldest was evicted
+        // and verifying for 3 also fails (the retained count is only 2)
         assertThat(verify(
             verification()
                 .withRequest(request("/repeated"))
                 .withTimes(exactly(3))
         ), is(not("")));
+
+        // with the escape hatch disabled, the old (unsound) count-the-window behaviour returns
+        configuration.failVerificationOnEvictedLog(false);
+        assertThat(verify(
+            verification()
+                .withRequest(request("/repeated"))
+                .withTimes(exactly(2))
+        ), is(""));
+    }
+
+    /**
+     * The headline regression: a request that genuinely happened is evicted, and {@code never()}
+     * then reports success. Against the pre-fix code this test FAILS (verify returns "" - a silent
+     * false green); the fix makes the verification refuse to certify absence it cannot see.
+     */
+    @Test
+    public void shouldNotSilentlyPassNeverVerificationWhenMatchingEntryWasEvicted() {
+        // given - a bounded log, and a request that really was made
+        buildEventLogWithMaxLogEntries(2);
+        addReceivedRequest("/was-definitely-called");
+
+        // when - later traffic drives the log past its bound so the entry above is evicted
+        addReceivedRequest("/filler-1");
+        addReceivedRequest("/filler-2");
+        retrieveAllReceivedRequests();
+
+        // then - the evidence really is gone, and eviction is now observable
+        assertThat(mockServerEventLog.size(), is(2));
+        assertThat(mockServerEventLog.getEvictedLogEntryCount(), greaterThan(0L));
+
+        // then - never() must NOT pass: the request DID happen, we simply discarded the proof
+        String result = verify(
+            verification()
+                .withRequest(request("/was-definitely-called"))
+                .withTimes(never())
+        );
+        assertThat(result, is(not("")));
+        assertThat(result, containsString("could not be verified"));
+        assertThat(result, containsString("maxLogEntries"));
+    }
+
+    /**
+     * The response-aware verify path (verification carrying an httpResponse) counts matches
+     * independently of the request path, so it needs the same guard - otherwise
+     * {@code verify(request, response, never())} keeps silently passing after eviction.
+     */
+    @Test
+    public void shouldNotSilentlyPassNeverResponseVerificationWhenEntryWasEvicted() {
+        // given - a bounded log holding a recorded request/response exchange
+        buildEventLogWithMaxLogEntries(2);
+        mockServerEventLog.add(
+            new LogEntry()
+                .setType(LogEntry.LogMessageType.EXPECTATION_RESPONSE)
+                .setHttpRequest(request("/called"))
+                .setHttpResponse(response().withStatusCode(200))
+        );
+
+        // when - later traffic evicts it
+        addReceivedRequest("/filler-1");
+        addReceivedRequest("/filler-2");
+        retrieveAllReceivedRequests();
+        assertThat(mockServerEventLog.getEvictedLogEntryCount(), greaterThan(0L));
+
+        // then - a response verification asserting absence must not pass on discarded evidence
+        String result = verify(
+            verification()
+                .withRequest(request("/called"))
+                .withResponse(response().withStatusCode(200))
+                .withTimes(never())
+        );
+        assertThat(result, is(not("")));
+        assertThat(result, containsString("could not be verified"));
+    }
+
+    /**
+     * The strictness must be asymmetric. Eviction can only ever make the observed count too LOW, so
+     * a lower-bound verification that already passed cannot have been invalidated by it - those must
+     * keep passing, or every long-running suite would go red for no reason.
+     */
+    @Test
+    public void shouldStillPassLowerBoundVerificationAfterEviction() {
+        // given
+        buildEventLogWithMaxLogEntries(2);
+        addReceivedRequest("/seen");
+        addReceivedRequest("/seen");
+        addReceivedRequest("/filler");
+        retrieveAllReceivedRequests();
+
+        // then - eviction happened
+        assertThat(mockServerEventLog.getEvictedLogEntryCount(), greaterThan(0L));
+
+        // then - atLeast(1) is still provable from the retained window
+        assertThat(verify(
+            verification()
+                .withRequest(request("/seen"))
+                .withTimes(atLeast(1))
+        ), is(""));
+    }
+
+    /**
+     * An explicit reset declares prior contents irrelevant, so it must clear the eviction taint -
+     * otherwise one rollover would poison every verification for the lifetime of the server and the
+     * only remedy would be a restart.
+     */
+    @Test
+    public void shouldClearEvictionTaintOnReset() {
+        // given - a log that has evicted
+        buildEventLogWithMaxLogEntries(2);
+        addReceivedRequest("/old");
+        addReceivedRequest("/filler-1");
+        addReceivedRequest("/filler-2");
+        retrieveAllReceivedRequests();
+        assertThat(mockServerEventLog.getEvictedLogEntryCount(), greaterThan(0L));
+
+        // when - the log is reset
+        mockServerEventLog.reset();
+
+        // then - the taint is gone and never() can be proven again
+        assertThat(mockServerEventLog.getEvictedLogEntryCount(), is(0L));
+        assertThat(verify(
+            verification()
+                .withRequest(request("/anything"))
+                .withTimes(never())
+        ), is(""));
+    }
+
+    /**
+     * "Clear everything" declares the whole history irrelevant just as reset() does, so it must also
+     * clear the eviction taint. Suites commonly use clear() rather than reset() between tests; if
+     * this did not reset, one rollover would leave them unable to prove absence for the rest of the
+     * process lifetime. A FILTERED clear must NOT reset it - removing some entries says nothing about
+     * the evidence eviction already destroyed.
+     */
+    @Test
+    public void shouldClearEvictionTaintOnClearEverythingButNotOnFilteredClear() {
+        // given - a log that has evicted
+        buildEventLogWithMaxLogEntries(2);
+        addReceivedRequest("/old");
+        addReceivedRequest("/filler-1");
+        addReceivedRequest("/filler-2");
+        retrieveAllReceivedRequests();
+        assertThat(mockServerEventLog.getEvictedLogEntryCount(), greaterThan(0L));
+
+        // when - a FILTERED clear is issued, the taint must remain
+        mockServerEventLog.clear(request("/filler-1"));
+        assertThat(mockServerEventLog.getEvictedLogEntryCount(), greaterThan(0L));
+
+        // when - everything is cleared, the taint is dropped
+        mockServerEventLog.clear(null);
+
+        // then - absence can be proven again
+        assertThat(mockServerEventLog.getEvictedLogEntryCount(), is(0L));
+        assertThat(verify(
+            verification()
+                .withRequest(request("/anything"))
+                .withTimes(never())
+        ), is(""));
+    }
+
+    /**
+     * Eviction accounting must count only true evictions, never deliberate removal - otherwise a
+     * per-test {@code reset()} would look like data loss.
+     */
+    @Test
+    public void shouldNotCountExplicitClearAsEviction() {
+        // given - a log well within its bound
+        buildEventLogWithMaxLogEntries(100);
+        addReceivedRequest("/a");
+        addReceivedRequest("/b");
+        retrieveAllReceivedRequests();
+
+        // when - cleared explicitly
+        mockServerEventLog.reset();
+
+        // then - no evictions were recorded
+        assertThat(mockServerEventLog.getEvictedLogEntryCount(), is(0L));
     }
 
     @Test
