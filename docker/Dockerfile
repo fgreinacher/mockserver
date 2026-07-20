@@ -8,7 +8,7 @@
 ARG source=download
 
 # build image — downloads release artifacts from Sonatype, tcnative from Maven Central
-FROM alpine:3.24 as download
+FROM alpine:3.24 AS download
 
 # Optional: trust a corporate root CA before `apk add`. The build context contains
 # ca-bundle.pem (empty in CI, populated locally behind a TLS-inspecting proxy).
@@ -47,7 +47,7 @@ RUN if [ "$TARGETARCH" = "amd64" ]; \
 RUN unzip netty-tcnative-boringssl-static.jar
 
 # build image — copies JAR from context, downloads tcnative from Maven Central
-FROM alpine:3.24 as copy
+FROM alpine:3.24 AS copy
 
 COPY ca-bundle.pem /tmp/local-ca.pem
 RUN if [ -s /tmp/local-ca.pem ]; then \
@@ -78,7 +78,7 @@ RUN if [ "$TARGETARCH" = "amd64" ]; \
     && echo "$(cat /tmp/expected-tcnative.sha256)  netty-tcnative-boringssl-static.jar" | sha256sum -c -
 RUN unzip netty-tcnative-boringssl-static.jar
 
-FROM ${source} as intermediate
+FROM ${source} AS intermediate
 
 # AppCDS build stage — jlink-trimmed JDK 25 runtime + training run producing the AppCDS archive.
 # Mirrors docker/local/Dockerfile (the release/snapshot artifact); this Dockerfile is the public
@@ -86,7 +86,7 @@ FROM ${source} as intermediate
 # NOTE: the JVM inside this runtime image is JDK 25 — the MockServer library itself is still
 # compiled to the Java 17 bytecode floor (see AGENTS.md Java Compatibility Policy); running that
 # jar on a newer JVM is fully supported and is a runtime-only choice, independent of compilation.
-FROM eclipse-temurin:25-jdk-noble as appcds-build
+FROM eclipse-temurin:25-jdk-noble AS appcds-build
 
 COPY --from=intermediate mockserver-netty-jar-with-dependencies.jar /mockserver-netty-jar-with-dependencies.jar
 
@@ -124,7 +124,7 @@ RUN /runtime/bin/java -XX:ArchiveClassesAtExit=/mockserver.jsa \
 FROM gcr.io/distroless/java-base-debian12:nonroot@sha256:a9930cad62d02853d7f3dede7281c4b916cbf74493c2d8d38564121aad92bf6c
 
 # maintainer details
-MAINTAINER James Bloom "jamesdbloom@gmail.com"
+LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
 
 # MCP registry ownership annotation — proves this image backs the com.mock-server/mockserver
 # entry on the official MCP registry (https://registry.modelcontextprotocol.io). Required before the
@@ -155,7 +155,7 @@ USER nonroot
 # and starts normally rather than failing.
 ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-XX:SharedArchiveFile=/mockserver.jsa", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
-ENV SERVER_PORT 1080
+ENV SERVER_PORT=1080
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
   CMD ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-cp", "/mockserver-netty-jar-with-dependencies.jar", "org.mockserver.cli.HealthCheck"]

@@ -11,7 +11,7 @@
 ARG source=download
 
 # build image — downloads release artifacts from Sonatype, tcnative from Maven Central
-FROM alpine:3.24 as download
+FROM alpine:3.24 AS download
 
 # Optional: trust a corporate root CA before `apk add`. The build context contains
 # ca-bundle.pem (empty in CI, populated locally behind a TLS-inspecting proxy).
@@ -49,7 +49,7 @@ RUN if [ "$TARGETARCH" = "amd64" ]; \
 RUN unzip netty-tcnative-boringssl-static.jar
 
 # build image — copies JAR from context, downloads tcnative from Maven Central
-FROM alpine:3.24 as copy
+FROM alpine:3.24 AS copy
 
 COPY ca-bundle.pem /tmp/local-ca.pem
 RUN if [ -s /tmp/local-ca.pem ]; then \
@@ -81,7 +81,7 @@ RUN if [ "$TARGETARCH" = "amd64" ]; \
 RUN unzip netty-tcnative-boringssl-static.jar
 
 # download GraalJS JARs
-FROM alpine:3.24 as graaljs
+FROM alpine:3.24 AS graaljs
 
 COPY ca-bundle.pem /tmp/local-ca.pem
 RUN if [ -s /tmp/local-ca.pem ]; then \
@@ -116,13 +116,13 @@ RUN mkdir -p /graaljs && \
     wget -O /graaljs/regex.jar "https://repo1.maven.org/maven2/org/graalvm/regex/regex/$GRAALJS_VERSION/regex-$GRAALJS_VERSION.jar" && \
     wget -O /graaljs/icu4j.jar "https://repo1.maven.org/maven2/org/graalvm/shadowed/icu4j/$GRAALJS_VERSION/icu4j-$GRAALJS_VERSION.jar"
 
-FROM ${source} as intermediate
+FROM ${source} AS intermediate
 
 # runtime image https://console.cloud.google.com/gcr/images/distroless/global/java17
 FROM gcr.io/distroless/java17:nonroot@sha256:4f682dfb4d9721e3f139fff791cd065b94e8dde1d3a4ae60b9ae86e165c4acf4
 
 # maintainer details
-MAINTAINER James Bloom "jamesdbloom@gmail.com"
+LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
 
 # expose ports.
 EXPOSE 1080
@@ -145,7 +145,7 @@ USER nonroot
 # this entrypoint flag is applied last and wins.
 ENTRYPOINT ["java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
-ENV SERVER_PORT 1080
+ENV SERVER_PORT=1080
 
 # Dashboard usage analytics (PostHog Cloud EU, cookieless). EMPTY by default so a plain
 # `docker build` — i.e. forks / self-hosters building this Dockerfile directly — ships analytics

@@ -30,7 +30,7 @@
 #
 
 # AppCDS build stage — jlink-trimmed JDK 25 runtime + training run producing the AppCDS archive
-FROM eclipse-temurin:25-jdk-noble as appcds-build
+FROM eclipse-temurin:25-jdk-noble AS appcds-build
 
 COPY mockserver-netty-jar-with-dependencies.jar /mockserver-netty-jar-with-dependencies.jar
 
@@ -68,7 +68,7 @@ RUN /runtime/bin/java -XX:ArchiveClassesAtExit=/mockserver.jsa \
 FROM gcr.io/distroless/java-base-debian12:nonroot@sha256:a9930cad62d02853d7f3dede7281c4b916cbf74493c2d8d38564121aad92bf6c
 
 # maintainer details
-MAINTAINER James Bloom "jamesdbloom@gmail.com"
+LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
 
 # MCP registry ownership annotation — proves this image backs the com.mock-server/mockserver
 # entry on the official MCP registry (https://registry.modelcontextprotocol.io). REQUIRED for the
@@ -101,7 +101,7 @@ USER nonroot
 # relies on (unlike the AOT variant, this image cannot soft-fail at release time).
 ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-XX:SharedArchiveFile=/mockserver.jsa", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
-ENV SERVER_PORT 1080
+ENV SERVER_PORT=1080
 
 # Dashboard usage analytics (PostHog Cloud EU, cookieless). EMPTY by default so a plain
 # `docker build` — i.e. forks / self-hosters building this Dockerfile directly — ships analytics

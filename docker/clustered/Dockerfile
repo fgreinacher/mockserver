@@ -24,7 +24,7 @@
 #
 
 # build image — downloads netty-tcnative from Maven Central (mirrors base image pattern)
-FROM alpine:3.24 as tcnative
+FROM alpine:3.24 AS tcnative
 
 # Optional: trust a corporate root CA before `apk add`. The build context contains
 # ca-bundle.pem (empty in CI, populated locally behind a TLS-inspecting proxy).
@@ -60,7 +60,7 @@ RUN unzip netty-tcnative-boringssl-static.jar
 FROM gcr.io/distroless/java17:nonroot@sha256:4f682dfb4d9721e3f139fff791cd065b94e8dde1d3a4ae60b9ae86e165c4acf4
 
 # maintainer details
-MAINTAINER James Bloom "jamesdbloom@gmail.com"
+LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
 
 # expose ports.
 EXPOSE 1080
@@ -86,7 +86,7 @@ USER nonroot
 # this entrypoint flag is applied last and wins.
 ENTRYPOINT ["java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
-ENV SERVER_PORT 1080
+ENV SERVER_PORT=1080
 
 # Dashboard usage analytics (PostHog Cloud EU, cookieless). EMPTY by default so a plain
 # `docker build` — i.e. forks / self-hosters building this Dockerfile directly — ships analytics

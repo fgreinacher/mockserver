@@ -22,7 +22,7 @@
 ARG source=download
 
 # build image — downloads release artifacts from Sonatype
-FROM alpine:3.24 as download
+FROM alpine:3.24 AS download
 
 # Optional: trust a corporate root CA before `apk add`. The build context contains
 # ca-bundle.pem (empty in CI, populated locally behind a TLS-inspecting proxy).
@@ -47,13 +47,13 @@ RUN wget --max-redirect=10 -O mockserver-netty-jar-with-dependencies.jar "$REPOS
     && echo "$(cat /tmp/expected.sha256)  mockserver-netty-jar-with-dependencies.jar" | sha256sum -c -
 
 # build image — copies JAR from context
-FROM alpine:3.24 as copy
+FROM alpine:3.24 AS copy
 COPY mockserver-netty-jar-with-dependencies.jar .
 
-FROM ${source} as intermediate
+FROM ${source} AS intermediate
 
 # AOT build stage — jlink-trimmed JDK 25 runtime + training run producing the AOT cache
-FROM eclipse-temurin:25-jdk-noble as aot-build
+FROM eclipse-temurin:25-jdk-noble AS aot-build
 
 COPY --from=intermediate mockserver-netty-jar-with-dependencies.jar /mockserver-netty-jar-with-dependencies.jar
 
@@ -82,7 +82,7 @@ RUN /runtime/bin/java -XX:AOTCacheOutput=/mockserver.aot \
 # since the baked AOT cache is specific to the JDK build it was trained with)
 FROM gcr.io/distroless/java-base-debian12:nonroot@sha256:a9930cad62d02853d7f3dede7281c4b916cbf74493c2d8d38564121aad92bf6c
 
-MAINTAINER James Bloom "jamesdbloom@gmail.com"
+LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
 
 EXPOSE 1080
 
@@ -97,7 +97,7 @@ USER nonroot
 # incompatible (e.g. different CPU arch) the JVM logs a warning and starts normally.
 ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-XX:AOTCache=/mockserver.aot", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
-ENV SERVER_PORT 1080
+ENV SERVER_PORT=1080
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
   CMD ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-cp", "/mockserver-netty-jar-with-dependencies.jar", "org.mockserver.cli.HealthCheck"]

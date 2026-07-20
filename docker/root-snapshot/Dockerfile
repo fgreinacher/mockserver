@@ -8,7 +8,7 @@
 ARG source=download
 
 # build image — downloads snapshot artifacts from Sonatype, tcnative from Maven Central
-FROM alpine:3.24 as download
+FROM alpine:3.24 AS download
 
 # Optional: trust a corporate root CA before `apk add`. The build context contains
 # ca-bundle.pem (empty in CI, populated locally behind a TLS-inspecting proxy).
@@ -46,7 +46,7 @@ RUN if [ "$TARGETARCH" = "amd64" ]; \
 RUN unzip netty-tcnative-boringssl-static.jar
 
 # build image — copies JAR from context, downloads tcnative from Maven Central
-FROM alpine:3.24 as copy
+FROM alpine:3.24 AS copy
 
 COPY ca-bundle.pem /tmp/local-ca.pem
 RUN if [ -s /tmp/local-ca.pem ]; then \
@@ -77,13 +77,13 @@ RUN if [ "$TARGETARCH" = "amd64" ]; \
     && echo "$(cat /tmp/expected-tcnative.sha256)  netty-tcnative-boringssl-static.jar" | sha256sum -c -
 RUN unzip netty-tcnative-boringssl-static.jar
 
-FROM ${source} as intermediate
+FROM ${source} AS intermediate
 
 # runtime image https://console.cloud.google.com/gcr/images/distroless/global/java17
 FROM gcr.io/distroless/java17:latest@sha256:1743afd5a206c3392f04d32c87ae478edac7a911fc94951d502f0d6db2a98e25
 
 # maintainer details
-MAINTAINER James Bloom "jamesdbloom@gmail.com"
+LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
 
 # expose ports.
 EXPOSE 1080
@@ -103,7 +103,7 @@ USER root
 # this entrypoint flag is applied last and wins.
 ENTRYPOINT ["java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
-ENV SERVER_PORT 1080
+ENV SERVER_PORT=1080
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
   CMD ["java", "-cp", "/mockserver-netty-jar-with-dependencies.jar", "org.mockserver.cli.HealthCheck"]

@@ -27,8 +27,12 @@ for df in "${DOCKERFILES[@]}"; do
     errors=$((errors + 1))
   fi
 
-  if ! grep -qE 'ENV\s+SERVER_PORT\s+1080' "$filepath"; then
-    echo "FAIL: $df missing 'ENV SERVER_PORT 1080'"
+  # Accept only the modern "ENV SERVER_PORT=1080" form. The legacy space-separated
+  # "ENV SERVER_PORT 1080" is what BuildKit's LegacyKeyValueFormat lint flags, so the
+  # Dockerfiles were migrated to "=" and this gate now asserts the migrated form (a bare
+  # space would be a regression back to the deprecated syntax).
+  if ! grep -qE 'ENV\s+SERVER_PORT=1080' "$filepath"; then
+    echo "FAIL: $df missing 'ENV SERVER_PORT=1080'"
     errors=$((errors + 1))
   fi
 
@@ -56,7 +60,7 @@ done
 if [ $errors -gt 0 ]; then
   echo ""
   echo "FAILED: $errors Dockerfile sync issue(s) found"
-  echo "All Dockerfiles must use: ENV SERVER_PORT 1080 + CMD [] (not CMD [\"-serverPort\", ...])"
+  echo "All Dockerfiles must use: ENV SERVER_PORT=1080 + CMD [] (not CMD [\"-serverPort\", ...])"
   exit 1
 fi
 
