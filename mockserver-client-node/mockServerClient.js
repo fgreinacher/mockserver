@@ -1373,6 +1373,48 @@ var mockServerClient;
             return message;
         };
         /**
+         * Issue a verification request and adapt the result to the callback /
+         * promise contract shared by every verify* method.
+         *
+         * A FAILED verification MUST stay failed for every consumption style.
+         * `makeRequest` rejects with the failure message, and that rejection is
+         * handled here in one of two ways:
+         *
+         *  - an error callback was supplied (explicitly, or implicitly by
+         *    `await`, which passes its own reject handler) -> hand the failure
+         *    to it, exactly as before;
+         *  - no error callback was supplied (e.g. a single-argument
+         *    `.then(onSuccess)`) -> re-throw.
+         *
+         * Returning normally in the second case would convert a FAILED
+         * verification into a passing one, silently turning a user's test suite
+         * green while proving nothing.
+         *
+         * What the re-throw surfaces as depends on the transport. Under Node
+         * `makeRequest` is a real (Q) promise, so it becomes a rejection. In the
+         * browser `makeRequest` is a hand-rolled thenable whose `then` returns
+         * `undefined` and whose handlers run synchronously from the XHR `load`
+         * listener, so it becomes an uncaught exception there rather than a
+         * catchable rejection. Loud in both cases, which is the point.
+         */
+        var verificationRequest = function (path, body, sucess, error) {
+            return makeRequest(host, port, path, body).then(
+                function () {
+                    if (sucess) {
+                        sucess();
+                    }
+                },
+                function (result) {
+                    var failure = simplifyVerificationError(result);
+                    if (error) {
+                        error(failure);
+                        return;
+                    }
+                    throw failure;
+                }
+            );
+        };
+        /**
          * Verify a request has been sent, for example:
          *
          *   expect(client.verify({
@@ -1393,30 +1435,13 @@ var mockServerClient;
             return {
                 then: function (sucess, error) {
                     request.headers = headersUniqueConcatenate(request.headers, defaultRequestHeaders);
-                    return makeRequest(host, port, "/mockserver/verify", {
+                    return verificationRequest("/mockserver/verify", {
                         "httpRequest": request,
                         "times": {
                             "atLeast": atLeast,
                             "atMost": atMost
                         }
-                    }).then(
-                        function () {
-                            if (sucess) {
-                                sucess();
-                            }
-                        },
-                        function (result) {
-                            if (!result.statusCode || result.statusCode !== 202) {
-                                if (error) {
-                                    error(simplifyVerificationError(result));
-                                }
-                            } else {
-                                if (error) {
-                                    sucess(result);
-                                }
-                            }
-                        }
-                    );
+                    }, sucess, error);
                 }
             };
         };
@@ -1437,30 +1462,13 @@ var mockServerClient;
             }
             return {
                 then: function (sucess, error) {
-                    return makeRequest(host, port, "/mockserver/verify", {
+                    return verificationRequest("/mockserver/verify", {
                         "expectationId": expectationId,
                         "times": {
                             "atLeast": atLeast,
                             "atMost": atMost
                         }
-                    }).then(
-                        function () {
-                            if (sucess) {
-                                sucess();
-                            }
-                        },
-                        function (result) {
-                            if (!result.statusCode || result.statusCode !== 202) {
-                                if (error) {
-                                    error(simplifyVerificationError(result));
-                                }
-                            } else {
-                                if (error) {
-                                    sucess(result);
-                                }
-                            }
-                        }
-                    );
+                    }, sucess, error);
                 }
             };
         };
@@ -1493,26 +1501,9 @@ var mockServerClient;
             }
             return {
                 then: function (sucess, error) {
-                    return makeRequest(host, port, "/mockserver/verifySequence", {
+                    return verificationRequest("/mockserver/verifySequence", {
                         "httpRequests": requestSequence
-                    }).then(
-                        function () {
-                            if (sucess) {
-                                sucess();
-                            }
-                        },
-                        function (result) {
-                            if (!result.statusCode || result.statusCode !== 202) {
-                                if (error) {
-                                    error(simplifyVerificationError(result));
-                                }
-                            } else {
-                                if (error) {
-                                    sucess(result);
-                                }
-                            }
-                        }
-                    );
+                    }, sucess, error);
                 }
             };
         };
@@ -1540,26 +1531,9 @@ var mockServerClient;
             var expectationIds = Array.from(arguments);
             return {
                 then: function (sucess, error) {
-                    return makeRequest(host, port, "/mockserver/verifySequence", {
+                    return verificationRequest("/mockserver/verifySequence", {
                         "expectationIds": expectationIds
-                    }).then(
-                        function () {
-                            if (sucess) {
-                                sucess();
-                            }
-                        },
-                        function (result) {
-                            if (!result.statusCode || result.statusCode !== 202) {
-                                if (error) {
-                                    error(simplifyVerificationError(result));
-                                }
-                            } else {
-                                if (error) {
-                                    sucess(result);
-                                }
-                            }
-                        }
-                    );
+                    }, sucess, error);
                 }
             };
         };
@@ -1578,30 +1552,13 @@ var mockServerClient;
             }
             return {
                 then: function (sucess, error) {
-                    return makeRequest(host, port, "/mockserver/verify", {
+                    return verificationRequest("/mockserver/verify", {
                         "httpResponse": responseMatcher,
                         "times": {
                             "atLeast": atLeast,
                             "atMost": atMost
                         }
-                    }).then(
-                        function () {
-                            if (sucess) {
-                                sucess();
-                            }
-                        },
-                        function (result) {
-                            if (!result.statusCode || result.statusCode !== 202) {
-                                if (error) {
-                                    error(simplifyVerificationError(result));
-                                }
-                            } else {
-                                if (error) {
-                                    sucess(result);
-                                }
-                            }
-                        }
-                    );
+                    }, sucess, error);
                 }
             };
         };
@@ -1626,31 +1583,14 @@ var mockServerClient;
             return {
                 then: function (sucess, error) {
                     requestMatcher.headers = headersUniqueConcatenate(requestMatcher.headers, defaultRequestHeaders);
-                    return makeRequest(host, port, "/mockserver/verify", {
+                    return verificationRequest("/mockserver/verify", {
                         "httpRequest": requestMatcher,
                         "httpResponse": responseMatcher,
                         "times": {
                             "atLeast": atLeast,
                             "atMost": atMost
                         }
-                    }).then(
-                        function () {
-                            if (sucess) {
-                                sucess();
-                            }
-                        },
-                        function (result) {
-                            if (!result.statusCode || result.statusCode !== 202) {
-                                if (error) {
-                                    error(simplifyVerificationError(result));
-                                }
-                            } else {
-                                if (error) {
-                                    sucess(result);
-                                }
-                            }
-                        }
-                    );
+                    }, sucess, error);
                 }
             };
         };
@@ -1676,27 +1616,10 @@ var mockServerClient;
             }
             return {
                 then: function (sucess, error) {
-                    return makeRequest(host, port, "/mockserver/verifySequence", {
+                    return verificationRequest("/mockserver/verifySequence", {
                         "httpRequests": requestSequence,
                         "httpResponses": responseSequence
-                    }).then(
-                        function () {
-                            if (sucess) {
-                                sucess();
-                            }
-                        },
-                        function (result) {
-                            if (!result.statusCode || result.statusCode !== 202) {
-                                if (error) {
-                                    error(simplifyVerificationError(result));
-                                }
-                            } else {
-                                if (error) {
-                                    sucess(result);
-                                }
-                            }
-                        }
-                    );
+                    }, sucess, error);
                 }
             };
         };
@@ -2518,16 +2441,13 @@ var mockServerClient;
         var verifySLO = function (criteria) {
             return {
                 then: function (sucess, error) {
-                    makeRequest(host, port, "/mockserver/verifySLO", criteria)
+                    return makeRequest(host, port, "/mockserver/verifySLO", criteria)
                         .then(function (result) {
                             // 2xx -> PASS or INCONCLUSIVE verdict.
                             if (sucess) {
                                 sucess(result.body ? JSON.parse(result.body) : result);
                             }
                         }, function (err) {
-                            if (!error) {
-                                return;
-                            }
                             // The transport rejects on any >= 400 with the response
                             // body string. A FAIL verdict (406) carries a SloVerdict
                             // JSON body with result:"FAIL"; a disabled/invalid
@@ -2539,18 +2459,27 @@ var mockServerClient;
                             } catch (e) {
                                 parsed = null;
                             }
-                            if (parsed && parsed.result === "FAIL") {
-                                error("SLO verdict FAIL: " + body);
-                            } else if (parsed && (parsed.result === "PASS" || parsed.result === "INCONCLUSIVE")) {
+                            if (parsed && (parsed.result === "PASS" || parsed.result === "INCONCLUSIVE")) {
                                 // Defensive: some transports surface non-2xx verdicts
                                 // through the error path; treat a PASS/INCONCLUSIVE
                                 // verdict body as success.
                                 if (sucess) {
                                     sucess(parsed);
                                 }
-                            } else {
-                                error("invalid SLO criteria (or SLO tracking disabled - set sloTrackingEnabled=true): " + body);
+                                return;
                             }
+                            var failure = (parsed && parsed.result === "FAIL")
+                                ? "SLO verdict FAIL: " + body
+                                : "invalid SLO criteria (or SLO tracking disabled - set sloTrackingEnabled=true): " + body;
+                            // As with verify*, a FAILED verdict must stay failed: hand it
+                            // to the error callback when one was supplied, otherwise
+                            // re-throw so the returned promise rejects rather than
+                            // silently resolving.
+                            if (error) {
+                                error(failure);
+                                return;
+                            }
+                            throw failure;
                         });
                 }
             };

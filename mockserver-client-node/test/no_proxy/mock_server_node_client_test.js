@@ -765,6 +765,135 @@ describe('mock server node client (no proxy)', { concurrency: 1 }, function () {
         }
     });
 
+    // --- promise-rejection contract for verification ------------------------
+    // A FAILED verification must stay failed for EVERY consumption style.
+    // `await` supplies its own reject handler so it was always safe, but a
+    // single-argument `.then(onSuccess)` supplies no error callback — the
+    // failure must still surface as a rejection rather than being swallowed,
+    // otherwise a user's suite goes green while proving nothing.
+
+    it('should reject, and not run the success handler, when a failed verify is consumed with a single-argument then', async function () {
+        await client.mockSimpleResponse('/somePath', {name: 'value'}, 203);
+        var r = await sendRequest("POST", mockServerHost, mockServerPort, "/somePath", "someBody");
+        assert.equal(r.statusCode, 203);
+
+        var successHandlerRan = false;
+        var rejection = "NO REJECTION";
+        try {
+            await client
+                .verify({ 'path': '/someOtherPath' }, 1)
+                .then(function () {
+                    successHandlerRan = true;
+                });
+        } catch (message) {
+            rejection = message;
+        }
+
+        assert.equal(successHandlerRan, false, "the success handler must not run for a FAILED verification");
+        assert.equal(rejection, "Request not found at least once",
+            "a failed verification consumed with a single-argument then must reject, not silently resolve");
+    });
+
+    it('should reject when a failed verifySequence is consumed with a single-argument then', async function () {
+        await client.mockSimpleResponse('/somePathOne', {name: 'one'}, 201);
+        var r = await sendRequest("POST", mockServerHost, mockServerPort, "/somePathOne", "someBody");
+        assert.equal(r.statusCode, 201);
+
+        var successHandlerRan = false;
+        var rejected = false;
+        try {
+            await client
+                .verifySequence({ 'method': 'POST', 'path': '/somePathOne' }, { 'method': 'POST', 'path': '/neverSent' })
+                .then(function () {
+                    successHandlerRan = true;
+                });
+        } catch (message) {
+            rejected = true;
+        }
+
+        assert.equal(successHandlerRan, false, "the success handler must not run for a FAILED sequence verification");
+        assert.equal(rejected, true,
+            "a failed verifySequence consumed with a single-argument then must reject, not silently resolve");
+    });
+
+    it('should throw when a failed verify is consumed with await', async function () {
+        await client.mockSimpleResponse('/somePath', {name: 'value'}, 203);
+        var r = await sendRequest("POST", mockServerHost, mockServerPort, "/somePath", "someBody");
+        assert.equal(r.statusCode, 203);
+
+        await assert.rejects(
+            async function () {
+                await client.verify({ 'path': '/someOtherPath' }, 1);
+            },
+            function (message) {
+                assert.equal(message, "Request not found at least once");
+                return true;
+            }
+        );
+    });
+
+    it('should invoke the error callback when a failed verify is consumed with success and error callbacks', async function () {
+        await client.mockSimpleResponse('/somePath', {name: 'value'}, 203);
+        var r = await sendRequest("POST", mockServerHost, mockServerPort, "/somePath", "someBody");
+        assert.equal(r.statusCode, 203);
+
+        var outcome = await new Promise(function (resolve) {
+            client.verify({ 'path': '/someOtherPath' }, 1).then(
+                function () {
+                    resolve({ handler: 'success' });
+                },
+                function (message) {
+                    resolve({ handler: 'error', message: message });
+                }
+            );
+        });
+
+        assert.equal(outcome.handler, 'error', "the error callback must run for a FAILED verification");
+        assert.equal(outcome.message, "Request not found at least once");
+    });
+
+    it('should reject when a failed verifySLO is consumed with a single-argument then', async function () {
+        // SLO tracking is disabled by default, so the server answers 400 — the
+        // same rejection path a FAIL verdict (406) takes. Either way the failure
+        // must not be swallowed into a resolved promise.
+        var successHandlerRan = false;
+        var rejected = false;
+        try {
+            await client
+                .verifySLO({
+                    'name': 'slo-rejection-contract',
+                    'window': { 'timeUnit': 'MINUTES', 'value': 5 },
+                    'objectives': [
+                        { 'sli': 'ERROR_RATE', 'comparator': 'LESS_THAN', 'threshold': 0.01 }
+                    ]
+                })
+                .then(function () {
+                    successHandlerRan = true;
+                });
+        } catch (message) {
+            rejected = true;
+        }
+
+        assert.equal(successHandlerRan, false, "the success handler must not run for a FAILED SLO verdict");
+        assert.equal(rejected, true,
+            "a failed verifySLO consumed with a single-argument then must reject, not silently resolve");
+    });
+
+    it('should run the success handler when a passing verify is consumed with a single-argument then', async function () {
+        await client.mockSimpleResponse('/somePath', {name: 'value'}, 203);
+        var r = await sendRequest("POST", mockServerHost, mockServerPort, "/somePath", "someBody");
+        assert.equal(r.statusCode, 203);
+
+        var successHandlerRan = false;
+        await client
+            .verify({ 'method': 'POST', 'path': '/somePath', 'body': 'someBody' }, 1)
+            .then(function () {
+                successHandlerRan = true;
+            });
+
+        assert.equal(successHandlerRan, true, "a PASSING verification must still run the success handler");
+    });
+
     it('should pass when correct sequence of requests have been sent', async function () {
         await client.mockSimpleResponse('/somePathOne', {name: 'one'}, 201);
         await client.mockSimpleResponse('/somePathTwo', {name: 'two'}, 202);

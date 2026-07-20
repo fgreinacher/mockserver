@@ -11,6 +11,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 ### Fixed
+- **BEHAVIOUR: the Node client no longer silently converts a FAILED verification into a passing one.**
+  Every `verify*` method (`verify`, `verifyById`, `verifySequence`, `verifySequenceById`, `verifyResponse`,
+  `verifyRequestAndResponse`, `verifySequenceWithResponses`, `verifyZeroInteractions`) and `verifySLO`
+  returns a thenable. When a verification failed, its rejection handler notified the caller's `error`
+  callback if one had been supplied — but simply returned when one had not, which **fulfilled** the promise
+  it returned. So a failure consumed with a single-argument `.then(onSuccess)` was swallowed: the success
+  handler never ran, nothing threw, and the promise resolved as though the verification had passed. Code of
+  the shape `return client.verify(...).then(() => { ... })` therefore passed unconditionally — a test suite
+  could be green while proving nothing. Under Node a failed verification now **rejects** when no `error`
+  callback is supplied, so the failure reaches `.then()` consumers and any framework that surfaces returned
+  promises. In the browser build the transport is a hand-rolled thenable rather than a real promise, so the
+  same failure surfaces as an **uncaught error** from the XHR handler instead of a catchable rejection —
+  loud either way, but not `.catch()`-able there.
+  **`await client.verify(...)` was never affected** — `await` supplies its own reject handler, which is why
+  the existing tests did not catch this — and the two-argument `.then(success, error)` callback style is
+  unchanged, so suites using either style behave exactly as before.
+  **Users consuming a verification with a single-argument `.then(...)` may see tests that pass today start
+  to fail; those failures are real and were previously being hidden.** Note that a fire-and-forget
+  `client.verify(...).then(fn)` whose promise is discarded now produces an **unhandled rejection**, which on
+  Node 15 and later terminates the process rather than merely failing a test. That is the intended
+  consequence of a failed verification no longer being silent, but it is abrupt: either `await` the call,
+  return its promise to your test framework, or pass an `error` callback.
+  A related inverted guard in the same handlers (`if (error) { sucess(result) }`, which tested the error
+  callback but invoked the success callback) was removed; it was unreachable, because the transport always
+  rejects with a plain string rather than an object carrying a status code.
+- **`verifySLO` now reports a PASS/INCONCLUSIVE verdict that arrives via the error path.** It previously
+  returned early whenever no `error` callback had been supplied, and did so *before* parsing the response —
+  so a PASS or INCONCLUSIVE verdict delivered through the rejection path (which the defensive branch below
+  it existed to handle) never reached the success callback at all. The verdict is now parsed first and
+  dispatched correctly, and `verifySLO` also returns its underlying promise so the result can be chained.
 - **gRPC unary mock responses are now spec-compliant, so real gRPC clients can consume them (#2419).** Two
   defects meant a documented unary expectation was rejected by any real gRPC client over HTTP/1.1 and HTTP/2.
   (1) The JSON-to-protobuf conversion only ran when the *response* carried `x-grpc-service`/`x-grpc-method`,
