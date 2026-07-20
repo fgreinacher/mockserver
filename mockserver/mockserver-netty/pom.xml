@@ -62,6 +62,18 @@
             <artifactId>grpc-stub</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Third-party protocol clients, test scope only: independent implementations used to
+             verify wire conformance, rather than asserting MockServer against its own objects. -->
+        <dependency>
+            <groupId>org.java-websocket</groupId>
+            <artifactId>Java-WebSocket</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp-sse</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>io.grpc</groupId>
             <artifactId>grpc-protobuf</artifactId>

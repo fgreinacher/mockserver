@@ -88,6 +88,14 @@
              gRPC client so the gRPC wire contract (protobuf framing + grpc-status trailer) is
              verified end-to-end rather than only at handler level. Never bundled in a release. -->
         <grpc.version>1.70.0</grpc.version>
+        <!-- Java-WebSocket: TEST SCOPE ONLY (mockserver-netty). An implementation independent of
+             Netty, used to drive mocked WebSockets so RFC 6455 control-frame behaviour (PING/PONG
+             keepalive, CLOSE echo) is verified against a real client rather than against the same
+             library the server is built on. Never bundled in a release. -->
+        <java-websocket.version>1.6.0</java-websocket.version>
+        <!-- okhttp-sse: TEST SCOPE ONLY (mockserver-netty). A real WHATWG event-stream parser, so
+             SSE framing is verified by a client that actually parses it. Never bundled. -->
+        <okhttp-sse.version>5.3.2</okhttp-sse.version>
         <chicory.version>1.7.5</chicory.version>
         <hdrhistogram.version>2.2.2</hdrhistogram.version>
         <jna.version>5.19.1</jna.version>
@@ -437,6 +445,16 @@
                 <groupId>io.grpc</groupId>
                 <artifactId>grpc-stub</artifactId>
                 <version>${grpc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.java-websocket</groupId>
+                <artifactId>Java-WebSocket</artifactId>
+                <version>${java-websocket.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.squareup.okhttp3</groupId>
+                <artifactId>okhttp-sse</artifactId>
+                <version>${okhttp-sse.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.grpc</groupId>

@@ -169,6 +169,18 @@ Test-scoped only, and never bundled in released artifacts. Added for the same re
 | `com.nimbusds:oauth2-oidc-sdk` | 11.23.1 | `mockserver-core` (test) | Independent, spec-driven parsing/validation of the discovery document (`OIDCProviderMetadata.parse`) and introspection responses (`TokenIntrospectionResponse.parse`) in `OidcDiscoveryCallbackTest` and `OidcIntrospectionCallbackTest` |
 
 This is the same code path Spring Security, Nimbus-based resource servers and pac4j use, so a response that parses here is one a real relying party accepts. It shares the `com.nimbusds` group with the already-present compile-scoped `nimbus-jose-jwt` (used to sign and verify tokens) but is a separate artifact and stays test scope — it must not become a compile dependency, since the provider itself deliberately implements OIDC rather than delegating to an SDK. Pulls `com.nimbusds:content-type` and `com.nimbusds:lang-tag` transitively; all test scope in a single module. Requires Java 11+, so it is within the Java 17 floor with no ceiling needed.
+### Test Dependencies (Streaming Protocol Clients)
+
+Test-scoped only, and never bundled in released artifacts. Added for the same reason as the gRPC client above — so WebSocket and SSE wire conformance is driven by **independent implementations of the RFCs** rather than asserted against MockServer's own objects, or against Netty, the library the server itself is built on. That gap is what let the #2419 family of "the stream looks healthy and delivers nothing" defects ship: mocked WebSockets answered no PING and echoed no CLOSE, and SSE data containing a lone CR was truncated, all while handler-level tests were green.
+
+| Dependency | Version | Module | Purpose |
+|------------|---------|--------|---------|
+| `org.java-websocket:Java-WebSocket` | 1.6.0 | `mockserver-netty` (test) | Non-Netty WebSocket client for RFC 6455 control-frame conformance (PING/PONG keepalive, CLOSE handling) in `ThirdPartyStreamingClientConformanceIntegrationTest` |
+| `com.squareup.okhttp3:okhttp-sse` | 5.3.2 | `mockserver-netty` (test) | Real WHATWG event-stream parser, so SSE framing is verified by a client that actually parses it; also used to PUT raw control-plane JSON |
+
+`Java-WebSocket` has **no transitive dependencies**. `okhttp-sse` pulls `com.squareup.okhttp3:okhttp-jvm` 5.3.2, `com.squareup.okio:okio-jvm` 3.16.4 and `org.jetbrains.kotlin:kotlin-stdlib` 2.2.21, all at test scope in this one module — note that MockServer otherwise deliberately keeps okhttp and kotlin-stdlib **out** of the shaded jar (the OTLP exporter excludes the okhttp sender for exactly this reason), so their presence here must stay test-scoped. Unlike `grpc-netty-shaded` these are ordinary unshaded artifacts, so Dependabot, CodeQL and Snyk can see and scan all of them normally.
+
+The `<okhttp-sse.version>` property is named for the artifact it actually manages: only `okhttp-sse` is version-managed, and `okhttp-jvm`/`okio-jvm`/`kotlin-stdlib` arrive transitively at whatever versions that release pins. If a CVE lands in okhttp, okio or kotlin-stdlib, bump `okhttp-sse.version` rather than expecting a direct pin to exist.
 
 ### Maven Dependency Graph Submission
 
