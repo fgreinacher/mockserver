@@ -9,7 +9,7 @@
     "specUrlOrPayload": "https://example.com/openapi.json",
     "validateRequest": false,
     "validateResponse": false,
-    "validationMode": "LENIENT",
+    "validationMode": "LOG_ONLY",
     "primary": false
   }
 }

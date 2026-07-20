@@ -362,14 +362,13 @@ class ResponseBuildersTest extends TestCase
     {
         // test-fixtures/expectations/action_forward_validate_response_only.json — validateRequest,
         // validateResponse and primary are all false (falsy-survival), and validationMode is
-        // "LENIENT", a value NOT in the schema enum (STRICT, LOG_ONLY) — so validationMode() must
-        // pass arbitrary strings through rather than restrict to the two constants.
+        // LOG_ONLY (validate but do not fail the exchange), the non-STRICT half of the server enum.
         $built = HttpForwardValidateAction::forward('https://example.com/openapi.json', 'backend.example.com')
             ->port(443)
             ->scheme(HttpForwardValidateAction::HTTPS)
             ->validateRequest(false)
             ->validateResponse(false)
-            ->validationMode('LENIENT')
+            ->validationMode(HttpForwardValidateAction::LOG_ONLY)
             ->primary(false)
             ->toArray();
 
@@ -379,6 +378,20 @@ class ResponseBuildersTest extends TestCase
             ),
             SharedFixtures::sortedDeep($built),
         );
+    }
+
+    public function testValidationModePassesArbitraryStringsThroughUppercased(): void
+    {
+        // validationMode() defers enum validity to the server (like scheme() / templateType()):
+        // it uppercases and forwards whatever it is given rather than restricting to the two
+        // constants. Probed with a deliberately-fictional value so this property is NOT pinned to
+        // a shared cross-client fixture — the server would reject "made_up_mode" with a 400, which
+        // is the point: the client does not pre-validate.
+        $arr = HttpForwardValidateAction::forward('https://example.com/openapi.json', 'h')
+            ->validationMode('made_up_mode')
+            ->toArray();
+
+        $this->assertSame('MADE_UP_MODE', $arr['validationMode']);
     }
 
     // ------------------------------------------------------------------
