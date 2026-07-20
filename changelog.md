@@ -126,6 +126,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actively depends on that flag. Both now carry the full matcher. Relatedly, a negated WebSocket
   text matcher was accepted and then **ignored** by `BidirectionalWebSocketFrameHandler`, which never
   consulted the flag at all; it is now honoured, as the gRPC equivalent already was.
+- **The Node client could not create gRPC bidi, forward-validate or forward-with-fallback
+  expectations.** Its list of expectation action keys was hand-maintained and had fallen three
+  entries behind the server, so for those actions it injected an empty `httpResponse` alongside the
+  real action; the server then counted two actions with no primary and rejected the expectation with
+  "exactly one must be marked as primary". The list is now defined once, checked against the server's
+  own `expectation.json` schema by a test, and the client no longer materialises an empty
+  `httpResponse` when it has no default headers to add — so a future unlisted action degrades to
+  "default headers not applied" rather than a hard failure.
 - **Verification could miss a just-forwarded request (race on every forward path).** The visibility guarantee
   for `verify`/`retrieve` rests on disruptor FIFO ordering — `drainDisruptor()` waits only for entries already
   *published*, so it cannot wait for one that has not been published yet. The mocked-response path logs before

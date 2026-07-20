@@ -10,6 +10,32 @@ var mockServerClient;
 (function () {
     "use strict";
 
+    // Every expectation action key the server recognises other than httpResponse itself, kept in
+    // one place so it cannot drift out of step with the server's own action list. Derived from
+    // Expectation.getAllActions() / the expectation.json schema. If any key is missing here an
+    // empty httpResponse gets injected alongside the real action, and the server then rejects the
+    // expectation with "exactly one must be marked as primary".
+    var NON_HTTP_RESPONSE_ACTION_KEYS = [
+        'httpResponseTemplate',
+        'httpResponseClassCallback',
+        'httpResponseObjectCallback',
+        'httpForward',
+        'httpForwardTemplate',
+        'httpForwardClassCallback',
+        'httpForwardObjectCallback',
+        'httpOverrideForwardedRequest',
+        'httpForwardValidateAction',
+        'httpForwardWithFallback',
+        'httpError',
+        'httpSseResponse',
+        'httpLlmResponse',
+        'httpWebSocketResponse',
+        'grpcStreamResponse',
+        'grpcBidiResponse',
+        'binaryResponse',
+        'dnsResponse'
+    ];
+
     // ------------------------------------------------------------------
     // Inline breakpoint/callback message routing (browser-safe, no deps)
     // ------------------------------------------------------------------
@@ -774,17 +800,30 @@ var mockServerClient;
             }
             return responseMatcher;
         };
+        var hasNonHttpResponseAction = function (expectation) {
+            return NON_HTTP_RESPONSE_ACTION_KEYS.some(function (key) {
+                return Boolean(expectation[key]);
+            });
+        };
         var addDefaultExpectationHeaders = function (expectation) {
+            if (!defaultRequestHeaders && !defaultResponseHeaders) {
+                // nothing to add — returning early avoids materialising an empty httpResponse next to
+                // a real action, which the server counts as a second action with no primary. Belt and
+                // braces alongside NON_HTTP_RESPONSE_ACTION_KEYS: a future server action that nobody
+                // adds to that list degrades to "default headers not applied" rather than a hard
+                // IllegalArgumentException from the server.
+                return expectation;
+            }
             if (Array.isArray(expectation)) {
                 for (var i = 0; i < expectation.length; i++) {
                     expectation[i].httpRequest = addDefaultRequestMatcherHeaders(expectation[i].httpRequest);
-                    if (!expectation[i].httpResponseTemplate && !expectation[i].httpResponseClassCallback && !expectation[i].httpResponseObjectCallback && !expectation[i].httpForward && !expectation[i].httpForwardTemplate && !expectation[i].httpForwardClassCallback && !expectation[i].httpForwardObjectCallback && !expectation[i].httpOverrideForwardedRequest && !expectation[i].httpError && !expectation[i].httpSseResponse && !expectation[i].httpWebSocketResponse && !expectation[i].grpcStreamResponse && !expectation[i].binaryResponse && !expectation[i].dnsResponse && !expectation[i].httpLlmResponse) {
+                    if (!hasNonHttpResponseAction(expectation[i])) {
                         expectation[i].httpResponse = addDefaultResponseMatcherHeaders(expectation[i].httpResponse);
                     }
                 }
             } else {
                 expectation.httpRequest = addDefaultRequestMatcherHeaders(expectation.httpRequest);
-                if (!expectation.httpResponseTemplate && !expectation.httpResponseClassCallback && !expectation.httpResponseObjectCallback && !expectation.httpForward && !expectation.httpForwardTemplate && !expectation.httpForwardClassCallback && !expectation.httpForwardObjectCallback && !expectation.httpOverrideForwardedRequest && !expectation.httpError && !expectation.httpSseResponse && !expectation.httpWebSocketResponse && !expectation.grpcStreamResponse && !expectation.binaryResponse && !expectation.dnsResponse && !expectation.httpLlmResponse) {
+                if (!hasNonHttpResponseAction(expectation)) {
                     expectation.httpResponse = addDefaultResponseMatcherHeaders(expectation.httpResponse);
                 }
             }
@@ -3309,7 +3348,9 @@ var mockServerClient;
             mcpMock: require('./mcpMockBuilder').mcpMock,
             a2aMock: require('./a2aMockBuilder').a2aMock,
             routeBreakpointMessage: _routeBreakpointMessage,
-            extractBreakpointHeaders: _extractBreakpointHeaders
+            extractBreakpointHeaders: _extractBreakpointHeaders,
+            // exported so a test can ratchet it against the server's own expectation schema
+            NON_HTTP_RESPONSE_ACTION_KEYS: NON_HTTP_RESPONSE_ACTION_KEYS
         };
     }
 })();
