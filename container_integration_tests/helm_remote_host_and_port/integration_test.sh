@@ -11,7 +11,20 @@ source "${SCRIPT_DIR}/../logging.sh"
 printMessage "Start: \"${SCRIPT_DIR/\//}\""
 
 function integration_test() {
-  start-up "--set image.repositoryNameAndTag=mockserver/mockserver:integration_testing --set service.port=1090" "proxy-target" "1090"
+  # releasenameOverride pins the Service name to exactly "proxy-target".
+  #
+  # Without it the chart's "release.name" template appends the chart name unless the
+  # release name ALREADY CONTAINS it, so release "proxy-target" creates Service
+  # "proxy-target-mockserver". Two things in this test assume the Service is named
+  # "proxy-target", and both were therefore broken:
+  #   1. start-up port-forwards to svc/<namespace> — "services 'proxy-target' not found";
+  #   2. app.proxyRemoteHost below resolves proxy-target.proxy-target.svc.cluster.local,
+  #      which never existed either (this one was masked, because (1) fails first).
+  # The sibling helm tests avoid this only by accident: they use release names that
+  # happen to contain "mockserver" ("mockserver", "mockserver-cfg"), so the template
+  # collapses to the release name. Pinning the name explicitly does not rely on that
+  # coincidence.
+  start-up "--set image.repositoryNameAndTag=mockserver/mockserver:integration_testing --set service.port=1090 --set releasenameOverride=proxy-target" "proxy-target" "1090"
   PROXY_TARGET="${MOCKSERVER_HOST}"
   sleep 3
   start-up "--set image.repositoryNameAndTag=mockserver/mockserver:integration_testing --set app.proxyRemoteHost=proxy-target.proxy-target.svc.cluster.local --set app.proxyRemotePort=1090"

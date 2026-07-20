@@ -88,14 +88,31 @@ function start-up() {
   done
   if [[ "${ready}" != "true" ]]; then
     printFailureMessage "port-forward to svc/${namespace} on 127.0.0.1:${port} never became ready after 30s"
+    kill-port-forward "${namespace}" "${port}"
+
+    # Pick the hint from what the forward ACTUALLY said, and print the captured output
+    # LAST so the final thing a reader sees is evidence rather than a guess.
+    #
+    # Previously the port-collision hint was printed unconditionally and last. For a
+    # "services not found" failure that is a red herring: nothing was listening on the
+    # port at all, and a reader who stops at the last line goes hunting for a collision
+    # that does not exist. That is exactly what happened with helm_remote_host_and_port.
+    if [[ -s "${forward_log}" ]] && grep -q "NotFound" "${forward_log}"; then
+      printFailureMessage "The Service does not exist under that name — this is NOT a port collision."
+      printFailureMessage "  The chart names its Service from the 'release.name' template, which appends the"
+      printFailureMessage "  chart name unless the release name already contains it: release 'foo' creates"
+      printFailureMessage "  Service 'foo-mockserver', while release 'mockserver-foo' creates 'mockserver-foo'."
+      printFailureMessage "  Pin it with --set releasenameOverride=<name>, or check: kubectl get svc -n ${namespace}"
+    else
+      printFailureMessage "Anything already listening on 127.0.0.1:${port} (e.g. a k3d 'ports:' publish in k3d-config.yaml) will prevent the forward from binding."
+    fi
+
     printFailureMessage "kubectl port-forward output was:"
     if [[ -s "${forward_log}" ]]; then
       cat "${forward_log}" >&2
     else
       printFailureMessage "  (empty — the forward produced no output; it may have been killed)"
     fi
-    kill-port-forward "${namespace}" "${port}"
-    printFailureMessage "Anything already listening on 127.0.0.1:${port} (e.g. a k3d 'ports:' publish in k3d-config.yaml) will prevent the forward from binding."
     return 1
   fi
 }
