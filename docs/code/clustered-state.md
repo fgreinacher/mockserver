@@ -170,6 +170,8 @@ The `compareAndSet` flow in `InfinispanKeyValueStore`:
 
 `put()` intentionally uses `cache.compute()` because an unconditional version-incrementing put is idempotent given a deterministic new value — re-execution on retry is safe there.
 
+**Composite keys use a length-prefixed encoding.** Scenario/cross-protocol keys are flattened to a single `String` before they reach the backend store, so a naive `name:state:pattern` join would let a delimiter inside one component collide with a component boundary (e.g. `a:b` + `c` vs `a` + `b:c`). `ScenarioManager.ScenarioKey#toString()` and `CrossProtocolEventBus.backendKey()` avoid this by prefixing each component with its length — `<trigger>|<len>:<name>:<len>:<state>:<len>:<pattern>` — making the encoding lossless and collision-free. `InfinispanKeyValueStore` then stores these as opaque `String` keys (`KeyValueStore<V>` parameterises the value type, not the key). Regression coverage: `CrossProtocolEventBusTest.backendKeyShouldNotCollideWhen…` and `ScenarioManagerCompositeKeyTest`.
+
 ## Cluster Status Endpoint
 
 `GET /mockserver/cluster` (control-plane, gated by `controlPlaneRequestAuthenticated`) returns a JSON snapshot of cluster membership and health, backed by the `StateBackend.clusterInfo()` SPI method.
