@@ -23,6 +23,7 @@ class HttpLlmResponse implements \JsonSerializable
     /** @var array<string, mixed>|null */
     private ?array $chaos = null;
     private ?Delay $delay = null;
+    private ?bool $primary = null;
 
     /**
      * Static factory mirroring {@code HttpLlmResponse.llmResponse()}.
@@ -80,6 +81,24 @@ class HttpLlmResponse implements \JsonSerializable
     }
 
     /**
+     * Mark this action as the primary one for the expectation.
+     *
+     * Only meaningful when an expectation carries more than one action: the
+     * server requires exactly one to be marked primary and rejects the
+     * expectation otherwise.
+     *
+     * Named {@code primary()} rather than {@code withPrimary()}, breaking this
+     * class's {@code with*} convention on purpose: every other action builder
+     * in the client spells it {@code primary()}, and the selector is set the
+     * same way across actions on a multi-action expectation.
+     */
+    public function primary(bool $primary): self
+    {
+        $this->primary = $primary;
+        return $this;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function jsonSerialize(): array
@@ -113,6 +132,9 @@ class HttpLlmResponse implements \JsonSerializable
         }
         if ($this->delay !== null) {
             $data['delay'] = $this->delay->toArray();
+        }
+        if ($this->primary !== null) {
+            $data['primary'] = $this->primary;
         }
         return $data;
     }

@@ -27,6 +27,7 @@ class HttpSseResponse implements \JsonSerializable
     private ?bool $closeConnection = null;
     private ?Delay $delay = null;
     private ?bool $primary = null;
+    private ?string $templateType = null;
 
     public static function response(): self
     {
@@ -92,6 +93,17 @@ class HttpSseResponse implements \JsonSerializable
     }
 
     /**
+     * Template engine used to render the message/event bodies.
+     *
+     * @param string $templateType one of VELOCITY, JAVASCRIPT, MUSTACHE
+     */
+    public function templateType(string $templateType): self
+    {
+        $this->templateType = strtoupper($templateType);
+        return $this;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function jsonSerialize(): array
@@ -122,6 +134,9 @@ class HttpSseResponse implements \JsonSerializable
         }
         if ($this->primary !== null) {
             $data['primary'] = $this->primary;
+        }
+        if ($this->templateType !== null) {
+            $data['templateType'] = $this->templateType;
         }
         return $data;
     }

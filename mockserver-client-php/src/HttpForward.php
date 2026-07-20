@@ -19,6 +19,7 @@ class HttpForward implements \JsonSerializable
     private ?int $port = null;
     private ?string $scheme = null;
     private ?bool $primary = null;
+    private ?Delay $delay = null;
 
     /**
      * Static factory for fluent construction.
@@ -46,6 +47,15 @@ class HttpForward implements \JsonSerializable
     public function scheme(string $scheme): self
     {
         $this->scheme = strtoupper($scheme);
+        return $this;
+    }
+
+    /**
+     * Apply a delay before the request is forwarded.
+     */
+    public function delay(Delay $delay): self
+    {
+        $this->delay = $delay;
         return $this;
     }
 
@@ -101,6 +111,9 @@ class HttpForward implements \JsonSerializable
         }
         if ($this->scheme !== null) {
             $data['scheme'] = $this->scheme;
+        }
+        if ($this->delay !== null) {
+            $data['delay'] = $this->delay->toArray();
         }
         if ($this->primary !== null) {
             $data['primary'] = $this->primary;

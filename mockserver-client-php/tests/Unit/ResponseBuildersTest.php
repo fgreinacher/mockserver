@@ -13,6 +13,7 @@ use MockServer\GrpcStreamResponse;
 use MockServer\HttpSseResponse;
 use MockServer\GraphQLSubscriptionFilter;
 use MockServer\HttpWebSocketResponse;
+use MockServer\Tests\Support\SharedFixtures;
 use MockServer\OpenAPIExpectation;
 use MockServer\SseEvent;
 use MockServer\WebSocketMessage;
@@ -228,19 +229,38 @@ class ResponseBuildersTest extends TestCase
     public function testGraphqlSubscriptionFilterMatchesTheSharedFixture(): void
     {
         // test-fixtures/expectations/action_websocket_graphql_filter.json
-        $fixture = json_decode(
-            (string) file_get_contents(
-                __DIR__ . '/../../../test-fixtures/expectations/action_websocket_graphql_filter.json',
-            ),
-            true,
-        );
-
-        $built = GraphQLSubscriptionFilter::query($fixture['httpWebSocketResponse']['graphqlSubscriptionFilter']['query'])
+        $built = GraphQLSubscriptionFilter::query('subscription OnMessage { messageAdded { id body } }')
             ->operationName('OnMessage')
             ->selectionSetMatchType(GraphQLSubscriptionFilter::AST_SUBSET)
             ->fields(['messageAdded'])
             ->toArray();
 
-        $this->assertSame($fixture['httpWebSocketResponse']['graphqlSubscriptionFilter'], $built);
+        $this->assertSame(
+            SharedFixtures::sortedDeep(
+                SharedFixtures::action('action_websocket_graphql_filter.json', 'httpWebSocketResponse', 6)
+                    ['graphqlSubscriptionFilter'],
+            ),
+            SharedFixtures::sortedDeep($built),
+        );
+    }
+
+    public function testHttpSseResponseTemplateType(): void
+    {
+        $arr = HttpSseResponse::response()->statusCode(200)->templateType('mustache')->toArray();
+
+        $this->assertSame('MUSTACHE', $arr['templateType']);
+    }
+
+    public function testHttpWebSocketResponseTemplateType(): void
+    {
+        $arr = HttpWebSocketResponse::response()->subprotocol('chat')->templateType('velocity')->toArray();
+
+        $this->assertSame('VELOCITY', $arr['templateType']);
+    }
+
+    public function testTemplateTypeOmittedWhenNotSet(): void
+    {
+        $this->assertArrayNotHasKey('templateType', HttpSseResponse::response()->statusCode(200)->toArray());
+        $this->assertArrayNotHasKey('templateType', HttpWebSocketResponse::response()->subprotocol('c')->toArray());
     }
 }

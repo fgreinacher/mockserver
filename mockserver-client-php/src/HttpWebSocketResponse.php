@@ -26,6 +26,7 @@ class HttpWebSocketResponse implements \JsonSerializable
     private ?Delay $delay = null;
     private ?bool $primary = null;
     private ?GraphQLSubscriptionFilter $graphqlSubscriptionFilter = null;
+    private ?string $templateType = null;
 
     public static function response(): self
     {
@@ -88,6 +89,17 @@ class HttpWebSocketResponse implements \JsonSerializable
     }
 
     /**
+     * Template engine used to render the message/event bodies.
+     *
+     * @param string $templateType one of VELOCITY, JAVASCRIPT, MUSTACHE
+     */
+    public function templateType(string $templateType): self
+    {
+        $this->templateType = strtoupper($templateType);
+        return $this;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function jsonSerialize(): array
@@ -118,6 +130,9 @@ class HttpWebSocketResponse implements \JsonSerializable
         }
         if ($this->graphqlSubscriptionFilter !== null) {
             $data['graphqlSubscriptionFilter'] = $this->graphqlSubscriptionFilter->toArray();
+        }
+        if ($this->templateType !== null) {
+            $data['templateType'] = $this->templateType;
         }
         return $data;
     }

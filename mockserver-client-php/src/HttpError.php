@@ -20,6 +20,7 @@ class HttpError implements \JsonSerializable
     private ?string $responseBytes = null;
     private ?int $streamError = null;
     private ?bool $primary = null;
+    private ?Delay $delay = null;
 
     /**
      * Static factory for fluent construction.
@@ -54,6 +55,15 @@ class HttpError implements \JsonSerializable
     public function streamError(int $streamError): self
     {
         $this->streamError = $streamError;
+        return $this;
+    }
+
+    /**
+     * Apply a delay before the error is produced.
+     */
+    public function delay(Delay $delay): self
+    {
+        $this->delay = $delay;
         return $this;
     }
 
@@ -94,6 +104,9 @@ class HttpError implements \JsonSerializable
         }
         if ($this->streamError !== null) {
             $data['streamError'] = $this->streamError;
+        }
+        if ($this->delay !== null) {
+            $data['delay'] = $this->delay->toArray();
         }
         if ($this->primary !== null) {
             $data['primary'] = $this->primary;

@@ -171,6 +171,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **The PHP client's action builders now carry nine further fields the server accepts.** `HttpError` and
+  `HttpForward` could not express `delay`; `HttpResponse` could not express `trailers`,
+  `generateFromSchema`, `statusCodeRange` or `recoverAfter`; `HttpSseResponse` and `HttpWebSocketResponse`
+  could not express `templateType`, so a templated SSE or WebSocket body was sent without the engine that
+  renders it; and `HttpLlmResponse` could not express `primary`, which the previous release note claimed was
+  closed for every action builder — it was missed because that class lives under `src/Llm/` and the
+  enumeration behind that change only looked at `src/`. A new `RecoverAfter` builder covers the
+  retry/recovery primitive (`failTimes`, `failResponse`, `idempotencyHeader`); `failTimes` of 0 is emitted
+  rather than dropped, because 0 makes the primitive deliberately inert and silently omitting it would turn
+  a configured no-op into an absent field. These gaps were invisible to the round-trip fidelity harness,
+  which replays raw JSON through `Expectation`'s `rawData` and never exercises a typed builder, so coverage
+  comes from the per-class builder tests.
 - **The PHP client's typed builders can now express `primary`, `streamError` and `graphqlSubscriptionFilter`.**
   `HttpResponse`, `HttpForward` and `HttpError` had no `primary()`, so a multi-action expectation built with
   them omitted the action selector entirely — the server requires exactly one action to be marked primary,

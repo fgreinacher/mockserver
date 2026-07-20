@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace MockServer\Tests\Unit;
 
+use MockServer\Delay;
 use MockServer\HttpForward;
 use PHPUnit\Framework\TestCase;
 
@@ -83,5 +84,25 @@ class HttpForwardTest extends TestCase
     public function testPrimaryOmittedWhenNotSet(): void
     {
         $this->assertArrayNotHasKey('primary', HttpForward::forward()->host('example.com')->toArray());
+    }
+
+    public function testDelayIsSerialised(): void
+    {
+        $arr = HttpForward::forward()->host('example.com')->delay(Delay::seconds(2))->toArray();
+
+        $this->assertSame(['timeUnit' => 'SECONDS', 'value' => 2], $arr['delay']);
+    }
+
+    public function testZeroDelayIsSerialisedNotOmitted(): void
+    {
+        $arr = HttpForward::forward()->host('example.com')->delay(Delay::milliseconds(0))->toArray();
+
+        $this->assertArrayHasKey('delay', $arr);
+        $this->assertSame(['timeUnit' => 'MILLISECONDS', 'value' => 0], $arr['delay']);
+    }
+
+    public function testDelayOmittedWhenNotSet(): void
+    {
+        $this->assertArrayNotHasKey('delay', HttpForward::forward()->host('example.com')->toArray());
     }
 }

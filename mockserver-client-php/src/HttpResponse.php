@@ -25,6 +25,11 @@ class HttpResponse implements \JsonSerializable
     private ?Delay $delay = null;
     private ?ConnectionOptions $connectionOptions = null;
     private ?bool $primary = null;
+    /** @var array<string, list<string>> */
+    private array $trailers = [];
+    private ?string $generateFromSchema = null;
+    private ?string $statusCodeRange = null;
+    private ?RecoverAfter $recoverAfter = null;
 
     /**
      * Static factory for fluent construction.
@@ -169,6 +174,53 @@ class HttpResponse implements \JsonSerializable
     }
 
     /**
+     * Add an HTTP trailer (a header sent after the response body, in the
+     * chunked trailer section).
+     *
+     * Mirrors {@see header()}: repeated calls with the same name append.
+     */
+    public function trailer(string $name, string ...$values): self
+    {
+        if (!isset($this->trailers[$name])) {
+            $this->trailers[$name] = [];
+        }
+        foreach ($values as $value) {
+            $this->trailers[$name][] = $value;
+        }
+        return $this;
+    }
+
+    /**
+     * Generate the response body from a JSON schema instead of specifying it.
+     *
+     * @param string $generateFromSchema a JSON schema, as a JSON string
+     */
+    public function generateFromSchema(string $generateFromSchema): self
+    {
+        $this->generateFromSchema = $generateFromSchema;
+        return $this;
+    }
+
+    /**
+     * Return a status code drawn from a range, e.g. "200-299".
+     */
+    public function statusCodeRange(string $statusCodeRange): self
+    {
+        $this->statusCodeRange = $statusCodeRange;
+        return $this;
+    }
+
+    /**
+     * Fail the first N matches with a different response before serving this
+     * one — a deterministic retry/backoff probe.
+     */
+    public function recoverAfter(RecoverAfter $recoverAfter): self
+    {
+        $this->recoverAfter = $recoverAfter;
+        return $this;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function jsonSerialize(): array
@@ -206,6 +258,24 @@ class HttpResponse implements \JsonSerializable
         }
         if ($this->primary !== null) {
             $data['primary'] = $this->primary;
+        }
+        if (!empty($this->trailers)) {
+            $data['trailers'] = $this->trailers;
+        }
+        // The scalar guards below are `!== null`, not truthiness, on purpose. An explicitly-empty
+        // value is a user error and should reach the server rather than be silently dropped: for
+        // the enum fields elsewhere (templateType) the server rejects "" outright, while
+        // generateFromSchema and statusCodeRange are plain `{"type": "string"}` in the schema, so
+        // "" is schema-VALID and surfaces downstream instead. Either way the user finds out. A
+        // truthy guard would also drop "0", which PHP treats as falsy.
+        if ($this->generateFromSchema !== null) {
+            $data['generateFromSchema'] = $this->generateFromSchema;
+        }
+        if ($this->statusCodeRange !== null) {
+            $data['statusCodeRange'] = $this->statusCodeRange;
+        }
+        if ($this->recoverAfter !== null) {
+            $data['recoverAfter'] = $this->recoverAfter->toArray();
         }
 
         return $data;

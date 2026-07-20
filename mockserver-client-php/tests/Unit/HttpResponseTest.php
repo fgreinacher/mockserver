@@ -7,6 +7,8 @@ namespace MockServer\Tests\Unit;
 use MockServer\ConnectionOptions;
 use MockServer\Delay;
 use MockServer\HttpResponse;
+use MockServer\RecoverAfter;
+use MockServer\Tests\Support\SharedFixtures;
 use PHPUnit\Framework\TestCase;
 
 class HttpResponseTest extends TestCase
@@ -240,5 +242,115 @@ class HttpResponseTest extends TestCase
     public function testPrimaryOmittedWhenNotSet(): void
     {
         $this->assertArrayNotHasKey('primary', HttpResponse::response()->statusCode(200)->toArray());
+    }
+
+    public function testTrailersAreSerialised(): void
+    {
+        $arr = HttpResponse::response()->statusCode(200)->trailer('X-Checksum', 'abc123')->toArray();
+
+        $this->assertSame(['X-Checksum' => ['abc123']], $arr['trailers']);
+    }
+
+    public function testRepeatedTrailerAppendsLikeHeader(): void
+    {
+        $arr = HttpResponse::response()->trailer('X-T', 'a')->trailer('X-T', 'b')->toArray();
+
+        $this->assertSame(['X-T' => ['a', 'b']], $arr['trailers']);
+    }
+
+    public function testEmptyStringTrailerValueSurvives(): void
+    {
+        // The emit guard is on the trailers map, not the value: an explicitly
+        // empty trailer value must still reach the wire.
+        $arr = HttpResponse::response()->trailer('X-Empty', '')->toArray();
+
+        $this->assertSame(['X-Empty' => ['']], $arr['trailers']);
+    }
+
+    public function testTrailersOmittedWhenNotSet(): void
+    {
+        $this->assertArrayNotHasKey('trailers', HttpResponse::response()->statusCode(200)->toArray());
+    }
+
+    public function testGenerateFromSchemaIsSerialised(): void
+    {
+        $schema = '{"type":"object","properties":{"id":{"type":"integer"}}}';
+        $arr = HttpResponse::response()->generateFromSchema($schema)->toArray();
+
+        $this->assertSame($schema, $arr['generateFromSchema']);
+    }
+
+    public function testStatusCodeRangeIsSerialised(): void
+    {
+        $arr = HttpResponse::response()->statusCodeRange('200-299')->toArray();
+
+        $this->assertSame('200-299', $arr['statusCodeRange']);
+    }
+
+    public function testRecoverAfterIsSerialised(): void
+    {
+        $arr = HttpResponse::response()
+            ->statusCode(200)
+            ->recoverAfter(
+                RecoverAfter::failTimes(2)
+                    ->failResponse(HttpResponse::response()->statusCode(503))
+                    ->idempotencyHeader('X-Idempotency-Key'),
+            )
+            ->toArray();
+
+        $this->assertSame(
+            [
+                'failTimes' => 2,
+                'failResponse' => ['statusCode' => 503],
+                'idempotencyHeader' => 'X-Idempotency-Key',
+            ],
+            $arr['recoverAfter'],
+        );
+    }
+
+    public function testRecoverAfterZeroFailTimesIsSerialisedNotOmitted(): void
+    {
+        // failTimes <= 0 makes recoverAfter inert. That is a configuration, not
+        // an absence — dropping it via a truthy guard would change its meaning.
+        $arr = RecoverAfter::failTimes(0)->toArray();
+
+        $this->assertArrayHasKey('failTimes', $arr);
+        $this->assertSame(0, $arr['failTimes']);
+    }
+
+    public function testMatchesTheSharedGeneratedFixture(): void
+    {
+        // The builder inputs are LITERAL and the expected side is READ from the shared corpus.
+        // Deriving the inputs from the fixture too would make this a self-comparison: both sides
+        // would move together and a fixture change could never redden it.
+        $built = HttpResponse::response()
+            ->statusCodeRange('200-299')
+            ->generateFromSchema('{"type":"object","properties":{"id":{"type":"integer"}}}')
+            ->recoverAfter(
+                RecoverAfter::failTimes(2)
+                    ->failResponse(HttpResponse::response()->statusCode(503))
+                    ->idempotencyHeader('X-Idempotency-Key'),
+            )
+            ->primary(false)
+            ->toArray();
+
+        // Sorted-then-strict: key order differs (the fixture leads with statusCodeRange, the
+        // builder emits primary first) but types must still match exactly — primary is false and
+        // failTimes is 0-capable, and a loose comparison would stop distinguishing those.
+        $this->assertSame(
+            SharedFixtures::sortedDeep(
+                SharedFixtures::action('action_response_generated.json', 'httpResponse', 4),
+            ),
+            SharedFixtures::sortedDeep($built),
+        );
+    }
+
+    public function testNewFieldsOmittedWhenNotSet(): void
+    {
+        $arr = HttpResponse::response()->statusCode(200)->toArray();
+
+        $this->assertArrayNotHasKey('generateFromSchema', $arr);
+        $this->assertArrayNotHasKey('statusCodeRange', $arr);
+        $this->assertArrayNotHasKey('recoverAfter', $arr);
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace MockServer\Tests\Unit;
 
 use MockServer\Llm\Completion;
+use MockServer\Llm\HttpLlmResponse;
 use MockServer\Llm\EmbeddingResponse;
 use MockServer\Llm\IsolationSource;
 use MockServer\Llm\LlmConversationBuilder;
@@ -237,5 +238,26 @@ class LlmBuilderTest extends TestCase
             '{"error":{"type":"error","message":"Request failed with status 599"}}',
             LlmFailoverBuilder::defaultErrorBody(599)
         );
+    }
+
+    public function testHttpLlmResponsePrimaryIsSerialised(): void
+    {
+        $arr = HttpLlmResponse::llmResponse()->withProvider(Provider::ANTHROPIC)->primary(true)->toArray();
+
+        $this->assertArrayHasKey('primary', $arr);
+        $this->assertTrue($arr['primary']);
+    }
+
+    public function testHttpLlmResponsePrimaryFalseIsSerialisedNotOmitted(): void
+    {
+        $arr = HttpLlmResponse::llmResponse()->withProvider(Provider::ANTHROPIC)->primary(false)->toArray();
+
+        $this->assertArrayHasKey('primary', $arr);
+        $this->assertFalse($arr['primary']);
+    }
+
+    public function testHttpLlmResponsePrimaryOmittedWhenNotSet(): void
+    {
+        $this->assertArrayNotHasKey('primary', HttpLlmResponse::llmResponse()->withProvider(Provider::ANTHROPIC)->toArray());
     }
 }

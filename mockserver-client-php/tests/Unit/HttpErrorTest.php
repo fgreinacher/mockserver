@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace MockServer\Tests\Unit;
 
+use MockServer\Delay;
 use MockServer\HttpError;
+use MockServer\Tests\Support\SharedFixtures;
 use PHPUnit\Framework\TestCase;
 
 class HttpErrorTest extends TestCase
@@ -83,12 +85,20 @@ class HttpErrorTest extends TestCase
 
     public function testMatchesTheSharedStreamResetFixture(): void
     {
-        // test-fixtures/expectations/action_error_stream_reset.json
-        $arr = HttpError::error()->streamError(2)->dropConnection(true)->primary(false)->toArray();
+        // Literal builder inputs; expected side read from the shared corpus (see the note in
+        // HttpResponseTest::testMatchesTheSharedGeneratedFixture on why the inputs are not
+        // derived from the fixture).
+        $built = HttpError::error()
+            ->streamError(2)
+            ->dropConnection(true)
+            ->primary(false)
+            ->toArray();
 
         $this->assertSame(
-            ['dropConnection' => true, 'streamError' => 2, 'primary' => false],
-            $arr,
+            SharedFixtures::sortedDeep(
+                SharedFixtures::action('action_error_stream_reset.json', 'httpError', 3),
+            ),
+            SharedFixtures::sortedDeep($built),
         );
     }
 
@@ -98,5 +108,28 @@ class HttpErrorTest extends TestCase
 
         $this->assertArrayNotHasKey('primary', $arr);
         $this->assertArrayNotHasKey('streamError', $arr);
+    }
+
+    public function testDelayIsSerialised(): void
+    {
+        $arr = HttpError::error()->dropConnection(true)->delay(Delay::milliseconds(250))->toArray();
+
+        $this->assertSame(['timeUnit' => 'MILLISECONDS', 'value' => 250], $arr['delay']);
+    }
+
+    public function testZeroDelayIsSerialisedNotOmitted(): void
+    {
+        // A zero delay is a real instruction (respond immediately, explicitly);
+        // a truthy guard on the Delay object would keep it, but a truthy guard
+        // on its value would not, so assert the emitted payload.
+        $arr = HttpError::error()->delay(Delay::milliseconds(0))->toArray();
+
+        $this->assertArrayHasKey('delay', $arr);
+        $this->assertSame(['timeUnit' => 'MILLISECONDS', 'value' => 0], $arr['delay']);
+    }
+
+    public function testDelayOmittedWhenNotSet(): void
+    {
+        $this->assertArrayNotHasKey('delay', HttpError::error()->dropConnection(true)->toArray());
     }
 }
