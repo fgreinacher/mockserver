@@ -18,6 +18,7 @@ class HttpForward implements \JsonSerializable
     private ?string $host = null;
     private ?int $port = null;
     private ?string $scheme = null;
+    private ?bool $primary = null;
 
     /**
      * Static factory for fluent construction.
@@ -45,6 +46,20 @@ class HttpForward implements \JsonSerializable
     public function scheme(string $scheme): self
     {
         $this->scheme = strtoupper($scheme);
+        return $this;
+    }
+
+    /**
+     * Mark this action as the primary one for the expectation.
+     *
+     * Only meaningful when an expectation carries more than one action: the
+     * server requires exactly one to be marked primary and rejects the
+     * expectation otherwise. Omitting it from a re-submitted expectation can
+     * silently change which action executes.
+     */
+    public function primary(bool $primary): self
+    {
+        $this->primary = $primary;
         return $this;
     }
 
@@ -86,6 +101,9 @@ class HttpForward implements \JsonSerializable
         }
         if ($this->scheme !== null) {
             $data['scheme'] = $this->scheme;
+        }
+        if ($this->primary !== null) {
+            $data['primary'] = $this->primary;
         }
 
         return $data;

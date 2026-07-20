@@ -11,11 +11,15 @@ namespace MockServer;
  *   $error = HttpError::error()
  *       ->dropConnection(true)
  *       ->responseBytes(base64_encode("garbage"));
+ *
+ * Wire keys: dropConnection, responseBytes, streamError, primary.
  */
 class HttpError implements \JsonSerializable
 {
     private ?bool $dropConnection = null;
     private ?string $responseBytes = null;
+    private ?int $streamError = null;
+    private ?bool $primary = null;
 
     /**
      * Static factory for fluent construction.
@@ -41,6 +45,33 @@ class HttpError implements \JsonSerializable
     }
 
     /**
+     * Reset the matched request stream with this error code instead of
+     * returning a response (HTTP/2 RST_STREAM, HTTP/3 RESET_STREAM). HTTP/1.1
+     * has no stream concept, so there it falls back to dropping the connection.
+     *
+     * @param int $streamError protocol-level stream error code, e.g. 2 (INTERNAL_ERROR)
+     */
+    public function streamError(int $streamError): self
+    {
+        $this->streamError = $streamError;
+        return $this;
+    }
+
+    /**
+     * Mark this action as the primary one for the expectation.
+     *
+     * Only meaningful when an expectation carries more than one action: the
+     * server requires exactly one to be marked primary and rejects the
+     * expectation otherwise. Omitting it from a re-submitted expectation can
+     * silently change which action executes.
+     */
+    public function primary(bool $primary): self
+    {
+        $this->primary = $primary;
+        return $this;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function jsonSerialize(): array
@@ -60,6 +91,12 @@ class HttpError implements \JsonSerializable
         }
         if ($this->responseBytes !== null) {
             $data['responseBytes'] = $this->responseBytes;
+        }
+        if ($this->streamError !== null) {
+            $data['streamError'] = $this->streamError;
+        }
+        if ($this->primary !== null) {
+            $data['primary'] = $this->primary;
         }
 
         return $data;

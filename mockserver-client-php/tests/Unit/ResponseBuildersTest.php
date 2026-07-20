@@ -11,6 +11,7 @@ use MockServer\DnsResponse;
 use MockServer\GrpcStreamMessage;
 use MockServer\GrpcStreamResponse;
 use MockServer\HttpSseResponse;
+use MockServer\GraphQLSubscriptionFilter;
 use MockServer\HttpWebSocketResponse;
 use MockServer\OpenAPIExpectation;
 use MockServer\SseEvent;
@@ -182,5 +183,64 @@ class ResponseBuildersTest extends TestCase
             ],
             OpenAPIExpectation::openAPI('spec.yaml', ['op' => '200'])->toArray()
         );
+    }
+
+    public function testHttpWebSocketResponseGraphqlSubscriptionFilter(): void
+    {
+        $ws = HttpWebSocketResponse::response()
+            ->subprotocol('graphql-transport-ws')
+            ->graphqlSubscriptionFilter(
+                GraphQLSubscriptionFilter::query('subscription OnMessage { messageAdded { id body } }')
+                    ->operationName('OnMessage')
+                    ->selectionSetMatchType(GraphQLSubscriptionFilter::AST_SUBSET)
+                    ->fields(['messageAdded']),
+            );
+
+        $arr = $ws->toArray();
+        $this->assertArrayHasKey('graphqlSubscriptionFilter', $arr);
+        $this->assertSame(
+            [
+                'query' => 'subscription OnMessage { messageAdded { id body } }',
+                'operationName' => 'OnMessage',
+                'selectionSetMatchType' => 'AST_SUBSET',
+                'fields' => ['messageAdded'],
+            ],
+            $arr['graphqlSubscriptionFilter'],
+        );
+    }
+
+    public function testGraphqlSubscriptionFilterOmittedWhenNotSet(): void
+    {
+        $arr = HttpWebSocketResponse::response()->subprotocol('chat')->toArray();
+
+        $this->assertArrayNotHasKey('graphqlSubscriptionFilter', $arr);
+    }
+
+    public function testGraphqlSubscriptionFilterEmitsQueryEvenWhenNothingElseSet(): void
+    {
+        // query is the server's only required property, so it must be emitted
+        // unconditionally rather than through an "if set" guard.
+        $arr = GraphQLSubscriptionFilter::query('subscription { t }')->toArray();
+
+        $this->assertSame(['query' => 'subscription { t }'], $arr);
+    }
+
+    public function testGraphqlSubscriptionFilterMatchesTheSharedFixture(): void
+    {
+        // test-fixtures/expectations/action_websocket_graphql_filter.json
+        $fixture = json_decode(
+            (string) file_get_contents(
+                __DIR__ . '/../../../test-fixtures/expectations/action_websocket_graphql_filter.json',
+            ),
+            true,
+        );
+
+        $built = GraphQLSubscriptionFilter::query($fixture['httpWebSocketResponse']['graphqlSubscriptionFilter']['query'])
+            ->operationName('OnMessage')
+            ->selectionSetMatchType(GraphQLSubscriptionFilter::AST_SUBSET)
+            ->fields(['messageAdded'])
+            ->toArray();
+
+        $this->assertSame($fixture['httpWebSocketResponse']['graphqlSubscriptionFilter'], $built);
     }
 }

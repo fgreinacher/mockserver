@@ -217,4 +217,28 @@ class HttpResponseTest extends TestCase
         $this->assertSame([], $response->getHeaders());
         $this->assertNull($response->getDelay());
     }
+
+    public function testPrimaryIsSerialised(): void
+    {
+        $response = HttpResponse::response()->statusCode(200)->primary(true);
+
+        $this->assertArrayHasKey('primary', $response->toArray());
+        $this->assertTrue($response->toArray()['primary']);
+    }
+
+    public function testPrimaryFalseIsSerialisedNotOmitted(): void
+    {
+        // false is meaningful: it marks a secondary action on a multi-action
+        // expectation. Treating it like "unset" is how the selector goes missing.
+        $response = HttpResponse::response()->statusCode(200)->primary(false);
+
+        $arr = $response->toArray();
+        $this->assertArrayHasKey('primary', $arr);
+        $this->assertFalse($arr['primary']);
+    }
+
+    public function testPrimaryOmittedWhenNotSet(): void
+    {
+        $this->assertArrayNotHasKey('primary', HttpResponse::response()->statusCode(200)->toArray());
+    }
 }

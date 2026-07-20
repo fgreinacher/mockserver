@@ -171,6 +171,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **The PHP client's typed builders can now express `primary`, `streamError` and `graphqlSubscriptionFilter`.**
+  `HttpResponse`, `HttpForward` and `HttpError` had no `primary()`, so a multi-action expectation built with
+  them omitted the action selector entirely — the server requires exactly one action to be marked primary,
+  so this could silently change which action a re-submitted expectation executes. `HttpError` also could not
+  express `streamError` (reset the matched stream with an HTTP/2 `RST_STREAM` / HTTP/3 `RESET_STREAM` code
+  instead of responding), and `HttpWebSocketResponse` could not express `graphqlSubscriptionFilter`, so PHP
+  users could not build the `graphql-transport-ws` subscription filtering that became settable on a running
+  server earlier in this release. A new `GraphQLSubscriptionFilter` builder covers the filter's own fields
+  (`query`, `operationName`, `variablesSchema`, `selectionSetMatchType`, `fields`). The equivalent gaps were
+  closed for Go, .NET and Rust earlier in this release; PHP was missed because its round-trip fidelity
+  harness replays raw JSON through `Expectation`'s `rawData` and never touches the typed builders, so it
+  reported zero gaps for fields the typed model could not express at all. Coverage for these fields
+  therefore comes from the per-class builder tests, which were extended accordingly.
 - **`/mockserver/debugMismatch` now reports the genuinely closest expectation instead of the first one
   registered.** The endpoint ranked candidates by the number of differing fields, but request matching
   fails fast on the first non-matching field — so every mismatched expectation recorded exactly one

@@ -63,4 +63,25 @@ class HttpForwardTest extends TestCase
         $this->assertSame(443, $decoded['port']);
         $this->assertSame('HTTPS', $decoded['scheme']);
     }
+
+    public function testPrimaryIsSerialised(): void
+    {
+        $forward = HttpForward::forward()->host('example.com')->primary(true);
+
+        $this->assertArrayHasKey('primary', $forward->toArray());
+        $this->assertTrue($forward->toArray()['primary']);
+    }
+
+    public function testPrimaryFalseIsSerialisedNotOmitted(): void
+    {
+        $arr = HttpForward::forward()->host('example.com')->primary(false)->toArray();
+
+        $this->assertArrayHasKey('primary', $arr);
+        $this->assertFalse($arr['primary']);
+    }
+
+    public function testPrimaryOmittedWhenNotSet(): void
+    {
+        $this->assertArrayNotHasKey('primary', HttpForward::forward()->host('example.com')->toArray());
+    }
 }

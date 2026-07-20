@@ -8,7 +8,8 @@ namespace MockServer;
  * Fluent builder for a WebSocket response action.
  *
  * Produces the {@code httpWebSocketResponse} action JSON. Wire keys:
- * subprotocol, messages, closeConnection, delay, primary.
+ * subprotocol, messages, closeConnection, delay, primary,
+ * graphqlSubscriptionFilter.
  *
  * @example
  *   HttpWebSocketResponse::response()
@@ -24,6 +25,7 @@ class HttpWebSocketResponse implements \JsonSerializable
     private ?bool $closeConnection = null;
     private ?Delay $delay = null;
     private ?bool $primary = null;
+    private ?GraphQLSubscriptionFilter $graphqlSubscriptionFilter = null;
 
     public static function response(): self
     {
@@ -75,6 +77,17 @@ class HttpWebSocketResponse implements \JsonSerializable
     }
 
     /**
+     * Only answer subscribe messages whose GraphQL query matches this filter.
+     *
+     * Used with the {@code graphql-transport-ws} subprotocol.
+     */
+    public function graphqlSubscriptionFilter(GraphQLSubscriptionFilter $filter): self
+    {
+        $this->graphqlSubscriptionFilter = $filter;
+        return $this;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function jsonSerialize(): array
@@ -102,6 +115,9 @@ class HttpWebSocketResponse implements \JsonSerializable
         }
         if ($this->primary !== null) {
             $data['primary'] = $this->primary;
+        }
+        if ($this->graphqlSubscriptionFilter !== null) {
+            $data['graphqlSubscriptionFilter'] = $this->graphqlSubscriptionFilter->toArray();
         }
         return $data;
     }

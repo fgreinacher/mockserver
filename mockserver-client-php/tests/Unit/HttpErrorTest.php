@@ -46,4 +46,57 @@ class HttpErrorTest extends TestCase
 
         $this->assertFalse($decoded['dropConnection']);
     }
+
+    public function testPrimaryIsSerialised(): void
+    {
+        $arr = HttpError::error()->dropConnection(true)->primary(true)->toArray();
+
+        $this->assertArrayHasKey('primary', $arr);
+        $this->assertTrue($arr['primary']);
+    }
+
+    public function testPrimaryFalseIsSerialisedNotOmitted(): void
+    {
+        $arr = HttpError::error()->dropConnection(true)->primary(false)->toArray();
+
+        $this->assertArrayHasKey('primary', $arr);
+        $this->assertFalse($arr['primary']);
+    }
+
+    public function testStreamErrorIsSerialised(): void
+    {
+        $arr = HttpError::error()->streamError(2)->toArray();
+
+        $this->assertArrayHasKey('streamError', $arr);
+        $this->assertSame(2, $arr['streamError']);
+    }
+
+    public function testStreamErrorZeroIsSerialisedNotOmitted(): void
+    {
+        // 0 is a valid protocol error code (NO_ERROR); it must not be dropped
+        // by a falsy check.
+        $arr = HttpError::error()->streamError(0)->toArray();
+
+        $this->assertArrayHasKey('streamError', $arr);
+        $this->assertSame(0, $arr['streamError']);
+    }
+
+    public function testMatchesTheSharedStreamResetFixture(): void
+    {
+        // test-fixtures/expectations/action_error_stream_reset.json
+        $arr = HttpError::error()->streamError(2)->dropConnection(true)->primary(false)->toArray();
+
+        $this->assertSame(
+            ['dropConnection' => true, 'streamError' => 2, 'primary' => false],
+            $arr,
+        );
+    }
+
+    public function testFieldsOmittedWhenNotSet(): void
+    {
+        $arr = HttpError::error()->dropConnection(true)->toArray();
+
+        $this->assertArrayNotHasKey('primary', $arr);
+        $this->assertArrayNotHasKey('streamError', $arr);
+    }
 }

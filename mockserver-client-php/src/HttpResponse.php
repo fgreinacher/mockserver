@@ -24,6 +24,7 @@ class HttpResponse implements \JsonSerializable
     private string|array|null $body = null;
     private ?Delay $delay = null;
     private ?ConnectionOptions $connectionOptions = null;
+    private ?bool $primary = null;
 
     /**
      * Static factory for fluent construction.
@@ -154,6 +155,20 @@ class HttpResponse implements \JsonSerializable
     }
 
     /**
+     * Mark this action as the primary one for the expectation.
+     *
+     * Only meaningful when an expectation carries more than one action: the
+     * server requires exactly one to be marked primary and rejects the
+     * expectation otherwise. Omitting it from a re-submitted expectation can
+     * silently change which action executes.
+     */
+    public function primary(bool $primary): self
+    {
+        $this->primary = $primary;
+        return $this;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function jsonSerialize(): array
@@ -188,6 +203,9 @@ class HttpResponse implements \JsonSerializable
         }
         if ($this->connectionOptions !== null) {
             $data['connectionOptions'] = $this->connectionOptions->toArray();
+        }
+        if ($this->primary !== null) {
+            $data['primary'] = $this->primary;
         }
 
         return $data;
