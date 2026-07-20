@@ -64,6 +64,24 @@ steps:
   # (-DskipTests) reusing the restored maven cache. The mockserver-java pipeline is
   # already path-gated (generate-pipeline.sh) to mockserver/ + mockserver-ui/
   # changes — the two drift inputs — so no per-step path filter is needed.
+  # Cloud blob-store contract suites (S3/MinIO, GCS/fake-gcs, Azure/Azurite).
+  # Split out of the main build because it needs the Docker socket, and
+  # run-in-docker.sh exit-0s a socket step on PR builds — putting `-s` on the
+  # main build would silently skip the ENTIRE Java reactor on every PR.
+  # Runs in this parallel group so it adds no critical-path time.
+  # The step asserts the suites actually executed (assert-suite-ran.sh) rather
+  # than trusting Maven's exit code, because the suites' `Assume` Docker guards
+  # otherwise turn an unusable socket into a green build of zero tests.
+  - label: ":cloud: cloud blob-store contract tests"
+    command: ".buildkite/scripts/steps/java-cloud-store-test.sh"
+    timeout_in_minutes: 30
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
   - label: ":test_tube: dashboard generated-Java compile gate"
     command: ".buildkite/scripts/steps/ui-java-codegen-compile.sh"
     timeout_in_minutes: 20
