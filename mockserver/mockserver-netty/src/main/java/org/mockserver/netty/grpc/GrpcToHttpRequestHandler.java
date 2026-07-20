@@ -81,7 +81,7 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                     .withHeader("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE)
                     .withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER, "0")
                     .withBody(responseBody);
-                tagGrpcWebResponse(healthResponse, grpcWebContentType);
+                tagGrpcWebResponse(healthResponse, request, grpcWebContentType);
                 ctx.writeAndFlush(healthResponse);
                 return;
             }
@@ -97,7 +97,7 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                         .withHeader("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE)
                         .withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER, "0")
                         .withBody(responseBody);
-                    tagGrpcWebResponse(reflectionResponse, grpcWebContentType);
+                    tagGrpcWebResponse(reflectionResponse, request, grpcWebContentType);
                     ctx.writeAndFlush(reflectionResponse);
                 } catch (Exception e) {
                     mockServerLogger.logEvent(
@@ -113,7 +113,7 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                             String.valueOf(GrpcStatusMapper.GrpcStatusCode.INTERNAL.getCode()))
                         .withHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER,
                             "reflection request failed: " + e.getMessage());
-                    tagGrpcWebResponse(errorResponse, grpcWebContentType);
+                    tagGrpcWebResponse(errorResponse, request, grpcWebContentType);
                     ctx.writeAndFlush(errorResponse);
                 }
                 return;
@@ -149,7 +149,7 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                             GrpcStatusMapper.GrpcStatusCode.ABORTED,
                             chaosProfile.getErrorMessage() != null ? chaosProfile.getErrorMessage() : "aborted after " + messageCount + " messages"
                         );
-                        tagGrpcWebResponse(abortResponse, grpcWebContentType);
+                        tagGrpcWebResponse(abortResponse, request, grpcWebContentType);
                         scheduleFaultResponse(ctx, chaosProfile, abortResponse);
                         return;
                     }
@@ -162,7 +162,7 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                         chaosProfile, fault.getStatusCode(),
                         fault.getMessage() != null ? fault.getMessage() : fault.getStatusCode().name()
                     );
-                    tagGrpcWebResponse(errorResponse, grpcWebContentType);
+                    tagGrpcWebResponse(errorResponse, request, grpcWebContentType);
                     scheduleFaultResponse(ctx, chaosProfile, errorResponse);
                     return;
                 }
@@ -178,7 +178,7 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                             GrpcStatusMapper.GrpcStatusCode.INTERNAL,
                             chaosProfile.getErrorMessage() != null ? chaosProfile.getErrorMessage() : "chaos fault"
                         );
-                        tagGrpcWebResponse(faultResponse, grpcWebContentType);
+                        tagGrpcWebResponse(faultResponse, request, grpcWebContentType);
                         scheduleFaultResponse(ctx, chaosProfile, faultResponse);
                         return;
                     }
@@ -204,7 +204,7 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                     .withHeader("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE)
                     .withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER, String.valueOf(statusCode.getCode()))
                     .withHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER, e.getMessage());
-                tagGrpcWebResponse(errorResponse, grpcWebContentType);
+                tagGrpcWebResponse(errorResponse, request, grpcWebContentType);
                 ctx.writeAndFlush(errorResponse);
             } catch (Exception e) {
                 mockServerLogger.logEvent(
@@ -218,7 +218,7 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                     .withHeader("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE)
                     .withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER, String.valueOf(GrpcStatusMapper.GrpcStatusCode.INTERNAL.getCode()))
                     .withHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER, "failed to decode gRPC request: " + e.getMessage());
-                tagGrpcWebResponse(errorResponse, grpcWebContentType);
+                tagGrpcWebResponse(errorResponse, request, grpcWebContentType);
                 ctx.writeAndFlush(errorResponse);
             }
         } else {
@@ -227,10 +227,26 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
     }
 
     /**
-     * Tags a direct response with the gRPC-Web content-type marker so that
-     * {@link GrpcToHttpResponseHandler} can re-frame it as gRPC-Web.
+     * Prepares a response this handler writes DIRECTLY (health check, reflection, chaos faults,
+     * decode errors) rather than passing down the pipeline to the matching engine.
+     * <p>
+     * Two things are needed, and both are easy to forget on a new direct-response path, which is
+     * why every such write funnels through here:
+     * <ol>
+     *   <li><strong>The HTTP/2 stream id.</strong> Responses that go through the matching engine
+     *       get this from {@code ResponseWriter.writeResponse}; a direct write does not. Without
+     *       it {@code HttpToHttp2ConnectionHandler.getStreamId} falls back to
+     *       {@code connection().local().incrementAndGetNextStreamId()} and replies on a FRESH
+     *       server-initiated stream, so the client never receives the response on the stream it
+     *       asked on -- its call hangs until deadline. Harmless on HTTP/1.1, where the id is null.</li>
+     *   <li><strong>The gRPC-Web content-type marker</strong>, so
+     *       {@link GrpcToHttpResponseHandler} can re-frame the response as gRPC-Web.</li>
+     * </ol>
      */
-    private static void tagGrpcWebResponse(org.mockserver.model.HttpResponse response, String grpcWebContentType) {
+    private static void tagGrpcWebResponse(org.mockserver.model.HttpResponse response, HttpRequest request, String grpcWebContentType) {
+        if (request != null && request.getStreamId() != null) {
+            response.withStreamId(request.getStreamId());
+        }
         if (grpcWebContentType != null) {
             response.withHeader("x-grpc-web-content-type", grpcWebContentType);
         }

@@ -58,6 +58,21 @@ public class GrpcStreamResponseActionHandler {
         initialResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, GrpcStatusMapper.GRPC_CONTENT_TYPE);
         initialResponse.headers().set(HttpHeaderNames.TRANSFER_ENCODING, "chunked");
 
+        // Reply on the HTTP/2 stream the request arrived on. This handler writes raw Netty objects
+        // straight to the channel, bypassing MockServerHttpResponseToFullHttpResponse, so nothing
+        // else stamps the stream id. Without it HttpToHttp2ConnectionHandler.getStreamId falls back
+        // to connection().local().incrementAndGetNextStreamId() and the whole stream -- initial
+        // HEADERS, every DATA frame and the trailers -- is written to a FRESH server-initiated
+        // stream that the client is not reading, so a real gRPC client receives NOTHING and hangs
+        // until its deadline. Netty's adapter latches this id from the initial HttpMessage and
+        // reuses it for the subsequent HttpContent frames, so setting it here covers the whole
+        // stream. Null on HTTP/1.1, where the header is simply not set.
+        if (request.getStreamId() != null) {
+            initialResponse.headers().set(
+                io.netty.handler.codec.http2.HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text(),
+                request.getStreamId());
+        }
+
         if (grpcStreamResponse.getHeaders() != null) {
             grpcStreamResponse.getHeaders().getEntries().forEach(header ->
                 header.getValues().forEach(value ->
