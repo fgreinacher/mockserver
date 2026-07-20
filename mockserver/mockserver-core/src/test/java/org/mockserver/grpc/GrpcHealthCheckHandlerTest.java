@@ -163,6 +163,59 @@ public class GrpcHealthCheckHandlerTest {
         assertThat(encoded[4], is((byte) 0)); // message length = 0
     }
 
+    // --- isRegistered: which Check calls may succeed at all ---
+    //
+    // grpc.health.v1.Health/Check is specified to fail the RPC with NOT_FOUND when asked about a
+    // service the server does not know about. These cover the registry/handler half of that
+    // decision; the half that turns it into a NOT_FOUND on the wire is covered by
+    // GrpcToHttpRequestHandlerHealthTest in mockserver-netty, so neither can pass on the other's
+    // behalf.
+
+    @Test
+    public void shouldNotTreatAnUnregisteredServiceAsRegistered() {
+        assertThat(handler.isRegistered("never.Registered"), is(false));
+    }
+
+    @Test
+    public void shouldTreatAServiceAsRegisteredOnceItHasAStatus() {
+        registry.setStatus("my.Service", ServingStatus.SERVING);
+
+        assertThat(handler.isRegistered("my.Service"), is(true));
+    }
+
+    @Test
+    public void shouldTreatTheEmptyServiceNameAsAlwaysRegistered() {
+        // The empty name is the overall-server health target and always resolves.
+        assertThat(handler.isRegistered(""), is(true));
+        assertThat(handler.isRegistered(null), is(true));
+    }
+
+    @Test
+    public void shouldNotTreatTheDefaultStatusAsRegisteringEveryServiceName() {
+        // Setting the overall status must not make arbitrary names resolvable — otherwise a
+        // typo'd service name inherits a status and Check answers about a service that does
+        // not exist.
+        registry.setStatus("", ServingStatus.NOT_SERVING);
+
+        assertThat(handler.isRegistered("typo.Servcie"), is(false));
+    }
+
+    @Test
+    public void shouldStopTreatingAServiceAsRegisteredOnceItsOverrideIsRemoved() {
+        registry.setStatus("my.Service", ServingStatus.SERVING);
+        registry.removeStatus("my.Service");
+
+        assertThat(handler.isRegistered("my.Service"), is(false));
+    }
+
+    @Test
+    public void shouldStopTreatingServicesAsRegisteredAfterReset() {
+        registry.setStatus("my.Service", ServingStatus.SERVING);
+        registry.reset();
+
+        assertThat(handler.isRegistered("my.Service"), is(false));
+    }
+
     // --- GrpcHealthRegistry ---
 
     @Test

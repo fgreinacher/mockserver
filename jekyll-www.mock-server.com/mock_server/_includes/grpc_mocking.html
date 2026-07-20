@@ -1265,7 +1265,17 @@ curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d @recorded-expec
 
 <p>Kubernetes readiness and liveness probes commonly use the <a href="https://github.com/grpc/grpc/blob/master/doc/health-checking.md">gRPC Health Checking Protocol</a> (<code class="inline code">grpc.health.v1.Health/Check</code>) to verify that a service is ready to receive traffic. MockServer auto-responds to this well-known method <strong>without requiring a proto descriptor</strong> — protobuf encoding and decoding is handled manually so health checks work out of the box even when no descriptors have been loaded.</p>
 
-<p>Health checking is always available — it is built in and cannot be disabled via a configuration property; MockServer answers any gRPC request whose content-type is gRPC and whose path matches the well-known health-check method. The default serving status for all services is <code class="inline code">SERVING</code>. You can override the status for individual services or for the global default via a REST endpoint.</p>
+<p>Health checking is always available — it is built in and cannot be disabled via a configuration property; MockServer answers any gRPC request whose content-type is gRPC and whose path matches the well-known health-check method. You can set the status for individual services, and for the overall server, via a REST endpoint.</p>
+
+<p>A <code class="inline code">Check</code> for a service that has never had a status registered <strong>fails with gRPC status <code class="inline code">NOT_FOUND</code></strong>, as the health-checking protocol requires — it does not report <code class="inline code">SERVING</code>. This means a mistyped service name surfaces as an error rather than quietly looking healthy. Register each service whose health you want to check:</p>
+
+<pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/grpc/health" \
+  -H "Content-Type: application/json" \
+  -d '{"service": "my.payments.PaymentService", "status": "SERVING"}'</code></pre>
+
+<p>The overall-server health check — the one that uses the <strong>empty service name</strong> (<code class="inline code">""</code>) — always answers and never returns <code class="inline code">NOT_FOUND</code>. Its status defaults to <code class="inline code">SERVING</code> and can be overridden. Note that setting the overall status applies <em>only</em> to that empty-name check; it is not a default inherited by named services.</p>
+
+<p class="note"><strong>Behaviour change.</strong> A <code class="inline code">Check</code> for an unregistered service name previously returned the overall default status — usually <code class="inline code">SERVING</code> — so a mistyped service name reported healthy, and a test asserting that a dependency was unhealthy passed without proving anything. If you relied on setting the overall status to cover every service, register each service explicitly with the <code class="inline code">PUT</code> above.</p>
 
 <h3>ServingStatus values</h3>
 
@@ -1296,7 +1306,7 @@ curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d @recorded-expec
         <tr>
             <td><code class="inline code">SERVICE_UNKNOWN</code></td>
             <td>3</td>
-            <td>The named service is not known to this server</td>
+            <td>The named service is not known to this server. Used by the streaming <code class="inline code">Watch</code> method; a <code class="inline code">Check</code> for an unknown service fails with gRPC status <code class="inline code">NOT_FOUND</code> instead of returning this value</td>
         </tr>
     </tbody>
 </table>
@@ -1308,7 +1318,7 @@ curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d @recorded-expec
   -H "Content-Type: application/json" \
   -d '{"service": "my.payments.PaymentService", "status": "NOT_SERVING"}'</code></pre>
 
-<p>Set <code class="inline code">service</code> to the fully-qualified gRPC service name. Use an empty string (<code class="inline code">""</code>) to override the default status that applies to <em>all</em> services without an explicit override. The response confirms the registration:</p>
+<p>Set <code class="inline code">service</code> to the fully-qualified gRPC service name. Registering a service is also what makes it checkable at all — an unregistered name fails with <code class="inline code">NOT_FOUND</code>. Use an empty string (<code class="inline code">""</code>) to set the <em>overall</em> server status, which is the status reported to a health check that uses the empty service name; it is not inherited by named services. The response confirms the registration:</p>
 
 <pre class="prettyprint code"><code class="code">{ "status": "registered", "service": "my.payments.PaymentService", "servingStatus": "NOT_SERVING" }</code></pre>
 
@@ -1326,7 +1336,7 @@ curl -v -X PUT "http://localhost:1080/mockserver/expectation" -d @recorded-expec
 
 <h3>How it works</h3>
 
-<p>When MockServer receives a request whose path is exactly <code class="inline code">/grpc.health.v1.Health/Check</code>, the request is intercepted in <code class="inline code">GrpcToHttpRequestHandler</code> before descriptor lookup — no proto descriptor for the health service is needed. <code class="inline code">GrpcHealthCheckHandler</code> decodes the 5-byte gRPC frame header and then manually parses the protobuf <code class="inline code">HealthCheckRequest</code> (field 1 = service name string). It looks up the serving status in <code class="inline code">GrpcHealthRegistry</code>, which falls back to the default status when no per-service override is registered. The response is a manually-encoded gRPC-framed <code class="inline code">HealthCheckResponse</code> (field 1 = status enum varint). The whole path bypasses the expectation matching engine so health checks always respond, even with no expectations registered.</p>
+<p>When MockServer receives a request whose path is exactly <code class="inline code">/grpc.health.v1.Health/Check</code>, the request is intercepted in <code class="inline code">GrpcToHttpRequestHandler</code> before descriptor lookup — no proto descriptor for the health service is needed. <code class="inline code">GrpcHealthCheckHandler</code> decodes the 5-byte gRPC frame header and then manually parses the protobuf <code class="inline code">HealthCheckRequest</code> (field 1 = service name string). It then looks the service up in <code class="inline code">GrpcHealthRegistry</code>. A named service that has no registered status fails the RPC with gRPC status <code class="inline code">NOT_FOUND</code> and no message body; the empty service name always resolves, to the overall status. Otherwise the response is a manually-encoded gRPC-framed <code class="inline code">HealthCheckResponse</code> (field 1 = status enum varint). The whole path bypasses the expectation matching engine so health checks always respond, even with no expectations registered.</p>
 
 <a id="grpc_server_reflection" class="anchor" href="#grpc_server_reflection">&nbsp;</a>
 

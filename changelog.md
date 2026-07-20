@@ -292,6 +292,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recorded undecoded with a warning rather than decoded incorrectly. **Behaviour change:** code constructing
   `KafkaAvroMessageSubscriber` directly while publishing under a non-default schema id must now pass the
   matching id to the new constructor overload.
+- **gRPC server reflection now returns the full transitive closure of a proto file's imports.** The
+  `file_containing_symbol` and `file_by_filename` responses carried only the requested file and its DIRECT
+  dependencies. Reflection clients (`grpcurl`, and any consumer of grpc-java's `ProtoReflectionService`)
+  build a descriptor pool from exactly the files in the response and resolve every `import` against that
+  pool, so any import chain deeper than one level failed to link: for `a.proto` importing `b.proto`
+  importing `c.proto` the client received `{a, b}` and could not resolve b's import of c. Reflection was
+  therefore unusable against any realistic multi-file proto. The response now carries the whole closure,
+  breadth-first and de-duplicated, so a diamond import appears once and an import cycle terminates.
+- **BREAKING BEHAVIOUR: `grpc.health.v1.Health/Check` now fails with `NOT_FOUND` for an unregistered service.** Any
+  service name resolved to the default status, so a `Check` for a service that was never registered — most
+  commonly a typo'd service name — returned `SERVING`, and a test asserting "this dependency is reported
+  unhealthy" passed while proving nothing. The health specification requires the RPC to fail with status
+  `NOT_FOUND` when the server does not know the service. The empty service name is unchanged: it remains
+  the overall-server health target and always answers. Note that setting the overall status (`PUT` with an
+  empty service name) no longer makes arbitrary service names answerable — register each service whose
+  health should be checkable.
+- **HTTP/3 header handling is no longer sensitive to the default locale.** Six `String.toLowerCase()`
+  calls in the HTTP/3 package ran without a locale — four folding response header and trailer FIELD
+  NAMES, and two parsing the `content-type`. Under a Turkish default locale `"CONNECTION"` folds to
+  `"connectıon"` (dotless i), producing non-ASCII field names on the wire and silently bypassing any
+  filter that compares against a lowercase literal. All six now use `Locale.ROOT`. The fold guarding
+  the forbidden-header filter was pinned as part of the RFC 9114 filter fix above; this covers the
+  remaining five, including the trailer field names, where the same fold produces a malformed
+  trailing HEADERS frame. Note that four of the six field names RFC 9114 forbids contain an `I`
+  (`connection`, `keep-alive`, `proxy-connection`, `transfer-encoding`), so a locale-sensitive fold
+  bypassed the filter for most of them — that interaction is now covered by a test.
+- **`connectionOptions` set on a response served over HTTP/3 now logs a warning instead of silently doing
+  nothing.** `ConnectionOptions` is honoured throughout the HTTP/1.1 response writer and was not read
+  anywhere in the HTTP/3 path, so `closeSocket`, `chunkSize`, `chunkDelay`, `closeSocketDelay`,
+  `suppressContentLengthHeader` and `contentLengthHeaderOverride` were accepted and ignored while the
+  expectation still reported as created — fault injection and connection control appeared to apply and did
+  not. These are now reported as not yet implemented on HTTP/3, and `suppressConnectionHeader` /
+  `keepAliveOverride` are reported as inapplicable (HTTP/3 forbids the headers they govern). The response
+  is still served rather than rejected, so a suite that sets `connectionOptions` globally and includes
+  HTTP/3 keeps working.
 - **Trailers on a body-less response no longer produce a malformed HTTP/1.1 message.** A response carrying
   trailers was unconditionally forced to `Transfer-Encoding: chunked` with a `Trailer` announcement header.
   For a body-less status (`1xx`, `204`, `205`, `304`) Netty's encoder emits neither a chunked body nor the

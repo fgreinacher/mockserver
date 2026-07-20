@@ -32,6 +32,7 @@ import org.slf4j.event.Level;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.Locale;
 
 /**
  * A {@link ResponseWriter} that writes gRPC responses over HTTP/3 with correct
@@ -393,7 +394,7 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
         if (headers != null) {
             for (Header entry : headers.getEntries()) {
                 for (NottableString value : entry.getValues()) {
-                    frame.headers().add(entry.getName().getValue().toLowerCase(), value.getValue());
+                    frame.headers().add(entry.getName().getValue().toLowerCase(Locale.ROOT), value.getValue());
                 }
             }
         }

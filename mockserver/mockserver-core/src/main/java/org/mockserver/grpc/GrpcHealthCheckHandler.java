@@ -34,6 +34,19 @@ public class GrpcHealthCheckHandler {
     }
 
     /**
+     * Returns whether {@code Check} for this service name should succeed at all.
+     *
+     * <p>{@code grpc.health.v1.Health/Check} is specified to fail the RPC with status
+     * {@code NOT_FOUND} when the client asks about a service the server does not know about,
+     * rather than returning a {@code HealthCheckResponse}. Callers must consult this before
+     * {@link #getStatus} and, when it returns false, respond with a {@code NOT_FOUND} status
+     * and no message body.</p>
+     */
+    public boolean isRegistered(String serviceName) {
+        return registry.isRegistered(serviceName);
+    }
+
+    /**
      * Decodes a HealthCheckRequest from gRPC-framed bytes and returns the service name.
      * Returns empty string if the body is null/empty or cannot be decoded.
      */

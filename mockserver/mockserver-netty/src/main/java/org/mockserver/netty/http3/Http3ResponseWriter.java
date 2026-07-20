@@ -8,6 +8,7 @@ import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.model.ConnectionOptions;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.model.StreamingBody;
@@ -16,6 +17,9 @@ import org.mockserver.responsewriter.StreamErrorWriter;
 import org.mockserver.telemetry.TraceContextAttributes;
 import org.mockserver.telemetry.W3CTraceContext;
 import org.slf4j.event.Level;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A {@link ResponseWriter} that serialises the MockServer {@link HttpResponse}
@@ -85,11 +89,122 @@ public class Http3ResponseWriter extends ResponseWriter implements StreamErrorWr
         // TraceContextHandler on the TCP path.
         propagateTraceContext(response);
 
+        warnIfConnectionOptionsIgnored(response);
+
         if (response.getStreamingBody() != null) {
             writeStreamingResponse(request, response);
         } else {
             writeStaticResponse(response);
         }
+    }
+
+    /**
+     * Warn, once per response, when an expectation carries {@link ConnectionOptions} that this
+     * writer does not act on.
+     *
+     * <h3>Why a warning and not an implementation</h3>
+     * <p>{@code ConnectionOptions} is honoured in nineteen places in the HTTP/1.1 writer and in
+     * NONE on HTTP/3, so a user who sets {@code closeSocket} or {@code chunkSize} and switches a
+     * test to HTTP/3 silently gets none of it while the expectation still reports as created.
+     * Accepting an option and ignoring it is the worst of the three available behaviours, so
+     * until the applicable subset is implemented the omission is at least made observable.</p>
+     *
+     * <p>The fields split into two groups:</p>
+     * <ul>
+     *   <li><b>Inapplicable by protocol</b> — {@code suppressConnectionHeader} and
+     *       {@code keepAliveOverride} govern the {@code Connection}/{@code Keep-Alive} headers,
+     *       which RFC 9114 section 4.2 forbids on HTTP/3 outright. There is nothing to
+     *       implement; these are reported as not applicable rather than as missing.</li>
+     *   <li><b>Applicable but unimplemented</b> — {@code closeSocket}, {@code closeSocketDelay},
+     *       {@code chunkSize}, {@code chunkDelay}, {@code suppressContentLengthHeader} and
+     *       {@code contentLengthHeaderOverride} all have meaningful QUIC equivalents (closing
+     *       the connection, segmenting the body across STREAM frames, header manipulation).
+     *       These are the follow-up work.</li>
+     * </ul>
+     *
+     * <p>Deliberately not a hard rejection: failing the response would break users who set
+     * {@code ConnectionOptions} globally across a suite that happens to include HTTP/3, turning
+     * a silent no-op into a broken test run.</p>
+     *
+     * <p>This fires once per response carrying {@code connectionOptions}, which is repetitive for
+     * a suite that sets them globally. Note that de-duplicating per writer would achieve nothing —
+     * {@code Http3MockServerHandler} constructs a new writer for every request. Meaningful dedup
+     * would have to hang off the QUIC CONNECTION (the stream channel's parent), which is left as
+     * follow-up rather than added speculatively to this path.</p>
+     */
+    private void warnIfConnectionOptionsIgnored(HttpResponse response) {
+        ConnectionOptions connectionOptions = response.getConnectionOptions();
+        // Null-guarded on the logger as writeStreamError above is: this runs on the response path
+        // and must never be the reason a response fails to be written. Deliberately NOT also gated
+        // on MockServerLogger.isEnabled(WARN) — that reads the global configured log level, which
+        // would make the emission depend on mutable process-wide state and any test of it
+        // order-dependent. The body only runs when connectionOptions is set, which is rare.
+        if (connectionOptions == null || mockServerLogger == null) {
+            return;
+        }
+        List<String> unimplemented = unimplementedOnHttp3(connectionOptions);
+        List<String> notApplicable = notApplicableOnHttp3(connectionOptions);
+        if (unimplemented.isEmpty() && notApplicable.isEmpty()) {
+            return;
+        }
+        mockServerLogger.logEvent(
+            new LogEntry()
+                .setLogLevel(Level.WARN)
+                .setMessageFormat(
+                    "connectionOptions are not applied on HTTP/3 and have been ignored - "
+                        + "not yet implemented:{}- not applicable to HTTP/3 (RFC 9114 section 4.2 forbids "
+                        + "connection-specific header fields):{}")
+                .setArguments(unimplemented, notApplicable)
+        );
+    }
+
+    /**
+     * The {@link ConnectionOptions} fields that are set, have a meaningful HTTP/3 equivalent, and
+     * are nonetheless not acted on by this writer. Package-private so the classification can be
+     * asserted directly rather than only inferred from a log line.
+     */
+    static List<String> unimplementedOnHttp3(ConnectionOptions connectionOptions) {
+        List<String> unimplemented = new ArrayList<>();
+        if (connectionOptions == null) {
+            return unimplemented;
+        }
+        if (connectionOptions.getCloseSocket() != null) {
+            unimplemented.add("closeSocket");
+        }
+        if (connectionOptions.getCloseSocketDelay() != null) {
+            unimplemented.add("closeSocketDelay");
+        }
+        if (connectionOptions.getChunkSize() != null) {
+            unimplemented.add("chunkSize");
+        }
+        if (connectionOptions.getChunkDelay() != null) {
+            unimplemented.add("chunkDelay");
+        }
+        if (connectionOptions.getSuppressContentLengthHeader() != null) {
+            unimplemented.add("suppressContentLengthHeader");
+        }
+        if (connectionOptions.getContentLengthHeaderOverride() != null) {
+            unimplemented.add("contentLengthHeaderOverride");
+        }
+        return unimplemented;
+    }
+
+    /**
+     * The {@link ConnectionOptions} fields that are set but cannot apply to HTTP/3 at all,
+     * because RFC 9114 section 4.2 forbids connection-specific header fields.
+     */
+    static List<String> notApplicableOnHttp3(ConnectionOptions connectionOptions) {
+        List<String> notApplicable = new ArrayList<>();
+        if (connectionOptions == null) {
+            return notApplicable;
+        }
+        if (connectionOptions.getSuppressConnectionHeader() != null) {
+            notApplicable.add("suppressConnectionHeader");
+        }
+        if (connectionOptions.getKeepAliveOverride() != null) {
+            notApplicable.add("keepAliveOverride");
+        }
+        return notApplicable;
     }
 
     /**

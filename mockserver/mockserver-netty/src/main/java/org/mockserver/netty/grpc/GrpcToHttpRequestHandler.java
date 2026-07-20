@@ -112,6 +112,21 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
             String path = request.getPath() != null ? request.getPath().getValue() : "";
             if (healthCheckHandler.isHealthCheckRequest(path)) {
                 String serviceName = healthCheckHandler.decodeServiceName(request.getBodyAsRawBytes());
+                if (!healthCheckHandler.isRegistered(serviceName)) {
+                    // grpc.health.v1.Health/Check MUST fail the RPC with NOT_FOUND for a service
+                    // the server does not know about. Returning SERVING here would report a
+                    // mistyped service name as healthy.
+                    org.mockserver.model.HttpResponse unknownServiceResponse = org.mockserver.model.HttpResponse.response()
+                        .withStatusCode(200)
+                        .withHeader("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE)
+                        .withTrailer(GrpcStatusMapper.GRPC_STATUS_HEADER,
+                            String.valueOf(GrpcStatusMapper.GrpcStatusCode.NOT_FOUND.getCode()))
+                        .withTrailer(GrpcStatusMapper.GRPC_MESSAGE_HEADER,
+                            GrpcStatusMapper.percentEncodeMessage("unknown service " + serviceName));
+                    tagGrpcWebResponse(unknownServiceResponse, request, grpcWebContentType);
+                    ctx.writeAndFlush(unknownServiceResponse);
+                    return;
+                }
                 ServingStatus status = healthCheckHandler.getStatus(serviceName);
                 byte[] responseBody = healthCheckHandler.encodeResponse(status);
                 org.mockserver.model.HttpResponse healthResponse = org.mockserver.model.HttpResponse.response()

@@ -16,6 +16,7 @@ import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 
 /**
  * Converts between HTTP/3 frames and MockServer's {@link HttpRequest}/{@link HttpResponse} model.
@@ -158,7 +159,7 @@ public final class Http3RequestBridge {
             response.getHeaderMultimap().entries().forEach(entry -> {
                 // Locale.ROOT: under a Turkish default locale "CONNECTION" folds to "connectıon"
                 // and the forbidden-header filter below is silently bypassed entirely
-                String name = entry.getKey().getValue().toLowerCase(java.util.Locale.ROOT);
+                String name = entry.getKey().getValue().toLowerCase(Locale.ROOT);
                 if (isForbiddenHttp3ResponseHeader(name, entry.getValue().getValue())
                     || (streaming && CONTENT_LENGTH.equals(name))) {
                     return;
@@ -218,7 +219,9 @@ public final class Http3RequestBridge {
         }
         DefaultHttp3HeadersFrame trailersFrame = new DefaultHttp3HeadersFrame();
         response.getTrailerMultimap().entries().forEach(entry ->
-            trailersFrame.headers().add(entry.getKey().getValue().toLowerCase(), entry.getValue().getValue())
+            // Locale.ROOT: a locale-sensitive fold would emit a non-ASCII trailer field name,
+            // which DefaultHttp3Headers rejects as malformed.
+            trailersFrame.headers().add(entry.getKey().getValue().toLowerCase(Locale.ROOT), entry.getValue().getValue())
         );
         return trailersFrame;
     }
@@ -266,7 +269,7 @@ public final class Http3RequestBridge {
             // no content-type: assume text to maximise expectation matching compatibility
             return true;
         }
-        String lower = contentType.toLowerCase();
+        String lower = contentType.toLowerCase(Locale.ROOT);
         return lower.startsWith("text/")
             || lower.contains("json")
             || lower.contains("xml")
@@ -282,7 +285,7 @@ public final class Http3RequestBridge {
      */
     private static java.nio.charset.Charset extractCharset(String contentType) {
         if (contentType != null) {
-            String lower = contentType.toLowerCase();
+            String lower = contentType.toLowerCase(Locale.ROOT);
             int charsetIndex = lower.indexOf("charset=");
             if (charsetIndex >= 0) {
                 String charsetName = contentType.substring(charsetIndex + 8).trim();

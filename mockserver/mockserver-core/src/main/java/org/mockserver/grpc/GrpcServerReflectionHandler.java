@@ -294,19 +294,52 @@ public class GrpcServerReflectionHandler {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         CodedOutputStream cos = CodedOutputStream.newInstance(baos);
 
-        // Include the file descriptor itself
-        byte[] fdProtoBytes = fileDescriptor.toProto().toByteArray();
-        cos.writeBytes(FDR_FILE_DESCRIPTOR_PROTO_FIELD, com.google.protobuf.ByteString.copyFrom(fdProtoBytes));
-
-        // Include direct dependencies (transitive closure is ideal but direct is sufficient
-        // for most reflection clients like grpcurl)
-        for (Descriptors.FileDescriptor dep : fileDescriptor.getDependencies()) {
-            byte[] depBytes = dep.toProto().toByteArray();
-            cos.writeBytes(FDR_FILE_DESCRIPTOR_PROTO_FIELD, com.google.protobuf.ByteString.copyFrom(depBytes));
+        // Emit the requested file followed by the TRANSITIVE closure of its imports.
+        //
+        // Reflection clients (grpcurl, grpc-java's ProtoReflectionService consumers, the Go
+        // jhump/protoreflect pool) build a descriptor pool from exactly the files in this
+        // response and resolve every `import` against that pool. A file whose import is absent
+        // cannot be linked, so returning only the DIRECT dependencies breaks any import chain
+        // deeper than one level: a.proto imports b.proto imports c.proto yields {a, b} and the
+        // client fails to resolve b's import of c.
+        //
+        // Emitted in breadth-first order from the root with a visited set, which both terminates
+        // on the cyclic-import case and de-duplicates diamonds (two imports sharing a transitive
+        // dependency), so each file appears exactly once.
+        for (Descriptors.FileDescriptor file : transitiveClosure(fileDescriptor)) {
+            byte[] fileProtoBytes = file.toProto().toByteArray();
+            cos.writeBytes(FDR_FILE_DESCRIPTOR_PROTO_FIELD, com.google.protobuf.ByteString.copyFrom(fileProtoBytes));
         }
 
         cos.flush();
         return baos.toByteArray();
+    }
+
+    /**
+     * Returns {@code root} followed by every file reachable from it through {@code import}
+     * declarations, breadth-first, each appearing exactly once.
+     *
+     * <p>Visited-set termination makes this safe against import cycles (which protoc rejects,
+     * but a hand-assembled {@code FileDescriptorSet} loaded through
+     * {@link GrpcProtoDescriptorStore} need not have been through protoc) and collapses diamond
+     * imports to a single occurrence.</p>
+     */
+    static List<Descriptors.FileDescriptor> transitiveClosure(Descriptors.FileDescriptor root) {
+        List<Descriptors.FileDescriptor> ordered = new ArrayList<>();
+        Set<String> visited = new HashSet<>();
+        Deque<Descriptors.FileDescriptor> queue = new ArrayDeque<>();
+        queue.add(root);
+        visited.add(root.getFullName());
+        while (!queue.isEmpty()) {
+            Descriptors.FileDescriptor current = queue.removeFirst();
+            ordered.add(current);
+            for (Descriptors.FileDescriptor dependency : current.getDependencies()) {
+                if (visited.add(dependency.getFullName())) {
+                    queue.addLast(dependency);
+                }
+            }
+        }
+        return ordered;
     }
 
     /**

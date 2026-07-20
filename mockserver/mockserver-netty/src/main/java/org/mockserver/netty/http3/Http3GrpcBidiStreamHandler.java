@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Locale;
 
 /**
  * Drives true bidirectional gRPC streaming over a single QUIC bidirectional stream
@@ -434,7 +435,7 @@ public class Http3GrpcBidiStreamHandler {
         if (config.getHeaders() != null) {
             for (Header entry : config.getHeaders().getEntries()) {
                 for (NottableString value : entry.getValues()) {
-                    headersFrame.headers().add(entry.getName().getValue().toLowerCase(), value.getValue());
+                    headersFrame.headers().add(entry.getName().getValue().toLowerCase(Locale.ROOT), value.getValue());
                 }
             }
         }

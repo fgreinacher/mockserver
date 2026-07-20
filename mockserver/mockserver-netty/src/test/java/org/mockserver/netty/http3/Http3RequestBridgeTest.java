@@ -14,6 +14,7 @@ import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -261,6 +262,122 @@ public class Http3RequestBridgeTest {
         // a non-streaming response keeps its content-length
         DefaultHttp3HeadersFrame nonStreaming = Http3RequestBridge.toHttp3HeadersFrame(response, false);
         assertThat(nonStreaming.headers().get("content-length").toString(), is("1234"));
+    }
+
+    // ---- locale-independent header case folding ----
+    //
+    // These run under a Turkish default locale, where 'I'.toLowerCase() is the DOTLESS 'ı'
+    // (U+0131) rather than 'i'. A locale-sensitive fold therefore turns "CONNECTION" into
+    // "connectıon", which fails the equals check that is supposed to drop it, and emits both a
+    // forbidden Connection header (malformed per RFC 9114 section 4.2) and a non-ASCII field
+    // name. The header names below are deliberately upper-case: the existing
+    // shouldFilterConnectionHeaders test uses already-lower-case names and so cannot detect this.
+
+    /**
+     * Covers the interaction between the RFC 9114 forbidden-header filter and locale-independent
+     * folding — something neither change could test on its own.
+     * {@link #shouldFilterEveryConnectionSpecificHeaderForbiddenByRfc9114()} names its headers in
+     * lower case, so it is immune to the fold and passes under any locale; the fold tests named
+     * only {@code CONNECTION} and {@code TRANSFER-ENCODING}. But <strong>four</strong> of the six
+     * forbidden field names contain an {@code I} and so are locale-exposed — {@code CONNECTION},
+     * {@code KEEP-ALIVE}, {@code PROXY-CONNECTION} and {@code TRANSFER-ENCODING} fold to
+     * {@code connectıon}, {@code keep-alıve}, {@code proxy-connectıon} and {@code transfer-encodıng}
+     * under a Turkish locale, bypassing the filter entirely. ({@code UPGRADE} and {@code TE} have
+     * no {@code I} and are safe either way.) All six are asserted here in upper case so the filter
+     * is exercised against the fold rather than around it.
+     */
+    @Test
+    public void shouldFilterUpperCaseConnectionHeadersUnderATurkishLocale() {
+        withDefaultLocale(new Locale("tr", "TR"), () -> {
+            HttpResponse response = HttpResponse.response()
+                .withStatusCode(200)
+                .withHeader("CONNECTION", "close")
+                .withHeader("KEEP-ALIVE", "timeout=5")
+                .withHeader("PROXY-CONNECTION", "keep-alive")
+                .withHeader("TRANSFER-ENCODING", "chunked")
+                .withHeader("UPGRADE", "websocket")
+                .withHeader("TE", "gzip")
+                .withHeader("X-CUSTOM", "kept");
+
+            DefaultHttp3HeadersFrame headersFrame = Http3RequestBridge.toHttp3HeadersFrame(response);
+
+            // Two weaker assertions were tried here first and BOTH passed vacuously under the
+            // mutation, so the exact emitted set is asserted instead:
+            //   get("connection") == null       -- the header leaks as "connectıon", so a lookup
+            //                                      for the correct spelling misses either way;
+            //   no name ROOT-folds to "connection" -- "connectıon" does not fold back to
+            //                                      "connection", so the mangled name slips through.
+            // Only enumerating what was actually emitted catches a leak under ANY spelling.
+            assertThat(emittedHeaderNames(headersFrame), containsInAnyOrder("server", "x-custom"));
+            assertThat(headersFrame.headers().get("x-custom").toString(), is("kept"));
+        });
+    }
+
+    /** Non-pseudo header field names actually emitted on the frame, in wire order. */
+    private static List<String> emittedHeaderNames(DefaultHttp3HeadersFrame frame) {
+        List<String> names = new ArrayList<>();
+        frame.headers().forEach(entry -> {
+            String name = entry.getKey().toString();
+            if (!name.startsWith(":")) {
+                names.add(name);
+            }
+        });
+        return names;
+    }
+
+    @Test
+    public void shouldNotEmitANonAsciiHeaderNameUnderATurkishLocale() {
+        // Stated separately from the filter assertion: a fold that mangles the name of a header
+        // which is NOT filtered corrupts the field name without tripping any equals check.
+        withDefaultLocale(new Locale("tr", "TR"), () -> {
+            HttpResponse response = HttpResponse.response()
+                .withStatusCode(200)
+                .withHeader("X-REQUEST-ID", "abc");
+
+            DefaultHttp3HeadersFrame headersFrame = Http3RequestBridge.toHttp3HeadersFrame(response);
+
+            assertThat(headersFrame.headers().get("x-request-id").toString(), is("abc"));
+            assertThat(headersFrame.headers().get("x-request-ıd"), is(nullValue()));
+        });
+    }
+
+    @Test
+    public void shouldNotEmitANonAsciiTrailerNameUnderATurkishLocale() {
+        withDefaultLocale(new Locale("tr", "TR"), () -> {
+            HttpResponse response = HttpResponse.response()
+                .withStatusCode(200)
+                .withTrailer("X-CHECKSUM-ID", "9f8e");
+
+            DefaultHttp3HeadersFrame trailersFrame = Http3RequestBridge.toHttp3TrailersFrame(response);
+
+            assertThat(trailersFrame, is(notNullValue()));
+            assertThat(trailersFrame.headers().get("x-checksum-id").toString(), is("9f8e"));
+            assertThat(trailersFrame.headers().get("x-checksum-ıd"), is(nullValue()));
+        });
+    }
+
+    /**
+     * Runs {@code body} with {@code locale} as the JVM default, always restoring the previous one.
+     *
+     * <p><strong>Depends on mockserver-netty running tests sequentially.</strong>
+     * {@link Locale#setDefault} is process-wide, so although this method restores the previous
+     * value, a concurrently-running test would observe the Turkish locale while {@code body} runs.
+     * This is safe today only because the mockserver-netty surefire configuration declares no
+     * {@code <parallel>} (unlike mockserver-core, which runs {@code parallel=classes}). If netty
+     * ever gains a parallel phase, move these tests to the sequential phase — they would otherwise
+     * start corrupting unrelated tests silently rather than failing.</p>
+     *
+     * <p>The surefire fork also pins {@code -Duser.language=en -Duser.country=GB}, so the ambient
+     * default can never exercise this path; overriding it here is the only way to reach it.</p>
+     */
+    private static void withDefaultLocale(Locale locale, Runnable body) {
+        Locale previous = Locale.getDefault();
+        Locale.setDefault(locale);
+        try {
+            body.run();
+        } finally {
+            Locale.setDefault(previous);
+        }
     }
 
     @Test

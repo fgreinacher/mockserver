@@ -33,7 +33,15 @@ public class GrpcHealthRegistry {
     }
 
     /**
-     * Get the status for a service name; falls back to default.
+     * Get the status for a service name, falling back to the default status when the name has no
+     * registered override.
+     *
+     * <p><strong>Callers must consult {@link #isRegistered} first.</strong> The fallback here is
+     * NOT the health-check contract for a named service: {@code Check} on an unregistered service
+     * must fail with {@code NOT_FOUND} rather than inherit the default, so calling this method
+     * alone would report an unknown service as healthy. The fallback remains because it is correct
+     * for the empty (overall-server) name, and because the {@code GET} control-plane endpoint
+     * reports effective status.</p>
      */
     public ServingStatus getStatus(String serviceName) {
         if (serviceName != null && !serviceName.isEmpty()) {
@@ -43,6 +51,20 @@ public class GrpcHealthRegistry {
             }
         }
         return defaultStatus;
+    }
+
+    /**
+     * Returns whether a health status has been registered for the given service name.
+     *
+     * <p>The empty service name is the overall-server health target defined by
+     * {@code grpc.health.v1.Health}; it always has a status (the default) and so is always
+     * registered. A named service is registered only once {@link #setStatus} has been called
+     * for it — the default status is deliberately NOT treated as covering arbitrary names,
+     * because {@code Check} on an unregistered service must fail with {@code NOT_FOUND} rather
+     * than inherit a status. Without this distinction a typo'd service name reports healthy.</p>
+     */
+    public boolean isRegistered(String serviceName) {
+        return serviceName == null || serviceName.isEmpty() || statusByService.containsKey(serviceName);
     }
 
     /**
