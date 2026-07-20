@@ -75,7 +75,10 @@ internal sealed class BreakpointWebSocketClient : IDisposable
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // Decode/encode paused-exchange requests whose matcher values use the nottable object form. See
+        // HttpRequestConverter.
+        Converters = { new Models.HttpRequestConverter() }
     };
 
     internal async Task ConnectAsync(string baseUrl)

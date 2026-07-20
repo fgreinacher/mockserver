@@ -60,6 +60,39 @@ public sealed class HttpRequest
     public Dictionary<string, string>? Cookies { get; set; }
 
     /// <summary>
+    /// Header matchers whose values are taken verbatim, so a value starting with <c>'!'</c> or
+    /// <c>'?'</c> means itself rather than being read as a negation or optionality marker. When set
+    /// (non-empty) this REPLACES <see cref="Headers"/> on the wire, escaping to the object form only for
+    /// values the plain form would misread. Additive: the plain <see cref="Headers"/> map keeps its type
+    /// and meaning. Serialised by <see cref="HttpRequestConverter"/>, so it only takes effect through a
+    /// <see cref="JsonSerializerOptions"/> that registers that converter (as the client's does).
+    /// </summary>
+    [JsonIgnore]
+    public Dictionary<string, List<MatcherValue>>? HeaderMatchers { get; set; }
+
+    /// <summary>
+    /// Query-string parameter matchers whose values are taken verbatim. See <see cref="HeaderMatchers"/>;
+    /// when set this REPLACES <see cref="QueryStringParameters"/> on the wire.
+    /// </summary>
+    [JsonIgnore]
+    public Dictionary<string, List<MatcherValue>>? QueryStringParameterMatchers { get; set; }
+
+    /// <summary>
+    /// Cookie matchers whose values are taken verbatim. See <see cref="HeaderMatchers"/>; when set this
+    /// REPLACES <see cref="Cookies"/> on the wire.
+    /// </summary>
+    [JsonIgnore]
+    public Dictionary<string, MatcherValue>? CookieMatchers { get; set; }
+
+    /// <summary>
+    /// Path-parameter matchers whose values are taken verbatim. See <see cref="HeaderMatchers"/>; when
+    /// set this REPLACES <see cref="PathParameters"/> on the wire. Carries the nottable object form
+    /// (not/optional/value), not the schema-matcher form (<c>{"schema":{...}}</c>).
+    /// </summary>
+    [JsonIgnore]
+    public Dictionary<string, List<MatcherValue>>? PathParameterMatchers { get; set; }
+
+    /// <summary>
     /// The request body matcher. Accepts a raw string, a <see cref="TypedBody"/>, <see cref="FileBody"/>,
     /// <see cref="AllOfBody"/>, or the fully-typed <see cref="Models.Body"/>; on deserialisation an
     /// unrecognised shape is preserved as a raw <c>JsonElement</c> so it round-trips without loss.

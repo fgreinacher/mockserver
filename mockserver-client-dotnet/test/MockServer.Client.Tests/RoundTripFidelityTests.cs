@@ -41,7 +41,11 @@ public class RoundTripFidelityTests
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // The client registers this so a matcher value starting with '!' or '?' round-trips through the
+        // nottable object form instead of being read as a marker; the harness must mirror the client's
+        // real options. See HttpRequestConverter.
+        Converters = { new MockServer.Client.Models.HttpRequestConverter() }
     };
 
     // keyToMultiValue fields: object form OR [{name, value(s)}] array form — canonicalized to {name -> [values]}.

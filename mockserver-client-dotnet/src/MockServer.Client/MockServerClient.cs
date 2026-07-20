@@ -32,7 +32,11 @@ public sealed class MockServerClient : IDisposable
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // Lets a header / query / cookie / path-parameter matcher value that starts with '!' or '?' be
+        // sent verbatim (object form) rather than being read by the server as a negation / optional
+        // marker; also decodes both wire forms on retrieve. See HttpRequestConverter.
+        Converters = { new Models.HttpRequestConverter() }
     };
 
     /// <summary>
