@@ -1,5 +1,6 @@
 package org.mockserver.slo;
 
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 
 import java.util.ArrayDeque;
@@ -89,21 +90,57 @@ public class SloSampleStore {
     }
 
     /**
+     * The effective SLO settings: the {@link Configuration} instance value when one is supplied,
+     * otherwise the static {@link ConfigurationProperties} store. The instance is preferred so a
+     * value set programmatically or via {@code PUT /mockserver/configuration} actually takes effect;
+     * the static fallback keeps system-property/env/file users unaffected.
+     */
+    private static boolean trackingEnabled(Configuration configuration) {
+        return configuration != null
+            ? configuration.sloTrackingEnabled()
+            : ConfigurationProperties.sloTrackingEnabled();
+    }
+
+    private static int windowMaxSamples(Configuration configuration) {
+        return configuration != null
+            ? configuration.sloWindowMaxSamples()
+            : ConfigurationProperties.sloWindowMaxSamples();
+    }
+
+    private static long windowRetentionMillis(Configuration configuration) {
+        return configuration != null
+            ? configuration.sloWindowRetentionMillis()
+            : ConfigurationProperties.sloWindowRetentionMillis();
+    }
+
+    /**
+     * Record one sample, reading the SLO settings from the static
+     * {@link ConfigurationProperties} store. Prefer
+     * {@link #record(Configuration, long, long, boolean, Scope, String)} from any call site that
+     * has a {@link Configuration} in scope, so an instance-set value takes effect.
+     */
+    public void record(long epochMillis, long latencyMillis, boolean isError, Scope scope, String host) {
+        record(null, epochMillis, latencyMillis, isError, scope, host);
+    }
+
+    /**
      * Record one sample. No-op when {@code sloTrackingEnabled} is false so the
      * forward hot path pays nothing when the feature is off.
      *
+     * @param configuration the server configuration whose instance values take precedence over the
+     *                      static {@link ConfigurationProperties} store; may be null
      * @param epochMillis   the sample's wall-clock end time (epoch millis)
      * @param latencyMillis upstream round-trip latency in milliseconds
      * @param isError       true when the response was an error (status null or {@code >= 500})
      * @param scope         which traffic the sample belongs to (v1 records {@link Scope#FORWARD})
      * @param host          the upstream host label, may be null
      */
-    public void record(long epochMillis, long latencyMillis, boolean isError, Scope scope, String host) {
-        if (!ConfigurationProperties.sloTrackingEnabled()) {
+    public void record(Configuration configuration, long epochMillis, long latencyMillis, boolean isError, Scope scope, String host) {
+        if (!trackingEnabled(configuration)) {
             return;
         }
-        int maxSamples = ConfigurationProperties.sloWindowMaxSamples();
-        long retentionMillis = ConfigurationProperties.sloWindowRetentionMillis();
+        int maxSamples = windowMaxSamples(configuration);
+        long retentionMillis = windowRetentionMillis(configuration);
         synchronized (samples) {
             samples.addLast(new Sample(epochMillis, latencyMillis, isError, scope, host));
             evictExpired(epochMillis, retentionMillis);

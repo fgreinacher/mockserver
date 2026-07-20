@@ -1,5 +1,6 @@
 package org.mockserver.mock.action.http;
 
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.model.PreemptionRequest;
 import org.mockserver.time.TimeService;
@@ -68,14 +69,28 @@ public class PreemptionSimulator {
      * @return the effective request actually applied (with defaults and clamping resolved)
      */
     public synchronized PreemptionRequest start(PreemptionRequest req) {
+        return start(null, req);
+    }
+
+    /**
+     * As {@link #start(PreemptionRequest)}, but resolves {@code preemptionSimulationMaxDrainMillis}
+     * from the supplied {@link Configuration} instance when one is given, falling back to the static
+     * {@link ConfigurationProperties} store otherwise. The instance is preferred so a cap set
+     * programmatically or via {@code PUT /mockserver/configuration} actually clamps the drain/TTL;
+     * the static fallback keeps system-property/env/file users unaffected.
+     *
+     * @param configuration the server configuration, may be null
+     * @return the effective request actually applied (with defaults and clamping resolved)
+     */
+    public synchronized PreemptionRequest start(Configuration configuration, PreemptionRequest req) {
         if (req == null) {
             req = PreemptionRequest.preemptionRequest();
         }
-        long cap = ConfigurationProperties.preemptionSimulationMaxDrainMillis();
+        long cap = maxDrainMillis(configuration);
 
         PreemptionRequest.Mode mode = req.getMode() != null ? req.getMode() : PreemptionRequest.Mode.both;
 
-        long drainMillis = req.getDrainMillis() != null ? req.getDrainMillis() : ConfigurationProperties.stopDrainMillis();
+        long drainMillis = req.getDrainMillis() != null ? req.getDrainMillis() : stopDrainMillis(configuration);
         if (drainMillis < 0) {
             drainMillis = 0;
         }
@@ -104,6 +119,26 @@ public class PreemptionSimulator {
         this.ttlExpiryMillis = ttlMillis > 0 ? saturatingAdd(now, ttlMillis) : 0L;
         this.cordoned = true;
         return effective;
+    }
+
+    /**
+     * The effective drain/TTL cap: the {@link Configuration} instance value when one is supplied,
+     * otherwise the static {@link ConfigurationProperties} store.
+     */
+    private static long maxDrainMillis(Configuration configuration) {
+        return configuration != null
+            ? configuration.preemptionSimulationMaxDrainMillis()
+            : ConfigurationProperties.preemptionSimulationMaxDrainMillis();
+    }
+
+    /**
+     * The default drain budget when the request omits {@code drainMillis}: the {@link Configuration}
+     * instance value when one is supplied, otherwise the static {@link ConfigurationProperties} store.
+     */
+    private static long stopDrainMillis(Configuration configuration) {
+        return configuration != null
+            ? configuration.stopDrainMillis()
+            : ConfigurationProperties.stopDrainMillis();
     }
 
     private static long saturatingAdd(long now, long delta) {

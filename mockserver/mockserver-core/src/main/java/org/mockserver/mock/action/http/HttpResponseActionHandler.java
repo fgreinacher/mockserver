@@ -89,15 +89,19 @@ public class HttpResponseActionHandler {
      * When the matched expectation matched on a {@link WasmBody} and that module exports
      * {@code shape_response} (ABI v3), hand the fully-materialised response to the module so it can
      * rewrite it (WASM-computed dynamic responses). Runs last, so the module sees the final response
-     * (after any templating/schema/GraphQL synthesis). Gated on {@link ConfigurationProperties#wasmEnabled()}
-     * and fail-safe: any module failure leaves the response untouched (see {@link WasmResponseShaper}).
+     * (after any templating/schema/GraphQL synthesis). Gated on {@link Configuration#wasmEnabled()}
+     * (falling back to the static store only when no {@link Configuration} is available) and fail-safe:
+     * any module failure leaves the response untouched (see {@link WasmResponseShaper}).
      */
     private void shapeResponseWithWasm(HttpResponse response, HttpRequest httpRequest, RequestDefinition matchedRequest) {
         if (response == null || httpRequest == null || !(matchedRequest instanceof HttpRequest)) {
             return;
         }
+        boolean wasmEnabled = configuration != null
+            ? configuration.wasmEnabled()
+            : ConfigurationProperties.wasmEnabled();
         Body<?> matchedBody = ((HttpRequest) matchedRequest).getBody();
-        if (!(matchedBody instanceof WasmBody) || !ConfigurationProperties.wasmEnabled()) {
+        if (!(matchedBody instanceof WasmBody) || !wasmEnabled) {
             return;
         }
         String moduleName = ((WasmBody) matchedBody).getModuleName();

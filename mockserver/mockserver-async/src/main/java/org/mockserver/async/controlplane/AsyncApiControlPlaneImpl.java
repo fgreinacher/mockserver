@@ -29,6 +29,7 @@ import org.mockserver.async.subscribe.Mqtt5MessageSubscriber;
 import org.mockserver.async.subscribe.MqttMessageSubscriber;
 import org.mockserver.async.subscribe.RecordedMessage;
 import org.mockserver.async.validation.AsyncApiSchemaValidator;
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,6 +68,15 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
     private final MessageExampleGenerator generator = new MessageExampleGenerator();
     private final AsyncApiSchemaValidator schemaValidator = new AsyncApiSchemaValidator();
 
+    /**
+     * The server's {@link Configuration} instance, or {@code null} when this control-plane
+     * was created without one. When present it is consulted first for the async broker
+     * defaults so that values set on the instance — including via
+     * {@code PUT /mockserver/configuration} — are honoured; {@link Configuration} itself
+     * falls back to {@link ConfigurationProperties} when its own field is unset.
+     */
+    private final Configuration configuration;
+
     // Active state
     private volatile AsyncApiSpec loadedSpec;
     private volatile BrokerConfig activeBrokerConfig;
@@ -76,12 +86,41 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
     private final List<SchemaValidationRecord> validationIssues = new CopyOnWriteArrayList<>();
 
     /**
-     * Register this implementation into the core registry.
-     * Call at server startup (e.g. from MockServerLifeCycle or Main).
+     * Create a control-plane with no {@link Configuration} instance, falling back entirely
+     * to the static {@link ConfigurationProperties} store for async broker defaults.
+     */
+    public AsyncApiControlPlaneImpl() {
+        this(null);
+    }
+
+    /**
+     * Create a control-plane bound to the server's {@link Configuration} instance so that
+     * instance-set async broker defaults are honoured.
+     *
+     * @param configuration the server configuration, or {@code null} to use only the static store
+     */
+    public AsyncApiControlPlaneImpl(Configuration configuration) {
+        this.configuration = configuration;
+    }
+
+    /**
+     * Register this implementation into the core registry, without a {@link Configuration}
+     * instance. Prefer {@link #registerIfAvailable(Configuration)} so that instance-set
+     * configuration is honoured.
      */
     public static void registerIfAvailable() {
+        registerIfAvailable(null);
+    }
+
+    /**
+     * Register this implementation into the core registry.
+     * Call at server startup (e.g. from MockServerLifeCycle or Main).
+     *
+     * @param configuration the server configuration, or {@code null} to use only the static store
+     */
+    public static void registerIfAvailable(Configuration configuration) {
         try {
-            AsyncApiControlPlaneImpl impl = new AsyncApiControlPlaneImpl();
+            AsyncApiControlPlaneImpl impl = new AsyncApiControlPlaneImpl(configuration);
             AsyncApiControlPlaneRegistry.getInstance().register(impl);
             LOG.info("AsyncAPI control-plane registered");
         } catch (Exception e) {
@@ -147,11 +186,22 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
     }
 
     /**
+     * The maximum number of recorded messages retained per channel, read live on each
+     * {@code load()} so a value set on the {@link Configuration} instance — including via
+     * {@code PUT /mockserver/configuration} — takes effect on the next load.
+     */
+    int recordedMessageMaxEntries() {
+        return configuration != null
+            ? configuration.asyncRecordedMessageMaxEntries()
+            : ConfigurationProperties.asyncRecordedMessageMaxEntries();
+    }
+
+    /**
      * Create publisher/subscriber connections. Extracted so partial-failure cleanup
      * is handled by the caller's catch block calling {@link #resetInternal()}.
      */
     private void createBrokerConnections(AsyncApiSpec spec, BrokerConfig brokerConfig) {
-        int maxRecordedMessages = ConfigurationProperties.asyncRecordedMessageMaxEntries();
+        int maxRecordedMessages = recordedMessageMaxEntries();
 
         if (brokerConfig.kafkaBootstrapServers != null) {
             boolean avro = "avro".equals(brokerConfig.kafkaValueFormat);
@@ -700,21 +750,29 @@ public class AsyncApiControlPlaneImpl implements AsyncApiControlPlane {
             config.avroSchema = avroSchemaOrNull(node.get("avroSchema"));
             config.avroSchemaId = intOrDefault(node, "avroSchemaId", 1);
         }
-        // Fall back to ConfigurationProperties defaults when request values are absent
+        // Fall back to configured defaults when request values are absent — preferring the
+        // Configuration instance (which itself falls back to ConfigurationProperties) so that
+        // values set on the instance, e.g. via PUT /mockserver/configuration, are honoured
         if (config.kafkaBootstrapServers == null) {
-            String configDefault = ConfigurationProperties.asyncKafkaBootstrapServers();
+            String configDefault = configuration != null
+                ? configuration.asyncKafkaBootstrapServers()
+                : ConfigurationProperties.asyncKafkaBootstrapServers();
             if (configDefault != null && !configDefault.isEmpty()) {
                 config.kafkaBootstrapServers = configDefault;
             }
         }
         if (config.mqttBrokerUrl == null) {
-            String configDefault = ConfigurationProperties.asyncMqttBrokerUrl();
+            String configDefault = configuration != null
+                ? configuration.asyncMqttBrokerUrl()
+                : ConfigurationProperties.asyncMqttBrokerUrl();
             if (configDefault != null && !configDefault.isEmpty()) {
                 config.mqttBrokerUrl = configDefault;
             }
         }
         if (config.amqpUri == null) {
-            String configDefault = ConfigurationProperties.asyncAmqpUri();
+            String configDefault = configuration != null
+                ? configuration.asyncAmqpUri()
+                : ConfigurationProperties.asyncAmqpUri();
             if (configDefault != null && !configDefault.isEmpty()) {
                 config.amqpUri = configDefault;
             }

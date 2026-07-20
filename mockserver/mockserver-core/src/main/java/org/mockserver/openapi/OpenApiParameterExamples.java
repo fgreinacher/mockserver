@@ -5,6 +5,7 @@ import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
+import org.mockserver.configuration.Configuration;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.openapi.examples.ExampleBuilder;
 import org.mockserver.openapi.examples.GenerationOptions;
@@ -46,8 +47,17 @@ public final class OpenApiParameterExamples {
         return getParameterExampleValue(param, openAPI, null);
     }
 
-    @SuppressWarnings("rawtypes")
     public static String getParameterExampleValue(Parameter param, OpenAPI openAPI, GenerationOptions generationOptions) {
+        return getParameterExampleValue(param, openAPI, generationOptions, null);
+    }
+
+    /**
+     * As {@link #getParameterExampleValue(Parameter, OpenAPI, GenerationOptions)} but resolving the
+     * {@code generateRealisticExampleValues} default from a caller-supplied {@link Configuration}
+     * instance. A {@code null} {@code configuration} keeps the static-store behaviour.
+     */
+    @SuppressWarnings("rawtypes")
+    public static String getParameterExampleValue(Parameter param, OpenAPI openAPI, GenerationOptions generationOptions, Configuration configuration) {
         if (param == null) {
             return null;
         }
@@ -78,7 +88,8 @@ public final class OpenApiParameterExamples {
                 schema,
                 openAPI != null && openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null,
                 generationOptions,
-                ExampleBuilder.Direction.REQUEST
+                ExampleBuilder.Direction.REQUEST,
+                configuration
             );
             if (generatedExample instanceof StringExample) {
                 return ((StringExample) generatedExample).getValue();
@@ -103,11 +114,15 @@ public final class OpenApiParameterExamples {
     }
 
     public static String resolvePath(String pathTemplate, Operation operation, OpenAPI openAPI, GenerationOptions generationOptions) {
+        return resolvePath(pathTemplate, operation, openAPI, generationOptions, null);
+    }
+
+    public static String resolvePath(String pathTemplate, Operation operation, OpenAPI openAPI, GenerationOptions generationOptions, Configuration configuration) {
         String resolved = pathTemplate;
         if (operation != null && operation.getParameters() != null) {
             for (Parameter param : operation.getParameters()) {
                 if ("path".equals(param.getIn())) {
-                    String exampleValue = getParameterExampleValue(param, openAPI, generationOptions);
+                    String exampleValue = getParameterExampleValue(param, openAPI, generationOptions, configuration);
                     if (exampleValue == null) {
                         exampleValue = "example";
                     }
@@ -126,6 +141,10 @@ public final class OpenApiParameterExamples {
      * {@link #resolvePath}. Mutates and returns {@code request} for fluent chaining.
      */
     public static HttpRequest applyExampleParameters(HttpRequest request, Operation operation, OpenAPI openAPI, GenerationOptions generationOptions) {
+        return applyExampleParameters(request, operation, openAPI, generationOptions, null);
+    }
+
+    public static HttpRequest applyExampleParameters(HttpRequest request, Operation operation, OpenAPI openAPI, GenerationOptions generationOptions, Configuration configuration) {
         if (request == null || operation == null || operation.getParameters() == null) {
             return request;
         }
@@ -136,21 +155,21 @@ public final class OpenApiParameterExamples {
             }
             switch (in) {
                 case "query": {
-                    String exampleValue = getParameterExampleValue(param, openAPI, generationOptions);
+                    String exampleValue = getParameterExampleValue(param, openAPI, generationOptions, configuration);
                     if (exampleValue != null) {
                         request.withQueryStringParameter(param.getName(), exampleValue);
                     }
                     break;
                 }
                 case "header": {
-                    String exampleValue = getParameterExampleValue(param, openAPI, generationOptions);
+                    String exampleValue = getParameterExampleValue(param, openAPI, generationOptions, configuration);
                     if (exampleValue != null) {
                         request.withHeader(param.getName(), exampleValue);
                     }
                     break;
                 }
                 case "cookie": {
-                    String exampleValue = getParameterExampleValue(param, openAPI, generationOptions);
+                    String exampleValue = getParameterExampleValue(param, openAPI, generationOptions, configuration);
                     if (exampleValue != null) {
                         request.withCookie(param.getName(), exampleValue);
                     }

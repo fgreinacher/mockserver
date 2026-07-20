@@ -105,6 +105,20 @@ public interface KeyValueStore<V> {
     void clear();
 
     /**
+     * Resize a bounded store's capacity, evicting the eldest entries immediately if the new
+     * capacity is smaller than the current entry count. Called when {@code maxExpectations} changes
+     * via {@code PUT /mockserver/configuration} so the change takes effect on the running store.
+     * <p>
+     * Default is a no-op for implementations whose capacity is not managed here (e.g. a clustered
+     * cache whose eviction policy is configured on the cache itself).
+     *
+     * @param maxSize the new capacity
+     */
+    default void setMaxSize(int maxSize) {
+        // no-op — unbounded, or bounded by the underlying implementation's own configuration
+    }
+
+    /**
      * Adds an invalidation listener that is notified on mutations.
      *
      * @param listener the listener

@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.mock.HttpState;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
@@ -154,9 +153,13 @@ public class McpResourceRegistry {
 
     private JsonNode readConfiguration() {
         try {
+            // read from the HttpState's Configuration instance, NOT the static ConfigurationProperties
+            // store: PUT /mockserver/configuration writes only the instance, so reading the static store
+            // made this resource disagree with GET /mockserver/configuration. Configuration falls back to
+            // the static store when a property is unset, so the static value is still honoured.
             ObjectNode config = objectMapper.createObjectNode();
-            config.put("maxExpectations", ConfigurationProperties.maxExpectations());
-            config.put("maxLogEntries", ConfigurationProperties.maxLogEntries());
+            config.put("maxExpectations", httpState.getConfiguration().maxExpectations());
+            config.put("maxLogEntries", httpState.getConfiguration().maxLogEntries());
             return config;
         } catch (Exception e) {
             ObjectNode error = objectMapper.createObjectNode();

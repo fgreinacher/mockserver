@@ -82,7 +82,8 @@ public class JsonStringMatcher extends BodyMatcher<String> {
      * original semantics of loading matchers on every match.
      */
     private Configuration baseConfiguration() {
-        Map<String, Matcher<?>> customMatchers = CustomJsonUnitMatcherLoader.load();
+        Map<String, Matcher<?>> customMatchers = CustomJsonUnitMatcherLoader.load(
+            mockServerLogger != null ? mockServerLogger.getConfiguration() : null);
         // read the matcher-key first, then the config: paired with the write order below this
         // guarantees that whenever the key matches, the config field seen was built from it
         Map<String, Matcher<?>> cachedMatchers = baseConfigurationMatchers;

@@ -1,5 +1,6 @@
 package org.mockserver.matchers;
 
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.llm.ParsedConversation;
 import org.mockserver.llm.ParsedMessage;
@@ -173,6 +174,19 @@ public class LlmConversationMatcher {
      * Never throws.
      */
     public boolean matches(HttpRequest request) {
+        return matches(request, null);
+    }
+
+    /**
+     * As {@link #matches(HttpRequest)} but consulting {@code configuration} for
+     * {@code maxLlmConversationBodySize}, so a cap set on the {@link Configuration} instance
+     * (including via {@code PUT /mockserver/configuration}) is honoured. Falls back to the static
+     * {@link ConfigurationProperties} store when {@code configuration} is {@code null}, leaving
+     * system-property/env/file users unaffected.
+     *
+     * @param configuration the effective server configuration (may be {@code null})
+     */
+    public boolean matches(HttpRequest request, Configuration configuration) {
         try {
             // If no predicate is set, return true (nothing to check)
             if (!hasPredicates()) {
@@ -192,9 +206,12 @@ public class LlmConversationMatcher {
 
             // Body-size cap
             byte[] bodyBytes = request != null ? request.getBodyAsRawBytes() : null;
-            if (bodyBytes != null && bodyBytes.length > ConfigurationProperties.maxLlmConversationBodySize()) {
+            long maxBodySize = configuration != null
+                ? configuration.maxLlmConversationBodySize()
+                : ConfigurationProperties.maxLlmConversationBodySize();
+            if (bodyBytes != null && bodyBytes.length > maxBodySize) {
                 LOGGER.debug("Request body size {} exceeds maxLlmConversationBodySize {}, skipping LLM conversation matching",
-                    bodyBytes.length, ConfigurationProperties.maxLlmConversationBodySize());
+                    bodyBytes.length, maxBodySize);
                 return false;
             }
 

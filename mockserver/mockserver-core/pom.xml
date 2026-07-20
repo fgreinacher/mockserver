@@ -698,6 +698,7 @@
                         <exclude>**/MockServerEventLogVerifyByDispositionTest.java</exclude>
                         <exclude>**/HttpStateTest.java</exclude>
                         <exclude>**/HttpStateAuditTest.java</exclude>
+                        <exclude>**/HttpStateConfigurationUpdateTest.java</exclude>
                         <exclude>**/HttpStateAuthorizationTest.java</exclude>
                         <exclude>**/HttpStateAuditEndpointTest.java</exclude>
                         <!-- Enables control-plane authentication through the STATIC ConfigurationProperties
@@ -763,12 +764,16 @@
                         <exclude>**/ScimConcurrentUpdateTest.java</exclude>
                         <!-- Mutates global ConfigurationProperties.generateRealisticExampleValues -->
                         <exclude>**/ExampleBuilderRealisticValuesTest.java</exclude>
+                        <exclude>**/ExampleBuilderConfigurationInstanceTest.java</exclude>
                         <!-- Mutate shared static PrometheusRegistry / Metrics / ConfigurationProperties -->
                         <exclude>**/HttpActionHandlerGraphQLChaosTest.java</exclude>
                         <exclude>**/ChaosAutoHaltMonitorTest.java</exclude>
                         <!-- Mutates global ConfigurationProperties.preemptionSimulationMaxDrainMillis + PreemptionSimulator singleton -->
                         <exclude>**/PreemptionSimulatorTest.java</exclude>
                         <exclude>**/LlmCostBudgetMonitorTest.java</exclude>
+                        <!-- Resets the LlmCostBudgetMonitor and RateLimitRegistry singletons -->
+                        <exclude>**/ConfigurationInstanceEnforcementTest.java</exclude>
+                        <exclude>**/MatchingLimitsInstanceConfigurationTest.java</exclude>
                         <exclude>**/LlmMetricsTest.java</exclude>
                         <!-- WS7.6: mutates the mockserver.perExpectationMetrics system property + static Metrics / default PrometheusRegistry -->
                         <exclude>**/PerExpectationMetricsTest.java</exclude>
@@ -889,6 +894,7 @@
                                 <include>**/MockServerEventLogVerifyByDispositionTest.java</include>
                                 <include>**/HttpStateTest.java</include>
                                 <include>**/HttpStateAuditTest.java</include>
+                                <include>**/HttpStateConfigurationUpdateTest.java</include>
                                 <include>**/HttpStateAuthorizationTest.java</include>
                                 <include>**/HttpStateAuditEndpointTest.java</include>
                                 <include>**/ControlPlaneAuthenticationRouteDenialTest.java</include>
@@ -931,10 +937,13 @@
                                 <include>**/ScimResourceStoreTest.java</include>
                                 <include>**/ScimConcurrentUpdateTest.java</include>
                                 <include>**/ExampleBuilderRealisticValuesTest.java</include>
+                                <include>**/ExampleBuilderConfigurationInstanceTest.java</include>
                                 <include>**/HttpActionHandlerGraphQLChaosTest.java</include>
                                 <include>**/ChaosAutoHaltMonitorTest.java</include>
                                 <include>**/PreemptionSimulatorTest.java</include>
                                 <include>**/LlmCostBudgetMonitorTest.java</include>
+                                <include>**/ConfigurationInstanceEnforcementTest.java</include>
+                                <include>**/MatchingLimitsInstanceConfigurationTest.java</include>
                                 <include>**/LlmMetricsTest.java</include>
                                 <include>**/PerExpectationMetricsTest.java</include>
                                 <include>**/LogEntryRedactionTest.java</include>

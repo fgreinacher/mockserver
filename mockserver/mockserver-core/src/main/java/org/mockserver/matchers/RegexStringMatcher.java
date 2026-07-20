@@ -215,7 +215,14 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
     }
 
     private static boolean runRegexWithTimeout(MockServerLogger mockServerLogger, NottableString pattern, String input, boolean caseSensitive) {
-        long timeoutMillis = ConfigurationProperties.regexMatchingTimeoutMillis();
+        // Prefer the live Configuration carried by the logger (the matcher graph's existing
+        // configuration carrier) so a timeout set over PUT /mockserver/configuration takes effect;
+        // fall back to the static store when no instance is available.
+        org.mockserver.configuration.Configuration configuration =
+            mockServerLogger != null ? mockServerLogger.getConfiguration() : null;
+        long timeoutMillis = configuration != null
+            ? configuration.regexMatchingTimeoutMillis()
+            : ConfigurationProperties.regexMatchingTimeoutMillis();
         try {
             return MatchingTimeoutExecutor.callWithTimeout(
                 () -> pattern.matches(input, caseSensitive),

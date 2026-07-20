@@ -1,6 +1,6 @@
 # Configuration Reference
 
-MockServer is configured through a single mechanism — a flat set of named properties — exposed in four equivalent forms. The authoritative list of every property, with defaults and inline documentation, is the example file checked into the repo:
+MockServer is configured through a single mechanism — a flat set of named properties — exposed in four forms: three equivalent static-store routes (system property, environment variable, properties file) and one per-instance form (`Configuration` object) that is not equivalent to the others. The authoritative list of every property, with defaults and inline documentation, is the example file checked into the repo:
 
 **[`mockserver/mockserver.example.properties`](../../mockserver/mockserver.example.properties)**
 
@@ -17,7 +17,7 @@ For the user-facing rendition of the same properties (with examples and cross-li
 3. **Environment variable** — `MOCKSERVER_SERVER_PORT=1080` (upper-snake form of the system-property suffix)
 4. **Built-in default** — coded into the typed getter
 
-This means properties file entries override environment variables, system properties override properties file entries, and explicit `Configuration` instance setters override all of the above (see "Instance-scoped configuration" below). The resolution is implemented in `readPropertyHierarchically`: `System.getProperty(key, properties.getProperty(key, envOrDefault))`.
+This means system properties override properties file entries, which override environment variables, which override the built-in default. The resolution is implemented in `readPropertyHierarchically`: `System.getProperty(key, properties.getProperty(key, envOrDefault))`.
 
 The loader logs the resolved property source on startup at `TRACE` — useful when a value isn't what you expect.
 
@@ -31,16 +31,32 @@ A misspelled property (e.g. `-Dmockserver.maxExpectatons=…` or `MOCKSERVER_MET
 
 The recognised-key set is derived **reflectively from the `MOCKSERVER_*` constant fields** in `ConfigurationProperties` (the constant's value is the `mockserver.*` key; the constant's field name is the `MOCKSERVER_*` env-var key), so it can never drift from the actual properties — adding a new property automatically extends recognition. Keys outside the `mockserver.`/`MOCKSERVER_` namespace (e.g. `JAVA_HOME`, `PATH`) are never flagged, so unrelated environment variables do not produce false positives. The check can never throw, so it cannot break startup. Only key **names** are logged, never values.
 
-## The four equivalent forms
+## Configuration forms
 
 | Form | Use when | Example |
 |------|----------|---------|
 | Properties file | Shipping reproducible config alongside the JAR / Docker image; CI default; what `mockserver.example.properties` documents | `mockserver.serverPort=1080` |
 | Environment variable | Container deployments where each setting is its own knob | `MOCKSERVER_SERVER_PORT=1080` |
 | JVM system property | Overriding a single value at launch time (CLI, IDE) | `-Dmockserver.serverPort=1080` |
-| Programmatic — `Configuration` instance | Embedded MockServer in tests; per-instance overrides without touching globals | `new Configuration().serverPort(1080)` |
+| Programmatic — `Configuration` instance | Embedded MockServer in tests; per-instance overrides for properties whose enforcement sites read the instance | `new Configuration().serverPort(1080)` |
 
-The first three feed into the **static** `ConfigurationProperties`. The fourth uses a **per-instance** `Configuration` object that falls back to `ConfigurationProperties` for any unset field. Use the instance form for tests that run multiple MockServers in the same JVM with different settings.
+The first three are equivalent routes into the **static** `ConfigurationProperties` store and differ only in precedence (system property > properties file > environment variable > built-in default). The fourth, the `Configuration` instance, is **not equivalent**: setting a field on an instance (including via `PUT /mockserver/configuration`) does **not** write the static store. An instance value takes effect **only** at enforcement sites that read the `Configuration` instance rather than calling `ConfigurationProperties` directly. A property whose enforcement site reads `ConfigurationProperties` directly cannot be overridden via the instance form, regardless of what the DTO exposes. The `Configuration` instance falls back to `ConfigurationProperties` for any field that has not been explicitly set on the instance. Use the instance form for tests that run multiple MockServers in the same JVM with different settings, for properties whose enforcement sites read the instance.
+
+### Capacity properties fixed at startup
+
+`PUT /mockserver/configuration` writes the live `Configuration` instance, but a capacity property only takes effect if the subsystem it sizes can be resized. MockServer resizes what it can and reports what it cannot — it never silently accepts a value it will ignore.
+
+| Property | Runtime behaviour on `PUT /mockserver/configuration` |
+|----------|------------------------------------------------------|
+| `maxLogEntries`, `maxEventLogSizeInBytes` | **Resized.** `MockServerEventLog.applyConfigurationCapacity()` resizes the bounded event-log deque; a shrink evicts the oldest entries immediately. |
+| `maxExpectations` | **Resized.** `RequestMatchers.applyConfigurationCapacity()` resizes the expectation store (the state backend's queue when one is wired, otherwise the node-local queue) and the request-definition shadow map; a shrink evicts the eldest expectations immediately. |
+| `controlPlaneAuditMaxEntries` | **Resized.** `AuditStore.setMaxSize(int)`; a shrink discards the oldest entries immediately. |
+| `ringBufferSize` | **Fixed at startup.** The LMAX Disruptor ring is a fixed power-of-two array allocated when the server starts; resizing it would mean draining in-flight events and rebuilding every handler. |
+| `maxWebSocketExpectations` | **Fixed at startup.** `LocalCallbackRegistry` builds its bounded registries lazily and exactly once. |
+
+For the two fixed properties, a PUT that **explicitly supplies a value differing from the one in force** logs a WARN naming the ignored value and the value actually in force, and resets the field to the in-force value so the echoed response — and any later `GET /mockserver/configuration` — reports the truth. The request still succeeds, so a client that PUTs a whole configuration blob with unchanged values is unaffected and logs nothing. Because `ringBufferSize` *derives* from `maxLogEntries` when not set explicitly, the check is driven by what the client actually sent (`ConfigurationDTO`), not by the resolved getter — changing only `maxLogEntries` never produces a `ringBufferSize` warning.
+
+Implemented in `HttpState.applyConfigurationUpdate(ConfigurationDTO)`, called from the `PUT /mockserver/configuration` route in `HttpRequestHandler`.
 
 ## Property categories
 
@@ -55,7 +71,7 @@ The first three feed into the **static** `ConfigurationProperties`. The fourth u
 | HTTP behaviour | `nioEventLoopThreadCount`, `actionHandlerThreadCount`, `webSocketClientEventLoopThreadCount`, `clientNioEventLoopThreadCount`, `streamingResponsesEnabled`, `maxStreamingCaptureBytes` |
 | gRPC | `maxGrpcMessageSize`, `grpcBidiStreamingEnabled` |
 | Matching | `matchersFailFast`, `matchExactCase` (when `true`, method/path/string-body matching is case-sensitive, and response reason-phrase matching in verification is also case-sensitive; header/cookie/query matching always stays case-insensitive — default `false`) |
-| JSON Schema matching (internal tuning) | `jsonSchemaAllowRemoteRefs`, `mockserver.candidateIndexThreshold` — **JVM system-property-only tuning knobs**, not part of the standard four-equivalent-forms property set; see [Internal Tuning-Only System Properties](#internal-tuning-only-system-properties) below |
+| JSON Schema matching (internal tuning) | `jsonSchemaAllowRemoteRefs`, `mockserver.candidateIndexThreshold` — **JVM system-property-only tuning knobs**, not part of the standard static-store property set; see [Internal Tuning-Only System Properties](#internal-tuning-only-system-properties) below |
 | Initialisation / OpenAPI | `initializationClass`, `initializationJsonPath`, `persistExpectations`, `persistedExpectationsPath`, `openAPIContextPathPrefix`, `openAPIResponseValidation`, `enforceResponseValidationForMocks`, `validateRequestsAgainstOpenApiSpec` (when `true`, requests matched by an OpenAPI-backed mock that violate the spec are rejected with a `400` instead of serving the mock response — default `false`; OpenAPI-backed expectations only), `generateRealisticExampleValues`, `validateProxyOpenAPISpec`, `validateProxyEnforce`, `failOnInitializationError` |
 | CORS | `enableCORSForAPI`, `enableCORSForAllResponses`, `corsAllowOrigin`, `corsAllowMethods`, `corsAllowHeaders`, `corsAllowCredentials` |
 | Default response headers | `defaultResponseHeaders` |
@@ -79,7 +95,8 @@ The first three feed into the **static** `ConfigurationProperties`. The fourth u
 | Service mesh / transparent proxy | `transparentProxyEnabled`, `transparentProxyTproxy`, `transparentProxyEbpf`, `transparentProxyEbpfMapPath` |
 | OpenTelemetry | `otelMetricsEnabled`, `otelTracesEnabled`, `otelEndpoint`, `otelMetricsExportIntervalSeconds`, `otelMetricsTemporality`, `otelPropagateTraceContext`, `otelGenerateTraceId` |
 | Prometheus Remote Write | `prometheusRemoteWriteEnabled`, `prometheusRemoteWriteUrl`, `prometheusRemoteWriteProtocolVersion`, `prometheusRemoteWriteIntervalSeconds`, `prometheusRemoteWriteBearerToken`, `prometheusRemoteWriteBasicAuthUsername`, `prometheusRemoteWriteBasicAuthPassword`, `prometheusRemoteWriteHeaders` |
-| Chaos auto-halt | `chaosAutoHaltEnabled`, `chaosAutoHaltErrorThreshold`, `chaosAutoHaltWindowMillis` |
+| Chaos auto-halt | `chaosAutoHaltEnabled`, `chaosAutoHaltErrorThreshold`, `chaosAutoHaltWindowMillis`, `connectionLifecycleChaosEnabled` (master switch for connection-lifecycle fault injection — mid-response RST, host-scoped slow close, HTTP/2 GOAWAY, preemption simulator; default `true`), `connectionLifecycleAutoHaltCountsRst` (when `true`, a connection-lifecycle RST counts as a destructive fault for the chaos auto-halt circuit-breaker; default `true`) |
+| Preemption simulation | `preemptionSimulationMaxDrainMillis` (hard upper bound in milliseconds on a preemption simulation's drain window and TTL, clamping values from `PUT /mockserver/preemption`; default `86400000` — 24 hours; `0` disables the cap) |
 | Rate limiting | `rateLimitMaxNamedQuotas` |
 | SLO verdicts | `sloTrackingEnabled`, `sloWindowRetentionMillis`, `sloWindowMaxSamples` |
 | Load generation | `loadGenerationEnabled`, `loadGenerationSuppressEventLog`, `loadGenerationMaxVirtualUsers`, `loadGenerationMaxInFlightRequests`, `loadGenerationMaxRequestsPerSecond`, `loadGenerationMaxDurationMillis`, `loadGenerationMaxSteps` |
@@ -90,15 +107,55 @@ The first three feed into the **static** `ConfigurationProperties`. The fourth u
 | Control-plane audit | `controlPlaneAuditEnabled`, `controlPlaneAuditMaxEntries`, `controlPlaneAuditReads`, `auditLogFile` |
 | Clustered state | `stateBackend`, `clusterEnabled`, `clusterName`, `clusterTransportConfig`, `clusterSharedTimesEnabled` |
 | Blob store | `blobStoreType`, `blobStoreBucket`, `blobStoreRegion`, `blobStoreEndpoint`, `blobStoreKeyPrefix`, `blobStoreAccessKeyId`, `blobStoreSecretAccessKey`, `blobStoreContainer`, `blobStoreConnectionString`, `blobStoreProjectId` |
-| Async messaging | `asyncKafkaBootstrapServers`, `asyncMqttBrokerUrl`, `asyncRecordedMessageMaxEntries` |
+| Async messaging | `asyncKafkaBootstrapServers`, `asyncMqttBrokerUrl`, `asyncRecordedMessageMaxEntries`, `asyncAmqpUri` (default AMQP connection URI used when a `PUT /mockserver/asyncapi` request does not include `brokerConfig.amqpUri`, e.g. `amqp://guest:guest@localhost:5672/`; empty by default — broker must be specified per-request; enforcement site reads the static store directly) |
 | JSON Schema matching | `jsonSchemaAllowRemoteRefs` — JVM system property only (see [Internal Tuning-Only System Properties](#internal-tuning-only-system-properties)) |
-| LLM mocking | `llmProvider`, `llmApiKey`, `llmModel`, `llmBaseUrl`, `llmBackendsConfig`, `llmSemanticMatchingEnabled`, `llmVcrStrict`, `fixtureBodyRedactFields` |
+| LLM mocking | `llmProvider`, `llmApiKey`, `llmModel`, `llmBaseUrl`, `llmBackendsConfig`, `llmSemanticMatchingEnabled`, `llmVcrStrict`, `fixtureBodyRedactFields`, `maxLlmConversationBodySize` (maximum request body size in bytes for LLM conversation matching; default `1048576` — 1 MiB; clamped to [`16384`, `67108864`]; bodies exceeding the limit are treated as no-match) |
 | LLM metrics & budget | `llmMetricsEnabled`, `llmCostBudgetUsd`, `perExpectationMetricsEnabled` |
 | Recorded expectations | `deduplicateRecordedExpectations`, `redactSecretsInRecordedExpectations` |
 | Event log / dashboard | `redactSecretsInLog` |
-| Lifecycle | `stopDrainMillis` |
+| Lifecycle | `stopDrainMillis` (maximum milliseconds the graceful shutdown waits for in-flight requests to drain before tearing down the event loops; default `15000`; `0` disables draining — the pre-7.2 stop-immediately behaviour; negative values are clamped to `0`. Also the default drain window a preemption simulation uses when `PUT /mockserver/preemption` omits `drainMillis`) |
 
 The example file documents the most commonly tuned properties (≈220 lines). For the complete list including newer subsystems, read `ConfigurationProperties.java` or the consumer reference page.
+
+### Properties wired onto the `Configuration` instance
+
+The 27 properties below previously existed **only** on `ConfigurationProperties`, with no `Configuration` accessor and no `ConfigurationDTO` field. That made them unreachable from the instance, DTO and REST routes *by construction*: `PUT /mockserver/configuration` could not set them at all. Each now has a `Configuration` getter/fluent-setter pair and a `ConfigurationDTO` field, so all three routes work and the usual resolution order applies (instance field → static store → env var / property file → default).
+
+Three of them are **write-only**: settable over `PUT /mockserver/configuration` and on the instance, but `GET /mockserver/configuration` returns `***REDACTED***` (`ConfigurationProperties.REDACTED_VALUE`) instead of the real value. A `PUT` that echoes that mask back is ignored rather than applied, so a GET-then-PUT of the whole configuration blob never destroys a working credential.
+
+| Property | Type | Default | Notes |
+|----------|------|---------|-------|
+| `customJsonUnitMatchersClass` | String | `""` | Custom json-unit matcher provider class |
+| `fixtureBodyRedactFields` | String | `""` | Comma-separated JSON field names redacted from recorded fixtures |
+| `llmBackendsConfig` | String | `""` | Path to the named-backends JSON file |
+| `llmBaseUrl` | String | `""` | Base URL override for the default LLM backend |
+| `llmInferUsageEnabled` | Boolean | `false` | Approximate token-usage inference |
+| `llmModel` | String | `""` | Model for the default LLM backend |
+| `llmOptimisationMaxCalls` | Integer | `200` | Cap on calls included in an optimisation report |
+| `llmProvider` | String | `""` | Provider for the default LLM backend |
+| `llmRequestTimeoutMillis` | Long | `30000` | Per-request timeout for outbound LLM calls |
+| `llmSemanticMatchingEnabled` | Boolean | `false` | Fuzzy LLM-judged prompt matching |
+| `llmVcrStrict` | Boolean | `false` | Strict VCR mode for LLM fixtures |
+| `otelEndpoint` | String | `""` | OTLP endpoint; falls back to `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| `otelMetricsEnabled` | Boolean | `false` | Export metrics via OTLP |
+| `otelMetricsExportIntervalSeconds` | Long | `60` | **Clamped to ≥ 1** on both the instance and static routes |
+| `otelMetricsTemporality` | String | `cumulative` | `cumulative` or `delta`; unknown values fail safe to cumulative |
+| `otelTracesEnabled` | Boolean | `false` | Emit GenAI semantic-convention spans |
+| `prometheusRemoteWriteBasicAuthUsername` | String | `""` | Basic-auth username (not a secret; not masked) |
+| `prometheusRemoteWriteEnabled` | Boolean | `false` | Push metrics to a remote-write endpoint |
+| `prometheusRemoteWriteHeaders` | String | `""` | Extra headers as a `key=value` list |
+| `prometheusRemoteWriteIntervalSeconds` | Long | `60` | **Clamped to ≥ 1** on both the instance and static routes |
+| `prometheusRemoteWriteProtocolVersion` | String | `v1` | `v1` or `v2`; unknown values fall back to `v1` |
+| `prometheusRemoteWriteUrl` | String | `""` | Remote-write endpoint URL |
+| `regexMatchingTimeoutMillis` | Long | `5000` | Regex evaluation budget; `0`/negative disables |
+| `xpathMatchingTimeoutMillis` | Long | `5000` | XPath evaluation budget; `0`/negative disables |
+| `llmApiKey` | String | `""` | **Write-only** — settable, masked on read |
+| `prometheusRemoteWriteBasicAuthPassword` | String | `""` | **Write-only** — settable, masked on read |
+| `prometheusRemoteWriteBearerToken` | String | `""` | **Write-only** — settable, masked on read |
+
+Masking lives in `ConfigurationDTO`: the JSON getters return the mask while `buildObject()`/`applyTo()` read the private fields, so the wire is clean without breaking the write path. `@JsonIgnore`-d `get…RawValue()` accessors expose the real value in-process only. `ConfigurationDTOCredentialMaskingTest` asserts non-leakage, the round-trip guard, and that the write path still works.
+
+**Reachability ≠ enforcement.** Wiring a property onto `Configuration` makes it *settable*; the enforcement sites for these 27 still read the static store, so they are recorded in `ConfigurationCallSiteGuardTest.KNOWN_INSTANCE_UNREACHABLE_DEFECTS` until each site is changed to consult the instance. That map is a ratchet: fixing a site makes its entry stale and fails the build until the line is deleted.
 
 ### `redactSecretsInRecordedExpectations`
 
@@ -112,6 +169,10 @@ Opt-in (default `false`). When `true`, MockServer masks the same sensitive heade
 
 This complements `redactSecretsInRecordedExpectations` (which masks the recorded-expectation *export* path); set both when you want secrets masked everywhere they could be observed.
 
+**Redaction is not retroactive.** `getHttpUpdatedRequests()`/`getHttpUpdatedResponse()` memoise the rendered view of an entry on first read, so a log entry that was already rendered before redaction was enabled keeps its unredacted form for the remainder of its life in the ring. Enabling `redactSecretsInLog` protects entries rendered *after* the change; it does not scrub secrets already captured. If secrets have already reached the log, enable redaction **and** clear the event log rather than relying on redaction alone.
+
+**Enabling it on a `Configuration` instance now works.** Until recently the redactor was resolved only from the static `ConfigurationProperties` store, so enabling redaction programmatically or via `PUT /mockserver/configuration` had no effect and secrets stayed in clear on every surface above. The redaction accessors now take the effective `Configuration`, wired through the event log, the recorded-requests disk archive, the dashboard and the JSON log-message serializer. Note `fixtureBodyRedactFields` has no `Configuration` accessor and is read from the static store only — that is its sole source, not a gap.
+
 ### `controlPlaneAuditEnabled`, `controlPlaneAuditMaxEntries`, `controlPlaneAuditReads`, `auditLogFile`
 
 Opt-in, append-only, bounded, in-memory audit log of control-plane *mutations* (who/what/when/where/outcome) that backs `GET /mockserver/audit` (see [docs/code/event-system.md](event-system.md#control-plane-audit-log)). It records redacted, structural metadata only — never request headers or bodies.
@@ -119,7 +180,7 @@ Opt-in, append-only, bounded, in-memory audit log of control-plane *mutations* (
 | Property | Default | Meaning |
 |----------|---------|---------|
 | `controlPlaneAuditEnabled` | `false` | When `false`, no audit entries are recorded and control-plane operations behave byte-for-byte identically (the audit emit returns immediately). Set to `true` to opt in. |
-| `controlPlaneAuditMaxEntries` | `1000` | Maximum entries retained in the bounded ring; the oldest is evicted once full. **Read once at `AuditStore` construction** — a fixed-capacity ring (like the drift store), so changing it at runtime does not resize an already-constructed store. |
+| `controlPlaneAuditMaxEntries` | `1000` | Maximum entries retained in the bounded ring; the oldest is evicted once full. The singleton's *initial* capacity is read once at `AuditStore` class initialization (`new AuditStore(maxFromConfig())`), so a system property, environment variable or properties-file value set **after** the class loads does not change it. The capacity is **resizable at runtime via `PUT /mockserver/configuration`**, which calls `AuditStore.setMaxSize(int)` — a shrink discards the oldest entries immediately. |
 | `controlPlaneAuditReads` | `false` | When `false`, only mutations (and `reset`) are audited. Set to `true` to also audit control-plane reads (GET requests and read-only PUTs such as `/retrieve`, `/verify`, `/diff`). No effect unless `controlPlaneAuditEnabled` is `true`. |
 | `auditLogFile` | `""` (off) | Optional path to a durable NDJSON audit file. When set, each recorded entry is *also* appended (one compact JSON object per line) by `AuditFileSink` — a separate writer that observes the same entries, leaving the in-memory ring untouched — giving a restart-and-`reset`-surviving trail. Path resolved once on first write; parent dirs created; append-only (rotation out of scope); fail-soft (one WARN then self-disable on IO error). No effect unless `controlPlaneAuditEnabled` is `true`. |
 

@@ -189,10 +189,18 @@ public final class MatchingTimeoutExecutor {
      * @return the match result, or {@code false} on timeout/error
      */
     public static boolean matchesWithRegexTimeout(MockServerLogger mockServerLogger, String description, Pattern pattern, Callable<Boolean> matchOperation) {
+        // Prefer the live Configuration carried by the logger (the matcher graph's existing
+        // configuration carrier) so a timeout set over PUT /mockserver/configuration takes effect;
+        // fall back to the static store when no instance is available.
+        org.mockserver.configuration.Configuration configuration =
+            mockServerLogger != null ? mockServerLogger.getConfiguration() : null;
+        long timeoutMillis = configuration != null
+            ? configuration.regexMatchingTimeoutMillis()
+            : ConfigurationProperties.regexMatchingTimeoutMillis();
         try {
             return callWithTimeout(
                 matchOperation,
-                ConfigurationProperties.regexMatchingTimeoutMillis(),
+                timeoutMillis,
                 Boolean.FALSE,
                 fired -> {
                     if (mockServerLogger != null) {

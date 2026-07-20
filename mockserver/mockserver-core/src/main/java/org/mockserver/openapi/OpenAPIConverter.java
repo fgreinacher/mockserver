@@ -13,6 +13,7 @@ import io.swagger.v3.oas.models.media.DateTimeSchema;
 import io.swagger.v3.oas.models.media.MediaType;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.responses.ApiResponses;
+import org.mockserver.configuration.Configuration;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mock.Expectation;
@@ -47,9 +48,19 @@ public class OpenAPIConverter {
     private static final int MAX_REF_DEPTH = 100;
     private static final int MAX_STRUCTURE_DEPTH = 1000;
     private final MockServerLogger mockServerLogger;
+    // nullable — when null, example generation resolves generateRealisticExampleValues from the static
+    // ConfigurationProperties store (the historic behaviour). Supplied by callers that hold a
+    // Configuration instance so a value set on the instance (e.g. via PUT /mockserver/configuration)
+    // is actually honoured rather than silently ignored.
+    private final Configuration configuration;
 
     public OpenAPIConverter(MockServerLogger mockServerLogger) {
+        this(mockServerLogger, null);
+    }
+
+    public OpenAPIConverter(MockServerLogger mockServerLogger, Configuration configuration) {
         this.mockServerLogger = mockServerLogger;
+        this.configuration = configuration;
     }
 
     public List<Expectation> buildExpectations(String specUrlOrPayload, Map<String, Object> operationsAndResponses) {
@@ -105,11 +116,11 @@ public class OpenAPIConverter {
     }
 
     private org.mockserver.model.HttpRequest buildExampleRequest(OpenAPI openAPI, String method, String pathTemplate, io.swagger.v3.oas.models.Operation operation, GenerationOptions generationOptions) {
-        String resolvedPath = OpenApiParameterExamples.resolvePath(pathTemplate, operation, openAPI, generationOptions);
+        String resolvedPath = OpenApiParameterExamples.resolvePath(pathTemplate, operation, openAPI, generationOptions, configuration);
         org.mockserver.model.HttpRequest httpRequest = org.mockserver.model.HttpRequest.request()
             .withMethod(method)
             .withPath(resolvedPath);
-        OpenApiParameterExamples.applyExampleParameters(httpRequest, operation, openAPI, generationOptions);
+        OpenApiParameterExamples.applyExampleParameters(httpRequest, operation, openAPI, generationOptions, configuration);
 
         io.swagger.v3.oas.models.parameters.RequestBody requestBody = operation.getRequestBody();
         if (requestBody != null && requestBody.getContent() != null && !requestBody.getContent().isEmpty()) {
@@ -123,7 +134,8 @@ public class OpenAPIConverter {
                     mediaType.getSchema(),
                     openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null,
                     generationOptions,
-                    ExampleBuilder.Direction.REQUEST
+                    ExampleBuilder.Direction.REQUEST,
+                    configuration
                 );
                 if (example != null) {
                     httpRequest.withBody(serialise(example));
@@ -263,7 +275,8 @@ public class OpenAPIConverter {
                                         mediaType.getSchema(),
                                         openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null,
                                         generationOptions,
-                                        ExampleBuilder.Direction.REQUEST
+                                        ExampleBuilder.Direction.REQUEST,
+                                        configuration
                                     );
                                     if (example != null) {
                                         callbackRequest.withBody(serialise(example));
@@ -316,7 +329,7 @@ public class OpenAPIConverter {
                             if (headerExample != null) {
                                 response.withHeader(entry.getKey(), String.valueOf(headerExample));
                             } else if (value.getSchema() != null) {
-                                org.mockserver.openapi.examples.models.Example generatedExample = ExampleBuilder.fromSchema(value.getSchema(), openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null, generationOptions, ExampleBuilder.Direction.RESPONSE);
+                                org.mockserver.openapi.examples.models.Example generatedExample = ExampleBuilder.fromSchema(value.getSchema(), openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null, generationOptions, ExampleBuilder.Direction.RESPONSE, configuration);
                                 if (generatedExample instanceof StringExample stringExample) {
                                     response.withHeader(entry.getKey(), stringExample.getValue());
                                 } else {
@@ -353,7 +366,7 @@ public class OpenAPIConverter {
                                             response.withBody(serialise(schemaExample));
                                         }
                                     } else {
-                                        org.mockserver.openapi.examples.models.Example generatedExample = ExampleBuilder.fromSchema(mediaType.getSchema(), openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null, generationOptions, ExampleBuilder.Direction.RESPONSE);
+                                        org.mockserver.openapi.examples.models.Example generatedExample = ExampleBuilder.fromSchema(mediaType.getSchema(), openAPI.getComponents() != null ? openAPI.getComponents().getSchemas() : null, generationOptions, ExampleBuilder.Direction.RESPONSE, configuration);
                                         if (generatedExample instanceof StringExample stringExample) {
                                             if (isJsonContentType(contentType.getKey())) {
                                                 response.withBody(json(serialise(stringExample.getValue())));

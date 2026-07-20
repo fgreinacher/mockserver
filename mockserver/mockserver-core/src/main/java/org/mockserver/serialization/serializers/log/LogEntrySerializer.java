@@ -20,8 +20,25 @@ public class LogEntrySerializer extends StdSerializer<LogEntry> {
         super(LogEntry.class);
     }
 
+    /**
+     * Attribute key under which callers may supply the effective {@link org.mockserver.configuration.Configuration}
+     * on the {@code ObjectWriter} (see {@code ObjectWriter.withAttribute}). This serializer is registered against a
+     * shared, process-wide {@code ObjectMapper} and so has no configuration of its own; when the attribute is
+     * absent the redaction accessors fall back to the static store, preserving existing behaviour for every other
+     * consumer of that mapper.
+     */
+    public static final String CONFIGURATION_ATTRIBUTE = "org.mockserver.configuration.Configuration";
+
+    private static org.mockserver.configuration.Configuration configurationOf(SerializerProvider provider) {
+        Object attribute = provider == null ? null : provider.getAttribute(CONFIGURATION_ATTRIBUTE);
+        return attribute instanceof org.mockserver.configuration.Configuration
+            ? (org.mockserver.configuration.Configuration) attribute
+            : null;
+    }
+
     @Override
     public void serialize(LogEntry logEntry, JsonGenerator jgen, SerializerProvider provider) throws IOException {
+        org.mockserver.configuration.Configuration configuration = configurationOf(provider);
         jgen.writeStartObject();
         if (logEntry.getLogLevel() != null) {
             jgen.writeObjectField("logLevel", logEntry.getLogLevel());
@@ -43,13 +60,13 @@ public class LogEntrySerializer extends StdSerializer<LogEntry> {
         }
         if (logEntry.getHttpRequests() != null) {
             if (logEntry.getHttpRequests().length > 1) {
-                jgen.writeObjectField("httpRequests", logEntry.getHttpUpdatedRequests());
+                jgen.writeObjectField("httpRequests", logEntry.getHttpUpdatedRequests(configuration));
             } else if (logEntry.getHttpRequests().length == 1) {
-                jgen.writeObjectField("httpRequest", logEntry.getHttpUpdatedRequests()[0]);
+                jgen.writeObjectField("httpRequest", logEntry.getHttpUpdatedRequests(configuration)[0]);
             }
         }
         if (logEntry.getHttpResponse() != null) {
-            jgen.writeObjectField("httpResponse", logEntry.getHttpUpdatedResponse());
+            jgen.writeObjectField("httpResponse", logEntry.getHttpUpdatedResponse(configuration));
         }
         if (logEntry.getHttpError() != null) {
             jgen.writeObjectField("httpError", logEntry.getHttpError());

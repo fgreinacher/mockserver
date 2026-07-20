@@ -38,6 +38,7 @@ import org.mockserver.scheduler.Scheduler;
 import org.mockserver.serialization.*;
 import org.mockserver.serialization.ObjectMapperFactory;
 import org.mockserver.serialization.java.ExpectationToJavaSerializer;
+import org.mockserver.serialization.model.ConfigurationDTO;
 import org.mockserver.serialization.YamlToJsonConverter;
 import org.mockserver.server.initialize.ExpectationInitializerLoader;
 import org.mockserver.cluster.ClusterFanIn;
@@ -90,6 +91,10 @@ public class HttpState {
     private static final ThreadLocal<Integer> LOCAL_PORT = new ThreadLocal<>();
     private final String uniqueLoopPreventionHeaderValue = "MockServer_" + UUIDService.getUUID();
     private final MockServerEventLog mockServerLog;
+    // The maxWebSocketExpectations actually in force. LocalCallbackRegistry builds its bounded
+    // registries lazily and exactly once, so the value handed to it at construction is the one that
+    // sizes them for the process lifetime — see applyConfigurationUpdate().
+    private final int maxWebSocketExpectationsInForce;
     private final Scheduler scheduler;
     private ExpectationFileSystemPersistence expectationFileSystemPersistence;
     private org.mockserver.persistence.RecordedExpectationFileSystemPersistence recordedExpectationFileSystemPersistence;
@@ -236,6 +241,7 @@ public class HttpState {
         this.scheduler = scheduler;
         this.webSocketClientRegistry = new WebSocketClientRegistry(configuration, mockServerLogger);
         LocalCallbackRegistry.setMaxWebSocketExpectations(configuration.maxWebSocketExpectations());
+        this.maxWebSocketExpectationsInForce = configuration.maxWebSocketExpectations();
         this.mockServerLog = new MockServerEventLog(configuration, mockServerLogger, scheduler, true);
         // G10 phase 2a: create the pluggable state backend (default in-memory, clustered in 2b+).
         this.stateBackend = StateBackendFactory.create(configuration);
@@ -271,6 +277,19 @@ public class HttpState {
         org.mockserver.mock.action.http.ServiceChaosRegistry.getInstance().setStateBackend(stateBackend);
         org.mockserver.mock.action.http.TcpChaosRegistry.getInstance().setStateBackend(stateBackend);
         org.mockserver.mock.action.http.GrpcChaosRegistry.getInstance().setStateBackend(stateBackend);
+        // Install the live configuration on the chaos auto-halt circuit-breaker. Its only production
+        // caller is the static Metrics.incrementHttpChaosInjected(...), which has no Configuration in
+        // scope, so the settings must be pushed in here instead. This is the same Configuration
+        // instance that PUT /mockserver/configuration mutates, so auto-halt settings applied over the
+        // REST config API take effect; unset instance values still fall back to ConfigurationProperties.
+        org.mockserver.mock.action.http.ChaosAutoHaltMonitor.getInstance().setConfiguration(configuration);
+        // Install the live configuration on the LLM provider sniffer for the same reason: it is a
+        // wholly-static utility called from several independent static analysis chains (dataset
+        // export, optimisation report building, MCP analysis tools, the forward path) that have no
+        // Configuration in scope, so llmProvider/llmBaseUrl must be pushed in here rather than
+        // threaded through every caller. Unset instance values still fall back to
+        // ConfigurationProperties.
+        org.mockserver.llm.client.LlmProviderSniffer.setConfiguration(configuration);
         // G11: register a SEPARATE InvalidationListener for chaos reconciliation
         // so that remote writes to chaos stores trigger the node-local rebuild.
         // This is distinct from the expectations reconcile listener above.
@@ -5109,7 +5128,7 @@ public class HttpState {
                 }
             }
             org.mockserver.model.PreemptionRequest effective =
-                org.mockserver.mock.action.http.PreemptionSimulator.getInstance().start(preemptionRequest);
+                org.mockserver.mock.action.http.PreemptionSimulator.getInstance().start(configuration, preemptionRequest);
             // No start-time channel orchestration: the cordon state is now authoritative, and an HTTP/2
             // GOAWAY (when the mode includes it) is emitted lazily by HttpRequestHandler on the next
             // request that hits a cordoned connection, so no per-channel registry is required.
@@ -6399,6 +6418,87 @@ public class HttpState {
     }
 
     /**
+     * Reconcile the running server's capacity-bounded subsystems with the {@link Configuration}
+     * after it has been mutated (i.e. immediately after a {@code PUT /mockserver/configuration}).
+     * <p>
+     * Historically these properties were read exactly once, at construction: a PUT that changed
+     * them was accepted, echoed back in the response and then silently ignored. This method closes
+     * that gap in the two honest ways available:
+     * <ul>
+     *     <li><b>Resizable properties are resized in place</b> — {@code maxLogEntries} /
+     *     {@code maxEventLogSizeInBytes} (event log deque), {@code maxExpectations} (expectation
+     *     store) and {@code controlPlaneAuditMaxEntries} (audit ring). A shrink evicts immediately.</li>
+     *     <li><b>Genuinely init-only properties are reported, not silently dropped</b> —
+     *     {@code ringBufferSize} (the LMAX disruptor ring is a fixed power-of-two array sized at
+     *     construction) and {@code maxWebSocketExpectations} (the local callback registries are
+     *     built lazily exactly once). A WARN is logged when, and only when, the client EXPLICITLY
+     *     supplied the property and its value DIFFERS from the value in force; the configuration
+     *     field is then reset to the in-force value so a subsequent
+     *     {@code GET /mockserver/configuration} reports the truth rather than a value the server is
+     *     not using. The request still succeeds — a whole-blob PUT that echoes back unchanged
+     *     values is unaffected and logs nothing.</li>
+     * </ul>
+     * <p>
+     * The init-only check is driven by what the client actually sent ({@code suppliedConfiguration})
+     * rather than by the resolved {@link Configuration} getters, because {@code ringBufferSize}
+     * DERIVES from {@code maxLogEntries} when it is not set explicitly. Comparing resolved getters
+     * would fire a confusing {@code ringBufferSize} warning at a client that only changed
+     * {@code maxLogEntries}, and worse would pin {@code ringBufferSize} to a literal value, breaking
+     * that derivation for good.
+     *
+     * @param suppliedConfiguration the properties the client actually sent, or {@code null} for a
+     *                              programmatic update where no init-only reporting is wanted
+     */
+    public void applyConfigurationUpdate(ConfigurationDTO suppliedConfiguration) {
+        mockServerLog.applyConfigurationCapacity();
+        requestMatchers.applyConfigurationCapacity();
+        org.mockserver.mock.audit.AuditStore.getInstance().setMaxSize(configuration.controlPlaneAuditMaxEntries());
+
+        if (suppliedConfiguration == null) {
+            return;
+        }
+        Integer suppliedRingBufferSize = suppliedConfiguration.getRingBufferSize();
+        int ringBufferSizeInForce = mockServerLog.getRingBufferSizeInForce();
+        if (suppliedRingBufferSize != null && configuration.ringBufferSize() != ringBufferSizeInForce) {
+            warnInitOnlyProperty("ringBufferSize", configuration.ringBufferSize(), ringBufferSizeInForce,
+                "the log event ring buffer is a fixed-size array allocated when the server started");
+            configuration.ringBufferSize(ringBufferSizeInForce);
+        }
+        Integer suppliedMaxWebSocketExpectations = suppliedConfiguration.getMaxWebSocketExpectations();
+        if (suppliedMaxWebSocketExpectations != null && configuration.maxWebSocketExpectations() != maxWebSocketExpectationsInForce) {
+            warnInitOnlyProperty("maxWebSocketExpectations", configuration.maxWebSocketExpectations(), maxWebSocketExpectationsInForce,
+                "the local callback registries are sized once when first used");
+            configuration.maxWebSocketExpectations(maxWebSocketExpectationsInForce);
+        }
+    }
+
+    /**
+     * Reconcile capacity-bounded subsystems with the {@link Configuration} after a programmatic
+     * change, without init-only reporting. See {@link #applyConfigurationUpdate(ConfigurationDTO)}.
+     */
+    public void applyConfigurationUpdate() {
+        applyConfigurationUpdate(null);
+    }
+
+    /**
+     * WARN that an init-only configuration property was supplied with a value that cannot take
+     * effect on the running server, naming the value in force and how to actually apply the change.
+     */
+    private void warnInitOnlyProperty(String property, int suppliedValue, int valueInForce, String reason) {
+        if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+            mockServerLogger.logEvent(new LogEntry()
+                .setType(LogEntry.LogMessageType.SERVER_CONFIGURATION)
+                .setLogLevel(Level.WARN)
+                .setMessageFormat(
+                    property + " is fixed at startup and cannot be changed on a running server (" + reason + ") - "
+                        + "the supplied value " + suppliedValue + " has been IGNORED and " + property + " remains "
+                        + valueInForce + "; set it before the server starts (system property, environment variable "
+                        + "or startup configuration) to change it"
+                ));
+        }
+    }
+
+    /**
      * Set the high-level operating mode (SIMULATE/SPY/CAPTURE), the single behavioural
      * switch behind {@code PUT /mockserver/mode}. Records the mode so {@code GET /mockserver/mode}
      * round-trips it and toggles {@code attemptToProxyIfNoMatchingExpectation} to match. Shared
@@ -7344,14 +7444,16 @@ public class HttpState {
 
     private LogEntrySerializer getLogEntrySerializer() {
         if (this.logEntrySerializer == null) {
-            this.logEntrySerializer = new LogEntrySerializer(mockServerLogger);
+            this.logEntrySerializer = new LogEntrySerializer(mockServerLogger, configuration);
         }
         return logEntrySerializer;
     }
 
     private OpenAPIConverter getOpenAPIConverter() {
         if (this.openAPIConverter == null) {
-            this.openAPIConverter = new OpenAPIConverter(mockServerLogger);
+            // pass the effective Configuration so generateRealisticExampleValues set on the
+            // instance (including via PUT /mockserver/configuration) reaches ExampleBuilder
+            this.openAPIConverter = new OpenAPIConverter(mockServerLogger, configuration);
         }
         return openAPIConverter;
     }

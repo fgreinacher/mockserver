@@ -2149,7 +2149,7 @@ public class HttpActionHandler {
             return null;
         }
         org.mockserver.ratelimit.RateLimitRegistry.Decision decision =
-            org.mockserver.ratelimit.RateLimitRegistry.getInstance().tryAcquire(rateLimit, expectationId);
+            org.mockserver.ratelimit.RateLimitRegistry.getInstance().tryAcquire(rateLimit, expectationId, configuration);
         if (decision.allowed) {
             return null;
         }
@@ -3646,7 +3646,7 @@ public class HttpActionHandler {
 
     private HttpLlmResponseActionHandler getHttpLlmResponseActionHandler() {
         if (httpLlmResponseActionHandler == null) {
-            httpLlmResponseActionHandler = new HttpLlmResponseActionHandler(mockServerLogger);
+            httpLlmResponseActionHandler = new HttpLlmResponseActionHandler(mockServerLogger, configuration);
         }
         return httpLlmResponseActionHandler;
     }
@@ -3999,7 +3999,7 @@ public class HttpActionHandler {
      */
     private HttpResponse checkLlmCostBudgetByHost(String explicitHost, HttpRequest request) {
         try {
-            if (org.mockserver.configuration.ConfigurationProperties.llmCostBudgetUsd() <= 0) {
+            if (configuration.llmCostBudgetUsd() <= 0) {
                 return null; // budget not configured — pass through
             }
             java.util.Optional<Provider> providerOpt;
@@ -4013,7 +4013,7 @@ public class HttpActionHandler {
             if (providerOpt.isEmpty()) {
                 return null; // not LLM traffic
             }
-            return LlmCostBudgetMonitor.getInstance().checkBudgetOrNull();
+            return LlmCostBudgetMonitor.getInstance().checkBudgetOrNull(configuration);
         } catch (Exception e) {
             // fail-open: never block traffic on a detection/config error
             return null;
@@ -4106,7 +4106,7 @@ public class HttpActionHandler {
     private void emitForwardGenAiSpan(HttpRequest forwardedRequest, HttpResponse upstreamResponse) {
         boolean spanEnabled = GenAiSpans.isEnabled();
         boolean metricsEnabled = org.mockserver.metrics.Metrics.isLlmMetricsActive();
-        boolean budgetEnabled = org.mockserver.configuration.ConfigurationProperties.llmCostBudgetUsd() > 0;
+        boolean budgetEnabled = configuration.llmCostBudgetUsd() > 0;
         if (!spanEnabled && !metricsEnabled && !budgetEnabled) {
             return;
         }
@@ -4250,6 +4250,7 @@ public class HttpActionHandler {
             // own sloTrackingEnabled gate (a no-op inside record(...) when off), so
             // it must run even when forward metrics are inactive.
             org.mockserver.slo.SloSampleStore.getInstance().record(
+                configuration,
                 org.mockserver.time.TimeService.currentTimeMillis(),
                 latencyMillis,
                 statusCode == null || statusCode >= 500,

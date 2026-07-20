@@ -80,9 +80,42 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
         };
     }
 
+    /**
+     * Resize the bound. A SHRINK takes effect immediately: the eldest elements are evicted (firing
+     * the eviction listener, exactly as an overflow eviction would) until the queue fits the new
+     * bound, rather than waiting for the next {@link #add(Object)}. This is what makes a live
+     * {@code maxExpectations} change via {@code PUT /mockserver/configuration} take effect at once.
+     * Subject to the single-writer contract in the class javadoc.
+     */
     public void setMaxSize(int maxSize) {
         this.maxSize = maxSize;
+        if (maxSize > 0) {
+            evictExcess();
+        }
         sortedCache = null;
+    }
+
+    /**
+     * Evict the eldest elements until the queue fits {@code maxSize}. Shared by {@link #add(Object)}
+     * and {@link #setMaxSize(int)} so both paths keep the byKey map, sort skip-list and insertion
+     * queue consistent and fire the eviction listener identically.
+     */
+    private void evictExcess() {
+        while (insertionOrderQueue.size() > maxSize) {
+            K keyToRemove = insertionOrderQueue.poll();
+            // Resolve the live value via byKey, remove it, then update the
+            // skip-list and fire the eviction listener. Under the single-
+            // writer contract byKey.remove is non-null here (the key was
+            // just polled from the insertion queue and no concurrent writer
+            // exists); the guard defends against a precondition violation
+            // (duplicate-key add) so eviction never NPEs or double-strips
+            // the skip-list / fires the listener for a missing element.
+            V elementToRemove = byKey.remove(keyToRemove);
+            if (elementToRemove != null) {
+                sortOrderSkipList.remove(skipListKeyFunction.apply(elementToRemove));
+                evictionListener.accept(elementToRemove);
+            }
+        }
     }
 
     public void removePriorityKey(V element) {
@@ -104,21 +137,7 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
             byKey.put(key, element);
             sortOrderSkipList.add(skipListKeyFunction.apply(element));
             insertionOrderQueue.offer(key);
-            while (insertionOrderQueue.size() > maxSize) {
-                K keyToRemove = insertionOrderQueue.poll();
-                // Resolve the live value via byKey, remove it, then update the
-                // skip-list and fire the eviction listener. Under the single-
-                // writer contract byKey.remove is non-null here (the key was
-                // just polled from the insertion queue and no concurrent writer
-                // exists); the guard defends against a precondition violation
-                // (duplicate-key add) so eviction never NPEs or double-strips
-                // the skip-list / fires the listener for a missing element.
-                V elementToRemove = byKey.remove(keyToRemove);
-                if (elementToRemove != null) {
-                    sortOrderSkipList.remove(skipListKeyFunction.apply(elementToRemove));
-                    evictionListener.accept(elementToRemove);
-                }
-            }
+            evictExcess();
             sortedCache = null;
         }
     }

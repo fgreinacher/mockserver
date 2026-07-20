@@ -48,15 +48,41 @@ public class OtelMetricsExporter {
      * telemetry must never prevent the server from running).
      */
     public static OtelMetricsExporter startIfEnabled() {
-        if (!ConfigurationProperties.otelMetricsEnabled()) {
+        return startIfEnabled(null);
+    }
+
+    /**
+     * As {@link #startIfEnabled()} but preferring the values carried on the supplied
+     * {@link org.mockserver.configuration.Configuration} instance, falling back to the static
+     * {@link ConfigurationProperties} store for each value the instance leaves unset. This is what
+     * makes OTLP metric export settings applied programmatically or over
+     * {@code PUT /mockserver/configuration} actually take effect, rather than round-tripping
+     * through the DTO and being silently ignored here.
+     *
+     * @param configuration the live server configuration, or {@code null} to read the static store
+     */
+    public static OtelMetricsExporter startIfEnabled(org.mockserver.configuration.Configuration configuration) {
+        boolean enabled = configuration != null
+            ? configuration.otelMetricsEnabled()
+            : ConfigurationProperties.otelMetricsEnabled();
+        if (!enabled) {
             return null;
         }
         try {
-            String endpoint = org.mockserver.telemetry.OtelEndpoints.metrics(ConfigurationProperties.otelEndpoint());
+            String configuredEndpoint = configuration != null
+                ? configuration.otelEndpoint()
+                : ConfigurationProperties.otelEndpoint();
+            String endpoint = org.mockserver.telemetry.OtelEndpoints.metrics(configuredEndpoint);
             // Resolve aggregation temporality — fail-safe: only the explicit "delta" opts in, any
             // unknown/blank value keeps the previous cumulative behaviour. deltaPreferred() yields
             // delta for counters/histograms and keeps gauges cumulative (OTLP-only concept).
-            boolean delta = isDeltaTemporality(ConfigurationProperties.otelMetricsTemporality());
+            String temporality = configuration != null
+                ? configuration.otelMetricsTemporality()
+                : ConfigurationProperties.otelMetricsTemporality();
+            boolean delta = isDeltaTemporality(temporality);
+            long intervalSeconds = configuration != null
+                ? configuration.otelMetricsExportIntervalSeconds()
+                : ConfigurationProperties.otelMetricsExportIntervalSeconds();
             OtlpHttpMetricExporterBuilder builder = endpoint != null
                 ? OtlpHttpMetricExporter.builder().setEndpoint(endpoint)
                 : OtlpHttpMetricExporter.builder();
@@ -65,12 +91,12 @@ public class OtelMetricsExporter {
             }
             OtlpHttpMetricExporter otlpExporter = builder.build();
             MetricReader reader = PeriodicMetricReader.builder(otlpExporter)
-                .setInterval(Duration.ofSeconds(ConfigurationProperties.otelMetricsExportIntervalSeconds()))
+                .setInterval(Duration.ofSeconds(intervalSeconds))
                 .build();
             OtelMetricsExporter exporter = startWithReader(reader);
             LOGGER.info("OpenTelemetry metrics export enabled (endpoint {}, interval {}s, temporality {})",
                 endpoint == null || endpoint.isEmpty() ? "default" : endpoint,
-                ConfigurationProperties.otelMetricsExportIntervalSeconds(),
+                intervalSeconds,
                 delta ? "delta" : "cumulative");
             return exporter;
         } catch (Exception e) {

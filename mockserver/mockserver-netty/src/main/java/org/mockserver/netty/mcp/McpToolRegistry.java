@@ -2657,7 +2657,10 @@ public class McpToolRegistry {
             Expectation[] sseAwareExpectations = sseConverter.convert(recordedExpectations);
 
             // Redact sensitive headers, plus any configured/requested JSON body fields
-            List<String> bodyFields = new ArrayList<>(splitCsv(ConfigurationProperties.fixtureBodyRedactFields()));
+            org.mockserver.configuration.Configuration recordConfiguration = httpState.getConfiguration();
+            List<String> bodyFields = new ArrayList<>(splitCsv(recordConfiguration != null
+                ? recordConfiguration.fixtureBodyRedactFields()
+                : ConfigurationProperties.fixtureBodyRedactFields()));
             JsonNode redactBodyFieldsNode = params.path("redactBodyFields");
             if (redactBodyFieldsNode.isArray()) {
                 for (JsonNode f : redactBodyFieldsNode) {
@@ -2780,7 +2783,9 @@ public class McpToolRegistry {
             // request matching no recorded entry fails loudly rather than falling through.
             boolean strict = params.path("strict").isBoolean()
                 ? params.path("strict").asBoolean()
-                : ConfigurationProperties.llmVcrStrict();
+                : (httpState.getConfiguration() != null
+                    ? httpState.getConfiguration().llmVcrStrict()
+                    : ConfigurationProperties.llmVcrStrict());
             int strictGuards = 0;
             if (strict) {
                 Set<String> paths = new LinkedHashSet<>();
@@ -4098,7 +4103,7 @@ public class McpToolRegistry {
 
             List<LogEventRequestAndResponse> pairs = retrieveRecordedPairs(null);
             org.mockserver.llm.analysis.LlmOptimisationReportService service =
-                new org.mockserver.llm.analysis.LlmOptimisationReportService();
+                new org.mockserver.llm.analysis.LlmOptimisationReportService(httpState.getConfiguration());
             org.mockserver.llm.analysis.LlmOptimisationReportService.Result result = service.build(pairs, filter);
 
             if (datasetFormat.isPresent()) {
@@ -4173,7 +4178,7 @@ public class McpToolRegistry {
 
             List<LogEventRequestAndResponse> pairs = retrieveRecordedPairs(null);
             org.mockserver.llm.analysis.LlmOptimisationReportService service =
-                new org.mockserver.llm.analysis.LlmOptimisationReportService();
+                new org.mockserver.llm.analysis.LlmOptimisationReportService(httpState.getConfiguration());
             org.mockserver.llm.analysis.LlmOptimisationReportService.Result beforeResult = service.build(pairs, beforeFilter);
             org.mockserver.llm.analysis.LlmOptimisationReportService.Result afterResult = service.build(pairs, afterFilter);
 
@@ -4309,7 +4314,7 @@ public class McpToolRegistry {
             }
 
             // Resolve a backend (off unless configured)
-            LlmBackendResolver resolver = new LlmBackendResolver();
+            LlmBackendResolver resolver = new LlmBackendResolver(httpState.getConfiguration());
             String backendName = emptyToNull(params.path("backendName").asText(null));
             Optional<LlmBackend> backendOpt = backendName != null ? resolver.resolveByName(backendName) : resolver.resolveDefault();
             if (!backendOpt.isPresent()) {
@@ -4345,7 +4350,12 @@ public class McpToolRegistry {
             // Build a transient transport for the live calls and run the detector.
             // Transient per-call is acceptable for the opt-in/scheduled CI lane this
             // tool targets; promote to a shared instance if usage becomes frequent.
-            long timeout = backend.timeoutMillis() != null ? backend.timeoutMillis() : ConfigurationProperties.llmRequestTimeoutMillis();
+            org.mockserver.configuration.Configuration driftConfiguration = httpState.getConfiguration();
+            long timeout = backend.timeoutMillis() != null
+                ? backend.timeoutMillis()
+                : (driftConfiguration != null
+                    ? driftConfiguration.llmRequestTimeoutMillis()
+                    : ConfigurationProperties.llmRequestTimeoutMillis());
             io.netty.channel.EventLoopGroup group = new io.netty.channel.nio.NioEventLoopGroup(1);
             DriftReport report;
             try {

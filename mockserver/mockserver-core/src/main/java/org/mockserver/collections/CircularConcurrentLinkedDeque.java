@@ -75,12 +75,36 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
         this.onEvictCallback = onEvictCallback;
     }
 
+    /**
+     * Resize the element-count bound. A SHRINK takes effect immediately: the oldest elements are
+     * evicted (firing the eviction callback, exactly as an overflow eviction would) until the deque
+     * fits the new bound, rather than waiting for the next {@link #add}. This is what makes a live
+     * {@code maxLogEntries} change via {@code PUT /mockserver/configuration} release memory at once
+     * instead of only after further traffic.
+     */
     public void setMaxSize(int maxSize) {
         this.maxSize = maxSize;
+        while (count.get() > maxSize) {
+            if (!pollAndEvict()) {
+                break;
+            }
+        }
     }
 
+    /**
+     * Resize the optional byte budget. Like {@link #setMaxSize(int)} a shrink takes effect
+     * immediately, evicting the oldest elements until the running byte total fits the new budget.
+     * No-op accounting when the budget is disabled ({@code maxBytes <= 0} or no weigher).
+     */
     public void setMaxBytes(long maxBytes) {
         this.maxBytes = maxBytes;
+        if (maxBytes > 0 && weigher != null) {
+            while (totalBytes.get() > maxBytes && count.get() > 0) {
+                if (!pollAndEvict()) {
+                    break;
+                }
+            }
+        }
     }
 
     /**

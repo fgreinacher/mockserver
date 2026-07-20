@@ -463,7 +463,11 @@ public class ConfigurationProperties {
     // fields. Java initialises static fields in textual order, so moving these below PROPERTIES leaves
     // them null when readPropertyFile() runs and throws NoClassDefFoundError at startup whenever a
     // property file has entries (regression #2338). Keep them above PROPERTIES.
-    static final String REDACTED_VALUE = "***REDACTED***";
+    //
+    // public (was package-private) so ConfigurationDTO in org.mockserver.serialization.model can reuse
+    // the SAME mask for write-only credential properties over the configuration control plane, rather
+    // than inventing a second, divergent redaction token.
+    public static final String REDACTED_VALUE = "***REDACTED***";
 
     private static final Set<String> SENSITIVE_SUBSTRINGS = Stream.of(
         "password",

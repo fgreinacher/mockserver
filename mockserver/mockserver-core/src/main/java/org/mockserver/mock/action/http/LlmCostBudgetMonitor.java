@@ -1,5 +1,6 @@
 package org.mockserver.mock.action.http;
 
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.metrics.Metrics;
 import org.slf4j.Logger;
@@ -63,13 +64,36 @@ public class LlmCostBudgetMonitor {
     }
 
     /**
+     * The effective budget: the {@link Configuration} instance value when one is supplied,
+     * otherwise the static {@link ConfigurationProperties} store. The instance is preferred so a
+     * budget set programmatically or via {@code PUT /mockserver/configuration} is enforced;
+     * the static fallback keeps system-property/env/file users unaffected.
+     */
+    private static double budgetUsd(Configuration configuration) {
+        return configuration != null
+            ? configuration.llmCostBudgetUsd()
+            : ConfigurationProperties.llmCostBudgetUsd();
+    }
+
+    /**
      * Check whether the cost budget is exceeded. Returns {@code true} if the
      * budget is configured (positive) and the cumulative cost has exceeded it.
      * Returns {@code false} if the budget is unset, negative, or not yet
      * exceeded — fail-open on misconfig.
+     * <p>
+     * Prefer {@link #isBudgetExceeded(Configuration)} wherever a {@link Configuration} is in
+     * scope: this overload consults only the static store.
      */
     public boolean isBudgetExceeded() {
-        double budgetUsd = ConfigurationProperties.llmCostBudgetUsd();
+        return isBudgetExceeded(null);
+    }
+
+    /**
+     * @param configuration the effective server configuration (may be {@code null})
+     * @see #isBudgetExceeded()
+     */
+    public boolean isBudgetExceeded(Configuration configuration) {
+        double budgetUsd = budgetUsd(configuration);
         if (budgetUsd <= 0.0) {
             return false; // disabled / fail-open
         }
@@ -81,14 +105,25 @@ public class LlmCostBudgetMonitor {
      * Check the budget and return an error response if exceeded, or {@code null}
      * if the request should proceed. This is the choke-point guard called before
      * LLM forwarding.
+     * <p>
+     * Prefer {@link #checkBudgetOrNull(Configuration)} wherever a {@link Configuration} is in
+     * scope: this overload consults only the static store.
      */
     public org.mockserver.model.HttpResponse checkBudgetOrNull() {
-        if (!isBudgetExceeded()) {
+        return checkBudgetOrNull(null);
+    }
+
+    /**
+     * @param configuration the effective server configuration (may be {@code null})
+     * @see #checkBudgetOrNull()
+     */
+    public org.mockserver.model.HttpResponse checkBudgetOrNull(Configuration configuration) {
+        if (!isBudgetExceeded(configuration)) {
             return null;
         }
         tripCount.incrementAndGet();
         double cumulativeUsd = cumulativeCostMicroUsd.get() / 1_000_000.0;
-        double budgetUsd = ConfigurationProperties.llmCostBudgetUsd();
+        double budgetUsd = budgetUsd(configuration);
         LOG.warn(
             "LLM cost budget exceeded: cumulative ${} >= budget ${} — blocking LLM forward",
             String.format("%.6f", cumulativeUsd),

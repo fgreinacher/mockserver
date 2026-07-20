@@ -19,6 +19,7 @@ package org.mockserver.openapi.examples;
 import io.swagger.util.Json;
 import io.swagger.v3.oas.models.media.*;
 import org.apache.commons.lang3.StringUtils;
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
@@ -87,12 +88,28 @@ public class ExampleBuilder {
      * no {@code readOnly}/{@code writeOnly} filtering is applied.
      */
     public static Example fromSchema(Schema<?> property, Map<String, Schema> definitions, GenerationOptions generationOptions, Direction direction) {
-        // An explicit per-run choice on the options wins; otherwise defer to the global configuration
-        // default. Reading the global only as a fallback (rather than unconditionally here) lets callers
-        // and tests drive realistic generation deterministically without mutating shared process state.
+        return fromSchema(property, definitions, generationOptions, direction, null);
+    }
+
+    /**
+     * As {@link #fromSchema(Schema, Map, GenerationOptions, Direction)} but resolving the
+     * {@code generateRealisticExampleValues} default from a caller-supplied {@link Configuration}
+     * instance rather than the static {@link ConfigurationProperties} store.
+     * <p>
+     * This matters because {@code PUT /mockserver/configuration} (and any programmatic
+     * {@code configuration.generateRealisticExampleValues(...)}) writes only the {@link Configuration}
+     * instance — it never writes the static store. A {@code null} {@code configuration} keeps the
+     * historic static-store behaviour, and {@link Configuration} itself falls back to the static store
+     * when the property is unset, so a value set via system property / {@code ConfigurationProperties}
+     * is still honoured either way.
+     */
+    public static Example fromSchema(Schema<?> property, Map<String, Schema> definitions, GenerationOptions generationOptions, Direction direction, Configuration configuration) {
+        // An explicit per-run choice on the options wins; otherwise defer to the configuration
+        // default. Reading the configuration only as a fallback (rather than unconditionally here) lets
+        // callers and tests drive realistic generation deterministically without mutating shared state.
         boolean realisticValues = (generationOptions != null && generationOptions.getRealisticValues() != null)
             ? generationOptions.getRealisticValues()
-            : ConfigurationProperties.generateRealisticExampleValues();
+            : (configuration != null ? configuration.generateRealisticExampleValues() : ConfigurationProperties.generateRealisticExampleValues());
         SampleDataGenerator generator = null;
         if (realisticValues) {
             generator = (generationOptions != null && generationOptions.getSeed() != null)

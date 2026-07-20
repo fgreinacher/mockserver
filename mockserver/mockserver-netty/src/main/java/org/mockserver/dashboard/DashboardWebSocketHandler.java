@@ -469,7 +469,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                 logEntry -> !logEntry.isDeleted()
                     && (logEntry.isAlwaysLog() || overrides == null || overrides.isEmpty()
                     || MockServerLogger.isEnabled(logEntry.getLogLevel(), LogEntry.LogMessageTypeCategory.resolveEffectiveLevel(logEntry.getType(), overrides, globalLevel))),
-                DashboardLogEntryDTO::new,
+                logEntry -> new DashboardLogEntryDTO(logEntry, configuration),
                 reverseLogEventsStream -> {
                     List<ImmutableMap<String, Object>> activeExpectations = requestMatchers
                         .retrieveRequestMatchers(httpRequest)

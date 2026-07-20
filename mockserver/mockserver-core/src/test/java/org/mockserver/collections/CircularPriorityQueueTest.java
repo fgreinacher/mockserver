@@ -757,4 +757,52 @@ public class CircularPriorityQueueTest {
         assertThat(evicted, contains(oneUpdated));
     }
 
+    @Test
+    public void shouldEvictEldestElementsImmediatelyWhenMaxSizeShrunk() {
+        // given - a full queue recording every eviction
+        List<SortableExpectationId> evicted = new ArrayList<>();
+        CircularPriorityQueue<String, SortableExpectationId, SortableExpectationId> queue = new CircularPriorityQueue<>(
+            5, EXPECTATION_SORTABLE_PRIORITY_COMPARATOR, id -> id, id -> id.id);
+        queue.setEvictionListener(evicted::add);
+
+        SortableExpectationId one = new SortableExpectationId("1", 0, 0);
+        SortableExpectationId two = new SortableExpectationId("2", 0, 0);
+        SortableExpectationId three = new SortableExpectationId("3", 0, 0);
+        queue.add(one);
+        queue.add(two);
+        queue.add(three);
+        assertThat(queue.size(), is(3));
+
+        // when - the bound is shrunk below the current size (as a live maxExpectations change does)
+        queue.setMaxSize(1);
+
+        // then - the eldest elements are evicted straight away, without waiting for another add,
+        // and are removed from every backing structure (size, sorted view and key lookup)
+        assertThat(queue.size(), is(1));
+        assertThat(queue.toSortedList(), contains(three));
+        assertThat(queue.getByKey("1"), is(Optional.empty()));
+        assertThat(queue.getByKey("2"), is(Optional.empty()));
+        assertThat(queue.getByKey("3"), is(Optional.of(three)));
+        assertThat(evicted, contains(one, two));
+    }
+
+    @Test
+    public void shouldNotEvictWhenMaxSizeGrown() {
+        // given
+        List<SortableExpectationId> evicted = new ArrayList<>();
+        CircularPriorityQueue<String, SortableExpectationId, SortableExpectationId> queue = new CircularPriorityQueue<>(
+            2, EXPECTATION_SORTABLE_PRIORITY_COMPARATOR, id -> id, id -> id.id);
+        queue.setEvictionListener(evicted::add);
+        queue.add(new SortableExpectationId("1", 0, 0));
+        queue.add(new SortableExpectationId("2", 0, 0));
+
+        // when - the bound is raised and the new headroom used
+        queue.setMaxSize(10);
+        queue.add(new SortableExpectationId("3", 0, 0));
+
+        // then
+        assertThat(queue.size(), is(3));
+        assertThat(evicted, is(empty()));
+    }
+
 }

@@ -267,10 +267,26 @@ public class LogEntry implements EventTranslator<LogEntry> {
 
     @JsonIgnore
     public RequestDefinition[] getHttpUpdatedRequests() {
+        return getHttpUpdatedRequests(null);
+    }
+
+    /**
+     * As {@link #getHttpUpdatedRequests()} but consulting {@code configuration} for
+     * {@code redactSecretsInLog}, so redaction enabled on a {@link org.mockserver.configuration.Configuration}
+     * instance (including via {@code PUT /mockserver/configuration}) applies to the dashboard and the
+     * JSON log-message surface. Falls back to the static store when {@code configuration} is {@code null}.
+     * <p>
+     * NOTE the result is memoised on first call, so toggling redaction after an entry has already been
+     * rendered does not retroactively change that entry.
+     *
+     * @param configuration the effective server configuration (may be {@code null})
+     */
+    @JsonIgnore
+    public RequestDefinition[] getHttpUpdatedRequests(org.mockserver.configuration.Configuration configuration) {
         if (httpRequests == null) {
             return EMPTY_REQUEST_DEFINITIONS;
         } else if (httpUpdatedRequests == null) {
-            org.mockserver.fixture.FixtureRedactor redactor = logRedactor();
+            org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
             httpUpdatedRequests = Arrays
                 .stream(httpRequests)
                 .map(this::updateBody)
@@ -292,8 +308,18 @@ public class LogEntry implements EventTranslator<LogEntry> {
      */
     @JsonIgnore
     public RequestDefinition[] getRedactedHttpRequests() {
+        return getRedactedHttpRequests(null);
+    }
+
+    /**
+     * @param configuration the effective server configuration, consulted for {@code redactSecretsInLog}
+     *                      (may be {@code null}, in which case the static store is used)
+     * @see #getRedactedHttpRequests()
+     */
+    @JsonIgnore
+    public RequestDefinition[] getRedactedHttpRequests(org.mockserver.configuration.Configuration configuration) {
         RequestDefinition[] requests = getHttpRequests();
-        org.mockserver.fixture.FixtureRedactor redactor = logRedactor();
+        org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
         if (redactor == null) {
             return requests;
         }
@@ -310,8 +336,17 @@ public class LogEntry implements EventTranslator<LogEntry> {
      */
     @JsonIgnore
     public RequestDefinition getRedactedHttpRequest() {
+        return getRedactedHttpRequest(null);
+    }
+
+    /**
+     * @param configuration the effective server configuration (may be {@code null})
+     * @see #getRedactedHttpRequest()
+     */
+    @JsonIgnore
+    public RequestDefinition getRedactedHttpRequest(org.mockserver.configuration.Configuration configuration) {
         RequestDefinition request = getHttpRequest();
-        org.mockserver.fixture.FixtureRedactor redactor = logRedactor();
+        org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
         if (redactor == null || request == null) {
             return request;
         }
@@ -325,8 +360,17 @@ public class LogEntry implements EventTranslator<LogEntry> {
      */
     @JsonIgnore
     public HttpResponse getRedactedHttpResponse() {
+        return getRedactedHttpResponse(null);
+    }
+
+    /**
+     * @param configuration the effective server configuration (may be {@code null})
+     * @see #getRedactedHttpResponse()
+     */
+    @JsonIgnore
+    public HttpResponse getRedactedHttpResponse(org.mockserver.configuration.Configuration configuration) {
         HttpResponse response = getHttpResponse();
-        org.mockserver.fixture.FixtureRedactor redactor = logRedactor();
+        org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
         if (redactor == null || response == null) {
             return response;
         }
@@ -386,11 +430,21 @@ public class LogEntry implements EventTranslator<LogEntry> {
     }
 
     public HttpResponse getHttpUpdatedResponse() {
+        return getHttpUpdatedResponse(null);
+    }
+
+    /**
+     * As {@link #getHttpUpdatedResponse()} but consulting {@code configuration} for
+     * {@code redactSecretsInLog}. Memoised on first call, as above.
+     *
+     * @param configuration the effective server configuration (may be {@code null})
+     */
+    public HttpResponse getHttpUpdatedResponse(org.mockserver.configuration.Configuration configuration) {
         if (httpResponse == null) {
             return null;
         } else if (httpUpdatedResponse == null) {
             HttpResponse updated = updateBody(httpResponse);
-            org.mockserver.fixture.FixtureRedactor redactor = logRedactor();
+            org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
             httpUpdatedResponse = redactor == null ? updated : redactor.redactResponseObject(updated);
             return httpUpdatedResponse;
         } else {
@@ -583,10 +637,28 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * matching/verification (which read the unredacted request) are unaffected.
      */
     private static org.mockserver.fixture.FixtureRedactor logRedactor() {
-        if (!org.mockserver.configuration.ConfigurationProperties.redactSecretsInLog()) {
+        return logRedactor(null);
+    }
+
+    /**
+     * As {@link #logRedactor()} but preferring the {@code redactSecretsInLog} value carried on the
+     * supplied {@link org.mockserver.configuration.Configuration} instance, falling back to the
+     * static store when {@code configuration} is {@code null}. This is what makes redaction enabled
+     * programmatically or via {@code PUT /mockserver/configuration} actually take effect.
+     * <p>
+     * {@code fixtureBodyRedactFields} is resolved the same way — instance first, static store as the
+     * fallback — so the set of masked body fields is settable over the REST config API too.
+     */
+    private static org.mockserver.fixture.FixtureRedactor logRedactor(org.mockserver.configuration.Configuration configuration) {
+        boolean redact = configuration != null
+            ? configuration.redactSecretsInLog()
+            : org.mockserver.configuration.ConfigurationProperties.redactSecretsInLog();
+        if (!redact) {
             return null;
         }
-        String bodyFields = org.mockserver.configuration.ConfigurationProperties.fixtureBodyRedactFields();
+        String bodyFields = configuration != null
+            ? configuration.fixtureBodyRedactFields()
+            : org.mockserver.configuration.ConfigurationProperties.fixtureBodyRedactFields();
         List<String> bodyFieldList = isBlank(bodyFields)
             ? Collections.emptyList()
             : Arrays.asList(bodyFields.split(","));

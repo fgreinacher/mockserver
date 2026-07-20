@@ -8,7 +8,6 @@ import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.http.*;
 import io.netty.util.ReferenceCountUtil;
 import org.mockserver.configuration.Configuration;
-import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mappers.Http2StreamIds;
@@ -394,7 +393,7 @@ public class NettyResponseWriter extends ResponseWriter {
      * when the feature is disabled or no TCP-layer chaos is registered.
      */
     private TcpChaosProfile resolveLifecycleProfile(HttpRequest request) {
-        if (request == null || !ConfigurationProperties.connectionLifecycleChaosEnabled()) {
+        if (request == null || !configuration.connectionLifecycleChaosEnabled()) {
             return null;
         }
         TcpChaosRegistry registry = TcpChaosRegistry.getInstance();
@@ -416,7 +415,7 @@ public class NettyResponseWriter extends ResponseWriter {
      */
     private void writeHeadThenReset(final ChannelHandlerContext ctx, HttpResponse response) {
         ChannelFuture headFuture = ctx.writeAndFlush(response);
-        if (ConfigurationProperties.connectionLifecycleAutoHaltCountsRst()) {
+        if (configuration.connectionLifecycleAutoHaltCountsRst()) {
             // "drop" is a destructive fault type, so recordError runs the auto-halt evaluation.
             Metrics.incrementHttpChaosInjected("drop");
         }

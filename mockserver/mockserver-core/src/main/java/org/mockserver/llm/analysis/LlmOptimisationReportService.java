@@ -30,6 +30,22 @@ public class LlmOptimisationReportService {
     private final LlmOptimisationBriefRenderer renderer = new LlmOptimisationBriefRenderer();
     private final LlmOptimisationCsvRenderer csvRenderer = new LlmOptimisationCsvRenderer();
 
+    /**
+     * The live server {@link org.mockserver.configuration.Configuration}, or {@code null} when the
+     * service is constructed without one. Preferred over the static {@link ConfigurationProperties}
+     * store so {@code llmOptimisationMaxCalls} and {@code fixtureBodyRedactFields} set over
+     * {@code PUT /mockserver/configuration} actually take effect here.
+     */
+    private final org.mockserver.configuration.Configuration configuration;
+
+    public LlmOptimisationReportService() {
+        this(null);
+    }
+
+    public LlmOptimisationReportService(org.mockserver.configuration.Configuration configuration) {
+        this.configuration = configuration;
+    }
+
     /** Optional filters; null/blank means "no filter". */
     public static final class Filter {
         private final String session;
@@ -143,7 +159,9 @@ public class LlmOptimisationReportService {
         }
 
         // Bound the report size: keep the most recent N calls.
-        int maxCalls = ConfigurationProperties.llmOptimisationMaxCalls();
+        int maxCalls = configuration != null
+            ? configuration.llmOptimisationMaxCalls()
+            : ConfigurationProperties.llmOptimisationMaxCalls();
         if (maxCalls > 0 && exchanges.size() > maxCalls) {
             exchanges = new ArrayList<>(exchanges.subList(exchanges.size() - maxCalls, exchanges.size()));
         }
@@ -202,8 +220,10 @@ public class LlmOptimisationReportService {
             : new FixtureRedactor(FixtureRedactor.defaultSensitiveHeaders(), bodyFields);
     }
 
-    private static List<String> bodyFields() {
-        String configured = ConfigurationProperties.fixtureBodyRedactFields();
+    private List<String> bodyFields() {
+        String configured = configuration != null
+            ? configuration.fixtureBodyRedactFields()
+            : ConfigurationProperties.fixtureBodyRedactFields();
         List<String> result = new ArrayList<>();
         if (configured != null && !configured.trim().isEmpty()) {
             for (String field : configured.split(",")) {

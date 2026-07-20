@@ -187,8 +187,11 @@ public class InMemoryExpectationKeyValueStore implements KeyValueStore<Expectati
     }
 
     /**
-     * Update the max size (e.g. when maxExpectations changes at runtime).
+     * Update the max size (e.g. when maxExpectations changes at runtime). A shrink evicts the
+     * eldest expectations immediately, firing the versions-map cleanup listener registered in the
+     * constructor.
      */
+    @Override
     public void setMaxSize(int maxSize) {
         queue.setMaxSize(maxSize);
     }

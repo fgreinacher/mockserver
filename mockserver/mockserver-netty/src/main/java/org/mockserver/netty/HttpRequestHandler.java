@@ -310,6 +310,14 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                             ConfigurationDTO configurationDTO = ObjectMapperFactory.createObjectMapper().readValue(request.getBodyAsString(), ConfigurationDTO.class);
                             synchronized (configuration) {
                                 configurationDTO.applyTo(configuration);
+                                // Capacity-bounded subsystems (event log, expectation store, audit
+                                // ring) were sized from the configuration at construction, so a PUT
+                                // that only mutates the Configuration would be accepted and then
+                                // ignored. Resize them here — and WARN for the properties that
+                                // genuinely cannot be resized, resetting them to the value in force
+                                // so the response below echoes the truth. Inside the lock so the
+                                // serialized response reflects the post-reconciliation state.
+                                httpState.applyConfigurationUpdate(configurationDTO);
                             }
                             if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
                                 mockServerLogger.logEvent(
@@ -582,7 +590,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                         request.getFirstQueryStringParameter("provider"));
 
                 org.mockserver.llm.analysis.LlmOptimisationReportService service =
-                    new org.mockserver.llm.analysis.LlmOptimisationReportService();
+                    new org.mockserver.llm.analysis.LlmOptimisationReportService(configuration);
                 org.mockserver.llm.analysis.LlmOptimisationReportService.Result result =
                     service.build(retrieveRecordedPairs(), filter);
 
@@ -652,7 +660,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                 }
 
                 org.mockserver.llm.analysis.LlmOptimisationReportService service =
-                    new org.mockserver.llm.analysis.LlmOptimisationReportService();
+                    new org.mockserver.llm.analysis.LlmOptimisationReportService(configuration);
                 List<org.mockserver.model.LogEventRequestAndResponse> pairs = retrieveRecordedPairs();
                 org.mockserver.llm.analysis.LlmOptimisationReportService.Result beforeResult = service.build(pairs, beforeFilter);
                 org.mockserver.llm.analysis.LlmOptimisationReportService.Result afterResult = service.build(pairs, afterFilter);

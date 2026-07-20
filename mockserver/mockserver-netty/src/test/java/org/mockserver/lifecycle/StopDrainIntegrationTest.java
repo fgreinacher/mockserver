@@ -428,4 +428,94 @@ public class StopDrainIntegrationTest {
             mockServer.stop();
         }
     }
+
+    // ---------------------------------------------------------------------
+    // Configuration-instance precedence for stopDrainMillis.
+    //
+    // stopDrainMillis previously existed ONLY on the static ConfigurationProperties store, so a
+    // value set programmatically or via PUT /mockserver/configuration was silently ignored by the
+    // shutdown drain. These tests pin the instance value as authoritative, and pin that the static
+    // store is still honoured when the instance leaves the property unset.
+    //
+    // Each test sets the static store to a value that DIFFERS from the instance value, so a
+    // regression to reading the static store is unambiguously observable in the elapsed time.
+    // ---------------------------------------------------------------------
+
+    @Test
+    public void instanceStopDrainMillisIsHonouredByShutdownDrain() throws Exception {
+        // given - a long static budget that must NOT be used, and a short instance budget that must
+        originalDrainMillis = ConfigurationProperties.stopDrainMillis();
+        ConfigurationProperties.stopDrainMillis(30_000L);
+        MockServer mockServer = new MockServer(configuration().stopDrainMillis(500L), PortFactory.findFreePort());
+
+        // and - a request that starts but never completes, so only the timeout can end the drain
+        mockServer.requestProcessingStarted();
+        assertThat(mockServer.getRequestsInFlight(), is(1));
+
+        // when
+        long start = System.currentTimeMillis();
+        mockServer.stopAsync().get(15, TimeUnit.SECONDS);
+        long elapsed = System.currentTimeMillis() - start;
+
+        // then - it waited the INSTANCE budget, not the static store's 30s
+        assertThat("should have waited at least the instance drain budget, took " + elapsed + "ms",
+            elapsed, is(greaterThanOrEqualTo(400L)));
+        assertThat("should NOT have waited the static store's 30s budget, took " + elapsed + "ms",
+            elapsed, is(lessThan(10_000L)));
+        assertThat(mockServer.isRunning(), is(false));
+    }
+
+    /**
+     * The mirror of the test above: the instance ENABLES draining while the static store disables
+     * it. This rules out a false pass from "the shorter value happens to win" — here honouring the
+     * instance means waiting LONGER than the static store would.
+     */
+    @Test
+    public void instanceStopDrainMillisIsHonouredWhenStaticStoreDisablesDraining() throws Exception {
+        // given - draining disabled in the static store but enabled on the instance
+        originalDrainMillis = ConfigurationProperties.stopDrainMillis();
+        ConfigurationProperties.stopDrainMillis(0L);
+        MockServer mockServer = new MockServer(configuration().stopDrainMillis(1_000L), PortFactory.findFreePort());
+
+        mockServer.requestProcessingStarted();
+        assertThat(mockServer.getRequestsInFlight(), is(1));
+
+        // when
+        long start = System.currentTimeMillis();
+        mockServer.stopAsync().get(15, TimeUnit.SECONDS);
+        long elapsed = System.currentTimeMillis() - start;
+
+        // then - the drain ran for the instance budget; reading the static store would have
+        // returned immediately with draining disabled
+        assertThat("instance budget must enable draining even though the static store disables it, took " + elapsed + "ms",
+            elapsed, is(greaterThanOrEqualTo(800L)));
+        assertThat(mockServer.isRunning(), is(false));
+    }
+
+    /**
+     * Fallback: a Configuration that leaves stopDrainMillis unset must fall through to the static
+     * store, so system-property / environment-variable / property-file users are unaffected.
+     */
+    @Test
+    public void staticStopDrainMillisIsHonouredWhenConfigurationLeavesItUnset() throws Exception {
+        // given - the static store is the ONLY place the budget is set
+        originalDrainMillis = ConfigurationProperties.stopDrainMillis();
+        ConfigurationProperties.stopDrainMillis(500L);
+        MockServer mockServer = new MockServer(configuration(), PortFactory.findFreePort());
+
+        mockServer.requestProcessingStarted();
+        assertThat(mockServer.getRequestsInFlight(), is(1));
+
+        // when
+        long start = System.currentTimeMillis();
+        mockServer.stopAsync().get(15, TimeUnit.SECONDS);
+        long elapsed = System.currentTimeMillis() - start;
+
+        // then - the static budget still bounds the drain
+        assertThat("static store must still bound the drain, took " + elapsed + "ms",
+            elapsed, is(greaterThanOrEqualTo(400L)));
+        assertThat("static store must not be ignored in favour of a hard-coded default, took " + elapsed + "ms",
+            elapsed, is(lessThan(10_000L)));
+        assertThat(mockServer.isRunning(), is(false));
+    }
 }

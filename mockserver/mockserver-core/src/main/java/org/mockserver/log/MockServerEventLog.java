@@ -122,7 +122,6 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     // and verification read the un-redacted fields directly elsewhere; this mapper is used only on the
     // request-retrieval / export surface (where the result is displayed/exported, or counted — and
     // redaction never adds/drops entries, so the verification count is unaffected).
-    private static final Function<LogEntry, RequestDefinition[]> logEntryToRequest = LogEntry::getRedactedHttpRequests;
     private static final Function<LogEntry, Expectation> logEntryToExpectation = LogEntry::getExpectation;
     // Raw request/response pair — used by the response-aware verification DECISION path, which must
     // match against the original (un-redacted) content so enabling redaction never changes a
@@ -135,19 +134,28 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     // Redacted request/response pair — used only by the retrieveRecordedRequestsAndResponses
     // retrieve/export surface, so secrets are masked in the exported/displayed copy while the
     // verification path above keeps matching raw content.
-    private static final Function<LogEntry, LogEventRequestAndResponse> logEntryToRedactedHttpRequestAndHttpResponse =
-        logEntry -> new LogEventRequestAndResponse()
-            .withHttpRequest((HttpRequest) logEntry.getRedactedHttpRequest())
-            .withHttpResponse(logEntry.getRedactedHttpResponse())
-            .withTimestamp(logEntry.getTimestamp());
     private static final String[] EXCLUDED_FIELDS = {"id", "disruptor"};
     private final Configuration configuration;
+    // Instance-scoped (not static) so redaction consults this server's Configuration instance —
+    // a static method reference could only ever see the global ConfigurationProperties store, so
+    // redactSecretsInLog set programmatically or via PUT /mockserver/configuration would not apply.
+    // Declared after `configuration` so the blank final is definitely assigned before these
+    // initializers run.
+    private final Function<LogEntry, RequestDefinition[]> logEntryToRequest;
+    // Redacted request/response pair — used only by the retrieveRecordedRequestsAndResponses
+    // retrieve/export surface, so secrets are masked in the exported/displayed copy while the
+    // verification path above keeps matching raw content.
+    private final Function<LogEntry, LogEventRequestAndResponse> logEntryToRedactedHttpRequestAndHttpResponse;
     private MockServerLogger mockServerLogger;
     private CircularConcurrentLinkedDeque<LogEntry> eventLog;
     private MatcherBuilder matcherBuilder;
     private RequestDefinitionSerializer requestDefinitionSerializer;
     private final boolean asynchronousEventProcessing;
     private Disruptor<LogEntry> disruptor;
+    // The ringBufferSize the disruptor was actually built with. An LMAX ring is a fixed
+    // power-of-two array sized at construction, so this is the value in force for the lifetime of
+    // the disruptor regardless of later configuration mutation — see getRingBufferSizeInForce().
+    private int ringBufferSizeInForce;
     // Count of INFO/DEBUG log events silently dropped because the disruptor ring buffer was full.
     // Under sustained load the ring buffer can saturate and tryPublishEvent() fails; previously
     // these drops were invisible (only WARN/ERROR drops were logged), so the saturation cliff was
@@ -172,6 +180,13 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     public MockServerEventLog(Configuration configuration, MockServerLogger mockServerLogger, Scheduler scheduler, boolean asynchronousEventProcessing) {
         super(scheduler);
         this.configuration = configuration;
+        // Bound to this server's Configuration instance (not a static method reference) so
+        // redactSecretsInLog set programmatically or via PUT /mockserver/configuration is honoured.
+        this.logEntryToRequest = logEntry -> logEntry.getRedactedHttpRequests(configuration);
+        this.logEntryToRedactedHttpRequestAndHttpResponse = logEntry -> new LogEventRequestAndResponse()
+            .withHttpRequest((HttpRequest) logEntry.getRedactedHttpRequest(configuration))
+            .withHttpResponse(logEntry.getRedactedHttpResponse(configuration))
+            .withTimestamp(logEntry.getTimestamp());
         this.mockServerLogger = mockServerLogger;
         this.matcherBuilder = new MatcherBuilder(configuration, mockServerLogger);
         this.requestDefinitionSerializer = new RequestDefinitionSerializer(mockServerLogger);
@@ -261,8 +276,34 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         return eventLog.getEvictedCount();
     }
 
+    /**
+     * Re-read the event log's capacity bounds from the {@link Configuration} and resize the backing
+     * deque in place, so a {@code maxLogEntries} / {@code maxEventLogSizeInBytes} change made via
+     * {@code PUT /mockserver/configuration} actually takes effect on the running log instead of
+     * being accepted and ignored. A shrink evicts the oldest entries immediately.
+     * <p>
+     * Note this deliberately does NOT touch {@code ringBufferSize} — the disruptor's ring is a
+     * fixed power-of-two array chosen at construction and cannot be resized without draining
+     * in-flight events and rebuilding every handler. See {@link #getRingBufferSizeInForce()}.
+     */
+    public void applyConfigurationCapacity() {
+        eventLog.setMaxSize(configuration.maxLogEntries());
+        eventLog.setMaxBytes(configuration.maxEventLogSizeInBytes());
+    }
+
+    /**
+     * The {@code ringBufferSize} actually in force — the value read from the {@link Configuration}
+     * when the disruptor was constructed. Because the ring cannot be resized, a later change to
+     * {@code configuration.ringBufferSize()} does not move this value; the control plane compares
+     * against it to warn that a supplied value will not take effect.
+     */
+    public int getRingBufferSizeInForce() {
+        return ringBufferSizeInForce;
+    }
+
     private void startRingBuffer() {
-        disruptor = new Disruptor<>(LogEntry::new, configuration.ringBufferSize(), new Scheduler.SchedulerThreadFactory("EventLog"));
+        ringBufferSizeInForce = configuration.ringBufferSize();
+        disruptor = new Disruptor<>(LogEntry::new, ringBufferSizeInForce, new Scheduler.SchedulerThreadFactory("EventLog"));
 
         final ExceptionHandler<LogEntry> errorHandler = new ExceptionHandler<LogEntry>() {
             @Override

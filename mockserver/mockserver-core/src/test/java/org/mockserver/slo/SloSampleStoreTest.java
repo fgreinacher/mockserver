@@ -3,6 +3,7 @@ package org.mockserver.slo;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 
 import java.util.Collections;
@@ -162,5 +163,77 @@ public class SloSampleStoreTest {
         assertThat(store.latenciesInWindow(5000L, 6000L, Scope.FORWARD, null).length, is(0));
         SloSampleStore.ErrorCounts counts = store.errorCountsInWindow(5000L, 6000L, Scope.FORWARD, null);
         assertThat(counts.getTotal(), is(0L));
+    }
+
+    // ---------------------------------------------------------------------
+    // Configuration-instance precedence: a value set on a Configuration instance
+    // (as PUT /mockserver/configuration does) must change observable behaviour,
+    // not be silently ignored in favour of the static ConfigurationProperties store.
+    // ---------------------------------------------------------------------
+
+    @Test
+    public void shouldNotRecordWhenTrackingDisabledOnConfigurationInstance() {
+        // given - the STATIC store says tracking is on
+        ConfigurationProperties.sloTrackingEnabled(true);
+        // but the instance says off, as a PUT /mockserver/configuration would
+        Configuration configuration = Configuration.configuration().sloTrackingEnabled(false);
+
+        store.record(configuration, 1000L, 10L, false, Scope.FORWARD, "a.svc");
+
+        assertThat("instance value must win over the static store", store.size(), is(0));
+    }
+
+    @Test
+    public void shouldRecordWhenTrackingEnabledOnConfigurationInstance() {
+        // given - the STATIC store says tracking is off
+        ConfigurationProperties.sloTrackingEnabled(false);
+        // but the instance says on
+        Configuration configuration = Configuration.configuration().sloTrackingEnabled(true);
+
+        store.record(configuration, 1000L, 10L, false, Scope.FORWARD, "a.svc");
+
+        assertThat("instance value must win over the static store", store.size(), is(1));
+    }
+
+    @Test
+    public void shouldBoundSamplesByMaxSamplesFromConfigurationInstance() {
+        // given - a generous static bound but a tight instance bound
+        ConfigurationProperties.sloWindowMaxSamples(50_000);
+        Configuration configuration = Configuration.configuration()
+            .sloTrackingEnabled(true)
+            .sloWindowMaxSamples(2);
+
+        for (int i = 0; i < 5; i++) {
+            store.record(configuration, 1000L + i, 10L, false, Scope.FORWARD, "a.svc");
+        }
+
+        assertThat("instance max-samples bound must be applied", store.size(), is(2));
+    }
+
+    @Test
+    public void shouldEvictByRetentionFromConfigurationInstance() {
+        // given - a generous static retention but a tight instance retention
+        ConfigurationProperties.sloWindowRetentionMillis(600_000L);
+        Configuration configuration = Configuration.configuration()
+            .sloTrackingEnabled(true)
+            .sloWindowRetentionMillis(100L);
+
+        store.record(configuration, 1_000L, 10L, false, Scope.FORWARD, "a.svc");
+        // 500ms later - beyond the 100ms instance retention, well inside the 600s static one
+        store.record(configuration, 1_500L, 10L, false, Scope.FORWARD, "a.svc");
+
+        assertThat("instance retention must evict the older sample", store.size(), is(1));
+    }
+
+    @Test
+    public void shouldFallBackToStaticStoreWhenConfigurationIsNull() {
+        // given - no instance supplied, so system-property/env/file users are unaffected
+        ConfigurationProperties.sloTrackingEnabled(false);
+        store.record(null, 1000L, 10L, false, Scope.FORWARD, "a.svc");
+        assertThat(store.size(), is(0));
+
+        ConfigurationProperties.sloTrackingEnabled(true);
+        store.record(null, 1000L, 10L, false, Scope.FORWARD, "a.svc");
+        assertThat(store.size(), is(1));
     }
 }

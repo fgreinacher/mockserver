@@ -53,6 +53,7 @@ public class Configuration {
     private Integer rateLimitMaxNamedQuotas;
     private Boolean connectionLifecycleChaosEnabled;
     private Long preemptionSimulationMaxDrainMillis;
+    private Long stopDrainMillis;
     private Boolean connectionLifecycleAutoHaltCountsRst;
     private Boolean sloTrackingEnabled;
     private Long sloWindowRetentionMillis;
@@ -392,6 +393,41 @@ public class Configuration {
     private String asyncMqttBrokerUrl;
     private String asyncAmqpUri;
     private Integer asyncRecordedMessageMaxEntries;
+
+    // runtime LLM backend
+    private String llmProvider;
+    private String llmApiKey;
+    private String llmModel;
+    private String llmBaseUrl;
+    private String llmBackendsConfig;
+    private Long llmRequestTimeoutMillis;
+    private Boolean llmSemanticMatchingEnabled;
+    private Boolean llmInferUsageEnabled;
+    private Boolean llmVcrStrict;
+    private Integer llmOptimisationMaxCalls;
+    private String fixtureBodyRedactFields;
+
+    // OpenTelemetry
+    private String otelEndpoint;
+    private Boolean otelMetricsEnabled;
+    private Boolean otelTracesEnabled;
+    private Long otelMetricsExportIntervalSeconds;
+    private String otelMetricsTemporality;
+
+    // Prometheus remote write
+    private Boolean prometheusRemoteWriteEnabled;
+    private String prometheusRemoteWriteUrl;
+    private Long prometheusRemoteWriteIntervalSeconds;
+    private String prometheusRemoteWriteBearerToken;
+    private String prometheusRemoteWriteBasicAuthUsername;
+    private String prometheusRemoteWriteBasicAuthPassword;
+    private String prometheusRemoteWriteHeaders;
+    private String prometheusRemoteWriteProtocolVersion;
+
+    // matching safety limits
+    private Long regexMatchingTimeoutMillis;
+    private Long xpathMatchingTimeoutMillis;
+    private String customJsonUnitMatchersClass;
 
 
     public Level logLevel() {
@@ -870,6 +906,30 @@ public class Configuration {
      */
     public Configuration preemptionSimulationMaxDrainMillis(Long preemptionSimulationMaxDrainMillis) {
         this.preemptionSimulationMaxDrainMillis = preemptionSimulationMaxDrainMillis;
+        return this;
+    }
+
+    public Long stopDrainMillis() {
+        if (stopDrainMillis == null) {
+            return ConfigurationProperties.stopDrainMillis();
+        }
+        // mirrors the clamp ConfigurationProperties.stopDrainMillis() applies, so a negative value can
+        // never be read back as a negative drain budget regardless of which route set it
+        return Math.max(0L, stopDrainMillis);
+    }
+
+    /**
+     * Maximum time in milliseconds to wait for in-flight requests to complete when the server is
+     * stopped (graceful shutdown connection drain). On stop, the server stops accepting new
+     * connections and then waits up to this timeout for any requests still being processed to
+     * finish before shutting down the event loops. If the timeout elapses a warning is logged with
+     * the number of remaining in-flight requests and shutdown proceeds anyway. Default is 15000
+     * (15 seconds). Set to 0 to disable draining (stop immediately, the pre-7.2 behaviour).
+     *
+     * @param stopDrainMillis drain timeout in milliseconds, 0 to disable draining
+     */
+    public Configuration stopDrainMillis(Long stopDrainMillis) {
+        this.stopDrainMillis = stopDrainMillis;
         return this;
     }
 
@@ -2717,12 +2777,6 @@ public class Configuration {
         this.driftAlertCooldownMillis = driftAlertCooldownMillis;
         return this;
     }
-
-    // regexMatchingTimeoutMillis / xpathMatchingTimeoutMillis are intentionally NOT exposed as
-    // per-instance Configuration getters/setters: the matchers that consume them are constructed
-    // without a Configuration handle and read directly from ConfigurationProperties. Use
-    // ConfigurationProperties.regexMatchingTimeoutMillis(...) / xpathMatchingTimeoutMillis(...) to
-    // override the JVM-wide default.
 
     public Boolean useSemicolonAsQueryParameterSeparator() {
         if (useSemicolonAsQueryParameterSeparator == null) {
@@ -5578,6 +5632,500 @@ public class Configuration {
         return this;
     }
 
+    public String llmProvider() {
+        if (llmProvider == null) {
+            return ConfigurationProperties.llmProvider();
+        }
+        return llmProvider;
+    }
+
+    /**
+     * Provider type for the default runtime-LLM backend (one of the {@code org.mockserver.model.Provider}
+     * enum names). Empty by default.
+     *
+     * @param llmProvider the runtime-LLM provider name
+     */
+    public Configuration llmProvider(String llmProvider) {
+        this.llmProvider = llmProvider;
+        return this;
+    }
+
+    public String llmApiKey() {
+        if (llmApiKey == null) {
+            return ConfigurationProperties.llmApiKey();
+        }
+        return llmApiKey;
+    }
+
+    /**
+     * API key (secret) for the default runtime-LLM backend. WRITE-ONLY over the control plane: it can be
+     * set via {@code PUT /mockserver/configuration}, but {@code GET /mockserver/configuration} returns
+     * {@link ConfigurationProperties#REDACTED_VALUE} instead of the real value. Never logged.
+     *
+     * @param llmApiKey the runtime-LLM API key
+     */
+    public Configuration llmApiKey(String llmApiKey) {
+        this.llmApiKey = llmApiKey;
+        return this;
+    }
+
+    public String llmModel() {
+        if (llmModel == null) {
+            return ConfigurationProperties.llmModel();
+        }
+        return llmModel;
+    }
+
+    /**
+     * Model for the default runtime-LLM backend; empty means the per-provider default applies.
+     *
+     * @param llmModel the runtime-LLM model name
+     */
+    public Configuration llmModel(String llmModel) {
+        this.llmModel = llmModel;
+        return this;
+    }
+
+    public String llmBaseUrl() {
+        if (llmBaseUrl == null) {
+            return ConfigurationProperties.llmBaseUrl();
+        }
+        return llmBaseUrl;
+    }
+
+    /**
+     * Base URL override for the default runtime-LLM backend; empty means the per-provider default applies.
+     *
+     * @param llmBaseUrl the runtime-LLM base URL
+     */
+    public Configuration llmBaseUrl(String llmBaseUrl) {
+        this.llmBaseUrl = llmBaseUrl;
+        return this;
+    }
+
+    public String llmBackendsConfig() {
+        if (llmBackendsConfig == null) {
+            return ConfigurationProperties.llmBackendsConfig();
+        }
+        return llmBackendsConfig;
+    }
+
+    /**
+     * Path to a JSON file declaring named runtime-LLM backends. Empty by default.
+     *
+     * @param llmBackendsConfig path to the backends JSON file
+     */
+    public Configuration llmBackendsConfig(String llmBackendsConfig) {
+        this.llmBackendsConfig = llmBackendsConfig;
+        return this;
+    }
+
+    public Long llmRequestTimeoutMillis() {
+        if (llmRequestTimeoutMillis == null) {
+            return ConfigurationProperties.llmRequestTimeoutMillis();
+        }
+        return llmRequestTimeoutMillis;
+    }
+
+    /**
+     * Per-request timeout (milliseconds) for outbound runtime-LLM calls. A backend's own
+     * {@code timeoutMillis} overrides this. Default 30000.
+     *
+     * @param llmRequestTimeoutMillis the per-request timeout in milliseconds
+     */
+    public Configuration llmRequestTimeoutMillis(Long llmRequestTimeoutMillis) {
+        this.llmRequestTimeoutMillis = llmRequestTimeoutMillis;
+        return this;
+    }
+
+    public Boolean llmSemanticMatchingEnabled() {
+        if (llmSemanticMatchingEnabled == null) {
+            return ConfigurationProperties.llmSemanticMatchingEnabled();
+        }
+        return llmSemanticMatchingEnabled;
+    }
+
+    /**
+     * Opt-in switch for fuzzy, LLM-judged semantic prompt matching (the {@code semanticMatch}
+     * conversation predicate). Off by default.
+     *
+     * @param llmSemanticMatchingEnabled enable semantic prompt matching
+     */
+    public Configuration llmSemanticMatchingEnabled(Boolean llmSemanticMatchingEnabled) {
+        this.llmSemanticMatchingEnabled = llmSemanticMatchingEnabled;
+        return this;
+    }
+
+    public Boolean llmInferUsageEnabled() {
+        if (llmInferUsageEnabled == null) {
+            return ConfigurationProperties.llmInferUsageEnabled();
+        }
+        return llmInferUsageEnabled;
+    }
+
+    /**
+     * Opt-in switch for approximate LLM token-usage inference on mocked completions that do not declare
+     * {@code usage}. Off by default.
+     *
+     * @param llmInferUsageEnabled enable token-usage inference
+     */
+    public Configuration llmInferUsageEnabled(Boolean llmInferUsageEnabled) {
+        this.llmInferUsageEnabled = llmInferUsageEnabled;
+        return this;
+    }
+
+    public Boolean llmVcrStrict() {
+        if (llmVcrStrict == null) {
+            return ConfigurationProperties.llmVcrStrict();
+        }
+        return llmVcrStrict;
+    }
+
+    /**
+     * When true, loading LLM fixtures in strict VCR mode registers a low-priority catch-all per cassette
+     * path so a request matching no recorded entry fails loudly (HTTP 599). Default false.
+     *
+     * @param llmVcrStrict enable strict VCR mode
+     */
+    public Configuration llmVcrStrict(Boolean llmVcrStrict) {
+        this.llmVcrStrict = llmVcrStrict;
+        return this;
+    }
+
+    public Integer llmOptimisationMaxCalls() {
+        if (llmOptimisationMaxCalls == null) {
+            return ConfigurationProperties.llmOptimisationMaxCalls();
+        }
+        return llmOptimisationMaxCalls;
+    }
+
+    /**
+     * Upper bound on the number of captured LLM calls included in an optimisation report / brief.
+     * Default 200.
+     *
+     * @param llmOptimisationMaxCalls the maximum number of calls in a report
+     */
+    public Configuration llmOptimisationMaxCalls(Integer llmOptimisationMaxCalls) {
+        this.llmOptimisationMaxCalls = llmOptimisationMaxCalls;
+        return this;
+    }
+
+    public String fixtureBodyRedactFields() {
+        if (fixtureBodyRedactFields == null) {
+            return ConfigurationProperties.fixtureBodyRedactFields();
+        }
+        return fixtureBodyRedactFields;
+    }
+
+    /**
+     * Comma-separated JSON field names whose values are redacted from recorded fixture request/response
+     * bodies. Empty by default.
+     *
+     * @param fixtureBodyRedactFields comma-separated JSON field names to redact
+     */
+    public Configuration fixtureBodyRedactFields(String fixtureBodyRedactFields) {
+        this.fixtureBodyRedactFields = fixtureBodyRedactFields;
+        return this;
+    }
+
+    public String otelEndpoint() {
+        if (otelEndpoint == null) {
+            return ConfigurationProperties.otelEndpoint();
+        }
+        return otelEndpoint;
+    }
+
+    /**
+     * OTLP endpoint MockServer exports to. When unset, falls back to the MockServer property, then the
+     * OpenTelemetry-standard {@code OTEL_EXPORTER_OTLP_ENDPOINT} env var, then empty.
+     *
+     * @param otelEndpoint the OTLP endpoint URL
+     */
+    public Configuration otelEndpoint(String otelEndpoint) {
+        this.otelEndpoint = otelEndpoint;
+        return this;
+    }
+
+    public Boolean otelMetricsEnabled() {
+        if (otelMetricsEnabled == null) {
+            return ConfigurationProperties.otelMetricsEnabled();
+        }
+        return otelMetricsEnabled;
+    }
+
+    /**
+     * When true, MockServer's explicitly-defined metrics are also exported via OpenTelemetry OTLP.
+     * Off by default.
+     *
+     * @param otelMetricsEnabled enable OTLP metric export
+     */
+    public Configuration otelMetricsEnabled(Boolean otelMetricsEnabled) {
+        this.otelMetricsEnabled = otelMetricsEnabled;
+        return this;
+    }
+
+    public Boolean otelTracesEnabled() {
+        if (otelTracesEnabled == null) {
+            return ConfigurationProperties.otelTracesEnabled();
+        }
+        return otelTracesEnabled;
+    }
+
+    /**
+     * When true, MockServer emits explicit GenAI semantic-convention spans for LLM interactions.
+     * Off by default.
+     *
+     * @param otelTracesEnabled enable OTLP trace export
+     */
+    public Configuration otelTracesEnabled(Boolean otelTracesEnabled) {
+        this.otelTracesEnabled = otelTracesEnabled;
+        return this;
+    }
+
+    public Long otelMetricsExportIntervalSeconds() {
+        if (otelMetricsExportIntervalSeconds == null) {
+            return ConfigurationProperties.otelMetricsExportIntervalSeconds();
+        }
+        // mirrors the clamp ConfigurationProperties.otelMetricsExportIntervalSeconds() applies, so a
+        // zero/negative interval (which would make PeriodicMetricReader throw) can never be read back
+        // regardless of which route set it
+        return Math.max(1L, otelMetricsExportIntervalSeconds);
+    }
+
+    /**
+     * How often (seconds) OTel metrics are exported. Default 60. Clamped to a minimum of 1 second.
+     *
+     * @param otelMetricsExportIntervalSeconds the export interval in seconds
+     */
+    public Configuration otelMetricsExportIntervalSeconds(Long otelMetricsExportIntervalSeconds) {
+        this.otelMetricsExportIntervalSeconds = otelMetricsExportIntervalSeconds;
+        return this;
+    }
+
+    public String otelMetricsTemporality() {
+        if (otelMetricsTemporality == null) {
+            return ConfigurationProperties.otelMetricsTemporality();
+        }
+        return otelMetricsTemporality;
+    }
+
+    /**
+     * OTLP aggregation temporality for counter/histogram instruments: {@code cumulative} (default) or
+     * {@code delta}. The exporter fails safe to cumulative on any unknown/blank value.
+     *
+     * @param otelMetricsTemporality the OTLP aggregation temporality
+     */
+    public Configuration otelMetricsTemporality(String otelMetricsTemporality) {
+        this.otelMetricsTemporality = otelMetricsTemporality;
+        return this;
+    }
+
+    public Boolean prometheusRemoteWriteEnabled() {
+        if (prometheusRemoteWriteEnabled == null) {
+            return ConfigurationProperties.prometheusRemoteWriteEnabled();
+        }
+        return prometheusRemoteWriteEnabled;
+    }
+
+    /**
+     * When true, MockServer periodically pushes its Prometheus metrics to a Prometheus Remote-Write
+     * endpoint. Off by default. Fail-soft — remote-write export never affects request handling.
+     *
+     * @param prometheusRemoteWriteEnabled enable Prometheus remote write
+     */
+    public Configuration prometheusRemoteWriteEnabled(Boolean prometheusRemoteWriteEnabled) {
+        this.prometheusRemoteWriteEnabled = prometheusRemoteWriteEnabled;
+        return this;
+    }
+
+    public String prometheusRemoteWriteUrl() {
+        if (prometheusRemoteWriteUrl == null) {
+            return ConfigurationProperties.prometheusRemoteWriteUrl();
+        }
+        return prometheusRemoteWriteUrl;
+    }
+
+    /**
+     * The Prometheus Remote-Write endpoint URL to POST to. Empty by default; when remote-write is
+     * enabled but this is blank the exporter logs a warning and does nothing.
+     *
+     * @param prometheusRemoteWriteUrl the remote-write endpoint URL
+     */
+    public Configuration prometheusRemoteWriteUrl(String prometheusRemoteWriteUrl) {
+        this.prometheusRemoteWriteUrl = prometheusRemoteWriteUrl;
+        return this;
+    }
+
+    public Long prometheusRemoteWriteIntervalSeconds() {
+        if (prometheusRemoteWriteIntervalSeconds == null) {
+            return ConfigurationProperties.prometheusRemoteWriteIntervalSeconds();
+        }
+        // mirrors the clamp ConfigurationProperties.prometheusRemoteWriteIntervalSeconds() applies, so a
+        // zero/negative push interval can never be read back regardless of which route set it
+        return Math.max(1L, prometheusRemoteWriteIntervalSeconds);
+    }
+
+    /**
+     * How often (seconds) metrics are pushed to the remote-write endpoint. Default 60. Clamped to a
+     * minimum of 1 second.
+     *
+     * @param prometheusRemoteWriteIntervalSeconds the push interval in seconds
+     */
+    public Configuration prometheusRemoteWriteIntervalSeconds(Long prometheusRemoteWriteIntervalSeconds) {
+        this.prometheusRemoteWriteIntervalSeconds = prometheusRemoteWriteIntervalSeconds;
+        return this;
+    }
+
+    public String prometheusRemoteWriteBearerToken() {
+        if (prometheusRemoteWriteBearerToken == null) {
+            return ConfigurationProperties.prometheusRemoteWriteBearerToken();
+        }
+        return prometheusRemoteWriteBearerToken;
+    }
+
+    /**
+     * Optional bearer token for the remote-write endpoint. WRITE-ONLY over the control plane: it can be
+     * set via {@code PUT /mockserver/configuration}, but {@code GET /mockserver/configuration} returns
+     * {@link ConfigurationProperties#REDACTED_VALUE} instead of the real value.
+     *
+     * @param prometheusRemoteWriteBearerToken the remote-write bearer token
+     */
+    public Configuration prometheusRemoteWriteBearerToken(String prometheusRemoteWriteBearerToken) {
+        this.prometheusRemoteWriteBearerToken = prometheusRemoteWriteBearerToken;
+        return this;
+    }
+
+    public String prometheusRemoteWriteBasicAuthUsername() {
+        if (prometheusRemoteWriteBasicAuthUsername == null) {
+            return ConfigurationProperties.prometheusRemoteWriteBasicAuthUsername();
+        }
+        return prometheusRemoteWriteBasicAuthUsername;
+    }
+
+    /**
+     * Optional HTTP basic-auth username for the remote-write endpoint. Used only when no bearer token
+     * is set.
+     *
+     * @param prometheusRemoteWriteBasicAuthUsername the remote-write basic-auth username
+     */
+    public Configuration prometheusRemoteWriteBasicAuthUsername(String prometheusRemoteWriteBasicAuthUsername) {
+        this.prometheusRemoteWriteBasicAuthUsername = prometheusRemoteWriteBasicAuthUsername;
+        return this;
+    }
+
+    public String prometheusRemoteWriteBasicAuthPassword() {
+        if (prometheusRemoteWriteBasicAuthPassword == null) {
+            return ConfigurationProperties.prometheusRemoteWriteBasicAuthPassword();
+        }
+        return prometheusRemoteWriteBasicAuthPassword;
+    }
+
+    /**
+     * Optional HTTP basic-auth password for the remote-write endpoint. WRITE-ONLY over the control
+     * plane: it can be set via {@code PUT /mockserver/configuration}, but
+     * {@code GET /mockserver/configuration} returns {@link ConfigurationProperties#REDACTED_VALUE}
+     * instead of the real value.
+     *
+     * @param prometheusRemoteWriteBasicAuthPassword the remote-write basic-auth password
+     */
+    public Configuration prometheusRemoteWriteBasicAuthPassword(String prometheusRemoteWriteBasicAuthPassword) {
+        this.prometheusRemoteWriteBasicAuthPassword = prometheusRemoteWriteBasicAuthPassword;
+        return this;
+    }
+
+    public String prometheusRemoteWriteHeaders() {
+        if (prometheusRemoteWriteHeaders == null) {
+            return ConfigurationProperties.prometheusRemoteWriteHeaders();
+        }
+        return prometheusRemoteWriteHeaders;
+    }
+
+    /**
+     * Optional extra HTTP headers added to each remote-write POST, as a comma-separated
+     * {@code key=value} list. The raw string is carried here; the exporter parses it.
+     *
+     * @param prometheusRemoteWriteHeaders comma-separated key=value header list
+     */
+    public Configuration prometheusRemoteWriteHeaders(String prometheusRemoteWriteHeaders) {
+        this.prometheusRemoteWriteHeaders = prometheusRemoteWriteHeaders;
+        return this;
+    }
+
+    public String prometheusRemoteWriteProtocolVersion() {
+        if (prometheusRemoteWriteProtocolVersion == null) {
+            return ConfigurationProperties.prometheusRemoteWriteProtocolVersion();
+        }
+        return prometheusRemoteWriteProtocolVersion;
+    }
+
+    /**
+     * The Prometheus remote-write protocol version to encode and push: {@code v1} (default) or
+     * {@code v2}. Any unrecognised or blank value falls back to {@code v1}.
+     *
+     * @param prometheusRemoteWriteProtocolVersion the remote-write protocol version
+     */
+    public Configuration prometheusRemoteWriteProtocolVersion(String prometheusRemoteWriteProtocolVersion) {
+        this.prometheusRemoteWriteProtocolVersion = prometheusRemoteWriteProtocolVersion;
+        return this;
+    }
+
+    public Long regexMatchingTimeoutMillis() {
+        if (regexMatchingTimeoutMillis == null) {
+            return ConfigurationProperties.regexMatchingTimeoutMillis();
+        }
+        return regexMatchingTimeoutMillis;
+    }
+
+    /**
+     * Maximum time (in milliseconds) allowed for evaluating a single regular expression during request
+     * matching. Exceeding the budget is treated as a non-match, bounding pathological backtracking.
+     * Default 5000. Set to 0 or negative to disable the timeout.
+     *
+     * @param regexMatchingTimeoutMillis regex evaluation timeout in milliseconds
+     */
+    public Configuration regexMatchingTimeoutMillis(Long regexMatchingTimeoutMillis) {
+        this.regexMatchingTimeoutMillis = regexMatchingTimeoutMillis;
+        return this;
+    }
+
+    public Long xpathMatchingTimeoutMillis() {
+        if (xpathMatchingTimeoutMillis == null) {
+            return ConfigurationProperties.xpathMatchingTimeoutMillis();
+        }
+        return xpathMatchingTimeoutMillis;
+    }
+
+    /**
+     * Maximum time (in milliseconds) allowed for evaluating a single XPath expression during request
+     * matching. Exceeding the budget is treated as a non-match. Default 5000. Set to 0 or negative to
+     * disable the timeout.
+     *
+     * @param xpathMatchingTimeoutMillis XPath evaluation timeout in milliseconds
+     */
+    public Configuration xpathMatchingTimeoutMillis(Long xpathMatchingTimeoutMillis) {
+        this.xpathMatchingTimeoutMillis = xpathMatchingTimeoutMillis;
+        return this;
+    }
+
+    public String customJsonUnitMatchersClass() {
+        if (customJsonUnitMatchersClass == null) {
+            return ConfigurationProperties.customJsonUnitMatchersClass();
+        }
+        return customJsonUnitMatchersClass;
+    }
+
+    /**
+     * Fully qualified name of a class implementing
+     * {@code org.mockserver.matchers.CustomJsonUnitMatcherProvider}, whose matchers are registered with
+     * the json-unit configuration used for JSON body matching. Empty by default (no custom matchers).
+     *
+     * @param customJsonUnitMatchersClass fully qualified provider class name
+     */
+    public Configuration customJsonUnitMatchersClass(String customJsonUnitMatchersClass) {
+        this.customJsonUnitMatchersClass = customJsonUnitMatchersClass;
+        return this;
+    }
+
     public void addSubjectAlternativeName(String host) {
         if (isNotBlank(host)) {
             String hostWithoutPort = substringBefore(host, ":");
@@ -5640,10 +6188,21 @@ public class Configuration {
         return nextPowerOfTwo(size);
     }
 
+    /**
+     * Round up to a power of two, IDEMPOTENTLY — a value that is already a power of two is returned
+     * unchanged.
+     * <p>
+     * This previously returned the next power of two STRICTLY GREATER than the input, which made
+     * {@link #ringBufferSize()} non-idempotent: reading the resolved value and writing it back (as
+     * {@code GET /mockserver/configuration} followed by {@code PUT} of the same blob does, via
+     * {@code ConfigurationDTO}) doubled it on every round trip — 1024 became 2048, then 4096. The
+     * documented contract is "rounded up to the next power of two", and an exact power of two is
+     * already there, so it must be a no-op.
+     */
     private int nextPowerOfTwo(int value) {
         for (int i = 0; i < 30; i++) {
             int powOfTwo = 1 << i;
-            if (powOfTwo > value) {
+            if (powOfTwo >= value) {
                 return powOfTwo;
             }
         }

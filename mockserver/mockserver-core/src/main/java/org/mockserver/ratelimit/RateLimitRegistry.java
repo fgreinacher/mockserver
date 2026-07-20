@@ -1,5 +1,6 @@
 package org.mockserver.ratelimit;
 
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.model.RateLimit;
 
@@ -82,6 +83,18 @@ public class RateLimitRegistry {
      * (or the limit is misconfigured/fails open)
      */
     public Decision tryAcquire(RateLimit rl, String fallbackKey) {
+        return tryAcquire(rl, fallbackKey, null);
+    }
+
+    /**
+     * As {@link #tryAcquire(RateLimit, String)} but consulting {@code configuration} for
+     * {@code rateLimitMaxNamedQuotas}, so a cap set on the {@link Configuration} instance (including
+     * via {@code PUT /mockserver/configuration}) is honoured. Falls back to the static
+     * {@link ConfigurationProperties} store when {@code configuration} is {@code null}.
+     *
+     * @param configuration the effective server configuration (may be {@code null})
+     */
+    public Decision tryAcquire(RateLimit rl, String fallbackKey, Configuration configuration) {
         if (rl == null) {
             return Decision.allow();
         }
@@ -92,12 +105,12 @@ public class RateLimitRegistry {
         long now = clock.getAsLong();
         RateLimit.Algorithm algorithm = rl.effectiveAlgorithm();
         if (algorithm == RateLimit.Algorithm.TOKEN_BUCKET) {
-            return tryAcquireTokenBucket(key, rl, now);
+            return tryAcquireTokenBucket(key, rl, now, configuration);
         }
-        return tryAcquireFixedWindow(key, rl, now);
+        return tryAcquireFixedWindow(key, rl, now, configuration);
     }
 
-    private Decision tryAcquireFixedWindow(String key, RateLimit rl, long now) {
+    private Decision tryAcquireFixedWindow(String key, RateLimit rl, long now, Configuration configuration) {
         Integer limitBox = rl.getLimit();
         Long windowBox = rl.getWindowMillis();
         if (limitBox == null || windowBox == null || limitBox < 1 || windowBox < 1) {
@@ -113,7 +126,7 @@ public class RateLimitRegistry {
                 // the global map sizes, so concurrent inserts of DISTINCT keys may still overshoot this
                 // fail-open soft memory bound by a small bounded amount — acceptable. Refuse the insert
                 // (return null) when the cap is reached so the request fails open below.
-                if (isOverCap()) {
+                if (isOverCap(configuration)) {
                     return null;
                 }
                 return new Window(now, 1);
@@ -133,7 +146,7 @@ public class RateLimitRegistry {
         return new Decision(allowed, limit, remaining, resetEpochSecond);
     }
 
-    private Decision tryAcquireTokenBucket(String key, RateLimit rl, long now) {
+    private Decision tryAcquireTokenBucket(String key, RateLimit rl, long now, Configuration configuration) {
         Long burstBox = rl.getBurst();
         Double refillBox = rl.getRefillPerSecond();
         if (burstBox == null || refillBox == null || burstBox < 1 || refillBox <= 0.0 || Double.isNaN(refillBox)) {
@@ -152,7 +165,7 @@ public class RateLimitRegistry {
                 // the global map sizes, so concurrent inserts of DISTINCT keys may still overshoot this
                 // fail-open soft memory bound by a small bounded amount — acceptable. Refuse the insert
                 // (return null) when the cap is reached so the request fails open below.
-                if (isOverCap()) {
+                if (isOverCap(configuration)) {
                     return null;
                 }
                 tokensMilli = capacityMilli;
@@ -195,9 +208,12 @@ public class RateLimitRegistry {
      * inserted is, by construction, not yet present in either map, so {@code windows.size() +
      * buckets.size()} is the current distinct-counter count.
      */
-    private boolean isOverCap() {
+    private boolean isOverCap(Configuration configuration) {
         long total = (long) windows.size() + (long) buckets.size();
-        return total >= ConfigurationProperties.rateLimitMaxNamedQuotas();
+        long cap = configuration != null
+            ? configuration.rateLimitMaxNamedQuotas()
+            : ConfigurationProperties.rateLimitMaxNamedQuotas();
+        return total >= cap;
     }
 
     /**

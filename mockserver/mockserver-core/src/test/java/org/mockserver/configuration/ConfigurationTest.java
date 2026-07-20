@@ -600,8 +600,12 @@ public class ConfigurationTest {
             configuration.maxLogEntries(100000);
 
             // then - the ring is NOT slaved to retention: default ceiling is min(maxLogEntries, 16384)
-            // rounded up to a power of two, so it no longer pre-allocates a 131072-slot ring
-            assertThat(configuration.ringBufferSize(), equalTo(32768));
+            // rounded up to a power of two, so it no longer pre-allocates a 131072-slot ring.
+            // 16384 is ALREADY a power of two, so rounding is a no-op and the cap is honoured
+            // exactly. (This previously asserted 32768: the rounding helper returned the next power
+            // STRICTLY greater than its input, so the documented 16384 cap actually allocated twice
+            // as many slots, and a GET/PUT configuration round trip doubled the value each time.)
+            assertThat(configuration.ringBufferSize(), equalTo(16384));
             assertThat(configuration.ringBufferSize(), not(equalTo(131072)));
 
             // when - retention below the cap, the ring still follows maxLogEntries (the computed

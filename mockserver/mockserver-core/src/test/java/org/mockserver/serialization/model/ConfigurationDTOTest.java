@@ -497,7 +497,10 @@ public class ConfigurationDTOTest {
             dropped, is(empty()));
     }
 
-    private static final class PropertyAccessor {
+    // package-private (not private) so the classification guard in
+    // ConfigurationEnforcementClassificationTest can reuse the same reflective enumeration, keeping a
+    // single source of truth for what counts as a Configuration property
+    static final class PropertyAccessor {
         final String name;
         final Method getter;
         final Method setter;
@@ -515,7 +518,7 @@ public class ConfigurationDTOTest {
      * Discover every Configuration property exposed as a no-arg getter {@code T name()} paired with a
      * single-argument fluent setter {@code Configuration name(T)}, minus the documented exclusions.
      */
-    private static List<PropertyAccessor> discoverProperties() {
+    static List<PropertyAccessor> discoverProperties() {
         Method[] methods = Configuration.class.getDeclaredMethods();
         // index single-arg setters that return Configuration, grouped by name (a property may have
         // overloaded setters, e.g. logLevel(Level) and logLevel(String) — keep all and pick the one

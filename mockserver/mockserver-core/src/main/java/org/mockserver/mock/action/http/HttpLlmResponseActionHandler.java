@@ -58,8 +58,21 @@ public class HttpLlmResponseActionHandler {
             }
         });
 
+    /**
+     * The live server {@link org.mockserver.configuration.Configuration}, or {@code null} when the
+     * handler is constructed without one (unit tests). Preferred over the static
+     * {@link ConfigurationProperties} store so {@code llmInferUsageEnabled} set over
+     * {@code PUT /mockserver/configuration} actually takes effect here.
+     */
+    private final org.mockserver.configuration.Configuration configuration;
+
     public HttpLlmResponseActionHandler(MockServerLogger mockServerLogger) {
+        this(mockServerLogger, null);
+    }
+
+    public HttpLlmResponseActionHandler(MockServerLogger mockServerLogger, org.mockserver.configuration.Configuration configuration) {
         this.mockServerLogger = mockServerLogger;
+        this.configuration = configuration;
     }
 
     public HttpResponse handle(HttpLlmResponse httpLlmResponse, HttpRequest request) {
@@ -561,7 +574,10 @@ public class HttpLlmResponseActionHandler {
      * yields a 0 prompt estimate rather than breaking the response.
      */
     Completion withInferredUsageIfEnabled(Completion completion, ProviderCodec codec, HttpRequest request) {
-        if (completion == null || !ConfigurationProperties.llmInferUsageEnabled()) {
+        boolean inferUsage = configuration != null
+            ? configuration.llmInferUsageEnabled()
+            : ConfigurationProperties.llmInferUsageEnabled();
+        if (completion == null || !inferUsage) {
             return completion;
         }
         Usage existing = completion.getUsage();

@@ -144,6 +144,28 @@ public class MockServerLogger {
         this.httpStateHandler = httpStateHandler;
     }
 
+    /**
+     * The {@link Configuration} this logger was constructed with, or {@code null} when it was built
+     * without one (test-support constructors, client-side use).
+     *
+     * <p>Exposed because {@code MockServerLogger} is already the configuration carrier threaded
+     * through the whole matcher graph: matchers such as {@code RegexStringMatcher},
+     * {@code XPathMatcher} and {@code JsonStringMatcher} — and the shared
+     * {@code MatchingTimeoutExecutor} — are constructed with a logger and nothing else, yet must
+     * honour instance-scoped matching limits ({@code regexMatchingTimeoutMillis},
+     * {@code xpathMatchingTimeoutMillis}, {@code customJsonUnitMatchersClass}) that are settable over
+     * {@code PUT /mockserver/configuration}. Reading the configuration off the logger they already
+     * hold avoids threading a second parameter through ~15 matcher construction sites for values
+     * those sites never otherwise touch.
+     *
+     * <p>Callers MUST treat {@code null} as "no instance configured" and fall back to
+     * {@link ConfigurationProperties}, exactly as {@link #isEnabledForInstance(Level)} and
+     * {@link #isDisableLogging()} already do.
+     */
+    public Configuration getConfiguration() {
+        return configuration;
+    }
+
     public MockServerLogger setHttpStateHandler(HttpState httpStateHandler) {
         this.httpStateHandler = httpStateHandler;
         return this;

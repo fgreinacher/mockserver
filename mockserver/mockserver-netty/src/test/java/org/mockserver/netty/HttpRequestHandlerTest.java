@@ -822,6 +822,104 @@ public class HttpRequestHandlerTest {
         assertThat(httpResponse.getBodyAsString(), containsString("\"logLevel\" : \"WARN\""));
     }
 
+    /**
+     * Rebuilds the fixture so the {@link HttpState} and the {@link HttpRequestHandler} share ONE
+     * {@link org.mockserver.configuration.Configuration} instance, as production wiring does
+     * (LifeCycle / PortUnificationHandler pass the same instance to both). The default fixture gives
+     * them separate instances, which would hide whether a PUT reconciles the state the server is
+     * actually using.
+     *
+     * @return the shared configuration
+     */
+    private org.mockserver.configuration.Configuration rebuildWithSharedConfiguration() {
+        org.mockserver.configuration.Configuration configuration = configuration();
+        httpStateHandler = new HttpState(configuration, new MockServerLogger(), synchronousScheduler());
+        mockServerHandler = new HttpRequestHandler(configuration, server, httpStateHandler, null);
+        embeddedChannel = new EmbeddedChannel(mockServerHandler);
+        return configuration;
+    }
+
+    /**
+     * Blocks until the asynchronous event log has drained the disruptor. {@code httpStateHandler.log}
+     * publishes to a ring buffer consumed on another thread, so asserting the log's size straight
+     * after logging is racy — it passed standalone and failed under full-suite load (1 of 5 entries
+     * consumed). A retrieve completes only after the in-flight entries have been processed.
+     */
+    private void drainEventLog() {
+        java.util.concurrent.CompletableFuture<java.util.List<LogEntry>> future = new java.util.concurrent.CompletableFuture<>();
+        httpStateHandler.getMockServerLog().retrieveMessageLogEntries(null, future::complete);
+        try {
+            future.get(60, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            throw new AssertionError("timed out draining the event log", e);
+        }
+    }
+
+    @Test
+    public void shouldResizeEventLogWhenConfigurationUpdateReducesMaxLogEntries() {
+        // given - a server sharing one Configuration, holding more log entries than the new bound
+        org.mockserver.configuration.Configuration configuration = rebuildWithSharedConfiguration();
+        for (int i = 0; i < 5; i++) {
+            httpStateHandler.log(new LogEntry().setHttpRequest(request("request_" + i)).setType(RECEIVED_REQUEST));
+        }
+        drainEventLog();
+        assertThat(httpStateHandler.getMockServerLog().size(), is(5));
+
+        // when - maxLogEntries is reduced over the control plane
+        embeddedChannel.writeInbound(request("/mockserver/configuration")
+            .withMethod("PUT")
+            .withBody("{\"maxLogEntries\":2}"));
+
+        // then - the PUT succeeds AND the running event log is actually resized (previously the
+        // value was accepted, echoed back and then ignored)
+        HttpResponse httpResponse = embeddedChannel.readOutbound();
+        assertThat(httpResponse.getStatusCode(), is(200));
+        assertThat(configuration.maxLogEntries(), is(2));
+        drainEventLog();
+        assertThat(httpStateHandler.getMockServerLog().size(), is(2));
+    }
+
+    @Test
+    public void shouldResizeExpectationStoreWhenConfigurationUpdateReducesMaxExpectations() {
+        // given - a server sharing one Configuration, holding more expectations than the new bound
+        rebuildWithSharedConfiguration();
+        for (int i = 0; i < 4; i++) {
+            httpStateHandler.getRequestMatchers().add(
+                new Expectation(request("/path_" + i)).thenRespond(response("body_" + i)),
+                org.mockserver.mock.listeners.MockServerMatcherNotifier.Cause.API);
+        }
+        assertThat(httpStateHandler.getRequestMatchers().retrieveActiveExpectations(null).size(), is(4));
+
+        // when
+        embeddedChannel.writeInbound(request("/mockserver/configuration")
+            .withMethod("PUT")
+            .withBody("{\"maxExpectations\":2}"));
+
+        // then
+        HttpResponse httpResponse = embeddedChannel.readOutbound();
+        assertThat(httpResponse.getStatusCode(), is(200));
+        assertThat(httpStateHandler.getRequestMatchers().retrieveActiveExpectations(null).size(), is(2));
+    }
+
+    @Test
+    public void shouldEchoValueInForceForInitOnlyRingBufferSize() {
+        // given - ringBufferSize cannot be resized on a running server
+        rebuildWithSharedConfiguration();
+        int inForce = httpStateHandler.getMockServerLog().getRingBufferSizeInForce();
+
+        // when - a PUT explicitly supplies a different value
+        embeddedChannel.writeInbound(request("/mockserver/configuration")
+            .withMethod("PUT")
+            .withBody("{\"ringBufferSize\":" + (inForce * 2) + "}"));
+
+        // then - the request still succeeds (no hard rejection), but the echoed configuration
+        // reports the value actually IN FORCE rather than the ignored value that was supplied
+        HttpResponse httpResponse = embeddedChannel.readOutbound();
+        assertThat(httpResponse.getStatusCode(), is(200));
+        assertThat(httpResponse.getBodyAsString(), containsString("\"ringBufferSize\" : " + inForce));
+        assertThat(httpResponse.getBodyAsString(), not(containsString("\"ringBufferSize\" : " + (inForce * 2))));
+    }
+
     @Test
     public void shouldRejectConfigurationWhenAuthEnabled() {
         // given

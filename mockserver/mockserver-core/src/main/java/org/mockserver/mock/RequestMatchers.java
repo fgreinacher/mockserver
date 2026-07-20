@@ -248,6 +248,31 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         return stateBackend;
     }
 
+    /**
+     * Re-read {@code maxExpectations} from the {@link Configuration} and resize the expectation
+     * store in place, so a change made via {@code PUT /mockserver/configuration} actually takes
+     * effect instead of being accepted and ignored. A shrink evicts the eldest expectations
+     * immediately (firing the same eviction path as an overflow).
+     * <p>
+     * When a state backend is wired (the default — {@code HttpState} always wires one) the backend
+     * is the eviction authority and the node-local queue is deliberately unbounded
+     * ({@link #setStateBackend}), so the resize is applied to the BACKEND and the node-local view is
+     * then reconciled to drop anything the backend evicted. Without a backend the node-local queue
+     * carries the bound and is resized directly.
+     */
+    public void applyConfigurationCapacity() {
+        int maxExpectations = configuration.maxExpectations();
+        if (expectationBackend != null) {
+            expectationBackend.setMaxSize(maxExpectations);
+            // The backend may have evicted entries — drop them from the node-local view (matcher
+            // cache, CPQ, request-definition map and candidate index) before the map is trimmed.
+            reconcileFromBackend();
+        } else {
+            httpRequestMatchers.setMaxSize(maxExpectations);
+        }
+        expectationRequestDefinitions.setMaxSize(maxExpectations);
+    }
+
     public Expectation add(Expectation expectation, Cause cause) {
         Expectation upsertedExpectation = null;
         if (expectation != null) {
@@ -580,7 +605,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                     LlmConversationMatcher convMatcher = llmResponse.getConversationMatcher();
                     if (convMatcher != null && convMatcher.hasPredicates()) {
                         if (requestDefinition instanceof HttpRequest) {
-                            if (!convMatcher.matches((HttpRequest) requestDefinition)) {
+                            if (!convMatcher.matches((HttpRequest) requestDefinition, configuration)) {
                                 continue;
                             }
                         }

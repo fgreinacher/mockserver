@@ -79,22 +79,44 @@ public class PrometheusRemoteWriteExporter {
      * (fail-soft — telemetry must never prevent the server from running).
      */
     public static PrometheusRemoteWriteExporter startIfEnabled() {
-        if (!ConfigurationProperties.prometheusRemoteWriteEnabled()) {
+        return startIfEnabled(null);
+    }
+
+    /**
+     * As {@link #startIfEnabled()} but preferring the values carried on the supplied
+     * {@link org.mockserver.configuration.Configuration} instance, falling back to the static
+     * {@link ConfigurationProperties} store for each value the instance leaves unset, so
+     * remote-write settings applied over {@code PUT /mockserver/configuration} take effect here.
+     *
+     * @param configuration the live server configuration, or {@code null} to read the static store
+     */
+    public static PrometheusRemoteWriteExporter startIfEnabled(org.mockserver.configuration.Configuration configuration) {
+        boolean enabled = configuration != null
+            ? configuration.prometheusRemoteWriteEnabled()
+            : ConfigurationProperties.prometheusRemoteWriteEnabled();
+        if (!enabled) {
             return null;
         }
         try {
-            String rawUrl = ConfigurationProperties.prometheusRemoteWriteUrl();
+            String rawUrl = configuration != null
+                ? configuration.prometheusRemoteWriteUrl()
+                : ConfigurationProperties.prometheusRemoteWriteUrl();
             if (rawUrl == null || rawUrl.trim().isEmpty()) {
                 LOGGER.warn("Prometheus remote-write is enabled but no URL is configured (mockserver.prometheusRemoteWriteUrl); skipping");
                 return null;
             }
-            long intervalSeconds = ConfigurationProperties.prometheusRemoteWriteIntervalSeconds();
-            RemoteWriteEncoder selectedEncoder = selectEncoder(ConfigurationProperties.prometheusRemoteWriteProtocolVersion());
+            long intervalSeconds = configuration != null
+                ? configuration.prometheusRemoteWriteIntervalSeconds()
+                : ConfigurationProperties.prometheusRemoteWriteIntervalSeconds();
+            String protocolVersion = configuration != null
+                ? configuration.prometheusRemoteWriteProtocolVersion()
+                : ConfigurationProperties.prometheusRemoteWriteProtocolVersion();
+            RemoteWriteEncoder selectedEncoder = selectEncoder(protocolVersion);
             Map<String, String> resolvedHeaders = resolveHeaders(
-                ConfigurationProperties.prometheusRemoteWriteBearerToken(),
-                ConfigurationProperties.prometheusRemoteWriteBasicAuthUsername(),
-                ConfigurationProperties.prometheusRemoteWriteBasicAuthPassword(),
-                ConfigurationProperties.prometheusRemoteWriteHeaders());
+                configuration != null ? configuration.prometheusRemoteWriteBearerToken() : ConfigurationProperties.prometheusRemoteWriteBearerToken(),
+                configuration != null ? configuration.prometheusRemoteWriteBasicAuthUsername() : ConfigurationProperties.prometheusRemoteWriteBasicAuthUsername(),
+                configuration != null ? configuration.prometheusRemoteWriteBasicAuthPassword() : ConfigurationProperties.prometheusRemoteWriteBasicAuthPassword(),
+                configuration != null ? configuration.prometheusRemoteWriteHeaders() : ConfigurationProperties.prometheusRemoteWriteHeaders());
             boolean authConfigured = resolvedHeaders.containsKey("Authorization");
             HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))

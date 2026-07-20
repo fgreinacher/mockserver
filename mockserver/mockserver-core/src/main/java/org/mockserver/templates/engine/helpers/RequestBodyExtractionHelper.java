@@ -72,7 +72,7 @@ public class RequestBodyExtractionHelper {
      */
     public String xPath(String xPath) {
         try {
-            String xPathResult = String.valueOf(new XPathEvaluator(xPath, null).evaluateXPathExpression(request.getBodyAsJsonOrXmlString(), (matched, exception, level) -> {
+            String xPathResult = String.valueOf(new XPathEvaluator(xPath, null, mockServerLogger != null ? mockServerLogger.getConfiguration() : null).evaluateXPathExpression(request.getBodyAsJsonOrXmlString(), (matched, exception, level) -> {
                 if (mockServerLogger != null) {
                     mockServerLogger.logEvent(
                         new LogEntry()

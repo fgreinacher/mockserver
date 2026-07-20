@@ -95,9 +95,9 @@ public abstract class LifeCycle implements Stoppable {
         // so a pure-mock server never allocates it. It remains disjoint from workerGroup (see field javadoc).
         this.scheduler = new Scheduler(this.configuration, this.mockServerLogger);
         this.httpState = new HttpState(this.configuration, this.mockServerLogger, this.scheduler);
-        this.otelMetricsExporter = org.mockserver.metrics.OtelMetricsExporter.startIfEnabled();
-        this.genAiSpanExporter = org.mockserver.telemetry.GenAiSpanExporter.startIfEnabled();
-        this.prometheusRemoteWriteExporter = org.mockserver.metrics.PrometheusRemoteWriteExporter.startIfEnabled();
+        this.otelMetricsExporter = org.mockserver.metrics.OtelMetricsExporter.startIfEnabled(this.configuration);
+        this.genAiSpanExporter = org.mockserver.telemetry.GenAiSpanExporter.startIfEnabled(this.configuration);
+        this.prometheusRemoteWriteExporter = org.mockserver.metrics.PrometheusRemoteWriteExporter.startIfEnabled(this.configuration);
         installSemanticMatchingIfEnabled(this.workerGroup);
         installLlmCompletionServiceIfAvailable(this.workerGroup);
         installSemanticDriftIfEnabled(this.workerGroup);
@@ -111,19 +111,22 @@ public abstract class LifeCycle implements Stoppable {
      * is never affected unless both conditions hold. Fail-soft.
      */
     private void installSemanticMatchingIfEnabled(EventLoopGroup eventLoopGroup) {
-        if (!org.mockserver.configuration.ConfigurationProperties.llmSemanticMatchingEnabled()) {
+        boolean semanticMatchingEnabled = configuration != null
+            ? configuration.llmSemanticMatchingEnabled()
+            : org.mockserver.configuration.ConfigurationProperties.llmSemanticMatchingEnabled();
+        if (!semanticMatchingEnabled) {
             return;
         }
         try {
             java.util.Optional<org.mockserver.llm.client.LlmBackend> backend =
-                new org.mockserver.llm.client.LlmBackendResolver().resolveDefault();
+                new org.mockserver.llm.client.LlmBackendResolver(configuration).resolveDefault();
             if (!backend.isPresent()) {
                 return;
             }
             org.mockserver.httpclient.NettyHttpClient httpClient =
                 new org.mockserver.httpclient.NettyHttpClient(configuration, mockServerLogger, eventLoopGroup, null, false);
             org.mockserver.llm.client.LlmCompletionService service =
-                new org.mockserver.llm.client.LlmCompletionService(new org.mockserver.llm.client.NettyHttpClientLlmTransport(httpClient));
+                new org.mockserver.llm.client.LlmCompletionService(new org.mockserver.llm.client.NettyHttpClientLlmTransport(httpClient), configuration);
             org.mockserver.llm.semantic.SemanticMatching.install(
                 new org.mockserver.llm.semantic.SemanticPromptMatcher(service, backend.get()));
             org.slf4j.LoggerFactory.getLogger(LifeCycle.class)
@@ -144,14 +147,14 @@ public abstract class LifeCycle implements Stoppable {
     private void installLlmCompletionServiceIfAvailable(EventLoopGroup eventLoopGroup) {
         try {
             java.util.Optional<org.mockserver.llm.client.LlmBackend> backend =
-                new org.mockserver.llm.client.LlmBackendResolver().resolveDefault();
+                new org.mockserver.llm.client.LlmBackendResolver(configuration).resolveDefault();
             if (!backend.isPresent()) {
                 return;
             }
             org.mockserver.httpclient.NettyHttpClient httpClient =
                 new org.mockserver.httpclient.NettyHttpClient(configuration, mockServerLogger, eventLoopGroup, null, false);
             org.mockserver.llm.client.LlmCompletionService service =
-                new org.mockserver.llm.client.LlmCompletionService(new org.mockserver.llm.client.NettyHttpClientLlmTransport(httpClient));
+                new org.mockserver.llm.client.LlmCompletionService(new org.mockserver.llm.client.NettyHttpClientLlmTransport(httpClient), configuration);
             httpState.setLlmCompletionService(service, backend.get());
             org.slf4j.LoggerFactory.getLogger(LifeCycle.class)
                 .info("LLM completion service installed for stub generation (backend: {})", backend.get().provider());
@@ -173,7 +176,7 @@ public abstract class LifeCycle implements Stoppable {
         }
         try {
             java.util.Optional<org.mockserver.llm.client.LlmBackend> backend =
-                new org.mockserver.llm.client.LlmBackendResolver().resolveDefault();
+                new org.mockserver.llm.client.LlmBackendResolver(configuration).resolveDefault();
             if (!backend.isPresent()) {
                 org.slf4j.LoggerFactory.getLogger(LifeCycle.class)
                     .info("semantic drift analysis enabled but no LLM backend available; feature disabled");
@@ -182,7 +185,7 @@ public abstract class LifeCycle implements Stoppable {
             org.mockserver.httpclient.NettyHttpClient httpClient =
                 new org.mockserver.httpclient.NettyHttpClient(configuration, mockServerLogger, eventLoopGroup, null, false);
             org.mockserver.llm.client.LlmCompletionService service =
-                new org.mockserver.llm.client.LlmCompletionService(new org.mockserver.llm.client.NettyHttpClientLlmTransport(httpClient));
+                new org.mockserver.llm.client.LlmCompletionService(new org.mockserver.llm.client.NettyHttpClientLlmTransport(httpClient), configuration);
             org.mockserver.mock.drift.SemanticDriftExtension extension =
                 new org.mockserver.mock.drift.SemanticDriftExtension(service, backend.get());
             org.mockserver.mock.drift.DriftAnalyzer.getInstance().setSemanticExtension(extension);
@@ -295,7 +298,9 @@ public abstract class LifeCycle implements Stoppable {
      * with requests still in flight a warning is logged and shutdown proceeds anyway.
      */
     private void drainInFlightRequests() {
-        long drainMillis = org.mockserver.configuration.ConfigurationProperties.stopDrainMillis();
+        long drainMillis = configuration != null
+            ? configuration.stopDrainMillis()
+            : org.mockserver.configuration.ConfigurationProperties.stopDrainMillis();
         if (drainMillis <= 0 || requestsInFlight.get() <= 0) {
             return;
         }
@@ -445,7 +450,10 @@ public abstract class LifeCycle implements Stoppable {
             // otherwise stop() returns to the caller before the server has actually shut down. The
             // drain can block up to stopDrainMillis (WS7.2), so allow that plus a buffer for the
             // event-loop teardown that follows. Falls back to a 30s floor when draining is disabled.
-            long stopTimeoutMillis = Math.max(30_000L, org.mockserver.configuration.ConfigurationProperties.stopDrainMillis() + 10_000L);
+            long drainMillis = configuration != null
+                ? configuration.stopDrainMillis()
+                : org.mockserver.configuration.ConfigurationProperties.stopDrainMillis();
+            long stopTimeoutMillis = Math.max(30_000L, drainMillis + 10_000L);
             stopAsync().get(stopTimeoutMillis, MILLISECONDS);
         } catch (Throwable throwable) {
             // a stop that did not stop must not be silent. Logging this at DEBUG meant the first

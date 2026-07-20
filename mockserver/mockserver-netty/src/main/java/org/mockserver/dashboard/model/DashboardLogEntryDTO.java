@@ -40,12 +40,22 @@ public class DashboardLogEntryDTO extends ObjectWithJsonToString {
     }
 
     public DashboardLogEntryDTO(LogEntry logEntry) {
+        this(logEntry, null);
+    }
+
+    /**
+     * @param configuration the effective server configuration, consulted for {@code redactSecretsInLog}
+     *                      so secrets are masked in the dashboard when redaction is enabled on the
+     *                      {@link org.mockserver.configuration.Configuration} instance (including via
+     *                      {@code PUT /mockserver/configuration}); {@code null} falls back to the static store.
+     */
+    public DashboardLogEntryDTO(LogEntry logEntry, org.mockserver.configuration.Configuration configuration) {
         setId(logEntry.id());
         setCorrelationId(logEntry.getCorrelationId());
         setTimestamp(logEntry.getTimestamp());
         setType(logEntry.getType());
-        setHttpRequests(logEntry.getHttpUpdatedRequests());
-        setHttpResponse(logEntry.getHttpUpdatedResponse());
+        setHttpRequests(logEntry.getHttpUpdatedRequests(configuration));
+        setHttpResponse(logEntry.getHttpUpdatedResponse(configuration));
         setMessageFormat(logEntry.getMessageFormat());
         setArguments(logEntry.getArguments());
         if (logEntry.getThrowable() != null) {

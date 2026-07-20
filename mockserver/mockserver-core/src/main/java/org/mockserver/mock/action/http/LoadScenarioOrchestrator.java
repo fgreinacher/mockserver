@@ -1044,7 +1044,7 @@ public class LoadScenarioOrchestrator {
             }
         }
         // Feed the SLO sample store so the SLO verdict feature can read load-driven SLIs.
-        SloSampleStore.getInstance().record(TimeService.currentTimeMillis(), latencyMillis, error, Scope.FORWARD, host);
+        SloSampleStore.getInstance().record(configuration, TimeService.currentTimeMillis(), latencyMillis, error, Scope.FORWARD, host);
     }
 
     private static String hostOf(HttpRequest request) {

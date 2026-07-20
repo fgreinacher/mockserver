@@ -208,6 +208,20 @@
             <artifactId>hamcrest</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- bytecode analysis for ConfigurationCallSiteGuardTest (test scope only, not shipped) -->
+        <dependency>
+            <groupId>org.ow2.asm</groupId>
+            <artifactId>asm</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
+            chicory (WASM interpreter) is NOT declared here on purpose. It used to be declared
+            test-scope as a workaround while mockserver-core marked it <optional>true</optional>;
+            core now ships it non-optional so it reaches this module transitively at compile scope.
+            Re-adding a direct test-scope declaration would win Maven's nearest-wins mediation and
+            strip chicory back out of the assembled jar and Docker image, silently reverting the
+            packaging fix that WasmRuntimeShippedWithServerTest guards.
+        -->
     </dependencies>
 
     <build>

@@ -13,16 +13,17 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * for control-plane mutations. Oldest entries are evicted once the store reaches
  * its maximum capacity.
  * <p>
- * The singleton's capacity is fixed at construction (read once from
- * {@code controlPlaneAuditMaxEntries}), mirroring {@code DriftStore}. A
- * package-visible constructor exists for unit tests that need an isolated,
- * small-capacity instance.
+ * The singleton's initial capacity is read once from {@code controlPlaneAuditMaxEntries} at class
+ * initialization, but is NOT fixed for the process lifetime: {@link #setMaxSize(int)} resizes the
+ * store live, and is invoked when {@code controlPlaneAuditMaxEntries} changes via
+ * {@code PUT /mockserver/configuration}. A package-visible constructor exists for unit tests that
+ * need an isolated, small-capacity instance.
  */
 public class AuditStore {
 
     private static final AuditStore INSTANCE = new AuditStore(maxFromConfig());
 
-    private final int maxSize;
+    private volatile int maxSize;
     private final Deque<AuditEntry> entries = new ArrayDeque<>();
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
@@ -40,6 +41,36 @@ public class AuditStore {
 
     public static AuditStore getInstance() {
         return INSTANCE;
+    }
+
+    /**
+     * Resize the store. A SHRINK takes effect immediately: the oldest entries are discarded until
+     * the store fits the new capacity, rather than waiting for further audited mutations to push
+     * them out. Non-positive values are ignored (the existing capacity is retained), matching the
+     * constructor's treatment of a non-positive configured value.
+     *
+     * @param maxSize the new capacity
+     */
+    public void setMaxSize(int maxSize) {
+        if (maxSize <= 0) {
+            return;
+        }
+        lock.writeLock().lock();
+        try {
+            this.maxSize = maxSize;
+            while (entries.size() > maxSize) {
+                entries.pollFirst();
+            }
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * The store's current capacity.
+     */
+    public int getMaxSize() {
+        return maxSize;
     }
 
     public void add(AuditEntry entry) {

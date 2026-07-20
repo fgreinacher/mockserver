@@ -612,4 +612,139 @@ public class ChaosAutoHaltMonitorTest {
 
         assertThat("no halt when nothing is active to halt", monitor.getHaltCount(), is(0L));
     }
+
+    // ---------------------------------------------------------------------
+    // Configuration-instance precedence: values set on a Configuration instance
+    // (as PUT /mockserver/configuration does) must change observable behaviour,
+    // not be silently ignored in favour of the static ConfigurationProperties store.
+    // The monitor's only production caller is the static
+    // Metrics.incrementHttpChaosInjected(...), so the configuration is pushed in
+    // via setConfiguration(...) (wired from HttpState's constructor) rather than
+    // threaded through that static call chain.
+    // ---------------------------------------------------------------------
+
+    @Test
+    public void shouldHaltWhenEnabledOnConfigurationInstanceButDisabledStatically() {
+        // given - the STATIC store says auto-halt is off
+        ConfigurationProperties.chaosAutoHaltEnabled(false);
+        ConfigurationProperties.chaosAutoHaltErrorThreshold(3);
+        ConfigurationProperties.chaosAutoHaltWindowMillis(10_000L);
+
+        AtomicLong now = new AtomicLong(1000L);
+        ChaosAutoHaltMonitor monitor = new ChaosAutoHaltMonitor(now::get);
+        // but the instance says on, as a PUT /mockserver/configuration would
+        monitor.setConfiguration(org.mockserver.configuration.Configuration.configuration()
+            .chaosAutoHaltEnabled(true)
+            .chaosAutoHaltErrorThreshold(3L)
+            .chaosAutoHaltWindowMillis(10_000L));
+
+        ServiceChaosRegistry.getInstance().put("upstream.svc", httpChaosProfile().withErrorStatus(503));
+
+        monitor.recordError("error");
+        monitor.recordError("error");
+        monitor.recordError("error");
+
+        assertThat("instance enable must win over the static store",
+            monitor.getHaltCount(), is(1L));
+        assertThat(ServiceChaosRegistry.getInstance().entries().isEmpty(), is(true));
+    }
+
+    @Test
+    public void shouldNotHaltWhenDisabledOnConfigurationInstanceButEnabledStatically() {
+        // given - the STATIC store says auto-halt is on
+        ConfigurationProperties.chaosAutoHaltEnabled(true);
+        ConfigurationProperties.chaosAutoHaltErrorThreshold(3);
+        ConfigurationProperties.chaosAutoHaltWindowMillis(10_000L);
+
+        AtomicLong now = new AtomicLong(1000L);
+        ChaosAutoHaltMonitor monitor = new ChaosAutoHaltMonitor(now::get);
+        // but the instance says off
+        monitor.setConfiguration(org.mockserver.configuration.Configuration.configuration()
+            .chaosAutoHaltEnabled(false));
+
+        ServiceChaosRegistry.getInstance().put("upstream.svc", httpChaosProfile().withErrorStatus(503));
+
+        monitor.recordError("error");
+        monitor.recordError("error");
+        monitor.recordError("error");
+        monitor.recordError("error");
+
+        assertThat("instance disable must win over the static store",
+            monitor.getHaltCount(), is(0L));
+        assertThat(ServiceChaosRegistry.getInstance().entries().isEmpty(), is(false));
+    }
+
+    @Test
+    public void shouldUseErrorThresholdFromConfigurationInstance() {
+        // given - a high static threshold that would never be crossed here
+        ConfigurationProperties.chaosAutoHaltEnabled(true);
+        ConfigurationProperties.chaosAutoHaltErrorThreshold(100);
+        ConfigurationProperties.chaosAutoHaltWindowMillis(10_000L);
+
+        AtomicLong now = new AtomicLong(1000L);
+        ChaosAutoHaltMonitor monitor = new ChaosAutoHaltMonitor(now::get);
+        // but a low instance threshold
+        monitor.setConfiguration(org.mockserver.configuration.Configuration.configuration()
+            .chaosAutoHaltErrorThreshold(2L));
+
+        ServiceChaosRegistry.getInstance().put("upstream.svc", httpChaosProfile().withErrorStatus(503));
+
+        monitor.recordError("error");
+        assertThat(monitor.getHaltCount(), is(0L));
+        monitor.recordError("error");
+
+        assertThat("instance threshold must win over the static store",
+            monitor.getHaltCount(), is(1L));
+    }
+
+    @Test
+    public void shouldUseWindowMillisFromConfigurationInstance() {
+        // given - a huge static window in which nothing would ever expire
+        ConfigurationProperties.chaosAutoHaltEnabled(true);
+        ConfigurationProperties.chaosAutoHaltErrorThreshold(3);
+        ConfigurationProperties.chaosAutoHaltWindowMillis(600_000L);
+
+        AtomicLong now = new AtomicLong(1_000L);
+        ChaosAutoHaltMonitor monitor = new ChaosAutoHaltMonitor(now::get);
+        // but a tight 1s instance window
+        monitor.setConfiguration(org.mockserver.configuration.Configuration.configuration()
+            .chaosAutoHaltErrorThreshold(3L)
+            .chaosAutoHaltWindowMillis(1_000L));
+
+        ServiceChaosRegistry.getInstance().put("upstream.svc", httpChaosProfile().withErrorStatus(503));
+
+        monitor.recordError("error");
+        now.set(1_500L);
+        monitor.recordError("error");
+
+        // when - time moves well past the 1s instance window, then two more errors arrive.
+        // Under the instance window the first two have expired, so the window never reaches 3.
+        // Under the 600s static window nothing expires and the breaker would trip.
+        now.set(5_000L);
+        monitor.recordError("error");
+        monitor.recordError("error");
+
+        assertThat("instance window must win over the static store",
+            monitor.getHaltCount(), is(0L));
+        assertThat(monitor.currentWindowSize(), is(2));
+        assertThat(ServiceChaosRegistry.getInstance().entries().isEmpty(), is(false));
+    }
+
+    @Test
+    public void shouldFallBackToStaticStoreWhenNoConfigurationInstalled() {
+        // given - no configuration installed, so system-property/env/file users are unaffected
+        ConfigurationProperties.chaosAutoHaltEnabled(true);
+        ConfigurationProperties.chaosAutoHaltErrorThreshold(2);
+        ConfigurationProperties.chaosAutoHaltWindowMillis(10_000L);
+
+        AtomicLong now = new AtomicLong(1000L);
+        ChaosAutoHaltMonitor monitor = new ChaosAutoHaltMonitor(now::get);
+
+        ServiceChaosRegistry.getInstance().put("upstream.svc", httpChaosProfile().withErrorStatus(503));
+
+        monitor.recordError("error");
+        monitor.recordError("error");
+
+        assertThat(monitor.getHaltCount(), is(1L));
+    }
 }

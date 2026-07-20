@@ -45,12 +45,29 @@ public class LlmBackendResolver {
 
     private final Function<String, String> env;
 
+    /**
+     * The live server {@link org.mockserver.configuration.Configuration}, or {@code null} when the
+     * resolver is constructed without one. Every property read below prefers this instance and falls
+     * back to the static {@link ConfigurationProperties} store, so a backend configured over
+     * {@code PUT /mockserver/configuration} is actually used rather than silently ignored.
+     */
+    private final org.mockserver.configuration.Configuration configuration;
+
     public LlmBackendResolver() {
-        this(System::getenv);
+        this(System::getenv, null);
+    }
+
+    public LlmBackendResolver(org.mockserver.configuration.Configuration configuration) {
+        this(System::getenv, configuration);
     }
 
     public LlmBackendResolver(Function<String, String> env) {
+        this(env, null);
+    }
+
+    public LlmBackendResolver(Function<String, String> env, org.mockserver.configuration.Configuration configuration) {
         this.env = env;
+        this.configuration = configuration;
     }
 
     /**
@@ -82,7 +99,9 @@ public class LlmBackendResolver {
      * configured or unreadable (a parse error is logged, not thrown).
      */
     public Map<String, LlmBackend> namedBackends() {
-        String path = ConfigurationProperties.llmBackendsConfig();
+        String path = configuration != null
+            ? configuration.llmBackendsConfig()
+            : ConfigurationProperties.llmBackendsConfig();
         if (path == null || path.isEmpty()) {
             return new LinkedHashMap<>();
         }
@@ -147,7 +166,9 @@ public class LlmBackendResolver {
     }
 
     private Optional<LlmBackend> fromProperties() {
-        String providerStr = ConfigurationProperties.llmProvider();
+        String providerStr = configuration != null
+            ? configuration.llmProvider()
+            : ConfigurationProperties.llmProvider();
         Provider provider = parseProvider(providerStr);
         if (provider == null) {
             return Optional.empty();
@@ -155,11 +176,11 @@ public class LlmBackendResolver {
         return Optional.of(new LlmBackend(
             null,
             provider,
-            emptyToNull(ConfigurationProperties.llmBaseUrl()),
-            emptyToNull(ConfigurationProperties.llmApiKey()),
-            emptyToNull(ConfigurationProperties.llmModel()),
+            emptyToNull(configuration != null ? configuration.llmBaseUrl() : ConfigurationProperties.llmBaseUrl()),
+            emptyToNull(configuration != null ? configuration.llmApiKey() : ConfigurationProperties.llmApiKey()),
+            emptyToNull(configuration != null ? configuration.llmModel() : ConfigurationProperties.llmModel()),
             null,
-            ConfigurationProperties.llmRequestTimeoutMillis()
+            configuration != null ? configuration.llmRequestTimeoutMillis() : ConfigurationProperties.llmRequestTimeoutMillis()
         ));
     }
 

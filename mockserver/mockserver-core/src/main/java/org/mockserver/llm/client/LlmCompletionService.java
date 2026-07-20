@@ -58,13 +58,29 @@ public class LlmCompletionService {
             }
         });
 
+    /**
+     * The live server {@link org.mockserver.configuration.Configuration}, or {@code null}. Preferred
+     * over the static {@link ConfigurationProperties} store when resolving the per-request timeout,
+     * so a value set over {@code PUT /mockserver/configuration} actually takes effect.
+     */
+    private final org.mockserver.configuration.Configuration configuration;
+
     public LlmCompletionService(LlmTransport transport) {
-        this(transport, LlmClientRegistry.getInstance());
+        this(transport, LlmClientRegistry.getInstance(), null);
+    }
+
+    public LlmCompletionService(LlmTransport transport, org.mockserver.configuration.Configuration configuration) {
+        this(transport, LlmClientRegistry.getInstance(), configuration);
     }
 
     public LlmCompletionService(LlmTransport transport, LlmClientRegistry registry) {
+        this(transport, registry, null);
+    }
+
+    public LlmCompletionService(LlmTransport transport, LlmClientRegistry registry, org.mockserver.configuration.Configuration configuration) {
         this.transport = transport;
         this.registry = registry;
+        this.configuration = configuration;
     }
 
     /**
@@ -95,7 +111,9 @@ public class LlmCompletionService {
             // response read), as NettyHttpClient blocks on a single future.get(timeout).
             long timeout = backend.timeoutMillis() != null
                 ? backend.timeoutMillis()
-                : ConfigurationProperties.llmRequestTimeoutMillis();
+                : (configuration != null
+                    ? configuration.llmRequestTimeoutMillis()
+                    : ConfigurationProperties.llmRequestTimeoutMillis());
             HttpResponse response = transport.send(request, timeout);
             // Only a 2xx is a usable completion; 1xx/3xx/4xx/5xx all fail closed so a
             // redirect or error body never gets parsed into an empty completion and cached.

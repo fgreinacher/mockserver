@@ -973,6 +973,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop at DEBUG, so the first visible symptom was an unrelated `BindException` much later. Both now log at WARN,
   as does giving up while waiting for a stop to be confirmed. **Users may see new WARN messages** where a stop was
   previously failing silently.
+- **`PUT /mockserver/configuration` no longer silently ignores capacity properties.** A set of capacity properties
+  was accepted and echoed back in the response but resized nothing, because the value had been consumed once at
+  construction. `maxLogEntries`, `maxEventLogSizeInBytes`, `maxExpectations` and `controlPlaneAuditMaxEntries` are
+  now applied to the running server — the event-log deque, the expectation store and the control-plane audit ring
+  are resized in place, and a shrink evicts the excess immediately rather than waiting for further traffic.
+  `ringBufferSize` and `maxWebSocketExpectations` genuinely cannot be resized on a running server (an LMAX
+  Disruptor ring is a fixed array allocated at startup; the local callback registries are built once), so a PUT
+  that explicitly supplies a differing value now logs a WARN naming the ignored value and the value in force, and
+  resets the field to the in-force value so the response and any later `GET /mockserver/configuration` report the
+  truth. The request still succeeds, so a client that PUTs a whole configuration blob with unchanged values is
+  unaffected. **If you set any of these over the config API and adapted to them being ignored, they now take
+  effect** — in particular a reduced `maxLogEntries` or `maxExpectations` will now drop existing entries.
+- **`ringBufferSize` no longer doubles on every configuration round trip.** The power-of-two rounding returned the
+  next power STRICTLY greater than its input, so reading the resolved value and writing it back (as a
+  `GET /mockserver/configuration` followed by a `PUT` of the same blob does) grew it each time — 1024 became 2048,
+  then 4096. An exact power of two is now returned unchanged, as the documented "rounded up to the next power of
+  two" behaviour implies. **A configuration that explicitly sets `ringBufferSize` to an exact power of two now
+  allocates that many slots rather than twice as many.**
+- **SECURITY: `redactSecretsInLog` now actually redacts.** Enabling redaction on a `Configuration` instance or via
+  `PUT /mockserver/configuration` left `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `x-api-key`
+  and `api-key` headers in clear in the event log, the dashboard, the retrieval/export surface and the persisted
+  recorded-requests archive, because the redactor was built from the static store only. The redaction accessors now
+  take the effective `Configuration`, wired through `MockServerEventLog`, `RecordedRequestsFileSystemPersistence`,
+  the dashboard (`DashboardLogEntryDTO`) and the JSON log-message serializer.
+  **Anyone who enabled this flag through the instance or REST API and assumed secrets were masked was not protected;
+  they are now.** Setting it via system property, environment variable or property file was already effective and is
+  unchanged. **Note redaction is not retroactive:** the rendered view of a log entry is memoised on first read, so
+  entries already rendered before redaction was enabled keep their unredacted form. If secrets have already been
+  captured, enable redaction *and* clear the event log rather than relying on redaction alone. The companion
+  `fixtureBodyRedactFields` (which JSON body fields to mask) is resolved the same way — the instance value first,
+  the static store as the fallback — so the set of masked body fields is settable over the config API too.
+- **`llmCostBudgetUsd`, `rateLimitMaxNamedQuotas` and `maxLlmConversationBodySize` now take effect when set on a
+  `Configuration` instance or via the config API.** All three were enforced against the static store only, so the
+  LLM cost circuit-breaker never tripped, the named-quota memory cap was never applied, and the LLM conversation
+  body-size cap was never enforced at the configured value. Each enforcement site now prefers the instance value.
+- **`connectionLifecycleChaosEnabled` and `connectionLifecycleAutoHaltCountsRst` now take effect when set on a
+  `Configuration` instance or via the config API.** `NettyResponseWriter` already held the effective configuration
+  but read the static store for both flags.
+- **28 properties that existed only as system properties are now settable on a `Configuration` instance and via
+  `PUT /mockserver/configuration`.** The LLM backend settings (`llmProvider`, `llmModel`, `llmBaseUrl`,
+  `llmBackendsConfig`, `llmRequestTimeoutMillis`, `llmSemanticMatchingEnabled`, `llmVcrStrict`,
+  `llmInferUsageEnabled`, `llmOptimisationMaxCalls`), the OpenTelemetry settings (`otelEndpoint`, `otelTracesEnabled`,
+  `otelMetricsEnabled`, `otelMetricsExportIntervalSeconds`, `otelMetricsTemporality`), the Prometheus remote-write
+  settings (`prometheusRemoteWriteEnabled`, `…Url`, `…BasicAuthUsername`, `…Headers`, `…IntervalSeconds`,
+  `…ProtocolVersion`), plus `stopDrainMillis`, `regexMatchingTimeoutMillis`, `xpathMatchingTimeoutMillis`,
+  `customJsonUnitMatchersClass` and `fixtureBodyRedactFields`, had no `Configuration` accessor and no `ConfigurationDTO`
+  field at all, so they could only ever be set at startup. They now round-trip through the config API like every other
+  property. Setting them by system property, environment variable or properties file is unchanged.
+- **The three name-obvious credential properties are write-only on the configuration API.** `llmApiKey`,
+  `prometheusRemoteWriteBasicAuthPassword` and `prometheusRemoteWriteBearerToken` can be set via a `Configuration`
+  instance or `PUT /mockserver/configuration`, but `GET /mockserver/configuration` returns `***REDACTED***` in their
+  place, including a value originally supplied by system property or environment variable. Applying a previously
+  retrieved (masked) configuration back is safe: a masked value is ignored rather than written, so a `GET`-then-`PUT`
+  round trip cannot silently overwrite one of these credentials with the placeholder.
+- **KNOWN GAP — credentials embedded *inside* `llmBackendsConfig` and `prometheusRemoteWriteHeaders` are NOT masked and
+  ARE disclosed by `GET /mockserver/configuration`.** These two properties are now settable and readable over the
+  configuration API, and both can legitimately carry secrets in their values: `llmBackendsConfig` is a JSON document
+  whose backend entries each hold an `apiKey`, and `prometheusRemoteWriteHeaders` is an arbitrary header list that
+  typically contains `Authorization` or an `Api-Key`. The write-only masking above is keyed on the whole-property name,
+  so it does not reach a secret nested in a value, and `GET` therefore returns these two in clear once set. On a
+  control plane left unauthenticated (the default) anyone who can reach it can read them back. **If you set either
+  property with an embedded secret, protect the control plane (`controlPlane*Authentication*`) or do not rely on the
+  endpoint keeping the secret private.** Per-field / per-header redaction is a planned follow-up; until it lands this
+  is the documented behaviour, not an oversight.
+- **SLO tracking, chaos auto-halt and preemption-simulation properties now take effect when set on a
+  `Configuration` instance or via the config API.** `sloTrackingEnabled`, `sloWindowMaxSamples` and
+  `sloWindowRetentionMillis` (SLO sample store), `chaosAutoHaltEnabled`, `chaosAutoHaltErrorThreshold` and
+  `chaosAutoHaltWindowMillis` (chaos auto-halt circuit-breaker), and `preemptionSimulationMaxDrainMillis` were all
+  enforced against the static store only. In particular the auto-halt eviction window read the static value in two
+  places, so even a partially-wired fix would have left eviction ignoring the configured window.
 - Fixed FILE-type response bodies being silently dropped during serialization. The `HttpResponseSerializer` and
   `HttpResponseDTOSerializer` whitelist body types when writing the `body` field and had no branch for `FileBody`,
   so a response configured with a file body was serialized without it (issue #2430). Both serializers now preserve

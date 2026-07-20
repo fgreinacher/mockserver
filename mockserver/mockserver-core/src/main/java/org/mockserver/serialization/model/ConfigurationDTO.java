@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import org.mockserver.configuration.Configuration;
+import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.socket.tls.ForwardProxyTLSX509CertificatesTrustManager;
 import org.slf4j.event.Level;
 
@@ -178,6 +179,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Integer rateLimitMaxNamedQuotas;
     private Boolean connectionLifecycleChaosEnabled;
     private Long preemptionSimulationMaxDrainMillis;
+    private Long stopDrainMillis;
     private Boolean connectionLifecycleAutoHaltCountsRst;
     private Boolean sloTrackingEnabled;
     private Long sloWindowRetentionMillis;
@@ -302,6 +304,43 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private String asyncMqttBrokerUrl;
     private String asyncAmqpUri;
     private Integer asyncRecordedMessageMaxEntries;
+
+    private String llmProvider;
+    private String llmModel;
+    private String llmBaseUrl;
+    private String llmBackendsConfig;
+    private Long llmRequestTimeoutMillis;
+    private Boolean llmSemanticMatchingEnabled;
+    private Boolean llmInferUsageEnabled;
+    private Boolean llmVcrStrict;
+    private Integer llmOptimisationMaxCalls;
+    private String fixtureBodyRedactFields;
+    private String otelEndpoint;
+    private Boolean otelMetricsEnabled;
+    private Boolean otelTracesEnabled;
+    private Long otelMetricsExportIntervalSeconds;
+    private String otelMetricsTemporality;
+    private Boolean prometheusRemoteWriteEnabled;
+    private String prometheusRemoteWriteUrl;
+    private Long prometheusRemoteWriteIntervalSeconds;
+    private String prometheusRemoteWriteBasicAuthUsername;
+    private String prometheusRemoteWriteHeaders;
+    private String prometheusRemoteWriteProtocolVersion;
+    private Long regexMatchingTimeoutMillis;
+    private Long xpathMatchingTimeoutMillis;
+    private String customJsonUnitMatchersClass;
+
+    // ---------------------------------------------------------------------------------------------
+    // WRITE-ONLY CREDENTIALS
+    //
+    // These three fields hold the REAL secret in memory so buildObject()/applyTo() stay fully
+    // functional, but their JSON getters return ConfigurationProperties.REDACTED_VALUE, so
+    // GET /mockserver/configuration never emits the real value. See maskCredential(...) and
+    // isMaskedCredential(...) below for the read mask and the round-trip guard respectively.
+    // ---------------------------------------------------------------------------------------------
+    private String llmApiKey;
+    private String prometheusRemoteWriteBearerToken;
+    private String prometheusRemoteWriteBasicAuthPassword;
 
     public ConfigurationDTO() {
     }
@@ -488,6 +527,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.rateLimitMaxNamedQuotas = configuration.rateLimitMaxNamedQuotas();
             this.connectionLifecycleChaosEnabled = configuration.connectionLifecycleChaosEnabled();
             this.preemptionSimulationMaxDrainMillis = configuration.preemptionSimulationMaxDrainMillis();
+            this.stopDrainMillis = configuration.stopDrainMillis();
             this.connectionLifecycleAutoHaltCountsRst = configuration.connectionLifecycleAutoHaltCountsRst();
             this.sloTrackingEnabled = configuration.sloTrackingEnabled();
             this.sloWindowRetentionMillis = configuration.sloWindowRetentionMillis();
@@ -613,6 +653,37 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.asyncMqttBrokerUrl = configuration.asyncMqttBrokerUrl();
             this.asyncAmqpUri = configuration.asyncAmqpUri();
             this.asyncRecordedMessageMaxEntries = configuration.asyncRecordedMessageMaxEntries();
+
+            this.llmProvider = configuration.llmProvider();
+            this.llmModel = configuration.llmModel();
+            this.llmBaseUrl = configuration.llmBaseUrl();
+            this.llmBackendsConfig = configuration.llmBackendsConfig();
+            this.llmRequestTimeoutMillis = configuration.llmRequestTimeoutMillis();
+            this.llmSemanticMatchingEnabled = configuration.llmSemanticMatchingEnabled();
+            this.llmInferUsageEnabled = configuration.llmInferUsageEnabled();
+            this.llmVcrStrict = configuration.llmVcrStrict();
+            this.llmOptimisationMaxCalls = configuration.llmOptimisationMaxCalls();
+            this.fixtureBodyRedactFields = configuration.fixtureBodyRedactFields();
+            this.otelEndpoint = configuration.otelEndpoint();
+            this.otelMetricsEnabled = configuration.otelMetricsEnabled();
+            this.otelTracesEnabled = configuration.otelTracesEnabled();
+            this.otelMetricsExportIntervalSeconds = configuration.otelMetricsExportIntervalSeconds();
+            this.otelMetricsTemporality = configuration.otelMetricsTemporality();
+            this.prometheusRemoteWriteEnabled = configuration.prometheusRemoteWriteEnabled();
+            this.prometheusRemoteWriteUrl = configuration.prometheusRemoteWriteUrl();
+            this.prometheusRemoteWriteIntervalSeconds = configuration.prometheusRemoteWriteIntervalSeconds();
+            this.prometheusRemoteWriteBasicAuthUsername = configuration.prometheusRemoteWriteBasicAuthUsername();
+            this.prometheusRemoteWriteHeaders = configuration.prometheusRemoteWriteHeaders();
+            this.prometheusRemoteWriteProtocolVersion = configuration.prometheusRemoteWriteProtocolVersion();
+            this.regexMatchingTimeoutMillis = configuration.regexMatchingTimeoutMillis();
+            this.xpathMatchingTimeoutMillis = configuration.xpathMatchingTimeoutMillis();
+            this.customJsonUnitMatchersClass = configuration.customJsonUnitMatchersClass();
+
+            // write-only credentials: the REAL value is copied into the DTO so buildObject()/applyTo()
+            // remain fully functional; the masking happens on the JSON getters, not here
+            this.llmApiKey = configuration.llmApiKey();
+            this.prometheusRemoteWriteBearerToken = configuration.prometheusRemoteWriteBearerToken();
+            this.prometheusRemoteWriteBasicAuthPassword = configuration.prometheusRemoteWriteBasicAuthPassword();
         }
     }
 
@@ -851,6 +922,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.rateLimitMaxNamedQuotas(rateLimitMaxNamedQuotas);
         configuration.connectionLifecycleChaosEnabled(connectionLifecycleChaosEnabled);
         configuration.preemptionSimulationMaxDrainMillis(preemptionSimulationMaxDrainMillis);
+        configuration.stopDrainMillis(stopDrainMillis);
         configuration.connectionLifecycleAutoHaltCountsRst(connectionLifecycleAutoHaltCountsRst);
         configuration.sloTrackingEnabled(sloTrackingEnabled);
         configuration.sloWindowRetentionMillis(sloWindowRetentionMillis);
@@ -984,7 +1056,66 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.asyncAmqpUri(asyncAmqpUri);
         configuration.asyncRecordedMessageMaxEntries(asyncRecordedMessageMaxEntries);
 
+        configuration.llmProvider(llmProvider);
+        configuration.llmModel(llmModel);
+        configuration.llmBaseUrl(llmBaseUrl);
+        configuration.llmBackendsConfig(llmBackendsConfig);
+        configuration.llmRequestTimeoutMillis(llmRequestTimeoutMillis);
+        configuration.llmSemanticMatchingEnabled(llmSemanticMatchingEnabled);
+        configuration.llmInferUsageEnabled(llmInferUsageEnabled);
+        configuration.llmVcrStrict(llmVcrStrict);
+        configuration.llmOptimisationMaxCalls(llmOptimisationMaxCalls);
+        configuration.fixtureBodyRedactFields(fixtureBodyRedactFields);
+        configuration.otelEndpoint(otelEndpoint);
+        configuration.otelMetricsEnabled(otelMetricsEnabled);
+        configuration.otelTracesEnabled(otelTracesEnabled);
+        configuration.otelMetricsExportIntervalSeconds(otelMetricsExportIntervalSeconds);
+        configuration.otelMetricsTemporality(otelMetricsTemporality);
+        configuration.prometheusRemoteWriteEnabled(prometheusRemoteWriteEnabled);
+        configuration.prometheusRemoteWriteUrl(prometheusRemoteWriteUrl);
+        configuration.prometheusRemoteWriteIntervalSeconds(prometheusRemoteWriteIntervalSeconds);
+        configuration.prometheusRemoteWriteBasicAuthUsername(prometheusRemoteWriteBasicAuthUsername);
+        configuration.prometheusRemoteWriteHeaders(prometheusRemoteWriteHeaders);
+        configuration.prometheusRemoteWriteProtocolVersion(prometheusRemoteWriteProtocolVersion);
+        configuration.regexMatchingTimeoutMillis(regexMatchingTimeoutMillis);
+        configuration.xpathMatchingTimeoutMillis(xpathMatchingTimeoutMillis);
+        configuration.customJsonUnitMatchersClass(customJsonUnitMatchersClass);
+
+        // write-only credentials: a value echoed back from a masked GET carries the literal mask, which
+        // must never become the credential — leave the field unset so the Configuration falls back to
+        // the static store rather than being poisoned with "***REDACTED***"
+        if (!isMaskedCredential(llmApiKey)) {
+            configuration.llmApiKey(llmApiKey);
+        }
+        if (!isMaskedCredential(prometheusRemoteWriteBearerToken)) {
+            configuration.prometheusRemoteWriteBearerToken(prometheusRemoteWriteBearerToken);
+        }
+        if (!isMaskedCredential(prometheusRemoteWriteBasicAuthPassword)) {
+            configuration.prometheusRemoteWriteBasicAuthPassword(prometheusRemoteWriteBasicAuthPassword);
+        }
+
         return configuration;
+    }
+
+    /**
+     * True when an incoming credential value is the redaction mask emitted by a previous
+     * {@code GET /mockserver/configuration}, rather than a real secret.
+     *
+     * <p>This is the round-trip guard: a client that does GET-then-PUT of the whole configuration blob
+     * (the dashboard, an operator with curl, a config-as-code tool) would otherwise write the literal
+     * {@code ***REDACTED***} over a working credential and silently break outbound auth.
+     */
+    private static boolean isMaskedCredential(String value) {
+        return ConfigurationProperties.REDACTED_VALUE.equals(value);
+    }
+
+    /**
+     * The value emitted over JSON for a write-only credential: the shared redaction mask whenever a
+     * value is present, otherwise {@code null} (so an unset credential stays absent from the JSON under
+     * {@code NON_NULL} inclusion rather than advertising a secret that does not exist).
+     */
+    private static String maskCredential(String value) {
+        return value == null || value.isEmpty() ? null : ConfigurationProperties.REDACTED_VALUE;
     }
 
     public void applyTo(Configuration target) {
@@ -1412,6 +1543,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (preemptionSimulationMaxDrainMillis != null) {
             target.preemptionSimulationMaxDrainMillis(preemptionSimulationMaxDrainMillis);
         }
+        if (stopDrainMillis != null) {
+            target.stopDrainMillis(stopDrainMillis);
+        }
         if (connectionLifecycleAutoHaltCountsRst != null) {
             target.connectionLifecycleAutoHaltCountsRst(connectionLifecycleAutoHaltCountsRst);
         }
@@ -1783,6 +1917,90 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (asyncRecordedMessageMaxEntries != null) {
             target.asyncRecordedMessageMaxEntries(asyncRecordedMessageMaxEntries);
+        }
+        if (llmProvider != null) {
+            target.llmProvider(llmProvider);
+        }
+        if (llmModel != null) {
+            target.llmModel(llmModel);
+        }
+        if (llmBaseUrl != null) {
+            target.llmBaseUrl(llmBaseUrl);
+        }
+        if (llmBackendsConfig != null) {
+            target.llmBackendsConfig(llmBackendsConfig);
+        }
+        if (llmRequestTimeoutMillis != null) {
+            target.llmRequestTimeoutMillis(llmRequestTimeoutMillis);
+        }
+        if (llmSemanticMatchingEnabled != null) {
+            target.llmSemanticMatchingEnabled(llmSemanticMatchingEnabled);
+        }
+        if (llmInferUsageEnabled != null) {
+            target.llmInferUsageEnabled(llmInferUsageEnabled);
+        }
+        if (llmVcrStrict != null) {
+            target.llmVcrStrict(llmVcrStrict);
+        }
+        if (llmOptimisationMaxCalls != null) {
+            target.llmOptimisationMaxCalls(llmOptimisationMaxCalls);
+        }
+        if (fixtureBodyRedactFields != null) {
+            target.fixtureBodyRedactFields(fixtureBodyRedactFields);
+        }
+        if (otelEndpoint != null) {
+            target.otelEndpoint(otelEndpoint);
+        }
+        if (otelMetricsEnabled != null) {
+            target.otelMetricsEnabled(otelMetricsEnabled);
+        }
+        if (otelTracesEnabled != null) {
+            target.otelTracesEnabled(otelTracesEnabled);
+        }
+        if (otelMetricsExportIntervalSeconds != null) {
+            target.otelMetricsExportIntervalSeconds(otelMetricsExportIntervalSeconds);
+        }
+        if (otelMetricsTemporality != null) {
+            target.otelMetricsTemporality(otelMetricsTemporality);
+        }
+        if (prometheusRemoteWriteEnabled != null) {
+            target.prometheusRemoteWriteEnabled(prometheusRemoteWriteEnabled);
+        }
+        if (prometheusRemoteWriteUrl != null) {
+            target.prometheusRemoteWriteUrl(prometheusRemoteWriteUrl);
+        }
+        if (prometheusRemoteWriteIntervalSeconds != null) {
+            target.prometheusRemoteWriteIntervalSeconds(prometheusRemoteWriteIntervalSeconds);
+        }
+        if (prometheusRemoteWriteBasicAuthUsername != null) {
+            target.prometheusRemoteWriteBasicAuthUsername(prometheusRemoteWriteBasicAuthUsername);
+        }
+        if (prometheusRemoteWriteHeaders != null) {
+            target.prometheusRemoteWriteHeaders(prometheusRemoteWriteHeaders);
+        }
+        if (prometheusRemoteWriteProtocolVersion != null) {
+            target.prometheusRemoteWriteProtocolVersion(prometheusRemoteWriteProtocolVersion);
+        }
+        if (regexMatchingTimeoutMillis != null) {
+            target.regexMatchingTimeoutMillis(regexMatchingTimeoutMillis);
+        }
+        if (xpathMatchingTimeoutMillis != null) {
+            target.xpathMatchingTimeoutMillis(xpathMatchingTimeoutMillis);
+        }
+        if (customJsonUnitMatchersClass != null) {
+            target.customJsonUnitMatchersClass(customJsonUnitMatchersClass);
+        }
+        // write-only credentials: null means "not supplied" (leave the existing credential alone) and
+        // the redaction mask means "this is the value a masked GET handed me" — which must ALSO leave
+        // the existing credential alone, or a GET-then-PUT round trip silently destroys it
+        if (llmApiKey != null && !isMaskedCredential(llmApiKey)) {
+            target.llmApiKey(llmApiKey);
+        }
+        if (prometheusRemoteWriteBearerToken != null && !isMaskedCredential(prometheusRemoteWriteBearerToken)) {
+            target.prometheusRemoteWriteBearerToken(prometheusRemoteWriteBearerToken);
+        }
+        if (prometheusRemoteWriteBasicAuthPassword != null && !isMaskedCredential(prometheusRemoteWriteBasicAuthPassword)) {
+            target.prometheusRemoteWriteBasicAuthPassword(prometheusRemoteWriteBasicAuthPassword);
         }
     }
 
@@ -3083,6 +3301,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
         return this;
     }
 
+    public Long getStopDrainMillis() {
+        return stopDrainMillis;
+    }
+
+    public ConfigurationDTO setStopDrainMillis(Long stopDrainMillis) {
+        this.stopDrainMillis = stopDrainMillis;
+        return this;
+    }
+
     public Boolean getConnectionLifecycleAutoHaltCountsRst() {
         return connectionLifecycleAutoHaltCountsRst;
     }
@@ -4202,6 +4429,274 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setAsyncRecordedMessageMaxEntries(Integer asyncRecordedMessageMaxEntries) {
         this.asyncRecordedMessageMaxEntries = asyncRecordedMessageMaxEntries;
+        return this;
+    }
+
+    public String getLlmProvider() {
+        return llmProvider;
+    }
+
+    public ConfigurationDTO setLlmProvider(String llmProvider) {
+        this.llmProvider = llmProvider;
+        return this;
+    }
+
+    public String getLlmModel() {
+        return llmModel;
+    }
+
+    public ConfigurationDTO setLlmModel(String llmModel) {
+        this.llmModel = llmModel;
+        return this;
+    }
+
+    public String getLlmBaseUrl() {
+        return llmBaseUrl;
+    }
+
+    public ConfigurationDTO setLlmBaseUrl(String llmBaseUrl) {
+        this.llmBaseUrl = llmBaseUrl;
+        return this;
+    }
+
+    public String getLlmBackendsConfig() {
+        return llmBackendsConfig;
+    }
+
+    public ConfigurationDTO setLlmBackendsConfig(String llmBackendsConfig) {
+        this.llmBackendsConfig = llmBackendsConfig;
+        return this;
+    }
+
+    public Long getLlmRequestTimeoutMillis() {
+        return llmRequestTimeoutMillis;
+    }
+
+    public ConfigurationDTO setLlmRequestTimeoutMillis(Long llmRequestTimeoutMillis) {
+        this.llmRequestTimeoutMillis = llmRequestTimeoutMillis;
+        return this;
+    }
+
+    public Boolean getLlmSemanticMatchingEnabled() {
+        return llmSemanticMatchingEnabled;
+    }
+
+    public ConfigurationDTO setLlmSemanticMatchingEnabled(Boolean llmSemanticMatchingEnabled) {
+        this.llmSemanticMatchingEnabled = llmSemanticMatchingEnabled;
+        return this;
+    }
+
+    public Boolean getLlmInferUsageEnabled() {
+        return llmInferUsageEnabled;
+    }
+
+    public ConfigurationDTO setLlmInferUsageEnabled(Boolean llmInferUsageEnabled) {
+        this.llmInferUsageEnabled = llmInferUsageEnabled;
+        return this;
+    }
+
+    public Boolean getLlmVcrStrict() {
+        return llmVcrStrict;
+    }
+
+    public ConfigurationDTO setLlmVcrStrict(Boolean llmVcrStrict) {
+        this.llmVcrStrict = llmVcrStrict;
+        return this;
+    }
+
+    public Integer getLlmOptimisationMaxCalls() {
+        return llmOptimisationMaxCalls;
+    }
+
+    public ConfigurationDTO setLlmOptimisationMaxCalls(Integer llmOptimisationMaxCalls) {
+        this.llmOptimisationMaxCalls = llmOptimisationMaxCalls;
+        return this;
+    }
+
+    public String getFixtureBodyRedactFields() {
+        return fixtureBodyRedactFields;
+    }
+
+    public ConfigurationDTO setFixtureBodyRedactFields(String fixtureBodyRedactFields) {
+        this.fixtureBodyRedactFields = fixtureBodyRedactFields;
+        return this;
+    }
+
+    public String getOtelEndpoint() {
+        return otelEndpoint;
+    }
+
+    public ConfigurationDTO setOtelEndpoint(String otelEndpoint) {
+        this.otelEndpoint = otelEndpoint;
+        return this;
+    }
+
+    public Boolean getOtelMetricsEnabled() {
+        return otelMetricsEnabled;
+    }
+
+    public ConfigurationDTO setOtelMetricsEnabled(Boolean otelMetricsEnabled) {
+        this.otelMetricsEnabled = otelMetricsEnabled;
+        return this;
+    }
+
+    public Boolean getOtelTracesEnabled() {
+        return otelTracesEnabled;
+    }
+
+    public ConfigurationDTO setOtelTracesEnabled(Boolean otelTracesEnabled) {
+        this.otelTracesEnabled = otelTracesEnabled;
+        return this;
+    }
+
+    public Long getOtelMetricsExportIntervalSeconds() {
+        return otelMetricsExportIntervalSeconds;
+    }
+
+    public ConfigurationDTO setOtelMetricsExportIntervalSeconds(Long otelMetricsExportIntervalSeconds) {
+        this.otelMetricsExportIntervalSeconds = otelMetricsExportIntervalSeconds;
+        return this;
+    }
+
+    public String getOtelMetricsTemporality() {
+        return otelMetricsTemporality;
+    }
+
+    public ConfigurationDTO setOtelMetricsTemporality(String otelMetricsTemporality) {
+        this.otelMetricsTemporality = otelMetricsTemporality;
+        return this;
+    }
+
+    public Boolean getPrometheusRemoteWriteEnabled() {
+        return prometheusRemoteWriteEnabled;
+    }
+
+    public ConfigurationDTO setPrometheusRemoteWriteEnabled(Boolean prometheusRemoteWriteEnabled) {
+        this.prometheusRemoteWriteEnabled = prometheusRemoteWriteEnabled;
+        return this;
+    }
+
+    public String getPrometheusRemoteWriteUrl() {
+        return prometheusRemoteWriteUrl;
+    }
+
+    public ConfigurationDTO setPrometheusRemoteWriteUrl(String prometheusRemoteWriteUrl) {
+        this.prometheusRemoteWriteUrl = prometheusRemoteWriteUrl;
+        return this;
+    }
+
+    public Long getPrometheusRemoteWriteIntervalSeconds() {
+        return prometheusRemoteWriteIntervalSeconds;
+    }
+
+    public ConfigurationDTO setPrometheusRemoteWriteIntervalSeconds(Long prometheusRemoteWriteIntervalSeconds) {
+        this.prometheusRemoteWriteIntervalSeconds = prometheusRemoteWriteIntervalSeconds;
+        return this;
+    }
+
+    public String getPrometheusRemoteWriteBasicAuthUsername() {
+        return prometheusRemoteWriteBasicAuthUsername;
+    }
+
+    public ConfigurationDTO setPrometheusRemoteWriteBasicAuthUsername(String prometheusRemoteWriteBasicAuthUsername) {
+        this.prometheusRemoteWriteBasicAuthUsername = prometheusRemoteWriteBasicAuthUsername;
+        return this;
+    }
+
+    public String getPrometheusRemoteWriteHeaders() {
+        return prometheusRemoteWriteHeaders;
+    }
+
+    public ConfigurationDTO setPrometheusRemoteWriteHeaders(String prometheusRemoteWriteHeaders) {
+        this.prometheusRemoteWriteHeaders = prometheusRemoteWriteHeaders;
+        return this;
+    }
+
+    public String getPrometheusRemoteWriteProtocolVersion() {
+        return prometheusRemoteWriteProtocolVersion;
+    }
+
+    public ConfigurationDTO setPrometheusRemoteWriteProtocolVersion(String prometheusRemoteWriteProtocolVersion) {
+        this.prometheusRemoteWriteProtocolVersion = prometheusRemoteWriteProtocolVersion;
+        return this;
+    }
+
+    public Long getRegexMatchingTimeoutMillis() {
+        return regexMatchingTimeoutMillis;
+    }
+
+    public ConfigurationDTO setRegexMatchingTimeoutMillis(Long regexMatchingTimeoutMillis) {
+        this.regexMatchingTimeoutMillis = regexMatchingTimeoutMillis;
+        return this;
+    }
+
+    public Long getXpathMatchingTimeoutMillis() {
+        return xpathMatchingTimeoutMillis;
+    }
+
+    public ConfigurationDTO setXpathMatchingTimeoutMillis(Long xpathMatchingTimeoutMillis) {
+        this.xpathMatchingTimeoutMillis = xpathMatchingTimeoutMillis;
+        return this;
+    }
+
+    public String getCustomJsonUnitMatchersClass() {
+        return customJsonUnitMatchersClass;
+    }
+
+    public ConfigurationDTO setCustomJsonUnitMatchersClass(String customJsonUnitMatchersClass) {
+        this.customJsonUnitMatchersClass = customJsonUnitMatchersClass;
+        return this;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // WRITE-ONLY CREDENTIAL ACCESSORS
+    //
+    // The getters are what Jackson serializes for GET /mockserver/configuration, so they return the
+    // shared redaction mask and NEVER the real secret. The functional paths (buildObject()/applyTo())
+    // read the private fields directly, so full functionality is preserved while the wire stays clean.
+    // Each has an @JsonIgnore-d *Raw accessor for in-process callers that legitimately need the real
+    // value; those are excluded from serialization so they cannot leak through a JSON round trip.
+    // ---------------------------------------------------------------------------------------------
+
+    public String getLlmApiKey() {
+        return maskCredential(llmApiKey);
+    }
+
+    @JsonIgnore
+    public String getLlmApiKeyRawValue() {
+        return llmApiKey;
+    }
+
+    public ConfigurationDTO setLlmApiKey(String llmApiKey) {
+        this.llmApiKey = llmApiKey;
+        return this;
+    }
+
+    public String getPrometheusRemoteWriteBearerToken() {
+        return maskCredential(prometheusRemoteWriteBearerToken);
+    }
+
+    @JsonIgnore
+    public String getPrometheusRemoteWriteBearerTokenRawValue() {
+        return prometheusRemoteWriteBearerToken;
+    }
+
+    public ConfigurationDTO setPrometheusRemoteWriteBearerToken(String prometheusRemoteWriteBearerToken) {
+        this.prometheusRemoteWriteBearerToken = prometheusRemoteWriteBearerToken;
+        return this;
+    }
+
+    public String getPrometheusRemoteWriteBasicAuthPassword() {
+        return maskCredential(prometheusRemoteWriteBasicAuthPassword);
+    }
+
+    @JsonIgnore
+    public String getPrometheusRemoteWriteBasicAuthPasswordRawValue() {
+        return prometheusRemoteWriteBasicAuthPassword;
+    }
+
+    public ConfigurationDTO setPrometheusRemoteWriteBasicAuthPassword(String prometheusRemoteWriteBasicAuthPassword) {
+        this.prometheusRemoteWriteBasicAuthPassword = prometheusRemoteWriteBasicAuthPassword;
         return this;
     }
 }

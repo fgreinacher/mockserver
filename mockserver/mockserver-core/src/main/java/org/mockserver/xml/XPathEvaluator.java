@@ -17,12 +17,37 @@ import java.util.Map;
 
 public class XPathEvaluator extends ObjectWithReflectiveEqualsHashCodeToString {
 
+    /**
+     * The injected server configuration is ambient context, not part of this evaluator's identity:
+     * two evaluators for the same expression are equal regardless of which {@code Configuration}
+     * supplied their timeout. Excluding it also keeps {@code toString()} from dumping the entire
+     * configuration object into log output.
+     */
+    private static final String[] EXCLUDED_FIELDS = {"configuration"};
+
+    @Override
+    protected String[] fieldsExcludedFromEqualsAndHashCode() {
+        return EXCLUDED_FIELDS;
+    }
+
     private final boolean namespaceAware;
     private final XPathExpression xPathExpression;
     private final String expression;
     private final StringToXmlDocumentParser stringToXmlDocumentParser = new StringToXmlDocumentParser();
+    /**
+     * The live server {@link org.mockserver.configuration.Configuration}, or {@code null} when the
+     * evaluator is constructed without one. Preferred over the static {@link ConfigurationProperties}
+     * store when resolving the xpath evaluation timeout, so a value set over
+     * {@code PUT /mockserver/configuration} actually takes effect.
+     */
+    private final org.mockserver.configuration.Configuration configuration;
 
     public XPathEvaluator(String expression, Map<String, String> namespacePrefixes) {
+        this(expression, namespacePrefixes, null);
+    }
+
+    public XPathEvaluator(String expression, Map<String, String> namespacePrefixes, org.mockserver.configuration.Configuration configuration) {
+        this.configuration = configuration;
         XPath xpath = XPathFactory.newInstance().newXPath();
         if (namespacePrefixes != null) {
             xpath.setNamespaceContext(new NamespaceContext() {
@@ -56,7 +81,9 @@ public class XPathEvaluator extends ObjectWithReflectiveEqualsHashCodeToString {
     public Object evaluateXPathExpression(String xmlAsString, StringToXmlDocumentParser.ErrorLogger errorLogger, QName returnType) {
         try {
             org.w3c.dom.Document document = stringToXmlDocumentParser.buildDocument(xmlAsString, errorLogger, namespaceAware);
-            long timeoutMillis = ConfigurationProperties.xpathMatchingTimeoutMillis();
+            long timeoutMillis = configuration != null
+                ? configuration.xpathMatchingTimeoutMillis()
+                : ConfigurationProperties.xpathMatchingTimeoutMillis();
             Object onTimeout = defaultForReturnType(returnType);
             return MatchingTimeoutExecutor.callWithTimeout(
                 () -> xPathExpression.evaluate(document, returnType),

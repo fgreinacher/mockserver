@@ -45,7 +45,21 @@ public final class CustomJsonUnitMatcherLoader {
      * provider is configured or the provider cannot be loaded.
      */
     public static Map<String, Matcher<?>> load() {
-        String className = ConfigurationProperties.customJsonUnitMatchersClass();
+        return load(null);
+    }
+
+    /**
+     * As {@link #load()} but preferring the {@code customJsonUnitMatchersClass} value carried on the
+     * supplied {@link org.mockserver.configuration.Configuration} instance, falling back to the
+     * static {@link ConfigurationProperties} store when it is {@code null}. This is what makes a
+     * provider class configured over {@code PUT /mockserver/configuration} actually load.
+     *
+     * @param configuration the live server configuration, or {@code null} to read the static store
+     */
+    public static Map<String, Matcher<?>> load(org.mockserver.configuration.Configuration configuration) {
+        String className = configuration != null
+            ? configuration.customJsonUnitMatchersClass()
+            : ConfigurationProperties.customJsonUnitMatchersClass();
         CacheEntry current = cache;
         if (!isNotBlank(className)) {
             if (current != EMPTY) {

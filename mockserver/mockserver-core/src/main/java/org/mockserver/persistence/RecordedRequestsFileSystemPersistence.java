@@ -40,8 +40,12 @@ public class RecordedRequestsFileSystemPersistence {
     // serialises serialize + write + flush as one atomic unit, matching the sibling persistence;
     // the consumer thread is single-threaded today but the lock keeps append/stop safe if that changes
     private final ReentrantLock writeOrderLock = new ReentrantLock();
+    // retained so the redaction-aware accessors below can consult this server's Configuration
+    // instance rather than only the global static store
+    private final Configuration configuration;
 
     public RecordedRequestsFileSystemPersistence(Configuration configuration, MockServerLogger mockServerLogger) {
+        this.configuration = configuration;
         if (configuration.persistRecordedRequestsToDisk()) {
             this.mockServerLogger = mockServerLogger;
             this.filePath = Paths.get(configuration.persistedRecordedRequestsPath());
@@ -94,13 +98,13 @@ public class RecordedRequestsFileSystemPersistence {
             // mockserver.redactSecretsInLog exactly like the in-memory retrieval path; they
             // return the raw object UNCHANGED when redaction is off (the default), so there is
             // zero behavioural change by default and secrets are masked when the flag is on
-            RequestDefinition requestDefinition = logEntry.getRedactedHttpRequest();
+            RequestDefinition requestDefinition = logEntry.getRedactedHttpRequest(configuration);
             if (!(requestDefinition instanceof HttpRequest)) {
                 return;
             }
             HttpRequestAndHttpResponse httpRequestAndHttpResponse = new HttpRequestAndHttpResponse()
                 .withHttpRequest((HttpRequest) requestDefinition)
-                .withHttpResponse(logEntry.getRedactedHttpResponse());
+                .withHttpResponse(logEntry.getRedactedHttpResponse(configuration));
             // collapse the pretty-printed JSON to a single NDJSON line (string values escape real
             // newlines as \n, so only the formatting newlines are affected — the JSON stays valid)
             String line = serializer.serialize(httpRequestAndHttpResponse).replaceAll("\\s*\\n\\s*", " ").trim();

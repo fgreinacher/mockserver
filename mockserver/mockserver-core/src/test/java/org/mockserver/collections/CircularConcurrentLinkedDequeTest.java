@@ -9,6 +9,7 @@ import java.util.List;
 import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.empty;
 
 import static org.hamcrest.core.Is.is;
 /**
@@ -217,6 +218,65 @@ public class CircularConcurrentLinkedDequeTest {
 
         // then
         assertThat(queue.size(), is(maxSize));
+    }
+
+    @Test
+    public void shouldEvictImmediatelyWhenMaxSizeShrunk() {
+        // given - a full deque recording every eviction
+        List<String> evicted = new ArrayList<>();
+        CircularConcurrentLinkedDeque<String> queue = new CircularConcurrentLinkedDeque<>(5, evicted::add);
+        queue.add("a");
+        queue.add("b");
+        queue.add("c");
+        queue.add("d");
+        queue.add("e");
+        assertThat(queue.size(), is(5));
+
+        // when - the bound is shrunk (as a live maxLogEntries change does)
+        queue.setMaxSize(2);
+
+        // then - the oldest entries are evicted straight away, without waiting for another add
+        assertThat(queue.size(), is(2));
+        assertThat(queue, contains("d", "e"));
+        assertThat(evicted, contains("a", "b", "c"));
+    }
+
+    @Test
+    public void shouldEvictImmediatelyWhenMaxBytesShrunk() {
+        // given - a byte-budgeted deque holding 30 bytes of elements
+        List<String> evicted = new ArrayList<>();
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(100, 100, String::length, evicted::add);
+        queue.add("aaaaaaaaaa");
+        queue.add("bbbbbbbbbb");
+        queue.add("cccccccccc");
+        assertThat(queue.size(), is(3));
+
+        // when - the byte budget is shrunk below the current total
+        queue.setMaxBytes(15);
+
+        // then - the oldest entries are evicted straight away until the total fits
+        assertThat(queue.size(), is(1));
+        assertThat(queue, contains("cccccccccc"));
+        assertThat(evicted, contains("aaaaaaaaaa", "bbbbbbbbbb"));
+    }
+
+    @Test
+    public void shouldNotEvictWhenMaxSizeGrown() {
+        // given
+        List<String> evicted = new ArrayList<>();
+        CircularConcurrentLinkedDeque<String> queue = new CircularConcurrentLinkedDeque<>(2, evicted::add);
+        queue.add("a");
+        queue.add("b");
+
+        // when - the bound is raised
+        queue.setMaxSize(10);
+        queue.add("c");
+
+        // then - nothing evicted and the new headroom is usable
+        assertThat(queue.size(), is(3));
+        assertThat(queue, contains("a", "b", "c"));
+        assertThat(evicted, is(empty()));
     }
 
 }

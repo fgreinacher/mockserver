@@ -30,11 +30,29 @@ public class GenAiSpanExporter {
     }
 
     public static GenAiSpanExporter startIfEnabled() {
-        if (!ConfigurationProperties.otelTracesEnabled()) {
+        return startIfEnabled(null);
+    }
+
+    /**
+     * As {@link #startIfEnabled()} but preferring the values carried on the supplied
+     * {@link org.mockserver.configuration.Configuration} instance, falling back to the static
+     * {@link ConfigurationProperties} store for each value the instance leaves unset, so trace
+     * export settings applied over {@code PUT /mockserver/configuration} take effect here.
+     *
+     * @param configuration the live server configuration, or {@code null} to read the static store
+     */
+    public static GenAiSpanExporter startIfEnabled(org.mockserver.configuration.Configuration configuration) {
+        boolean enabled = configuration != null
+            ? configuration.otelTracesEnabled()
+            : ConfigurationProperties.otelTracesEnabled();
+        if (!enabled) {
             return null;
         }
         try {
-            String endpoint = OtelEndpoints.traces(ConfigurationProperties.otelEndpoint());
+            String configuredEndpoint = configuration != null
+                ? configuration.otelEndpoint()
+                : ConfigurationProperties.otelEndpoint();
+            String endpoint = OtelEndpoints.traces(configuredEndpoint);
             OtlpHttpSpanExporter spanExporter = endpoint != null
                 ? OtlpHttpSpanExporter.builder().setEndpoint(endpoint).build()
                 : OtlpHttpSpanExporter.builder().build();

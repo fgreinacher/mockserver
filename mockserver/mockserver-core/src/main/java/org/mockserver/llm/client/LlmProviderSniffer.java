@@ -32,6 +32,46 @@ public final class LlmProviderSniffer {
     }
 
     /**
+     * The live server {@link org.mockserver.configuration.Configuration}, installed by
+     * {@code HttpState}'s constructor via {@link #setConfiguration(org.mockserver.configuration.Configuration)}.
+     *
+     * <p>This class is a wholly-static utility invoked from several INDEPENDENT static chains that
+     * carry no configuration of their own — {@code LlmDatasetExporter.export(...)},
+     * {@code LlmOptimisationReportBuilder.build(...)}, {@code McpToolRegistry}'s analysis tools, and
+     * {@code HttpActionHandler}'s forward path all call {@code sniff}/{@code detectForAnalysis}
+     * statically. Threading a {@code Configuration} parameter down every one of those chains would be
+     * a wide, mechanical change across call sites that mostly do not otherwise touch configuration,
+     * so the value is instead PUSHED IN ONCE at startup — the same approach already used by
+     * {@code ChaosAutoHaltMonitor.setConfiguration(...)} for the equivalent
+     * {@code Metrics.incrementHttpChaosInjected(...)} static chain.
+     *
+     * <p>This is exactly the {@code Configuration} instance that {@code PUT /mockserver/configuration}
+     * mutates, so provider/base-URL settings applied over the REST config API take effect here. When
+     * it is {@code null} (no server started — unit tests, client-only use) every read falls back to
+     * the static {@link ConfigurationProperties} store, so system-property/env/file users are
+     * unaffected.
+     */
+    private static volatile org.mockserver.configuration.Configuration installedConfiguration;
+
+    /**
+     * Install the live server configuration. Called by the runtime ({@code HttpState}'s constructor);
+     * a {@code null} argument is ignored so an already-installed configuration is never cleared.
+     */
+    public static void setConfiguration(org.mockserver.configuration.Configuration configuration) {
+        if (configuration != null) {
+            installedConfiguration = configuration;
+        }
+    }
+
+    /**
+     * Clear the installed configuration. Test-support only, so a test that installs a configuration
+     * cannot leak it into unrelated tests in the same JVM.
+     */
+    public static void resetConfiguration() {
+        installedConfiguration = null;
+    }
+
+    /**
      * Path fragments that indicate an LLM endpoint. Used to gate the configured-provider
      * fallback so non-LLM traffic to unknown hosts is never misclassified.
      * Checked case-insensitively.
@@ -372,7 +412,10 @@ public final class LlmProviderSniffer {
         }
 
         // Configured Ollama host: match against mockserver.llmBaseUrl
-        String configuredBaseUrl = ConfigurationProperties.llmBaseUrl();
+        org.mockserver.configuration.Configuration config = installedConfiguration;
+        String configuredBaseUrl = config != null
+            ? config.llmBaseUrl()
+            : ConfigurationProperties.llmBaseUrl();
         if (configuredBaseUrl != null && !configuredBaseUrl.isEmpty()) {
             String configuredHost = extractHostFromUrl(configuredBaseUrl);
             if (configuredHost != null && lowerHost.equals(configuredHost.toLowerCase())) {
@@ -406,7 +449,10 @@ public final class LlmProviderSniffer {
         if (!looksLikeLlmPath(path)) {
             return Optional.empty();
         }
-        String configured = ConfigurationProperties.llmProvider();
+        org.mockserver.configuration.Configuration config = installedConfiguration;
+        String configured = config != null
+            ? config.llmProvider()
+            : ConfigurationProperties.llmProvider();
         if (configured != null && !configured.isEmpty()) {
             try {
                 return Optional.of(Provider.valueOf(configured.toUpperCase()));

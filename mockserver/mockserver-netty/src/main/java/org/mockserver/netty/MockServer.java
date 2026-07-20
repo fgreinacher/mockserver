@@ -227,8 +227,8 @@ public class MockServer extends LifeCycle {
         // absent the endpoint gracefully responds 501 (Not Implemented).
         try {
             Class<?> asyncCp = Class.forName("org.mockserver.async.controlplane.AsyncApiControlPlaneImpl");
-            java.lang.reflect.Method register = asyncCp.getMethod("registerIfAvailable");
-            register.invoke(null);
+            java.lang.reflect.Method register = asyncCp.getMethod("registerIfAvailable", Configuration.class);
+            register.invoke(null, configuration);
         } catch (ClassNotFoundException ignored) {
             // mockserver-async not on classpath — AsyncAPI endpoints will return 501
         } catch (Exception e) {

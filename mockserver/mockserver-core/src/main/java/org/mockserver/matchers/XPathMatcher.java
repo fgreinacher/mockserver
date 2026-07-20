@@ -30,7 +30,8 @@ public class XPathMatcher extends BodyMatcher<String> {
         this.matcher = matcher;
         if (isNotBlank(matcher)) {
             try {
-                xPathEvaluator = new XPathEvaluator(matcher, namespacePrefixes);
+                xPathEvaluator = new XPathEvaluator(matcher, namespacePrefixes,
+                    mockServerLogger != null ? mockServerLogger.getConfiguration() : null);
             } catch (Throwable throwable) {
                 if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(DEBUG)) {
                     mockServerLogger.logEvent(
