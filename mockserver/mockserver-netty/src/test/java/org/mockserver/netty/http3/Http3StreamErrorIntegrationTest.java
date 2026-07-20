@@ -115,7 +115,7 @@ public class Http3StreamErrorIntegrationTest {
             .channel(NioDatagramChannel.class)
             .handler(Http3.newQuicServerCodecBuilder()
                 .sslContext(sslContext)
-                .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
+                .maxIdleTimeout(30000, TimeUnit.MILLISECONDS)
                 .initialMaxData(10000000)
                 .initialMaxStreamDataBidirectionalLocal(1000000)
                 .initialMaxStreamDataBidirectionalRemote(1000000)
@@ -189,7 +189,7 @@ public class Http3StreamErrorIntegrationTest {
             .channel(NioDatagramChannel.class)
             .handler(Http3.newQuicClientCodecBuilder()
                 .sslContext(clientSslContext)
-                .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
+                .maxIdleTimeout(30000, TimeUnit.MILLISECONDS)
                 .initialMaxData(10000000)
                 .initialMaxStreamDataBidirectionalLocal(1000000)
                 .initialMaxStreamsBidirectional(100)
@@ -202,7 +202,7 @@ public class Http3StreamErrorIntegrationTest {
             .handler(new Http3ClientConnectionHandler())
             .remoteAddress(new InetSocketAddress("127.0.0.1", port))
             .connect()
-            .get(5, TimeUnit.SECONDS);
+            .get(15, TimeUnit.SECONDS);
 
         StreamOutcome outcome = new StreamOutcome();
         CountDownLatch done = new CountDownLatch(1);

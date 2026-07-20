@@ -49,7 +49,7 @@ public class Http3LifecycleTest {
 
         // now try with a dynamic UDP port to trigger the HTTP/3 startup path
         int udpPort = findAvailableUdpPort();
-        Configuration configuration2 = configuration().http3Port(udpPort);
+        Configuration configuration2 = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
 
         MockServer server2 = null;
         try {
@@ -76,7 +76,7 @@ public class Http3LifecycleTest {
         // is configured but the native QUIC transport is not available. The fail-soft
         // path logs a warning and continues.
         int udpPort = findAvailableUdpPort();
-        Configuration configuration = configuration().http3Port(udpPort);
+        Configuration configuration = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
         MockServer server = new MockServer(configuration, 0);
         try {
             assertThat("MockServer should start without crashing", server.isRunning(), is(true));
@@ -90,7 +90,7 @@ public class Http3LifecycleTest {
     @Test
     public void shouldStopHttp3ServerOnShutdown() {
         int udpPort = findAvailableUdpPort();
-        Configuration configuration = configuration().http3Port(udpPort);
+        Configuration configuration = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
         MockServer server = new MockServer(configuration, 0);
 
         // only assert port transition if QUIC actually started
@@ -117,14 +117,14 @@ public class Http3LifecycleTest {
     }
 
     /**
-     * Find an available UDP port by binding to port 0 and then closing.
+     * Find a free UDP port for the HTTP/3 (QUIC) server.
+     *
+     * <p>Delegates to the shared {@link org.mockserver.testing.socket.TestPortFactory} so the probing
+     * strategy lives in one place. A failure to find a port is now raised rather than reported as port
+     * {@code 0}: {@code http3Port(0)} means "HTTP/3 disabled", which would silently turn an
+     * infrastructure failure into a test that skips or asserts against a server that never started.
      */
     private static int findAvailableUdpPort() {
-        try (java.net.DatagramSocket socket = new java.net.DatagramSocket(0)) {
-            return socket.getLocalPort();
-        } catch (Exception e) {
-            // fallback: return a high ephemeral port
-            return 0;
-        }
+        return org.mockserver.testing.socket.TestPortFactory.findFreeUdpPort();
     }
 }

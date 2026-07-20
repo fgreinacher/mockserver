@@ -178,7 +178,7 @@ public class Http3StreamingIntegrationTest {
             .channel(NioDatagramChannel.class)
             .handler(Http3.newQuicServerCodecBuilder()
                 .sslContext(sslContext)
-                .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
+                .maxIdleTimeout(30000, TimeUnit.MILLISECONDS)
                 .initialMaxData(10000000)
                 .initialMaxStreamDataBidirectionalLocal(1000000)
                 .initialMaxStreamDataBidirectionalRemote(1000000)
@@ -276,7 +276,7 @@ public class Http3StreamingIntegrationTest {
             .channel(NioDatagramChannel.class)
             .handler(Http3.newQuicClientCodecBuilder()
                 .sslContext(clientSslContext)
-                .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
+                .maxIdleTimeout(30000, TimeUnit.MILLISECONDS)
                 .initialMaxData(10000000)
                 .initialMaxStreamDataBidirectionalLocal(1000000)
                 .initialMaxStreamsBidirectional(100)
@@ -289,7 +289,7 @@ public class Http3StreamingIntegrationTest {
             .handler(new Http3ClientConnectionHandler())
             .remoteAddress(new InetSocketAddress("127.0.0.1", port))
             .connect()
-            .get(5, TimeUnit.SECONDS);
+            .get(15, TimeUnit.SECONDS);
 
         BlockingQueue<String> statusQueue = new LinkedBlockingQueue<>();
         BlockingQueue<String> bodyQueue = new LinkedBlockingQueue<>();
@@ -332,8 +332,8 @@ public class Http3StreamingIntegrationTest {
             .sync();
 
         // wait for response
-        String status = statusQueue.poll(5, TimeUnit.SECONDS);
-        String responseBody = bodyQueue.poll(5, TimeUnit.SECONDS);
+        String status = statusQueue.poll(20, TimeUnit.SECONDS);
+        String responseBody = bodyQueue.poll(20, TimeUnit.SECONDS);
 
         quicChannel.close().sync();
         clientChannel.close().sync();

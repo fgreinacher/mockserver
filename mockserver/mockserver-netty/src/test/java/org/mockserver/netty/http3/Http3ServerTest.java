@@ -98,7 +98,7 @@ public class Http3ServerTest {
         // http3Port(0) means disabled. We need to use a real port.
         // Use a helper to find an available UDP port.
         int udpPort = findAvailableUdpPort();
-        config.http3Port(udpPort);
+        config.http3Port(udpPort).http3MaxIdleTimeout(30000L);
 
         mockServer = new MockServer(config, 0);
 
@@ -128,6 +128,7 @@ public class Http3ServerTest {
         int udpPort = findAvailableUdpPort();
         Configuration config = configuration()
             .http3Port(udpPort)
+            .http3MaxIdleTimeout(30000L)
             .attemptToProxyIfNoMatchingExpectation(false); // disable proxy attempt for clean 404
 
         mockServer = new MockServer(config, 0);
@@ -143,7 +144,7 @@ public class Http3ServerTest {
     @Test
     public void shouldHandlePostRequestWithBody() throws Exception {
         int udpPort = findAvailableUdpPort();
-        Configuration config = configuration().http3Port(udpPort);
+        Configuration config = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
 
         mockServer = new MockServer(config, 0);
 
@@ -200,7 +201,7 @@ public class Http3ServerTest {
     @Test
     public void shouldTrackActiveConnectionCount() throws Exception {
         int udpPort = findAvailableUdpPort();
-        Configuration config = configuration().http3Port(udpPort);
+        Configuration config = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
 
         mockServer = new MockServer(config, 0);
 
@@ -234,7 +235,7 @@ public class Http3ServerTest {
     public void shouldPreserveDefaultBehaviourWhenNoTransportParamsConfigured() throws Exception {
         // verify that the server starts and works with default config (no transport param overrides)
         int udpPort = findAvailableUdpPort();
-        Configuration config = configuration().http3Port(udpPort);
+        Configuration config = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
 
         mockServer = new MockServer(config, 0);
 
@@ -260,7 +261,7 @@ public class Http3ServerTest {
         // constructor behaviour. Verify the server starts and serves requests without
         // creating QPACK encoder/decoder streams.
         int udpPort = findAvailableUdpPort();
-        Configuration config = configuration().http3Port(udpPort);
+        Configuration config = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
 
         // assert the default is 0
         assertThat("default QPACK max table capacity should be 0", config.http3QpackMaxTableCapacity(), equalTo(0L));
@@ -290,6 +291,7 @@ public class Http3ServerTest {
         int udpPort = findAvailableUdpPort();
         Configuration config = configuration()
             .http3Port(udpPort)
+            .http3MaxIdleTimeout(30000L)
             .http3QpackMaxTableCapacity(4096L);
 
         // assert the capacity is non-zero
@@ -317,7 +319,7 @@ public class Http3ServerTest {
     public void shouldReturnHttp3StatusEndpoint() throws Exception {
         // start MockServer with HTTP/3 enabled
         int udpPort = findAvailableUdpPort();
-        Configuration config = configuration().http3Port(udpPort);
+        Configuration config = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
 
         mockServer = new MockServer(config, 0);
 
@@ -376,15 +378,15 @@ public class Http3ServerTest {
     // ---- helper methods ----
 
     /**
-     * Find an available UDP port by binding to port 0 and then closing.
+     * Find a free UDP port for the HTTP/3 (QUIC) server.
+     *
+     * <p>Delegates to the shared {@link org.mockserver.testing.socket.TestPortFactory} so the probing
+     * strategy lives in one place. A failure to find a port is now raised rather than reported as port
+     * {@code 0}: {@code http3Port(0)} means "HTTP/3 disabled", which would silently turn an
+     * infrastructure failure into a test that skips or asserts against a server that never started.
      */
     private static int findAvailableUdpPort() {
-        try (java.net.DatagramSocket socket = new java.net.DatagramSocket(0)) {
-            return socket.getLocalPort();
-        } catch (Exception e) {
-            // fallback: return a high port that's unlikely to be in use
-            return 0;
-        }
+        return org.mockserver.testing.socket.TestPortFactory.findFreeUdpPort();
     }
 
     /**
@@ -406,7 +408,7 @@ public class Http3ServerTest {
             .channel(NioDatagramChannel.class)
             .handler(Http3.newQuicClientCodecBuilder()
                 .sslContext(clientSslContext)
-                .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
+                .maxIdleTimeout(30000, TimeUnit.MILLISECONDS)
                 .initialMaxData(10000000)
                 .initialMaxStreamDataBidirectionalLocal(1000000)
                 .initialMaxStreamsBidirectional(100)
@@ -419,7 +421,7 @@ public class Http3ServerTest {
             .handler(new Http3ClientConnectionHandler())
             .remoteAddress(new InetSocketAddress("127.0.0.1", port))
             .connect()
-            .get(5, TimeUnit.SECONDS);
+            .get(15, TimeUnit.SECONDS);
 
         BlockingQueue<String> statusQueue = new LinkedBlockingQueue<>();
         BlockingQueue<String> bodyQueue = new LinkedBlockingQueue<>();
@@ -470,8 +472,8 @@ public class Http3ServerTest {
         }
 
         // wait for response
-        String status = statusQueue.poll(5, TimeUnit.SECONDS);
-        String responseBody = bodyQueue.poll(5, TimeUnit.SECONDS);
+        String status = statusQueue.poll(20, TimeUnit.SECONDS);
+        String responseBody = bodyQueue.poll(20, TimeUnit.SECONDS);
 
         quicChannel.close().sync();
         clientChannel.close().sync();

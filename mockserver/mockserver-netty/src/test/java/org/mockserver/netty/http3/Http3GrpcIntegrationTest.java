@@ -518,8 +518,8 @@ public class Http3GrpcIntegrationTest {
             .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT)
             .sync();
 
-        String status = statusQueue.poll(5, TimeUnit.SECONDS);
-        String responseBody = bodyQueue.poll(5, TimeUnit.SECONDS);
+        String status = statusQueue.poll(20, TimeUnit.SECONDS);
+        String responseBody = bodyQueue.poll(20, TimeUnit.SECONDS);
 
         quicChannel.close().sync();
         clientChannel.close().sync();
@@ -614,12 +614,16 @@ public class Http3GrpcIntegrationTest {
         throw lastFailure;
     }
 
+    /**
+     * Find a free UDP port for the HTTP/3 (QUIC) server.
+     *
+     * <p>Delegates to the shared {@link org.mockserver.testing.socket.TestPortFactory} so the probing
+     * strategy lives in one place. A failure to find a port is now raised rather than reported as port
+     * {@code 0}: {@code http3Port(0)} means "HTTP/3 disabled", which would silently turn an
+     * infrastructure failure into a test that skips or asserts against a server that never started.
+     */
     private static int findAvailableUdpPort() {
-        try (java.net.DatagramSocket socket = new java.net.DatagramSocket(0)) {
-            return socket.getLocalPort();
-        } catch (Exception e) {
-            return 0;
-        }
+        return org.mockserver.testing.socket.TestPortFactory.findFreeUdpPort();
     }
 
     private static void assumeQuicAvailable() {

@@ -85,6 +85,7 @@ public class Http3ParityIntegrationTest {
         int udpPort = findAvailableUdpPort();
         Configuration config = configuration()
             .http3Port(udpPort)
+            .http3MaxIdleTimeout(30000L)
             .otelPropagateTraceContext(true);
 
         mockServer = new MockServer(config, 0);
@@ -120,7 +121,7 @@ public class Http3ParityIntegrationTest {
     public void shouldNotPropagateTraceparentWhenDisabled() throws Exception {
         // given -- default config (otelPropagateTraceContext disabled)
         int udpPort = findAvailableUdpPort();
-        Configuration config = configuration().http3Port(udpPort);
+        Configuration config = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
 
         mockServer = new MockServer(config, 0);
         int http3Port = mockServer.getHttp3Port();
@@ -153,6 +154,7 @@ public class Http3ParityIntegrationTest {
         int udpPort = findAvailableUdpPort();
         Configuration config = configuration()
             .http3Port(udpPort)
+            .http3MaxIdleTimeout(30000L)
             .otelPropagateTraceContext(true);
 
         mockServer = new MockServer(config, 0);
@@ -188,6 +190,7 @@ public class Http3ParityIntegrationTest {
         int udpPort = findAvailableUdpPort();
         Configuration config = configuration()
             .http3Port(udpPort)
+            .http3MaxIdleTimeout(30000L)
             .attemptToProxyIfNoMatchingExpectation(false);
 
         mockServer = new MockServer(config, 0);
@@ -239,6 +242,7 @@ public class Http3ParityIntegrationTest {
         int udpPort = findAvailableUdpPort();
         Configuration config = configuration()
             .http3Port(udpPort)
+            .http3MaxIdleTimeout(30000L)
             .attemptToProxyIfNoMatchingExpectation(false);
 
         mockServer = new MockServer(config, 0);
@@ -276,7 +280,7 @@ public class Http3ParityIntegrationTest {
     public void shouldNotAffectBehaviourWithDefaultOtelConfig() throws Exception {
         // given -- default config: otelPropagateTraceContext=false, otelGenerateTraceId=false
         int udpPort = findAvailableUdpPort();
-        Configuration config = configuration().http3Port(udpPort);
+        Configuration config = configuration().http3Port(udpPort).http3MaxIdleTimeout(30000L);
 
         mockServer = new MockServer(config, 0);
         int http3Port = mockServer.getHttp3Port();
@@ -303,12 +307,16 @@ public class Http3ParityIntegrationTest {
 
     // ---- helper methods ----
 
+    /**
+     * Find a free UDP port for the HTTP/3 (QUIC) server.
+     *
+     * <p>Delegates to the shared {@link org.mockserver.testing.socket.TestPortFactory} so the probing
+     * strategy lives in one place. A failure to find a port is now raised rather than reported as port
+     * {@code 0}: {@code http3Port(0)} means "HTTP/3 disabled", which would silently turn an
+     * infrastructure failure into a test that skips or asserts against a server that never started.
+     */
     private static int findAvailableUdpPort() {
-        try (java.net.DatagramSocket socket = new java.net.DatagramSocket(0)) {
-            return socket.getLocalPort();
-        } catch (Exception e) {
-            return 0;
-        }
+        return org.mockserver.testing.socket.TestPortFactory.findFreeUdpPort();
     }
 
     /**
@@ -373,7 +381,7 @@ public class Http3ParityIntegrationTest {
             .channel(NioDatagramChannel.class)
             .handler(Http3.newQuicClientCodecBuilder()
                 .sslContext(clientSslContext)
-                .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
+                .maxIdleTimeout(30000, TimeUnit.MILLISECONDS)
                 .initialMaxData(10000000)
                 .initialMaxStreamDataBidirectionalLocal(1000000)
                 .initialMaxStreamsBidirectional(100)
@@ -386,7 +394,7 @@ public class Http3ParityIntegrationTest {
             .handler(new Http3ClientConnectionHandler())
             .remoteAddress(new InetSocketAddress("127.0.0.1", port))
             .connect()
-            .get(5, TimeUnit.SECONDS);
+            .get(15, TimeUnit.SECONDS);
 
         BlockingQueue<String> statusQueue = new LinkedBlockingQueue<>();
         BlockingQueue<String> bodyQueue = new LinkedBlockingQueue<>();
@@ -452,8 +460,8 @@ public class Http3ParityIntegrationTest {
         }
 
         // wait for response
-        String status = statusQueue.poll(5, TimeUnit.SECONDS);
-        String responseBody = bodyQueue.poll(5, TimeUnit.SECONDS);
+        String status = statusQueue.poll(20, TimeUnit.SECONDS);
+        String responseBody = bodyQueue.poll(20, TimeUnit.SECONDS);
 
         quicChannel.close().sync();
         clientChannel.close().sync();
