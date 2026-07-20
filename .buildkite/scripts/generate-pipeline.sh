@@ -41,13 +41,24 @@ fi
 
 STEPS=""
 
-trigger_if_changed() {
-  local path_regex="$1"
-  local pipeline_slug="$2"
-  local label="$3"
-  if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "$path_regex"; then
-    echo "--- :pipeline: Triggering ${label} (matched ${path_regex})"
-    STEPS="${STEPS}  - label: \":pipeline: ${label}\"
+# A server change alters the wire format every client library encodes against,
+# and test-fixtures/ is the shared parity corpus every client round-trips. Both
+# must run the client conformance suites, or wire drift ships with zero
+# non-Java verification (the client pipelines are otherwise gated only on their
+# own directory). mockserver-maven-plugin/ is excluded — it has its own
+# pipeline and does not define the wire format.
+SERVER_OR_FIXTURES_CHANGED=false
+if printf '%s\n' "$CHANGED_FILES" | grep -E -- "^mockserver/" | grep -qvE -- "^mockserver/mockserver-maven-plugin/"; then
+  SERVER_OR_FIXTURES_CHANGED=true
+fi
+if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "^test-fixtures/"; then
+  SERVER_OR_FIXTURES_CHANGED=true
+fi
+
+emit_trigger() {
+  local pipeline_slug="$1"
+  local label="$2"
+  STEPS="${STEPS}  - label: \":pipeline: ${label}\"
     command: \".buildkite/scripts/trigger-pipeline.sh ${pipeline_slug} '${label}'\"
     timeout_in_minutes: 120
     agents:
@@ -57,21 +68,46 @@ trigger_if_changed() {
         - exit_status: -1
           limit: 2
 "
+}
+
+trigger_if_changed() {
+  local path_regex="$1"
+  local pipeline_slug="$2"
+  local label="$3"
+  if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "$path_regex"; then
+    echo "--- :pipeline: Triggering ${label} (matched ${path_regex})"
+    emit_trigger "$pipeline_slug" "$label"
   fi
 }
 
-# Match changes under mockserver/ excluding the maven-plugin submodule (which has its own pipeline)
-if printf '%s\n' "$CHANGED_FILES" | grep -E -- "^(mockserver/|mockserver-ui/)" | grep -qvE -- "^mockserver/mockserver-maven-plugin/"; then
-  trigger_if_changed "^(mockserver/|mockserver-ui/)" "mockserver-java" "MockServer Java"
+# Client pipelines additionally trigger on any server or shared-fixture change,
+# so wire-format drift is verified against every client library.
+trigger_client_if_changed() {
+  local path_regex="$1"
+  local pipeline_slug="$2"
+  local label="$3"
+  if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "$path_regex"; then
+    echo "--- :pipeline: Triggering ${label} (matched ${path_regex})"
+    emit_trigger "$pipeline_slug" "$label"
+  elif [ "$SERVER_OR_FIXTURES_CHANGED" = "true" ]; then
+    echo "--- :pipeline: Triggering ${label} (server / test-fixtures change — client conformance)"
+    emit_trigger "$pipeline_slug" "$label"
+  fi
+}
+
+# Match changes under mockserver/ excluding the maven-plugin submodule (which has its own pipeline).
+# test-fixtures/ is included: the Java model is round-tripped against the same shared corpus.
+if printf '%s\n' "$CHANGED_FILES" | grep -E -- "^(mockserver/|mockserver-ui/|test-fixtures/)" | grep -qvE -- "^mockserver/mockserver-maven-plugin/"; then
+  trigger_if_changed "^(mockserver/|mockserver-ui/|test-fixtures/)" "mockserver-java" "MockServer Java"
 fi
 trigger_if_changed "^mockserver-ui/" "mockserver-ui" "MockServer UI"
-trigger_if_changed "^(mockserver-node/|mockserver-client-node/|mockserver-testcontainers/node/)" "mockserver-node" "MockServer Node"
-trigger_if_changed "^(mockserver-client-python/|mockserver-testcontainers/python/)" "mockserver-python" "MockServer Python"
-trigger_if_changed "^mockserver-client-ruby/" "mockserver-ruby" "MockServer Ruby"
-trigger_if_changed "^(mockserver-client-go/|mockserver-testcontainers/go/)" "mockserver-go" "MockServer Go"
-trigger_if_changed "^(mockserver-client-dotnet/|mockserver-testcontainers/dotnet/)" "mockserver-dotnet" "MockServer .NET"
-trigger_if_changed "^(mockserver-client-rust/|mockserver-testcontainers/rust/)" "mockserver-rust" "MockServer Rust"
-trigger_if_changed "^mockserver-client-php/" "mockserver-php" "MockServer PHP"
+trigger_client_if_changed "^(mockserver-node/|mockserver-client-node/|mockserver-testcontainers/node/)" "mockserver-node" "MockServer Node"
+trigger_client_if_changed "^(mockserver-client-python/|mockserver-testcontainers/python/)" "mockserver-python" "MockServer Python"
+trigger_client_if_changed "^mockserver-client-ruby/" "mockserver-ruby" "MockServer Ruby"
+trigger_client_if_changed "^(mockserver-client-go/|mockserver-testcontainers/go/)" "mockserver-go" "MockServer Go"
+trigger_client_if_changed "^(mockserver-client-dotnet/|mockserver-testcontainers/dotnet/)" "mockserver-dotnet" "MockServer .NET"
+trigger_client_if_changed "^(mockserver-client-rust/|mockserver-testcontainers/rust/)" "mockserver-rust" "MockServer Rust"
+trigger_client_if_changed "^mockserver-client-php/" "mockserver-php" "MockServer PHP"
 trigger_if_changed "^(mockserver-vscode/|mockserver-jetbrains/)" "mockserver-editors" "MockServer Editors"
 trigger_if_changed "^mockserver/mockserver-maven-plugin/" "mockserver-maven-plugin" "MockServer Maven Plugin"
 trigger_if_changed "^mockserver-performance-test/" "mockserver-performance-test" "MockServer Performance Test"
