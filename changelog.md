@@ -171,6 +171,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **The Go client can now match a header, query parameter, cookie or path parameter whose value starts
+  with `!` or `?`.** MockServer's plain-string matcher form encodes negation as a leading `!` and
+  optionality as a leading `?`, and the server strips those markers unconditionally when reading. A value
+  whose own first character is a marker therefore could not be expressed: asking for "`X-Tag` is exactly
+  `!foo`" went over the wire bare and was read back as "`X-Tag` is anything but `foo`" — which matches
+  almost every request, so the expectation silently passed for the wrong reason rather than failing. The
+  Go client gains `MatcherValue` with `Literal`, `NotLiteral` and `OptionalLiteral`, and the request
+  builder gains `HeaderMatcher`, `QueryStringParameterMatcher`, `CookieMatcher` and
+  `PathParameterMatcher`; a value that the plain form would misread is sent as the object form
+  (`{"not":false,"value":"!foo"}`), which the server reads verbatim. This matches the escape the Java
+  client already had. Ambiguity is decided by re-parsing the plain form rather than by testing for a
+  leading marker, so every value that already round-tripped stays byte-identical on the wire — including
+  `NotLiteral("!foo")`, which still serialises as the shorter `"!!foo"`. The existing plain-string maps
+  and builder methods are unchanged and keep their current marker-parsing meaning, so this is additive.
+  `RetrieveActiveExpectations` and `RetrieveRecordedRequests` decode the object form too, so an
+  expectation carrying an escaped value survives being read back — including one written by a MockServer
+  or another client that emits the object form itself.
 - **The PHP client's action builders now carry nine further fields the server accepts.** `HttpError` and
   `HttpForward` could not express `delay`; `HttpResponse` could not express `trailers`,
   `generateFromSchema`, `statusCodeRange` or `recoverAfter`; `HttpSseResponse` and `HttpWebSocketResponse`

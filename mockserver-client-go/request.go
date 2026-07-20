@@ -1,5 +1,11 @@
 package mockserver
 
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+)
+
 // HttpRequest represents an HTTP request matcher for MockServer.
 type HttpRequest struct {
 	Method             string              `json:"method,omitempty"`
@@ -13,6 +19,22 @@ type HttpRequest struct {
 	SocketAddress      *SocketAddress      `json:"socketAddress,omitempty"`
 	PathParametersList map[string][]string `json:"pathParameters,omitempty"`
 	JWT                *Jwt                `json:"jwt,omitempty"`
+	// HeaderMatchers, QueryStringParameterMatchers, CookieMatchers and
+	// PathParameterMatchers express matcher values that the plain string maps
+	// above cannot. A value whose first character is '!' or '?' is a marker to
+	// the server and is stripped when read, so `Headers["X"] = []string{"!foo"}`
+	// asks for "X is anything but foo", not "X is !foo". A MatcherValue keeps
+	// the text and the flags apart and escapes to the object form only when the
+	// plain form would be misread -- see MatcherValue.
+	//
+	// When one of these is non-nil it REPLACES the corresponding plain map on
+	// the wire. They are additive so existing code using the plain maps keeps
+	// compiling and keeps its current meaning.
+	HeaderMatchers               map[string][]MatcherValue `json:"-"`
+	QueryStringParameterMatchers map[string][]MatcherValue `json:"-"`
+	CookieMatchers               map[string]MatcherValue   `json:"-"`
+	PathParameterMatchers        map[string][]MatcherValue `json:"-"`
+
 	// Not negates the whole request matcher (match everything except this).
 	Not *bool `json:"not,omitempty"`
 	// Protocol constrains the matcher to a wire protocol: "HTTP_1_1",
@@ -383,4 +405,254 @@ func (j *Jwt) WithHeader(header string) *Jwt {
 func (j *Jwt) WithScheme(scheme string) *Jwt {
 	j.Scheme = scheme
 	return j
+}
+
+// MarshalJSON serialises the request, letting the *Matchers maps stand in for
+// their plain-string counterparts when set. Without this the matcher maps would
+// be invisible on the wire (they carry `json:"-"`), and a value beginning with a
+// marker character could not be expressed at all.
+func (r HttpRequest) MarshalJSON() ([]byte, error) {
+	// a distinct type with no methods, so encoding/json does not recurse
+	type plain HttpRequest
+	aux := struct {
+		plain
+		Headers           interface{} `json:"headers,omitempty"`
+		QueryStringParams interface{} `json:"queryStringParameters,omitempty"`
+		Cookies           interface{} `json:"cookies,omitempty"`
+		PathParameters    interface{} `json:"pathParameters,omitempty"`
+	}{plain: plain(r)}
+
+	// the embedded plain still carries the original maps; blank them there and
+	// choose the effective value for each field explicitly
+	aux.plain.Headers = nil
+	aux.plain.QueryStringParams = nil
+	aux.plain.Cookies = nil
+	aux.plain.PathParametersList = nil
+
+	// len, not nil: aux.Headers is an interface{}, and `omitempty` drops only a
+	// NIL interface -- one holding an empty map still emits `{}`, which the
+	// plain fields never did.
+	if len(r.HeaderMatchers) > 0 {
+		aux.Headers = r.HeaderMatchers
+	} else if len(r.Headers) > 0 {
+		aux.Headers = r.Headers
+	}
+	// len, not nil: aux.QueryStringParams is an interface{}, and `omitempty` drops only a
+	// NIL interface -- one holding an empty map still emits `{}`, which the
+	// plain fields never did.
+	if len(r.QueryStringParameterMatchers) > 0 {
+		aux.QueryStringParams = r.QueryStringParameterMatchers
+	} else if len(r.QueryStringParams) > 0 {
+		aux.QueryStringParams = r.QueryStringParams
+	}
+	// len, not nil: aux.Cookies is an interface{}, and `omitempty` drops only a
+	// NIL interface -- one holding an empty map still emits `{}`, which the
+	// plain fields never did.
+	if len(r.CookieMatchers) > 0 {
+		aux.Cookies = r.CookieMatchers
+	} else if len(r.Cookies) > 0 {
+		aux.Cookies = r.Cookies
+	}
+	// len, not nil: aux.PathParameters is an interface{}, and `omitempty` drops only a
+	// NIL interface -- one holding an empty map still emits `{}`, which the
+	// plain fields never did.
+	if len(r.PathParameterMatchers) > 0 {
+		aux.PathParameters = r.PathParameterMatchers
+	} else if len(r.PathParametersList) > 0 {
+		aux.PathParameters = r.PathParametersList
+	}
+
+	return json.Marshal(aux)
+}
+
+// HeaderMatcher adds a header matcher whose values are taken verbatim, so a
+// value starting with '!' or '?' means itself rather than being read as a
+// negation or optionality marker.
+func (b *RequestBuilder) HeaderMatcher(name string, values ...MatcherValue) *RequestBuilder {
+	if b.request.HeaderMatchers == nil {
+		b.request.HeaderMatchers = make(map[string][]MatcherValue)
+		// carry over anything already set through the plain map so the two APIs
+		// can be mixed without the plain entries disappearing
+		for k, v := range b.request.Headers {
+			b.request.HeaderMatchers[k] = literals(v)
+		}
+	}
+	b.request.HeaderMatchers[name] = values
+	return b
+}
+
+// QueryStringParameterMatcher adds a query-string parameter matcher whose
+// values are taken verbatim. See HeaderMatcher.
+func (b *RequestBuilder) QueryStringParameterMatcher(name string, values ...MatcherValue) *RequestBuilder {
+	if b.request.QueryStringParameterMatchers == nil {
+		b.request.QueryStringParameterMatchers = make(map[string][]MatcherValue)
+		for k, v := range b.request.QueryStringParams {
+			b.request.QueryStringParameterMatchers[k] = literals(v)
+		}
+	}
+	b.request.QueryStringParameterMatchers[name] = values
+	return b
+}
+
+// CookieMatcher adds a cookie matcher whose value is taken verbatim. See
+// HeaderMatcher.
+func (b *RequestBuilder) CookieMatcher(name string, value MatcherValue) *RequestBuilder {
+	if b.request.CookieMatchers == nil {
+		b.request.CookieMatchers = make(map[string]MatcherValue)
+		for k, v := range b.request.Cookies {
+			b.request.CookieMatchers[k] = parsePlain(v)
+		}
+	}
+	b.request.CookieMatchers[name] = value
+	return b
+}
+
+// PathParameterMatcher adds a path parameter matcher whose values are taken
+// verbatim. See HeaderMatcher.
+func (b *RequestBuilder) PathParameterMatcher(name string, values ...MatcherValue) *RequestBuilder {
+	if b.request.PathParameterMatchers == nil {
+		b.request.PathParameterMatchers = make(map[string][]MatcherValue)
+		for k, v := range b.request.PathParametersList {
+			b.request.PathParameterMatchers[k] = literals(v)
+		}
+	}
+	b.request.PathParameterMatchers[name] = values
+	return b
+}
+
+// UnmarshalJSON is the read half of MarshalJSON.
+//
+// Without it the escape is write-only: the matcher maps carry `json:"-"`, so a
+// response containing the object form (`{"not":false,"value":"!foo"}`) fails to
+// decode into the plain `map[string][]string` fields with "cannot unmarshal
+// object into ... of type string". That is reachable from
+// RetrieveActiveExpectations and RetrieveRecordedRequests, and it is provoked by
+// this client's own output -- and by the server's, since a MockServer carrying
+// the same escape echoes the object form back.
+//
+// The four fields are decoded through MatcherValue, which accepts both wire
+// forms. A field whose values all round-trip through the plain form is mirrored
+// into the plain map and the matcher map is left nil, so plain-form traffic
+// decodes exactly as it always did and re-marshals byte-identically. Only a
+// field that genuinely needs the object form populates the matcher map.
+func (r *HttpRequest) UnmarshalJSON(data []byte) error {
+	// a distinct type with no methods, so encoding/json does not recurse
+	type plain HttpRequest
+	aux := struct {
+		*plain
+		Headers           json.RawMessage `json:"headers"`
+		QueryStringParams json.RawMessage `json:"queryStringParameters"`
+		Cookies           json.RawMessage `json:"cookies"`
+		PathParameters    json.RawMessage `json:"pathParameters"`
+	}{plain: (*plain)(r)}
+
+	// encoding/json reports the FIRST type mismatch but keeps decoding every other
+	// field, and callers rely on that. This model still types `path` and `method`
+	// as plain strings, so an expectation using their object form raises an
+	// UnmarshalTypeError even though the rest of the request decodes fine --
+	// and because encoding/json aborts a PARENT decode when a nested
+	// UnmarshalJSON returns, propagating it would drop every field decoded after
+	// httpRequest, including the enclosing Expectation's httpResponse.
+	//
+	// So exactly those two fields are tolerated, and NOTHING else: a mismatch on
+	// any other field (`secure`, `keepAlive`, ...) still propagates, because
+	// swallowing it would leave that field silently at its zero value and lose an
+	// error the stdlib used to surface. The two tolerated fields' gap is recorded
+	// as `httpRequest.path` and `httpRequest.method` in the round-trip fidelity
+	// harness's known-gaps.json, which is where it stays visible.
+	var typeErr *json.UnmarshalTypeError
+	if err := json.Unmarshal(data, &aux); err != nil {
+		if !errors.As(err, &typeErr) || !isToleratedTypeMismatch(typeErr) {
+			return err
+		}
+	}
+
+	if err := decodeMultiValueMatchers(aux.Headers, &r.Headers, &r.HeaderMatchers); err != nil {
+		return err
+	}
+	if err := decodeMultiValueMatchers(aux.QueryStringParams, &r.QueryStringParams, &r.QueryStringParameterMatchers); err != nil {
+		return err
+	}
+	if err := decodeMultiValueMatchers(aux.PathParameters, &r.PathParametersList, &r.PathParameterMatchers); err != nil {
+		return err
+	}
+	// typeErr is a tolerated path/method mismatch (see above) and is deliberately
+	// not returned; anything else already returned before reaching here.
+	_ = typeErr
+	return decodeSingleValueMatchers(aux.Cookies, &r.Cookies, &r.CookieMatchers)
+}
+
+// decodeMultiValueMatchers decodes a keyToMultiValue field, mirroring it into
+// the plain map when every value survives the plain form.
+func decodeMultiValueMatchers(raw json.RawMessage, plainOut *map[string][]string, matcherOut *map[string][]MatcherValue) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	decoded := map[string][]MatcherValue{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	needsMatchers := false
+	for _, values := range decoded {
+		for _, v := range values {
+			if v.ambiguous() {
+				needsMatchers = true
+			}
+		}
+	}
+	if needsMatchers {
+		*matcherOut = decoded
+		return nil
+	}
+	mirrored := make(map[string][]string, len(decoded))
+	for key, values := range decoded {
+		plainValues := make([]string, 0, len(values))
+		for _, v := range values {
+			plainValues = append(plainValues, v.serialise())
+		}
+		mirrored[key] = plainValues
+	}
+	*plainOut = mirrored
+	return nil
+}
+
+// decodeSingleValueMatchers is decodeMultiValueMatchers for a keyToValue field
+// (cookies), which carries one value per name rather than a list.
+func decodeSingleValueMatchers(raw json.RawMessage, plainOut *map[string]string, matcherOut *map[string]MatcherValue) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	decoded := map[string]MatcherValue{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	for _, v := range decoded {
+		if v.ambiguous() {
+			*matcherOut = decoded
+			return nil
+		}
+	}
+	mirrored := make(map[string]string, len(decoded))
+	for key, v := range decoded {
+		mirrored[key] = v.serialise()
+	}
+	*plainOut = mirrored
+	return nil
+}
+
+// isToleratedTypeMismatch reports whether a type mismatch is on `path` or
+// `method` -- the two fields whose object form this model cannot represent, and
+// the only two whose error must be swallowed so the parent decode can complete.
+//
+// The name is compared on its LAST segment because UnmarshalTypeError.Field is
+// qualified by the struct it was reached through: decoding via the embedded
+// `plain` alias reports "plain.path", not "path". Matching the whole string
+// against "path" therefore never fires, which would silently restore the
+// object-wide data loss this tolerance exists to prevent.
+func isToleratedTypeMismatch(typeErr *json.UnmarshalTypeError) bool {
+	field := typeErr.Field
+	if i := strings.LastIndex(field, "."); i >= 0 {
+		field = field[i+1:]
+	}
+	return field == "path" || field == "method"
 }
