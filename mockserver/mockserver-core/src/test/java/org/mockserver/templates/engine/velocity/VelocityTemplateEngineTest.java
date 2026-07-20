@@ -1187,4 +1187,63 @@ public class VelocityTemplateEngineTest {
         assertThat(uuids.size(), anyOf(is(200), is(1)));
     }
 
+    // ---- JSON-RPC id echoing ----
+
+    /**
+     * Every MCP and A2A mock builder (across all eight client languages) emits
+     * {@code "id": $!{request.jsonRpcRawId}}. A JSON-RPC notification carries no id, so before the
+     * fix that rendered to nothing and produced {@code {"jsonrpc":"2.0","result":{},"id": }} --
+     * not parseable JSON. The id must render as the JSON {@code null} literal instead.
+     */
+    @Test
+    public void shouldRenderJsonRpcRawIdAsNullLiteralForNotification() throws JsonProcessingException {
+        // given a JSON-RPC notification (no "id" member)
+        HttpRequest request = request()
+            .withMethod("POST")
+            .withPath("/mcp")
+            .withBody("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}");
+
+        // when the builders' response template is rendered
+        String rendered = new VelocityTemplateEngine(mockServerLogger, configuration)
+            .renderTemplate("{\"jsonrpc\": \"2.0\", \"result\": {}, \"id\": $!{request.jsonRpcRawId}}", request, null);
+
+        // then the result is parseable JSON carrying an explicit null id
+        assertThat(rendered, containsString("\"id\": null"));
+        assertThat(OBJECT_MAPPER.readTree(rendered).path("id").isNull(), is(true));
+    }
+
+    @Test
+    public void shouldEchoJsonRpcRawIdUnchangedForNumericAndStringIds() {
+        VelocityTemplateEngine engine = new VelocityTemplateEngine(mockServerLogger, configuration);
+        String template = "id=$!{request.jsonRpcRawId}";
+
+        HttpRequest numericId = request().withMethod("POST").withPath("/mcp")
+            .withBody("{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/list\"}");
+        assertThat(engine.renderTemplate(template, numericId, null), is("id=42"));
+
+        HttpRequest stringId = request().withMethod("POST").withPath("/mcp")
+            .withBody("{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"method\":\"tools/list\"}");
+        assertThat(engine.renderTemplate(template, stringId, null), is("id=\"abc\""));
+
+        // an explicit null id is already a valid JSON-RPC id and must stay null
+        HttpRequest nullId = request().withMethod("POST").withPath("/mcp")
+            .withBody("{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"tools/list\"}");
+        assertThat(engine.renderTemplate(template, nullId, null), is("id=null"));
+    }
+
+    /**
+     * A non-JSON-RPC request must be left alone -- {@code jsonRpcRawId} stays unset so a template
+     * referencing it renders empty exactly as before.
+     */
+    @Test
+    public void shouldNotSetJsonRpcRawIdForNonJsonRpcRequest() {
+        HttpRequest request = request().withMethod("POST").withPath("/other")
+            .withBody("{\"some\":\"payload\"}");
+
+        String rendered = new VelocityTemplateEngine(mockServerLogger, configuration)
+            .renderTemplate("id=$!{request.jsonRpcRawId}", request, null);
+
+        assertThat(rendered, is("id="));
+    }
+
 }

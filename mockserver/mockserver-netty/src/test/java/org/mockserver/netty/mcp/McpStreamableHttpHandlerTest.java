@@ -294,9 +294,11 @@ public class McpStreamableHttpHandlerTest {
         String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
         FullHttpResponse response = sendPost(requestBody);
 
-        assertThat(response.status(), is(HttpResponseStatus.OK));
+        // previously asserted HTTP 200 with a JSON-RPC error; a request omitting a required
+        // Mcp-Session-Id is a malformed request, so MCP 2025-06-18 basic/transports makes it a 400
+        assertThat(response.status(), is(HttpResponseStatus.BAD_REQUEST));
         JsonNode json = parseResponse(response);
-        assertThat(json.path("error").path("message").asText(), containsString("Missing or invalid Mcp-Session-Id"));
+        assertThat(json.path("error").path("message").asText(), containsString("Missing Mcp-Session-Id"));
 
         response.release();
     }
@@ -1187,15 +1189,14 @@ public class McpStreamableHttpHandlerTest {
             "]";
         FullHttpResponse response = sendPost(requestBody, "nonexistent-session");
 
-        assertThat(response.status(), is(HttpResponseStatus.OK));
+        // previously asserted HTTP 200 with a per-element JSON-RPC error for each entry. The session
+        // is a property of the POST, not of an individual element, and MCP 2025-06-18
+        // basic/transports requires 404 for a session id the server does not recognise, so the whole
+        // batch is now rejected with a single 404 rather than a 200 carrying an array of errors.
+        assertThat(response.status(), is(HttpResponseStatus.NOT_FOUND));
         JsonNode json = parseResponse(response);
-        assertThat(json.isArray(), is(true));
-        assertThat(json.size(), is(2));
-
-        // Both should be errors due to invalid session
-        for (int i = 0; i < json.size(); i++) {
-            assertThat(json.get(i).path("error").path("message").asText(), containsString("Missing or invalid Mcp-Session-Id"));
-        }
+        assertThat(json.isArray(), is(false));
+        assertThat(json.path("error").path("message").asText(), containsString("Unknown or terminated Mcp-Session-Id"));
 
         response.release();
     }
@@ -1208,11 +1209,13 @@ public class McpStreamableHttpHandlerTest {
             "]";
         FullHttpResponse response = sendPost(requestBody);
 
-        assertThat(response.status(), is(HttpResponseStatus.OK));
+        // previously asserted HTTP 200 with a one-element array of JSON-RPC errors; a batch with no
+        // session id at all is a malformed request, so it is now a single 400 (see
+        // shouldRejectBatchRequestWithInvalidSession for the unknown-session 404 counterpart)
+        assertThat(response.status(), is(HttpResponseStatus.BAD_REQUEST));
         JsonNode json = parseResponse(response);
-        assertThat(json.isArray(), is(true));
-        assertThat(json.size(), is(1));
-        assertThat(json.get(0).path("error").path("message").asText(), containsString("Missing or invalid Mcp-Session-Id"));
+        assertThat(json.isArray(), is(false));
+        assertThat(json.path("error").path("message").asText(), containsString("Missing Mcp-Session-Id"));
 
         response.release();
     }
@@ -1337,9 +1340,63 @@ public class McpStreamableHttpHandlerTest {
         String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
         FullHttpResponse response = sendPost(requestBody, sessionId);
 
+        // previously asserted HTTP 200 with "Missing or invalid Mcp-Session-Id". The session here is
+        // neither missing nor unknown -- it exists and is live, it has simply not completed the
+        // handshake -- so 404 would be wrong (it would tell the client to discard a usable session).
+        // This is a protocol-sequence error against a valid session: 400, with a message that says so.
+        assertThat(response.status(), is(HttpResponseStatus.BAD_REQUEST));
+        JsonNode json = parseResponse(response);
+        assertThat(json.path("error").path("message").asText(),
+            containsString("has not completed initialization"));
+
+        response.release();
+    }
+
+    @Test
+    public void shouldAnswerPingBeforeInitializedNotification() throws Exception {
+        // ping is the explicit carve-out from the pre-init restriction (MCP 2025-06-18
+        // basic/lifecycle): a client may ping a session it has opened with initialize but not yet
+        // confirmed with notifications/initialized. So set up exactly that state -- initialize, but
+        // do NOT send notifications/initialized -- and expect a pong, not the "has not completed
+        // initialization" error that shouldRejectToolCallBeforeInitialized asserts for tools/list.
+        String initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}";
+        FullHttpResponse initResponse = sendPost(initBody);
+        String sessionId = initResponse.headers().get("Mcp-Session-Id");
+        initResponse.release();
+
+        String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\",\"params\":{}}";
+        FullHttpResponse response = sendPost(requestBody, sessionId);
+
         assertThat(response.status(), is(HttpResponseStatus.OK));
         JsonNode json = parseResponse(response);
-        assertThat(json.path("error").path("message").asText(), containsString("Missing or invalid Mcp-Session-Id"));
+        assertThat("ping before init must return a result, not an error", json.path("result").isObject(), is(true));
+        assertThat("ping before init must not carry an error", json.has("error"), is(false));
+        assertThat(json.path("id").asInt(), is(9));
+
+        response.release();
+    }
+
+    @Test
+    public void shouldStillRequireSessionIdForPing() throws Exception {
+        // the ping exemption is only from the initialized precondition, not from the session-id
+        // requirement: a ping with no session id at all is still a malformed request (400)
+        String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\",\"params\":{}}";
+        FullHttpResponse response = sendPost(requestBody);
+
+        assertThat(response.status(), is(HttpResponseStatus.BAD_REQUEST));
+        JsonNode json = parseResponse(response);
+        assertThat(json.path("error").path("message").asText(), containsString("Missing Mcp-Session-Id"));
+
+        response.release();
+    }
+
+    @Test
+    public void shouldReturnNotFoundForPingOnUnknownSession() throws Exception {
+        // and a ping naming an unknown session is still a 404, exactly like any other method
+        String requestBody = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\",\"params\":{}}";
+        FullHttpResponse response = sendPost(requestBody, "never-issued");
+
+        assertThat(response.status(), is(HttpResponseStatus.NOT_FOUND));
 
         response.release();
     }
@@ -1359,7 +1416,11 @@ public class McpStreamableHttpHandlerTest {
         String requestBody = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}";
         FullHttpResponse response = sendPost(requestBody, "invalid-id");
 
-        assertThat(response.status(), is(HttpResponseStatus.BAD_REQUEST));
+        // previously asserted 400. The session id is present but unknown, which MCP 2025-06-18
+        // basic/transports makes a 404 regardless of whether the message is a request or a
+        // notification -- the client needs the same "start a new session" signal either way.
+        // The sibling shouldRejectNotificationWithoutSession still asserts 400 (id absent).
+        assertThat(response.status(), is(HttpResponseStatus.NOT_FOUND));
 
         response.release();
     }

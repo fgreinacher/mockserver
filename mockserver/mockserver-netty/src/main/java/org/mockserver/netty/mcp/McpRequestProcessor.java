@@ -6,10 +6,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.mockserver.lifecycle.LifeCycle;
+import org.mockserver.log.model.LogEntry;
 import org.mockserver.metrics.Metrics;
 import org.mockserver.mock.HttpState;
 import org.mockserver.serialization.ObjectMapperFactory;
 import org.mockserver.version.Version;
+import org.slf4j.event.Level;
 
 import java.nio.charset.StandardCharsets;
 
@@ -87,10 +89,19 @@ public class McpRequestProcessor {
     private static final String SAMPLING_STOP_REASON = "endTurn";
 
     public McpRequestProcessor(HttpState httpState, LifeCycle server, McpSessionManager sessionManager) {
+        this(httpState, server, sessionManager, new McpToolRegistry(httpState, server));
+    }
+
+    /**
+     * Constructor taking an explicit {@link McpToolRegistry}, so tests can supply a registry
+     * whose tools fail in a controlled way (for example to prove that a throwing tool still
+     * produces a JSON-RPC error response rather than no response at all).
+     */
+    McpRequestProcessor(HttpState httpState, LifeCycle server, McpSessionManager sessionManager, McpToolRegistry toolRegistry) {
         this.httpState = httpState;
         this.server = server;
         this.sessionManager = sessionManager;
-        this.toolRegistry = new McpToolRegistry(httpState, server);
+        this.toolRegistry = toolRegistry;
         this.resourceRegistry = new McpResourceRegistry(httpState);
         this.promptRegistry = new McpPromptRegistry();
         this.objectMapper = ObjectMapperFactory.buildObjectMapperWithoutRemovingEmptyValues();
@@ -243,24 +254,70 @@ public class McpRequestProcessor {
 
     // ---- private request handling ----
 
-    private boolean isSessionValid(String mcpSessionId, String method) {
-        if ("initialize".equals(method)) {
-            return true;
+    /**
+     * Decide the HTTP status for a POST whose MCP session cannot be used, per the MCP Streamable
+     * HTTP transport spec (2025-06-18, {@code basic/transports}): a request that omits a required
+     * {@code Mcp-Session-Id} is a 400 Bad Request, while one naming a session the server does not --
+     * or no longer -- recognise MUST be answered 404 Not Found. The 404 is load-bearing: it is the
+     * signal a conformant client uses to know it must start a new session. Answering 200 with a
+     * JSON-RPC error (as this previously did) gives the client no way to tell a dead session from an
+     * application-level error, so it can never perform the mandated recovery and instead loops
+     * against a session that will never work again. DELETE already answers 404 for an unknown
+     * session; this brings POST into line with it.
+     *
+     * @return the rejection status, or null when the session is usable
+     */
+    private Integer sessionRejectionStatus(String mcpSessionId) {
+        // Blank counts as absent, not as an unknown session. The transports disagree on how they
+        // report a missing header -- the HTTP/1.1 and HTTP/2 handlers read it straight off the Netty
+        // headers and get null, while the HTTP/3 handler uses HttpRequest.getFirstHeader, which
+        // returns "" by MockServer convention. Testing only for null therefore answered 400 on
+        // HTTP/1.1 and 404 on HTTP/3 for the identical request, which is both a spec violation on
+        // one of the two and exactly the kind of per-transport divergence this class exists to avoid.
+        if (mcpSessionId == null || mcpSessionId.trim().isEmpty()) {
+            return 400;
         }
         if (!sessionManager.isValidSession(mcpSessionId)) {
-            return false;
+            return 404;
         }
-        if ("notifications/initialized".equals(method)) {
-            return true;
-        }
-        McpSession session = sessionManager.getSession(mcpSessionId);
-        return session != null && session.isInitialized();
+        return null;
+    }
+
+    private static String sessionRejectionMessage(int status) {
+        return status == 404
+            ? "Unknown or terminated Mcp-Session-Id. Start a new session by calling 'initialize'."
+            : "Missing Mcp-Session-Id header. Call 'initialize' first.";
+    }
+
+    /**
+     * Whether a request method is exempt from the "session must have completed initialization"
+     * precondition. Only {@code ping} is: the MCP lifecycle spec (2025-06-18, {@code basic/lifecycle})
+     * explicitly permits a client to send a ping before it has sent {@code notifications/initialized},
+     * so a live-but-not-yet-initialized session must still be able to answer one. Gating it (as this
+     * previously did) meant a client following the spec's own recommendation -- ping to check liveness
+     * during a slow handshake -- got an error instead of a pong. This exemption is only from the
+     * initialized precondition; the session-id checks ({@link #sessionRejectionStatus}) run first, so a
+     * ping with no session or an unknown session is still rejected 400/404 like any other method, and
+     * this does not widen access for any method other than ping.
+     */
+    private static boolean isExemptFromInitializedPrecondition(String method) {
+        return "ping".equals(method);
     }
 
     private McpResult handleBatchRequest(JsonNode batchNode, String mcpSessionId, java.util.Set<String> scopes) {
         if (batchNode.size() == 0) {
             return jsonResponse(400,
                 JsonRpcMessage.JsonRpcResponse.error(null, JsonRpcMessage.INVALID_REQUEST, "Invalid Request: batch must not be empty"), null);
+        }
+
+        // The session is a property of the POST, not of an individual element, so it is validated
+        // once for the whole batch. This also means a batch made up entirely of notifications sent
+        // against a dead session is now rejected with 404 rather than silently accepted with 202.
+        Integer batchRejectionStatus = sessionRejectionStatus(mcpSessionId);
+        if (batchRejectionStatus != null) {
+            return jsonResponse(batchRejectionStatus,
+                JsonRpcMessage.JsonRpcResponse.error(null, JsonRpcMessage.INVALID_REQUEST,
+                    sessionRejectionMessage(batchRejectionStatus)), null);
         }
 
         ArrayNode responses = objectMapper.createArrayNode();
@@ -284,25 +341,24 @@ public class McpRequestProcessor {
             }
 
             if (rpcRequest.isNotification()) {
-                boolean sessionValid = mcpSessionId != null && sessionManager.isValidSession(mcpSessionId);
+                // the session is already known valid; notifications/initialized is what marks the
+                // session initialized, so it alone is exempt from the initialized precondition
                 if ("notifications/initialized".equals(rpcRequest.getMethod())) {
-                    if (sessionValid) {
-                        processNotification(rpcRequest, mcpSessionId);
-                    }
+                    processNotification(rpcRequest, mcpSessionId);
                 } else {
-                    if (sessionValid) {
-                        McpSession session = sessionManager.getSession(mcpSessionId);
-                        if (session != null && session.isInitialized()) {
-                            processNotification(rpcRequest, mcpSessionId);
-                        }
+                    McpSession session = sessionManager.getSession(mcpSessionId);
+                    if (session != null && session.isInitialized()) {
+                        processNotification(rpcRequest, mcpSessionId);
                     }
                 }
             } else {
                 allNotifications = false;
-                if (!isSessionValid(mcpSessionId, rpcRequest.getMethod())) {
+                McpSession session = sessionManager.getSession(mcpSessionId);
+                if (!isExemptFromInitializedPrecondition(rpcRequest.getMethod())
+                    && (session == null || !session.isInitialized())) {
                     responses.add(objectMapper.valueToTree(
                         JsonRpcMessage.JsonRpcResponse.error(rpcRequest.getId(), JsonRpcMessage.INVALID_REQUEST,
-                            "Missing or invalid Mcp-Session-Id header. Call 'initialize' first.")));
+                            "MCP session has not completed initialization. Send the 'notifications/initialized' notification first.")));
                     continue;
                 }
                 JsonRpcMessage.JsonRpcResponse response = processRequest(rpcRequest, mcpSessionId, scopes);
@@ -324,14 +380,13 @@ public class McpRequestProcessor {
         }
 
         if (rpcRequest.isNotification()) {
-            if ("notifications/initialized".equals(rpcRequest.getMethod())) {
-                if (mcpSessionId == null || !sessionManager.isValidSession(mcpSessionId)) {
-                    return emptyResponse(400);
-                }
-            } else {
-                if (mcpSessionId == null || !sessionManager.isValidSession(mcpSessionId)) {
-                    return emptyResponse(400);
-                }
+            Integer notificationRejectionStatus = sessionRejectionStatus(mcpSessionId);
+            if (notificationRejectionStatus != null) {
+                return emptyResponse(notificationRejectionStatus);
+            }
+            // notifications/initialized is what marks the session initialized, so it alone is
+            // exempt from the initialized precondition
+            if (!"notifications/initialized".equals(rpcRequest.getMethod())) {
                 McpSession session = sessionManager.getSession(mcpSessionId);
                 if (session == null || !session.isInitialized()) {
                     return emptyResponse(400);
@@ -346,10 +401,19 @@ public class McpRequestProcessor {
             return jsonResponse(200, initResult.response, initResult.sessionId);
         }
 
-        if (!isSessionValid(mcpSessionId, rpcRequest.getMethod())) {
-            return jsonResponse(200,
+        Integer rejectionStatus = sessionRejectionStatus(mcpSessionId);
+        if (rejectionStatus != null) {
+            return jsonResponse(rejectionStatus,
                 JsonRpcMessage.JsonRpcResponse.error(rpcRequest.getId(), JsonRpcMessage.INVALID_REQUEST,
-                    "Missing or invalid Mcp-Session-Id header. Call 'initialize' first."), null);
+                    sessionRejectionMessage(rejectionStatus)), null);
+        }
+
+        McpSession initializedSession = sessionManager.getSession(mcpSessionId);
+        if (!isExemptFromInitializedPrecondition(rpcRequest.getMethod())
+            && (initializedSession == null || !initializedSession.isInitialized())) {
+            return jsonResponse(400,
+                JsonRpcMessage.JsonRpcResponse.error(rpcRequest.getId(), JsonRpcMessage.INVALID_REQUEST,
+                    "MCP session has not completed initialization. Send the 'notifications/initialized' notification first."), null);
         }
 
         JsonRpcMessage.JsonRpcResponse response = processRequest(rpcRequest, mcpSessionId, scopes);
@@ -396,28 +460,46 @@ public class McpRequestProcessor {
             return JsonRpcMessage.JsonRpcResponse.error(rpcRequest.getId(), JsonRpcMessage.INVALID_REQUEST, "Missing method");
         }
 
-        switch (method) {
-            case "initialize":
-                return handleInitialize(rpcRequest).response;
-            case "tools/list":
-                return handleToolsList(rpcRequest);
-            case "tools/call":
-                return handleToolsCall(rpcRequest, mcpSessionId, scopes);
-            case "resources/list":
-                return handleResourcesList(rpcRequest);
-            case "resources/read":
-                return handleResourcesRead(rpcRequest);
-            case "prompts/list":
-                return handlePromptsList(rpcRequest);
-            case "prompts/get":
-                return handlePromptsGet(rpcRequest);
-            case "sampling/createMessage":
-                return handleSamplingCreateMessage(rpcRequest);
-            case "ping":
-                return handlePing(rpcRequest);
-            default:
-                return JsonRpcMessage.JsonRpcResponse.error(rpcRequest.getId(), JsonRpcMessage.METHOD_NOT_FOUND,
-                    "Method not found: " + method);
+        // A handler (most likely a tool) that throws must still yield a JSON-RPC error envelope:
+        // an exception escaping here propagates out of the MCP executor task with no response ever
+        // written, leaving the client blocked until its own timeout. Catching per request also means
+        // one failing entry in a batch does not discard the responses to the entries around it.
+        // The exception detail is logged but deliberately not returned -- tool arguments and internal
+        // state routinely appear in exception messages and this is a control-plane response.
+        try {
+            switch (method) {
+                case "initialize":
+                    return handleInitialize(rpcRequest).response;
+                case "tools/list":
+                    return handleToolsList(rpcRequest);
+                case "tools/call":
+                    return handleToolsCall(rpcRequest, mcpSessionId, scopes);
+                case "resources/list":
+                    return handleResourcesList(rpcRequest);
+                case "resources/read":
+                    return handleResourcesRead(rpcRequest);
+                case "prompts/list":
+                    return handlePromptsList(rpcRequest);
+                case "prompts/get":
+                    return handlePromptsGet(rpcRequest);
+                case "sampling/createMessage":
+                    return handleSamplingCreateMessage(rpcRequest);
+                case "ping":
+                    return handlePing(rpcRequest);
+                default:
+                    return JsonRpcMessage.JsonRpcResponse.error(rpcRequest.getId(), JsonRpcMessage.METHOD_NOT_FOUND,
+                        "Method not found: " + method);
+            }
+        } catch (Throwable throwable) {
+            httpState.getMockServerLogger().logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.ERROR)
+                    .setMessageFormat("exception handling MCP method \"{}\"")
+                    .setArguments(method)
+                    .setThrowable(throwable)
+            );
+            return JsonRpcMessage.JsonRpcResponse.error(rpcRequest.getId(), JsonRpcMessage.INTERNAL_ERROR,
+                "Internal error");
         }
     }
 

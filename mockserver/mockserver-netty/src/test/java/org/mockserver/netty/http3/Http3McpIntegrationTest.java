@@ -183,10 +183,12 @@ public class Http3McpIntegrationTest {
         String listBody = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}";
         Http3ResponseCapture result = sendMcpRequest("POST", listBody, null);
 
-        assertThat("status should be 200", result.status, is("200"));
+        // previously asserted 200; a request omitting a required Mcp-Session-Id is a 400 per
+        // MCP 2025-06-18 basic/transports, and HTTP/3 must answer the same as HTTP/1.1
+        assertThat("status should be 400", result.status, is("400"));
         JsonNode json = objectMapper.readTree(result.body);
         assertThat("should have error about session", json.path("error").path("message").asText(),
-            containsString("Missing or invalid Mcp-Session-Id"));
+            containsString("Missing Mcp-Session-Id"));
     }
 
     @Test
@@ -205,10 +207,13 @@ public class Http3McpIntegrationTest {
         String listBody = "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/list\",\"params\":{}}";
         Http3ResponseCapture afterDelete = sendMcpRequest("POST", listBody, sessionId);
 
+        // previously asserted only the error message; a terminated session MUST be 404 per
+        // MCP 2025-06-18 basic/transports so the client knows to start a new session
+        assertThat("terminated session should return 404", afterDelete.status, is("404"));
         JsonNode json = objectMapper.readTree(afterDelete.body);
         assertThat("should reject request after session deletion",
             json.path("error").path("message").asText(),
-            containsString("Missing or invalid Mcp-Session-Id"));
+            containsString("Unknown or terminated Mcp-Session-Id"));
     }
 
     @Test

@@ -172,6 +172,13 @@ public class HttpRequestTemplateObject extends RequestDefinition {
                     if (idNode != null) {
                         jsonRpcId = idNode.isTextual() ? idNode.asText() : idNode.toString();
                         jsonRpcRawId = idNode.toString();
+                    } else {
+                        // A JSON-RPC notification carries no id. Every MCP and A2A mock builder emits
+                        // "id": $!{request.jsonRpcRawId}, so leaving this unset rendered to nothing and
+                        // produced unparseable JSON ("id": followed by the closing brace). Render the
+                        // JSON null literal so the response is at least well-formed. jsonRpcId is
+                        // deliberately left null -- it is a matching field, not a rendering one.
+                        jsonRpcRawId = "null";
                     }
                     JsonNode methodNode = root.get("method");
                     if (methodNode != null) {

@@ -54,9 +54,17 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
     private final MockServerLogger mockServerLogger;
 
     public McpStreamableHttpHandler(HttpState httpState, LifeCycle server, McpSessionManager sessionManager) {
+        this(httpState, sessionManager, new McpRequestProcessor(httpState, server, sessionManager));
+    }
+
+    /**
+     * Constructor taking an explicit {@link McpRequestProcessor}, so tests can drive the Netty
+     * framing with a processor configured to fail in a controlled way.
+     */
+    McpStreamableHttpHandler(HttpState httpState, McpSessionManager sessionManager, McpRequestProcessor processor) {
         this.httpState = httpState;
         this.sessionManager = sessionManager;
-        this.processor = new McpRequestProcessor(httpState, server, sessionManager);
+        this.processor = processor;
         this.mockServerLogger = httpState.getMockServerLogger();
     }
 
@@ -229,6 +237,18 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
                     String mcpSessionId = request.headers().get("Mcp-Session-Id");
                     McpRequestProcessor.McpResult result = processor.handlePost(body, mcpSessionId, scopes);
                     writeMcpResult(ctx, result, streamId);
+                } catch (Throwable throwable) {
+                    // Backstop: anything escaping here would otherwise be swallowed by the executor
+                    // with no response written, leaving the client blocked until its own timeout.
+                    // Per-method failures are already converted to JSON-RPC errors inside the
+                    // processor; this covers the residue (serialisation, session lookup, writes).
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.ERROR)
+                            .setMessageFormat("exception processing MCP request")
+                            .setThrowable(throwable)
+                    );
+                    writeInternalError(ctx, streamId);
                 } finally {
                     request.release();
                 }
@@ -239,6 +259,25 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
                 "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Server is busy, try again later\"},\"id\":null}".getBytes(StandardCharsets.UTF_8),
                 null);
             writeMcpResult(ctx, busy, streamId);
+        }
+    }
+
+    /**
+     * Write a JSON-RPC {@code -32603 Internal error} envelope. Used as the last-resort response
+     * so a failure on the MCP executor can never leave the client without a response. The HTTP/2
+     * stream id is threaded through for the same reason every other write on this path carries it:
+     * without it the response is not delivered to an HTTP/2 client, which would reinstate the
+     * original hang on exactly the error path this backstop exists to cover.
+     */
+    private void writeInternalError(ChannelHandlerContext ctx, Integer streamId) {
+        try {
+            McpRequestProcessor.McpResult result = new McpRequestProcessor.McpResult(500,
+                "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":null}".getBytes(StandardCharsets.UTF_8),
+                null);
+            writeMcpResult(ctx, result, streamId);
+        } catch (Throwable ignored) {
+            // the channel is already unusable -- close it so the client fails fast rather than waiting
+            ctx.close();
         }
     }
 

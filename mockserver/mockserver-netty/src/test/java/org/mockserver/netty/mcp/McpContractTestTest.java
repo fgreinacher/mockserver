@@ -11,6 +11,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 
 public class McpContractTestTest {
 
@@ -325,6 +326,128 @@ public class McpContractTestTest {
         McpContractTest.CheckResult call = check(report, "tools/call");
         assertThat(call.isPassed(), is(false));
         assertThat(call.getValidationErrors(), hasItem(containsString("structuredContent is present but not a JSON object")));
+    }
+
+    /**
+     * The checker must FAIL a server that answers a notification with 200 and a JSON-RPC result
+     * body. MCP 2025-06-18 {@code basic/transports} makes 202-with-no-body a MUST, and this exact
+     * shape -- {@code 200} plus {@code {"jsonrpc":"2.0","result":{},"id":null}} -- is what
+     * MockServer's own mock builders emit. The checker previously accepted 200/202/204 and only
+     * rejected a body containing an "error" member, so it certified this as conformant: the
+     * conformance tool could not detect the conformance defect it exists to detect.
+     */
+    @Test
+    public void failsNotificationCheckForTwoHundredWithResultBody() {
+        McpContractTest.JsonRpcExchange lenientServer = (message, sessionId) -> {
+            String method = message.path("method").asText();
+            if (method.equals("notifications/initialized")) {
+                ObjectNode body = mapper.createObjectNode();
+                body.put("jsonrpc", "2.0");
+                body.putObject("result");
+                body.putNull("id");
+                return new McpContractTest.ExchangeResult(200, null, body, null);
+            }
+            return conformant.send(message, sessionId);
+        };
+
+        McpContractTest.Report report = contractTest.run(null, null, lenientServer);
+
+        McpContractTest.CheckResult notification = check(report, "notifications/initialized");
+        assertThat(notification.isPassed(), is(false));
+        assertThat(notification.getValidationErrors(), hasItem(containsString("expected HTTP 202 Accepted")));
+        // the body objection is deliberately NOT raised here: the body rule applies to a 202, and the
+        // spec permits a body on a non-202 rejection, so only the status is at fault
+        assertThat(notification.getValidationErrors().size(), is(1));
+    }
+
+    /**
+     * The body rule bites where it applies: a 202 carrying a JSON-RPC body. The spec requires
+     * "202 Accepted with no body", so the status alone is not sufficient.
+     */
+    @Test
+    public void failsNotificationCheckForAcceptedWithBody() {
+        McpContractTest.JsonRpcExchange bodyOnAccepted = (message, sessionId) -> {
+            if (message.path("method").asText().equals("notifications/initialized")) {
+                ObjectNode body = mapper.createObjectNode();
+                body.put("jsonrpc", "2.0");
+                body.putObject("result");
+                body.putNull("id");
+                return new McpContractTest.ExchangeResult(202, null, body, null);
+            }
+            return conformant.send(message, sessionId);
+        };
+
+        McpContractTest.CheckResult notification =
+            check(contractTest.run(null, null, bodyOnAccepted), "notifications/initialized");
+
+        assertThat(notification.isPassed(), is(false));
+        assertThat(notification.getValidationErrors(), hasItem(containsString("expected no body")));
+    }
+
+    /**
+     * A server that rejects the notification with an HTTP error and a JSON-RPC error body must not
+     * be told "expected no body" -- MCP 2025-06-18 basic/transports permits exactly that shape on
+     * the rejection path. Only the status is reported.
+     */
+    @Test
+    public void doesNotObjectToABodyOnTheNotificationRejectionPath() {
+        McpContractTest.JsonRpcExchange rejectingServer = (message, sessionId) -> {
+            if (message.path("method").asText().equals("notifications/initialized")) {
+                ObjectNode body = mapper.createObjectNode();
+                body.put("jsonrpc", "2.0");
+                body.putObject("error").put("code", -32600).put("message", "cannot accept");
+                body.putNull("id");
+                return new McpContractTest.ExchangeResult(400, null, body, null);
+            }
+            return conformant.send(message, sessionId);
+        };
+
+        McpContractTest.CheckResult notification =
+            check(contractTest.run(null, null, rejectingServer), "notifications/initialized");
+
+        assertThat(notification.getValidationErrors(), hasItem(containsString("expected HTTP 202 Accepted")));
+        for (String error : notification.getValidationErrors()) {
+            assertThat("the spec permits a body on the rejection path", error, not(containsString("expected no body")));
+        }
+    }
+
+    /**
+     * A 200 with no body is still non-conformant on the status alone. This also pins that the
+     * body check does not fire here: there is no body to object to, so the status error must be
+     * the only finding.
+     */
+    @Test
+    public void failsNotificationCheckForTwoHundredWithNoBody() {
+        McpContractTest.JsonRpcExchange lenientServer = (message, sessionId) -> {
+            if (message.path("method").asText().equals("notifications/initialized")) {
+                return new McpContractTest.ExchangeResult(200, null, null, null);
+            }
+            return conformant.send(message, sessionId);
+        };
+
+        McpContractTest.CheckResult notification =
+            check(contractTest.run(null, null, lenientServer), "notifications/initialized");
+
+        assertThat(notification.isPassed(), is(false));
+        assertThat(notification.getValidationErrors(), hasItem(containsString("expected HTTP 202 Accepted")));
+        assertThat(notification.getValidationErrors().size(), is(1));
+    }
+
+    /** A 204 is also non-conformant: the spec names 202 specifically. */
+    @Test
+    public void failsNotificationCheckForNoContentStatus() {
+        McpContractTest.JsonRpcExchange noContentServer = (message, sessionId) -> {
+            if (message.path("method").asText().equals("notifications/initialized")) {
+                return new McpContractTest.ExchangeResult(204, null, null, null);
+            }
+            return conformant.send(message, sessionId);
+        };
+
+        McpContractTest.CheckResult notification =
+            check(contractTest.run(null, null, noContentServer), "notifications/initialized");
+
+        assertThat(notification.isPassed(), is(false));
+        assertThat(notification.getValidationErrors(), hasItem(containsString("expected HTTP 202 Accepted")));
     }
 
     private boolean isKnownMethod(String method) {

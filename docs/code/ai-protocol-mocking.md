@@ -355,7 +355,7 @@ MockServer's own MCP server (`McpRequestProcessor`) advertises and negotiates th
 |---|---|---|
 | `initialize` | `POST {path}` + `JsonRpcBody("initialize")` | Velocity template — echoes `jsonRpcRawId`, returns server info and capabilities |
 | `ping` | `POST {path}` + `JsonRpcBody("ping")` | Velocity template — echoes `jsonRpcRawId`, returns `{}` |
-| `notifications/initialized` | `POST {path}` + `JsonRpcBody("notifications/initialized")` | Static `HttpResponse` 200 with empty JSON body |
+| `notifications/initialized` | `POST {path}` + `JsonRpcBody("notifications/initialized")` | Static `HttpResponse` 200 with empty JSON body — **known divergence, see below** |
 | `tools/list` | `POST {path}` + `JsonRpcBody("tools/list")` | Velocity template — returns configured tools array |
 | `tools/call` (per tool) | `POST {path}` + `JsonPathBody` matching `method == 'tools/call'` and `params.name == '{toolName}'` | Velocity template — returns text content and `isError` flag |
 | `resources/list` | `POST {path}` + `JsonRpcBody("resources/list")` | Velocity template — returns configured resources array |
@@ -364,6 +364,26 @@ MockServer's own MCP server (`McpRequestProcessor`) advertises and negotiates th
 | `prompts/get` (per prompt) | `POST {path}` + `JsonPathBody` matching `method == 'prompts/get'` and `params.name == '{promptName}'` | Velocity template — returns messages array |
 
 The `tools/list`, `resources/list`, and `prompts/list` expectations are generated whenever tools, resources, or prompts are registered respectively, or when the corresponding capability flag (`withToolsCapability()`, etc.) is explicitly set.
+
+#### Known divergence: `notifications/initialized`
+
+The mock builders answer `notifications/initialized` with **HTTP 200 and a `{}` body**. MCP 2025-06-18
+`basic/transports` requires **202 Accepted with no body**, and MockServer's own MCP *server* endpoint
+returns 202 correctly — so the builders diverge from the server in the same repository.
+
+This is unfixed because the expectation is emitted identically by the MCP builders in **all eight client
+languages** (Java, Node, Python, Go, Ruby, .NET, PHP, Rust), and **seven of the eight** — every one
+except the Java client — carry regression tests asserting the current 200-with-`{}` shape. Correcting one
+client alone would relocate the divergence rather than close it, so it is tracked as a single
+cross-client unit whose cost is dominated by updating those seven test suites.
+
+**What this means for `run_mcp_contract_test`:** the checker enforces the specification, not MockServer's
+behaviour. Pointed at a MockServer *mock* built by these builders, the `notifications/initialized` check
+**fails** — correctly. Pointed at MockServer's own MCP endpoint, it passes. Until the builders are
+corrected, treat a failure of that one check against builder-generated mocks as this known divergence.
+
+To suppress it in a gate, filter on the **check name** (`notifications/initialized`). Every check the
+suite emits enforces a MUST-level requirement, so there is no severity dimension to filter on.
 
 ### JSON-RPC ID Echoing
 

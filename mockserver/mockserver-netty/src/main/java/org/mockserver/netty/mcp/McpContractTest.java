@@ -219,11 +219,26 @@ public class McpContractTest {
         } else {
             notifCheck.statusCode = notifResult.getStatusCode();
             int status = notifResult.getStatusCode();
-            if (status != 200 && status != 202 && status != 204) {
-                notifCheck.validationErrors.add("expected HTTP 200, 202 or 204 for a notification, got " + status);
+            // MCP 2025-06-18 basic/transports makes this a MUST: "If the input consists solely of
+            // (any number of) JSON-RPC responses or notifications ... the server MUST return HTTP
+            // status code 202 Accepted with no body." This check previously accepted 200, 202 or 204
+            // and only rejected a body carrying an "error" member, so a server answering 200 with a
+            // JSON-RPC result body passed -- which is precisely the non-conformant shape MockServer's
+            // own mock builders emit. A conformance checker that tolerates the violation it exists to
+            // detect certifies nothing, so the tolerance is gone.
+            if (status != 202) {
+                notifCheck.validationErrors.add(
+                    "expected HTTP 202 Accepted for a notification, got " + status
+                        + " (MCP 2025-06-18 basic/transports: the server MUST return 202 Accepted with no body)");
             }
-            if (notifResult.getBody() != null && notifResult.getBody().has("error")) {
-                notifCheck.validationErrors.add("server returned a JSON-RPC error for the notification");
+            // Only a 202 is required to be body-less. The same section explicitly permits a body on
+            // the rejection path -- a server that cannot accept the notification MAY return an HTTP
+            // error status with a JSON-RPC error body carrying no id -- so flagging a body on a
+            // non-202 would contradict the very clause cited in the message above.
+            if (status == 202 && notifResult.getBody() != null) {
+                notifCheck.validationErrors.add(
+                    "expected no body for a notification, got a JSON-RPC body"
+                        + " (MCP 2025-06-18 basic/transports: the server MUST return 202 Accepted with no body)");
             }
             if (notifResult.getSessionId() != null) {
                 sessionId = notifResult.getSessionId();

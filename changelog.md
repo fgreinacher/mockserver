@@ -496,6 +496,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `keepAliveOverride` are reported as inapplicable (HTTP/3 forbids the headers they govern). The response
   is still served rather than rejected, so a suite that sets `connectionOptions` globally and includes
   HTTP/3 keeps working.
+- **An MCP tool that throws now returns a JSON-RPC error instead of hanging the client.** MCP `POST`
+  processing runs on a separate executor, and only `JsonProcessingException` was caught. Any other
+  exception escaping a tool handler propagated out of the executor task with no response ever written,
+  so the client received nothing at all and blocked until its own timeout — the failure mode most likely
+  to be misread as a network problem rather than a tool bug. Method dispatch now converts any exception
+  into a `-32603 Internal error` response carrying the request's `id`, and the transport handler has a
+  last-resort backstop for anything failing outside dispatch. The exception detail is logged but not
+  returned, since tool arguments and internal state routinely appear in exception messages. Because the
+  conversion happens per request rather than per POST, one failing entry in a batch no longer discards
+  the responses to the entries beside it.
+- **A JSON-RPC notification no longer produces an unparseable mocked response.** Every MCP and A2A mock
+  builder, in all eight client languages, emits `"id": $!{request.jsonRpcRawId}`. A notification carries
+  no `id`, so that rendered to nothing and produced `{"jsonrpc":"2.0","result":{},"id": }` — not valid
+  JSON, meaning a client could not even parse the response to discover it was spurious. The id now
+  renders as the JSON `null` literal. This is a partial fix: JSON-RPC says a notification should receive
+  no response at all, which a matcher cannot currently express (matching and responding are not
+  separable), so the mocked response is still sent — it is now merely well-formed. To be explicit,
+  `"id": null` is **not** the conformant end state either: JSON-RPC 2.0 §5 requires a response id to
+  equal the request id and reserves `null` for a response to a request whose id could not be
+  determined. The conformant behaviour is to send no response at all, which remains outstanding.
+  Requests carrying a real id, and non-JSON-RPC requests, are unaffected.
+- **MCP now returns the specified HTTP status for an unusable session, so clients can recover.** A POST
+  naming a session the server does not recognise — including one it has already terminated — returned
+  `200` with a JSON-RPC error. MCP 2025-06-18 `basic/transports` requires `404 Not Found`, and states
+  that a client receiving `404` MUST start a new session; with a `200` the client cannot distinguish a
+  dead session from an application error, so it can never perform the mandated recovery and loops
+  against a session that will never work again. Unknown and terminated sessions now return `404`, a
+  request that omits a required `Mcp-Session-Id` returns `400`, and a request against a live session
+  that has not yet completed the handshake returns `400` with a message saying so (previously all three
+  were indistinguishable). `DELETE` already returned `404` for an unknown session; `POST` now matches it.
+  A batch is validated once for the whole POST rather than per element, so a batch consisting only of
+  notifications sent against a dead session is now rejected rather than silently accepted with `202`.
+- **MCP `ping` is now answered before the handshake completes, as the lifecycle spec requires.** A client
+  may open a session with `initialize` and, before sending `notifications/initialized`, `ping` to check
+  liveness — MCP 2025-06-18 `basic/lifecycle` names `ping` as the explicit exception to the rule that a
+  session must be initialized before it handles requests. MockServer wrongly gated it, so that `ping`
+  returned the "session has not completed initialization" error instead of a pong. `ping` is now exempt
+  from the initialized precondition. The exemption is only from that precondition: a `ping` with no
+  session id still returns `400` and one naming an unknown session still returns `404`, and no method
+  other than `ping` is affected.
+- **`run_mcp_contract_test` no longer certifies a non-conformant notification response as conformant.**
+  The shipped MCP conformance checker accepted HTTP `200`, `202` or `204` for a notification and
+  inspected the body only for an `error` member, so a server answering `200` with a JSON-RPC result body
+  passed — which is exactly the shape MockServer's own mock builders emit. MCP 2025-06-18
+  `basic/transports` makes `202 Accepted` with no body a MUST, and the check now enforces that, citing
+  the specification in the failure. Reports that previously passed against a lenient server will now
+  show this check as failed, which is the intended correction: a conformance tool that tolerates the
+  violation it exists to detect certifies nothing. The body requirement is scoped to the `202` response:
+  the same section permits a rejected notification to carry a JSON-RPC error body under an HTTP error
+  status, so that shape is not flagged.
 - **Trailers on a body-less response no longer produce a malformed HTTP/1.1 message.** A response carrying
   trailers was unconditionally forced to `Transfer-Encoding: chunked` with a `Trailer` announcement header.
   For a body-less status (`1xx`, `204`, `205`, `304`) Netty's encoder emits neither a chunked body nor the
