@@ -310,6 +310,20 @@ classDiagram
     Action <|-- HttpLlmResponse
 ```
 
+### HttpTemplate Engine Notes
+
+`HttpTemplate.templateType` is one of `VELOCITY`, `MUSTACHE`, or `JAVASCRIPT`. Velocity and Mustache are always available. The `JAVASCRIPT` engine requires the GraalVM Polyglot JARs (`org.graalvm.polyglot:polyglot` + `js`), which are declared `<optional>true</optional>` in `mockserver-core/pom.xml` and are absent from the standard netty jar-with-dependencies and default Docker image. Invoking a `JAVASCRIPT` template without GraalJS on the classpath causes `JavaScriptTemplateEngine` to throw a `RuntimeException` with an actionable error message rather than degrading silently. See [request-processing.md — Template Engines](request-processing.md#template-engines) for full behaviour.
+
+Scenario and capture state is accessed via a different syntax per engine because jmustache cannot call a helper method with an argument:
+
+| Engine | Scenario state accessor | Example |
+|--------|------------------------|---------|
+| Velocity | Method call on `$scenario` helper | `$scenario.get('key')` |
+| JavaScript | Method call on `scenario` helper | `scenario.get('key')` |
+| Mustache | Section `Mustache.Lambda` (in `MustacheTemplateEngine`) | `{{#scenario.get}}key{{/scenario.get}}` |
+
+All three engines delegate to the same `ScenarioTemplateHelper.get(...)` call; only the invocation form differs.
+
 ### Body Types
 
 ```mermaid
@@ -866,6 +880,19 @@ Schema → example values"]
 `OpenAPIConverter` creates one `Expectation` per operation, with an `OpenAPIDefinition` matcher and an example `HttpResponse` built from the spec's response schemas, headers, and examples. Both path operations and webhook operations (OAS 3.1 `webhooks` top-level key) are included.
 
 `OpenAPIConverter.buildExampleRequests(...)` is a separate, additive entry point that returns, per operation, a concrete example `HttpRequest` (keyed by `operationId`) with example `path`, `query`, `header`, and `cookie` parameter values plus a request body where the operation declares one. Unlike `buildExpectations(...)` — whose request side is always an `OpenAPIDefinition` matcher that carries no concrete parameter values — these realised example requests are intended for documentation, preview, replay seeding, and client/contract-test scaffolding. The parameter example-value logic (parameter `example`/`examples` → schema `default` → schema `enum` → generated sample → `"example"` fallback for required parameters) lives in the shared `OpenApiParameterExamples` helper, reused by the converter and the `OpenApiContractTest`/`OpenApiResiliencyTest` harnesses.
+
+### Spec Namespacing and Incremental Sync
+
+`OpenApiSyncPlanner` assigns every imported spec a stable `specKey` and derives a namespace prefix `openapi:<specKey>:` from it. On re-import, only expectations whose IDs start with the spec's own namespace prefix are candidates for pruning; expectations added manually or generated from a different spec are never touched.
+
+The key is computed by `OpenApiSyncPlanner.deriveSpecKey(String title, String specUrlOrPayload)` as `<sanitizedTitle>_<shortHash>`, where `sanitizedTitle` is `info.title` lowercased with every non-alphanumeric character replaced by `_`, and `shortHash` is the first 16 hex characters (8 bytes) of SHA-256 applied to the spec **source identity**. When `info.title` is blank, the key is the hash alone.
+
+| Source kind | Source identity | Incremental-sync behaviour |
+|-------------|-----------------|---------------------------|
+| URL or file reference | The reference string | Re-importing the same URL reuses the same namespace, so pruning correctly removes operations deleted from the spec |
+| Inline payload | The payload content | Editing the payload changes the hash and therefore the key; expectations from the old namespace are **orphaned** (not pruned). Use a URL or file reference for specs that evolve and need clean incremental sync |
+
+Manually-registered expectations are never pruned because their IDs do not carry any `openapi:` prefix.
 
 ### Request Validation
 

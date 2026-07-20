@@ -150,6 +150,26 @@ For the default `InMemoryStateBackend`, this is backed by a `ConcurrentHashMap` 
 
 `ScenarioManager` uses no node-local cache for scenario state; all reads go through `KeyValueStore.get()` and all writes through `put()` or `compareAndSet()`. This read-through design means no `InvalidationListener` is needed for scenario state (unlike expectations, which maintain a node-local compiled-matcher cache).
 
+### CAS Implementation: cache.replace vs cache.compute
+
+**Invariant: `InfinispanKeyValueStore.compareAndSet` MUST use `cache.replace(key, oldValue, newValue)` — NOT `cache.compute()` with a side-channel flag.**
+
+Under `REPL_SYNC`, Infinispan may re-execute a `compute` lambda on conflict/retry. If the lambda records its result into a side-channel (e.g. an `AtomicBoolean`), the retry invocation overwrites the side-channel with the retry's outcome, so the caller observes the retry result rather than the first execution — a false failure even when the first CAS succeeded.
+
+`cache.replace(K, V oldValue, V newValue)` (`InfinispanKeyValueStore.compareAndSet`, `mockserver-state-infinispan`) is a genuine atomic CAS: Infinispan compares the stored value using `equals()` and atomically swaps to `newValue` only if the stored value matches `oldValue`. The boolean return value is the authoritative success indicator.
+
+**Version-carrying wrapper.** Every stored value is wrapped in a `VersionedWrapper<V>` (`mockserver-state-infinispan`) pairing the payload with an explicit `long version`. `VersionedWrapper.equals()` checks both fields — version and value — so a stale-version `replace()` fails even if the payload bytes are identical but the version has advanced. `hashCode()` is consistent with `equals()`. Note that `VersionedWrapper.equals()` **delegates the value comparison to the payload type's own `equals()`** (`Objects.equals(value, that.value)`), so the stored value type must implement structural equality — MockServer stores `String` scenario-state values, which do. This matters in `REPL_SYNC`: a replica receives another node's update as a **deserialized** copy (a different instance), so a `replace(current, updated)` CAS would spuriously fail if the value type fell back to reference equality. (This is also why `put()` uses `compute()` rather than `replace()` — see the `InfinispanKeyValueStore.put()` Javadoc.)
+
+The `compareAndSet` flow in `InfinispanKeyValueStore`:
+
+1. `cache.get(key)` — reads the current `VersionedWrapper<V>` from the node-local replica (no network round-trip)
+2. Version mismatch → return `false` immediately
+3. Build `updated = new VersionedWrapper<>(value, expectedVersion + 1)`
+4. `cache.replace(key, current, updated)` — atomic write; synchronously replicated across the cluster
+5. Return the `boolean` result directly
+
+`put()` intentionally uses `cache.compute()` because an unconditional version-incrementing put is idempotent given a deterministic new value — re-execution on retry is safe there.
+
 ## Cluster Status Endpoint
 
 `GET /mockserver/cluster` (control-plane, gated by `controlPlaneRequestAuthenticated`) returns a JSON snapshot of cluster membership and health, backed by the `StateBackend.clusterInfo()` SPI method.

@@ -952,6 +952,8 @@ avoid re-render storms and keep interaction smooth:
 | Deferred expand body | `useDeferredValue(expanded)` in `LogEntry` / `JsonListItem` | The chevron/layout reacts to the click immediately; the expensive expanded JSON tree (`@uiw/react-json-view`) builds in a non-blocking follow-up render |
 | Progressive rendering | `ProgressiveList` (used by `LogPanel`, `ExpectationPanel`, `RequestPanel`) | Mounts an initial batch (~visible rows) on first paint, then appends the rest in batches during browser idle time (`requestIdleCallback`, `setTimeout` fallback). The full list ends up laid out, so native scrolling stays smooth with no per-scroll work |
 | Lifted expand state | `useExpansion` hook (per panel) | Expand/collapse state is held in the panel keyed by row key, passed to rows as controlled `expanded`/`onToggle` props (with an uncontrolled fallback for standalone use), so it survives independently of any row remount |
+| Monaco code-split | `JsonEditorLazy` / `JsonDiffViewerLazy` (`src/components/`) | `monaco-editor` and its web-worker bundles are multi-MB; both components wrap the real editor in `React.lazy()` so Monaco is only fetched when an editor is first rendered, reducing the initial bundle from ~4.66 MB to ~912 kB |
+| `LogGroup` collapse | `LogGroup.tsx` — `<Collapse unmountOnExit>` | Log-entry children within a collapsed group are unmounted from the DOM rather than hidden with CSS, eliminating the DOM pressure from large numbers of collapsed log groups |
 
 An earlier attempt used true windowing (`@tanstack/react-virtual`) but was
 reverted: it rendered the full list then re-rendered windowed (slower first

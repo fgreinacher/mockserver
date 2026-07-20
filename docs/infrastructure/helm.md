@@ -559,6 +559,23 @@ cosign verify \
 > never appears in the host process table. Keyless (OIDC) signing is a further alternative if
 > Buildkite OIDC is set up, avoiding a stored key altogether.
 
+#### Artifact Hub verification caching
+
+Artifact Hub caches the cosign-verify result **when it first indexes a chart version** and does NOT re-verify the same version digest. If a version was indexed before the signing key was configured (and therefore indexed as unsigned), adding a cosign signature to the same GHCR digest does not cause Artifact Hub to re-show the Signed badge — the cached result is permanent.
+
+To add the Signed badge retroactively to a version that was indexed unsigned, you must **re-publish with a new digest**. This means re-running `helm push` with an updated chart (even if only a comment or annotation changes) so the GHCR OCI tag gets a new content digest, then waiting for Artifact Hub to re-index the new push.
+
+#### Fetching a chart signature from GHCR via curl
+
+Cosign stores chart signatures as OCI manifest layers alongside the chart at a tag derived from the chart digest. Fetching the `.sig` object via curl requires an explicit media-type header:
+
+```bash
+curl -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+  https://ghcr.io/v2/mock-server/charts/mockserver/manifests/sha256-<digest>.sig
+```
+
+A bare `curl` without the `Accept` header returns `404` or a JSON error from the OCI registry.
+
 ### Requesting "Official" status (Artifact Hub)
 
 The Artifact Hub **Official** badge marks a package as published by the project that owns the

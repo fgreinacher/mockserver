@@ -304,3 +304,46 @@ The website navigation includes links to:
 
 - **SwaggerHub API Reference:** https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi
 - **GitHub Examples:** https://github.com/mock-server/mockserver-monorepo/tree/master/examples
+
+## Authoring Rules
+
+### No Mermaid renderer — use PNG diagrams
+
+The Jekyll site (`jekyll-www.mock-server.com/`, served at `https://www.mock-server.com`) has **no Mermaid renderer**. The `Gemfile` installs only `jekyll` and `jekyll-code-example-tag` — there is no `jekyll-mermaid` gem, no Mermaid JS, and no `kramdown-parser-gfm`. A Mermaid fenced code block renders as broken raw text in the browser.
+
+**Always use PNG images for diagrams in the Jekyll consumer site.** The docs/ internal architecture files may use Mermaid normally (GitHub's renderer handles them).
+
+Diagram authoring workflow:
+
+1. **Source:** `jekyll-www.mock-server.com/images/MockServerScenarios.pptx` — the canonical diagram source. All production diagram slides live here.
+2. **Renderers:** Python scripts under `jekyll-www.mock-server.com/images/diagram-tools/`:
+   - `build_diagrams.py` — clones/rebuilds generated slides in the PPTX from their definitions (idempotent; run after editing definitions, not after hand-tuning a slide).
+   - `render_diagrams.py` — exports slides to PNG and writes them to `jekyll-www.mock-server.com/images/`.
+   - `build_ai_diagrams.py` / `render_ai_architecture.py` — same pattern for AI-specific diagrams.
+3. **Output:** committed PNG files in `jekyll-www.mock-server.com/images/` (e.g. `MockServerBreakpoints.png`, `MockServerCluster.png`). Reference them from HTML with `<img src="/images/…">`.
+
+To add a new diagram: define the slide in `build_diagrams.py`, register its index in `render_diagrams.py`, run both scripts, and commit the PPTX and the generated PNG.
+
+### Client-accordion convention
+
+Every code-example accordion that shows multiple client languages follows a fixed tab order. Inner tab buttons appear as `<button class="accordion inner">` and must be in this sequence:
+
+| Position | Tab label | Notes |
+|----------|-----------|-------|
+| 1 | Java | Typed fluent builder; static imports omitted for brevity |
+| 2 | JavaScript | Raw-JSON object literal passed to the JS client |
+| 3 | Python | Typed Python builder |
+| 4 | Ruby | Typed builder, or `from_hash({…})` for complex structures |
+| 5 | Go | Typed Go builder |
+| 6 | .NET | Typed C# builder |
+| 7 | Rust | Typed Rust builder |
+| 8 | PHP | Typed PHP builder |
+| 9 | REST API | `curl` command with raw JSON body — always last |
+
+Additional rules:
+
+- **No standalone JSON tab.** JSON is embedded inside the JavaScript example (shown as a JS object literal) and/or the REST API example (as a `curl` body). There is never a ninth "JSON" tab between PHP and REST API.
+- **Ruby `from_hash` requires string keys.** When Ruby uses `from_hash({…})` for raw-structure upserts, all keys must be string literals (`'httpRequest' => …`), not Ruby symbol keys (`:httpRequest =>` fails). See `mock_server/_includes/request_matcher_code_examples.html` for canonical examples.
+- **Prefer typed builders.** Use the language's typed client builder in each tab. Fall back to a raw-JSON `from_hash` / object literal only for Java-only features (e.g. a complex matcher type not yet modelled in other clients).
+
+Reference file: `jekyll-www.mock-server.com/mock_server/_includes/request_matcher_code_examples.html`.

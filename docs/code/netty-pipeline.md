@@ -410,6 +410,25 @@ branches — it is handed to a `DefaultHttpContent` only when non-empty and rele
 response attaches an empty `Unpooled.EMPTY_BUFFER` `LastHttpContent`. The existing chunk-delay
 and HTTP/3 writer paths retain/release as before.
 
+## HTTP/2 Extension Header Stripping
+
+**Invariant: every mapper that decodes an HTTP/2 upstream response must strip the entire `x-http2-*` extension-header family before the response enters the MockServer model.**
+
+Netty's `InboundHttp2ToHttpAdapter` injects synthetic `x-http2-*` headers — `x-http2-stream-id`, `x-http2-scheme`, `x-http2-path`, `x-http2-stream-dependency-id`, `x-http2-stream-weight`, `x-http2-stream-promise-id` — when it converts an HTTP/2 frame sequence into a `FullHttpResponse`. These are internal Netty plumbing, not real response headers. If they escape into the response model and are later serialised back onto an outbound HTTP/2 connection, the upstream stream id (`x-http2-stream-id`) is written on a foreign stream. The HTTP/2 peer sees a HEADERS frame carrying a stream id that does not match any open stream on the write-back channel and responds with a connection-level PROTOCOL_ERROR / GOAWAY, hanging both legs of the proxy.
+
+### Where the strip happens
+
+| Site | Class / method | What is stripped |
+|------|----------------|-----------------|
+| Upstream response decode | `FullHttpResponseToMockServerHttpResponse.setHeaders()` (`mockserver-core`) | All six `ExtensionHeaderNames` values in the static `HTTP2_EXTENSION_HEADER_NAMES` set are excluded during header iteration. The same set is re-checked when folding in HTTP trailers (`trailingHeaders()`), so neither the header block nor the trailer block can carry these names into the model. |
+| Write-back to client | `MockServerHttpResponseToFullHttpResponse` (`mockserver-core`) | Belt-and-braces: `response.headers().remove(STREAM_ID.text())` is called unconditionally before the outbound stream id is set from the protocol-guarded `HttpResponse.getStreamId()` field. This prevents a foreign upstream stream id from leaking onto the write path even if an upstream stripping step is bypassed. |
+
+`HTTP2_EXTENSION_HEADER_NAMES` is built once from `HttpConversionUtil.ExtensionHeaderNames.*` at class load time and stored as a `Set<String>` of lower-cased names for O(1) lookup.
+
+### Inbound request path
+
+On the **inbound request** side, `FullHttpRequestToMockServerHttpRequest` does not strip `x-http2-stream-id` during header iteration — instead it reads the value with `headers().getInt(STREAM_ID.text())` and places it in the trusted `HttpRequest.streamId` field only when `request.getProtocol() == HTTP_2` (preventing an HTTP/1.1 client from forging it). Forwarded requests never carry `x-http2-*` into upstream headers because `MockServerHttpRequestToFullHttpRequest` re-derives the outbound stream id from `request.getStreamId()` directly, not from the header map.
+
 ## Connection-Lifecycle Response-Path Faults
 
 These faults fire at response/dispatch time (not connect time) and are distinct from

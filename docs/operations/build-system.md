@@ -122,6 +122,19 @@ MockServer pins all of its third-party transitive versions in the **parent POM's
 
 Two related choices reduce convergence pressure even without the BOM: `mockserver-client-java` **excludes the server-only engines** from its `mockserver-core` dependency (a client never executes templates/scripts/WASM/gRPC), and `mockserver-core` **prunes the stale `velocity-engine-core 2.3`** that `velocity-tools-generic` drags in alongside the `2.4.1` the build already uses. The parent's `flatten-maven-plugin` execution is declared `<inherited>false</inherited>`, so it applies only to the root POM; `mockserver-bom` carries its own copy.
 
+#### Gotcha: `netty-tcnative` and other classifier-shipped artifacts
+
+`netty-tcnative-boringssl-static` is pinned by its **own** property (`<netty-tcnative-boringssl-static.version>` in `mockserver/pom.xml`), **separately** from `<netty.version>`. This is a convergence trap when Netty is upgraded: a new Netty version pulls the tcnative **native classifier** artifacts (`linux-x86_64`, `linux-aarch_64`, `osx-*`, `windows-x86_64`) transitively at *Netty's* expected tcnative version. If the explicit `boringssl-static` pin lags behind (e.g. pinned `2.0.77.Final` while Netty `4.2.16.Final` pulls the classifiers at `2.0.78.Final`), the Enforcer `dependencyConvergence` rule fails the **entire** build — which surfaces as a red master on both Buildkite and CodeQL, not as a test failure.
+
+When bumping Netty, keep the tcnative pin in lockstep, and also update the six Docker `NETTY_TCNATIVE=` build args (`docker/*/Dockerfile` — a comment at the pom property flags this). Verify locally before pushing with:
+
+```bash
+mvn -pl mockserver-core -am validate   # Enforcer runs at the validate phase
+# look for: "Rule 0: ...DependencyConvergence passed"
+```
+
+The same trap applies to any dependency that ships OS/arch classifier variants pinned independently of its umbrella version.
+
 ### Quick Reference
 
 All Maven commands run from within the `mockserver/` directory:
@@ -217,7 +230,13 @@ Manual activation"]
 
 - **Unit tests:** `*Test.java` — run during `test` phase via Surefire
 - **Integration tests:** `*IntegrationTest.java` — run during `integration-test`/`verify` phases via Failsafe
-- **Parallel unit tests (`mockserver-core`):** Surefire runs in two phases — a parallel phase (`parallel=classes`, `threadCount=4`) for the bulk of the suite, and a `sequential-tests` execution (`parallel=none`) for the classes that mutate JVM-global state (`ConfigurationProperties` system properties, the static Prometheus `Metrics` registry, the controllable clock, or globally-fixed time). `ParallelStaticStateGuardTest` fails the build if the parallel-excluded and sequential-included class lists drift apart. See [performance-tuning.md](performance-tuning.md) for the rationale.
+- **Parallel unit tests (`mockserver-core`):** Surefire runs in two phases — a parallel phase (`parallel=classes`, `threadCount=4`) for the bulk of the suite, and a `sequential-tests` execution (`parallel=none`) for the classes that mutate JVM-global state (`ConfigurationProperties` system properties, the static Prometheus `Metrics` registry, the controllable clock, or globally-fixed time). Two guard tests enforce this:
+  - `ParallelStaticStateGuardTest` (`mockserver-core/src/test/java/org/mockserver/testing/ParallelStaticStateGuardTest.java`) fails the build if the parallel-phase `<excludes>` and the sequential-tests `<includes>` in `mockserver-core/pom.xml` are not the exact same set — preventing the silent "class runs twice or never" failure.
+  - `GlobalStateMutationGuardTest` (`mockserver-core/src/test/java/org/mockserver/testing/GlobalStateMutationGuardTest.java`) scans every test source file for mutation-pattern calls (`ConfigurationProperties.<setter>`, `System.setProperty`, singleton `.reset()`/`.clear()`, Prometheus registry access) and fails the build if the class is not listed in the sequential phase. To suppress a genuine false positive, add a class-level comment `// @ParallelStateGuardSuppress: <reason>` — the guard skips any file containing that marker.
+
+  **Rule:** any new test that mutates JVM-global static state must be added to BOTH the Surefire `<excludes>` (parallel phase) AND the `<includes>` (sequential-tests execution) in `mockserver-core/pom.xml`. See [performance-tuning.md](performance-tuning.md) for the rationale.
+
+- **Troubleshooting — parallel-phase build hangs to ~1800s with zero test failures:** the `forkedProcessTimeoutInSeconds=1800` in `mockserver/pom.xml` (both Surefire and Failsafe) is the hard kill for a hung ForkedBooter JVM. When `mockserver-core` unit tests hang to exactly that limit with no reported failures, the most common cause is **GraalJS interpreter-only CPU starvation**: under parallel CPU contention, GraalJS runs in interpreter mode and a JS template parse/execute can spin for minutes rather than seconds — the ForkedBooter looks alive (consuming CPU) but makes no test progress. This is NOT a deadlock and is usually NOT caused by the commit under investigation. Diagnose with `jstack <ForkedBooter-PID>` — a GraalJS hang shows deep Truffle/polyglot frames, not a Java lock cycle. Mitigations already in place: `StreamTemplateRendererTest` is moved to the sequential phase (pom comment at that exclude); `JavaScriptTemplateEngineTest` disables the production execution timeout (`javascriptTemplateExecutionTimeout(0L)`) to prevent premature kills. Keep JS test loops small and avoid per-test GraalJS context creation.
 - **Log level:** `mockserver.logLevel=ERROR` during tests
 - **Locale:** Forced to `en-GB` (`-Duser.language=en -Duser.country=GB`)
 - **Test listener:** `org.mockserver.test.PrintOutCurrentTestRunListener` for progress output
@@ -247,6 +266,22 @@ Homebrew tarball"]
 | Shaded JAR | `shaded` | Dependencies relocated to avoid conflicts |
 | Homebrew tarball | `brew-tar` | Tarball for Homebrew formula |
 | Debian package | (none) | `.deb` with SysV init.d and Upstart configs |
+
+#### Gotcha: `jar-with-dependencies` bundles `mockserver-core` from `~/.m2`, not from `target/`
+
+The fat JAR is assembled by `maven-assembly-plugin` (`assembly:single`) using the descriptor at `mockserver-netty/src/main/assembly/jar-with-dependencies/jar-with-dependencies.xml`. The descriptor uses `<dependencySets>` with `<scope>runtime</scope>` and `<scope>provided</scope>` — Maven resolves these from the **local repository (`~/.m2`)**, not from sibling modules' `target/` directories.
+
+**Consequence:** if you edit `mockserver-core` source and then run `mvn -pl mockserver-netty package` without first installing the updated core, the fat JAR will silently bundle the **old** `mockserver-core` from `~/.m2`. The symptom is that your core change has no effect when running the fat JAR (including in Docker), even though the class files in `mockserver-core/target/` are up to date.
+
+**Fix:** install core first, then build the fat JAR:
+
+```bash
+cd mockserver
+mvn -o -pl mockserver-core install   # or without -o if offline deps are missing
+mvn -pl mockserver-netty package
+```
+
+A full reactor build (`mvn clean install`) is unaffected because Maven processes modules in dependency order and installs each before moving to the next.
 
 ## Distribution
 

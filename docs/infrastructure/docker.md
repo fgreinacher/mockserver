@@ -120,6 +120,34 @@ Image scanners (Trivy, Grype, the ArtifactHub Helm security report) will always 
 2. Check the `Fixed in` column. `-` means no upstream fix exists yet → expected baseline, no action. A concrete version means distroless has likely already rebuilt → ensure the Dependabot digest-bump PR has merged (or merge it).
 3. Assess reachability — these libraries are largely inert for MockServer's HTTP/proxy hot paths (e.g. no untrusted-XML-through-expat path), which is why an unpatched base CVE is rarely a practical risk.
 
+### Base Image Digest Pinning
+
+All production Dockerfiles pin their base images by digest (`FROM image:tag@sha256:...`). The digest must be the **multi-arch INDEX digest** — the top-level manifest-list entry that resolves correctly on both `linux/amd64` and `linux/arm64`.
+
+**Get the correct digest with `docker buildx imagetools inspect`:**
+
+```bash
+docker buildx imagetools inspect gcr.io/distroless/java17:nonroot
+# Look for the top-level "Digest:" line at the start of the output
+```
+
+**Do NOT use `docker manifest inspect -v`** and take the first entry (`[0]`). That command returns the amd64 platform-specific manifest digest. Pinning to a platform-specific digest causes exec-format errors on arm64 hosts.
+
+```bash
+# Wrong — returns the amd64 platform manifest, breaks arm64:
+docker manifest inspect -v gcr.io/distroless/java17:nonroot | jq '.[0].Digest'
+
+# Correct — returns the multi-arch index digest:
+docker buildx imagetools inspect gcr.io/distroless/java17:nonroot \
+  | grep '^Digest:' | awk '{print $2}'
+```
+
+The release pipeline itself uses `docker buildx imagetools inspect` when resolving digests for cosign signing (see `scripts/release/components/docker.sh`).
+
+**After any Dockerfile base change**, smoke-test the image on both architectures — or at minimum start it and confirm the health check passes. On Apple Silicon, build and run the `linux/arm64` platform natively; the CI amd64 build runs arm64 via QEMU.
+
+Dependabot's `docker` ecosystem (see `.github/dependabot.yml`) opens digest-bump PRs automatically when upstream bases move, so routine base updates arrive as dependency PRs rather than requiring manual re-pins. Dockerfile directories not registered in `dependabot.yml` are not tracked.
+
 ### Docker HEALTHCHECK
 
 All production MockServer **server** Dockerfiles include a built-in `HEALTHCHECK` instruction that runs a lightweight Java class (`org.mockserver.cli.HealthCheck`) to verify MockServer is serving requests. The health check calls `PUT /mockserver/status` internally — no shell, curl, or external tools required. The one exception is the admission-webhook image (`docker/webhook/Dockerfile`), which deliberately has no `HEALTHCHECK` — it is a short-lived Kubernetes sidecar-injection webhook rather than a long-running server, and its liveness/readiness is governed by Kubernetes probes against the webhook endpoint.

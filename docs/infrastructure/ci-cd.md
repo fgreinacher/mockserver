@@ -246,7 +246,45 @@ On `master` only, four additional steps run sequentially:
 - **Build and push :snapshot:** `.buildkite/scripts/steps/java-docker-push-snapshot.sh` — builds and pushes the `:snapshot` and `:mockserver-snapshot` Docker images (`:latest` is only pushed during releases)
 - **Publish snapshot binary bundles** (`soft_fail`): `.buildkite/scripts/steps/java-publish-snapshot-bundles.sh` — builds JVM-less binary bundles for all platforms (linux/x86_64, linux/aarch64, darwin/x86_64, darwin/aarch64, windows/x86_64) using `scripts/build-all-bundles.sh` and uploads them to `s3://aws-binaries-mockserver/mockserver-<POM_VERSION>/`, served at `https://downloads.mock-server.com/mockserver-<POM_VERSION>/...`. Each master build overwrites the previous snapshot bundles. This provides working download URLs for the Go/.NET/Rust/Ruby/Python binary client launchers between releases. **No GitHub token is required** — the upload uses the agent's IAM instance role; the default-queue role needs `s3:PutObject` on `arn:aws:s3:::aws-binaries-mockserver/*` (provisioned via Terraform in `terraform/buildkite-agents/`). Releases still use GitHub Releases (via the release pipeline). The `jlink` cross-build needs JDK 21, which this step **bootstraps on demand** (downloads Temurin 21 for the host and passes it via `JAVA_HOME` to `build-all-bundles.sh` for that one invocation) — the **Maven build keeps running on JDK 17**, so the Java-17 floor is still enforced and this step never changes the Maven JDK. Master-only (`if: build.branch == 'master'`) and `soft_fail: true`, so **PR builds never publish** and bundle-build failures never redden master.
 
-#### Spot Resilience (agent-lost auto-retry)
+#### Client-Codegen Fidelity Gate
+
+**Script:** `.buildkite/scripts/steps/ui-java-codegen-compile.sh`
+
+**Trigger:** Path-gated to the `mockserver-java` pipeline — fires on any change under `mockserver/` (including `mockserver-client-java/`) or `mockserver-ui/`.
+
+**Problem it solves:** The dashboard's "Java" language tab (`mockserver-ui/src/lib/standardCodegen.ts → standardToJava`) emits fluent MockServer client code. TypeScript string-assertion tests verify the emitted shape, but cannot catch a renamed or removed method on `MockServerClient` or the `org.mockserver.model.*` builders — the generated Java would ship broken silently.
+
+**Three-phase approach:**
+
+```mermaid
+flowchart LR
+    P1["Phase 1: Maven
+    Build mockserver-client-java
+    dump compile classpath"]
+    P2["Phase 2: Node 22
+    emit-java-codegen-samples.mjs
+    standardToJava() sample matrix"]
+    P3["Phase 3: javac
+    javac --release 17
+    samples vs real client jar"]
+    P1 --> P2 --> P3
+```
+
+Each phase runs inside its own Docker image via `run-in-docker.sh`. Set `CODEGEN_COMPILE_USE_DOCKER=false` to run the same commands against host toolchains for local validation.
+
+| Phase | Image | What it does |
+|-------|-------|-------------|
+| 1 | `mockserver/mockserver:maven` | `./mvnw install -pl mockserver-client-java -am -DskipTests -T 1C` then `dependency:build-classpath` to a file |
+| 2 | `node:22` | Runs `mockserver-ui/scripts/emit-java-codegen-samples.mjs` — no `npm ci` needed; `standardCodegen.ts` is dependency-free |
+| 3 | `mockserver/mockserver:maven` | `javac --release 17` on all emitted `.java` files against the Phase 1 classpath |
+
+A **coverage floor** asserts at least 23 emitted samples — a regression that silently shrinks the emitter output fails loudly rather than passing with reduced coverage.
+
+**Companion test:** `mockserver-ui/src/__tests__/fixtureCoverage.test.ts` is a Vitest meta-test that verifies the canonical fixture set at `test-fixtures/expectations/` collectively exercises every top-level key in the server `expectation.json` schema, every `ACTION_FAMILY_KEY`, every `StandardActionType`, and every `BodyMatcherType`. Adding a new server feature without a covering fixture fails CI until a fixture is added.
+
+**Ratchet ledger:** `test-fixtures/expectations/known-gaps.json` tracks accepted per-language JSON-path gaps in the cross-language round-trip fidelity tests. A stale entry (one that no longer excuses any diff) fails CI — the ratchet re-arms as client models are completed. This file conflicts on every rebase when multiple worktrees are active; always resolve from `origin/master` after a rebase.
+
+### Spot Resilience (agent-lost auto-retry)
 
 The `default` agent queue is a mix of on-demand and Spot instances (see [aws-infrastructure.md](aws-infrastructure.md#scaling-behaviour)). When AWS reclaims a Spot instance mid-build, the Buildkite agent is lost and the running job ends with **exit status `-1`** (or `255`) — an infrastructure kill, not a test failure. The Maven build runs 15–25 minutes, so a reclaim part-way through used to fail the whole build and require a manual re-run (~2 Spot evictions/day were observed).
 
@@ -466,6 +504,35 @@ GitHub's built-in dependency graph automatically indexes all manifest files (`po
 - Dependency review in pull requests (shows dependency changes and known vulnerabilities)
 
 **Note:** A custom `dependency-submission.yml` workflow was previously used but was removed because it never worked (the workflow failed on every run due to a GitHub-level configuration issue). The built-in dependency graph provides equivalent coverage.
+
+### Pull requests from external forks
+
+PRs from a third-party **fork** (`isCrossRepository: true`) do not get the full pipeline automatically, unlike in-repo branches (e.g. Dependabot, which pushes to branches inside this repo and therefore builds normally). Two things differ:
+
+- **Buildkite does not build fork PRs.** The orchestrator triggers from GitHub webhooks scoped to this repository's branches, so a fork PR shows only the Snyk (and, once approved, CodeQL) checks — never a `buildkite/mockserver` status. This is intentional: it keeps CI credentials off untrusted fork code.
+- **CodeQL requires manual approval.** A fork PR's CodeQL run lands in the `action_required` state (GitHub's first-time/​fork-contributor gate) and will not start until a maintainer approves it.
+
+To drive a fork PR green so it can be merged:
+
+```bash
+# 1. Approve the pending CodeQL (GitHub Actions) run
+RUN_ID=$(gh run list --repo mock-server/mockserver-monorepo --branch <fork-branch> \
+  --json databaseId,headSha --jq '.[]|select(.headSha=="<PR_HEAD_SHA>")|.databaseId' | head -1)
+gh api -X POST "repos/mock-server/mockserver-monorepo/actions/runs/$RUN_ID/approve"
+
+# 2. Trigger Buildkite by pushing the PR's exact head SHA to a throwaway in-repo branch.
+#    Buildkite reports the buildkite/mockserver commit status keyed to the SHA, which
+#    GitHub then surfaces on the fork PR (same commit) — making it mergeable.
+git push origin <PR_HEAD_SHA>:refs/heads/ci/pr-<NNNN>-verify
+# ... wait for the build, then clean up:
+git push origin --delete ci/pr-<NNNN>-verify
+```
+
+To push fixes to a fork PR branch, the PR must have `maintainerCanModify: true`; then
+`git push git@github.com:<fork-owner>/<repo>.git <local-ref>:<branch> --force-with-lease=<branch>:<old-sha>`.
+(Note: git remotes are repo-global and shared across worktrees, so re-`set-url` a reused `fork` remote before pushing to a different owner.)
+
+`mergeStateStatus: UNSTABLE` means mergeable with non-required checks pending/failing; `BLOCKED` means a **required** check is failing. Buildkite is not configured as a hard-required check, so a docs-only fork change can merge on green CodeQL without waiting for the ~20-minute Buildkite integration suite.
 
 ## Build Agent Infrastructure
 

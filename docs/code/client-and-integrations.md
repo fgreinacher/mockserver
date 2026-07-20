@@ -696,6 +696,11 @@ The plugin is written in Kotlin and built with the IntelliJ Platform Gradle Plug
 | Minimum platform | 2023.3 (build `sinceBuild=243`) |
 | Language | Kotlin 2.1.x, JVM toolchain 17 |
 
+**Plugin Verifier (`verifyPlugin`).** The `./gradlew verifyPlugin` gate (IntelliJ Plugin Verifier) is stricter than the JetBrains Marketplace upload check and must pass before publishing. The `untilBuild` target in `gradle.properties` drifts as new IDE EAP builds are released, making this a recurring breakage risk — bump `untilBuild` whenever verifyPlugin fails on a new EAP range. Two stable patterns avoid common verifyPlugin failures:
+
+- **Plugin version**: derive the version at runtime via `(MockServerSettings::class.java.classLoader as? PluginAwareClassLoader)?.pluginDescriptor?.version` (`MockServerSettings.kt`) rather than a hardcoded build constant. `PluginAwareClassLoader` is a public, stable IntelliJ API that exposes the plugin descriptor.
+- **Action dispatch**: invoke actions programmatically via `AnActionEvent.createEvent(action, dataContext, place, ...)` (`MockServerToolWindowFactory.kt`) rather than constructing an `AnActionEvent` directly. The factory method is the stable API surface the verifier checks.
+
 **Release publishing** (`scripts/release/components/jetbrains.sh`): bumps `pluginVersion` in `gradle.properties`, builds the plugin ZIP (`./gradlew clean buildPlugin`) inside the pinned Maven Docker image (which ships JDK 17; Gradle is downloaded by the wrapper), then publishes via `./gradlew publishPlugin` with the `JETBRAINS_TOKEN` environment variable set from `mockserver-release/jetbrains` in AWS Secrets Manager.
 
 ## MCP (Model Context Protocol) Integration

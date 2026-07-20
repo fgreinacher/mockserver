@@ -411,6 +411,10 @@ The `LOGS` retrieve type now supports `format=LOG_ENTRIES` to return structured 
 
 Deserialization is handled by `LogEntrySerializer.deserializeArray()` using Jackson's `ObjectMapper.readValue()` directly against the `LogEntry` class. Fields that survive the round-trip: `logLevel`, `epochTime`, `timestamp`, `type`, `correlationId`, `port`, `expectationId`, `messageFormat`, `arguments`, `because`. Fields serialized by the custom `LogEntrySerializer` but NOT deserialized (returned as `null`): `httpRequest`, `httpResponse`, `httpError`, `expectation`, `throwable` — their setters are `@JsonIgnore` because the types (`RequestDefinition`, `Expectation`) lack default constructors needed for Jackson deserialization.
 
+> **Recorded-request retrieval and `rawBytes` serialization.** `RequestDefinitionSerializer.retrieveRequests(...)` serializes the recorded `HttpRequest` list using `objectWriter.withAttribute("emitRawBytes", Boolean.TRUE)`. The body serializers `JsonBodySerializer` and `JsonBodyDTOSerializer` gate emission of the base64 `rawBytes` field on this per-call Jackson `SerializerProvider` attribute; the attribute is absent on the normal write path so raw bytes are never emitted there. This ensures that a request body whose on-wire bytes differ from the canonical JSON representation (for example, a body with unconventional whitespace) round-trips faithfully when retrieved via `PUT /mockserver/retrieve?type=REQUESTS`.
+
+> **Mock response body encoding (double-gzip prevention).** `MockServerHttpResponseToFullHttpResponse.getBody()` writes the mock response body bytes verbatim to the wire. Unlike the forward path — where the inbound decompressor strips `Content-Encoding` and the upstream-bound request must be re-compressed — a mock response is never re-encoded. The `Content-Encoding` header is emitted as-is from the expectation, giving callers byte-level control over the response body with no risk of double-compression (issue #2375).
+
 ```mermaid
 sequenceDiagram
     participant AH as HttpActionHandler

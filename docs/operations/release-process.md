@@ -201,7 +201,7 @@ scripts/release/
     ├── javadoc.sh                # Javadoc to S3
     ├── website.sh                # Jekyll site
     ├── schema.sh                 # JSON Schema
-    ├── swaggerhub.sh             # OpenAPI spec to SwaggerHub
+    ├── swaggerhub.sh             # OpenAPI spec to SwaggerHub (see versioning note below)
     ├── github.sh                 # GitHub Release
     ├── binary.sh                 # per-platform jlink bundles (GitHub Release assets)
     ├── versioned-site.sh         # X-Y.mock-server.com Terraform
@@ -223,6 +223,16 @@ scripts/release/
 .buildkite/release-pipeline.yml   # flat list of steps; each step is one
                                   # release-runner.sh invocation
 ```
+
+### SwaggerHub versioning convention
+
+`scripts/release/components/swaggerhub.sh` enforces that **both** the SwaggerHub registry label and the uploaded spec body's `info.version` field use the `major.minor.x` form (e.g. `7.0.x`), never the full patch version. The script:
+
+1. Asserts that the on-disk spec's `info.version` matches `RELEASE_VERSION` exactly (ensures `prepare.sh` bumped it correctly).
+2. Derives `API_VERSION="${MAJOR}.${MINOR}.x"` from `RELEASE_VERSION`.
+3. Creates a throwaway copy of the spec with `info.version` rewritten to `API_VERSION` and uploads that copy — the on-disk spec keeps the full patch version.
+
+Uploading under the full patch version (e.g. `7.0.0`) rather than `7.0.x` leaves every `mockserver_api_version`-based link in the website 404ing, because `_config.yml` uses the `.x` form and all SwaggerHub links on the site reference it.
 
 ## How a release happens
 
@@ -377,6 +387,30 @@ TERRAFORM_IMAGE=hashicorp/terraform:1.15
 Override any of them by exporting the corresponding env var. Change them in `_lib.sh` to update for everyone.
 
 ## Common operations
+
+### Retry semantics — what a Buildkite Retry actually reruns
+
+A Buildkite job **Retry** button re-executes the step's script from the **build's pinned commit** — whichever commit was at `HEAD` when the build was triggered. That means:
+
+| Change type | Retry sufficient? |
+|---|---|
+| Config / data files (secrets, YAML, env vars) | Yes — the script re-reads them at runtime |
+| Script logic in `scripts/release/*.sh` or `_lib.sh` | **No** — the pinned commit's version of the script runs, not your local edits |
+
+If you need a script-logic fix to take effect, you must **trigger a fresh build** from the commit that includes the fix.
+
+**Half-published release recovery:** when a release half-publishes (for example, Maven Central artifacts are already live but downstream steps failed), use `RELEASE_TYPE=post-maven` to skip the Maven Central step on the fresh build and complete only the remaining publish steps:
+
+```bash
+# On Buildkite — trigger a new build with:
+#   Release Type → "Post Maven (skip maven, publish remaining)"
+#   Release Version → same version as the failed build
+
+# Locally:
+RELEASE_VERSION=7.4.0 RELEASE_TYPE=post-maven ./scripts/release/release.sh --execute
+```
+
+`RELEASE_TYPE=post-maven` is wired into each component via the `skip_unless_release_type` guard in `scripts/release/_lib.sh` — components that already published (such as `maven-central`) check this flag and exit early, while remaining components run normally.
 
 ### Re-run a single component after a partial-pipeline failure
 

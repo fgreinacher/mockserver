@@ -16,6 +16,12 @@ Read [docs/code/memory-management.md](../code/memory-management.md) before touch
 
 For the request-processing flow itself, [docs/code/request-processing.md](../code/request-processing.md) and [docs/code/netty-pipeline.md](../code/netty-pipeline.md) describe where each handler runs and how requests cross the event-loop / executor boundary.
 
+## Optimization principles
+
+One standing rule governs every performance change in this codebase:
+
+**A performance change must never regress the small/common case in order to speed up the large/rare one.** Fast-path thresholds — the point at which an optimization kicks in, a cache is consulted, or a code path branches — must be chosen **empirically** from the JMH break-even point, not intuition. Always benchmark both tiny-N (the typical unit-test or low-load request) and large-N (the sustained-throughput or high-cardinality case) and gate the change on **no regression in either**. A threshold that is too low hurts the common case; a threshold that is too high means the optimization never fires at the scale it was designed for. The JMH harness in `mockserver-benchmark/` (run via `perf-test-microbench.sh`) and the k6 regression suite in `mockserver-performance-test/` are the canonical verification tools.
+
 ## Rules of thumb
 
 These are the heuristics maintainers reach for when tuning real workloads. They are not contractual — measure before you change.
