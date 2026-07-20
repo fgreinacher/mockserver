@@ -42,7 +42,7 @@ describe('standardToRust — typed construction', () => {
 
   it('constructs an Expectation via HttpRequest / HttpResponse builders', () => {
     const code = standardToRust(
-      { id: '', method: 'GET', path: '/api', headers: '', queryString: '', cookies: '', pathParams: '', body: '', bodyBinary: false, bodyMatcherType: 'string', secure: false, priority: 0, times: 0 },
+      { id: '', method: 'GET', path: '/api', headers: '', queryString: '', cookies: '', pathParams: '', body: '', bodyBinary: false, bodyMatcherType: 'string', priority: 0, times: 0 },
       { type: 'static', static: { statusCode: 200, body: 'hello', contentType: 'text/plain', bodyFromFile: false, filePath: '', fileTemplateType: '' } },
       'http://localhost:1080',
     );
@@ -67,7 +67,7 @@ describe('standardToRust — typed construction', () => {
           { type: 'xpath', value: '/a/b' },
           { type: 'regex', value: '.*foo.*' },
         ],
-        secure: false, priority: 0, times: 0,
+        priority: 0, times: 0,
       },
       { type: 'static', static: { statusCode: 200, body: 'ok', contentType: 'text/plain', bodyFromFile: false, filePath: '', fileTemplateType: '' } },
       'http://localhost:1080',
@@ -79,7 +79,7 @@ describe('standardToRust — typed construction', () => {
 
   it('builds a typed HttpForward for a forward action', () => {
     const code = standardToRust(
-      { id: '', method: 'GET', path: '/api', headers: '', queryString: '', cookies: '', pathParams: '', body: '', bodyBinary: false, bodyMatcherType: 'string', secure: false, priority: 0, times: 0 },
+      { id: '', method: 'GET', path: '/api', headers: '', queryString: '', cookies: '', pathParams: '', body: '', bodyBinary: false, bodyMatcherType: 'string', priority: 0, times: 0 },
       { type: 'forward', forward: { scheme: 'HTTPS', host: 'upstream.example.com', port: 8443 } },
       'http://localhost:1080',
     );
@@ -89,7 +89,7 @@ describe('standardToRust — typed construction', () => {
 
   it('builds a typed HttpChaosProfile struct literal for a chaos profile', () => {
     const code = standardToRust(
-      { id: '', method: 'GET', path: '/flaky', headers: '', queryString: '', cookies: '', pathParams: '', body: '', bodyBinary: false, bodyMatcherType: 'string', secure: false, priority: 0, times: 0 },
+      { id: '', method: 'GET', path: '/flaky', headers: '', queryString: '', cookies: '', pathParams: '', body: '', bodyBinary: false, bodyMatcherType: 'string', priority: 0, times: 0 },
       {
         type: 'static',
         static: { statusCode: 200, body: 'ok', contentType: 'text/plain', bodyFromFile: false, filePath: '', fileTemplateType: '' },

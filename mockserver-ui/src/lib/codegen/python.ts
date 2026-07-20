@@ -224,7 +224,8 @@ class PyBuilder {
     if (v['pathParameters'] != null) kw.push(['path_parameters', this.keyMultiList(v['pathParameters'], indent + 4)]);
     if (v['body'] != null) kw.push(['body', this.body(v['body'], indent + 4)]);
     if (v['jwt'] != null) kw.push(['jwt', this.jwt(v['jwt'], indent + 4)]);
-    if (v['secure']) kw.push(['secure', 'True']);
+    // typeof, not truthiness: secure:false is an HTTP-only matcher, not an absent field
+    if (typeof v['secure'] === 'boolean') kw.push(['secure', v['secure'] ? 'True' : 'False']);
     return renderCall('HttpRequest', kw, indent);
   }
 

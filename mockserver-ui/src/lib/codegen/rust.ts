@@ -278,7 +278,8 @@ function renderHttpRequest(req: Record<string, unknown>, ctx: Ctx, indent: numbe
   const jwtTyped = !!(jwt && jwt['claims'] && typeof jwt['claims'] === 'object');
   if (jwtTyped) calls.push(jwtCall(jwt!, indent));
 
-  if (req['secure'] === true) calls.push('.secure(true)');
+  // typeof, not === true: secure:false is an HTTP-only matcher, not an absent field
+  if (typeof req['secure'] === 'boolean') calls.push(`.secure(${req['secure']})`);
 
   // Fields with no dedicated builder (dnsName/dnsType/dnsClass DNS matcher, a
   // claims-less jwt, protocol, keepAlive, socketAddress, edit-passthrough fields,

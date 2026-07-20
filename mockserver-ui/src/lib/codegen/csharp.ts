@@ -297,7 +297,8 @@ function renderRequest(req: Record<string, unknown>, indent: number, ctx: Ctx): 
   if (typeof req['dnsClass'] === 'string') props.push(`DnsClass = ${csStr(req['dnsClass'] as string)}`);
   if (bodyExpr !== null) props.push(`Body = ${bodyExpr}`);
   if (isObject(req['jwt'])) props.push(`Jwt = ${renderJwt(req['jwt'] as Record<string, unknown>, indent + 4)}`);
-  if (req['secure'] === true) props.push('Secure = true');
+  // typeof, not === true: secure:false is an HTTP-only matcher, not an absent field
+  if (typeof req['secure'] === 'boolean') props.push(`Secure = ${req['secure'] ? 'true' : 'false'}`);
   if (typeof req['keepAlive'] === 'boolean') props.push(`KeepAlive = ${req['keepAlive'] ? 'true' : 'false'}`);
   return csObjectInit('HttpRequest', props, indent);
 }

@@ -22,7 +22,7 @@ function baseMatcher(overrides?: Partial<StandardMatcher>): StandardMatcher {
   return {
     id: '', method: 'GET', path: '/api', headers: '', queryString: '', cookies: '',
     pathParams: '', body: '', bodyBinary: false, bodyMatcherType: 'string',
-    secure: false, priority: 0, times: 0, ...overrides,
+    priority: 0, times: 0, ...overrides,
   };
 }
 

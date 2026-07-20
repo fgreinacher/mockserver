@@ -17,7 +17,7 @@ function m(o: Partial<StandardMatcher> = {}): StandardMatcher {
   return {
     id: '', method: 'GET', path: '/api', headers: '', queryString: '', cookies: '',
     pathParams: '', body: '', bodyBinary: false, bodyMatcherType: 'string',
-    secure: false, priority: 0, times: 0, ...o,
+    priority: 0, times: 0, ...o,
   };
 }
 const URL = 'http://localhost:1080';

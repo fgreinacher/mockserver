@@ -6,8 +6,10 @@
     "subprotocol": "graphql-transport-ws",
     "templateType": "MUSTACHE",
     "graphqlSubscriptionFilter": {
+      "type": "GRAPHQL",
       "query": "subscription OnMessage { messageAdded { id body } }",
       "operationName": "OnMessage",
+      "variablesSchema": "{\"type\":\"object\",\"properties\":{\"roomId\":{\"type\":\"string\"}},\"required\":[\"roomId\"]}",
       "selectionSetMatchType": "AST_SUBSET",
       "fields": [
         "messageAdded"

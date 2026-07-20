@@ -50,7 +50,13 @@ export interface StandardMatcher {
   bodyAllOf?: StandardBodyAllOfEntry[];
   /** JWT request-matcher criteria (httpRequest.jwt); omitted entirely when nothing is set. */
   jwt?: StandardJwtMatcher;
-  secure: boolean;
+  /**
+   * Tri-state TLS matcher. `true` matches HTTPS only, `false` matches HTTP only, and
+   * `undefined` omits the field so the expectation matches either. Must not be collapsed to a
+   * plain boolean: `false` is a real constraint on the server, so emitting nothing for it
+   * silently widens an HTTP-only matcher into a wildcard.
+   */
+  secure?: boolean;
   priority: number;
   times: number;
   /** Time-to-live in seconds before the expectation auto-expires; 0/undefined = unlimited. */
@@ -1123,7 +1129,8 @@ export function buildExpectationJson(
     }
     const jwtJson = buildJwtJson(matcher.jwt);
     if (jwtJson) httpRequest['jwt'] = jwtJson;
-    if (matcher.secure) httpRequest['secure'] = true;
+    // != null, not truthiness: `secure: false` is an HTTP-only matcher and must be emitted.
+    if (matcher.secure != null) httpRequest['secure'] = matcher.secure;
   }
 
   const out: Record<string, unknown> = { httpRequest };
@@ -2164,7 +2171,7 @@ function matcherToJava(matcher: StandardMatcher): string {
   if (jwtJson) {
     lines.push(`    .withJwt(${jwtToJava(matcher.jwt!)})`);
   }
-  if (matcher.secure) lines.push('    .withSecure(true)');
+  if (matcher.secure != null) lines.push(`    .withSecure(${matcher.secure})`);
   return lines.join('\n');
 }
 

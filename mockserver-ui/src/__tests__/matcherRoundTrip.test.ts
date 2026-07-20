@@ -14,7 +14,6 @@ function baseMatcher(overrides?: Partial<StandardMatcher>): StandardMatcher {
     body: '',
     bodyBinary: false,
     bodyMatcherType: 'string',
-    secure: false,
     priority: 0,
     times: 0,
     ...overrides,

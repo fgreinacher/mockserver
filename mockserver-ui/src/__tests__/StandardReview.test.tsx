@@ -16,7 +16,6 @@ const matcher: StandardMatcher = {
   body: '',
   bodyBinary: false,
   bodyMatcherType: 'string',
-  secure: false,
   priority: 0,
   times: 0,
 };

@@ -24,10 +24,19 @@
  * from a `false` fixture; `true` is asserted only to stop a "fix" that hardcodes
  * the literal.
  *
- * NOT every non-optional boolean belongs here. `secure` is deliberately excluded:
- * its switch is labelled "HTTPS only", and BooleanMatcher treats an absent matcher
- * as a WILDCARD, so OFF genuinely means "match either" and absent is correct —
- * emitting `secure: false` would wrongly narrow it to "HTTP only".
+ * NOT every non-optional boolean belongs here — but `secure` is no longer the
+ * counter-example it once was, and the reasoning is worth keeping because it shows
+ * how a control's LABEL decides what its emitter must do.
+ *
+ * `secure` used to be excluded on the grounds that its switch was labelled "HTTPS
+ * only", so with only two states OFF genuinely meant "match either" and omitting the
+ * field was correct — emitting `secure: false` would have wrongly narrowed it to
+ * "HTTP only". That reasoning was sound for a two-state switch. The control is now
+ * tri-state (Any / HTTPS only / HTTP only), so `false` is a state the user has to
+ * choose deliberately and it means HTTP only, exactly as BooleanMatcher reads it.
+ * Omitting it there is the bug, not the fix: it silently widens an HTTP-only matcher
+ * into a wildcard. `secure` is covered by composerSecureTriState.test.ts rather than
+ * here, because its three states need round-trip coverage this file does not model.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -50,7 +59,7 @@ function m(): StandardMatcher {
   return {
     id: '', method: 'GET', path: '/api', headers: '', queryString: '', cookies: '',
     pathParams: '', body: '', bodyBinary: false, bodyMatcherType: 'string',
-    secure: false, priority: 0, times: 0,
+    priority: 0, times: 0,
   } as unknown as StandardMatcher;
 }
 

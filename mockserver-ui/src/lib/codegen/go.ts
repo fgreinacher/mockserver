@@ -761,7 +761,8 @@ function requestBuilderCalls(req: Record<string, unknown>, includePlainBody: boo
     }
   }
   if (isObj(req['jwt'])) calls.push(`Jwt(${renderJwtBuilder(req['jwt'])})`);
-  if (req['secure'] === true) calls.push('Secure(true)');
+  // typeof, not === true: secure:false is an HTTP-only matcher, not an absent field
+  if (typeof req['secure'] === 'boolean') calls.push(`Secure(${req['secure']})`);
   if (typeof req['keepAlive'] === 'boolean') calls.push(`KeepAlive(${req['keepAlive']})`);
   if (includePlainBody && typeof req['body'] === 'string') calls.push(`Body(${goStr(req['body'])})`);
   return calls;

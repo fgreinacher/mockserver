@@ -184,6 +184,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   harness replays raw JSON through `Expectation`'s `rawData` and never touches the typed builders, so it
   reported zero gaps for fields the typed model could not express at all. Coverage for these fields
   therefore comes from the per-class builder tests, which were extended accordingly.
+- **The dashboard no longer widens an HTTP-only expectation into a wildcard when you edit it.** `secure`
+  is a tri-state request matcher on the server — `true` matches HTTPS only, `false` matches HTTP only, and
+  an absent field matches either — but the Composer modelled it as a two-state switch labelled "HTTPS only"
+  and emitted the field only when it was on. An expectation carrying `secure: false` therefore loaded as
+  OFF and was re-saved with the field **absent**, silently changing an HTTP-only matcher into one that also
+  matches HTTPS; merely opening such an expectation and saving it changed what it matched. The control is
+  now a three-way **Any / HTTPS only / HTTP only** selector, and `false` round-trips as `false`. Four of the
+  nine generated-code tabs — Python, Go, C# and Rust — additionally dropped `secure: false` through
+  `=== true` or truthiness guards even once the shared builder emitted it, so the generated client code
+  claimed a wildcard the dashboard did not; all four now emit the field whenever it is a boolean. Note the
+  label change is part of the fix rather than cosmetic: with only two states, OFF genuinely meant "match
+  either", so omitting the field was correct — it is the third state that makes `false` expressible.
+- **The client-fidelity fixture gate now checks one level deeper.** It compared only the immediate
+  properties of each action schema, so a field nested inside an inline object could be expressible by zero
+  clients while the gap manifest read clean, because no fixture ever probed it —
+  `httpWebSocketResponse.graphqlSubscriptionFilter.type` and `.variablesSchema` were both in that state.
+  The gate now also requires every child property of an inline nested action object to be exercised, and
+  the WebSocket GraphQL fixture covers both fields. Following `$ref` into other schemas reaches a further
+  64 fields across 17 actions and is deliberately left as separate work rather than folded in here.
 - **`/mockserver/debugMismatch` now reports the genuinely closest expectation instead of the first one
   registered.** The endpoint ranked candidates by the number of differing fields, but request matching
   fails fast on the first non-matching field — so every mismatched expectation recorded exactly one

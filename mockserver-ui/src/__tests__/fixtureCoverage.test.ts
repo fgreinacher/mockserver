@@ -127,6 +127,21 @@ const BODY_MATCHER_TO_SERVER_TYPE: Record<BodyMatcherType, string> = {
   wasm: 'WASM',
 };
 
+/**
+ * Every object instance of `actionKey` across all fixtures. Used instead of "did any fixture
+ * contribute a property" so that an action present but EMPTY is still checked rather than skipped.
+ */
+function instancesFor(actionKey: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const { json } of fixtures) {
+    const action = json[actionKey];
+    if (action && typeof action === 'object' && !Array.isArray(action)) {
+      out.push(action as Record<string, unknown>);
+    }
+  }
+  return out;
+}
+
 describe('client fidelity fixtures — coverage gate', () => {
   it('has a non-trivial fixture set and excludes the gap manifest', () => {
     expect(fixtures.length).toBeGreaterThanOrEqual(40);
@@ -169,14 +184,54 @@ describe('client fidelity fixtures — coverage gate', () => {
           for (const k of Object.keys(action as Record<string, unknown>)) seen.add(k);
         }
       }
-      // an action with no fixture at all is already caught by the ACTION_FAMILY_KEYS gate above
-      if (seen.size === 0) continue;
+      // An action with no fixture at all is already caught by the ACTION_FAMILY_KEYS gate above,
+      // so skipping here would normally be harmless. It is NOT skipped, because that gate only
+      // proves the action KEY appears somewhere: an action present as an empty object satisfies it
+      // while contributing no properties, and would then silently opt out of every check below —
+      // the same blindness this gate exists to remove, one level down. No fixture is in that state
+      // today; the guard is removed so none can quietly enter it.
+      if (instancesFor(actionKey).length === 0) continue;
       for (const property of Object.keys(actionSchema.properties)) {
         if (!seen.has(property)) gaps.push(`${actionKey}.${property}`);
       }
     }
 
     expect(gaps, `action schema properties not exercised by any fixture: ${gaps.join(', ')}`).toEqual([]);
+  });
+
+  // Depth-2 gate: for every action property that is itself an object with inline `properties`,
+  // every CHILD property must be exercised by some fixture too. The depth-1 gate only proves the
+  // parent object appeared; a nested field no fixture ever sets is expressible by zero clients
+  // while known-gaps.json reads clean, because nothing ever probed it. That is exactly how
+  // graphqlSubscriptionFilter.type and .variablesSchema sat uncovered.
+  //
+  // Scoped to INLINE nested `properties` — objects the action schema defines in place. Following
+  // `$ref` into other schemas reaches a much larger surface (64 further gaps across 17 actions at
+  // the time of writing) and is a fixture-authoring project of its own, deliberately not conflated
+  // with this gate. Widening it later is a ratchet, not a flag flip.
+  it('exercises every child property of every inline nested action object', () => {
+    const gaps: string[] = [];
+    for (const [path, actionSchema] of Object.entries(actionSchemaModules)) {
+      const actionKey = schemaNameOf(path);
+      const instances = instancesFor(actionKey);
+      if (instances.length === 0) continue;
+      for (const [property, spec] of Object.entries(actionSchema.properties)) {
+        const nested = (spec as { properties?: Record<string, unknown> }).properties;
+        if (!nested) continue;
+        const seenChildren = new Set<string>();
+        for (const instance of instances) {
+          const value = instance[property];
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            for (const child of Object.keys(value as Record<string, unknown>)) seenChildren.add(child);
+          }
+        }
+        for (const child of Object.keys(nested)) {
+          if (!seenChildren.has(child)) gaps.push(`${actionKey}.${property}.${child}`);
+        }
+      }
+    }
+
+    expect(gaps, `nested action schema properties not exercised by any fixture: ${gaps.join(', ')}`).toEqual([]);
   });
 
   // Booleans are the sharpest instance of the depth-0 blind spot: a fixture that only ever sets a

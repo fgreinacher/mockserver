@@ -350,7 +350,12 @@ interface MatcherState {
   bodyAllOf?: StandardBodyAllOfEntry[];
   /** JWT request-matcher criteria (Advanced form's optional JWT section). */
   jwt?: StandardJwtMatcher;
-  secure: boolean;
+  /**
+   * Tri-state TLS matcher: `true` = HTTPS only, `false` = HTTP only, `undefined` = either.
+   * `false` is a real server-side constraint, so it must survive an edit round-trip — see
+   * composerSecureTriState.test.ts.
+   */
+  secure: boolean | undefined;
   priority: number;
   times: number;         // 0 = unlimited
   ttlSeconds: number;    // 0 = unlimited (auto-expire after N seconds)
@@ -375,7 +380,7 @@ function emptyMatcher(): MatcherState {
     bodySubString: false,
     bodyAllOf: [],
     jwt: undefined,
-    secure: false,
+    secure: undefined,
     priority: 0,
     times: 0,
     ttlSeconds: 0,
@@ -956,16 +961,21 @@ function MatcherPanel({ matcher, setMatcher }: { matcher: MatcherState; setMatch
       </Box>
       <JwtMatcherSection matcher={matcher} setMatcher={setMatcher} />
       <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-        <FormControlLabel
-          control={
-            <Switch
-              size="small"
-              checked={matcher.secure}
-              onChange={(e) => setMatcher({ ...matcher, secure: e.target.checked })}
-            />
-          }
-          label={<Typography variant="body2">HTTPS only</Typography>}
-        />
+        {/* Tri-state: the previous two-state switch had no way to express "HTTP only", so OFF
+            meant "match either" and an expectation carrying secure:false was silently widened
+            when re-saved. Mirrors the triValue/triParse control used for keep-alive. */}
+        <TextField
+          select
+          size="small"
+          label="TLS"
+          sx={{ width: { xs: '100%', sm: 150 } }}
+          value={triValue(matcher.secure)}
+          onChange={(e) => setMatcher({ ...matcher, secure: triParse(e.target.value) })}
+        >
+          <MenuItem value="">Any</MenuItem>
+          <MenuItem value="true">HTTPS only</MenuItem>
+          <MenuItem value="false">HTTP only</MenuItem>
+        </TextField>
         <TextField
           label="Priority (higher = wins)"
           size="small"
@@ -1243,7 +1253,9 @@ export function matcherFromExpectation(item: JsonListItem): MatcherState {
     bodySubString,
     bodyAllOf,
     jwt: jwtFromRequest(req),
-    secure: req['secure'] === true,
+    // typeof check, not `=== true`: an explicit `false` is an HTTP-only matcher and must load
+    // as false, not collapse into the same state as an absent (match-either) field.
+    secure: typeof req['secure'] === 'boolean' ? (req['secure'] as boolean) : undefined,
     priority: typeof v['priority'] === 'number' ? (v['priority'] as number) : 0,
     // 0 = unlimited. An explicitly unlimited expectation prefills 0 rather than its
     // (irrelevant) remainingTimes count.
