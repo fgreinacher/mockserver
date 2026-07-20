@@ -14,8 +14,10 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.mockserver.configuration.ClientConfiguration;
 import org.mockserver.configuration.Configuration;
+import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.file.FileReader;
 import org.mockserver.httpclient.NettyHttpClient;
+import org.mockserver.httpclient.SocketCommunicationException;
 import org.mockserver.httpclient.SocketConnectionException;
 import org.mockserver.load.LoadScenario;
 import org.mockserver.log.model.LogEntry;
@@ -811,7 +813,12 @@ public class MockServerClient implements Stoppable {
      */
     public boolean hasStopped(int attempts, long timeout, TimeUnit timeUnit) {
         try {
-            HttpResponse httpResponse = sendRequest(request().withMethod("PUT").withPath(calculatePath("status")), true, false);
+            // errors are deliberately NOT ignored here. With ignoreErrors=true both a connection
+            // refusal (MockServer genuinely stopped) and a read timeout (MockServer alive but slow)
+            // are swallowed into a null response, which cannot be told apart - and treating that
+            // null as "stopped" is a fail-open. Letting the exceptions propagate is what makes the
+            // two cases distinguishable below.
+            HttpResponse httpResponse = sendRequest(request().withMethod("PUT").withPath(calculatePath("status")), false, false);
             if (httpResponse != null && httpResponse.getStatusCode() == HttpStatusCode.OK_200.code()) {
                 if (attempts <= 0) {
                     return false;
@@ -827,8 +834,110 @@ public class MockServerClient implements Stoppable {
                 return true;
             }
         } catch (SocketConnectionException | IllegalStateException sce) {
+            // the socket refused the connection, or this client's event loop is already closed:
+            // MockServer is not accepting connections, so it really has stopped
             return true;
+        } catch (RuntimeException rex) {
+            // Neither a timeout nor any other unexpected failure tells us MockServer has stopped, so
+            // none of them may report "stopped". A read timeout in particular is AMBIGUOUS - MockServer
+            // may still be alive and still holding its port, just too slow to answer (GC pause, CPU
+            // contention, a saturated event loop). Reporting "stopped" there is a fail-open: callers
+            // rebind the port while the server still owns it and get a BindException far away from the
+            // real cause.
+            //
+            // Returning false for every unrecognised failure also keeps this method total. It
+            // previously swallowed such failures to a null response and answered "stopped"; throwing
+            // instead would be a new way for callers to fail (see InstanceHolder in the Maven plugin,
+            // which rethrows), so "not confirmed stopped" is both the safe and the compatible answer.
+            //
+            // Deliberately not retried: each probe already costs up to maxSocketTimeoutInMillis
+            // (20 seconds by default), so retrying here would multiply shutdown latency. Callers that
+            // want to keep waiting drive their own retry loop.
+            if (MockServerLogger.isEnabled(WARN)) {
+                String reason = isTimeoutFailure(rex)
+                    ? "timeout while checking if MockServer has stopped - " + rex.getMessage()
+                    + " - a timeout cannot distinguish a stopped MockServer from one that is still "
+                    + "running but slow to respond"
+                    : "unexpected failure while checking if MockServer has stopped - " + rex.getMessage();
+                MOCK_SERVER_LOGGER.logEvent(
+                    new LogEntry()
+                        .setLogLevel(WARN)
+                        .setMessageFormat(reason + " - reporting NOT stopped")
+                        .setThrowable(rex)
+                );
+            }
+            return false;
         }
+    }
+
+    /**
+     * How long {@link #stop(boolean)} keeps waiting for a confirmed stop before giving up.
+     *
+     * <p>This must never be shorter than the shutdown it is waiting for. MockServer stops accepting
+     * connections and then holds its bound port draining in-flight requests for up to
+     * {@code stopDrainMillis}, during which {@code /status} still answers, so each {@link #hasStopped()}
+     * probe costs real time and can itself take up to {@code maxSocketTimeoutInMillis}. A fixed budget
+     * that ignored both would abandon the wait while the server still held its port - completing
+     * {@code stopFuture} early and handing the caller the very {@code BindException} this is meant to
+     * prevent. {@code LifeCycle.stop()} sizes its own budget from {@code stopDrainMillis} for the same
+     * reason.
+     *
+     * <p><strong>Cross-JVM caveat.</strong> {@code stopDrainMillis} is read from this client's JVM but
+     * describes the <em>server's</em> drain. Against a remote MockServer configured with a longer drain
+     * than the client knows about, this budget under-estimates and the wait can still end before the
+     * server has released its port. That is inherent to a client that cannot see the server's
+     * configuration; when it happens the wait now logs a warning rather than reporting a false stop.
+     *
+     * @param stopDrainMillis         how long the server may spend draining in-flight requests
+     * @param maxSocketTimeoutMillis  how long a single status probe may block
+     */
+    static long stopWaitTimeoutMillis(long stopDrainMillis, long maxSocketTimeoutMillis) {
+        return Math.max(30_000L, stopDrainMillis + maxSocketTimeoutMillis);
+    }
+
+    /**
+     * How long the blocking {@link #stop()} waits for the {@link #stop(boolean)} future to complete.
+     *
+     * <p>This must <em>exceed</em> {@link #stopWaitTimeoutMillis} - the budget the background wait uses -
+     * or the blocking wrapper would always abandon the future before that wait could conclude, which
+     * would be a new way to report a stop that had not happened. The margin is one further status probe,
+     * because the background loop checks its deadline at the head of each iteration and so can overshoot
+     * by up to one {@link #hasStopped()} call.
+     *
+     * @param stopDrainMillis         how long the server may spend draining in-flight requests
+     * @param maxSocketTimeoutMillis  how long a single status probe may block
+     */
+    static long stopBlockingTimeoutMillis(long stopDrainMillis, long maxSocketTimeoutMillis) {
+        return stopWaitTimeoutMillis(stopDrainMillis, maxSocketTimeoutMillis) + Math.max(0L, maxSocketTimeoutMillis);
+    }
+
+    /**
+     * Whether a failure represents a read timeout rather than a definite answer about liveness.
+     *
+     * <p>A timeout can reach us in more than one shape, and which one wins is a race between two
+     * independent timers, so both must be recognised:
+     * <ul>
+     *   <li>the client-side {@code future.get(timeout)} expiring, wrapped as
+     *       {@link SocketCommunicationException}; and</li>
+     *   <li>Netty's own {@code ReadTimeoutHandler} firing first, which surfaces as a plain
+     *       {@link RuntimeException} wrapping a Netty timeout because that exception is not an
+     *       {@code IOException} and so is not translated into a {@link SocketConnectionException}.</li>
+     * </ul>
+     * Matching only the first shape would leave the fail-open in place under exactly the load that
+     * triggers it. The whole cause chain is inspected because these arrive wrapped.
+     */
+    static boolean isTimeoutFailure(Throwable throwable) {
+        for (Throwable cause = throwable; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SocketCommunicationException
+                || cause instanceof io.netty.handler.timeout.TimeoutException
+                || cause instanceof java.util.concurrent.TimeoutException) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**
@@ -905,13 +1014,27 @@ public class MockServerClient implements Stoppable {
      */
     public void stop() {
         try {
-            stopAsync().get(10, SECONDS);
+            // Derived rather than fixed, for the same reason as the background wait it is waiting on:
+            // MockServer holds its bound port while draining, so a hardcoded budget shorter than the
+            // drain would return to the caller while the port was still in use. LifeCycle.stop() sizes
+            // its own budget the same way.
+            stopAsync().get(
+                stopBlockingTimeoutMillis(
+                    ConfigurationProperties.stopDrainMillis(),
+                    configuration.maxSocketTimeoutInMillis()
+                ),
+                MILLISECONDS
+            );
         } catch (Throwable throwable) {
-            if (MockServerLogger.isEnabled(DEBUG)) {
+            // a stop that did not stop must not be silent. Logging this at DEBUG meant the first
+            // visible symptom was an unrelated BindException later, when something tried to rebind
+            // a port this MockServer was in fact still holding.
+            if (MockServerLogger.isEnabled(WARN)) {
                 MOCK_SERVER_LOGGER.logEvent(
                     new LogEntry()
-                        .setLogLevel(DEBUG)
-                        .setMessageFormat("exception while stopping - " + throwable.getMessage())
+                        .setLogLevel(WARN)
+                        .setMessageFormat("exception while stopping MockServer, it may still be running and holding its port - "
+                            + throwable.getMessage())
                         .setThrowable(throwable)
                 );
             }
@@ -928,10 +1051,33 @@ public class MockServerClient implements Stoppable {
             new Scheduler.SchedulerThreadFactory("ClientStop").newThread(() -> {
                 try {
                     sendRequest(request().withMethod("PUT").withPath(calculatePath("stop")), false);
-                    if (!hasStopped()) {
-                        for (int i = 0; !hasStopped() && i < 50; i++) {
-                            TimeUnit.MILLISECONDS.sleep(5);
-                        }
+                    // Bounded by iteration count and by a wall-clock deadline. hasStopped() no longer
+                    // returns early on a read timeout, so against an unresponsive MockServer each probe
+                    // can cost up to maxSocketTimeoutInMillis - an iteration-only bound could spin here
+                    // for many minutes. The budget is derived from the shutdown it is waiting for
+                    // rather than fixed, so that raising stopDrainMillis cannot make this give up while
+                    // the server is still draining and still holding its port.
+                    //
+                    // The deadline is checked at the head of each iteration, so the elapsed time can
+                    // overshoot it by up to one hasStopped() call; the wait is bounded, not precise.
+                    long deadline = System.currentTimeMillis() + stopWaitTimeoutMillis(
+                        ConfigurationProperties.stopDrainMillis(),
+                        configuration.maxSocketTimeoutInMillis()
+                    );
+                    boolean stopped = hasStopped();
+                    for (int i = 0; !stopped && i < 50 && System.currentTimeMillis() < deadline; i++) {
+                        TimeUnit.MILLISECONDS.sleep(5);
+                        stopped = hasStopped();
+                    }
+                    if (!stopped && MockServerLogger.isEnabled(WARN)) {
+                        // giving up without a confirmed stop is exactly the state that later surfaces
+                        // as an unrelated BindException, so it must not be silent
+                        MOCK_SERVER_LOGGER.logEvent(
+                            new LogEntry()
+                                .setLogLevel(WARN)
+                                .setMessageFormat("gave up waiting for MockServer to stop - it was not confirmed "
+                                    + "stopped and may still be running and holding its port")
+                        );
                     }
                 } catch (RejectedExecutionException ree) {
                     if (!ignoreFailure && MockServerLogger.isEnabled(TRACE)) {

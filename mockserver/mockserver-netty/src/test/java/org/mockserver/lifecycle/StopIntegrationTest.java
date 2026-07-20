@@ -394,6 +394,36 @@ public class StopIntegrationTest {
         }
     }
 
+    /**
+     * Companion to {@link #freesPortBeforeStopMethodReturns()}, which only covers the direct
+     * {@link MockServer#stop()} path.
+     *
+     * <p>Several tests in this class stop the server through {@link MockServerClient#stopAsync()}
+     * instead, and that is a genuinely different code path: it completes its future once
+     * {@code hasStopped()} reports success, rather than once the channel is closed. When
+     * {@code hasStopped()} treated a read timeout as "stopped", the future could therefore complete
+     * while the server was still bound - and the next bind of this class's single fixed port failed
+     * with "Exception while binding MockServer to port ...", far away from the real cause. The
+     * invariant was asserted only for the path that could not break it, so this asserts it for the
+     * path that could.
+     */
+    @Test
+    public void freesPortBeforeStopAsyncCompletes() throws ExecutionException, InterruptedException, TimeoutException {
+        // start server
+        new MockServer(MOCK_SERVER_PORT);
+        MockServerClient mockServerClient = new MockServerClient("localhost", MOCK_SERVER_PORT);
+
+        // when
+        mockServerClient.stopAsync().get(10, SECONDS);
+
+        // then
+        try (ServerSocket serverSocket = new ServerSocket(MOCK_SERVER_PORT)) {
+            assertThat(serverSocket.isBound(), is(true));
+        } catch (IOException ioe) {
+            fail("port should be freed once the stopAsync future completes");
+        }
+    }
+
     private void testBasicExpectationAndResponse(MockServerClient mockServerClient) {
         // then
         mockServerClient

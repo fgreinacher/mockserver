@@ -905,6 +905,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of relying on the Netty default, which differs between Netty 4.1 (unset, meaning unlimited) and
   4.2 (100). The advertised value is unchanged from what Netty 4.2 already supplied, so there is no
   behaviour change; it is now MockServer's own limit and cannot shift under a Netty upgrade.
+- **Fixed `MockServerClient.hasStopped()` reporting a running MockServer as stopped.** The status probe ignored
+  errors, which collapsed both a connection refusal (genuinely stopped) and a read timeout (alive but slow to
+  answer) into the same empty result, and treated that result as "stopped". A MockServer that was merely paused
+  by GC or starved of CPU therefore reported itself stopped while it was still bound, so callers rebound the port
+  and got a `BindException` raised far from the real cause. A refused connection still reports stopped; a timeout
+  now reports **not** stopped and logs a warning. **Behaviour change:** `hasStopped()` returns `false` in cases
+  where it previously returned `true`, and it no longer reports success for any failure it cannot interpret. Code
+  that treated a `true` result as proof the port was free was relying on the defect and may now wait longer, which
+  is the intended behaviour. Both the blocking `stop()` and the background wait behind `stopAsync()` now derive
+  how long they wait for a confirmed stop from `stopDrainMillis` and `maxSocketTimeoutInMillis` instead of using
+  a fixed 10 seconds, so raising the drain timeout no longer causes either to give up while the server is still
+  draining and still holding its port. Note that `stopDrainMillis` is read from the client's JVM, so against a
+  remote MockServer configured with a longer drain the client can still stop waiting early — it now logs a
+  warning when it does, rather than reporting a stop that did not happen.
+- **Stop failures are no longer silent.** `MockServerClient.stop()` and `LifeCycle.stop()` logged a failure to
+  stop at DEBUG, so the first visible symptom was an unrelated `BindException` much later. Both now log at WARN,
+  as does giving up while waiting for a stop to be confirmed. **Users may see new WARN messages** where a stop was
+  previously failing silently.
 - Fixed FILE-type response bodies being silently dropped during serialization. The `HttpResponseSerializer` and
   `HttpResponseDTOSerializer` whitelist body types when writing the `body` field and had no branch for `FileBody`,
   so a response configured with a file body was serialized without it (issue #2430). Both serializers now preserve

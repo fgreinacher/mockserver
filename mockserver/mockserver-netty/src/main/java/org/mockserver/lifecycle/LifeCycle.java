@@ -448,11 +448,15 @@ public abstract class LifeCycle implements Stoppable {
             long stopTimeoutMillis = Math.max(30_000L, org.mockserver.configuration.ConfigurationProperties.stopDrainMillis() + 10_000L);
             stopAsync().get(stopTimeoutMillis, MILLISECONDS);
         } catch (Throwable throwable) {
-            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(DEBUG)) {
+            // a stop that did not stop must not be silent. Logging this at DEBUG meant the first
+            // visible symptom was an unrelated BindException later, when something tried to rebind
+            // a port this server was in fact still holding.
+            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(WARN)) {
                 mockServerLogger.logEvent(
                     new LogEntry()
-                        .setLogLevel(DEBUG)
-                        .setMessageFormat("exception while stopping - " + throwable.getMessage())
+                        .setLogLevel(WARN)
+                        .setMessageFormat("exception while stopping MockServer, it may still be running and holding its port - "
+                            + throwable.getMessage())
                         .setArguments(throwable)
                 );
             }
