@@ -31,7 +31,7 @@ function deploy_mockserver_chart() {
   # No --version: installing from a local chart directory, so Helm ignores the
   # registry version filter. Avoid hardcoding a stale version string.
   runCommand "helm --kube-context ${KUBE_CONTEXT} upgrade --install --namespace ${NAMESPACE} --create-namespace --set image.repositoryNameAndTag=mockserver/mockserver:integration_testing --set app.mountConfigMap=true --debug --wait ${NAMESPACE} ${MOCKSERVER_CHART_DIR}"
-  runCommand "(ps -ef | grep port-forward | grep ${PORT} | awk '{ print \$2 }' | xargs kill) || true"
+  kill-port-forward "${NAMESPACE}" "${PORT}" "1080"
   runCommand "kubectl --context ${KUBE_CONTEXT} --namespace ${NAMESPACE} port-forward svc/${NAMESPACE} ${PORT}:1080 &"
   export MOCKSERVER_HOST=127.0.0.1:${PORT}
   sleep 3
@@ -40,7 +40,7 @@ function deploy_mockserver_chart() {
 function tear_down_all() {
   runCommand "helm --kube-context ${KUBE_CONTEXT} --namespace ${NAMESPACE} delete ${NAMESPACE} || true"
   runCommand "helm --kube-context ${KUBE_CONTEXT} --namespace ${NAMESPACE} delete ${NAMESPACE}-config || true"
-  runCommand "(ps -ef | grep port-forward | grep ${PORT} | awk '{ print \$2 }' | xargs kill) || true"
+  kill-port-forward "${NAMESPACE}" "${PORT}" "1080"
 }
 
 function integration_test() {

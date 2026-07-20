@@ -141,14 +141,35 @@ function test() {
   # missing file, `set -e` abort in start-up, docker unavailable, a bad `cd` —
   # left no record at all: not in PASS_LOG, not in FAIL_LOG. run_all_tests only
   # sets EXIT_CODE from a non-empty FAIL_LOG, so the suite exited 0 having run
-  # nothing. Record any unaccounted-for non-zero exit here.
-  if [[ ${rc} -ne 0 ]] && ! grep -qF -- "- ${TEST_CASE}" "${FAIL_LOG_FILE}" 2>/dev/null; then
+  # nothing.
+  #
+  # The check is on RESULT PRESENCE, not on the exit code. Keying it off a
+  # non-zero exit still let a test that exited 0 without recording anything
+  # disappear from the summary — the suite stayed green and simply reported one
+  # test fewer, which is build #129's failure mode in a narrower form (a run of
+  # "PASSED: 1" while another test vanished entirely). A test that produced no
+  # result did not pass, whatever it exited with.
+  #
+  # The trailing delimiter in the pattern stops a name matching a longer one
+  # that starts with it (e.g. docker_variant_smoke_root vs ...root-snapshot).
+  local recorded=false
+  local result_log
+  for result_log in "${PASS_LOG_FILE}" "${FAIL_LOG_FILE}" "${SKIP_LOG_FILE}" "${WARN_LOG_FILE}"; do
+    if grep -qE -- "- ${TEST_CASE}(:|\$|[^[:alnum:]_-])" "${result_log}" 2>/dev/null; then
+      recorded=true
+      break
+    fi
+  done
+
+  if [[ "${recorded}" != "true" ]]; then
+    local how="exited ${rc}"
     if [[ "${blocking_mode}" == "non_blocking" ]]; then
-      printMessageWithColourAndBorders >&2 "Warning (non-blocking): ${TEST_CASE} exited ${rc} without recording a result" "\e[0;33m"
-      printMessageWithColour >&2 "  - ${TEST_CASE} (crashed without recording a result)" "\e[0;33m" >>"${WARN_LOG_FILE}" 2>&1
+      printMessageWithColourAndBorders >&2 "Warning (non-blocking): ${TEST_CASE} ${how} without recording a result" "\e[0;33m"
+      printMessageWithColour >&2 "  - ${TEST_CASE} (${how} without recording a result)" "\e[0;33m" >>"${WARN_LOG_FILE}" 2>&1
     else
-      printFailureMessage "Failed (test script exited ${rc} without recording a result): ${TEST_CASE}"
-      printPlainFailureMessage "  - ${TEST_CASE} (crashed without recording a result)" >>"${FAIL_LOG_FILE}" 2>&1
+      printFailureMessage "Failed (test script ${how} without recording a result): ${TEST_CASE}"
+      printPlainFailureMessage "  - ${TEST_CASE} (${how} without recording a result)" >>"${FAIL_LOG_FILE}" 2>&1
+      rc=1
     fi
   fi
   return ${rc}

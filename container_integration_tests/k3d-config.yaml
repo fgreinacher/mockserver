@@ -3,10 +3,20 @@ kind: Simple
 metadata:
   name: mockserver
 servers: 1
-ports:
-  - port: 1080:1080
-    nodeFilters:
-      - loadbalancer
+# NO host port publishing. Every helm test reaches MockServer through the
+# `kubectl port-forward` started by helm-deploy.sh's start-up(), which binds
+# 127.0.0.1:<port> and is the only thing MOCKSERVER_HOST is ever set from.
+#
+# Publishing `1080:1080` to the loadbalancer node used to sit here, and it was
+# not merely redundant — it BROKE those forwards. k3d's serverlb (nginx) claimed
+# host 1080 for itself, so `kubectl port-forward ... 1080:1080` could not bind
+# and died instantly with "address already in use". The tests then talked to the
+# serverlb instead, which — with traefik disabled below and `ingress.enabled:
+# false` in the chart — has nothing behind it, so it accepted the connection and
+# closed it: the "Empty reply from server" seen in build #130.
+#
+# Do not reintroduce a `ports:` block that overlaps a port the tests forward
+# (1080 for most, 1090 for helm_remote_host_and_port).
 options:
   k3d:
     wait: true

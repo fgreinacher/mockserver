@@ -26,6 +26,33 @@ function tear-down-k8s() {
   fi
 }
 
+# Matches ONLY the port-forward this script starts, for this namespace and port.
+# Deliberately specific: the previous `ps -ef | grep port-forward | grep <port>`
+# matched its own grep processes in the same pipeline (so `xargs kill` reported
+# "No such process"), and would happily kill an unrelated forward — including one
+# belonging to a concurrent worktree — that merely mentioned the same port.
+# (namespace, localPort, remotePort). remotePort defaults to localPort, which is
+# the common case; helm_mockserver_config_chart forwards 1082:1080, so a pattern
+# assuming they are equal silently matches nothing and kills nothing.
+function port-forward-pattern() {
+  local namespace="${1}"
+  local local_port="${2}"
+  local remote_port="${3:-${2}}"
+  echo "kubectl .*--namespace ${namespace} port-forward svc/${namespace} ${local_port}:${remote_port}"
+}
+
+# Deterministic per-(namespace,port) so tear-down can find the right one:
+# helm_remote_host_and_port runs two concurrent forwards (1090 and 1080).
+function port-forward-log() {
+  echo "${TMPDIR:-/tmp}/mockserver-port-forward-${1}-${2}.log"
+}
+
+function kill-port-forward() {
+  # pkill excludes itself, and -f matches the full command line. No-op (exit 1)
+  # when nothing matches, which is the normal case.
+  pkill -f "$(port-forward-pattern "${1}" "${2}" "${3:-${2}}")" || true
+}
+
 function start-up() {
   local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
   local namespace="${2:-mockserver}"
@@ -34,12 +61,43 @@ function start-up() {
   # Kill any stale port-forward holding this local port, then WAIT for the port to
   # actually free before binding a new one. A leaked background forward from a prior
   # test is what causes the flaky "address already in use" on bind.
-  runCommand "(ps -ef | grep port-forward | grep ${port} | awk '{ print \$2 }' | xargs kill) || true"
+  kill-port-forward "${namespace}" "${port}"
   runCommand "for _ in \$(seq 1 15); do (exec 3<>/dev/tcp/127.0.0.1/${port}) 2>/dev/null && { exec 3>&-; sleep 1; } || break; done"
-  runCommand "kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} port-forward svc/${namespace} ${port}:${port} >/dev/null 2>&1 &"
+
+  # Keep the forward's own stderr. It is the only place the real cause is stated
+  # ("Unable to listen on port ...: address already in use"); discarding it to
+  # /dev/null is what reduced a hard bind failure to an unexplained curl error.
+  local forward_log
+  forward_log="$(port-forward-log "${namespace}" "${port}")"
+  : >"${forward_log}"
+  runCommand "kubectl --context ${KUBE_CONTEXT} --namespace ${namespace} port-forward svc/${namespace} ${port}:${port} >\"${forward_log}\" 2>&1 &"
   export MOCKSERVER_HOST=127.0.0.1:${port}
-  # Poll until the forward actually serves rather than a fixed sleep (flaky under load).
-  runCommand "for _ in \$(seq 1 30); do curl -sf -o /dev/null -X PUT \"http://127.0.0.1:${port}/mockserver/status\" && break; sleep 1; done"
+
+  # Poll until the forward actually serves rather than a fixed sleep (flaky under
+  # load). The loop MUST have an exhaustion branch: without one it fell through
+  # silently after 30s and the caller proceeded to curl a port nothing was
+  # serving, reporting a generic failure that named neither the forward nor the
+  # reason.
+  local ready=false
+  for _ in $(seq 1 30); do
+    if curl -sf -o /dev/null -X PUT "http://127.0.0.1:${port}/mockserver/status"; then
+      ready=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "${ready}" != "true" ]]; then
+    printFailureMessage "port-forward to svc/${namespace} on 127.0.0.1:${port} never became ready after 30s"
+    printFailureMessage "kubectl port-forward output was:"
+    if [[ -s "${forward_log}" ]]; then
+      cat "${forward_log}" >&2
+    else
+      printFailureMessage "  (empty — the forward produced no output; it may have been killed)"
+    fi
+    kill-port-forward "${namespace}" "${port}"
+    printFailureMessage "Anything already listening on 127.0.0.1:${port} (e.g. a k3d 'ports:' publish in k3d-config.yaml) will prevent the forward from binding."
+    return 1
+  fi
 }
 
 function run-helm-test() {
@@ -49,7 +107,8 @@ function run-helm-test() {
 
 function tear-down() {
   runCommand "helm --kube-context ${KUBE_CONTEXT} --namespace ${1:-mockserver} delete ${1:-mockserver}"
-  runCommand "(ps -ef | grep port-forward | grep ${2:-1080} | awk '{ print \$2 }' | xargs kill) || true"
+  kill-port-forward "${1:-mockserver}" "${2:-1080}"
+  rm -f "$(port-forward-log "${1:-mockserver}" "${2:-1080}")" 2>/dev/null || true
 }
 
 function container-logs() {
