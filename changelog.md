@@ -46,6 +46,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The count includes only true evictions: an explicit `reset()`/`clear()` resets it to zero.
 
 ### Changed
+- **The control-plane trust anchor is now mutable at runtime rather than frozen at startup.** The
+  control-plane authentication handler (mTLS CA chain, JWT JWK source, OIDC issuer/audience/JWKS) is derived
+  from the LIVE configuration on every request instead of being built once during server bootstrap. This is
+  what makes enabling, disabling or re-pointing control-plane authentication on an already-running instance
+  actually take effect, instead of returning success and being silently ignored — but it is a genuine
+  widening versus immutable-after-bootstrap and is worth understanding. **Any configuration route can move
+  the trust anchor of a running server**: a system property, a `Configuration` setter, or
+  `PUT /mockserver/configuration`. Critically, a `Configuration` instance reads through to the process-global
+  static `ConfigurationProperties` store for any field it has not set itself, so a server whose CA chain was
+  never pinned on its own instance will follow later mutations of the global store — including mutations made
+  by unrelated code sharing the JVM. **To pin a trust anchor that unrelated code cannot move, set it on the
+  `Configuration` instance you start the server with** (an explicitly-set instance field wins over the static
+  store); embedded and test usage should not treat the global store as a client-configuration vehicle. If the
+  control plane is reachable by parties who should not be able to change its own trust anchor, keep
+  control-plane authentication enabled — `PUT /mockserver/configuration` routes through the same gate. See
+  [tls-and-security.md](docs/code/tls-and-security.md#runtime-mutability-of-the-control-plane-trust-anchor).
 - **WIRE FORMAT: a matcher *value* whose first character is `!` or `?` is now sent as an object rather
   than a bare string.** In the plain-string form a leading `!` means "not" and a leading `?` means
   "optional", and the receiver strips those markers unconditionally — so asking for "path **is**

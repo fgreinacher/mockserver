@@ -252,7 +252,7 @@ both must pass"]
     CHAIN -->|Either fails| DENY
 ```
 
-Authentication is configured in `MockServer.createServerBootstrap()` and validated in `HttpState.controlPlaneRequestAuthenticated()`:
+Authentication is **derived from the live `Configuration` on every request** by `ControlPlaneAuthenticationHandlerFactory.build()` (cached against `signature(Configuration)` and rebuilt whenever an auth-relevant value changes) and validated in `HttpState.controlPlaneRequestAuthenticated()`. It is no longer built once during `MockServer.createServerBootstrap()` and pushed into `HttpState` — see [Runtime Mutability of the Control-Plane Trust Anchor](#runtime-mutability-of-the-control-plane-trust-anchor) for what that implies.
 
 | Configuration | Handler | Mechanism |
 |---------------|---------|-----------|
@@ -260,6 +260,45 @@ Authentication is configured in `MockServer.createServerBootstrap()` and validat
 | `controlPlaneJWTAuthenticationJWKSource` | JWT handler | Validates Bearer token using JWK source |
 | `controlPlaneOidcAuthenticationRequired` | OIDC handler | Verifies an external-IdP Bearer token (issuer + audience + scopes) and surfaces a verified principal |
 | Two or more configured | Chained handler | Every configured handler must succeed (logical AND) |
+
+### Runtime Mutability of the Control-Plane Trust Anchor
+
+**The control-plane trust anchor is NOT frozen at startup. It is mutable at runtime, including through the process-global static `ConfigurationProperties` store.** Pinning a CA chain, JWKS source or issuer before starting a server does not fix it for that server's lifetime.
+
+This is intended: it is what makes enabling control-plane authentication on an already-running instance actually take effect, rather than being accepted and silently ignored (the defect fixed in `efc0d256c`, where the handler was built once at bootstrap so every later configuration route returned success and left the handler `null` — and a `null` handler means "authenticated"). The trade-off is deliberate but it is a genuine widening versus immutable-after-bootstrap, so it needs to be understood.
+
+```mermaid
+flowchart LR
+    SYS["System property
+-Dmockserver.controlPlane*"] --> STATIC["ConfigurationProperties
+process-global static store"]
+    PUT["PUT /mockserver/configuration"] --> INST
+    SETTER["Configuration setter
+on the server's instance"] --> INST["Configuration instance"]
+    STATIC -->|"read-through when the
+instance field is unset"| INST
+    INST --> FACTORY["ControlPlaneAuthenticationHandlerFactory
+build() keyed by signature()"]
+    FACTORY --> GATE["Enforcement point
+every control-plane request"]
+```
+
+Consequences to be aware of:
+
+- **A `Configuration` reads through to the static store for any field it has not set itself.** So a server started with an unset `controlPlaneTLSMutualAuthenticationCAChain` on its own instance will follow *later* mutations of the global store — the running server's trust anchor changes underneath it, with no restart and no log line announcing a trust change.
+- **Any route can do it**: a system property, a `Configuration` setter, `PUT /mockserver/configuration`, or unrelated code in the same process. The handler is rebuilt as soon as `signature(Configuration)` changes.
+- **Cross-test contamination hazard in a shared JVM.** Two tests in one JVM share the static store, so one test's control-plane configuration can re-point another's running server. This is not hypothetical: `AuthenticatedControlPlaneUsingMTLSClientNotAuthenticatedIntegrationTest` used to set the global CA chain to `ca.pem`, start a server, then rewrite the global store to a *different* CA purely to build a differently-signed client — which, once the handler became live-derived, re-pointed the running server's trust anchor at the very CA that signed the supposedly-unauthorised client, and it authenticated. **Tests (and any embedded use) that need a fixed trust anchor must pin it on the server's own `Configuration` instance and must not use the global store as a client-config vehicle.**
+
+To pin a trust anchor that cannot be moved by unrelated code, set it on the server's own `Configuration` instance and start the server with it:
+
+```java
+Configuration serverConfiguration = configuration()
+    .controlPlaneTLSMutualAuthenticationCAChain("path/to/ca.pem")
+    .controlPlaneTLSMutualAuthenticationRequired(true);
+ClientAndServer server = ClientAndServer.startClientAndServer(serverConfiguration);
+```
+
+An instance field that has been explicitly set wins over the static store, so this is stable against global mutation. It is still mutable through that instance and through `PUT /mockserver/configuration`; if the control plane is reachable by anyone you do not trust to change its own trust anchor, that endpoint must itself be authenticated (it routes through the same gate).
 
 ### Verified OIDC Control-Plane Authentication
 

@@ -5,6 +5,20 @@ import org.mockserver.model.HttpRequest;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * <strong>Implementations delegate in BOTH directions — check which way before editing one.</strong>
+ * {@code MTLSAuthenticationHandler}, {@code JWTAuthenticationHandler} and
+ * {@code ControlPlaneAuthenticationHandlerFactory.DenyAllAuthenticationHandler} implement only
+ * {@link #controlPlaneRequestAuthenticated} and inherit the default {@link #authenticate}, so the boolean
+ * method holds their logic. {@code OidcAuthenticationHandler} inverts this: it overrides
+ * {@link #authenticate} (to surface a verified principal) and its
+ * {@link #controlPlaneRequestAuthenticated} is a one-line delegation back to it.
+ * <p>
+ * The enforcement point ({@code HttpState.evaluateControlPlaneAuthentication}) calls {@link #authenticate},
+ * so for OIDC the boolean method is not on the enforcement path. It carries no independent logic, so
+ * hardening {@link #authenticate} covers it — but an edit made only to the boolean method of a handler that
+ * overrides {@link #authenticate} will have no effect.
+ */
 public interface AuthenticationHandler {
 
     /**

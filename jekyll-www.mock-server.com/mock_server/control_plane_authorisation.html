@@ -34,6 +34,10 @@ sitemap:
 <p>Authentication can be enabled for all control plane requests (i.e. <strong>create expectations</strong>, <strong>clear</strong>, <strong>reset</strong>, <strong>verify</strong>, <strong>retrieve</strong>, <strong>stop</strong>, etc) using either <a href="#control_plane_mtls_authentication">mTLS</a>, <a href="#control_plane_jwt_authentication">JWT</a> or both.</p>
 <p>If both <a href="#control_plane_mtls_authentication">mTLS</a> and <a href="#control_plane_jwt_authentication">JWT</a> are enabled <a href="#control_plane_mtls_authentication">mTLS</a> will be validated first.</p>
 
+<p><strong>Control plane authentication settings are read live, not frozen at startup.</strong> The CA chain, JWK source, issuer and audience used to authenticate control plane requests are re-read from the current configuration on every request, so enabling, disabling or re-pointing control plane authentication on a <strong>running</strong> MockServer takes effect immediately &mdash; whether you change it with a system property, a <code>Configuration</code> setter, or <code>PUT /mockserver/configuration</code>.</p>
+
+<p>This is what makes it possible to lock down an instance that is already running. It also means the trust anchor you set at startup is <strong>not</strong> permanent: anything that can change MockServer's configuration can change who is trusted. Two things follow. First, if you run MockServer embedded, set the CA chain on the <code>Configuration</code> instance you start the server with rather than through the global static properties, so unrelated code in the same JVM (including other tests) cannot move it. Second, if the control plane is reachable by anyone you would not trust to change its own trust anchor, keep control plane authentication enabled &mdash; <code>PUT /mockserver/configuration</code> is itself a control plane request and is refused when authentication is enabled and not satisfied.</p>
+
 <a id="control_plane_mtls_authentication" class="anchor" href="#control_plane_mtls_authentication">&nbsp;</a>
 
 <h3>Control Plane mTLS Authentication</h3>
