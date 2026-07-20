@@ -290,12 +290,12 @@ Example: the `code-reviewer.md` includes a checklist for LLM-specific issues (ha
 
 ## Building Block 4: Rules
 
-Rules are mandatory constraints loaded into sessions. They encode what experienced engineers know but an AI does not.
+Rules are mandatory constraints that encode what experienced engineers know but an AI does not. Only `AGENTS.md` is always in context — it is the sole entry in `opencode.jsonc` `instructions[]`. Every rule below is **loaded on demand**: read when a reachable referrer (`AGENTS.md`, an agent/command/skill, or another reachable rule) points to it. An unreferenced rule is inert. The **Reachable** column records that each rule is wired into that reference graph; the rule-reachability check in `scripts/validate_opencode_config.sh` fails CI if any rule becomes unreachable.
 
 ### Rule Catalogue
 
-| Rule | Lines | Always Loaded | Purpose |
-|------|------:|:------------:|---------|
+| Rule | Lines | Reachable | Purpose |
+|------|------:|:---------:|---------|
 | `git-safety.md` | 56 | Yes | Blocks 11 destructive git commands without confirmation |
 | `commit-workflow.md` | 202 | Yes | 4-step pre-commit workflow with adversarial review |
 | `commit-locking.md` | 311 | Yes | Filesystem-based commit lock for parallel session safety |
@@ -729,8 +729,8 @@ When modifying the opencode configuration:
 
 - **Adding an agent**: Add the entry to `opencode.jsonc`, create the prompt file in `.opencode/agents/`, update the routing table in `AGENTS.md`, and update this document.
 - **Adding a skill**: Create the skill directory under `.opencode/skills/`, add a `SKILL.md`, optionally add templates. If the skill requires subagent routing, create a corresponding command file and add the conversational mapping in `.opencode/rules/subagent-routing.md`.
-- **Adding a rule**: Create the rule file in `.opencode/rules/`. Rules are automatically loaded based on filename conventions.
+- **Adding a rule**: Create the rule file in `.opencode/rules/`, then reference it from a reachable referrer (`AGENTS.md`, an agent/command/skill, or another reachable rule) so it loads on demand. Rules are **not** auto-loaded by filename — an unreferenced rule is inert, and `scripts/validate_opencode_config.sh` fails CI until it is wired in.
 - **Changing model assignments**: Update the `model` field in the agent's entry in `opencode.jsonc`. No other files need to change.
 - **Adding a command**: Create a markdown file in `.opencode/commands/` with YAML frontmatter specifying the target agent.
 - **Adding a plugin**: Create the TypeScript file in `.opencode/plugins/`. Ensure `@opencode-ai/plugin` is in `.opencode/package.json`.
-- **Validation**: Run `./scripts/validate_opencode_config.sh` to catch broken command→skill references, command→agent mismatches, subagent-routing drift, and hardcoded infrastructure literals.
+- **Validation**: Run `./scripts/validate_opencode_config.sh` to catch broken command→skill references, command→agent mismatches, subagent-routing drift, unreachable (orphaned) rules, and hardcoded infrastructure literals.

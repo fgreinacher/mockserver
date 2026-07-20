@@ -101,7 +101,7 @@ The consumer-facing documentation lives in `jekyll-www.mock-server.com/` and is 
 | Pipeline build agents and infrastructure | `mockserver-build` |
 | Website (S3, CloudFront, DNS, TLS) | `mockserver-website` |
 
-Account IDs, SSO portal URLs, and resource identifiers are in `~/mockserver-aws-ids.md` (not committed to the repo).
+Account IDs, SSO portal URLs, and resource identifiers are in `~/mockserver-aws-ids.md` (not committed to the repo). Before any AWS operation, verify that file exists and never hard-code identifiers into the repo — see `.opencode/rules/aws-ids-file.md`.
 
 ### AWS Prerequisites
 

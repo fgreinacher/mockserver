@@ -147,6 +147,79 @@ for drift_file in "${drift_files[@]}"; do
   fi
 done
 
+echo "[opencode] validating rule reachability (no orphaned rules)"
+if ! python3 - "$repo_root" <<'PY'
+import os, re, sys
+
+root = sys.argv[1]
+rules_dir = os.path.join(root, ".opencode", "rules")
+if not os.path.isdir(rules_dir):
+    sys.exit(0)
+
+rules = {f[:-3] for f in os.listdir(rules_dir) if f.endswith(".md")}
+if not rules:
+    sys.exit(0)
+
+
+def read(path):
+    try:
+        return open(path, encoding="utf-8").read()
+    except OSError:
+        return ""
+
+
+# Entry docs are the always-loaded / independently-loadable files a rule can be
+# discovered from: AGENTS.md (the only always-loaded instruction file), the
+# agents/commands/skills that load when invoked, and opencode.jsonc.
+entry_files = [
+    os.path.join(root, "AGENTS.md"),
+    os.path.join(root, "CLAUDE.md"),
+    os.path.join(root, "opencode.jsonc"),
+]
+for base in (".opencode/agents", ".opencode/commands", ".opencode/skills",
+             ".claude/agents", ".claude/commands"):
+    for dirpath, _, filenames in os.walk(os.path.join(root, base)):
+        entry_files += [os.path.join(dirpath, f) for f in filenames
+                        if f.endswith(".md")]
+
+rule_text = {r: read(os.path.join(rules_dir, r + ".md")) for r in rules}
+# Whole-token match so "commit-workflow" never counts as a hit for "commit".
+pattern = {r: re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(r) + r"(?![A-Za-z0-9_-])")
+           for r in rules}
+
+
+def refs_in(text, exclude):
+    return {r for r in rules if r != exclude and pattern[r].search(text)}
+
+
+# BFS from the entry docs through rule -> rule references. A rule reachable only
+# from another orphaned rule (a cycle of orphans) is never reached, so this
+# catches more than a raw inbound-reference count would.
+reachable = set()
+frontier = set()
+for entry in entry_files:
+    frontier |= refs_in(read(entry), None)
+reachable |= frontier
+while frontier:
+    nxt = set()
+    for r in frontier:
+        nxt |= refs_in(rule_text[r], r)
+    nxt -= reachable
+    reachable |= nxt
+    frontier = nxt
+
+orphans = sorted(rules - reachable)
+for orphan in orphans:
+    print("ERROR: rule .opencode/rules/%s.md is unreachable — no entry doc "
+          "(AGENTS.md, an agent/command/skill, or opencode.jsonc) and no "
+          "reachable rule references it; link it from a referrer or remove it"
+          % orphan)
+sys.exit(1 if orphans else 0)
+PY
+then
+  errors=1
+fi
+
 if [[ "$errors" -ne 0 ]]; then
   echo "[opencode] validation failed"
   exit 1
