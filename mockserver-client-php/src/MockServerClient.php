@@ -1276,7 +1276,10 @@ class MockServerClient
      *
      * @param string $host The downstream host the chaos applies to.
      * @param array<string, mixed> $profile The chaos profile (errorStatus,
-     *        errorProbability, latency{value,timeUnit}, connectionDrop, seed).
+     *        errorProbability, latency{value,timeUnit}, dropConnectionProbability,
+     *        seed). Note dropConnectionProbability is a 0.0-1.0 probability, not a
+     *        boolean; the previously documented `connectionDrop` key does not exist
+     *        server-side and was silently ignored.
      * @param int|null $ttlMillis Optional time-to-live in milliseconds.
      * @return array<string, mixed> The server response.
      * @throws InvalidRequestException If the chaos profile is invalid (HTTP 400).

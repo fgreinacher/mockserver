@@ -773,8 +773,11 @@ type ServiceChaosProfile struct {
 	ErrorProbability float64 `json:"errorProbability,omitempty"`
 	// Latency is the injected latency, if any.
 	Latency *ChaosLatency `json:"latency,omitempty"`
-	// ConnectionDrop, when true, drops the TCP connection without responding.
-	ConnectionDrop *bool `json:"connectionDrop,omitempty"`
+	// DropConnectionProbability is the probability (0.0-1.0) that a request has its
+	// TCP connection dropped without any response. The server rejects values outside
+	// that range. Replaces the former ConnectionDrop *bool, which named a property
+	// (connectionDrop) the server has never accepted and therefore always ignored.
+	DropConnectionProbability *float64 `json:"dropConnectionProbability,omitempty"`
 	// Seed is a fixed seed for deterministic probabilistic outcomes.
 	Seed *int `json:"seed,omitempty"`
 }

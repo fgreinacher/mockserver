@@ -134,6 +134,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own `expectation.json` schema by a test, and the client no longer materialises an empty
   `httpResponse` when it has no default headers to add — so a future unlisted action degrades to
   "default headers not applied" rather than a hard failure.
+- **BREAKING (Go): `ServiceChaosProfile.ConnectionDrop` is replaced by `DropConnectionProbability`.**
+  Following the removal of the phantom `connectionDrop` property from the OpenAPI specification
+  (below), the Go client — which was generated against that specification — still sent
+  `{"connectionDrop": true}` on `PUT /mockserver/serviceChaos`, so the server ignored it and **every
+  Go user who set `ConnectionDrop` got no connection drops at all**. The real property is
+  `dropConnectionProbability`, and the semantics differ: it is a `0.0`-`1.0` probability, not a
+  boolean, so this is a genuine API change rather than a rename. Migrate `ConnectionDrop: ptr(true)`
+  to `DropConnectionProbability: ptr(1.0)`. The change breaks compilation deliberately: silently
+  reinterpreting the old field would leave users believing chaos was configured when it never was. A
+  new test checks every `ServiceChaosProfile` JSON tag against the server's `httpChaosProfile.json`
+  schema, so a phantom property cannot be reintroduced. The PHP client's docblock, which documented
+  the same non-existent key, is corrected — PHP passes the profile through verbatim, so it never sent
+  the property itself.
 - **Verification could miss a just-forwarded request (race on every forward path).** The visibility guarantee
   for `verify`/`retrieve` rests on disruptor FIFO ordering — `drainDisruptor()` waits only for entries already
   *published*, so it cannot wait for one that has not been published yet. The mocked-response path logs before
