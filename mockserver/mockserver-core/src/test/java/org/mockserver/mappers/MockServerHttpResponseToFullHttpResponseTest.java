@@ -554,6 +554,15 @@ public class MockServerHttpResponseToFullHttpResponseTest {
         }
     }
 
+    /**
+     * A body-less status keeps its trailers on the {@code LastHttpContent} -- HTTP/2 and HTTP/3
+     * can carry them on a trailing HEADERS frame -- but must NOT be forced to chunked and must
+     * NOT advertise a {@code Trailer} header. Netty's encoder emits no chunked body, no
+     * terminating chunk and no trailing-header block for these statuses, so on HTTP/1.1 the
+     * announcement could never be honoured, and for {@code 304} the chunked announcement is not
+     * even stripped, leaving a truncated message on the wire. The framing itself is asserted at
+     * byte level in {@link MockServerHttpResponseToFullHttpResponseEncodingTest}.
+     */
     @Test
     public void shouldEmitTrailersForBodylessResponse() {
         // given
@@ -568,9 +577,14 @@ public class MockServerHttpResponseToFullHttpResponseTest {
         try {
             assertThat(result, hasSize(2));
             DefaultHttpResponse head = (DefaultHttpResponse) result.get(0);
-            assertThat(head.headers().get(HttpHeaderNames.TRAILER), containsString("x-checksum"));
+            assertThat("a body-less status must not advertise trailers it can never send on HTTP/1.1",
+                head.headers().get(HttpHeaderNames.TRAILER), nullValue());
+            assertThat("a body-less status must not be forced to chunked -- Netty emits no "
+                    + "terminating chunk for it",
+                head.headers().get(HttpHeaderNames.TRANSFER_ENCODING), nullValue());
             LastHttpContent last = (LastHttpContent) result.get(1);
-            assertThat(last.trailingHeaders().get("x-checksum"), equalTo("abc123"));
+            assertThat("trailers stay on the LastHttpContent so HTTP/2 / HTTP/3 can still deliver them",
+                last.trailingHeaders().get("x-checksum"), equalTo("abc123"));
         } finally {
             for (DefaultHttpObject object : result) {
                 if (object instanceof ReferenceCounted) {

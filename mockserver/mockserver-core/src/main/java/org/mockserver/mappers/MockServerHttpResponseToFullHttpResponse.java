@@ -119,8 +119,25 @@ public class MockServerHttpResponseToFullHttpResponse {
      * <p>
      * This is safe for HTTP/2 / HTTP/3 because their adapters strip transfer-encoding and ride
      * the trailers on the trailing HEADERS frame, so this single wiring covers all three
-     * protocols. A body-less status (204/304 or HEAD) yields an empty body content -- the
-     * trailers still ride on the {@code LastHttpContent}.
+     * protocols.
+     * <p>
+     * <strong>Body-less statuses are the exception.</strong> For {@code 1xx}, {@code 204},
+     * {@code 205} and {@code 304}, Netty's {@code HttpObjectEncoder} reports
+     * {@code isContentAlwaysEmpty} and enters {@code ST_CONTENT_ALWAYS_EMPTY}, which writes a
+     * bare empty buffer: the trailing-header block is only ever written from the
+     * {@code ST_CONTENT_CHUNK} branch, so trailers cannot reach an HTTP/1.1 wire for these
+     * statuses no matter what the {@code LastHttpContent} carries. That is also what RFC 9110
+     * requires -- no body means no chunked framing, and no chunked framing means no trailers.
+     * <p>
+     * Forcing chunked anyway is actively harmful for {@code 304}: {@code
+     * HttpResponseEncoder.sanitizeHeadersBeforeEncode} strips {@code Transfer-Encoding} for
+     * {@code 1xx}, {@code 204} and {@code 205} but <strong>not</strong> for {@code 304}
+     * (verified against Netty 4.2.16), so a {@code 304} would go out advertising chunked with no
+     * terminating {@code 0\r\n\r\n} chunk -- a framing violation that can wedge a keep-alive
+     * connection. We therefore skip the chunked forcing and the {@code Trailer} announcement for
+     * body-less statuses, while still attaching the trailers to the {@code LastHttpContent} so
+     * that HTTP/2 and HTTP/3 -- which can legitimately carry trailers on a body-less response via
+     * a trailing HEADERS frame -- still deliver them.
      */
     private List<DefaultHttpObject> mapResponseWithTrailers(HttpResponse httpResponse, ConnectionOptions connectionOptions) {
         List<DefaultHttpObject> httpMessages = new ArrayList<>();
@@ -135,13 +152,19 @@ public class MockServerHttpResponseToFullHttpResponse {
             // Trailers REQUIRE chunked transfer-encoding on HTTP/1.1 (RFC 7230 section 3.3.1 --
             // Content-Length and chunked are mutually exclusive, and Netty's HttpObjectEncoder
             // only writes the trailing-header block while in its chunked state). We therefore
-            // always force chunked and drop any Content-Length (and ignore
-            // contentLengthHeaderOverride for framing). HTTP/2 / HTTP/3 adapters strip
-            // transfer-encoding and ride the trailers on the trailing HEADERS frame, so this is
-            // safe across all three protocols.
-            defaultHttpResponse.headers().remove(CONTENT_LENGTH);
-            HttpUtil.setTransferEncodingChunked(defaultHttpResponse, true);
-            addTrailerHeader(httpResponse, defaultHttpResponse);
+            // force chunked and drop any Content-Length (and ignore contentLengthHeaderOverride
+            // for framing). HTTP/2 / HTTP/3 adapters strip transfer-encoding and ride the
+            // trailers on the trailing HEADERS frame, so this is safe across all three protocols.
+            //
+            // A body-less status is the exception: Netty never emits a chunked body -- and so
+            // never emits a terminating chunk -- for it, and for 304 it does not strip the
+            // Transfer-Encoding header either, which would leave a truncated message on the
+            // wire. See the javadoc above.
+            if (!isContentAlwaysEmpty(defaultHttpResponse.status())) {
+                defaultHttpResponse.headers().remove(CONTENT_LENGTH);
+                HttpUtil.setTransferEncodingChunked(defaultHttpResponse, true);
+                addTrailerHeader(httpResponse, defaultHttpResponse);
+            }
             setCookies(httpResponse, defaultHttpResponse);
             httpMessages.add(defaultHttpResponse);
 
@@ -163,6 +186,29 @@ public class MockServerHttpResponseToFullHttpResponse {
                 body.release();
             }
         }
+    }
+
+    /**
+     * Whether Netty's {@code HttpObjectEncoder} will treat a response with this status as having
+     * no body, and therefore emit neither a chunked body nor a terminating chunk nor the
+     * trailing-header block.
+     * <p>
+     * Deliberately mirrors {@code HttpResponseEncoder.isContentAlwaysEmpty} (RFC 7230
+     * &sect;3.3.3): all {@code 1xx}, plus {@code 204}, {@code 205} and {@code 304}.
+     * <p>
+     * One deliberate divergence: Netty returns {@code false} for a {@code 101} that carries a
+     * {@code Sec-WebSocket-Version} header (the WebSocket-00 draft, which does have a body),
+     * whereas this returns {@code true} for all {@code 1xx}. A real WebSocket handshake never
+     * travels this mapper, so the case is unreachable in practice; the consequence if it ever
+     * were reached is that a user-authored {@code 101} carrying that header AND trailers would
+     * stop emitting the trailers -- the safe direction, since the alternative is the truncated
+     * framing this method exists to prevent.
+     */
+    private static boolean isContentAlwaysEmpty(HttpResponseStatus status) {
+        return status.codeClass() == HttpStatusClass.INFORMATIONAL
+            || status.code() == HttpResponseStatus.NO_CONTENT.code()
+            || status.code() == HttpResponseStatus.RESET_CONTENT.code()
+            || status.code() == HttpResponseStatus.NOT_MODIFIED.code();
     }
 
     /**

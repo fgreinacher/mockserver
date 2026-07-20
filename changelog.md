@@ -94,6 +94,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restores the previous, unsound behaviour when set to `false`.
 
 ### Fixed
+- **Trailers on a body-less response no longer produce a malformed HTTP/1.1 message.** A response carrying
+  trailers was unconditionally forced to `Transfer-Encoding: chunked` with a `Trailer` announcement header.
+  For a body-less status (`1xx`, `204`, `205`, `304`) Netty's encoder emits neither a chunked body nor the
+  terminating `0\r\n\r\n` chunk, and for `304` it does not strip the `Transfer-Encoding` header either — so a
+  `304` with trailers went onto the wire advertising chunked framing that never terminated, which can leave a
+  peer waiting and wedge a keep-alive connection. Body-less responses are no longer forced to chunked and no
+  longer announce trailers they cannot deliver. The trailers remain attached to the response so HTTP/2 and
+  HTTP/3, which can legitimately carry trailers on a body-less response via a trailing HEADERS frame, still
+  deliver them.
 - **SECURITY: enabling control-plane authentication at runtime now actually takes effect.** The mTLS, JWT and
   OIDC handler chain was built once during server bootstrap, so enabling
   `controlPlaneJWTAuthenticationRequired`, `controlPlaneTLSMutualAuthenticationRequired` or

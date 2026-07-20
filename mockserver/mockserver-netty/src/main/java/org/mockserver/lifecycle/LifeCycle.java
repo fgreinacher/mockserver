@@ -350,6 +350,28 @@ public abstract class LifeCycle implements Stoppable {
                             return Stream.empty();
                         }
                     })
+                    // NOTE: disconnect() really does CLOSE a server channel, closing the listening
+                    // socket so no new connections are accepted from here on. This is not obvious
+                    // and has been raised twice as a suspected bug, so the reasoning is recorded:
+                    //
+                    //   AbstractChannelHandlerContext.disconnect(promise) begins
+                    //       if (!channel().metadata().hasDisconnect()) { return close(promise); }
+                    //   and NioServerSocketChannel's metadata is `new ChannelMetadata(false, 16)`,
+                    //   i.e. hasDisconnect == false. So the pipeline translates disconnect into
+                    //   close before it ever reaches the channel implementation.
+                    //
+                    // NioServerSocketChannel.doDisconnect() does throw UnsupportedOperationException,
+                    // which is what makes this look broken when that class is read on its own -- but
+                    // that method is unreachable through the public disconnect() API used here.
+                    // Epoll arrives at the same place by a different route (doDisconnect() delegates
+                    // to doClose()), so there is NO platform divergence in observable behaviour.
+                    //
+                    // Reading a method body proves what it does, not that it runs: the deciding
+                    // logic is one layer above, in the pipeline.
+                    //
+                    // StopAcceptingConnectionsIntegrationTest guards this behaviour, and was
+                    // validated by a positive control (replacing this with newSucceededFuture(), so
+                    // the socket is never closed, correctly turns it red).
                     .map(ChannelOutboundInvoker::disconnect)
                     .collect(Collectors.toList());
                 try {
