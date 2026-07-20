@@ -291,11 +291,30 @@ public class AsyncApiMockOrchestrator {
     }
 
     /**
-     * Stop periodic publishing.
+     * Stop periodic publishing, waiting for an in-flight publish to finish.
+     * <p>
+     * Callers close the publishers immediately after this returns (see
+     * {@code resetInternal()}), so returning while a scheduled {@code publishAll} is still running
+     * would let that thread publish against a channel being closed underneath it. Shutting down
+     * gracefully and then awaiting termination closes that window: {@code shutdown()} cancels the
+     * periodic schedule (a {@code ScheduledThreadPoolExecutor} drops periodic tasks on shutdown by
+     * default) while letting an already-running publish complete.
+     * <p>
+     * Matches the shutdown shape already used by {@code KafkaMessageSubscriber} and
+     * {@code KafkaAvroMessageSubscriber}: same 5s budget, fall back to {@code shutdownNow()} if the
+     * publish overruns it, and restore the interrupt flag rather than swallowing the interrupt.
      */
     public synchronized void stop() {
         if (scheduler != null) {
-            scheduler.shutdownNow();
+            scheduler.shutdown();
+            try {
+                if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                    scheduler.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                scheduler.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
             scheduler = null;
             LOG.info("Stopped scheduled publishing");
         }

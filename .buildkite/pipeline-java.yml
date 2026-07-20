@@ -82,6 +82,24 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
+  # AsyncAPI live-broker integration suites (Kafka, Kafka+Avro, AMQP, MQTT 3.1.1,
+  # MQTT 5). Same rationale as the cloud step above: these are Docker-gated and the
+  # main build has no socket, so they were COLLECTED by Failsafe but skipped every
+  # test on every build while the job still went green (the ":maven: build" job
+  # passed, exit 0, in builds #1580 and #1583, each reporting "Tests run: 5,
+  # Skipped: 5"). Being matched by an include is not the same as testing anything.
+  # This step gives them a socket and then asserts they really ran, so the skip can
+  # no longer pass as a pass. ~75s of real broker tests locally.
+  - label: ":envelope: asyncapi live-broker tests"
+    command: ".buildkite/scripts/steps/java-async-broker-test.sh"
+    timeout_in_minutes: 30
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
   - label: ":test_tube: dashboard generated-Java compile gate"
     command: ".buildkite/scripts/steps/ui-java-codegen-compile.sh"
     timeout_in_minutes: 20

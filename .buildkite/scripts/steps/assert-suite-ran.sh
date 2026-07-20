@@ -13,10 +13,16 @@
 # skipping silently is exactly the false positive we are removing.
 #
 # Usage:
-#   assert-suite-ran.sh <surefire-report-glob> [<surefire-report-glob> ...]
+#   assert-suite-ran.sh <test-report-glob> [<test-report-glob> ...]
 #
 # Example:
 #   assert-suite-ran.sh 'mockserver-blob-s3/target/surefire-reports/TEST-*ContractTest.xml'
+#   assert-suite-ran.sh 'mockserver-async/target/failsafe-reports/TEST-*IntegrationTest.xml'
+#
+# Works for BOTH surefire and failsafe reports: Failsafe declares a different xsd
+# but emits the same <testsuite tests= skipped=> attributes this parses. Point the
+# glob at failsafe-reports for *IT/*IntegrationTest suites, and run it after the
+# `verify` phase rather than `test`.
 #
 # Exits non-zero if any glob matches no report, or if a matched report shows
 # zero tests or every test skipped.
@@ -24,7 +30,7 @@
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
-  echo "usage: assert-suite-ran.sh <surefire-report-glob> [...]" >&2
+  echo "usage: assert-suite-ran.sh <test-report-glob> [...]" >&2
   exit 2
 fi
 
@@ -34,7 +40,7 @@ for pattern in "$@"; do
   # shellcheck disable=SC2086
   reports=$(ls $pattern 2>/dev/null || true)
   if [ -z "$reports" ]; then
-    echo "+++ :bangbang: no surefire report matched '${pattern}' — the suite did not run" >&2
+    echo "+++ :bangbang: no test report matched '${pattern}' — the suite did not run" >&2
     status=1
     continue
   fi
