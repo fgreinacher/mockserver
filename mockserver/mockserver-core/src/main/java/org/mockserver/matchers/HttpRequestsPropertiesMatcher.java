@@ -547,6 +547,15 @@ public class HttpRequestsPropertiesMatcher extends AbstractHttpRequestMatcher {
     @Override
     public boolean matches(MatchDifference context, RequestDefinition requestDefinition) {
         boolean result = false;
+        // Gate on the expectation's lifecycle (TTL and remaining matches) exactly as every
+        // sibling matcher does. The per-operation delegates below are built with
+        // update(HttpRequest), not update(Expectation), so their own isActive() is trivially
+        // true -- the lifecycle state lives only on this outer matcher's expectation, and if it
+        // is not checked here it is checked nowhere on the serving path, leaving expired OpenAPI
+        // expectations served forever.
+        if (!isActive()) {
+            return false;
+        }
         if (httpRequestPropertiesMatchers != null && !httpRequestPropertiesMatchers.isEmpty()) {
             for (HttpRequestPropertiesMatcher httpRequestPropertiesMatcher : httpRequestPropertiesMatchers) {
                 if (context == null) {
@@ -569,7 +578,17 @@ public class HttpRequestsPropertiesMatcher extends AbstractHttpRequestMatcher {
                     break;
                 }
             }
-        } else if (httpRequestPropertiesMatchers == null) {
+        } else if (httpRequestPropertiesMatchers == null && controlPlaneMatcher) {
+            // No per-operation matchers could be derived (a null or blank spec, so apply() never
+            // populated the list -- note a spec that fails to PARSE leaves it empty, not null).
+            //
+            // On the control plane an unpopulated matcher is an empty filter, and matching
+            // everything is the intended "no restriction" semantic for clear / retrieve / verify.
+            //
+            // On the DATA plane it must not match: an expectation that matches every request
+            // would hijack the entire server and serve its action for all traffic. Only
+            // update(RequestDefinition) marks a matcher control-plane, so an expectation-backed
+            // matcher never takes this branch.
             result = true;
         }
         return result;

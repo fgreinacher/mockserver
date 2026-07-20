@@ -92,6 +92,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or `reset()` the event log between tests (a reset, and a clear-everything, clear the eviction state; a
   filtered clear deliberately does not). The new `failVerificationOnEvictedLog` property (default `true`)
   restores the previous, unsound behaviour when set to `false`.
+- **BREAKING BEHAVIOUR: OpenAPI expectations now respect `Times` and `TimeToLive`, so expired OpenAPI
+  expectations stop being served. Suites relying on an expired OpenAPI expectation still responding will
+  correctly go red.** An expectation created from an `OpenAPIDefinition` was never lifecycle-gated: every
+  other matcher checks `isActive()`, but the OpenAPI matcher delegates to per-operation matchers built
+  without an expectation attached, so their `isActive()` was trivially true and the outer expectation's TTL
+  and remaining-match count were consulted nowhere on the serving path. An OpenAPI expectation set up with
+  `Times.exactly(1)` or a one-minute TTL therefore kept matching for the life of the server. Plain
+  (non-OpenAPI) expectations were always gated correctly and are unaffected.
+- **BREAKING BEHAVIOUR: a data-plane OpenAPI expectation whose spec is blank or null no longer matches every
+  request. A suite that is green today because of a mistyped spec will correctly go red.** When no operations
+  could be derived from the spec, the matcher fell through to matching *everything*, so a single expectation
+  with an empty or mistyped spec silently hijacked all traffic on the server and served its action for every
+  request — including requests that other expectations were meant to handle. It now matches nothing. Anyone
+  relying on the old behaviour was almost certainly doing so by accident: a blank spec is not a way to express
+  "match everything" (use a plain expectation with no request definition for that), and an expectation sent
+  over the REST API with a blank `specUrlOrPayload` is deserialised as a plain request rather than an OpenAPI
+  definition (`RequestDefinitionDTODeserializer` only builds an `OpenAPIDefinitionDTO` when the spec is
+  non-blank), so this was only reachable through the Java client. **Control-plane filters are unaffected** —
+  `clear`, `retrieve` and `verify` by request definition keep the "empty filter matches all" semantic, which
+  is correct and intended there. A spec that fails to *parse* was already safe and is unchanged.
 
 ### Fixed
 - **Trailers on a body-less response no longer produce a malformed HTTP/1.1 message.** A response carrying

@@ -4570,6 +4570,16 @@ public class HttpRequestsPropertiesMatcherTest {
         ), is(false));
     }
 
+    /**
+     * A blank spec yields no per-operation matchers, and a DATA-PLANE expectation in that state
+     * must not match. This previously returned true -- i.e. one mistyped expectation silently
+     * matched every request the server received and served its action for all traffic. The
+     * "handle blanks without throwing" intent of this test is preserved; only the dangerous
+     * match-all outcome changed. Control-plane matchers (built via update(RequestDefinition))
+     * keep the match-all semantic, which is the intended "no filter" behaviour for
+     * clear / retrieve / verify -- see
+     * {@link HttpRequestsPropertiesMatcherLifecycleTest#shouldNotMatchEveryRequestWhenNoMatchersCouldBeDerived}.
+     */
     @Test
     public void shouldHandleBlankStrings() {
         // given
@@ -4579,6 +4589,32 @@ public class HttpRequestsPropertiesMatcherTest {
                 .withSpecUrlOrPayload("")
                 .withOperationId("")
         ));
+        HttpRequest httpRequest = request();
+        MatchDifference context = new MatchDifference(configuration.detailedMatchFailures(), httpRequest);
+
+        // when
+        boolean matches = httpRequestsPropertiesMatcher.matches(context, httpRequest);
+
+        // then
+        thenMatchesEmptyFieldDifferences(context, matches, false);
+    }
+
+    /**
+     * The control-plane counterpart of {@link #shouldHandleBlankStrings()}: built via
+     * {@code update(RequestDefinition)} rather than {@code update(Expectation)}, a blank spec is
+     * an empty FILTER, and matching everything remains the intended "no restriction" semantic for
+     * clear / retrieve / verify. The two tests together document the split: the behaviour was not
+     * removed, it was narrowed to the plane where it is correct.
+     */
+    @Test
+    public void shouldHandleBlankStringsOnControlPlane() {
+        // given
+        HttpRequestsPropertiesMatcher httpRequestsPropertiesMatcher = new HttpRequestsPropertiesMatcher(configuration, mockServerLogger);
+        httpRequestsPropertiesMatcher.update(
+            new OpenAPIDefinition()
+                .withSpecUrlOrPayload("")
+                .withOperationId("")
+        );
         HttpRequest httpRequest = request();
         MatchDifference context = new MatchDifference(configuration.detailedMatchFailures(), httpRequest);
 
@@ -6095,6 +6131,10 @@ public class HttpRequestsPropertiesMatcherTest {
 
     // OTHER TESTS
 
+    /**
+     * As {@link #shouldHandleBlankStrings()}: a null spec builds no per-operation matchers, and a
+     * data-plane expectation in that state must not match every request.
+     */
     @Test
     public void shouldHandleNulls() {
         // given
@@ -6104,6 +6144,29 @@ public class HttpRequestsPropertiesMatcherTest {
                 .withSpecUrlOrPayload(null)
                 .withOperationId(null)
         ));
+        HttpRequest httpRequest = request();
+        MatchDifference context = new MatchDifference(configuration.detailedMatchFailures(), httpRequest);
+
+        // when
+        boolean matches = httpRequestsPropertiesMatcher.matches(context, httpRequest);
+
+        // then
+        thenMatchesEmptyFieldDifferences(context, matches, false);
+    }
+
+    /**
+     * The control-plane counterpart of {@link #shouldHandleNulls()} -- see
+     * {@link #shouldHandleBlankStringsOnControlPlane()} for why the two planes differ.
+     */
+    @Test
+    public void shouldHandleNullsOnControlPlane() {
+        // given
+        HttpRequestsPropertiesMatcher httpRequestsPropertiesMatcher = new HttpRequestsPropertiesMatcher(configuration, mockServerLogger);
+        httpRequestsPropertiesMatcher.update(
+            new OpenAPIDefinition()
+                .withSpecUrlOrPayload(null)
+                .withOperationId(null)
+        );
         HttpRequest httpRequest = request();
         MatchDifference context = new MatchDifference(configuration.detailedMatchFailures(), httpRequest);
 
