@@ -6,6 +6,39 @@ MockServer supports WebAssembly (WASM) modules as custom body matchers. Users up
 
 This feature uses the **chicory** pure-Java WASM interpreter (no JNI or native code required), keeping MockServer's "runs anywhere Java runs" promise.
 
+## Packaging — chicory must NOT be optional
+
+`com.dylibso.chicory:runtime` is declared in `mockserver-core/pom.xml` as an ordinary (non-optional)
+dependency, and must stay that way.
+
+Maven keeps an `<optional>true</optional>` dependency on its own module's classpath but does not
+propagate it to consumers. Declaring chicory optional therefore left `mockserver-netty` — the module the
+standalone `jar-with-dependencies` and every Docker image are assembled from — without an interpreter,
+while still shipping the `org.mockserver.wasm` classes. Module upload and expectation registration both
+still succeeded, so the feature looked healthy right up to the point of use, where every match failed
+closed on a `NoClassDefFoundError`. Because it fails closed rather than erroring, the symptom is a silent
+non-match plus a `WARNING` in the log — easy to mistake for a faulty module.
+
+This is deliberately *unlike* GraalJS (see [response templates](../../jekyll-www.mock-server.com/mock_server/response_templates.html)),
+which is genuinely optional: GraalVM is ~262 MB and gets its own `-graaljs` image variant plus a
+documented add-on step. chicory is ~365 KB and WASM is gated off by default (`wasmEnabled=false`), so
+bundling it is inert until opted into and the size argument does not apply.
+
+Guarded by `WasmRuntimeShippedWithServerTest` in **mockserver-netty** — it must live in a *consumer* of
+core, because chicory is present in core's own test JVM regardless of how it is declared, so an
+equivalent test there cannot fail.
+
+That is a general property of optional dependencies, not something specific to chicory, and it can be
+re-verified by inspection at any time: `polyglot`, `js` and `slf4j-jdk14` are all still declared
+`<optional>true</optional>` in `mockserver-core/pom.xml`, and all three appear on core's own test
+classpath (`./mvnw dependency:build-classpath -pl mockserver-core -Dmdep.includeScope=test`). So for any
+optional dependency backing a shipped feature, a test in the declaring module is structurally incapable
+of detecting its absence from the assembled artifact — the guard has to sit in a module that consumes it.
+
+This bug class has precedent here: see `changelog.md` (issue #2097), where the shaded standalone jar lost
+its SLF4J provider by exactly the same mechanism — `slf4j-jdk14` declared optional, not propagated,
+logging silently degraded to a no-op in the shipped artifact while every in-module test passed.
+
 ## Architecture
 
 ```mermaid

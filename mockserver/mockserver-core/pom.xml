@@ -223,11 +223,18 @@
             <artifactId>datafaker</artifactId>
         </dependency>
 
-        <!-- WASM (chicory pure-Java interpreter) -->
+        <!-- WASM (chicory pure-Java interpreter).
+             NOT optional: WASM custom rules are a documented, advertised feature and the interpreter must
+             reach the modules assembled into the standalone jar and Docker image. Declared optional, Maven
+             keeps it on this module's own classpath but does not propagate it to consumers, so every
+             shipped artifact carried the org.mockserver.wasm classes with no interpreter behind them and
+             WASM rules silently never matched. Unlike GraalJS (~262 MB, deliberately optional and
+             documented as an add-on with its own image variant) chicory is ~365 KB of pure Java, and WASM
+             is gated off by default via wasmEnabled=false, so bundling it is inert until opted into.
+             Consumers that do not want it exclude it — see mockserver-client-java. -->
         <dependency>
             <groupId>com.dylibso.chicory</groupId>
             <artifactId>runtime</artifactId>
-            <optional>true</optional>
         </dependency>
 
         <!-- HdrHistogram (authoritative per-run load-scenario latency percentiles) -->

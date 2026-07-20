@@ -155,6 +155,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **WASM custom rules now actually work in the standalone jar and the Docker images — previously they never
+  matched.** The chicory WASM interpreter was declared an optional dependency of `mockserver-core`. Maven
+  keeps an optional dependency on its own module's classpath but does not propagate it to consumers, so
+  `mockserver-netty` — the module the `jar-with-dependencies` and every Docker image are assembled from —
+  never received it. Each shipped artifact therefore carried the nine `org/mockserver/wasm` classes with no
+  interpreter behind them: uploading a module and registering a `WASM` body matcher both succeeded, then
+  every match failed closed with a `NoClassDefFoundError`, so a documented feature silently never matched.
+  The interpreter is now bundled (about 360 KB, roughly 0.35% of the standalone jar) and WASM matching works
+  out of the box. WASM remains gated off by default via `wasmEnabled=false`, so the bundled interpreter is
+  inert until you opt in, and `mockserver-client-java` still excludes it. Note this only ever affected
+  assembled artifacts — embedding `mockserver-core` directly and declaring chicory yourself worked
+  throughout. The failure was already fail-closed and logged a `WARNING` naming the missing class; it did
+  not hang or drop connections.
 - **Trailers on a body-less response no longer produce a malformed HTTP/1.1 message.** A response carrying
   trailers was unconditionally forced to `Transfer-Encoding: chunked` with a `Trailer` announcement header.
   For a body-less status (`1xx`, `204`, `205`, `304`) Netty's encoder emits neither a chunked body nor the
