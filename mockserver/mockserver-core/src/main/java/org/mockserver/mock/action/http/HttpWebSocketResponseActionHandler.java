@@ -105,6 +105,12 @@ public class HttpWebSocketResponseActionHandler {
                     );
                     removePipelineHandlers(ctx);
 
+                    // Answer PING with PONG and echo CLOSE (RFC 6455 §5.5.1/§5.5.2). The manual
+                    // handshake installs only the frame codec, so without this every long-lived
+                    // mocked session dies as soon as the client starts sending keepalive pings.
+                    ctx.pipeline().addLast("webSocketControlFrameHandler",
+                        new WebSocketControlFrameHandler(handshaker));
+
                     // Check if this is a GraphQL subscription WebSocket
                     if (GraphQLSubscriptionHandler.isGraphQLWebSocketProtocol(httpWebSocketResponse.getSubprotocol())
                         && httpWebSocketResponse.getGraphqlSubscriptionFilter() != null) {
@@ -148,6 +154,30 @@ public class HttpWebSocketResponseActionHandler {
             }
         });
         nettyRequest.release();
+    }
+
+    /**
+     * A 1000 NORMAL_CLOSURE frame. An empty close frame (no status code) is legal but leaves the
+     * client reporting close code 1005 "no status received", which several clients treat as an
+     * abnormal termination.
+     */
+    private static CloseWebSocketFrame normalClosure() {
+        return new CloseWebSocketFrame(WebSocketCloseStatus.NORMAL_CLOSURE);
+    }
+
+    /**
+     * The subprotocol actually agreed during the handshake, which decides whether the legacy
+     * {@code graphql-ws} vocabulary is spoken.
+     *
+     * <p>Only the handshaker's selection counts. Falling back to the <em>configured</em>
+     * subprotocol would be wrong here: the sole caller is already gated on the configured value
+     * being a GraphQL subprotocol, so the fallback would always name one — and a client that
+     * requested no subprotocol at all (leaving {@code selectedSubprotocol()} null) would then be
+     * answered in the legacy vocabulary it never asked for. When nothing was negotiated the
+     * modern graphql-transport-ws vocabulary is used, which is the protocol's own default.
+     */
+    private static String negotiatedSubprotocol(WebSocketServerHandshaker handshaker) {
+        return handshaker != null ? handshaker.selectedSubprotocol() : null;
     }
 
     private void removePipelineHandlers(ChannelHandlerContext ctx) {
@@ -373,7 +403,7 @@ public class HttpWebSocketResponseActionHandler {
         }
         if (ctx.channel().isActive()) {
             if (httpWebSocketResponse.getCloseConnection() == null || httpWebSocketResponse.getCloseConnection()) {
-                handshaker.close(ctx.channel(), new CloseWebSocketFrame());
+                handshaker.close(ctx.channel(), normalClosure());
             }
         }
     }
@@ -386,7 +416,7 @@ public class HttpWebSocketResponseActionHandler {
                                                       boolean useWsDispatch, String breakpointClientId,
                                                       String streamBreakpointId,
                                                       String inboundBreakpointClientId, String inboundBreakpointIdParam) {
-        GraphQLSubscriptionHandler.FrameSender frameSender = (senderCtx, text, delay) -> {
+        GraphQLSubscriptionHandler.FrameSender frameSender = (senderCtx, text, delay, onSent) -> {
             if (!senderCtx.channel().isActive()) {
                 return;
             }
@@ -406,7 +436,7 @@ public class HttpWebSocketResponseActionHandler {
                     if (wsFuture != null) {
                         decisionFuture = wsFuture;
                     } else {
-                        senderCtx.writeAndFlush(new TextWebSocketFrame(text));
+                        senderCtx.writeAndFlush(new TextWebSocketFrame(text)).addListener(f -> onSent.run());
                         return;
                     }
 
@@ -418,24 +448,32 @@ public class HttpWebSocketResponseActionHandler {
                             }
                             switch (decision.getAction()) {
                                 case CONTINUE -> senderCtx.writeAndFlush(
-                                    new TextWebSocketFrame(Unpooled.wrappedBuffer(capturedBytes)));
+                                    new TextWebSocketFrame(Unpooled.wrappedBuffer(capturedBytes)))
+                                    .addListener(f -> onSent.run());
                                 case MODIFY -> senderCtx.writeAndFlush(
-                                    new TextWebSocketFrame(Unpooled.wrappedBuffer(decision.getReplacementBody())));
-                                case DROP -> { /* discard -- do not write */ }
+                                    new TextWebSocketFrame(Unpooled.wrappedBuffer(decision.getReplacementBody())))
+                                    .addListener(f -> onSent.run());
+                                // discard the frame but still advance the sequence, otherwise a
+                                // dropped frame would strand the subscription with no `complete`
+                                case DROP -> onSent.run();
                                 case INJECT -> {
                                     senderCtx.writeAndFlush(
                                         new TextWebSocketFrame(Unpooled.wrappedBuffer(capturedBytes)))
                                         .addListener(f -> {
                                             if (senderCtx.channel().isActive()) {
                                                 senderCtx.writeAndFlush(
-                                                    new TextWebSocketFrame(Unpooled.wrappedBuffer(decision.getInjectedBody())));
+                                                    new TextWebSocketFrame(Unpooled.wrappedBuffer(decision.getInjectedBody())))
+                                                    .addListener(f2 -> onSent.run());
+                                            } else {
+                                                onSent.run();
                                             }
                                         });
                                 }
+                                // CLOSE deliberately does not advance -- the stream is over
                                 case CLOSE -> {
                                     StreamFrameBreakpointRegistry.getInstance().evictStream(streamId);
                                     if (handshaker != null) {
-                                        handshaker.close(senderCtx.channel(), new CloseWebSocketFrame());
+                                        handshaker.close(senderCtx.channel(), normalClosure());
                                     }
                                 }
                             }
@@ -449,11 +487,14 @@ public class HttpWebSocketResponseActionHandler {
                                     .setArguments(streamId, ex.getMessage())
                             );
                         }
+                        // advance anyway so the subscription still terminates with `complete`
+                        senderCtx.channel().eventLoop().execute(onSent);
                         return null;
                     });
                 };
             } else {
-                writeAction = () -> senderCtx.writeAndFlush(new TextWebSocketFrame(text));
+                writeAction = () -> senderCtx.writeAndFlush(new TextWebSocketFrame(text))
+                    .addListener(f -> onSent.run());
             }
             if (delay != null) {
                 scheduler.schedule(writeAction, false, delay);
@@ -472,7 +513,8 @@ public class HttpWebSocketResponseActionHandler {
                 inboundStreamId,
                 webSocketClientRegistry,
                 inboundBreakpointClientId,
-                inboundBreakpointIdParam
+                inboundBreakpointIdParam,
+                negotiatedSubprotocol(handshaker)
             ));
     }
 
@@ -560,7 +602,7 @@ public class HttpWebSocketResponseActionHandler {
                                     case CLOSE -> {
                                         StreamFrameBreakpointRegistry.getInstance().evictStream(streamId);
                                         if (handshaker != null) {
-                                            handshaker.close(senderCtx.channel(), new CloseWebSocketFrame());
+                                            handshaker.close(senderCtx.channel(), normalClosure());
                                         }
                                     }
                                 }

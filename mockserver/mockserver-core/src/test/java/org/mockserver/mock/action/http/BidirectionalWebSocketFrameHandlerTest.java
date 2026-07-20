@@ -199,6 +199,186 @@ public class BidirectionalWebSocketFrameHandlerTest {
         }
     }
 
+    // --- a text matcher must not match non-text frames ---
+    //
+    // Reachability note: `withText`/`withTextRegex`/`withTextMatcher` all pin `frameType` to
+    // TEXT, and `WebSocketMessageMatcherDTO.buildObject` calls `withText` last, so a matcher
+    // built from control-plane JSON always ends up frameType=TEXT and never reaches the text
+    // comparison with a non-text frame. The fall-through is therefore reachable only by setting
+    // the frame type *after* the text on the Java API -- which is exactly what a user writes to
+    // express "match this text on any frame type". These tests use that ordering deliberately;
+    // building them the other way round would assert the frame-type guard instead and would stay
+    // green with the defect present.
+
+    /**
+     * The text-content check used to be guarded by {@code frame instanceof TextWebSocketFrame},
+     * so a non-text frame skipped the block entirely and fell through to {@code return true} --
+     * the matcher then fired its responses on the client's keepalive PING traffic.
+     */
+    @Test
+    public void shouldNotMatchPingFrameWithATextMatcherWhenFrameTypeIsAny() {
+        WebSocketMessageMatcher matcher = webSocketMessageMatcher()
+            .withText("hello")
+            .withFrameType(WebSocketFrameType.ANY);
+
+        BidirectionalWebSocketFrameHandler handler = new BidirectionalWebSocketFrameHandler(
+            List.of(matcher), (ctx, msg) -> {}
+        );
+
+        PingWebSocketFrame frame = new PingWebSocketFrame();
+        try {
+            assertThat("a text matcher must not be satisfied by a PING frame",
+                handler.matches(matcher, frame), is(false));
+        } finally {
+            frame.release();
+        }
+    }
+
+    @Test
+    public void shouldNotMatchPongFrameWithATextMatcherWhenFrameTypeIsAny() {
+        WebSocketMessageMatcher matcher = webSocketMessageMatcher()
+            .withText("hello")
+            .withFrameType(WebSocketFrameType.ANY);
+
+        BidirectionalWebSocketFrameHandler handler = new BidirectionalWebSocketFrameHandler(
+            List.of(matcher), (ctx, msg) -> {}
+        );
+
+        PongWebSocketFrame frame = new PongWebSocketFrame();
+        try {
+            assertThat(handler.matches(matcher, frame), is(false));
+        } finally {
+            frame.release();
+        }
+    }
+
+    @Test
+    public void shouldNotMatchBinaryFrameWithATextMatcherWhenFrameTypeIsAny() {
+        WebSocketMessageMatcher matcher = webSocketMessageMatcher()
+            .withText("hello")
+            .withFrameType(WebSocketFrameType.ANY);
+
+        BidirectionalWebSocketFrameHandler handler = new BidirectionalWebSocketFrameHandler(
+            List.of(matcher), (ctx, msg) -> {}
+        );
+
+        BinaryWebSocketFrame frame = new BinaryWebSocketFrame(
+            io.netty.buffer.Unpooled.copiedBuffer("hello", java.nio.charset.StandardCharsets.UTF_8));
+        try {
+            assertThat("a text matcher cannot be satisfied by a binary frame, "
+                + "even one whose bytes spell the pattern", handler.matches(matcher, frame), is(false));
+        } finally {
+            frame.release();
+        }
+    }
+
+    /**
+     * A text matcher explicitly typed PING is self-contradictory; before the fix it matched every
+     * PING regardless of the configured text.
+     */
+    @Test
+    public void shouldNotMatchPingFrameWithATextMatcherTypedPing() {
+        WebSocketMessageMatcher matcher = webSocketMessageMatcher()
+            .withText("hello")
+            .withFrameType(WebSocketFrameType.PING);
+
+        BidirectionalWebSocketFrameHandler handler = new BidirectionalWebSocketFrameHandler(
+            List.of(matcher), (ctx, msg) -> {}
+        );
+
+        PingWebSocketFrame frame = new PingWebSocketFrame();
+        try {
+            assertThat(handler.matches(matcher, frame), is(false));
+        } finally {
+            frame.release();
+        }
+    }
+
+    @Test
+    public void shouldNotMatchNonTextFrameWithATextRegexMatcherWhenFrameTypeIsAny() {
+        WebSocketMessageMatcher matcher = webSocketMessageMatcher()
+            .withTextRegex(".*")
+            .withFrameType(WebSocketFrameType.ANY);
+
+        BidirectionalWebSocketFrameHandler handler = new BidirectionalWebSocketFrameHandler(
+            List.of(matcher), (ctx, msg) -> {}
+        );
+
+        PingWebSocketFrame frame = new PingWebSocketFrame();
+        try {
+            assertThat(handler.matches(matcher, frame), is(false));
+        } finally {
+            frame.release();
+        }
+    }
+
+    /**
+     * A <em>negated</em> text matcher does not vacuously match a frame carrying no text either.
+     *
+     * <p>This is the interaction between the non-text guard and the negation support: treating
+     * {@code not("hello")} as true for a PING would reopen the very defect the guard closes, with
+     * the matcher's responses firing on client keepalive traffic. A matcher expressed in terms of
+     * text content does not apply to frames that have none, in either polarity.
+     */
+    @Test
+    public void shouldNotMatchPingFrameWithANegatedTextMatcherWhenFrameTypeIsAny() {
+        WebSocketMessageMatcher matcher = webSocketMessageMatcher()
+            .withTextMatcher(org.mockserver.model.NottableString.string("hello", true))
+            .withFrameType(WebSocketFrameType.ANY);
+
+        BidirectionalWebSocketFrameHandler handler = new BidirectionalWebSocketFrameHandler(
+            List.of(matcher), (ctx, msg) -> {}
+        );
+
+        PingWebSocketFrame frame = new PingWebSocketFrame();
+        try {
+            assertThat("a negated text matcher must not vacuously match a PING",
+                handler.matches(matcher, frame), is(false));
+        } finally {
+            frame.release();
+        }
+    }
+
+    /**
+     * A matcher with no text content still matches any frame type -- only a *text* matcher is
+     * restricted to text frames.
+     */
+    @Test
+    public void shouldStillMatchPingFrameWithATypeOnlyMatcher() {
+        WebSocketMessageMatcher matcher = webSocketMessageMatcher()
+            .withFrameType(WebSocketFrameType.PING);
+
+        BidirectionalWebSocketFrameHandler handler = new BidirectionalWebSocketFrameHandler(
+            List.of(matcher), (ctx, msg) -> {}
+        );
+
+        PingWebSocketFrame frame = new PingWebSocketFrame();
+        try {
+            assertThat(handler.matches(matcher, frame), is(true));
+        } finally {
+            frame.release();
+        }
+    }
+
+    /** A text matcher must still match the text frame it was written for. */
+    @Test
+    public void shouldStillMatchTextFrameWhenFrameTypeIsAny() {
+        WebSocketMessageMatcher matcher = webSocketMessageMatcher()
+            .withText("hello")
+            .withFrameType(WebSocketFrameType.ANY);
+
+        BidirectionalWebSocketFrameHandler handler = new BidirectionalWebSocketFrameHandler(
+            List.of(matcher), (ctx, msg) -> {}
+        );
+
+        TextWebSocketFrame frame = new TextWebSocketFrame("hello");
+        try {
+            assertThat(handler.matches(matcher, frame), is(true));
+        } finally {
+            frame.release();
+        }
+    }
+
     @Test
     public void shouldTrackSentResponses() {
         List<WebSocketMessage> sentMessages = new ArrayList<>();

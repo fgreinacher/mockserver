@@ -13,7 +13,9 @@ import org.mockserver.model.GraphQLBody;
 import org.mockserver.model.SelectionSetMatchType;
 import org.mockserver.model.WebSocketMessage;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -27,19 +29,76 @@ public class GraphQLSubscriptionHandlerTest {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /**
-     * Records text messages sent via the FrameSender for assertion.
+     * A FrameSender that behaves like the production one in the two ways that matter for
+     * protocol correctness:
+     *
+     * <ol>
+     *   <li><b>It writes to the channel</b>, the same sink {@code connection_ack}, {@code error}
+     *       and {@code complete} use. The previous fake collected {@code next} frames into a
+     *       private list while the terminal {@code complete} went to the channel, so the two
+     *       were asserted from separate sinks and their relative order on the wire was
+     *       structurally unobservable — which is precisely why this suite stayed green while
+     *       {@code complete} was being emitted before every {@code next}.</li>
+     *   <li><b>It defers a delayed frame</b> rather than discarding the delay, so a delayed send
+     *       really does complete later than an undelayed one. Call {@link #fireDelayed()} to
+     *       stand in for the scheduler firing.</li>
+     * </ol>
      */
     private static class RecordingFrameSender implements GraphQLSubscriptionHandler.FrameSender {
         final List<String> sentMessages = new ArrayList<>();
         final List<Delay> sentDelays = new ArrayList<>();
+        private final Deque<Runnable> deferred = new ArrayDeque<>();
 
         @Override
-        public void send(ChannelHandlerContext ctx, String text, Delay delay) {
-            if (text != null) {
-                sentMessages.add(text);
-            }
+        public void send(ChannelHandlerContext ctx, String text, Delay delay, Runnable onSent) {
             sentDelays.add(delay);
+            Runnable write = () -> {
+                if (text != null) {
+                    sentMessages.add(text);
+                    ctx.writeAndFlush(new TextWebSocketFrame(text));
+                }
+                onSent.run();
+            };
+            if (delay != null) {
+                deferred.add(write);
+            } else {
+                write.run();
+            }
         }
+
+        /**
+         * Run every deferred write, including any newly deferred by a continuation, mimicking
+         * the scheduler draining its queue.
+         */
+        void fireDelayed() {
+            while (!deferred.isEmpty()) {
+                deferred.poll().run();
+            }
+        }
+
+        boolean hasDeferred() {
+            return !deferred.isEmpty();
+        }
+    }
+
+    /** Drain every frame currently queued on the channel, in wire order. */
+    private static List<String> drainWire(EmbeddedChannel channel) {
+        List<String> frames = new ArrayList<>();
+        TextWebSocketFrame frame;
+        while ((frame = channel.readOutbound()) != null) {
+            frames.add(frame.text());
+            frame.release();
+        }
+        return frames;
+    }
+
+    /** The {@code type} field of each frame, in wire order. */
+    private static List<String> wireTypes(EmbeddedChannel channel) throws Exception {
+        List<String> types = new ArrayList<>();
+        for (String frame : drainWire(channel)) {
+            types.add(OBJECT_MAPPER.readTree(frame).get("type").asText());
+        }
+        return types;
     }
 
     private EmbeddedChannel createChannel(GraphQLSubscriptionHandler handler) {
@@ -147,13 +206,14 @@ public class GraphQLSubscriptionHandlerTest {
         assertThat(next2.get("payload").get("data").get("id").asText(), is("2"));
         assertThat(next2.get("payload").get("data").get("name").asText(), is("Bob"));
 
-        // Verify complete was sent via ctx.writeAndFlush
-        TextWebSocketFrame completeFrame = channel.readOutbound();
-        assertNotNull("Expected complete message", completeFrame);
-        JsonNode complete = OBJECT_MAPPER.readTree(completeFrame.text());
+        // Verify the wire order: both next frames, then the terminal complete last
+        List<String> wire = drainWire(channel);
+        assertThat(wire.size(), is(3));
+        assertThat(OBJECT_MAPPER.readTree(wire.get(0)).get("type").asText(), is("next"));
+        assertThat(OBJECT_MAPPER.readTree(wire.get(1)).get("type").asText(), is("next"));
+        JsonNode complete = OBJECT_MAPPER.readTree(wire.get(2));
         assertThat(complete.get("id").asText(), is("sub-1"));
         assertThat(complete.get("type").asText(), is("complete"));
-        completeFrame.release();
 
         channel.finishAndReleaseAll();
     }
@@ -404,12 +464,244 @@ public class GraphQLSubscriptionHandlerTest {
         String subscribeMsg = "{\"id\":\"s1\",\"type\":\"subscribe\",\"payload\":{\"query\":\"subscription { counter { v } }\"}}";
         channel.writeInbound(new TextWebSocketFrame(subscribeMsg));
 
+        // The first (undelayed) message is written straight away; the second is still pending
+        // on its delay, so the sequence has not yet advanced past it.
+        assertThat(sender.sentMessages.size(), is(1));
+        assertTrue("second message should still be waiting on its delay", sender.hasDeferred());
+
+        sender.fireDelayed();
+
         assertThat(sender.sentMessages.size(), is(2));
         // First message has no delay
         assertNull(sender.sentDelays.get(0));
         // Second message has the configured delay
         assertNotNull(sender.sentDelays.get(1));
         assertThat(sender.sentDelays.get(1).getValue(), is(500L));
+
+        channel.finishAndReleaseAll();
+    }
+
+    // --- wire ordering: complete must be the last frame, even with delays ---
+
+    /**
+     * The regression this suite previously could not see. With any delay configured, the handler
+     * used to recurse through the whole payload list without waiting and then write {@code
+     * complete} immediately, so {@code complete} reached the wire before a single {@code next}.
+     * Both Apollo and graphql-ws discard messages received after {@code complete}, so the
+     * subscription delivered nothing at all.
+     */
+    @Test
+    public void shouldNotWriteCompleteBeforeDelayedNextFramesReachTheWire() throws Exception {
+        RecordingFrameSender sender = new RecordingFrameSender();
+        Delay delay = new Delay(TimeUnit.MILLISECONDS, 50);
+        List<WebSocketMessage> payloads = List.of(
+            webSocketMessage("{\"v\":1}").withDelay(delay),
+            webSocketMessage("{\"v\":2}").withDelay(delay)
+        );
+        GraphQLSubscriptionHandler handler = createHandler(
+            "subscription { counter { v } }", payloads, sender
+        );
+        EmbeddedChannel channel = createChannel(handler);
+
+        channel.writeInbound(new TextWebSocketFrame("{\"type\":\"connection_init\"}"));
+        assertThat(wireTypes(channel), is(List.of("connection_ack")));
+
+        channel.writeInbound(new TextWebSocketFrame(
+            "{\"id\":\"s1\",\"type\":\"subscribe\",\"payload\":{\"query\":\"subscription { counter { v } }\"}}"));
+
+        // Nothing may reach the wire until the first delay elapses -- in particular the terminal
+        // `complete` must not have been written. This is the assertion that goes red on the bug.
+        assertThat("no frame may precede the delayed next frames", wireTypes(channel), is(empty()));
+
+        sender.fireDelayed();
+
+        assertThat(wireTypes(channel), is(List.of("next", "next", "complete")));
+
+        channel.finishAndReleaseAll();
+    }
+
+    /**
+     * Guards the ordering contract for the mixed case, where only some payloads carry a delay.
+     */
+    @Test
+    public void shouldKeepWireOrderWhenOnlySomePayloadsAreDelayed() throws Exception {
+        RecordingFrameSender sender = new RecordingFrameSender();
+        List<WebSocketMessage> payloads = List.of(
+            webSocketMessage("{\"v\":1}"),
+            webSocketMessage("{\"v\":2}").withDelay(new Delay(TimeUnit.MILLISECONDS, 50)),
+            webSocketMessage("{\"v\":3}")
+        );
+        GraphQLSubscriptionHandler handler = createHandler(
+            "subscription { counter { v } }", payloads, sender
+        );
+        EmbeddedChannel channel = createChannel(handler);
+
+        channel.writeInbound(new TextWebSocketFrame("{\"type\":\"connection_init\"}"));
+        assertThat(wireTypes(channel), is(List.of("connection_ack")));
+
+        channel.writeInbound(new TextWebSocketFrame(
+            "{\"id\":\"s1\",\"type\":\"subscribe\",\"payload\":{\"query\":\"subscription { counter { v } }\"}}"));
+
+        // Only the first, undelayed, payload has been written so far
+        assertThat(wireTypes(channel), is(List.of("next")));
+
+        sender.fireDelayed();
+
+        // The remaining two next frames, then complete -- never complete in the middle
+        assertThat(wireTypes(channel), is(List.of("next", "next", "complete")));
+
+        channel.finishAndReleaseAll();
+    }
+
+    /**
+     * The payloads must arrive in the order they were configured, not merely all before
+     * {@code complete}.
+     */
+    @Test
+    public void shouldDeliverDelayedPayloadsInConfiguredOrder() throws Exception {
+        RecordingFrameSender sender = new RecordingFrameSender();
+        Delay delay = new Delay(TimeUnit.MILLISECONDS, 10);
+        List<WebSocketMessage> payloads = List.of(
+            webSocketMessage("{\"v\":1}").withDelay(delay),
+            webSocketMessage("{\"v\":2}").withDelay(delay),
+            webSocketMessage("{\"v\":3}").withDelay(delay)
+        );
+        GraphQLSubscriptionHandler handler = createHandler(
+            "subscription { counter { v } }", payloads, sender
+        );
+        EmbeddedChannel channel = createChannel(handler);
+
+        channel.writeInbound(new TextWebSocketFrame("{\"type\":\"connection_init\"}"));
+        drainWire(channel); // ack
+        channel.writeInbound(new TextWebSocketFrame(
+            "{\"id\":\"s1\",\"type\":\"subscribe\",\"payload\":{\"query\":\"subscription { counter { v } }\"}}"));
+        sender.fireDelayed();
+
+        List<String> wire = drainWire(channel);
+        assertThat(wire.size(), is(4));
+        assertThat(OBJECT_MAPPER.readTree(wire.get(0)).get("payload").get("data").get("v").asInt(), is(1));
+        assertThat(OBJECT_MAPPER.readTree(wire.get(1)).get("payload").get("data").get("v").asInt(), is(2));
+        assertThat(OBJECT_MAPPER.readTree(wire.get(2)).get("payload").get("data").get("v").asInt(), is(3));
+        assertThat(OBJECT_MAPPER.readTree(wire.get(3)).get("type").asText(), is("complete"));
+
+        channel.finishAndReleaseAll();
+    }
+
+    // --- legacy graphql-ws (subscriptions-transport-ws) subprotocol ---
+
+    private GraphQLSubscriptionHandler createLegacyHandler(
+        String subscriptionQuery,
+        List<WebSocketMessage> payloads,
+        RecordingFrameSender frameSender
+    ) {
+        GraphQLBody filter = GraphQLBody.graphQL(subscriptionQuery)
+            .withSelectionSetMatchType(SelectionSetMatchType.AST_SUBSET);
+        return new GraphQLSubscriptionHandler(filter, payloads, frameSender, null,
+            null, null, null, null, null, "graphql-ws");
+    }
+
+    /**
+     * The legacy subprotocol was advertised and accepted but its vocabulary was never
+     * implemented, so an Apollo client sent {@code start} and hung forever after a
+     * healthy-looking {@code connection_ack}.
+     */
+    @Test
+    public void shouldDriveLegacySubscriptionWithStartAndDataMessages() throws Exception {
+        RecordingFrameSender sender = new RecordingFrameSender();
+        GraphQLSubscriptionHandler handler = createLegacyHandler(
+            "subscription { counter { v } }",
+            List.of(webSocketMessage("{\"v\":1}")),
+            sender
+        );
+        EmbeddedChannel channel = createChannel(handler);
+
+        channel.writeInbound(new TextWebSocketFrame("{\"type\":\"connection_init\"}"));
+        assertThat(wireTypes(channel), is(List.of("connection_ack")));
+
+        // legacy clients subscribe with `start`, not `subscribe`
+        channel.writeInbound(new TextWebSocketFrame(
+            "{\"id\":\"s1\",\"type\":\"start\",\"payload\":{\"query\":\"subscription { counter { v } }\"}}"));
+
+        // and expect `data`, not `next`
+        assertThat(wireTypes(channel), is(List.of("data", "complete")));
+
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    public void shouldCancelLegacySubscriptionOnStop() throws Exception {
+        RecordingFrameSender sender = new RecordingFrameSender();
+        Delay delay = new Delay(TimeUnit.MILLISECONDS, 50);
+        GraphQLSubscriptionHandler handler = createLegacyHandler(
+            "subscription { counter { v } }",
+            List.of(
+                webSocketMessage("{\"v\":1}").withDelay(delay),
+                webSocketMessage("{\"v\":2}").withDelay(delay)
+            ),
+            sender
+        );
+        EmbeddedChannel channel = createChannel(handler);
+
+        channel.writeInbound(new TextWebSocketFrame("{\"type\":\"connection_init\"}"));
+        drainWire(channel); // ack
+        channel.writeInbound(new TextWebSocketFrame(
+            "{\"id\":\"s1\",\"type\":\"start\",\"payload\":{\"query\":\"subscription { counter { v } }\"}}"));
+
+        // legacy clients cancel with `stop`, not `complete`
+        channel.writeInbound(new TextWebSocketFrame("{\"id\":\"s1\",\"type\":\"stop\"}"));
+        sender.fireDelayed();
+
+        // The first payload was already handed to the scheduler before the cancel arrived, so it
+        // still lands; what `stop` must do is stop the sequence advancing -- no second payload,
+        // and no `complete`, because a cancelled subscription never completes normally.
+        assertThat(wireTypes(channel), is(List.of("data")));
+
+        channel.finishAndReleaseAll();
+    }
+
+    @Test
+    public void shouldSendLegacyErrorPayloadAsObjectNotArray() throws Exception {
+        RecordingFrameSender sender = new RecordingFrameSender();
+        GraphQLSubscriptionHandler handler = createLegacyHandler(
+            "subscription { counter { v } }", List.of(), sender
+        );
+        EmbeddedChannel channel = createChannel(handler);
+
+        channel.writeInbound(new TextWebSocketFrame("{\"type\":\"connection_init\"}"));
+        drainWire(channel); // ack
+        channel.writeInbound(new TextWebSocketFrame(
+            "{\"id\":\"s1\",\"type\":\"start\",\"payload\":{\"query\":\"subscription { somethingElse { v } }\"}}"));
+
+        List<String> wire = drainWire(channel);
+        assertThat(wire.size(), is(1));
+        JsonNode error = OBJECT_MAPPER.readTree(wire.get(0));
+        assertThat(error.get("type").asText(), is("error"));
+        assertTrue("legacy error payload is a single object", error.get("payload").isObject());
+        assertThat(error.get("payload").get("message").asText(), containsString("No matching subscription"));
+
+        channel.finishAndReleaseAll();
+    }
+
+    /**
+     * The modern protocol must be unaffected by the legacy support: it still emits {@code next}
+     * and an array-shaped error payload.
+     */
+    @Test
+    public void shouldKeepModernVocabularyWhenSubprotocolIsGraphqlTransportWs() throws Exception {
+        RecordingFrameSender sender = new RecordingFrameSender();
+        GraphQLSubscriptionHandler handler = new GraphQLSubscriptionHandler(
+            GraphQLBody.graphQL("subscription { counter { v } }")
+                .withSelectionSetMatchType(SelectionSetMatchType.AST_SUBSET),
+            List.of(webSocketMessage("{\"v\":1}")),
+            sender, null, null, null, null, null, null, "graphql-transport-ws");
+        EmbeddedChannel channel = createChannel(handler);
+
+        channel.writeInbound(new TextWebSocketFrame("{\"type\":\"connection_init\"}"));
+        drainWire(channel); // ack
+        channel.writeInbound(new TextWebSocketFrame(
+            "{\"id\":\"s1\",\"type\":\"subscribe\",\"payload\":{\"query\":\"subscription { counter { v } }\"}}"));
+
+        assertThat(wireTypes(channel), is(List.of("next", "complete")));
 
         channel.finishAndReleaseAll();
     }

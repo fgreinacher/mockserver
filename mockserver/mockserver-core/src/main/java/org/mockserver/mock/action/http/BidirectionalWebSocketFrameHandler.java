@@ -288,10 +288,23 @@ public class BidirectionalWebSocketFrameHandler extends SimpleChannelInboundHand
             }
         }
         // Check text content if matcher has a text matcher
-        if (matcher.getTextMatcher() != null && frame instanceof TextWebSocketFrame textFrame) {
-            String text = textFrame.text();
+        if (matcher.getTextMatcher() != null) {
             String pattern = matcher.getTextMatcher().getValue();
             if (pattern != null && !pattern.isEmpty()) {
+                // A text matcher can only be satisfied by a text frame. Previously a non-text
+                // frame simply skipped this block and fell through to `return true`, so a
+                // matcher configured with text content matched every PING, PONG and BINARY
+                // frame as well -- and its responses fired on client keepalive traffic.
+                //
+                // This applies in BOTH polarities: a negated text matcher does not vacuously
+                // match a frame that carries no text either. A matcher expressed in terms of
+                // text content simply does not apply to frames that have none, and treating
+                // `not("x")` as true for a PING would reopen the same defect for negated
+                // matchers -- responses firing on client keepalive traffic.
+                if (!(frame instanceof TextWebSocketFrame textFrame)) {
+                    return false;
+                }
+                String text = textFrame.text();
                 boolean matched;
                 // Try exact match first, then regex
                 if (text.equals(pattern)) {

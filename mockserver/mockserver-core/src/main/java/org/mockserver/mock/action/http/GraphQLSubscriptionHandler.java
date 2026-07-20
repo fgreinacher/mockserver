@@ -59,6 +59,20 @@ public class GraphQLSubscriptionHandler extends SimpleChannelInboundHandler<WebS
 
     static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
+    /** The modern protocol — <a href="https://github.com/enisdenjo/graphql-ws">graphql-ws</a> library. */
+    static final String MODERN_SUBPROTOCOL = "graphql-transport-ws";
+    /** The legacy protocol — {@code subscriptions-transport-ws}, still what Apollo Client defaults to. */
+    static final String LEGACY_SUBPROTOCOL = "graphql-ws";
+
+    /**
+     * True when the negotiated subprotocol is the legacy {@code graphql-ws}
+     * (subscriptions-transport-ws) protocol, whose vocabulary differs from graphql-transport-ws:
+     * the client subscribes with {@code start} rather than {@code subscribe}, cancels with
+     * {@code stop} rather than {@code complete}, and the server pushes {@code data} rather
+     * than {@code next}.
+     */
+    private final boolean legacyProtocol;
+
     private final GraphQLAstMatcher astMatcher;
     private final List<WebSocketMessage> subscriptionPayloads;
     private final FrameSender frameSender;
@@ -87,13 +101,21 @@ public class GraphQLSubscriptionHandler extends SimpleChannelInboundHandler<WebS
      */
     public interface FrameSender {
         /**
-         * Send a text frame, optionally after a delay.
+         * Send a text frame, optionally after a delay, then run {@code onSent}.
+         * <p>
+         * {@code onSent} MUST be invoked only once the frame has actually been written to the
+         * wire (or has been deliberately discarded), never before the delay has elapsed. The
+         * subscription sequencer chains the next {@code next} message — and ultimately the
+         * terminal {@code complete} — off this callback, so an implementation that runs it
+         * eagerly re-introduces the defect where {@code complete} overtakes the delayed
+         * {@code next} frames and every message is discarded by the client as post-terminal.
          *
-         * @param ctx   the channel context
-         * @param text  the text to send
-         * @param delay optional delay before sending (may be null)
+         * @param ctx    the channel context
+         * @param text   the text to send
+         * @param delay  optional delay before sending (may be null)
+         * @param onSent continuation invoked after the frame has been written or discarded
          */
-        void send(ChannelHandlerContext ctx, String text, Delay delay);
+        void send(ChannelHandlerContext ctx, String text, Delay delay, Runnable onSent);
     }
 
     /**
@@ -155,7 +177,32 @@ public class GraphQLSubscriptionHandler extends SimpleChannelInboundHandler<WebS
         String inboundBreakpointClientId,
         String inboundBreakpointId
     ) {
+        this(expectedSubscriptionQuery, subscriptionPayloads, frameSender, handshaker, configuration,
+            inboundStreamId, webSocketClientRegistry, inboundBreakpointClientId, inboundBreakpointId, null);
+    }
+
+    /**
+     * Constructor taking the subprotocol actually negotiated during the handshake.
+     *
+     * @param negotiatedSubprotocol the negotiated WebSocket subprotocol; when this is the legacy
+     *                              {@code graphql-ws} (subscriptions-transport-ws) protocol the handler
+     *                              speaks that protocol's vocabulary ({@code start}/{@code stop}/{@code data})
+     *                              instead of the graphql-transport-ws vocabulary
+     */
+    public GraphQLSubscriptionHandler(
+        GraphQLBody expectedSubscriptionQuery,
+        List<WebSocketMessage> subscriptionPayloads,
+        FrameSender frameSender,
+        WebSocketServerHandshaker handshaker,
+        Configuration configuration,
+        String inboundStreamId,
+        WebSocketClientRegistry webSocketClientRegistry,
+        String inboundBreakpointClientId,
+        String inboundBreakpointId,
+        String negotiatedSubprotocol
+    ) {
         super(false); // don't auto-release frames
+        this.legacyProtocol = LEGACY_SUBPROTOCOL.equals(negotiatedSubprotocol);
         this.astMatcher = createMatcher(expectedSubscriptionQuery);
         this.subscriptionPayloads = subscriptionPayloads != null ? subscriptionPayloads : Collections.emptyList();
         this.frameSender = frameSender;
@@ -290,8 +337,13 @@ public class GraphQLSubscriptionHandler extends SimpleChannelInboundHandler<WebS
             switch (type) {
                 case "connection_init" -> handleConnectionInit(ctx);
                 case "ping" -> handlePing(ctx);
+                // graphql-transport-ws vocabulary
                 case "subscribe" -> handleSubscribe(ctx, message);
                 case "complete" -> handleClientComplete(message);
+                // legacy graphql-ws (subscriptions-transport-ws) vocabulary
+                case "start" -> handleSubscribe(ctx, message);
+                case "stop" -> handleClientComplete(message);
+                case "connection_terminate" -> closeConnection(ctx);
                 default -> {
                     // Unknown message type -- ignore per the protocol spec
                 }
@@ -376,12 +428,14 @@ public class GraphQLSubscriptionHandler extends SimpleChannelInboundHandler<WebS
             return;
         }
 
-        frameSender.send(ctx, nextJson, payload.getDelay());
-
-        // Chain to next message -- the FrameSender handles delay
-        // but we need to schedule the next push after the current one
-        // For simplicity, we push all at once with cumulative delays
-        pushNextSequence(ctx, subscriptionId, index + 1);
+        // Chain strictly off the send completion: message index + 1 is only pushed once
+        // index has actually reached the wire, and `complete` is only written after the
+        // final `next`. Recursing eagerly here (the previous behaviour) let the terminal
+        // `complete` overtake every delayed `next`, and both Apollo and graphql-ws discard
+        // messages received after `complete` -- so a subscription with any delay set
+        // delivered nothing at all.
+        frameSender.send(ctx, nextJson, payload.getDelay(),
+            () -> pushNextSequence(ctx, subscriptionId, index + 1));
     }
 
     /**
@@ -397,7 +451,8 @@ public class GraphQLSubscriptionHandler extends SimpleChannelInboundHandler<WebS
 
         ObjectNode nextMessage = OBJECT_MAPPER.createObjectNode();
         nextMessage.put("id", subscriptionId);
-        nextMessage.put("type", "next");
+        // legacy subscriptions-transport-ws calls this message `data`, not `next`
+        nextMessage.put("type", legacyProtocol ? "data" : "next");
 
         ObjectNode payloadWrapper = OBJECT_MAPPER.createObjectNode();
         try {
@@ -434,9 +489,14 @@ public class GraphQLSubscriptionHandler extends SimpleChannelInboundHandler<WebS
         errorMsg.put("type", "error");
         ObjectNode errorPayload = OBJECT_MAPPER.createObjectNode();
         errorPayload.put("message", errorMessage);
-        ArrayNode errorArray = OBJECT_MAPPER.createArrayNode();
-        errorArray.add(errorPayload);
-        errorMsg.set("payload", errorArray);
+        if (legacyProtocol) {
+            // legacy subscriptions-transport-ws carries a single error object, not a list
+            errorMsg.set("payload", errorPayload);
+        } else {
+            ArrayNode errorArray = OBJECT_MAPPER.createArrayNode();
+            errorArray.add(errorPayload);
+            errorMsg.set("payload", errorArray);
+        }
         try {
             sendImmediate(ctx, OBJECT_MAPPER.writeValueAsString(errorMsg));
         } catch (JsonProcessingException e) {
@@ -455,9 +515,17 @@ public class GraphQLSubscriptionHandler extends SimpleChannelInboundHandler<WebS
         }
     }
 
+    /**
+     * A 1000 NORMAL_CLOSURE frame — an empty close frame leaves the client reporting
+     * close code 1005 "no status received".
+     */
+    private static CloseWebSocketFrame normalClosure() {
+        return new CloseWebSocketFrame(io.netty.handler.codec.http.websocketx.WebSocketCloseStatus.NORMAL_CLOSURE);
+    }
+
     private void closeConnection(ChannelHandlerContext ctx) {
         if (handshaker != null && ctx.channel().isActive()) {
-            handshaker.close(ctx.channel(), new CloseWebSocketFrame());
+            handshaker.close(ctx.channel(), normalClosure());
         }
     }
 
@@ -480,6 +548,6 @@ public class GraphQLSubscriptionHandler extends SimpleChannelInboundHandler<WebS
      * or legacy graphql-ws protocol.
      */
     public static boolean isGraphQLWebSocketProtocol(String subprotocol) {
-        return "graphql-transport-ws".equals(subprotocol) || "graphql-ws".equals(subprotocol);
+        return MODERN_SUBPROTOCOL.equals(subprotocol) || LEGACY_SUBPROTOCOL.equals(subprotocol);
     }
 }

@@ -173,6 +173,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covers non-ASCII metadata keys for every backend, asserting that a store either round-trips them exactly or
   rejects the write — never silently stores a different key. S3 legitimately rejects them, since it carries
   metadata in `x-amz-meta-*` HTTP headers whose field names are ASCII tokens.
+- **Mocked WebSockets now answer PING and echo CLOSE (RFC 6455 §5.5.1/§5.5.2).** MockServer performs the
+  WebSocket handshake by hand, which installs only the frame encoder and decoder and contributes no
+  control-frame behaviour, so a mocked WebSocket silently ignored every PING and never echoed a CLOSE. Since
+  browsers, OkHttp's `pingInterval` and Java-WebSocket's connection-lost detector all ping for keepalive,
+  **every long-lived mocked WebSocket session eventually died**, typically appearing as an unexplained
+  disconnect part-way through a test. A PONG carrying the PING's payload verbatim is now always sent, a client
+  CLOSE is echoed with the client's own status code and reason (falling back to 1000 for reserved or absent
+  codes), and server-initiated closes now send 1000 NORMAL_CLOSURE rather than an empty close frame that left
+  clients reporting 1005 "no status received". PING frames are still forwarded to matchers, so `frameType:
+  PING` matchers are unaffected.
+- **GraphQL subscriptions no longer deliver zero messages when a delay is configured.** The subscription
+  sequencer recursed through the whole payload list without waiting for each `next` frame to be sent, then
+  wrote the terminal `complete` immediately — so with any delay set, `complete` reached the wire *before* every
+  `next`, and both Apollo and `graphql-ws` discard messages received after `complete`. A subscription with
+  delays therefore delivered nothing at all. Each `next` is now chained off the previous frame's actual send
+  completion, so `complete` is always last and per-message delays are cumulative rather than all firing from
+  the same instant.
+  **Reachability:** the subscription handler is installed only when `graphqlSubscriptionFilter` is set, and
+  that field currently cannot be set over the control plane at all — the JSON schema rejects the
+  `"type":"GRAPHQL"` discriminator every client emits, and `GraphQLBodyDTO` has no deserialization path
+  behind it — so this path is reachable only from the embedded Java API or an `initializationClass`. The
+  fix is therefore latent for control-plane users rather than a live bug they can observe today; making
+  `graphqlSubscriptionFilter` settable is tracked separately.
+- **The legacy `graphql-ws` subprotocol is now actually implemented.** It was accepted at handshake but only
+  the `graphql-transport-ws` vocabulary was ever handled, so a subscription driven by a legacy client (still
+  Apollo Client's default) never advanced: its `start` message was silently ignored. The legacy `start`,
+  `stop` and `connection_terminate` messages are now handled, `data` is emitted instead of `next`, and the
+  legacy single-object `error` payload shape is used. Same reachability caveat as above — this affects
+  subscriptions configured through the embedded Java API or an `initializationClass` only.
+- **SSE data containing a lone carriage return no longer truncates the event.** `data` was split on LF only,
+  so a bare CR was emitted raw inside a `data:` line; per WHATWG an event stream is split on CRLF, CR *or* LF,
+  so a real client treated the CR as a line terminator and silently dropped everything after it (and a crafted
+  payload could frame an additional event). All three terminators are now split into separate `data:` lines.
+  `id` and `event` were already guarded.
+- **A WebSocket text matcher no longer matches non-text frames.** The text-content comparison was guarded by
+  `frame instanceof TextWebSocketFrame`, so a PING, PONG or BINARY frame skipped the check entirely and fell
+  through to a match — a matcher configured with text content fired its responses on the client's keepalive
+  traffic. This was reachable when the frame type was set *after* the text (e.g.
+  `.withText("x").withFrameType(ANY)`); the text setters otherwise pin the frame type to TEXT.
 - **SECURITY: enabling control-plane authentication at runtime now actually takes effect.** The mTLS, JWT and
   OIDC handler chain was built once during server bootstrap, so enabling
   `controlPlaneJWTAuthenticationRequired`, `controlPlaneTLSMutualAuthenticationRequired` or

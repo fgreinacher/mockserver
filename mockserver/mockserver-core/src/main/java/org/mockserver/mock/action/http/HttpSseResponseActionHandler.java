@@ -224,7 +224,8 @@ public class HttpSseResponseActionHandler {
         return value.replace("\n", "").replace("\r", "");
     }
 
-    private String formatSseEvent(SseEvent event) {
+    /** Package-private for testing. */
+    String formatSseEvent(SseEvent event) {
         StringBuilder sb = new StringBuilder();
         if (event.getId() != null) {
             sb.append("id: ").append(sanitizeSseFieldValue(event.getId())).append("\n");
@@ -236,7 +237,12 @@ public class HttpSseResponseActionHandler {
             sb.append("retry: ").append(event.getRetry()).append("\n");
         }
         if (event.getData() != null) {
-            for (String line : event.getData().split("\n")) {
+            // Per WHATWG, an SSE stream is split on CRLF, CR *or* LF. Splitting on "\n" alone
+            // left a lone CR embedded in the emitted `data:` line, where the client treats it as
+            // a line terminator -- so everything after the CR was parsed as a new (unrecognised)
+            // field and silently dropped. Every line terminator must become its own `data:` line;
+            // the client rejoins them with "\n", which is the only form a bare CR can survive in.
+            for (String line : event.getData().split("\r\n|\r|\n")) {
                 sb.append("data: ").append(line).append("\n");
             }
         }
