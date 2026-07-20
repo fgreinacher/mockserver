@@ -171,6 +171,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **The gRPC fail-safe diagnostics are no longer silent at global log level WARN or ERROR.** When decoding
+  an upstream gRPC response fails, or a descriptor directory / proto file cannot be loaded, MockServer
+  deliberately swallows the error and carries on — but logs a WARN so the fallback is diagnosable. Those
+  three log entries set the message type to WARN but never set the log *level*, which defaults to INFO, and
+  the logger filters on level rather than type — so at the WARN/ERROR log levels a production operator is
+  most likely to run, the entries were dropped and the fail-safe was completely silent. They now log at WARN
+  as intended.
 - **A header, query-parameter or cookie whose name literally begins with `!` or `?` is no longer inverted
   when an expectation is serialised and re-read.** Collection keys go on the wire as JSON field names, and
   the plain-string encoding prefixes `!` for negation and `?` for optional — markers the reader strips

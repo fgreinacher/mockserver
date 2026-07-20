@@ -212,6 +212,11 @@ public class GrpcForwardTranslator {
                 store.getMockServerLogger().logEvent(
                     new org.mockserver.log.model.LogEntry()
                         .setType(org.mockserver.log.model.LogEntry.LogMessageType.WARN)
+                        // setType alone does NOT raise the level: LogEntry.logLevel defaults to
+                        // INFO and MockServerLogger gates on getLogLevel(), so without this the
+                        // WARN is silent at global log level WARN/ERROR — exactly when the
+                        // fail-safe most needs to be diagnosable.
+                        .setLogLevel(org.slf4j.event.Level.WARN)
                         .setMessageFormat("failed to decode upstream gRPC response for {}/{}, "
                             + "forwarding it unchanged:{}")
                         .setArguments(service, method, e.getMessage())

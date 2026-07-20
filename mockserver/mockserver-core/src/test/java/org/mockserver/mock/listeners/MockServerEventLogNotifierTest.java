@@ -8,6 +8,11 @@ import org.mockserver.scheduler.Scheduler;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Delayed;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -45,6 +50,114 @@ public class MockServerEventLogNotifierTest {
         @Override
         public void updated(MockServerEventLog mockServerLog) {
             updateCount.incrementAndGet();
+        }
+    }
+
+    /**
+     * A ScheduledExecutorService with a virtual clock, so the debounce window can be advanced
+     * deterministically instead of slept through. Only the two methods the notifier uses are
+     * implemented: schedule(Runnable, delay, unit) and isShutdown(). advanceBy(ms) runs every task
+     * whose deadline has arrived — and honours tasks that re-schedule themselves during a tick
+     * (the notifier's re-arm), because a task scheduled at the new clock value only fires on a
+     * later advance, exactly as a real fixed-window debounce behaves.
+     */
+    private static final class ManualTickExecutor implements ScheduledExecutorService {
+        private long nowMillis = 0L;
+        private final List<Scheduled> tasks = new ArrayList<>();
+        private boolean shutdown = false;
+
+        private static final class Scheduled {
+            final long dueMillis;
+            final Runnable task;
+            Scheduled(long dueMillis, Runnable task) {
+                this.dueMillis = dueMillis;
+                this.task = task;
+            }
+        }
+
+        @Override
+        public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
+            tasks.add(new Scheduled(nowMillis + unit.toMillis(delay), command));
+            return new NoopScheduledFuture();
+        }
+
+        /** Advance the virtual clock and run every task now due, in deadline order. */
+        void advanceBy(long millis, TimeUnit unit) {
+            nowMillis += unit.toMillis(millis);
+            boolean progressed = true;
+            while (progressed) {
+                progressed = false;
+                Scheduled due = null;
+                for (Scheduled s : tasks) {
+                    if (s.dueMillis <= nowMillis) {
+                        due = s;
+                        break;
+                    }
+                }
+                if (due != null) {
+                    tasks.remove(due);
+                    due.task.run();
+                    progressed = true;
+                }
+            }
+        }
+
+        int pendingTaskCount() {
+            return tasks.size();
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return shutdown;
+        }
+
+        @Override
+        public void shutdown() {
+            shutdown = true;
+        }
+
+        // --- unused ScheduledExecutorService surface: the notifier never calls these ---
+        @Override public <V> ScheduledFuture<V> schedule(Callable<V> c, long d, TimeUnit u) { throw new UnsupportedOperationException(); }
+        @Override public ScheduledFuture<?> scheduleAtFixedRate(Runnable c, long i, long p, TimeUnit u) { throw new UnsupportedOperationException(); }
+        @Override public ScheduledFuture<?> scheduleWithFixedDelay(Runnable c, long i, long d, TimeUnit u) { throw new UnsupportedOperationException(); }
+        @Override public List<Runnable> shutdownNow() { shutdown = true; return new ArrayList<>(); }
+        @Override public boolean isTerminated() { return shutdown; }
+        @Override public boolean awaitTermination(long t, TimeUnit u) { return true; }
+        @Override public <T> java.util.concurrent.Future<T> submit(Callable<T> t) { throw new UnsupportedOperationException(); }
+        @Override public <T> java.util.concurrent.Future<T> submit(Runnable t, T r) { throw new UnsupportedOperationException(); }
+        @Override public java.util.concurrent.Future<?> submit(Runnable t) { throw new UnsupportedOperationException(); }
+        @Override public <T> List<java.util.concurrent.Future<T>> invokeAll(java.util.Collection<? extends Callable<T>> t) { throw new UnsupportedOperationException(); }
+        @Override public <T> List<java.util.concurrent.Future<T>> invokeAll(java.util.Collection<? extends Callable<T>> t, long to, TimeUnit u) { throw new UnsupportedOperationException(); }
+        @Override public <T> T invokeAny(java.util.Collection<? extends Callable<T>> t) { throw new UnsupportedOperationException(); }
+        @Override public <T> T invokeAny(java.util.Collection<? extends Callable<T>> t, long to, TimeUnit u) { throw new UnsupportedOperationException(); }
+        @Override public void execute(Runnable command) { command.run(); }
+
+        private static final class NoopScheduledFuture implements ScheduledFuture<Object> {
+            @Override public long getDelay(TimeUnit unit) { return 0; }
+            @Override public int compareTo(Delayed o) { return 0; }
+            @Override public boolean cancel(boolean mayInterruptIfRunning) { return false; }
+            @Override public boolean isCancelled() { return false; }
+            @Override public boolean isDone() { return false; }
+            @Override public Object get() { return null; }
+            @Override public Object get(long timeout, TimeUnit unit) { return null; }
+        }
+    }
+
+    /**
+     * A Scheduler whose executor is the manual-tick one, so the notifier's debounce path is driven
+     * by advanceBy(...) rather than the wall clock. Uses the synchronous super-constructor so no
+     * real thread pool is allocated, then overrides getExecutorService() to hand back the manual
+     * executor.
+     */
+    private static final class ManualScheduler extends Scheduler {
+        private final ManualTickExecutor executor;
+        ManualScheduler(ManualTickExecutor executor) {
+            super(Configuration.configuration(), new MockServerLogger(), true);
+            this.executor = executor;
+        }
+        @Override
+        public ScheduledExecutorService getExecutorService() {
+            return executor;
         }
     }
 
@@ -149,27 +262,43 @@ public class MockServerEventLogNotifierTest {
     }
 
     @Test
-    public void shouldCoalesceRapidAsynchronousNotifications() throws InterruptedException {
-        // async Scheduler so notifyListeners(..., false) goes through the debounce path
-        Scheduler scheduler = new Scheduler(Configuration.configuration(), new MockServerLogger(), false);
-        try {
-            TestableEventLogNotifier notifier = createAsyncNotifier(scheduler);
-            CountingLogListener listener = new CountingLogListener();
-            notifier.registerListener(listener);
+    public void shouldCoalesceRapidAsynchronousNotifications() {
+        // Manual-tick executor so the debounce window is advanced deterministically rather than
+        // slept through: wall-clock-independent, and it asserts the actual coalescing property
+        // (N calls suppressed to one per window) instead of a machine-speed-dependent count.
+        ManualTickExecutor executor = new ManualTickExecutor();
+        ManualScheduler scheduler = new ManualScheduler(executor);
+        TestableEventLogNotifier notifier = createAsyncNotifier(scheduler);
+        CountingLogListener listener = new CountingLogListener();
+        notifier.registerListener(listener);
 
-            // when - a rapid burst of async notifications (simulating many log adds within one window)
-            for (int i = 0; i < 1000; i++) {
-                notifier.fireNotification(null, false);
-            }
-
-            // then - they coalesce into at most one updated(...) within the debounce window.
-            // Wait beyond one window (250ms) plus scheduling slack, then assert exactly one fired.
-            Thread.sleep(1500);
-            assertThat("rapid async adds should coalesce to a single notification",
-                listener.updateCount.get(), is(1));
-        } finally {
-            scheduler.shutdown();
+        // 1) a burst of 1000 async notifications, no time advanced: every one is suppressed. This
+        //    is the property that matters — 0 dispatches, not "a small number". A single scheduled
+        //    task is armed.
+        for (int i = 0; i < 1000; i++) {
+            notifier.fireNotification(null, false);
         }
+        assertThat("1000 async adds within one window must all be suppressed until the window ends",
+            listener.updateCount.get(), is(0));
+        assertThat("only one coalescing task should be armed for the whole burst",
+            executor.pendingTaskCount(), is(1));
+
+        // 2) advance past one window: exactly one dispatch fires for the whole burst.
+        executor.advanceBy(MockServerEventLogNotifier.COALESCE_WINDOW_MILLIS, TimeUnit.MILLISECONDS);
+        assertThat("the burst must coalesce to exactly one notification",
+            listener.updateCount.get(), is(1));
+
+        // 3) a second burst after the first window arms a fresh task; advancing again fires once
+        //    more. This proves the re-arm — that the notifier keeps working for the NEXT window,
+        //    which nothing previously tested.
+        for (int i = 0; i < 500; i++) {
+            notifier.fireNotification(null, false);
+        }
+        assertThat("the second burst must not fire until its own window elapses",
+            listener.updateCount.get(), is(1));
+        executor.advanceBy(MockServerEventLogNotifier.COALESCE_WINDOW_MILLIS, TimeUnit.MILLISECONDS);
+        assertThat("the debounce must re-arm and coalesce the second burst to one more notification",
+            listener.updateCount.get(), is(2));
     }
 
     @Test
