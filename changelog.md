@@ -171,6 +171,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **The Node client's type declarations are no longer generated from a schema three major versions stale,
+  and CI now fails when they drift.** `mockserver-client-node/scripts/build_server_typescript.sh` generated
+  `mockServer.d.ts` from a *remote* SwaggerHub schema pinned to `mock-server-openapi/5.15.x`, fetched over
+  the network and diffed by nothing. Because no CI step ever regenerated it, the file quietly stopped being
+  generated and became hand-maintained while the script still claimed to produce it — so running the script
+  would have silently reverted the Node types to a 5.15-era contract. Generation now reads the in-repo spec,
+  so the input is versioned alongside the code and reviewable in the same diff. Investigating this surfaced
+  that the *spec*, not the types, is what is behind: the in-repo OpenAPI spec does not declare seven
+  expectation actions the server accepts (`binaryResponse`, `dnsResponse`, `grpcBidiResponse`,
+  `grpcStreamResponse`, `httpForwardValidateAction`, `httpForwardWithFallback`, `httpLlmResponse`), so
+  regenerating from it today would *drop* those actions and break the type-level fidelity gate. The script
+  therefore refuses to overwrite when regeneration would lose actions, naming them and pointing at the spec,
+  and a new Node test pins the gap as a ratchet that fails both when it widens and when it closes without
+  the pin being updated. A companion check keeps the two committed copies of the spec byte-identical and
+  asserts `mockServer.d.ts` declares every action the server's authoritative `expectation.json` schema
+  declares — and, in the other direction, declares nothing the server would reject. That reverse check
+  found a real defect: `openAPIDefinition` was declared as a top-level expectation member, but it is a
+  *request-level* concept and `expectation.json` sets `additionalProperties: false`, so an expectation
+  using it typechecked green and was then rejected by the server with 400 "incorrect expectation json
+  format". It has been removed; the OpenAPI form of a request matcher remains available where it belongs,
+  through `httpRequest` (`RequestDefinition` already includes `OpenAPIDefinition`). A commit touching only
+  the published copy of the spec now also triggers the Node pipeline, so the byte-identity assertion fires
+  on the change most likely to break it rather than on the next unrelated commit.
+- **The Node client's expectation actions are now proven against a real server, not just against the bytes
+  the client emits.** The existing action-key test captured requests with a throwaway HTTP listener that
+  replied `201` to anything, so it proved the client sent exactly one action but not that a real MockServer
+  accepted the result — and its per-action payloads were in fact schema-invalid. A new test creates an
+  expectation through the client for every action the server's schema declares and asserts the server both
+  accepted and stored it, plus asserts the rejection path via `.then(onFulfilled, onRejected)` rather than
+  `await`, so a regression of the single-argument `.then()` bug that once turned failed verifications into
+  passes cannot hide behind `await`'s own reject path.
 - **WASM custom rules now actually work in the standalone jar and the Docker images — previously they never
   matched.** The chicory WASM interpreter was declared an optional dependency of `mockserver-core`. Maven
   keeps an optional dependency on its own module's classpath but does not propagate it to consumers, so

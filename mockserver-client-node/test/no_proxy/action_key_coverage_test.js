@@ -24,38 +24,13 @@
 
 var { describe, it, before, after } = require('node:test');
 var assert = require('node:assert/strict');
-var fs = require('fs');
-var path = require('path');
 var http = require('http');
 
 var { NON_HTTP_RESPONSE_ACTION_KEYS, mockServerClient } = require('../../mockServerClient');
 
-// test/no_proxy -> test -> mockserver-client-node -> <repo root>
-var SCHEMA_PATH = path.resolve(
-  __dirname, '..', '..', '..',
-  'mockserver', 'mockserver-core', 'src', 'main', 'resources',
-  'org', 'mockserver', 'model', 'schema', 'expectation.json'
-);
-
-// Everything in expectation.json that is NOT an action: matchers, scenario/state plumbing,
-// lifecycle metadata. Listed explicitly (rather than pattern-matched) so that a new server key
-// lands in neither bucket by accident and forces a deliberate decision here.
-var NON_ACTION_KEYS = new Set([
-  'id', 'priority', 'percentage', 'chaos', 'rateLimit',
-  'httpRequest', 'httpResponse',
-  'beforeActions', 'afterActions', 'capture',
-  'namespace', 'scenarioName', 'scenarioState', 'newScenarioState',
-  'httpResponses', 'responseMode', 'responseWeights', 'switchAfter',
-  'crossProtocolScenarios',
-  'times', 'timeToLive', 'steps', 'timestamp'
-]);
-
-function schemaActionKeys() {
-  var schema = JSON.parse(fs.readFileSync(SCHEMA_PATH, 'utf8'));
-  return Object.keys(schema.properties)
-    .filter(function (k) { return !NON_ACTION_KEYS.has(k); })
-    .sort();
-}
+// The action/non-action split and its derivation from the server schema live in one place
+// (test/lib/action_keys.js) so the three test files and build_server_typescript.sh cannot drift.
+var schemaActionKeys = require('../lib/action_keys').serverActionKeys;
 
 describe('expectation action key coverage', function () {
   it('knows every non-httpResponse action key declared by the server schema', function () {
@@ -143,6 +118,41 @@ describe('expectation submitted over the wire', function () {
         'action key present and rejects an expectation with more than one and no primary'
       );
     });
+  });
+
+  /*
+   * The belt-and-braces half of the fix: when there are NO default headers to add,
+   * addDefaultExpectationHeaders returns early and never materialises an httpResponse.
+   * That is what degrades a FUTURE server action nobody has added to
+   * NON_HTTP_RESPONSE_ACTION_KEYS from a hard server rejection ("exactly one must be
+   * marked as primary") down to a harmless "default headers not applied".
+   *
+   * It needs an action key the client does NOT know about, which no real action can
+   * provide while the coverage test above is green — so this case uses a deliberately
+   * synthetic key standing in for a not-yet-added server action. It never reaches a real
+   * server (the listener 201s anything), so the unknown key costs nothing.
+   *
+   * Without this case, deleting the early return is an entirely SILENT mutation: every
+   * other test here and in action_key_server_acceptance_test.js configures default
+   * headers, so none of them ever executes the early-return branch.
+   */
+  it('injects no httpResponse for an unknown action when no default headers are set', async function () {
+    captured = null;
+    var client = mockServerClient('127.0.0.1', port);
+    // Deliberately NO setDefaultHeaders() — that is the branch under test.
+
+    await client.mockAnyResponse({
+      httpRequest: { path: '/some/path' },
+      someFutureServerAction: { some: 'action' }
+    });
+
+    assert.ok(captured, 'client sent no request');
+    assert.deepEqual(
+      Object.keys(captured.body).sort(), ['httpRequest', 'someFutureServerAction'],
+      'with no default headers the expectation must go out untouched; injecting an empty ' +
+      'httpResponse next to an unrecognised action is what makes a newly-added server ' +
+      'action uncreatable from Node until the client is taught about it'
+    );
   });
 
   it('still applies default response headers to a plain httpResponse expectation', async function () {

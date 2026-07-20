@@ -24,7 +24,6 @@ export type Expectation = {
   priority?: number;
   percentage?: number;
   httpRequest?: RequestDefinition;
-  openAPIDefinition?: OpenAPIDefinition;
   httpResponse?: HttpResponse;
   httpResponseTemplate?: HttpTemplate;
   httpResponseClassCallback?: HttpClassCallback;

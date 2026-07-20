@@ -101,7 +101,11 @@ if printf '%s\n' "$CHANGED_FILES" | grep -E -- "^(mockserver/|mockserver-ui/|tes
   trigger_if_changed "^(mockserver/|mockserver-ui/|test-fixtures/)" "mockserver-java" "MockServer Java"
 fi
 trigger_if_changed "^mockserver-ui/" "mockserver-ui" "MockServer UI"
-trigger_client_if_changed "^(mockserver-node/|mockserver-client-node/|mockserver-testcontainers/node/)" "mockserver-node" "MockServer Node"
+# The jekyll copy of the OpenAPI spec is included deliberately: the Node suite asserts it stays
+# byte-identical to the copy under mockserver-core (generated_types_drift_test.js). Without this,
+# a commit touching ONLY the published spec runs the website pipeline alone, the assertion never
+# fires, and the divergence surfaces later on an unrelated change — attributed to the wrong commit.
+trigger_client_if_changed "^(mockserver-node/|mockserver-client-node/|mockserver-testcontainers/node/|jekyll-www\.mock-server\.com/mockserver-openapi\.yaml)" "mockserver-node" "MockServer Node"
 trigger_client_if_changed "^(mockserver-client-python/|mockserver-testcontainers/python/)" "mockserver-python" "MockServer Python"
 trigger_client_if_changed "^mockserver-client-ruby/" "mockserver-ruby" "MockServer Ruby"
 trigger_client_if_changed "^(mockserver-client-go/|mockserver-testcontainers/go/)" "mockserver-go" "MockServer Go"
