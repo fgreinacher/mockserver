@@ -45,6 +45,14 @@ public abstract class AbstractExtendedDeployableWARMockingIntegrationTest extend
     }
 
     @Override
+    protected boolean supportsChunkedResponses() {
+        // ConnectionOptions (which carries chunkSize) is rejected outright by the servlet
+        // transport: "ConnectionOptions is not supported by MockServer deployed as a WAR due to
+        // limitations in the JEE specification"
+        return false;
+    }
+
+    @Override
     protected boolean supportsRequestBodyDecompression() {
         // Tomcat / servlet containers do not decompress request bodies
         return false;

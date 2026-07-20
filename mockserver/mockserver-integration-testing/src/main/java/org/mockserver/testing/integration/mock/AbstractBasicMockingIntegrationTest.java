@@ -56,7 +56,7 @@ import static org.mockserver.model.XmlBody.xml;
 /**
  * @author jamesdbloom
  */
-public abstract class AbstractBasicMockingIntegrationTest extends AbstractTransportDecodeSmokeIntegrationTest {
+public abstract class AbstractBasicMockingIntegrationTest extends AbstractTransportEncodeSmokeIntegrationTest {
 
     protected HttpResponse localNotFoundResponse() {
         return response()
