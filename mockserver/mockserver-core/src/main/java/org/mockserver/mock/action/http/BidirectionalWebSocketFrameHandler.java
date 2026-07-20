@@ -292,15 +292,20 @@ public class BidirectionalWebSocketFrameHandler extends SimpleChannelInboundHand
             String text = textFrame.text();
             String pattern = matcher.getTextMatcher().getValue();
             if (pattern != null && !pattern.isEmpty()) {
+                boolean matched;
                 // Try exact match first, then regex
                 if (text.equals(pattern)) {
-                    return true;
+                    matched = true;
+                } else {
+                    try {
+                        matched = text.matches(pattern);
+                    } catch (PatternSyntaxException e) {
+                        matched = false;
+                    }
                 }
-                try {
-                    return text.matches(pattern);
-                } catch (PatternSyntaxException e) {
-                    return false;
-                }
+                // honour the negation flag, as GrpcBidiRuleMatcher does for its equivalent rule
+                // matcher — without this a negated text matcher is accepted and silently ignored
+                return matcher.getTextMatcher().isNot() != matched;
             }
         }
         return true;

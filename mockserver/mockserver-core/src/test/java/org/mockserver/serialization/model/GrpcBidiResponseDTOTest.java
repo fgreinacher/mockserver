@@ -6,6 +6,7 @@ import org.mockserver.model.GrpcBidiResponse;
 import org.mockserver.model.GrpcBidiRule;
 import org.mockserver.model.GrpcStreamMessage;
 import org.mockserver.model.HttpTemplate;
+import org.mockserver.model.NottableString;
 import org.mockserver.serialization.ObjectMapperFactory;
 
 import java.util.concurrent.TimeUnit;
@@ -16,6 +17,43 @@ import static org.hamcrest.core.IsNull.notNullValue;
 import static org.hamcrest.core.IsNull.nullValue;
 
 public class GrpcBidiResponseDTOTest {
+
+    /**
+     * The DTO used to collapse the rule's NottableString matcher to a bare String, dropping the
+     * negation flag. buildObject() re-parsed a leading '!' to recover it, but a matchJson value is
+     * JSON and never starts with '!', so a negated rule silently inverted into its opposite on any
+     * control-plane round-trip — and {@code GrpcBidiRuleMatcher} depends on that flag.
+     */
+    @Test
+    public void shouldPreserveMatchJsonNegationThroughDTORoundTrip() {
+        GrpcBidiResponse original = GrpcBidiResponse.grpcBidiResponse()
+            .withRule(GrpcBidiRule.grpcBidiRule()
+                .withMatchJson(NottableString.string(".*Alice.*", true))
+                .withResponse("{\"greeting\": \"not Alice\"}"));
+
+        GrpcBidiResponse rebuilt = new GrpcBidiResponseDTO(original).buildObject();
+
+        assertThat(rebuilt.getRules().get(0).getMatchJson().getValue(), is(".*Alice.*"));
+        assertThat(rebuilt.getRules().get(0).getMatchJson().isNot(), is(true));
+    }
+
+    /** The same negation must survive the actual JSON wire form, not just the in-memory DTO hop. */
+    @Test
+    public void shouldPreserveMatchJsonNegationThroughJsonWire() throws Exception {
+        GrpcBidiResponse original = GrpcBidiResponse.grpcBidiResponse()
+            .withRule(GrpcBidiRule.grpcBidiRule()
+                .withMatchJson(NottableString.string(".*Alice.*", true))
+                .withResponse("{\"greeting\": \"not Alice\"}"));
+
+        String json = ObjectMapperFactory.createObjectMapper()
+            .writeValueAsString(new GrpcBidiResponseDTO(original));
+        GrpcBidiResponse rebuilt = ObjectMapperFactory.createObjectMapper()
+            .readValue(json, GrpcBidiResponseDTO.class).buildObject();
+
+        assertThat("negation lost in wire form " + json,
+            rebuilt.getRules().get(0).getMatchJson().isNot(), is(true));
+        assertThat(rebuilt.getRules().get(0).getMatchJson().getValue(), is(".*Alice.*"));
+    }
 
     @Test
     public void shouldBuildObjectFromDTO() {

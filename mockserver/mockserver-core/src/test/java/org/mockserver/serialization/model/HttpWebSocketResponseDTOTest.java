@@ -2,6 +2,7 @@ package org.mockserver.serialization.model;
 
 import org.junit.Test;
 import org.mockserver.model.*;
+import org.mockserver.serialization.ObjectMapperFactory;
 
 import java.util.Arrays;
 import java.util.List;
@@ -103,6 +104,42 @@ public class HttpWebSocketResponseDTOTest {
         assertThat(dto.getMatchers(), is(nullValue()));
     }
 
+    /**
+     * The DTO used to collapse the matcher's NottableString to a bare String, dropping negation.
+     * buildObject() re-parsed a leading '!', which recovers the flag for most values but silently
+     * corrupts any literal value that itself begins with '!'.
+     */
+    @Test
+    public void shouldPreserveTextMatcherNegationThroughDTORoundTrip() {
+        HttpWebSocketResponse original = HttpWebSocketResponse.webSocketResponse()
+            .withMatcher(WebSocketMessageMatcher.webSocketMessageMatcher()
+                .withTextMatcher(NottableString.string("ping", true))
+                .withResponses(WebSocketMessage.webSocketMessage("pong")));
+
+        HttpWebSocketResponse rebuilt = new HttpWebSocketResponseDTO(original).buildObject();
+
+        assertThat(rebuilt.getMatchers().get(0).getTextMatcher().getValue(), is("ping"));
+        assertThat(rebuilt.getMatchers().get(0).getTextMatcher().isNot(), is(true));
+    }
+
+    /** A literal leading '!' must stay literal rather than being re-read as a negation. */
+    @Test
+    public void shouldPreserveLiteralNotCharacterInTextMatcherThroughJsonWire() throws Exception {
+        HttpWebSocketResponse original = HttpWebSocketResponse.webSocketResponse()
+            .withMatcher(WebSocketMessageMatcher.webSocketMessageMatcher()
+                .withTextMatcher(NottableString.string("!ping", false))
+                .withResponses(WebSocketMessage.webSocketMessage("pong")));
+
+        String json = ObjectMapperFactory.createObjectMapper()
+            .writeValueAsString(new HttpWebSocketResponseDTO(original));
+        HttpWebSocketResponse rebuilt = ObjectMapperFactory.createObjectMapper()
+            .readValue(json, HttpWebSocketResponseDTO.class).buildObject();
+
+        assertThat("literal '!' inverted by wire form " + json,
+            rebuilt.getMatchers().get(0).getTextMatcher().isNot(), is(false));
+        assertThat(rebuilt.getMatchers().get(0).getTextMatcher().getValue(), is("!ping"));
+    }
+
     @Test
     public void shouldSerializeMatchers() {
         WebSocketMessageMatcher matcher = WebSocketMessageMatcher.webSocketMessageMatcher()
@@ -115,7 +152,7 @@ public class HttpWebSocketResponseDTOTest {
         HttpWebSocketResponseDTO dto = new HttpWebSocketResponseDTO(httpWebSocketResponse);
 
         assertThat(dto.getMatchers().size(), is(1));
-        assertThat(dto.getMatchers().get(0).getTextMatcher(), is("ping"));
+        assertThat(dto.getMatchers().get(0).getTextMatcher().getValue(), is("ping"));
         assertThat(dto.getMatchers().get(0).getFrameType(), is(WebSocketFrameType.TEXT));
         assertThat(dto.getMatchers().get(0).getResponses().size(), is(1));
     }
@@ -163,12 +200,12 @@ public class HttpWebSocketResponseDTOTest {
     public void shouldSetMatchersViaSetter() {
         WebSocketMessageMatcherDTO matcherDTO = new WebSocketMessageMatcherDTO();
         matcherDTO.setFrameType(WebSocketFrameType.TEXT);
-        matcherDTO.setTextMatcher("ping");
+        matcherDTO.setTextMatcher(NottableString.string("ping"));
 
         HttpWebSocketResponseDTO dto = new HttpWebSocketResponseDTO(null);
         dto.setMatchers(List.of(matcherDTO));
 
         assertThat(dto.getMatchers().size(), is(1));
-        assertThat(dto.getMatchers().get(0).getTextMatcher(), is("ping"));
+        assertThat(dto.getMatchers().get(0).getTextMatcher().getValue(), is("ping"));
     }
 }

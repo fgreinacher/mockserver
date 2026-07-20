@@ -1,20 +1,23 @@
 package org.mockserver.serialization.model;
 
 import org.mockserver.model.GrpcBidiRule;
+import org.mockserver.model.NottableString;
 import org.mockserver.model.ObjectWithReflectiveEqualsHashCodeToString;
 
 import java.util.ArrayList;
 import java.util.List;
 
 public class GrpcBidiRuleDTO extends ObjectWithReflectiveEqualsHashCodeToString implements DTO<GrpcBidiRule> {
-    private String matchJson;
+    // held as a NottableString, not a String: collapsing to String drops the negation flag, and
+    // buildObject() cannot recover it by re-parsing a leading '!' because a matchJson value is JSON
+    // and never starts with '!'. GrpcBidiRuleMatcher depends on the flag, so a negated rule
+    // otherwise inverts into its opposite on any control-plane round-trip.
+    private NottableString matchJson;
     private List<GrpcStreamMessageDTO> responses;
 
     public GrpcBidiRuleDTO(GrpcBidiRule rule) {
         if (rule != null) {
-            if (rule.getMatchJson() != null) {
-                matchJson = rule.getMatchJson().getValue();
-            }
+            matchJson = rule.getMatchJson();
             if (rule.getResponses() != null) {
                 responses = new ArrayList<>();
                 rule.getResponses().forEach(msg -> responses.add(new GrpcStreamMessageDTO(msg)));
@@ -36,11 +39,11 @@ public class GrpcBidiRuleDTO extends ObjectWithReflectiveEqualsHashCodeToString 
         return rule;
     }
 
-    public String getMatchJson() {
+    public NottableString getMatchJson() {
         return matchJson;
     }
 
-    public GrpcBidiRuleDTO setMatchJson(String matchJson) {
+    public GrpcBidiRuleDTO setMatchJson(NottableString matchJson) {
         this.matchJson = matchJson;
         return this;
     }

@@ -9,6 +9,7 @@ import org.mockserver.model.NottableString;
 import org.mockserver.serialization.ObjectMapperFactory;
 
 import java.io.IOException;
+import java.util.Objects;
 
 import static org.mockserver.model.NottableString.serialiseNottableString;
 
@@ -27,18 +28,44 @@ public class NottableStringSerializer extends StdSerializer<NottableString> {
     @Override
     public void serialize(NottableString nottableString, JsonGenerator jgen, SerializerProvider provider) throws IOException {
         if (nottableString instanceof NottableSchemaString) {
-            writeObject(nottableString, jgen, "schema", OBJECT_MAPPER.readTree(nottableString.getValue()));
+            writeObject(nottableString, jgen, "schema", OBJECT_MAPPER.readTree(nottableString.getValue()), false);
         } else if (nottableString.getParameterStyle() != null) {
-            writeObject(nottableString, jgen, "value", nottableString.getValue());
+            writeObject(nottableString, jgen, "value", nottableString.getValue(), false);
+        } else if (isAmbiguousAsPlainString(nottableString)) {
+            // The plain-string form prefixes '!' for negation and '?' for optional, and the reader
+            // strips those markers unconditionally. So a value whose own first character is one of
+            // those markers cannot be represented as a bare string — "path IS !foo" would be read
+            // back as "path is NOT foo", the exact opposite of what was asked. Fall back to the
+            // object form, whose `value` field the deserialiser reads verbatim.
+            writeObject(nottableString, jgen, "value", nottableString.getValue(), true);
         } else {
             jgen.writeString(serialiseNottableString(nottableString));
         }
     }
 
-    private void writeObject(NottableString nottableString, JsonGenerator jgen, String valueFieldName, Object value) throws IOException {
+    /**
+     * True when re-reading the plain-string form would not reproduce this value, negation and
+     * optionality. Determined by actually re-parsing rather than by enumerating prefixes, so it
+     * stays correct for compound markers ("?!", "!?") and any future marker character.
+     */
+    private static boolean isAmbiguousAsPlainString(NottableString nottableString) {
+        if (nottableString.isBlank()) {
+            // a blank/null value serialises to "" and has no marker to misread; it also cannot be
+            // expressed in the object form, whose deserialiser ignores a blank `value`
+            return false;
+        }
+        NottableString reparsed = NottableString.string(serialiseNottableString(nottableString));
+        return reparsed.isNot() != nottableString.isNot()
+            || reparsed.isOptional() != nottableString.isOptional()
+            || !Objects.equals(reparsed.getValue(), nottableString.getValue());
+    }
+
+    private void writeObject(NottableString nottableString, JsonGenerator jgen, String valueFieldName, Object value, boolean alwaysWriteNot) throws IOException {
         jgen.writeStartObject();
-        if (Boolean.TRUE.equals(nottableString.isNot())) {
-            jgen.writeBooleanField("not", true);
+        if (alwaysWriteNot || Boolean.TRUE.equals(nottableString.isNot())) {
+            // written explicitly when disambiguating so the intent is unmistakable to readers and
+            // to the seven non-Java clients, rather than relying on absent-means-false
+            jgen.writeBooleanField("not", nottableString.isNot());
         }
         if (Boolean.TRUE.equals(nottableString.isOptional())) {
             jgen.writeBooleanField("optional", true);

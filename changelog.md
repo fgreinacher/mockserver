@@ -33,6 +33,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The count includes only true evictions: an explicit `reset()`/`clear()` resets it to zero.
 
 ### Changed
+- **WIRE FORMAT: a matcher *value* whose first character is `!` or `?` is now sent as an object rather
+  than a bare string.** In the plain-string form a leading `!` means "not" and a leading `?` means
+  "optional", and the receiver strips those markers unconditionally — so asking for "path **is**
+  `!foo`" was transmitted as `"!foo"` and read back as "path is **NOT** `foo`", the exact opposite of
+  what was requested, with no way to escape it. Such values are now serialised as
+  `{"not": false, "value": "!foo"}`, which the server already read verbatim. **This only affects
+  values that were previously impossible to express correctly**; every value that round-tripped
+  before is byte-for-byte unchanged on the wire, so existing expectations, recordings and fixtures
+  are unaffected. The object form is already permitted by the published JSON schema
+  (`stringOrJsonSchema`), and `httpWebSocketResponse.matchers[].textMatcher` and
+  `grpcBidiResponse.rules[].matchJson` have been updated to reference it. The negated direction was,
+  and remains, expressible as a string: `!!foo` still means "not `!foo`". Generated Java code is
+  fixed the same way, emitting `string("!foo", false)` instead of a bare literal that would be
+  re-parsed as a negation when the generated code runs.
+  **Scope: matcher values only, not header/parameter/cookie *names*.** A name is a JSON field name,
+  which cannot carry the object form, so `header(string("!X-Foo", false), "bar")` still inverts. That
+  is pre-existing rather than a regression, needs a schema change to fix, and is recorded with the
+  reasoning in `test-fixtures/expectations/known-gaps.json`.
 - **BREAKING BEHAVIOUR: `verify(never())` and other upper-bound verifications now FAIL instead of passing once
   the event log has evicted entries. Suites that are green today may legitimately go red — that is the point.**
   Previously, when the event log rolled over, the entries proving a request had happened were silently
@@ -100,6 +118,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read once when the engine was constructed and the engine was cached for the process lifetime, so enabling
   the sandbox later was inert. The engine is now rebuilt when the setting changes. The default is unchanged
   (the sandbox remains off).
+- **gRPC bidi and WebSocket matchers no longer invert on a control-plane round-trip.**
+  `GrpcBidiRuleDTO` and `WebSocketMessageMatcherDTO` collapsed their matcher to a plain `String`,
+  dropping the negation flag. `buildObject()` recovered it by re-parsing a leading `!`, but a
+  `matchJson` value is JSON and never starts with `!`, so a negated gRPC bidi rule became its own
+  opposite whenever an expectation was retrieved and re-submitted — and `GrpcBidiRuleMatcher`
+  actively depends on that flag. Both now carry the full matcher. Relatedly, a negated WebSocket
+  text matcher was accepted and then **ignored** by `BidirectionalWebSocketFrameHandler`, which never
+  consulted the flag at all; it is now honoured, as the gRPC equivalent already was.
 - **Verification could miss a just-forwarded request (race on every forward path).** The visibility guarantee
   for `verify`/`retrieve` rests on disruptor FIFO ordering — `drainDisruptor()` waits only for entries already
   *published*, so it cannot wait for one that has not been published yet. The mocked-response path logs before

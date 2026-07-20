@@ -44,7 +44,7 @@
         "additionalProperties": false,
         "properties": {
           "matchJson": {
-            "type": "string"
+            "$ref": "#/definitions/stringOrJsonSchema"
           },
           "responses": {
             "type": "array",

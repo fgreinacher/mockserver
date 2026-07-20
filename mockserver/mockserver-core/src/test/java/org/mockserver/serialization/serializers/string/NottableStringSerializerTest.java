@@ -96,6 +96,62 @@ public class NottableStringSerializerTest {
             is("\"!!some_string\""));
     }
 
+    /**
+     * A NOT-negated value whose first character is the negation marker cannot be represented as a
+     * bare JSON string: the receiver strips the leading '!' unconditionally
+     * ({@link NottableString#string(String)}), turning "path IS !foo" into "path is NOT foo" — the
+     * exact opposite of what was asked. The serialiser must fall back to the unambiguous object
+     * form, which the deserialiser reads verbatim.
+     */
+    @Test
+    public void shouldSerializeLiteralNotCharacterAsObjectWhenNotNegated() throws JsonProcessingException {
+        assertThat(ObjectMapperFactory.createObjectMapper().writeValueAsString(string("!some_string", false)),
+            is("{\"not\":false,\"value\":\"!some_string\"}"));
+    }
+
+    /**
+     * Same defect via the optional marker: "?some_string" as a literal value would be re-read as an
+     * optional match on "some_string".
+     */
+    @Test
+    public void shouldSerializeLiteralOptionalCharacterAsObjectWhenNotOptional() throws JsonProcessingException {
+        assertThat(ObjectMapperFactory.createObjectMapper().writeValueAsString(string("?some_string", false)),
+            is("{\"not\":false,\"value\":\"?some_string\"}"));
+    }
+
+    /**
+     * An optional match on a value that itself starts with '!' serialises to "?!value", which
+     * re-reads as optional AND negated.
+     */
+    @Test
+    public void shouldSerializeOptionalWithLiteralNotCharacterAsObject() throws JsonProcessingException {
+        assertThat(ObjectMapperFactory.createObjectMapper().writeValueAsString(optional("!some_string", false)),
+            is("{\"not\":false,\"optional\":true,\"value\":\"!some_string\"}"));
+    }
+
+    /**
+     * The discriminating test: serialise on the client side, then parse with the SAME deserialiser
+     * the server uses. A test that only round-trips within one side cannot see an inversion.
+     */
+    @Test
+    public void shouldRoundTripLiteralMarkerCharactersThroughTheWire() throws Exception {
+        for (NottableString original : new NottableString[]{
+            string("!some_string", false),
+            string("?some_string", false),
+            string("?!some_string", false),
+            string("!?some_string", false),
+            optional("!some_string", false),
+            string("!some_string", true),
+            optional("!some_string", true),
+        }) {
+            String wire = ObjectMapperFactory.createObjectMapper().writeValueAsString(original);
+            NottableString parsed = ObjectMapperFactory.createObjectMapper().readValue(wire, NottableString.class);
+            assertThat("value survived wire form " + wire, parsed.getValue(), is(original.getValue()));
+            assertThat("negation survived wire form " + wire, parsed.isNot(), is(original.isNot()));
+            assertThat("optionality survived wire form " + wire, parsed.isOptional(), is(original.isOptional()));
+        }
+    }
+
     @Test
     public void shouldSerializeOptionalString() throws JsonProcessingException {
         assertThat(ObjectMapperFactory.createObjectMapper().writeValueAsString(optional("some_string")),

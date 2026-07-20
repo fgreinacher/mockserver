@@ -7,15 +7,16 @@ import java.util.List;
 
 public class WebSocketMessageMatcherDTO extends ObjectWithReflectiveEqualsHashCodeToString implements DTO<WebSocketMessageMatcher> {
     private WebSocketFrameType frameType;
-    private String textMatcher;
+    // held as a NottableString, not a String: collapsing to String drops the negation flag. Re-parsing
+    // a leading '!' in buildObject() recovers it for most values but silently inverts any literal
+    // value that itself begins with '!'.
+    private NottableString textMatcher;
     private List<WebSocketMessageModelDTO> responses;
 
     public WebSocketMessageMatcherDTO(WebSocketMessageMatcher matcher) {
         if (matcher != null) {
             frameType = matcher.getFrameType();
-            if (matcher.getTextMatcher() != null) {
-                textMatcher = matcher.getTextMatcher().getValue();
-            }
+            textMatcher = matcher.getTextMatcher();
             if (matcher.getResponses() != null) {
                 responses = new ArrayList<>();
                 matcher.getResponses().forEach(response -> responses.add(new WebSocketMessageModelDTO(response)));
@@ -34,7 +35,7 @@ public class WebSocketMessageMatcherDTO extends ObjectWithReflectiveEqualsHashCo
             matcher.withFrameType(WebSocketFrameType.ANY);
         }
         if (textMatcher != null) {
-            matcher.withText(textMatcher);
+            matcher.withTextMatcher(textMatcher);
         }
         if (responses != null) {
             List<WebSocketMessage> messages = new ArrayList<>();
@@ -53,11 +54,11 @@ public class WebSocketMessageMatcherDTO extends ObjectWithReflectiveEqualsHashCo
         return this;
     }
 
-    public String getTextMatcher() {
+    public NottableString getTextMatcher() {
         return textMatcher;
     }
 
-    public WebSocketMessageMatcherDTO setTextMatcher(String textMatcher) {
+    public WebSocketMessageMatcherDTO setTextMatcher(NottableString textMatcher) {
         this.textMatcher = textMatcher;
         return this;
     }

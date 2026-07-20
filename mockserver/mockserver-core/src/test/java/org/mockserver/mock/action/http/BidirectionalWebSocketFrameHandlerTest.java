@@ -35,6 +35,35 @@ public class BidirectionalWebSocketFrameHandlerTest {
         }
     }
 
+    /**
+     * A negated text matcher was previously accepted by the model and dropped by the DTO, and even
+     * when it survived the handler ignored the flag entirely — so "respond to anything that is NOT
+     * ping" matched ping and nothing else. GrpcBidiRuleMatcher already honoured its equivalent flag.
+     */
+    @Test
+    public void shouldHonourNegatedTextMatcher() {
+        WebSocketMessageMatcher matcher = webSocketMessageMatcher()
+            .withTextMatcher(org.mockserver.model.NottableString.string("hello", true));
+
+        BidirectionalWebSocketFrameHandler handler = new BidirectionalWebSocketFrameHandler(
+            List.of(matcher), (ctx, msg) -> {}
+        );
+
+        TextWebSocketFrame matching = new TextWebSocketFrame("hello");
+        try {
+            assertThat("negated matcher must NOT match its own value", handler.matches(matcher, matching), is(false));
+        } finally {
+            matching.release();
+        }
+
+        TextWebSocketFrame other = new TextWebSocketFrame("world");
+        try {
+            assertThat("negated matcher must match everything else", handler.matches(matcher, other), is(true));
+        } finally {
+            other.release();
+        }
+    }
+
     @Test
     public void shouldNotMatchTextFrameByDifferentText() {
         WebSocketMessageMatcher matcher = webSocketMessageMatcher()

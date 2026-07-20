@@ -45,7 +45,7 @@
             ]
           },
           "textMatcher": {
-            "type": "string"
+            "$ref": "#/definitions/stringOrJsonSchema"
           },
           "responses": {
             "type": "array",

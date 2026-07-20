@@ -507,6 +507,48 @@
               }
             }
           }
+        },
+        "clientCertificate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "subject": {
+              "$ref": "#/definitions/stringOrJsonSchema"
+            },
+            "issuer": {
+              "$ref": "#/definitions/stringOrJsonSchema"
+            },
+            "fingerprintSha256": {
+              "$ref": "#/definitions/stringOrJsonSchema"
+            }
+          }
+        },
+        "jwt": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "header": {
+              "type": "string"
+            },
+            "scheme": {
+              "type": "string"
+            },
+            "claims": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/stringOrJsonSchema"
+              }
+            },
+            "issuer": {
+              "$ref": "#/definitions/stringOrJsonSchema"
+            },
+            "audience": {
+              "$ref": "#/definitions/stringOrJsonSchema"
+            },
+            "algorithm": {
+              "$ref": "#/definitions/stringOrJsonSchema"
+            }
+          }
         }
       },
       "definitions": {}
@@ -1265,6 +1307,13 @@
             }
           }
         },
+        "templateType": {
+          "enum": [
+            "VELOCITY",
+            "JAVASCRIPT",
+            "MUSTACHE"
+          ]
+        },
         "closeConnection": {
           "type": "boolean"
         },
@@ -1338,6 +1387,18 @@
                 "outputTokens": {
                   "type": "integer",
                   "minimum": 0
+                },
+                "cachedInputTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cacheCreationTokens": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "reasoningTokens": {
+                  "type": "integer",
+                  "minimum": 0
                 }
               }
             },
@@ -1351,6 +1412,12 @@
               "type": "boolean"
             },
             "toolChoice": {
+              "type": "string"
+            },
+            "reasoningText": {
+              "type": "string"
+            },
+            "reasoningSignature": {
               "type": "string"
             },
             "model": {
@@ -1375,6 +1442,10 @@
                 },
                 "seed": {
                   "type": "integer"
+                },
+                "subwordStreaming": {
+                  "type": "boolean",
+                  "default": true
                 }
               }
             }
@@ -1408,6 +1479,39 @@
             },
             "seed": {
               "type": "integer"
+            }
+          }
+        },
+        "moderation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "flaggedCategories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "model": {
+              "type": "string"
+            }
+          }
+        },
+        "contentFilter": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hate": {
+              "type": "string"
+            },
+            "sexual": {
+              "type": "string"
+            },
+            "violence": {
+              "type": "string"
+            },
+            "selfHarm": {
+              "type": "string"
             }
           }
         },
@@ -1520,6 +1624,14 @@
             "tokenQuotaWindowMillis": {
               "type": "integer",
               "minimum": 1
+            },
+            "contentFilterBlockProbability": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "errorKind": {
+              "type": "string"
             }
           }
         },
@@ -1576,7 +1688,7 @@
                 ]
               },
               "textMatcher": {
-                "type": "string"
+                "$ref": "#/definitions/stringOrJsonSchema"
               },
               "responses": {
                 "type": "array",
@@ -1599,6 +1711,13 @@
               }
             }
           }
+        },
+        "templateType": {
+          "enum": [
+            "VELOCITY",
+            "JAVASCRIPT",
+            "MUSTACHE"
+          ]
         },
         "closeConnection": {
           "type": "boolean"
@@ -1667,6 +1786,13 @@
               "json": {
                 "type": "string"
               },
+              "templateType": {
+                "enum": [
+                  "VELOCITY",
+                  "JAVASCRIPT",
+                  "MUSTACHE"
+                ]
+              },
               "delay": {
                 "$ref": "#/definitions/delay"
               }
@@ -1728,7 +1854,7 @@
             "additionalProperties": false,
             "properties": {
               "matchJson": {
-                "type": "string"
+                "$ref": "#/definitions/stringOrJsonSchema"
               },
               "responses": {
                 "type": "array",
@@ -2627,6 +2753,32 @@
               "type": "string"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "not": {
+              "type": "boolean"
+            },
+            "optional": {
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "ALL_OF"
+              ]
+            },
+            "bodyAllOf": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/body"
+              }
+            }
+          },
+          "required": [
+            "bodyAllOf"
+          ]
         }
       ]
     },
