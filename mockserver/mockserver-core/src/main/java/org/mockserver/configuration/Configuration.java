@@ -157,6 +157,7 @@ public class Configuration {
     private Integer maxHeaderSize;
     private Integer maxChunkSize;
     private Integer maxRequestBodySize;
+    private Integer maxGrpcMessageSize;
     private Integer maxResponseBodySize;
     private Integer maxLlmConversationBodySize;
     private Boolean driftDetectionEnabled;
@@ -2392,6 +2393,26 @@ public class Configuration {
      */
     public Configuration maxRequestBodySize(Integer maxRequestBodySize) {
         this.maxRequestBodySize = maxRequestBodySize;
+        return this;
+    }
+
+    public Integer maxGrpcMessageSize() {
+        if (maxGrpcMessageSize == null) {
+            return ConfigurationProperties.maxGrpcMessageSize();
+        }
+        return maxGrpcMessageSize;
+    }
+
+    /**
+     * Maximum size (in bytes) of a single decoded gRPC message, before and after decompression.
+     * <p>
+     * A request message larger than this is rejected with {@code grpc-status: 8 RESOURCE_EXHAUSTED}.
+     * The default is 4,194,304 bytes (4 MiB), matching grpc-java and grpc-go.
+     *
+     * @param maxGrpcMessageSize maximum decoded gRPC message size in bytes
+     */
+    public Configuration maxGrpcMessageSize(Integer maxGrpcMessageSize) {
+        this.maxGrpcMessageSize = maxGrpcMessageSize;
         return this;
     }
 

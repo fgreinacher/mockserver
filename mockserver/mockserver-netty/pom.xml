@@ -47,6 +47,27 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- grpc-java: TEST SCOPE ONLY. Drives MockServer with a real gRPC client
+             (GrpcUnaryClientIntegrationTest) so the gRPC wire contract is verified against an
+             actual client implementation, not just handler-level assertions. Uses
+             grpc-netty-shaded so grpc's bundled Netty 4.1 cannot clash with MockServer's
+             Netty 4.2. Never bundled in a released artifact. -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-stub</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-protobuf</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Netty -->
         <dependency>
             <groupId>io.netty</groupId>

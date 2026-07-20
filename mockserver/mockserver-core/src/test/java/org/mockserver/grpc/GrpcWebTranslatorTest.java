@@ -325,16 +325,21 @@ public class GrpcWebTranslatorTest {
 
     // ---- Response content-type mapping ----
 
+    /**
+     * The negotiated {@code +proto} subtype is echoed back rather than collapsed to the bare type.
+     * Clients accept the bare form, so this is cosmetic, but the response should reflect what was
+     * actually negotiated.
+     */
     @Test
     public void shouldReturnCorrectResponseContentType() {
         assertThat(GrpcWebTranslator.responseContentType("application/grpc-web"),
             is("application/grpc-web"));
         assertThat(GrpcWebTranslator.responseContentType("application/grpc-web+proto"),
-            is("application/grpc-web"));
+            is("application/grpc-web+proto"));
         assertThat(GrpcWebTranslator.responseContentType("application/grpc-web-text"),
             is("application/grpc-web-text"));
         assertThat(GrpcWebTranslator.responseContentType("application/grpc-web-text+proto"),
-            is("application/grpc-web-text"));
+            is("application/grpc-web-text+proto"));
     }
 
     // ---- Trailer frame parsing ----

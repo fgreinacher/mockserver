@@ -240,6 +240,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Long forwardProxyCircuitBreakerWindowMillis;
     private Boolean enforceResponseValidationForMocks;
     private Integer maxRequestBodySize;
+    private Integer maxGrpcMessageSize;
     private Integer maxResponseBodySize;
     private Integer maxLlmConversationBodySize;
     private Boolean driftDetectionEnabled;
@@ -546,6 +547,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.forwardProxyCircuitBreakerWindowMillis = configuration.forwardProxyCircuitBreakerWindowMillis();
             this.enforceResponseValidationForMocks = configuration.enforceResponseValidationForMocks();
             this.maxRequestBodySize = configuration.maxRequestBodySize();
+            this.maxGrpcMessageSize = configuration.maxGrpcMessageSize();
             this.maxResponseBodySize = configuration.maxResponseBodySize();
             this.maxLlmConversationBodySize = configuration.maxLlmConversationBodySize();
             this.driftDetectionEnabled = configuration.driftDetectionEnabled();
@@ -905,6 +907,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.forwardProxyCircuitBreakerWindowMillis(forwardProxyCircuitBreakerWindowMillis);
         configuration.enforceResponseValidationForMocks(enforceResponseValidationForMocks);
         configuration.maxRequestBodySize(maxRequestBodySize);
+        configuration.maxGrpcMessageSize(maxGrpcMessageSize);
         configuration.maxResponseBodySize(maxResponseBodySize);
         configuration.maxLlmConversationBodySize(maxLlmConversationBodySize);
         configuration.driftDetectionEnabled(driftDetectionEnabled);
@@ -1585,6 +1588,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (maxRequestBodySize != null) {
             target.maxRequestBodySize(maxRequestBodySize);
+        }
+        if (maxGrpcMessageSize != null) {
+            target.maxGrpcMessageSize(maxGrpcMessageSize);
         }
         if (maxResponseBodySize != null) {
             target.maxResponseBodySize(maxResponseBodySize);
@@ -3610,6 +3616,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public Integer getMaxRequestBodySize() {
         return maxRequestBodySize;
+    }
+
+    public Integer getMaxGrpcMessageSize() {
+        return maxGrpcMessageSize;
+    }
+
+    public ConfigurationDTO setMaxGrpcMessageSize(Integer maxGrpcMessageSize) {
+        this.maxGrpcMessageSize = maxGrpcMessageSize;
+        return this;
     }
 
     public ConfigurationDTO setMaxRequestBodySize(Integer maxRequestBodySize) {

@@ -136,7 +136,8 @@ public class GrpcForwardTranslatorTest {
         assertThat(decoded.getBodyAsString(), containsString("Hello World"));
         assertThat(decoded.getFirstHeader(GrpcForwardTranslator.SERVICE_HEADER), is(SERVICE));
         assertThat(decoded.getFirstHeader(GrpcForwardTranslator.METHOD_HEADER), is("Greeting"));
-        assertThat(decoded.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER), is("OK"));
+        assertThat("the upstream status is carried through numerically, not as a status-name",
+            decoded.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("0"));
     }
 
     @Test
@@ -156,15 +157,35 @@ public class GrpcForwardTranslatorTest {
     }
 
     @Test
-    public void shouldPreserveNonOkStatusName() {
+    public void shouldPreserveNonOkStatus() {
         HttpResponse upstream = response()
             .withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER, "5")
             .withBody(new byte[0]);
 
         HttpResponse decoded = GrpcForwardTranslator.decodeResponseFromUpstream(upstream, SERVICE, "Greeting", store);
 
-        assertThat(decoded.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER), is("NOT_FOUND"));
+        assertThat(decoded.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("5"));
         assertThat(decoded.getBodyAsString(), is(emptyOrNullString()));
+    }
+
+    /**
+     * A proxy must not rewrite the upstream's status. Converting it to a status-name went through
+     * {@code GrpcStatusMapper.fromCode}, which is {@code getOrDefault(code, UNKNOWN)}, so an
+     * upstream returning a non-standard or future status silently became UNKNOWN -- rendered to
+     * the client as "2". Codes outside the enum must survive the proxy untouched.
+     */
+    @Test
+    public void shouldPreserveUnmappedNumericStatusFromUpstream() {
+        HttpResponse upstream = response()
+            .withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER, "42")
+            .withBody(new byte[0]);
+
+        HttpResponse decoded = GrpcForwardTranslator.decodeResponseFromUpstream(upstream, SERVICE, "Greeting", store);
+
+        assertThat("an unmapped upstream status must not be collapsed to UNKNOWN",
+            decoded.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("42"));
+        assertThat("and must not be rewritten into a status-name either",
+            decoded.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER), is(""));
     }
 
     @Test

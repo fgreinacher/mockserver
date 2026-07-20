@@ -167,10 +167,18 @@ public class GrpcForwardProxyIntegrationTest {
             byte[] requestFrame = GrpcFrameCodec.encode(converter.toProtobuf("{\"name\":\"Ghost\"}", greetingMethod.getInputType()));
             HttpRawResponse response = sendGrpcCall(proxy.getLocalPort(), "/" + SERVICE + "/Greeting", requestFrame);
 
-            // the caller must receive the non-OK status, NOT a defaulted OK
+            // the caller must receive the non-OK status, NOT a defaulted OK -- and per the gRPC wire
+            // contract it must arrive as a TRAILER (the chunked trailer section on HTTP/1.1),
+            // never as a plain response header
             assertThat(response.statusLine, containsString("200"));
             assertThat("grpc-status must be relayed as 5 (NOT_FOUND), not defaulted to 0",
-                response.headerBlock, containsString("grpc-status: 5"));
+                response.raw, containsString("grpc-status: 5"));
+            // no "grpc-status:" header LINE in the head (the RFC 9110 "Trailer: grpc-status"
+            // announcement header is expected there, and is not a grpc-status header itself)
+            assertThat("grpc-status must be a trailer, not an initial response header",
+                response.headerBlock, not(containsString("\r\ngrpc-status:")));
+            assertThat("the head must announce the trailer per RFC 9110",
+                response.headerBlock, containsString("trailer: grpc-status"));
 
             // and the recording must preserve the non-OK status so replay is faithful
             Expectation[] recorded = proxyClient.retrieveRecordedExpectations(
@@ -272,11 +280,14 @@ public class GrpcForwardProxyIntegrationTest {
         final String statusLine;
         final byte[] body;
         final String headerBlock;
+        /** the entire response as received, lower-cased -- includes the chunked trailer section */
+        final String raw;
 
-        HttpRawResponse(String statusLine, byte[] body, String headerBlock) {
+        HttpRawResponse(String statusLine, byte[] body, String headerBlock, String raw) {
             this.statusLine = statusLine;
             this.body = body;
             this.headerBlock = headerBlock;
+            this.raw = raw;
         }
     }
 
@@ -300,7 +311,8 @@ public class GrpcForwardProxyIntegrationTest {
             String headerBlock = new String(raw, 0, split < 0 ? raw.length : split, StandardCharsets.ISO_8859_1);
             String statusLine = headerBlock.split("\r\n", 2)[0];
             byte[] body = split < 0 ? new byte[0] : extractBody(raw, split + 4, headerBlock);
-            return new HttpRawResponse(statusLine, body, headerBlock.toLowerCase());
+            return new HttpRawResponse(statusLine, body, headerBlock.toLowerCase(),
+                new String(raw, StandardCharsets.ISO_8859_1).toLowerCase());
         }
     }
 

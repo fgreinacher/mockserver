@@ -11,6 +11,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 ### Fixed
+- **gRPC unary mock responses are now spec-compliant, so real gRPC clients can consume them (#2419).** Two
+  defects meant a documented unary expectation was rejected by any real gRPC client over HTTP/1.1 and HTTP/2.
+  (1) The JSON-to-protobuf conversion only ran when the *response* carried `x-grpc-service`/`x-grpc-method`,
+  but those are set on the request only and are never propagated to the matched response — so a normal mock
+  returned raw JSON on a stream the client expected to be framed protobuf. MockServer now remembers the
+  service/method resolved from the request and converts automatically; explicit response headers still take
+  precedence. (2) `grpc-status`/`grpc-message` were sent as response headers rather than the terminal trailer
+  the gRPC wire format requires. They are now trailers on every path — unary mock responses, health check,
+  reflection, and chaos fault injection (including `customTrailers`) — with `content-type: application/grpc`
+  remaining a real header. gRPC-Web is unchanged for users: the status still travels in the in-body trailer
+  frame. A non-OK `grpc-status` written as a plain numeric header on the response is now honoured instead of
+  being silently replaced with `OK`, and is emitted verbatim on both the mock and forward-proxy paths — a
+  non-standard or future status code such as `42` is no longer collapsed to `2` (`UNKNOWN`). Concurrent unary calls on a single gRPC channel are each
+  converted against their own method's output type, so overlapping requests on one HTTP/2 connection no
+  longer return raw JSON (or a response decoded as the wrong message type). Verified end-to-end with a real
+  grpc-java client, including concurrent calls to two different methods.
+- **BEHAVIOUR: a gRPC response with a non-2xx HTTP status and no gRPC status of its own is now returned as a
+  gRPC error instead of `OK`.** The status is mapped per the gRPC-over-HTTP/2 specification (404 →
+  `UNIMPLEMENTED`, 401 → `UNAUTHENTICATED`, 403 → `PERMISSION_DENIED`, 400 → `INTERNAL`,
+  429/502/503/504 → `UNAVAILABLE`, anything else → `UNKNOWN`), the HTTP status becomes 200 so the client
+  reads the trailers, and the body is dropped. This applies wherever a gRPC response is framed — an unmatched
+  request (the common case: previously the absent status resolved to `OK` and a synthesized example body was
+  invented, so a typo'd path returned a plausible success), a matched expectation that deliberately returns a
+  non-2xx status without a gRPC status, and a non-2xx response from upstream on the gRPC forward-proxy path.
+  Set `grpc-status` or `grpc-status-name` explicitly to keep full control — an explicit gRPC status always
+  takes precedence over the HTTP status. Applies on HTTP/1.1, HTTP/2 and HTTP/3.
+- **`grpc-message` is now percent-encoded per the gRPC wire specification, on every transport.** MockServer
+  previously wrote the raw string, which corrupts ordinary input because clients percent-*decode* on
+  receipt: a message echoing `%41` arrived as `A`, non-ASCII (`paiement refusé`) arrived as mojibake over
+  HTTP/1.1 and HTTP/2 and as literal `?` characters in the gRPC-Web trailer frame, and multi-line messages
+  broke the trailer block. Encoding is applied at all five emission sites (unary, HTTP/3, bidi streaming,
+  server streaming, gRPC-Web) from one shared helper, and messages received from a real upstream server are
+  percent-*decoded* into the response model on the gRPC forward-proxy path.
+- **SECURITY: fixed CRLF injection into the gRPC-Web trailer frame via `grpc-message`.** The frame is a
+  CRLF-delimited block and only `customTrailers` were checked, so a message containing
+  `"denied\r\ngrpc-status: 0"` could inject a second `grpc-status` line and — depending on the client's
+  first-wins/last-wins parse — turn an error into a success. Percent-encoding escapes CR/LF, and trailer
+  names/values are CRLF-stripped as a second layer.
+- gRPC requests whose message exceeds the maximum size now return `grpc-status: 8 RESOURCE_EXHAUSTED`
+  instead of `13 INTERNAL`, matching the specification and grpc-java/grpc-go. The limit is now configurable
+  via **`maxGrpcMessageSize`** (default 4 MiB, unchanged) instead of being hard-coded, and the constant is
+  no longer duplicated between the two frame decoders.
+- An unsupported `grpc-encoding` (for example `deflate` or `snappy`) now returns
+  `grpc-status: 12 UNIMPLEMENTED` with a `grpc-accept-encoding: identity, gzip` response header telling the
+  client what to retry with, instead of failing inside gzip and surfacing as an opaque `INTERNAL`. The
+  request's `grpc-encoding` is now actually consulted rather than assuming any compressed frame is gzip,
+  and `grpc-accept-encoding` is advertised on gRPC responses.
+- **`grpc-timeout` is now honoured.** A client deadline (for example grpc-java's `withDeadlineAfter`) that
+  elapses before the response is written returns `grpc-status: 4 DEADLINE_EXCEEDED`, and the late response
+  is dropped rather than written onto a stream that already carries terminal trailers. The header is still
+  passed through as an ordinary request header so it remains matchable. **This is a behaviour change:** an
+  expectation whose `Delay` exceeds the client's deadline now returns DEADLINE_EXCEEDED from the server
+  instead of the client timing out locally while MockServer kept writing to an abandoned stream. Timers are
+  cancelled when the exchange is answered, when its record is evicted, when the connection goes inactive,
+  and when an HTTP/3 QUIC stream closes. Enforcement covers **streaming RPCs mid-stream** as well as unary: a server-streaming,
+  client-streaming or bidi RPC whose messages outlast the deadline is terminated with a DEADLINE_EXCEEDED
+  trailer and stops emitting, rather than continuing to write messages to a stream the client has abandoned.
+  Normal completion and deadline termination are mutually exclusive (compare-and-set on every terminal
+  path), so exactly one terminal trailer is ever written and no message follows it.
+- Fixed **server-streaming gRPC delivering nothing at all to a real gRPC client over HTTP/2**. The
+  streaming handler writes Netty objects directly, bypassing the response mapper, so nothing stamped the
+  HTTP/2 stream id — the initial HEADERS, every DATA frame and the trailers were written to a fresh
+  server-initiated stream the client was not reading, and the call hung until its deadline. Measured
+  before the fix: 0 of 2 messages received; after: 2 of 2. HTTP/1.1 was unaffected. This is the same
+  defect class as the direct-response stream-id fix above, in the streaming path.
+- gRPC responses without a body are now emitted as a **Trailers-Only** response on HTTP/2 (a single
+  end-of-stream HEADERS frame), matching what HTTP/3 already did and what strict conformance suites expect.
+  HTTP/1.1 continues to use real trailers, where Trailers-Only has no meaning.
+- Fixed a gRPC response being returned as unframed JSON with no `grpc-status` when the proto descriptor was
+  removed or reloaded between decoding the request and encoding the response — the same shape as #2419. It
+  now returns `UNIMPLEMENTED` with an empty body.
+- gRPC-Web responses now echo the negotiated `+proto` subtype instead of always returning the bare
+  `application/grpc-web` content-type.
+- Fixed gRPC direct responses (health check, server reflection, chaos faults, and request-decode errors)
+  being written on a **fresh HTTP/2 stream** instead of the one the request arrived on. These are written
+  directly by the gRPC request handler rather than through the matching engine, so nothing stamped the
+  stream id; Netty then allocated a new server-initiated stream and the client's call hung until its
+  deadline. Affected gRPC and gRPC-Web over HTTP/2; HTTP/1.1 was unaffected.
+- Fixed three HTTP/3 gRPC gaps that made the same expectation behave differently there than on HTTP/1.1
+  and HTTP/2: `grpc-status` is now read from response **trailers** as well as headers (the documented way
+  to author it — previously a trailer-authored non-OK status arrived as `OK` over HTTP/3); an unmatched
+  request no longer fabricates a successful response with the 404 body as its payload; and a unary
+  response now carries the expectation's own headers instead of silently dropping them. Status resolution
+  is now shared by all three transports (`GrpcResponseStatusResolver`) rather than reimplemented per
+  transport, which is how these diverged.
+- gRPC chaos `customTrailers` are now delivered to gRPC-Web clients. They are folded into the in-body
+  trailer frame along with `grpc-status`/`grpc-message`, and no trailers are left as real HTTP trailers —
+  browsers cannot read HTTP trailers, so a custom trailer left there was unreachable.
+- MockServer now advertises `SETTINGS_MAX_CONCURRENT_STREAMS` (100) explicitly on every HTTP/2 connection
+  instead of relying on the Netty default, which differs between Netty 4.1 (unset, meaning unlimited) and
+  4.2 (100). The advertised value is unchanged from what Netty 4.2 already supplied, so there is no
+  behaviour change; it is now MockServer's own limit and cannot shift under a Netty upgrade.
 - Fixed FILE-type response bodies being silently dropped during serialization. The `HttpResponseSerializer` and
   `HttpResponseDTOSerializer` whitelist body types when writing the `body` field and had no branch for `FileBody`,
   so a response configured with a file body was serialized without it (issue #2430). Both serializers now preserve

@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package com.example.catalog;
+
+option java_package = "com.example.catalog";
+option java_outer_classname = "CatalogProtos";
+
+// Two unary methods with DISTINCT output types, so a test can prove that concurrent calls to
+// different methods on one connection are each converted against their own output type. The
+// single-slot channel attribute this replaced could convert response A with method B's type,
+// silently yielding a wrong-typed message or a grpc-status 13 INTERNAL.
+service CatalogService {
+  rpc GetBook (LookupRequest) returns (Book);
+  rpc GetAuthor (LookupRequest) returns (Author);
+}
+
+message LookupRequest {
+  string id = 1;
+}
+
+message Book {
+  string title = 1;
+  int32 pages = 2;
+}
+
+message Author {
+  string name = 1;
+  string country = 2;
+}

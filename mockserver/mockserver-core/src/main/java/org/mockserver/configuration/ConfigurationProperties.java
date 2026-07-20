@@ -172,6 +172,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_MAX_HEADER_SIZE = "mockserver.maxHeaderSize";
     private static final String MOCKSERVER_MAX_CHUNK_SIZE = "mockserver.maxChunkSize";
     private static final String MOCKSERVER_MAX_REQUEST_BODY_SIZE = "mockserver.maxRequestBodySize";
+    private static final String MOCKSERVER_MAX_GRPC_MESSAGE_SIZE = "mockserver.maxGrpcMessageSize";
     private static final String MOCKSERVER_MAX_RESPONSE_BODY_SIZE = "mockserver.maxResponseBodySize";
     private static final String MOCKSERVER_MAX_LLM_CONVERSATION_BODY_SIZE = "mockserver.maxLlmConversationBodySize";
     private static final String MOCKSERVER_LLM_PROVIDER = "mockserver.llmProvider";
@@ -2672,6 +2673,27 @@ public class ConfigurationProperties {
      */
     public static void maxRequestBodySize(int size) {
         setProperty(MOCKSERVER_MAX_REQUEST_BODY_SIZE, "" + size);
+    }
+
+    public static int maxGrpcMessageSize() {
+        return readIntegerProperty(MOCKSERVER_MAX_GRPC_MESSAGE_SIZE, "MOCKSERVER_MAX_GRPC_MESSAGE_SIZE", 4 * 1024 * 1024);
+    }
+
+    /**
+     * Maximum size (in bytes) of a single decoded gRPC message, before and after decompression.
+     * <p>
+     * A request message larger than this is rejected with {@code grpc-status: 8 RESOURCE_EXHAUSTED},
+     * which is the status the gRPC specification (and grpc-java and grpc-go) use for exceeding the
+     * receive-message-size limit.
+     * <p>
+     * The default is 4,194,304 bytes (4 MiB), matching grpc-java's and grpc-go's default
+     * {@code maxReceiveMessageSize}. Raise it only if you intentionally mock large gRPC messages;
+     * the limit is what stops a declared frame length from allocating unbounded memory.
+     *
+     * @param size maximum decoded gRPC message size in bytes
+     */
+    public static void maxGrpcMessageSize(int size) {
+        setProperty(MOCKSERVER_MAX_GRPC_MESSAGE_SIZE, "" + size);
     }
 
     public static int maxResponseBodySize() {

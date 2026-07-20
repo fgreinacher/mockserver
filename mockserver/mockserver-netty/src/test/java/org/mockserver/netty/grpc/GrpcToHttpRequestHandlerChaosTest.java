@@ -72,7 +72,7 @@ public class GrpcToHttpRequestHandlerChaosTest {
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
         assertThat(response.getStatusCode(), is(200));
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("14")); // UNAVAILABLE
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is("14")); // UNAVAILABLE
         // request must NOT be propagated to normal handling when chaos fires
         assertThat(channel.readInbound(), is(nullValue()));
     }
@@ -87,7 +87,7 @@ public class GrpcToHttpRequestHandlerChaosTest {
 
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("4")); // DEADLINE_EXCEEDED
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is("4")); // DEADLINE_EXCEEDED
     }
 
     @Test
@@ -142,7 +142,7 @@ public class GrpcToHttpRequestHandlerChaosTest {
         assertThat(response, is(notNullValue()));
         assertThat(response.getStatusCode(), is(200));
         // grpc-status header must be absent
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is(""));
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is(nullValue()));
         // request must NOT be propagated
         assertThat(channel.readInbound(), is(nullValue()));
     }
@@ -161,7 +161,7 @@ public class GrpcToHttpRequestHandlerChaosTest {
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
         // omitGrpcStatus overrides the status code from the fault
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is(""));
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is(nullValue()));
         assertThat(channel.readInbound(), is(nullValue()));
     }
 
@@ -179,7 +179,7 @@ public class GrpcToHttpRequestHandlerChaosTest {
         assertThat(response, is(notNullValue()));
         assertThat(response.getStatusCode(), is(200));
         // grpc-status must be an integer per spec; "malformed" is a genuine protocol violation
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("malformed"));
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is("malformed"));
         assertThat(channel.readInbound(), is(nullValue()));
     }
 
@@ -198,9 +198,9 @@ public class GrpcToHttpRequestHandlerChaosTest {
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
         // corruptGrpcStatus replaces the valid status code with non-numeric "malformed"
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("malformed"));
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is("malformed"));
         // message is preserved
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER), is("timed out"));
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_MESSAGE_HEADER), is("timed out"));
         assertThat(channel.readInbound(), is(nullValue()));
     }
 
@@ -221,8 +221,8 @@ public class GrpcToHttpRequestHandlerChaosTest {
 
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
-        assertThat(response.getFirstHeader("grpc-retry-pushback-ms"), is("500"));
-        assertThat(response.getFirstHeader("x-error-detail"), is("overloaded"));
+        assertThat(firstTrailer(response, "grpc-retry-pushback-ms"), is("500"));
+        assertThat(firstTrailer(response, "x-error-detail"), is("overloaded"));
         assertThat(channel.readInbound(), is(nullValue()));
     }
 
@@ -241,8 +241,8 @@ public class GrpcToHttpRequestHandlerChaosTest {
 
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("13")); // INTERNAL
-        assertThat(response.getFirstHeader("x-debug"), is("chaos-injected"));
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is("13")); // INTERNAL
+        assertThat(firstTrailer(response, "x-debug"), is("chaos-injected"));
         assertThat(channel.readInbound(), is(nullValue()));
     }
 
@@ -261,7 +261,7 @@ public class GrpcToHttpRequestHandlerChaosTest {
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
         assertThat(response.getStatusCode(), is(200));
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("10")); // ABORTED
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is("10")); // ABORTED
         assertThat(channel.readInbound(), is(nullValue()));
     }
 
@@ -291,7 +291,7 @@ public class GrpcToHttpRequestHandlerChaosTest {
 
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("10")); // ABORTED
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is("10")); // ABORTED
     }
 
     @Test
@@ -307,7 +307,7 @@ public class GrpcToHttpRequestHandlerChaosTest {
 
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is(""));
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is(nullValue()));
     }
 
     @Test
@@ -324,8 +324,8 @@ public class GrpcToHttpRequestHandlerChaosTest {
 
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("10")); // ABORTED
-        assertThat(response.getFirstHeader("x-abort-reason"), is("too many messages"));
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is("10")); // ABORTED
+        assertThat(firstTrailer(response, "x-abort-reason"), is("too many messages"));
     }
 
     @Test
@@ -346,7 +346,7 @@ public class GrpcToHttpRequestHandlerChaosTest {
         channel2.writeInbound(grpcRequest("/svc.v1.Service/Method"));
         HttpResponse response = channel2.readOutbound();
         assertThat(response, is(notNullValue()));
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("10")); // ABORTED
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is("10")); // ABORTED
     }
 
     // --- C1: CRLF header-injection safety in handler (belt-and-braces) ---
@@ -420,10 +420,19 @@ public class GrpcToHttpRequestHandlerChaosTest {
         HttpResponse response = channel.readOutbound();
         assertThat(response, is(notNullValue()));
         // omitGrpcStatus wins: no grpc-status header
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is(""));
+        assertThat(firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER), is(nullValue()));
     }
 
     // --- helper methods ---
+
+    /**
+     * Reads a trailing header value. gRPC delivers {@code grpc-status}/{@code grpc-message}
+     * (and chaos custom trailers) in the terminal trailing HEADERS frame, never in the
+     * initial response headers, so these assertions read trailers rather than headers.
+     */
+    private static String firstTrailer(HttpResponse response, String name) {
+        return GrpcToHttpResponseHandler.firstTrailer(response, name);
+    }
 
     private HttpRequest grpcRequest(String path, byte[] body) {
         return request().withMethod("POST").withPath(path)

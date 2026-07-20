@@ -72,6 +72,26 @@ import static org.slf4j.event.Level.WARN;
  */
 public class PortUnificationHandler extends ReplayingDecoder<Void> {
 
+    /**
+     * The HTTP/2 {@code SETTINGS_MAX_CONCURRENT_STREAMS} MockServer advertises on every HTTP/2
+     * connection, and which Netty enforces by refusing further streams with {@code REFUSED_STREAM}
+     * ({@code AbstractHttp2ConnectionHandlerBuilder.enforceMaxActiveStreams} →
+     * {@code connection.remote().maxActiveStreams(...)}).
+     * <p>
+     * This is set <strong>explicitly</strong>, and deliberately matches the value Netty 4.2 would
+     * otherwise supply ({@code Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS} = 100), so current
+     * behaviour is unchanged while the limit becomes MockServer's own rather than an inherited
+     * default. It cannot be left implicit: Netty 4.1's {@code Http2Settings.defaultSettings()}
+     * advertises no concurrent-stream limit at all (RFC 9113 then permits unbounded streams), and
+     * 4.2 added one — so anything depending on the limit would silently change meaning with a
+     * Netty upgrade or downgrade.
+     * <p>
+     * {@link org.mockserver.netty.grpc.GrpcPendingRequests} depends on this bound: it sizes its
+     * per-stream record map above this value so eviction can never discard a live stream (which
+     * would silently skip gRPC conversion — issue #2419).
+     */
+    public static final int HTTP2_MAX_CONCURRENT_STREAMS = 100;
+
     private static final AttributeKey<Boolean> TLS_ENABLED_UPSTREAM = AttributeKey.valueOf("TLS_ENABLED_UPSTREAM");
     private static final AttributeKey<Boolean> TLS_ENABLED_DOWNSTREAM = AttributeKey.valueOf("TLS_ENABLED_DOWNSTREAM");
     private static final AttributeKey<NettySslContextFactory> NETTY_SSL_CONTEXT_FACTORY = AttributeKey.valueOf("NETTY_SSL_CONTEXT_FACTORY");
@@ -331,6 +351,10 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
             } else {
                 final Http2Connection connection = new DefaultHttp2Connection(true);
                 final HttpToHttp2ConnectionHandlerBuilder http2ConnectionHandlerBuilder = new HttpToHttp2ConnectionHandlerBuilder()
+                    // advertise (and have Netty enforce) the concurrent-stream limit explicitly
+                    // rather than inheriting Netty's default -- see HTTP2_MAX_CONCURRENT_STREAMS
+                    .initialSettings(Http2Settings.defaultSettings()
+                        .maxConcurrentStreams(HTTP2_MAX_CONCURRENT_STREAMS))
                     .frameListener(
                         new DelegatingDecompressorFrameListener(
                             connection,
@@ -355,7 +379,7 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
                 addAltSvcHandlerIfEnabled(pipeline);
                 if (httpState.getGrpcDescriptorStore() != null && httpState.getGrpcDescriptorStore().hasServices()) {
                     addLastIfNotPresent(pipeline, new GrpcToHttpResponseHandler(mockServerLogger, httpState.getGrpcDescriptorStore()));
-                    addLastIfNotPresent(pipeline, new GrpcToHttpRequestHandler(mockServerLogger, httpState.getGrpcDescriptorStore()));
+                    addLastIfNotPresent(pipeline, new GrpcToHttpRequestHandler(configuration, mockServerLogger, httpState.getGrpcDescriptorStore()));
                 }
                 addLastIfNotPresent(pipeline, new HttpRequestHandler(configuration, server, httpState, actionHandler));
             }
@@ -384,6 +408,10 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
             } else {
                 final Http2Connection connection = new DefaultHttp2Connection(true);
                 final HttpToHttp2ConnectionHandlerBuilder http2ConnectionHandlerBuilder = new HttpToHttp2ConnectionHandlerBuilder()
+                    // advertise (and have Netty enforce) the concurrent-stream limit explicitly
+                    // rather than inheriting Netty's default -- see HTTP2_MAX_CONCURRENT_STREAMS
+                    .initialSettings(Http2Settings.defaultSettings()
+                        .maxConcurrentStreams(HTTP2_MAX_CONCURRENT_STREAMS))
                     .frameListener(
                         new DelegatingDecompressorFrameListener(
                             connection,
@@ -409,7 +437,7 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
                 addAltSvcHandlerIfEnabled(pipeline);
                 if (httpState.getGrpcDescriptorStore() != null && httpState.getGrpcDescriptorStore().hasServices()) {
                     addLastIfNotPresent(pipeline, new GrpcToHttpResponseHandler(mockServerLogger, httpState.getGrpcDescriptorStore()));
-                    addLastIfNotPresent(pipeline, new GrpcToHttpRequestHandler(mockServerLogger, httpState.getGrpcDescriptorStore()));
+                    addLastIfNotPresent(pipeline, new GrpcToHttpRequestHandler(configuration, mockServerLogger, httpState.getGrpcDescriptorStore()));
                 }
                 addLastIfNotPresent(pipeline, new HttpRequestHandler(configuration, server, httpState, actionHandler));
             }
@@ -430,6 +458,7 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
         // is an intentional Phase 0 limitation for the gRPC multiplex pipeline.
         Http2FrameCodecBuilder frameCodecBuilder = Http2FrameCodecBuilder.forServer()
             .initialSettings(Http2Settings.defaultSettings()
+                .maxConcurrentStreams(HTTP2_MAX_CONCURRENT_STREAMS)
                 .maxFrameSize(configuration.maxRequestBodySize() < Http2CodecUtil.MAX_FRAME_SIZE_LOWER_BOUND
                     ? Http2CodecUtil.MAX_FRAME_SIZE_LOWER_BOUND
                     : Math.min(configuration.maxRequestBodySize(), Http2CodecUtil.MAX_FRAME_SIZE_UPPER_BOUND)));
@@ -498,7 +527,7 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
                 // gRPC-Web works over HTTP/1.1, so add gRPC handlers here too
                 if (httpState.getGrpcDescriptorStore() != null && httpState.getGrpcDescriptorStore().hasServices()) {
                     addLastIfNotPresent(pipeline, new GrpcToHttpResponseHandler(mockServerLogger, httpState.getGrpcDescriptorStore()));
-                    addLastIfNotPresent(pipeline, new GrpcToHttpRequestHandler(mockServerLogger, httpState.getGrpcDescriptorStore()));
+                    addLastIfNotPresent(pipeline, new GrpcToHttpRequestHandler(configuration, mockServerLogger, httpState.getGrpcDescriptorStore()));
                 }
                 addLastIfNotPresent(pipeline, new HttpRequestHandler(configuration, server, httpState, actionHandler));
                 pipeline.remove(this);

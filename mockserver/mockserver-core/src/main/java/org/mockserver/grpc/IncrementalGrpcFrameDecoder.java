@@ -21,18 +21,36 @@ import java.util.List;
 public class IncrementalGrpcFrameDecoder {
 
     private static final int HEADER_LENGTH = 5;
-    private static final int MAX_MESSAGE_SIZE = 4 * 1024 * 1024;
-    private static final int DEFAULT_MAX_BUFFER_SIZE = 8 * 1024 * 1024;
+    /**
+     * Buffer headroom above the configured message size, so a single maximum-size message plus its
+     * 5-byte header always fits. Previously hard-coded at 8 MiB, which silently defeated any
+     * {@code maxGrpcMessageSize} above that: the streaming decoder rejected the message on buffer
+     * capacity before the (raised) size limit was ever consulted.
+     */
+    private static int defaultMaxBufferSize(org.mockserver.configuration.Configuration configuration) {
+        return Math.max(8 * 1024 * 1024, GrpcFrameCodec.maxMessageSize(configuration) * 2);
+    }
 
     private final int maxBufferSize;
+    /** Live configuration, when available; null falls back to the static property store. */
+    private final org.mockserver.configuration.Configuration configuration;
     private byte[] buffer;
     private int position;
 
     /**
-     * Creates a decoder with the default max buffer size (8 MiB).
+     * Creates a decoder with the default max buffer size (at least 8 MiB, and always above maxGrpcMessageSize).
      */
     public IncrementalGrpcFrameDecoder() {
-        this(DEFAULT_MAX_BUFFER_SIZE);
+        this((org.mockserver.configuration.Configuration) null);
+    }
+
+    /**
+     * Preferred constructor: carries the live {@link org.mockserver.configuration.Configuration} so
+     * {@code maxGrpcMessageSize} set on an instance (or via the DTO / {@code PUT /mockserver/config})
+     * reaches the bidi streaming decoder too, not only the unary path.
+     */
+    public IncrementalGrpcFrameDecoder(org.mockserver.configuration.Configuration configuration) {
+        this(defaultMaxBufferSize(configuration), configuration);
     }
 
     /**
@@ -42,6 +60,11 @@ public class IncrementalGrpcFrameDecoder {
      *                      {@link GrpcException} is thrown from {@link #feed(byte[])}
      */
     public IncrementalGrpcFrameDecoder(int maxBufferSize) {
+        this(maxBufferSize, null);
+    }
+
+    public IncrementalGrpcFrameDecoder(int maxBufferSize, org.mockserver.configuration.Configuration configuration) {
+        this.configuration = configuration;
         if (maxBufferSize < HEADER_LENGTH) {
             throw new IllegalArgumentException("maxBufferSize must be at least " + HEADER_LENGTH);
         }
@@ -60,7 +83,7 @@ public class IncrementalGrpcFrameDecoder {
      * @return list of complete message payloads (never {@code null}; may be empty)
      * @throws GrpcException if the total buffered bytes exceed the configured cap,
      *                       or if a frame header has invalid flag bits or exceeds
-     *                       {@code MAX_MESSAGE_SIZE}
+     *                       {@link GrpcFrameCodec#maxMessageSize()}
      */
     public List<byte[]> feed(byte[] chunk) {
         if (chunk == null || chunk.length == 0) {
@@ -93,8 +116,11 @@ public class IncrementalGrpcFrameDecoder {
                 | ((buffer[offset + 3] & 0xFF) << 8)
                 | (buffer[offset + 4] & 0xFF);
 
-            if (length < 0 || length > MAX_MESSAGE_SIZE) {
-                throw new GrpcException("gRPC message size " + length + " exceeds maximum allowed " + MAX_MESSAGE_SIZE);
+            int maxMessageSize = GrpcFrameCodec.maxMessageSize(configuration);
+            if (length < 0 || length > maxMessageSize) {
+                throw new GrpcException(
+                    "gRPC message size " + length + " exceeds maximum allowed " + maxMessageSize,
+                    GrpcStatusMapper.GrpcStatusCode.RESOURCE_EXHAUSTED);
             }
 
             if (offset + HEADER_LENGTH + length > position) {
@@ -105,7 +131,7 @@ public class IncrementalGrpcFrameDecoder {
             System.arraycopy(buffer, offset + HEADER_LENGTH, payload, 0, length);
 
             if (compressedFlag == 1) {
-                payload = decompress(payload);
+                payload = decompress(payload, configuration);
             }
 
             messages.add(payload);
@@ -142,7 +168,7 @@ public class IncrementalGrpcFrameDecoder {
         }
     }
 
-    private static byte[] decompress(byte[] data) {
+    private static byte[] decompress(byte[] data, org.mockserver.configuration.Configuration configuration) {
         try {
             java.io.ByteArrayInputStream bis = new java.io.ByteArrayInputStream(data);
             try (java.util.zip.GZIPInputStream gis = new java.util.zip.GZIPInputStream(bis)) {
@@ -152,8 +178,10 @@ public class IncrementalGrpcFrameDecoder {
                 long total = 0;
                 while ((len = gis.read(buf)) != -1) {
                     total += len;
-                    if (total > MAX_MESSAGE_SIZE) {
-                        throw new GrpcException("decompressed gRPC message size exceeds maximum allowed " + MAX_MESSAGE_SIZE);
+                    if (total > GrpcFrameCodec.maxMessageSize(configuration)) {
+                        throw new GrpcException(
+                            "decompressed gRPC message size exceeds maximum allowed " + GrpcFrameCodec.maxMessageSize(configuration),
+                            GrpcStatusMapper.GrpcStatusCode.RESOURCE_EXHAUSTED);
                     }
                     bos.write(buf, 0, len);
                 }

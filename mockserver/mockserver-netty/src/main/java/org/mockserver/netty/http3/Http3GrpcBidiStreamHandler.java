@@ -13,6 +13,7 @@ import org.mockserver.grpc.GrpcException;
 import org.mockserver.grpc.GrpcFrameCodec;
 import org.mockserver.grpc.GrpcJsonMessageConverter;
 import org.mockserver.grpc.GrpcStatusMapper;
+import org.mockserver.grpc.GrpcStreamDeadline;
 import org.mockserver.grpc.GrpcStreamMessageTemplateRenderer;
 import org.mockserver.grpc.IncrementalGrpcFrameDecoder;
 import org.mockserver.log.model.LogEntry;
@@ -92,12 +93,23 @@ public class Http3GrpcBidiStreamHandler {
     private final GrpcBidiResponse config;
     private final Runnable completionCallback;
     private final MockServerLogger mockServerLogger;
-    private final IncrementalGrpcFrameDecoder decoder = new IncrementalGrpcFrameDecoder();
+    private final IncrementalGrpcFrameDecoder decoder;
     // Renders bidi response messages, applying optional per-message response templating against
     // the matched inbound message. Static (no templateType) messages pass through unchanged.
     private final GrpcStreamMessageTemplateRenderer templateRenderer;
 
-    private boolean finished;
+    /**
+     * Terminal guard. An {@link java.util.concurrent.atomic.AtomicBoolean} rather than a plain
+     * boolean: normal finish, the error trailer and an elapsed deadline are all terminal paths, and
+     * the previous check-then-set could let two of them each write a terminal HEADERS frame.
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean finishedGuard = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * Enforces the client's grpc-timeout for this bidi RPC, terminating it mid-stream. The QUIC
+     * stream is its own channel, so the timer is naturally per-stream.
+     */
+    private final GrpcStreamDeadline deadline = new GrpcStreamDeadline();
     private boolean inputClosed;
     // Number of in-progress message-emission chains (startup eager chain + one per inbound
     // message's rule responses). The trailing HEADERS frame is written only once the client
@@ -166,6 +178,9 @@ public class Http3GrpcBidiStreamHandler {
         this.completionCallback = completionCallback;
         this.mockServerLogger = mockServerLogger;
         this.configuration = configuration;
+        // live configuration reaches the streaming decoder too, so maxGrpcMessageSize set on an
+        // instance / via the DTO / PUT /mockserver/config applies on the bidi path as well
+        this.decoder = new IncrementalGrpcFrameDecoder(configuration);
         this.templateRenderer = new GrpcStreamMessageTemplateRenderer(mockServerLogger, configuration);
         this.inboundStreamId = inboundStreamId;
         this.inboundBreakpointClientId = inboundBreakpointClientId;
@@ -180,7 +195,13 @@ public class Http3GrpcBidiStreamHandler {
      * ({@link GrpcBidiResponse#getDelay()}), if configured, delays the eager message stream
      * (the HEADERS are sent promptly so inbound DATA frames never race ahead of them).
      */
-    public void start() {
+    public void start(org.mockserver.model.HttpRequest request) {
+        // Honour the client's grpc-timeout for the whole bidi RPC. writeErrorTrailer's CAS makes
+        // the deadline and any normal termination mutually exclusive, and the finishedGuard checks
+        // on the emission paths stop messages following the terminal trailer.
+        deadline.schedule(ctx, request, () -> writeErrorTrailer(
+            GrpcStatusMapper.GrpcStatusCode.DEADLINE_EXCEEDED, deadline.deadlineExceededMessage()));
+
         writeInitialHeaders();
 
         long actionDelayMillis = (config.getDelay() != null) ? config.getDelay().sampleValueMillis() : 0;
@@ -217,7 +238,7 @@ public class Http3GrpcBidiStreamHandler {
      * arrive while one is held are buffered in order.
      */
     public void onData(byte[] bytes) {
-        if (finished) {
+        if (finishedGuard.get()) {
             return;
         }
         if (!inboundBreakpointsActive) {
@@ -272,7 +293,7 @@ public class Http3GrpcBidiStreamHandler {
     private void pumpInbound(byte[] first) {
         byte[] current = first;
         while (current != null) {
-            if (finished || !ctx.channel().isActive()) {
+            if (finishedGuard.get() || !ctx.channel().isActive()) {
                 heldInboundFrames.clear();
                 StreamFrameBreakpointRegistry.getInstance().evictStream(inboundStreamId);
                 return;
@@ -287,7 +308,7 @@ public class Http3GrpcBidiStreamHandler {
             if (decisionFuture == null) {
                 // Not parked (cap reached or client not connected): process inline, keep draining.
                 processInboundBytes(current);
-                if (finished) {
+                if (finishedGuard.get()) {
                     heldInboundFrames.clear();
                     return;
                 }
@@ -302,7 +323,7 @@ public class Http3GrpcBidiStreamHandler {
                 .exceptionally(ex -> {
                     ctx.executor().execute(() -> {
                         inboundFrameInFlight = false;
-                        if (!finished && ctx.channel().isActive()) {
+                        if (!finishedGuard.get() && ctx.channel().isActive()) {
                             processInboundBytes(parked);
                         }
                         resumeNextInboundOrFinish();
@@ -321,7 +342,7 @@ public class Http3GrpcBidiStreamHandler {
      */
     private void handleInboundDecision(StreamFrameDecision decision, byte[] originalBytes) {
         inboundFrameInFlight = false;
-        if (finished || !ctx.channel().isActive()) {
+        if (finishedGuard.get() || !ctx.channel().isActive()) {
             heldInboundFrames.clear();
             StreamFrameBreakpointRegistry.getInstance().evictStream(inboundStreamId);
             return;
@@ -358,7 +379,7 @@ public class Http3GrpcBidiStreamHandler {
      * frames were parked).
      */
     private void resumeNextInboundOrFinish() {
-        if (finished) {
+        if (finishedGuard.get()) {
             heldInboundFrames.clear();
             return;
         }
@@ -385,6 +406,10 @@ public class Http3GrpcBidiStreamHandler {
      * a clean END_STREAM.
      */
     public void onChannelInactive() {
+        // a deadline timer must not outlive the QUIC stream that scheduled it -- an abandoned
+        // stream with a very long grpc-timeout would otherwise leave a ScheduledFutureTask in the
+        // shared event-loop queue indefinitely
+        deadline.cancel();
         if (inboundStreamId != null) {
             StreamFrameBreakpointRegistry.getInstance().evictStream(inboundStreamId);
         }
@@ -462,17 +487,17 @@ public class Http3GrpcBidiStreamHandler {
         // Do not finish while an inbound frame is parked at a breakpoint or buffered behind one:
         // the trailing HEADERS must come after every (possibly held) inbound frame is resolved
         // and its responses drained.
-        if (inputClosed && activeChains == 0 && !finished
+        if (inputClosed && activeChains == 0 && !finishedGuard.get()
             && !inboundFrameInFlight && heldInboundFrames.isEmpty()) {
             finish();
         }
     }
 
     private void finish() {
-        if (finished) {
+        if (!finishedGuard.compareAndSet(false, true)) {
             return;
         }
-        finished = true;
+        deadline.cancel();
 
         String statusCode = "0";
         String statusMessage = null;
@@ -496,10 +521,10 @@ public class Http3GrpcBidiStreamHandler {
     }
 
     private void writeErrorTrailer(GrpcStatusMapper.GrpcStatusCode statusCode, String message) {
-        if (finished) {
+        if (!finishedGuard.compareAndSet(false, true)) {
             return;
         }
-        finished = true;
+        deadline.cancel();
         mockServerLogger.logEvent(
             new LogEntry()
                 .setLogLevel(Level.WARN)

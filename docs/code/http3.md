@@ -297,6 +297,26 @@ declarations are needed -- they resolve automatically.
   is still correctly framed in trailing HEADERS. Error responses (unknown method,
   decode failure) use the gRPC "trailers-only" pattern (single HEADERS frame with
   both `:status` and `grpc-status`). Non-gRPC requests are unaffected.
+- **HTTP/3 gRPC behaves identically to HTTP/1.1 and HTTP/2.** Status resolution is
+  shared, not reimplemented per transport: `GrpcResponseStatusResolver` (in
+  `mockserver-core`) is used by `GrpcHttp3Adapter` and `Http3GrpcResponseWriter` as
+  well as by `GrpcToHttpResponseHandler`. This closed three HTTP/3-only divergences —
+  `grpc-status` is now read from response **trailers** as well as headers (the form
+  the consumer docs recommend, previously reported as `OK` over HTTP/3 while
+  correctly reported as the authored status over HTTP/2); an **unmatched** request
+  no longer fabricates a success with the 404 body as its payload; and a unary
+  response now carries the expectation's own headers instead of dropping them
+  (`buildInitialHeadersFrame(response)` / `buildTrailersOnlyFrame(..., response)`,
+  excluding gRPC protocol metadata the frame builder emits itself).
+- `grpc-message` is percent-encoded on the HTTP/3 path too, from the same shared
+  `GrpcStatusMapper.percentEncodeMessage` helper — see
+  [ai-protocol-mocking.md](ai-protocol-mocking.md#grpc-message-percent-encoding).
+- **`grpc-timeout` is honoured over HTTP/3.** `Http3GrpcResponseWriter.scheduleDeadline`
+  schedules the deadline on the QUIC stream's own event loop — each HTTP/3 request is
+  its own `QuicStreamChannel`, so the timer is naturally per-stream and dies with the
+  stream. An `AtomicBoolean completed` makes the deadline and the real response
+  mutually exclusive, so a `Delay` that outruns the client's deadline cannot write a
+  second response onto a stream that already ended with DEADLINE_EXCEEDED.
 - Integration-tested gRPC-over-HTTP/3 (in-JVM Netty QUIC client with manual gRPC
   framing, verifies unary call round-trip, trailing HEADERS framing, error status,
   and non-gRPC regression)

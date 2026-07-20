@@ -166,16 +166,37 @@ public class GrpcForwardTranslator {
                 .withBody(json)
                 .withHeader(SERVICE_HEADER, service)
                 .withHeader(METHOD_HEADER, method);
-            // carry the upstream gRPC status through as a status-name so GrpcToHttpResponseHandler
-            // re-emits the correct grpc-status trailer when re-framing for the client
+            // Carry the upstream gRPC status through so GrpcToHttpResponseHandler re-emits the
+            // correct grpc-status trailer when re-framing for the client.
+            //
+            // Keep the NUMERIC status rather than converting it to a status-name: the name lookup
+            // is GrpcStatusMapper.fromCode, which is getOrDefault(code, UNKNOWN), so an upstream
+            // server returning a non-standard or future status (say 42) would have it silently
+            // rewritten to UNKNOWN and rendered as "2". A proxy must not rewrite the upstream's
+            // status. GrpcResponseStatusResolver.explicitStatus reads this header and
+            // emits it verbatim.
             String grpcStatus = response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER);
             if (grpcStatus != null && !grpcStatus.isEmpty()) {
                 try {
-                    decoded.withHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER,
-                        GrpcStatusMapper.fromCode(Integer.parseInt(grpcStatus.trim())).name());
+                    decoded.withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER,
+                        String.valueOf(Integer.parseInt(grpcStatus.trim())));
                 } catch (NumberFormatException ignored) {
-                    // non-numeric grpc-status (protocol violation) — leave the status-name unset
+                    // non-numeric grpc-status (protocol violation) — leave the status unset
                 }
+            }
+            // Percent-DECODE the upstream's grpc-message into the response model. A real gRPC
+            // server percent-encodes it per the wire spec, so without decoding here the message
+            // would appear escaped ("paiement refus%C3%A9") in the log and in verifications, and
+            // would then be double-encoded when re-emitted to the client.
+            String grpcMessage = response.getFirstHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER);
+            if (grpcMessage != null && !grpcMessage.isEmpty()) {
+                // strip C0 controls: %00 / %0D%0A decode to real NUL / CRLF, and this value reaches
+                // the event log, persisted log, verifications and dashboard from an UNTRUSTED
+                // upstream, where they would allow forged log lines
+                decoded.replaceHeader(new org.mockserver.model.Header(
+                    GrpcStatusMapper.GRPC_MESSAGE_HEADER,
+                    GrpcStatusMapper.stripControlCharacters(
+                        GrpcStatusMapper.percentDecodeMessage(grpcMessage))));
             }
             return decoded;
         } catch (Exception e) {

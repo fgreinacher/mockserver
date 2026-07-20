@@ -500,7 +500,130 @@ graph LR
 
 The handlers are placed after `MockServerHttpServerCodec` so they operate on MockServer model objects. `GrpcToHttpRequestHandler` intercepts inbound `HttpRequest` objects with `content-type: application/grpc`, extracts the service and method from the path, decodes the protobuf body to JSON, and forwards with `x-grpc-service`, `x-grpc-method` headers.
 
-`GrpcToHttpResponseHandler` is an outbound encoder that intercepts `HttpResponse` objects with `x-grpc-service` header, encodes the JSON body back to protobuf binary with gRPC framing, and appends `grpc-status` / `grpc-message` trailers.
+`GrpcToHttpResponseHandler` is an outbound encoder that encodes the JSON body back to protobuf binary with gRPC framing and emits `grpc-status` / `grpc-message` as trailers.
+
+#### Request → response service/method propagation
+
+The `x-grpc-service` / `x-grpc-method` headers that `convertGrpcRequest` sets are on the **request** only — the matching pipeline does not copy internal headers onto the matched response. Resolution order in `GrpcToHttpResponseHandler.encode()` is therefore:
+
+1. **Explicit `x-grpc-service` / `x-grpc-method` response headers** — set by `GrpcForwardTranslator.decodeResponseFromUpstream` on the forward-proxy path, or by a user opting in. These always win.
+2. **The per-connection `GrpcPendingRequests` registry** — recorded by `GrpcToHttpRequestHandler.convertGrpcRequest` when it decoded the request, and looked up in `encode()` by the response's HTTP/2 stream id. This is what makes conversion fire for an ordinary mock expectation whose matcher (not response) carries the gRPC headers.
+
+##### Why the record is keyed by stream id
+
+Both handlers are `@ChannelHandler.Sharable`, so this state must live on the channel, never in a field. It is tempting to conclude that a single-slot channel attribute suffices because "each HTTP/2 stream gets its own child channel" — **that is false in the default configuration**, and getting it wrong breaks every concurrent call but one:
+
+| Configuration | Pipeline installed by `PortUnificationHandler` | What `ctx.channel()` is |
+|---|---|---|
+| `grpcBidiStreamingEnabled` **off** (default) | connection adapter — `InboundHttp2ToHttpAdapter`, both gRPC handlers added to the **connection-level** pipeline | the shared TCP connection, common to every multiplexed stream |
+| `grpcBidiStreamingEnabled` **on** | `switchToHttp2Multiplex` → `GrpcMultiplexChildInitializer` | a per-stream child channel |
+| HTTP/1.1 | connection pipeline | the connection (but only one exchange is ever in flight) |
+
+Only the middle row makes a single slot per-stream. On the default path all requests are read before any response is written, so each record would overwrite the last: measured with four concurrent unary calls on one `ManagedChannel`, three returned unconverted JSON and only the last succeeded. With two *different* RPCs in flight the mix-up is worse than a dropped conversion — a response can be converted against the other method's output type, yielding a wrong-typed message or a fabricated `grpc-status: 13 INTERNAL`.
+
+What actually makes the state safe on each path:
+
+- **HTTP/2 (either pipeline)** — the record is keyed by `HttpRequest.getStreamId()`, set in `FullHttpRequestToMockServerHttpRequest` only when the protocol really is HTTP/2 (so an HTTP/1.1 client cannot forge it) and copied onto the response by `ResponseWriter.writeResponse`. `encode()` removes the entry for its own stream, so no record is visible to another stream.
+- **HTTP/1.1** — there is no stream id and no intra-connection concurrency: exactly one response per request, in order. A single slot is consumed-and-cleared on use, and is additionally discarded when a non-gRPC request arrives on the connection, so a record left by an abandoned gRPC exchange cannot convert an unrelated later response (for example a control-plane JSON response on the same port).
+- **Abandoned exchanges** — a drop-connection action, an unreleased request-phase breakpoint, or an exception before the write can leave a record that is never consumed. The registry dies with the connection, and evicts in insertion order beyond `GrpcPendingRequests.MAX_PENDING_STREAMS` so a long-lived HTTP/2 connection cannot accumulate them without bound.
+
+Eviction must never reach a **live** stream: a stream whose record was evicted skips conversion and goes out as raw JSON, silently reintroducing #2419 under load. That is guaranteed structurally rather than assumed — `MAX_PENDING_STREAMS` is *derived* from `PortUnificationHandler.HTTP2_MAX_CONCURRENT_STREAMS` (`× 2`), the `SETTINGS_MAX_CONCURRENT_STREAMS` value MockServer advertises and Netty enforces with `REFUSED_STREAM` (`AbstractHttp2ConnectionHandlerBuilder.enforceMaxActiveStreams` → `connection.remote().maxActiveStreams(...)`). A test pins the inequality so the two constants cannot drift, and eviction logs at WARN so the condition is diagnosable if the invariant is ever broken.
+
+That limit is advertised **explicitly** rather than inherited. Netty's default is not stable across versions: 4.1's `Http2Settings.defaultSettings()` sets only `maxHeaderListSize` (no concurrent-stream limit, so RFC 9113 permits unbounded streams), while 4.2 added `maxConcurrentStreams(SMALLEST_MAX_CONCURRENT_STREAMS)` = 100. Depending on that default would make the registry's correctness a silent function of the Netty version. MockServer therefore sets 100 itself on all three HTTP/2 pipeline sites — the same value 4.2 supplies, so behaviour is unchanged.
+
+The HTTP/1.1 slot is **single-shot**. Netty keeps reading after `channelRead` returns, so with HTTP/1.1 pipelining and an asynchronous action a second request can genuinely be decoded before the first response is written. Rather than let the second record overwrite the first — which would convert the *first* response against the *second* request's method, producing a wrong-typed message or a fabricated `grpc-status: 13` — `GrpcPendingRequests.record` marks the slot ambiguous and `consume` then returns `null`, so neither response is converted. Refusing to convert is strictly safer: the response goes out unconverted (the pre-#2419 behaviour, visible and debuggable) rather than silently wrong. The ambiguity is logged at WARN and clears on the next consume, so it cannot wedge the connection.
+
+This is pinned by `shouldRefuseToConvertWhenTheHttp11SlotIsAmbiguous` and `shouldPassPipelinedResponsesThroughUnconvertedRatherThanMisconvert` in `GrpcToHttpResponseHandlerTest`.
+
+##### Only matched, successful responses are converted
+
+A non-2xx response carrying no explicit gRPC status did not come from a matched gRPC expectation — overwhelmingly the 404 `notFoundResponse` produced when nothing matched. Converting it would resolve the absent status to `OK`, let the descriptor example synthesizer invent a schema-valid body, and overwrite the 404 with 200: the server log would say `404 Not Found` while the client received a plausible success. Such responses are instead mapped to a gRPC error via `GrpcStatusMapper.fromHttpTransportStatus`, the gRPC-over-HTTP/2 spec's HTTP-status mapping — 404 becomes `UNIMPLEMENTED`, which is what a real gRPC server returns for an unknown method.
+
+Note this is deliberately **not** `GrpcStatusMapper.fromHttpStatus`, which inverts the gRPC → HTTP rendering carried on `GrpcStatusCode` (404 → `NOT_FOUND`). An explicitly-authored `grpc-status` / `grpc-status-name` still takes precedence over the HTTP status.
+
+The health-check, reflection and chaos paths short-circuit in `channelRead0` **before** `convertGrpcRequest` and write already-framed responses, so they deliberately do not record the attribute — otherwise their bodies would be framed twice.
+
+Before this wiring existed, the documented unary expectation returned raw JSON on a stream the client expected to be framed protobuf (issue #2419). The HTTP/3 path avoids the same trap by capturing service/method from the original request in `Http3GrpcResponseWriter`.
+
+#### `grpc-message` percent-encoding
+
+`grpc-message` is a **Percent-Encoded** field in the gRPC wire specification: ASCII only, with every byte outside `0x20-0x7E` — plus `%` itself — escaped as `%XX` over the value's UTF-8 bytes. Clients percent-*decode* on receipt, so writing the raw string is wrong even for ordinary input.
+
+**The rule: every write of a `grpc-message` value goes through `GrpcStatusMapper.percentEncodeMessage`, exactly once.** That covers the unary encoder, both HTTP/3 frame builders, both bidi handlers, the server-streaming handler, the gRPC-Web trailer frame, and the responses `GrpcToHttpRequestHandler` writes directly (health check, reflection errors, decode errors, chaos faults, the deadline response) — currently 14 call sites, which is why this is stated as a rule rather than an inventory that drifts. Grep for `GRPC_MESSAGE_HEADER` to enumerate them.
+
+Exactly once matters as much as at-all: `convertToGrpcWebResponse` decodes the already-encoded trailer before `buildTrailerFrame` re-encodes it, because encoding twice sends `quota 50%2525 exceeded` for an authored `quota 50% exceeded`. `GrpcForwardTranslator.decodeResponseFromUpstream` applies the inverse, `percentDecodeMessage`, so a message from a real upstream server appears decoded in the log and in verifications and is not double-encoded when re-emitted.
+
+Three distinct failures this prevents:
+
+| Input | Without encoding | Why |
+|---|---|---|
+| `invalid escape %41 in pattern` | client sees `invalid escape A in pattern` | the client decodes `%41` |
+| `paiement refusé` | mojibake on h1/h2; literal `?` on gRPC-Web | Netty's `AsciiString` byte-casts `char & 0xFF`; the gRPC-Web trailer frame is written `US_ASCII` |
+| `denied\r\ngrpc-status: 0` | a second `grpc-status` line is injected | the gRPC-Web trailer frame is a CRLF-delimited block |
+
+That last row is a **security** issue, not just conformance: depending on whether the client takes the first or last `grpc-status`, an error can be turned into a success. The outbound mapper's `sanitizeHeaderValue` cannot help — `GrpcToHttpResponseHandler` runs *before* `MockServerHttpServerCodec` on the outbound path (tail→head), so by then the bytes are already inside the body. Trailer names and values are additionally CRLF-stripped in `buildTrailerFrame` as a second layer.
+
+Note grpc-java decodes leniently, so a `%` **not** followed by two hex digits happens to survive unencoded — which is why the round-trip test uses the `%41` form that genuinely corrupts, rather than a bare `%`.
+
+#### Deadlines (`grpc-timeout`)
+
+A client's deadline arrives as `grpc-timeout: <1-8 digits><unit>`, parsed by `GrpcTimeout` (units are case-sensitive: `H`ours, `M`inutes, `S`econds, `m`illis, `u`micros, `n`anos — `M` and `m` differ by a factor of 60,000). The header is still passed through as an ordinary request header, so it remains matchable; enforcement is additive.
+
+| Transport | Where scheduled | How the race is resolved |
+|---|---|---|
+| HTTP/1.1, HTTP/2, gRPC-Web | `GrpcToHttpRequestHandler.scheduleDeadline`, timer held on the `GrpcPendingRequests` record | `claimForDeadline` — whichever of the response and the deadline arrives first wins; both run on the channel event loop |
+| HTTP/3 | `Http3GrpcResponseWriter.scheduleDeadline` (each QUIC stream is its own channel) | an `AtomicBoolean completed` |
+
+When the deadline wins, DEADLINE_EXCEEDED trailers are written and the stream id is remembered, so the *late* response — the `Delay` that outran the client — is **dropped** rather than written as a second response onto a stream that already carries terminal trailers. Timers are cancelled when the exchange is answered, when its record is evicted, and on `channelInactive`, so none can outlive its exchange.
+
+This is a behaviour change: previously the client timed out locally while MockServer went on writing to an abandoned stream.
+
+**Mid-stream cancellation.** Streaming RPCs are covered too, via `GrpcStreamDeadline` (mockserver-core), one instance per RPC invocation threaded through the emission recursion. It is deliberately *not* a channel attribute: on the HTTP/2 connection-adapter pipeline one channel is shared by every multiplexed stream, so a channel-scoped guard would be replaced by the next overlapping RPC — the same error class as the single-slot service/method attribute this change set already had to fix.
+
+| Path | Terminal guard | Deadline writes |
+|---|---|---|
+| `GrpcStreamResponseActionHandler` (h1/h2 server streaming, gRPC-Web) | `GrpcStreamDeadline.tryTerminate()` CAS, checked in `scheduleMessages`/`writeGrpcFrame` | `DefaultLastHttpContent` trailers |
+| `GrpcBidiStreamHandler` (h2 bidi) | `finished` **converted from `volatile boolean` to `AtomicBoolean`** — the previous check-then-set was not atomic, so two terminal paths could each write a terminal HEADERS frame | `writeTrailer(DEADLINE_EXCEEDED, …)` |
+| `Http3GrpcResponseWriter` (h3 unary + server streaming) | `AtomicBoolean completed` for unary; for streaming an `AtomicReference<StreamState>` (`IDLE → STREAMING → COMPLETED`), so starting the stream and an elapsed deadline are a *single* atomic transition and the terminal frame shape (trailing vs trailers-only) is chosen from the state the deadline actually observed | trailing or trailers-only HEADERS |
+| `Http3GrpcBidiStreamHandler` (h3 bidi) | `finishedGuard` (also converted to `AtomicBoolean`) | `writeErrorTrailer(DEADLINE_EXCEEDED, …)` |
+
+Every emission point additionally checks the guard before writing, because a per-message delay or a breakpoint resume can land after the deadline fired — including `GrpcBidiStreamHandler`'s *initial* HEADERS, which are deferred by the action delay and so can be scheduled to run after the deadline has already terminated the stream. A terminal frame written before those initial HEADERS is emitted as a complete Trailers-Only response (carrying `:status`), since it is then the first frame on the stream. Timers are cancelled on normal completion, on `channelInactive`, and — for the HTTP/3 writers and the server-streaming handler, whose deadlines are not registered in `GrpcPendingRequests` — via a `closeFuture` listener, so none can outlive its stream.
+
+A separate CAS is needed on the streaming entry point specifically because `writeGrpcStreamResponse` is dispatched off the stream's event loop by the scheduler whenever a delay is configured: a plain "check completed, then mark started" pair is not atomic against the deadline, and losing that race put two `:status` HEADERS frames on one stream.
+
+**How this is verified.** The end-to-end real-client test cannot distinguish server-side termination from the client giving up: grpc-java reports `DEADLINE_EXCEEDED` either way, at the same instant. `GrpcStreamDeadlineTest` therefore asserts at handler level on an `EmbeddedChannel` with a manually driven scheduler, where the frames MockServer actually wrote are directly observable — exactly one terminal trailer carrying status 4, and no message frame after it even once the pending 5s message delay elapses.
+
+#### Message size and encoding negotiation
+
+`GrpcFrameCodec.maxMessageSize()` is the single definition of the decoded-message limit (see [`maxGrpcMessageSize`](configuration-reference.md#maxgrpcmessagesize)); `IncrementalGrpcFrameDecoder` reads it from there rather than keeping its own copy. Exceeding it raises a `GrpcException` carrying `RESOURCE_EXHAUSTED`. The status now travels **on the exception** rather than being inferred from the message text, which is what previously collapsed everything except `"unknown gRPC method"` to `INTERNAL`.
+
+The frame's compressed flag says *that* a message is compressed, not *how* — `grpc-encoding` does. It is now read and validated, so an unsupported encoding (`deflate`, `snappy`) returns `UNIMPLEMENTED` with a `grpc-accept-encoding: identity, gzip` response header telling the client what to retry with, instead of failing inside gzip as an opaque `INTERNAL`. `grpc-accept-encoding` is advertised on gRPC responses generally.
+
+#### Trailers-Only on HTTP/2
+
+A body-less gRPC response on HTTP/2 is collapsed into the gRPC **Trailers-Only** form — one end-of-stream HEADERS frame carrying `:status`, `content-type` and `grpc-status`, with no DATA frame and no separate trailing HEADERS frame — by `GrpcToHttpResponseHandler.asTrailersOnlyIfHttp2`. Moving the status into the headers makes the response mapper take its no-trailers branch and emit a `DefaultFullHttpResponse` with empty content, which `HttpToHttp2ConnectionHandler` writes as a single `endStream=true` HEADERS frame.
+
+Gated on the response carrying an HTTP/2 stream id. Trailers-Only is an HTTP/2 concept, and on HTTP/1.1 putting `grpc-status` in the headers is precisely the #2419 defect, so HTTP/1.1 keeps real trailers. HTTP/3 already emitted Trailers-Only; this makes HTTP/2 agree.
+
+#### Trailer contract
+
+Per gRPC-over-HTTP/2 (and HTTP/3), a unary response must deliver `grpc-status` (and `grpc-message`) in a **terminal trailing HEADERS frame**. Only `content-type: application/grpc` is a real header. This holds across every gRPC path in the codebase — `GrpcToHttpResponseHandler`, the direct responses in `GrpcToHttpRequestHandler` (health check, reflection, chaos `buildFaultResponse` including its `customTrailers`), `GrpcStreamResponseActionHandler`, `GrpcBidiStreamHandler`, `GrpcBidiReflectionHandler`, `GrpcHttp3Adapter` and `Http3GrpcResponseWriter`.
+
+Trailers are set with `HttpResponse.withTrailer(...)` and written by `MockServerHttpResponseToFullHttpResponse.mapResponseWithTrailers`, which forces chunked transfer-encoding on HTTP/1.1 and rides the trailing HEADERS frame on HTTP/2 / HTTP/3. The chaos `omitGrpcStatus` fault is only a genuine fault simulation because the non-faulted case emits a trailer.
+
+Status resolution lives in **`GrpcResponseStatusResolver` (mockserver-core)** and is shared by every gRPC response path — `GrpcToHttpResponseHandler` (HTTP/1.1, HTTP/2), `GrpcHttp3Adapter` and `Http3GrpcResponseWriter` (HTTP/3). The order is: `grpc-status-name` header → explicit numeric `grpc-status` **header or trailer** → HTTP-status mapping for a non-2xx response (see above) → `OK`.
+
+It is shared rather than reimplemented per transport because the rules are a property of the gRPC contract, not the wire protocol — and duplicating them is exactly how HTTP/3 drifted. Before extraction, HTTP/3 read the status from headers only and defaulted to `"0"`, so an expectation authored with `withTrailer("grpc-status", "5")` (the form the consumer docs recommend) returned `NOT_FOUND` over HTTP/2 but `OK` over HTTP/3, and an unmatched request over HTTP/3 fabricated a success with the 404 body as its payload.
+
+Two further HTTP/3-only gaps are fixed alongside: a unary HTTP/3 response now copies the expectation's own headers onto the initial (or trailers-only) HEADERS frame — previously it emitted only `:status`, `content-type` and `server`, silently dropping `withHeader(...)`, even though HTTP/2 preserved them via `clone()` and the HTTP/3 server-streaming path copied them via `addConfiguredHeaders`. gRPC protocol metadata is excluded from the copy so the transport remains the single source of `grpc-status`.
+
+**Server-streaming must carry the request's stream id too.** `GrpcStreamResponseActionHandler` writes raw Netty objects straight to the channel, bypassing `MockServerHttpResponseToFullHttpResponse`, so nothing stamped `streamId` and the entire stream went to a fresh server-initiated stream — a real gRPC client received **nothing** and hung until its deadline (measured: 0 of 2 messages before, 2 of 2 after). The initial `DefaultHttpResponse` now carries `HttpConversionUtil.ExtensionHeaderNames.STREAM_ID`; Netty's adapter latches that id from the initial `HttpMessage` and reuses it for the subsequent `HttpContent` frames, so setting it once covers the whole stream.
+
+**Direct responses must carry the request's stream id.** Health check, server reflection, chaos faults and request-decode errors are written straight from `GrpcToHttpRequestHandler` rather than through the matching engine, so `ResponseWriter.writeResponse` never stamps `streamId` on them. Without it `HttpToHttp2ConnectionHandler.getStreamId` falls back to `connection().local().incrementAndGetNextStreamId()` and replies on a **fresh server-initiated stream**, so the client's call hangs until deadline. Every direct write funnels through `tagGrpcWebResponse(response, request, grpcWebContentType)`, which stamps the stream id and the gRPC-Web marker together, so a new direct-response path cannot forget one.
+
+A numeric `grpc-status` is emitted **verbatim** (parsed as an integer, so whitespace is normalised, then re-rendered) rather than round-tripped through `GrpcStatusMapper.fromCode`. That lookup is `getOrDefault(code, UNKNOWN)`, so round-tripping would silently rewrite a user simulating a non-standard or future status — `42` would arrive at the client as `2`. The `GrpcStatusCode` enum is used only where a typed status is genuinely required.
+
+`GrpcUnaryClientIntegrationTest` (`mockserver-netty`, test scope) drives this contract with a **real grpc-java client** over h2c using `DynamicMessage` and the loaded descriptor set, so both halves of the contract are verified against an actual client rather than only at handler level. It uses `grpc-netty-shaded` so grpc's bundled Netty 4.1 cannot clash with MockServer's Netty 4.2.
 
 ### gRPC-Web Support
 
@@ -516,7 +639,7 @@ gRPC-Web is a variant of gRPC designed for browser clients that cannot use HTTP/
 
 **Response path:**
 1. `GrpcToHttpResponseHandler.encode()` checks for the `x-grpc-web-content-type` header on outbound responses
-2. If present, `convertToGrpcWebResponse()` re-frames the response: `grpc-status`/`grpc-message` headers are removed and embedded in a trailer frame (flag byte `0x80`) appended to the message body
+2. If present, `convertToGrpcWebResponse()` re-frames the response: `grpc-status`/`grpc-message` are read from the response **trailers** (falling back to headers), embedded in a trailer frame (flag byte `0x80`) appended to the message body, and then **stripped from both the headers and the trailers** so the status is not also emitted as a real HTTP trailer. Reading trailers first is load-bearing: `GrpcWebTranslator.buildTrailerFrame` defaults a missing status to `"0"`, so a headers-only read would silently report OK on every gRPC-Web error
 3. For the `-text` variant, the entire body (message frames + trailer frame) is base64-encoded
 4. The response content-type is set to the matching gRPC-Web type
 
@@ -630,7 +753,9 @@ sequenceDiagram
 | `customTrailers` | Map&lt;String,String&gt; | Arbitrary trailer key/value pairs injected on the fault response in addition to (or instead of) the normal status trailers. Applied after `omitGrpcStatus`/`corruptGrpcStatus` — always added regardless of which status variant fires. |
 | `abortAfterMessages` | Integer | For client-streaming requests: when the number of decoded gRPC messages in the request body is >= this threshold, inject an `ABORTED` status immediately. The message count is determined by decoding the 5-byte gRPC length-prefixed frames in the request body; >= 1. |
 
-**Trailer-fault precedence in `buildFaultResponse`:** `omitGrpcStatus: true` → no `grpc-status` header is written at all; else `corruptGrpcStatus: true` → `grpc-status: malformed` is written (a non-numeric value that violates the gRPC wire spec); else the normal numeric status code is written. `customTrailers` are always appended after the status decision, for every fault response. Custom trailer keys and values are validated against CR/LF injection at the model layer and defensively skipped at the handler layer.
+**Trailer-fault precedence in `buildFaultResponse`:** `omitGrpcStatus: true` → no `grpc-status` trailer is written at all; else `corruptGrpcStatus: true` → `grpc-status: malformed` is written (a non-numeric value that violates the gRPC wire spec); else the normal numeric status code is written. All of these are real **trailers**, not headers — which is what makes `omitGrpcStatus` a genuine fault simulation, since the non-faulted case emits a trailer. `customTrailers` are always appended after the status decision, for every fault response. Custom trailer keys and values are validated against CR/LF injection at the model layer and defensively skipped at the handler layer, and again when folded into the gRPC-Web trailer frame.
+
+On the **gRPC-Web** path these trailers (including `customTrailers`) are folded into the in-body trailer frame by `GrpcToHttpResponseHandler.convertToGrpcWebResponse` and the real HTTP trailers are then cleared. This is required, not cosmetic: browser `fetch`/XHR do not expose HTTP trailers, so a trailer left on the response is unreachable by a gRPC-Web client.
 
 Serialization uses `GrpcChaosProfileDTO` (`org.mockserver.serialization.model.GrpcChaosProfileDTO`).
 

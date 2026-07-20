@@ -16,6 +16,8 @@ import org.mockserver.grpc.GrpcBidiRuleMatcher;
 import org.mockserver.grpc.GrpcFrameCodec;
 import org.mockserver.grpc.GrpcJsonMessageConverter;
 import org.mockserver.grpc.GrpcStatusMapper;
+import org.mockserver.grpc.GrpcStreamDeadline;
+import org.mockserver.grpc.GrpcTimeout;
 import org.mockserver.grpc.GrpcStreamMessageTemplateRenderer;
 import org.mockserver.grpc.IncrementalGrpcFrameDecoder;
 import org.mockserver.mock.breakpoint.PausedStreamFrame;
@@ -82,7 +84,29 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
     private final Descriptors.MethodDescriptor methodDescriptor;
     private final GrpcJsonMessageConverter converter;
     private final IncrementalGrpcFrameDecoder decoder;
-    private volatile boolean finished;
+    /**
+     * Terminal guard for the stream. An {@link AtomicBoolean} rather than a {@code volatile
+     * boolean}: the previous check-then-set was not atomic, so two terminal paths (normal finish,
+     * error trailer, and now an elapsed deadline) could each observe {@code false} and both write a
+     * terminal HEADERS frame. The CAS makes exactly one win.
+     */
+    private final AtomicBoolean finished = new AtomicBoolean();
+
+    /**
+     * Enforces the client's grpc-timeout for this streaming RPC, terminating it mid-stream with
+     * DEADLINE_EXCEEDED. Scheduled on this stream's own child channel, so it is naturally
+     * per-stream and dies with the stream.
+     */
+    private final GrpcStreamDeadline deadline = new GrpcStreamDeadline();
+
+    /**
+     * Set once the initial response HEADERS are on the wire. The initial HEADERS are deferred by
+     * {@code config.getDelay()}, so a {@code grpc-timeout} shorter than that delay can fire first --
+     * and a terminal frame written before them must then be a complete Trailers-Only response
+     * (carrying {@code :status}), not a bare trailing HEADERS frame with only {@code grpc-status}.
+     * Mirrors {@code Http3GrpcResponseWriter}'s stream-state handling.
+     */
+    private final AtomicBoolean initialHeadersWritten = new AtomicBoolean();
 
     // Phase 3a mode: function-based responder
     private final Function<String, List<String>> responder;
@@ -183,7 +207,7 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
         Configuration configuration,
         String inboundStreamId
     ) {
-        this(methodDescriptor, converter, null, config, new IncrementalGrpcFrameDecoder(), completionCallback, configuration, inboundStreamId, null, null, null);
+        this(methodDescriptor, converter, null, config, new IncrementalGrpcFrameDecoder(configuration), completionCallback, configuration, inboundStreamId, null, null, null);
     }
 
     /**
@@ -214,7 +238,7 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
         String inboundStreamId,
         WebSocketClientRegistry webSocketClientRegistry
     ) {
-        this(methodDescriptor, converter, null, config, new IncrementalGrpcFrameDecoder(), completionCallback, configuration, inboundStreamId, webSocketClientRegistry, null, null);
+        this(methodDescriptor, converter, null, config, new IncrementalGrpcFrameDecoder(configuration), completionCallback, configuration, inboundStreamId, webSocketClientRegistry, null, null);
     }
 
     /**
@@ -242,7 +266,7 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
         String inboundBreakpointClientId,
         String inboundBreakpointId
     ) {
-        this(methodDescriptor, converter, null, config, new IncrementalGrpcFrameDecoder(), completionCallback,
+        this(methodDescriptor, converter, null, config, new IncrementalGrpcFrameDecoder(configuration), completionCallback,
             configuration, inboundStreamId, webSocketClientRegistry, inboundBreakpointClientId, inboundBreakpointId);
     }
 
@@ -272,7 +296,7 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
         this.templateRenderer = new GrpcStreamMessageTemplateRenderer(null, configuration);
         this.inboundStreamId = inboundStreamId;
         this.webSocketClientRegistry = webSocketClientRegistry;
-        this.finished = false;
+        this.finished.set(false);
         // Use the matched breakpoint's clientId and id passed from the outer caller
         // (avoids re-matching with null request which can pick the wrong breakpoint)
         if (inboundStreamId != null && inboundBreakpointClientId != null && webSocketClientRegistry != null) {
@@ -314,12 +338,32 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void handleHeaders(ChannelHandlerContext ctx, Http2HeadersFrame headersFrame) {
+        // Honour the client's grpc-timeout for the whole bidi RPC. writeTrailer's CAS makes the
+        // deadline and any normal termination mutually exclusive, and writeGrpcMessage refuses to
+        // emit once finished, so no message can follow the terminal trailer.
+        CharSequence grpcTimeout = headersFrame.headers().get(GrpcTimeout.GRPC_TIMEOUT_HEADER);
+        if (grpcTimeout != null) {
+            deadline.schedule(
+                ctx,
+                org.mockserver.model.HttpRequest.request()
+                    .withHeader(GrpcTimeout.GRPC_TIMEOUT_HEADER, grpcTimeout.toString()),
+                () -> writeTrailer(ctx, GrpcStatusMapper.GrpcStatusCode.DEADLINE_EXCEEDED,
+                    deadline.deadlineExceededMessage())
+            );
+        }
         // Apply the top-level action delay (if configured) before writing initial HEADERS.
         // This mirrors how HttpActionHandler applies action.getDelay() via the Scheduler.
         Delay actionDelay = (config != null) ? config.getDelay() : null;
         long actionDelayMillis = (actionDelay != null) ? actionDelay.sampleValueMillis() : 0;
 
         Runnable writeInitialResponse = () -> {
+            // The action delay can outlast the client's grpc-timeout, in which case the deadline
+            // already terminated the stream -- writing :status HEADERS (and then DATA) onto an
+            // ended stream is a protocol violation.
+            if (finished.get()) {
+                return;
+            }
+            initialHeadersWritten.set(true);
             // Write initial response headers
             DefaultHttp2Headers responseHeaders = new DefaultHttp2Headers();
             responseHeaders.status("200");
@@ -596,6 +640,11 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void writeGrpcMessage(ChannelHandlerContext ctx, String json) {
+        if (finished.get()) {
+            // the stream already carries a terminal trailer (normal finish or an elapsed deadline);
+            // a per-message delay or breakpoint resume can still land here afterwards
+            return;
+        }
         byte[] responseProto = converter.toProtobuf(json, methodDescriptor.getOutputType());
         byte[] framedResponse = GrpcFrameCodec.encode(responseProto);
         ctx.writeAndFlush(new DefaultHttp2DataFrame(
@@ -603,10 +652,10 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void finish(ChannelHandlerContext ctx) {
-        if (finished) {
+        if (!finished.compareAndSet(false, true)) {
             return;
         }
-        finished = true;
+        deadline.cancel();
 
         // Determine grpc-status from config
         String statusCode = "0";
@@ -622,7 +671,8 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
         DefaultHttp2Headers trailers = new DefaultHttp2Headers();
         trailers.set(GrpcStatusMapper.GRPC_STATUS_HEADER, statusCode);
         if (statusMessage != null) {
-            trailers.set(GrpcStatusMapper.GRPC_MESSAGE_HEADER, statusMessage);
+            trailers.set(GrpcStatusMapper.GRPC_MESSAGE_HEADER,
+                GrpcStatusMapper.percentEncodeMessage(statusMessage));
         }
         ctx.writeAndFlush(new DefaultHttp2HeadersFrame(trailers, true));
 
@@ -637,14 +687,22 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void writeTrailer(ChannelHandlerContext ctx, GrpcStatusMapper.GrpcStatusCode statusCode, String message) {
-        if (finished) {
+        if (!finished.compareAndSet(false, true)) {
             return;
         }
-        finished = true;
+        deadline.cancel();
         DefaultHttp2Headers trailers = new DefaultHttp2Headers();
+        if (!initialHeadersWritten.get()) {
+            // Nothing has been written yet, so this is the FIRST frame on the stream and must be a
+            // valid Trailers-Only response: :status and content-type alongside grpc-status. Emitting
+            // a bare trailing HEADERS frame here produced a response with no :status at all.
+            trailers.status("200");
+            trailers.set("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE);
+        }
         trailers.set(GrpcStatusMapper.GRPC_STATUS_HEADER, String.valueOf(statusCode.getCode()));
         if (message != null) {
-            trailers.set(GrpcStatusMapper.GRPC_MESSAGE_HEADER, message);
+            trailers.set(GrpcStatusMapper.GRPC_MESSAGE_HEADER,
+                GrpcStatusMapper.percentEncodeMessage(message));
         }
         ctx.writeAndFlush(new DefaultHttp2HeadersFrame(trailers, true));
 
@@ -696,6 +754,8 @@ public class GrpcBidiStreamHandler extends ChannelInboundHandlerAdapter {
         if (inboundStreamId != null) {
             StreamFrameBreakpointRegistry.getInstance().evictStream(inboundStreamId);
         }
+        // a deadline timer must not outlive the stream that scheduled it
+        deadline.cancel();
         invokeCompletionCallback();
         super.channelInactive(ctx);
     }

@@ -7,10 +7,14 @@ import org.mockserver.grpc.GrpcException;
 import org.mockserver.grpc.GrpcFrameCodec;
 import org.mockserver.grpc.GrpcJsonMessageConverter;
 import org.mockserver.grpc.GrpcProtoDescriptorStore;
+import org.mockserver.grpc.GrpcResponseStatusResolver;
 import org.mockserver.grpc.GrpcStatusMapper;
 import com.google.protobuf.Descriptors;
+import org.mockserver.model.Header;
+import org.mockserver.model.Headers;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
+import org.mockserver.model.NottableString;
 
 import java.util.List;
 
@@ -133,18 +137,19 @@ public final class GrpcHttp3Adapter {
     ) {
         Descriptors.MethodDescriptor methodDescriptor = descriptorStore.getMethod(serviceName, methodName);
 
-        // Determine grpc-status
-        String statusName = response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER);
-        GrpcStatusMapper.GrpcStatusCode statusCode;
-        if (statusName != null && !statusName.isEmpty()) {
-            statusCode = GrpcStatusMapper.fromName(statusName);
-        } else {
-            statusCode = GrpcStatusMapper.GrpcStatusCode.OK;
-        }
+        // Determine grpc-status using the SHARED, transport-independent resolver, so an
+        // expectation behaves identically over HTTP/1.1, HTTP/2 and HTTP/3. In particular the
+        // status is read from the trailers as well as the headers (consumer docs recommend
+        // authoring it as a trailer), and a non-2xx HTTP status maps to a gRPC error rather than
+        // silently reporting OK.
+        GrpcResponseStatusResolver.ResolvedStatus resolved = GrpcResponseStatusResolver.resolve(response);
+        boolean transportFailure = resolved.isTransportFailure();
 
-        // Encode the response body to gRPC framing
+        // Encode the response body to gRPC framing. A transport failure carries no message --
+        // whatever body it has (an error page, a mismatch diagnostic) is not a protobuf message of
+        // this method's output type, and trying to convert it would throw.
         byte[] grpcFrame = null;
-        if (methodDescriptor != null) {
+        if (methodDescriptor != null && !transportFailure) {
             String bodyString = response.getBodyAsString();
             if (bodyString != null && !bodyString.isEmpty()) {
                 GrpcJsonMessageConverter converter = descriptorStore.getConverter();
@@ -153,21 +158,7 @@ public final class GrpcHttp3Adapter {
             }
         }
 
-        // Check if the response already has explicit grpc-status header (e.g., from a passthrough)
-        String explicitGrpcStatus = response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER);
-        String explicitGrpcMessage = response.getFirstHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER);
-
-        String finalStatus;
-        String finalMessage;
-        if (explicitGrpcStatus != null && !explicitGrpcStatus.isEmpty()) {
-            finalStatus = explicitGrpcStatus;
-            finalMessage = explicitGrpcMessage;
-        } else {
-            finalStatus = String.valueOf(statusCode.getCode());
-            finalMessage = null;
-        }
-
-        return new GrpcResponseParts(grpcFrame, finalStatus, finalMessage);
+        return new GrpcResponseParts(grpcFrame, resolved.code(), resolved.message());
     }
 
     /**
@@ -191,11 +182,43 @@ public final class GrpcHttp3Adapter {
      * (which belongs in the trailing HEADERS frame).
      */
     public static DefaultHttp3HeadersFrame buildInitialHeadersFrame() {
+        return buildInitialHeadersFrame(null);
+    }
+
+    /**
+     * As {@link #buildInitialHeadersFrame()}, additionally copying the matched response's own
+     * headers through to the client.
+     * <p>
+     * Without this, a unary HTTP/3 gRPC response silently dropped every header the expectation
+     * set -- {@code withHeader("x-tenant-id", "acme")} simply never arrived. HTTP/2 preserves them
+     * by cloning the response, and the HTTP/3 server-streaming path already copies them via
+     * {@code addConfiguredHeaders}, so unary HTTP/3 was the only path that lost them.
+     * gRPC protocol metadata is excluded ({@link GrpcResponseStatusResolver#isGrpcProtocolMetadata})
+     * because this frame emits {@code :status} and {@code content-type} itself, and
+     * {@code grpc-status}/{@code grpc-message} belong in the trailing HEADERS frame.
+     *
+     * @param response the matched response, may be {@code null}
+     */
+    public static DefaultHttp3HeadersFrame buildInitialHeadersFrame(HttpResponse response) {
         DefaultHttp3HeadersFrame headersFrame = new DefaultHttp3HeadersFrame();
         headersFrame.headers().status("200");
         headersFrame.headers().add("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE);
         headersFrame.headers().add("server", "mockserver-http3");
+        addPassThroughHeaders(headersFrame, response);
         return headersFrame;
+    }
+
+    private static void addPassThroughHeaders(DefaultHttp3HeadersFrame headersFrame, HttpResponse response) {
+        if (response == null) {
+            return;
+        }
+        Headers passThrough = GrpcResponseStatusResolver.passThroughHeaders(response);
+        for (Header header : passThrough.getEntries()) {
+            String name = header.getName().getValue();
+            for (NottableString value : header.getValues()) {
+                headersFrame.headers().add(name, value.getValue());
+            }
+        }
     }
 
     /**
@@ -207,7 +230,8 @@ public final class GrpcHttp3Adapter {
         DefaultHttp3HeadersFrame trailersFrame = new DefaultHttp3HeadersFrame();
         trailersFrame.headers().add(GrpcStatusMapper.GRPC_STATUS_HEADER, grpcStatus);
         if (grpcMessage != null && !grpcMessage.isEmpty()) {
-            trailersFrame.headers().add(GrpcStatusMapper.GRPC_MESSAGE_HEADER, grpcMessage);
+            trailersFrame.headers().add(GrpcStatusMapper.GRPC_MESSAGE_HEADER,
+                GrpcStatusMapper.percentEncodeMessage(grpcMessage));
         }
         return trailersFrame;
     }
@@ -229,13 +253,24 @@ public final class GrpcHttp3Adapter {
      * This is used for error responses where there is no message body.
      */
     public static DefaultHttp3HeadersFrame buildTrailersOnlyFrame(String grpcStatus, String grpcMessage) {
+        return buildTrailersOnlyFrame(grpcStatus, grpcMessage, null);
+    }
+
+    /**
+     * As {@link #buildTrailersOnlyFrame(String, String)}, additionally copying the matched
+     * response's own headers through -- a trailers-only response is the client's only frame, so
+     * dropping them here loses them entirely.
+     */
+    public static DefaultHttp3HeadersFrame buildTrailersOnlyFrame(String grpcStatus, String grpcMessage, HttpResponse response) {
         DefaultHttp3HeadersFrame frame = new DefaultHttp3HeadersFrame();
         frame.headers().status("200");
         frame.headers().add("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE);
         frame.headers().add("server", "mockserver-http3");
+        addPassThroughHeaders(frame, response);
         frame.headers().add(GrpcStatusMapper.GRPC_STATUS_HEADER, grpcStatus);
         if (grpcMessage != null && !grpcMessage.isEmpty()) {
-            frame.headers().add(GrpcStatusMapper.GRPC_MESSAGE_HEADER, grpcMessage);
+            frame.headers().add(GrpcStatusMapper.GRPC_MESSAGE_HEADER,
+                GrpcStatusMapper.percentEncodeMessage(grpcMessage));
         }
         return frame;
     }

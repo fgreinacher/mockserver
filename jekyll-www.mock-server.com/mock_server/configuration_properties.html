@@ -1038,6 +1038,24 @@ mockserver.enableCORSForAllResponses=true</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxRequestBodySize="52428800"</code></pre>
 </div>
 
+<button id="button_configuration_max_grpc_message_size" class="accordion title"><strong>Maximum gRPC Message Size</strong></button>
+<div class="panel title">
+    <p>Maximum size (in bytes) of a single decoded gRPC message. A request message larger than this is rejected with <span class="inline_code">grpc-status: 8</span> (<span class="inline_code">RESOURCE_EXHAUSTED</span>) &mdash; the status the gRPC specification uses for exceeding the receive-message-size limit, so your client can tell &quot;message too big&quot; apart from &quot;the server broke&quot;.</p>
+    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">4194304 (4 MiB)</span></p>
+    <p>The default matches gRPC-Java and gRPC-Go, so a message MockServer accepts is one a real gRPC server would accept too. The limit is also applied while decompressing, so a small compressed message cannot expand past it.</p>
+    <p>This is separate from <span class="inline_code">maxRequestBodySize</span>, which bounds the whole HTTP body: one HTTP body can carry several gRPC messages (client streaming), and this limit applies to each message. Raise it only if you intentionally mock large gRPC messages &mdash; it is what stops a declared message length from allocating unbounded memory.</p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.maxGrpcMessageSize(int size)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxGrpcMessageSize=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_MAX_GRPC_MESSAGE_SIZE=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.maxGrpcMessageSize=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxGrpcMessageSize="16777216"</code></pre>
+</div>
+
 <button id="button_configuration_max_response_body_size" class="accordion title"><strong>Maximum Upstream Response Body Size</strong></button>
 <div class="panel title">
     <p>Maximum aggregated body size (in bytes) accepted on responses received from upstream servers when MockServer is acting as a proxy or forwarder.</p>

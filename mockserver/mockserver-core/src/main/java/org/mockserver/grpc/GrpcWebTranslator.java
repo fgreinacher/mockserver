@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Map;
 
 /**
  * Translates between gRPC-Web framing and standard gRPC framing.
@@ -91,13 +92,28 @@ public class GrpcWebTranslator {
      * @return the gRPC-Web response body bytes
      */
     public static byte[] encodeResponseBody(byte[] messageFrameBody, String grpcStatus, String grpcMessage, boolean isTextVariant) {
+        return encodeResponseBody(messageFrameBody, grpcStatus, grpcMessage, null, isTextVariant);
+    }
+
+    /**
+     * As {@link #encodeResponseBody(byte[], String, String, boolean)}, additionally carrying
+     * arbitrary custom trailers into the trailer frame.
+     * <p>
+     * Custom trailers matter because a gRPC-Web client can only read trailers from this in-body
+     * frame — real HTTP trailers are not exposed by browser fetch/XHR. Anything the server wants a
+     * gRPC-Web client to see (for example the chaos profile's {@code customTrailers}, such as
+     * {@code grpc-retry-pushback-ms}) must therefore travel here.
+     *
+     * @param customTrailers additional trailer entries, may be {@code null} or empty
+     */
+    public static byte[] encodeResponseBody(byte[] messageFrameBody, String grpcStatus, String grpcMessage, Map<String, String> customTrailers, boolean isTextVariant) {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         // write message frame(s) as-is (they use the same framing as standard gRPC)
         if (messageFrameBody != null && messageFrameBody.length > 0) {
             bos.write(messageFrameBody, 0, messageFrameBody.length);
         }
         // build trailer frame
-        byte[] trailerFrame = buildTrailerFrame(grpcStatus, grpcMessage);
+        byte[] trailerFrame = buildTrailerFrame(grpcStatus, grpcMessage, customTrailers);
         bos.write(trailerFrame, 0, trailerFrame.length);
 
         byte[] result = bos.toByteArray();
@@ -112,14 +128,56 @@ public class GrpcWebTranslator {
      * then ASCII-encoded trailer lines.
      */
     public static byte[] buildTrailerFrame(String grpcStatus, String grpcMessage) {
+        return buildTrailerFrame(grpcStatus, grpcMessage, null);
+    }
+
+    /**
+     * As {@link #buildTrailerFrame(String, String)}, additionally emitting custom trailer entries
+     * after {@code grpc-status}/{@code grpc-message}.
+     * <p>
+     * Entries whose name or value contains CR or LF are skipped: trailer lines are CRLF-delimited,
+     * so allowing them through would let a caller inject additional trailers (the same defensive
+     * check {@code GrpcToHttpRequestHandler.buildFaultResponse} applies). {@code grpc-status} and
+     * {@code grpc-message} are skipped too, since they are emitted from their own parameters and a
+     * duplicate would be ambiguous.
+     */
+    public static byte[] buildTrailerFrame(String grpcStatus, String grpcMessage, Map<String, String> customTrailers) {
         StringBuilder trailers = new StringBuilder();
         trailers.append(GrpcStatusMapper.GRPC_STATUS_HEADER).append(": ");
-        trailers.append(grpcStatus != null ? grpcStatus : "0");
+        // The status is normally a decimal integer, but the chaos profile can deliberately emit a
+        // non-numeric value ("malformed") as a protocol-violation fault. Strip CR/LF so even that
+        // cannot terminate the line and inject a further trailer.
+        trailers.append(stripCrLf(grpcStatus != null ? grpcStatus : "0"));
         trailers.append("\r\n");
         if (grpcMessage != null && !grpcMessage.isEmpty()) {
             trailers.append(GrpcStatusMapper.GRPC_MESSAGE_HEADER).append(": ");
-            trailers.append(grpcMessage);
+            // Percent-encoding is load-bearing here for THREE reasons, not just conformance:
+            //  - this frame is a CRLF-delimited block, so an unescaped CRLF in the message injects
+            //    a second "grpc-status:" line and can turn an error into a success. The outbound
+            //    mapper's sanitizeHeaderValue cannot help: GrpcToHttpResponseHandler runs BEFORE
+            //    MockServerHttpServerCodec on the outbound path, so by then these bytes are already
+            //    inside the body;
+            //  - the frame is written as US_ASCII below, so any non-ASCII character would otherwise
+            //    be replaced by a literal '?' -- silent data loss;
+            //  - clients percent-decode on receipt, so an unencoded '%' corrupts the message.
+            trailers.append(GrpcStatusMapper.percentEncodeMessage(grpcMessage));
             trailers.append("\r\n");
+        }
+        if (customTrailers != null) {
+            for (Map.Entry<String, String> entry : customTrailers.entrySet()) {
+                String name = entry.getKey();
+                String value = entry.getValue();
+                if (name == null || name.isEmpty() || containsCrLf(name) || containsCrLf(value)) {
+                    continue;
+                }
+                if (GrpcStatusMapper.GRPC_STATUS_HEADER.equalsIgnoreCase(name)
+                    || GrpcStatusMapper.GRPC_MESSAGE_HEADER.equalsIgnoreCase(name)) {
+                    continue;
+                }
+                trailers.append(name).append(": ");
+                trailers.append(stripCrLf(value != null ? value : ""));
+                trailers.append("\r\n");
+            }
         }
         byte[] trailerBytes = trailers.toString().getBytes(StandardCharsets.US_ASCII);
         ByteBuffer buffer = ByteBuffer.allocate(HEADER_LENGTH + trailerBytes.length);
@@ -127,6 +185,21 @@ public class GrpcWebTranslator {
         buffer.putInt(trailerBytes.length);
         buffer.put(trailerBytes);
         return buffer.array();
+    }
+
+    private static boolean containsCrLf(String value) {
+        return value != null && (value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0);
+    }
+
+    /**
+     * Removes CR and LF, which would otherwise terminate a trailer line in the CRLF-delimited
+     * trailer frame and allow a further trailer to be injected.
+     */
+    private static String stripCrLf(String value) {
+        if (value == null || !containsCrLf(value)) {
+            return value;
+        }
+        return value.replace("\r", "").replace("\n", "");
     }
 
     /**
@@ -148,9 +221,13 @@ public class GrpcWebTranslator {
      * @return the matching gRPC-Web response content-type
      */
     public static String responseContentType(String requestContentType) {
+        // Echo the negotiated subtype: a request for application/grpc-web+proto should be answered
+        // as application/grpc-web+proto, not the bare type. Clients accept the bare form, so this
+        // is cosmetic, but it makes the response reflect what was actually negotiated.
+        boolean isProtoSubtype = requestContentType != null && requestContentType.contains("+proto");
         if (isGrpcWebTextContentType(requestContentType)) {
-            return GRPC_WEB_TEXT_CONTENT_TYPE;
+            return isProtoSubtype ? GRPC_WEB_TEXT_PROTO_CONTENT_TYPE : GRPC_WEB_TEXT_CONTENT_TYPE;
         }
-        return GRPC_WEB_CONTENT_TYPE;
+        return isProtoSubtype ? GRPC_WEB_PROTO_CONTENT_TYPE : GRPC_WEB_CONTENT_TYPE;
     }
 }

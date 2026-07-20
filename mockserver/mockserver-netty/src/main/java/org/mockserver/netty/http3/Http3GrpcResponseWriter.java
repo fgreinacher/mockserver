@@ -9,7 +9,9 @@ import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.mockserver.closurecallback.websocketregistry.WebSocketClientRegistry;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.grpc.GrpcProtoDescriptorStore;
+import org.mockserver.grpc.GrpcResponseStatusResolver;
 import org.mockserver.grpc.GrpcStatusMapper;
+import org.mockserver.grpc.GrpcTimeout;
 import org.mockserver.grpc.GrpcStreamMessageEncoder;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
@@ -59,6 +61,25 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
     private final String grpcService;
     private final String grpcMethod;
     private final WebSocketClientRegistry webSocketClientRegistry;
+    /**
+     * Guards the stream against two terminal writes: the matched response and an elapsed
+     * {@code grpc-timeout} deadline race, and exactly one must win.
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean completed = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * Stream lifecycle, so starting a stream and an elapsed deadline are a SINGLE atomic
+     * transition. {@code completed.get()} followed by {@code streamStarted.set(true)} was not
+     * atomic with respect to each other: {@code writeGrpcStreamResponse} is dispatched off the QUIC
+     * event loop by the scheduler whenever a delay is configured, so the deadline could win its CAS
+     * between the two and emit a trailers-only frame (with {@code :status}) while the streaming
+     * path then emitted its own initial HEADERS -- two {@code :status} frames on one stream.
+     */
+    private enum StreamState { IDLE, STREAMING, COMPLETED }
+
+    private final java.util.concurrent.atomic.AtomicReference<StreamState> streamState =
+        new java.util.concurrent.atomic.AtomicReference<>(StreamState.IDLE);
+    private io.netty.util.concurrent.ScheduledFuture<?> deadlineFuture;
 
     public Http3GrpcResponseWriter(
         Configuration configuration,
@@ -88,8 +109,88 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
         this.webSocketClientRegistry = webSocketClientRegistry;
     }
 
+    /**
+     * Honours the client's {@code grpc-timeout} by scheduling a DEADLINE_EXCEEDED response.
+     * <p>
+     * Each HTTP/3 request is its own {@link QuicStreamChannel}, so the timer is naturally
+     * per-stream and dies with the stream. {@link #completed} makes the deadline and the real
+     * response mutually exclusive, so a {@code Delay} that outruns the client's deadline cannot
+     * write a second response onto a stream that already carries terminal trailers.
+     */
+    public void scheduleDeadline(HttpRequest request) {
+        Long timeoutNanos = GrpcTimeout.parseNanos(request);
+        if (timeoutNanos == null) {
+            return;
+        }
+        // Cancel if the stream closes first. Without this an abandoned QUIC stream carrying a very
+        // long grpc-timeout (the format saturates at ~292 years) leaves a ScheduledFutureTask in
+        // the shared event-loop queue forever -- unauthenticated and uncapped, so a client could
+        // open and reset streams to accumulate them. The HTTP/1.1 and HTTP/2 path already cancels
+        // via channelInactive; this was the omission.
+        ctx.channel().closeFuture().addListener(closeFuture -> {
+            if (deadlineFuture != null) {
+                deadlineFuture.cancel(false);
+                deadlineFuture = null;
+            }
+        });
+        deadlineFuture = ctx.channel().eventLoop().schedule(() -> {
+            if (!completed.compareAndSet(false, true)) {
+                return;
+            }
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.INFO)
+                    .setHttpRequest(request)
+                    .setMessageFormat("gRPC deadline elapsed over HTTP/3 for {} - returning DEADLINE_EXCEEDED")
+                    .setArguments(request.getPath())
+            );
+            String deadlineMessage = GrpcTimeout.deadlineExceededMessage(timeoutNanos);
+            // Claim the stream for the deadline. If it was IDLE the stream never started, so a
+            // trailers-only frame (carrying :status) is correct; if it was STREAMING the initial
+            // HEADERS are already on the wire and only a TRAILING HEADERS frame may follow.
+            StreamState priorState = streamState.getAndSet(StreamState.COMPLETED);
+            if (priorState == StreamState.COMPLETED) {
+                return;
+            }
+            if (priorState == StreamState.STREAMING) {
+                // mid-stream: the initial HEADERS are already on the wire, so terminate with a
+                // TRAILING HEADERS frame rather than a trailers-only frame
+                DefaultHttp3HeadersFrame trailers = GrpcHttp3Adapter.buildTrailingHeadersFrame(
+                    String.valueOf(GrpcStatusMapper.GrpcStatusCode.DEADLINE_EXCEEDED.getCode()),
+                    deadlineMessage
+                );
+                ctx.writeAndFlush(trailers).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+            } else {
+                writeTrailersOnly(GrpcStatusMapper.GrpcStatusCode.DEADLINE_EXCEEDED, deadlineMessage);
+            }
+        }, timeoutNanos, TimeUnit.NANOSECONDS);
+    }
+
+    private void writeTrailersOnly(GrpcStatusMapper.GrpcStatusCode statusCode, String message) {
+        DefaultHttp3HeadersFrame trailersOnly = GrpcHttp3Adapter.buildTrailersOnlyFrame(
+            String.valueOf(statusCode.getCode()), message
+        );
+        ctx.writeAndFlush(trailersOnly).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+    }
+
     @Override
     public void sendResponse(HttpRequest request, HttpResponse response) {
+        if (!completed.compareAndSet(false, true)) {
+            // the deadline already fired and terminated this stream -- dropping the late response
+            // avoids writing a second response onto a stream that already ended
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.INFO)
+                    .setHttpRequest(request)
+                    .setMessageFormat("dropping gRPC response over HTTP/3 for a stream that already"
+                        + " ended with DEADLINE_EXCEEDED - the delay outlasted the client's grpc-timeout")
+            );
+            return;
+        }
+        if (deadlineFuture != null) {
+            deadlineFuture.cancel(false);
+            deadlineFuture = null;
+        }
         if (response == null) {
             response = HttpResponse.notFoundResponse();
         }
@@ -121,7 +222,7 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
 
             if (parts.hasBody()) {
                 // Full response: initial HEADERS + DATA + trailing HEADERS
-                DefaultHttp3HeadersFrame initialHeaders = GrpcHttp3Adapter.buildInitialHeadersFrame();
+                DefaultHttp3HeadersFrame initialHeaders = GrpcHttp3Adapter.buildInitialHeadersFrame(response);
                 DefaultHttp3DataFrame dataFrame = GrpcHttp3Adapter.buildDataFrame(parts.grpcFrameBytes());
                 DefaultHttp3HeadersFrame trailers = GrpcHttp3Adapter.buildTrailingHeadersFrame(
                     parts.grpcStatus(), parts.grpcMessage()
@@ -134,7 +235,7 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
             } else {
                 // Trailers-only: single HEADERS frame with grpc-status
                 DefaultHttp3HeadersFrame trailersOnly = GrpcHttp3Adapter.buildTrailersOnlyFrame(
-                    parts.grpcStatus(), parts.grpcMessage()
+                    parts.grpcStatus(), parts.grpcMessage(), response
                 );
                 ctx.writeAndFlush(trailersOnly)
                     .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
@@ -161,16 +262,23 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
      * it correctly with trailing HEADERS.
      */
     private void writePassthroughGrpcResponse(HttpResponse response) {
-        String grpcStatus = response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER);
-        String grpcMessage = response.getFirstHeader(GrpcStatusMapper.GRPC_MESSAGE_HEADER);
+        // Use the SHARED resolver rather than reading grpc-status from the headers and defaulting
+        // to "0". Two defects came from that default:
+        //  - an expectation authored with withTrailer("grpc-status", ...) -- which the consumer
+        //    docs recommend -- was reported as OK, so the same expectation gave opposite results
+        //    over HTTP/2 and HTTP/3;
+        //  - an UNMATCHED request fabricated a success: this branch is taken whenever no descriptor
+        //    is loaded, so the 404 notFoundResponse was written out as grpc-status 0 with the 404
+        //    body as a DATA frame. That is the direct twin of the HTTP/2 defect from #2419.
+        GrpcResponseStatusResolver.ResolvedStatus resolved = GrpcResponseStatusResolver.resolve(response);
+        String grpcStatus = resolved.code();
+        String grpcMessage = resolved.message();
 
-        if (grpcStatus == null || grpcStatus.isEmpty()) {
-            grpcStatus = "0"; // OK
-        }
-
-        byte[] bodyBytes = response.getBodyAsRawBytes();
+        // A transport failure's body is not a gRPC message (it is an error page or a mismatch
+        // diagnostic), so the status is the whole response.
+        byte[] bodyBytes = resolved.isTransportFailure() ? null : response.getBodyAsRawBytes();
         if (bodyBytes != null && bodyBytes.length > 0) {
-            DefaultHttp3HeadersFrame initialHeaders = GrpcHttp3Adapter.buildInitialHeadersFrame();
+            DefaultHttp3HeadersFrame initialHeaders = GrpcHttp3Adapter.buildInitialHeadersFrame(response);
             DefaultHttp3DataFrame dataFrame = GrpcHttp3Adapter.buildDataFrame(bodyBytes);
             DefaultHttp3HeadersFrame trailers = GrpcHttp3Adapter.buildTrailingHeadersFrame(
                 grpcStatus, grpcMessage
@@ -182,7 +290,7 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
                 .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
         } else {
             DefaultHttp3HeadersFrame trailersOnly = GrpcHttp3Adapter.buildTrailersOnlyFrame(
-                grpcStatus, grpcMessage
+                grpcStatus, grpcMessage, response
             );
             ctx.writeAndFlush(trailersOnly)
                 .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
@@ -251,6 +359,12 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
             breakpointClientId = null;
         }
 
+        // Single atomic transition: either this claims the stream for streaming, or the deadline
+        // already claimed it and nothing further may be written.
+        if (!streamState.compareAndSet(StreamState.IDLE, StreamState.STREAMING)) {
+            return;
+        }
+
         DefaultHttp3HeadersFrame initialHeaders = GrpcHttp3Adapter.buildInitialHeadersFrame();
         addConfiguredHeaders(initialHeaders, grpcStreamResponse.getHeaders());
         ctx.write(initialHeaders);
@@ -291,6 +405,10 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
         boolean streamBreakpointsActive, String streamId, String reqMethod, String reqPath,
         boolean useWsDispatch, String breakpointClientId, String streamBreakpointId
     ) {
+        if (streamState.get() == StreamState.COMPLETED) {
+            // the deadline already wrote the terminal trailer -- no message may follow it
+            return;
+        }
         if (index >= messages.size() || !ctx.channel().isActive()) {
             finishGrpcStream(action, streamBreakpointsActive, streamId);
             return;
@@ -419,6 +537,10 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
                                   HttpRequest request, boolean streamBreakpointsActive, String streamId,
                                   String reqMethod, String reqPath, boolean useWsDispatch, String breakpointClientId,
                                   String streamBreakpointId) {
+        if (streamState.get() == StreamState.COMPLETED) {
+            // a per-message delay or breakpoint resume elapsed after the deadline fired
+            return;
+        }
         DefaultHttp3DataFrame dataFrame = new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(frameBytes));
         ctx.writeAndFlush(dataFrame).addListener(future -> {
             if (future.isSuccess()) {
@@ -433,6 +555,15 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
     private void finishGrpcStream(GrpcStreamResponse action, boolean streamBreakpointsActive, String streamId) {
         if (streamBreakpointsActive && streamId != null) {
             StreamFrameBreakpointRegistry.getInstance().evictStream(streamId);
+        }
+        // claim the stream: if the deadline already terminated it, do not write a second trailer
+        if (streamState.getAndSet(StreamState.COMPLETED) == StreamState.COMPLETED) {
+            return;
+        }
+        completed.set(true);
+        if (deadlineFuture != null) {
+            deadlineFuture.cancel(false);
+            deadlineFuture = null;
         }
         if (!ctx.channel().isActive()) {
             return;

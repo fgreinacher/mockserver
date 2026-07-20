@@ -108,11 +108,13 @@ public class HttpForwardActionHandlerGrpcTest {
             .getHttpResponse().get();
 
         // response (used for both the client write and the recorded FORWARDED_REQUEST) is decoded JSON,
-        // re-stamped so GrpcToHttpResponseHandler can re-frame it, and carries the upstream status name
+        // re-stamped so GrpcToHttpResponseHandler can re-frame it, and carries the upstream status
+        // through verbatim as a numeric grpc-status (NOT converted to a status-name, which would
+        // collapse any code outside the GrpcStatusCode enum to UNKNOWN)
         assertThat(response.getBodyAsString(), containsString("Hello Tom"));
         assertThat(response.getFirstHeader(GrpcForwardTranslator.SERVICE_HEADER), is(SERVICE));
         assertThat(response.getFirstHeader(GrpcForwardTranslator.METHOD_HEADER), is("Greeting"));
-        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER), is("OK"));
+        assertThat(response.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is("0"));
     }
 
     @Test

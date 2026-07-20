@@ -84,6 +84,10 @@
         <!-- also update NETTY_TCNATIVE in docker/*/Dockerfile download stages -->
         <netty-tcnative-boringssl-static.version>2.0.78.Final</netty-tcnative-boringssl-static.version>
         <protobuf.version>4.35.1</protobuf.version>
+        <!-- grpc-java: TEST SCOPE ONLY (mockserver-netty). Used to drive MockServer with a real
+             gRPC client so the gRPC wire contract (protobuf framing + grpc-status trailer) is
+             verified end-to-end rather than only at handler level. Never bundled in a release. -->
+        <grpc.version>1.70.0</grpc.version>
         <chicory.version>1.7.5</chicory.version>
         <hdrhistogram.version>2.2.2</hdrhistogram.version>
         <jna.version>5.19.1</jna.version>
@@ -417,6 +421,27 @@
                 <groupId>com.google.protobuf</groupId>
                 <artifactId>protobuf-java-util</artifactId>
                 <version>${protobuf.version}</version>
+            </dependency>
+
+            <!-- grpc-java (TEST SCOPE ONLY, see the grpc.version property comment).
+                 grpc-netty-shaded is used in preference to grpc-netty because grpc-netty
+                 targets Netty 4.1.x while MockServer runs Netty 4.2; the shaded artifact bundles
+                 its own relocated Netty so the test client cannot be broken by, or break, the
+                 server's Netty version. -->
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-netty-shaded</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-stub</artifactId>
+                <version>${grpc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-protobuf</artifactId>
+                <version>${grpc.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.google.errorprone</groupId>

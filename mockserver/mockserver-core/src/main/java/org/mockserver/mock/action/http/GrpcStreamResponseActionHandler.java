@@ -7,6 +7,7 @@ import org.mockserver.closurecallback.websocketregistry.WebSocketClientRegistry;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.grpc.GrpcProtoDescriptorStore;
 import org.mockserver.grpc.GrpcStatusMapper;
+import org.mockserver.grpc.GrpcStreamDeadline;
 import org.mockserver.grpc.GrpcStreamMessageEncoder;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
@@ -83,6 +84,18 @@ public class GrpcStreamResponseActionHandler {
 
         ctx.writeAndFlush(initialResponse);
 
+        // Enforce the client's grpc-timeout for the WHOLE streaming RPC. If the deadline elapses
+        // mid-stream, terminate with a DEADLINE_EXCEEDED trailer and stop emitting messages -- a
+        // streaming expectation whose per-message delays outlast the client's deadline previously
+        // kept writing to a stream the client had already given up on.
+        final GrpcStreamDeadline deadline = new GrpcStreamDeadline();
+        deadline.schedule(ctx, request, () -> writeDeadlineExceededTrailer(ctx, deadline, request));
+        // This deadline is local to the invocation, so it is not registered in GrpcPendingRequests
+        // and channelInactive's cancelAllDeadlines does not reach it. Without this a long
+        // grpc-timeout (say 8H) would keep its task queued for the full duration after the channel
+        // died. The HTTP/3 and bidi paths already cancel on close; this was the gap.
+        ctx.channel().closeFuture().addListener(closeFuture -> deadline.cancel());
+
         // Determine if stream-frame breakpoints are active
         final org.mockserver.mock.breakpoint.BreakpointMatcher streamBreakpointMatcher = org.mockserver.mock.breakpoint.BreakpointMatcherRegistry.getInstance().findMatch(request, org.mockserver.mock.breakpoint.BreakpointPhase.RESPONSE_STREAM);
         final boolean streamBreakpointsActive = streamBreakpointMatcher != null;
@@ -108,20 +121,25 @@ public class GrpcStreamResponseActionHandler {
 
         List<GrpcStreamMessage> messages = grpcStreamResponse.getMessages();
         if (messages != null && !messages.isEmpty()) {
-            scheduleMessages(messages, 0, ctx, grpcStreamResponse, request, methodDescriptor, streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId,
+            scheduleMessages(deadline, messages, 0, ctx, grpcStreamResponse, request, methodDescriptor, streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId,
                 streamBreakpointMatcher != null ? streamBreakpointMatcher.getId() : null);
         } else {
-            finishStream(ctx, grpcStreamResponse, streamBreakpointsActive, streamId);
+            finishStream(deadline, ctx, grpcStreamResponse, streamBreakpointsActive, streamId);
         }
     }
 
-    private void scheduleMessages(List<GrpcStreamMessage> messages, int index, ChannelHandlerContext ctx,
+    private void scheduleMessages(GrpcStreamDeadline deadline, List<GrpcStreamMessage> messages, int index, ChannelHandlerContext ctx,
                                    GrpcStreamResponse grpcStreamResponse, org.mockserver.model.HttpRequest request,
                                    com.google.protobuf.Descriptors.MethodDescriptor methodDescriptor,
                                    boolean streamBreakpointsActive, String streamId, String reqMethod, String reqPath,
                                    boolean useWsDispatch, String breakpointClientId, String streamBreakpointId) {
+        if (deadline.isTerminated()) {
+            // the deadline already wrote the terminal trailer -- emitting anything now would put a
+            // message after end-of-stream
+            return;
+        }
         if (index >= messages.size() || !ctx.channel().isActive()) {
-            finishStream(ctx, grpcStreamResponse, streamBreakpointsActive, streamId);
+            finishStream(deadline, ctx, grpcStreamResponse, streamBreakpointsActive, streamId);
             return;
         }
 
@@ -137,7 +155,7 @@ public class GrpcStreamResponseActionHandler {
 
                 if (!streamBreakpointsActive) {
                     // Default-off fast path: write immediately
-                    writeGrpcFrame(frameBytes, ctx, request, messages, index, grpcStreamResponse, methodDescriptor,
+                    writeGrpcFrame(deadline, frameBytes, ctx, request, messages, index, grpcStreamResponse, methodDescriptor,
                         streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId, streamBreakpointId);
                     return;
                 }
@@ -159,7 +177,7 @@ public class GrpcStreamResponseActionHandler {
                     );
                 if (wsFuture == null) {
                     // Cap reached or client not connected -- write immediately
-                    writeGrpcFrame(frameBytes, ctx, request, messages, index, grpcStreamResponse, methodDescriptor,
+                    writeGrpcFrame(deadline, frameBytes, ctx, request, messages, index, grpcStreamResponse, methodDescriptor,
                         streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId, streamBreakpointId);
                     return;
                 }
@@ -170,18 +188,18 @@ public class GrpcStreamResponseActionHandler {
                 decisionFuture.thenAccept(decision ->
                     ctx.channel().eventLoop().execute(() -> {
                         if (!ctx.channel().isActive()) {
-                            scheduleMessages(messages, index + 1, ctx, grpcStreamResponse, request, methodDescriptor,
+                            scheduleMessages(deadline, messages, index + 1, ctx, grpcStreamResponse, request, methodDescriptor,
                                 streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId, streamBreakpointId);
                             return;
                         }
                         switch (decision.getAction()) {
-                            case CONTINUE -> writeGrpcFrame(capturedFrameBytes, ctx, request, messages, index,
+                            case CONTINUE -> writeGrpcFrame(deadline, capturedFrameBytes, ctx, request, messages, index,
                                 grpcStreamResponse, methodDescriptor, streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId, streamBreakpointId);
-                            case MODIFY -> writeGrpcFrame(decision.getReplacementBody(), ctx, request, messages, index,
+                            case MODIFY -> writeGrpcFrame(deadline, decision.getReplacementBody(), ctx, request, messages, index,
                                 grpcStreamResponse, methodDescriptor, streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId, streamBreakpointId);
                             case DROP ->
                                 // Skip this frame -- proceed to next message
-                                scheduleMessages(messages, index + 1, ctx, grpcStreamResponse, request, methodDescriptor,
+                                scheduleMessages(deadline, messages, index + 1, ctx, grpcStreamResponse, request, methodDescriptor,
                                     streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId, streamBreakpointId);
                             case INJECT -> {
                                 // Write original frame, then inject an extra frame, then proceed
@@ -192,10 +210,10 @@ public class GrpcStreamResponseActionHandler {
                                         DefaultHttpContent injectedContent = new DefaultHttpContent(
                                             Unpooled.wrappedBuffer(decision.getInjectedBody()));
                                         ctx.writeAndFlush(injectedContent).addListener(f2 ->
-                                            scheduleMessages(messages, index + 1, ctx, grpcStreamResponse, request,
+                                            scheduleMessages(deadline, messages, index + 1, ctx, grpcStreamResponse, request,
                                                 methodDescriptor, streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId, streamBreakpointId));
                                     } else {
-                                        scheduleMessages(messages, index + 1, ctx, grpcStreamResponse, request,
+                                        scheduleMessages(deadline, messages, index + 1, ctx, grpcStreamResponse, request,
                                             methodDescriptor, streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId, streamBreakpointId);
                                     }
                                 });
@@ -203,7 +221,7 @@ public class GrpcStreamResponseActionHandler {
                             case CLOSE -> {
                                 // End the stream: evict remaining frames and send trailers
                                 StreamFrameBreakpointRegistry.getInstance().evictStream(streamId);
-                                finishStream(ctx, grpcStreamResponse, false, null);
+                                finishStream(deadline, ctx, grpcStreamResponse, false, null);
                             }
                         }
                     })
@@ -232,7 +250,7 @@ public class GrpcStreamResponseActionHandler {
                             .setThrowable(e)
                     );
                 }
-                finishStream(ctx, grpcStreamResponse, streamBreakpointsActive, streamId);
+                finishStream(deadline, ctx, grpcStreamResponse, streamBreakpointsActive, streamId);
             }
         };
 
@@ -247,11 +265,15 @@ public class GrpcStreamResponseActionHandler {
      * Writes a gRPC frame (byte[]) to the channel and chains to the next message on success.
      * Shared between the default-off fast path and the breakpoint resume path.
      */
-    private void writeGrpcFrame(byte[] frameBytes, ChannelHandlerContext ctx, org.mockserver.model.HttpRequest request,
+    private void writeGrpcFrame(GrpcStreamDeadline deadline, byte[] frameBytes, ChannelHandlerContext ctx, org.mockserver.model.HttpRequest request,
                                 List<GrpcStreamMessage> messages, int index, GrpcStreamResponse grpcStreamResponse,
                                 com.google.protobuf.Descriptors.MethodDescriptor methodDescriptor,
                                 boolean streamBreakpointsActive, String streamId, String reqMethod, String reqPath,
                                 boolean useWsDispatch, String breakpointClientId, String streamBreakpointId) {
+        if (deadline.isTerminated()) {
+            // a per-message delay or breakpoint resume elapsed after the deadline fired
+            return;
+        }
         DefaultHttpContent content = new DefaultHttpContent(Unpooled.wrappedBuffer(frameBytes));
         ctx.writeAndFlush(content).addListener(future -> {
             if (future.isSuccess()) {
@@ -266,7 +288,7 @@ public class GrpcStreamResponseActionHandler {
                             .setArguments(index + 1, messages.size(), request)
                     );
                 }
-                scheduleMessages(messages, index + 1, ctx, grpcStreamResponse, request, methodDescriptor,
+                scheduleMessages(deadline, messages, index + 1, ctx, grpcStreamResponse, request, methodDescriptor,
                     streamBreakpointsActive, streamId, reqMethod, reqPath, useWsDispatch, breakpointClientId, streamBreakpointId);
             } else {
                 if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
@@ -280,9 +302,39 @@ public class GrpcStreamResponseActionHandler {
                             .setThrowable(future.cause())
                     );
                 }
-                finishStream(ctx, grpcStreamResponse, streamBreakpointsActive, streamId);
+                finishStream(deadline, ctx, grpcStreamResponse, streamBreakpointsActive, streamId);
             }
         });
+    }
+
+    /**
+     * Terminates an in-progress streaming RPC because the client's deadline elapsed.
+     * <p>
+     * Only ever reached having already won {@link GrpcStreamDeadline#tryTerminate()}, so this
+     * cannot race the normal {@code finishStream} trailer.
+     */
+    private void writeDeadlineExceededTrailer(ChannelHandlerContext ctx, GrpcStreamDeadline deadline,
+                                              org.mockserver.model.HttpRequest request) {
+        deadline.cancel();
+        if (!ctx.channel().isActive()) {
+            return;
+        }
+        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.INFO)
+                    .setCorrelationId(request.getLogCorrelationId())
+                    .setHttpRequest(request)
+                    .setMessageFormat("gRPC deadline elapsed mid-stream for request:{} - terminating with DEADLINE_EXCEEDED")
+                    .setArguments(request)
+            );
+        }
+        DefaultLastHttpContent trailers = new DefaultLastHttpContent();
+        trailers.trailingHeaders().set(GrpcStatusMapper.GRPC_STATUS_HEADER,
+            String.valueOf(GrpcStatusMapper.GrpcStatusCode.DEADLINE_EXCEEDED.getCode()));
+        trailers.trailingHeaders().set(GrpcStatusMapper.GRPC_MESSAGE_HEADER,
+            GrpcStatusMapper.percentEncodeMessage(deadline.deadlineExceededMessage()));
+        ctx.writeAndFlush(trailers);
     }
 
     private byte[] encodeMessage(GrpcStreamMessage message, com.google.protobuf.Descriptors.MethodDescriptor methodDescriptor, org.mockserver.model.HttpRequest request) {
@@ -297,11 +349,30 @@ public class GrpcStreamResponseActionHandler {
         return GrpcStreamMessageEncoder.encode(json, methodDescriptor, descriptorStore);
     }
 
-    private void finishStream(ChannelHandlerContext ctx, GrpcStreamResponse grpcStreamResponse,
+    private void finishStream(GrpcStreamDeadline deadline, ChannelHandlerContext ctx, GrpcStreamResponse grpcStreamResponse,
                               boolean streamBreakpointsActive, String streamId) {
         if (streamBreakpointsActive && streamId != null) {
             StreamFrameBreakpointRegistry.getInstance().evictStream(streamId);
         }
+        // Claim the stream, so whichever of normal completion and the deadline gets here first wins.
+        //
+        // On the synchronous emission paths (scheduleMessages, writeGrpcFrame) this claim is
+        // defence in depth: those are already fronted by a deadline.isTerminated() check, so
+        // degrading it there alone changes no observable behaviour in unit scope.
+        //
+        // On the two ASYNCHRONOUS paths it is the live guard, and the only thing preventing a
+        // second terminal trailer after DEADLINE_EXCEEDED:
+        //   - the breakpoint CLOSE decision, resolved from decisionFuture.thenAccept, which can
+        //     land arbitrarily long after the isTerminated check (a breakpoint is human-driven);
+        //   - the writeMessage catch block, reached after scheduler.schedule(...) when a render or
+        //     encode throws, by which time the deadline may already have fired.
+        // Neither is reachable in a single-threaded unit harness, which is why the primitive's
+        // single-shot property is pinned directly by GrpcStreamDeadlineContractTest rather than
+        // through a handler test that would not discriminate.
+        if (!deadline.tryTerminate()) {
+            return;
+        }
+        deadline.cancel();
         if (ctx.channel().isActive()) {
             GrpcStatusMapper.GrpcStatusCode statusCode = GrpcStatusMapper.GrpcStatusCode.OK;
             if (grpcStreamResponse.getStatusName() != null && !grpcStreamResponse.getStatusName().isEmpty()) {
@@ -311,7 +382,8 @@ public class GrpcStreamResponseActionHandler {
             DefaultLastHttpContent trailers = new DefaultLastHttpContent();
             trailers.trailingHeaders().set(GrpcStatusMapper.GRPC_STATUS_HEADER, String.valueOf(statusCode.getCode()));
             if (grpcStreamResponse.getStatusMessage() != null && !grpcStreamResponse.getStatusMessage().isEmpty()) {
-                trailers.trailingHeaders().set(GrpcStatusMapper.GRPC_MESSAGE_HEADER, grpcStreamResponse.getStatusMessage());
+                trailers.trailingHeaders().set(GrpcStatusMapper.GRPC_MESSAGE_HEADER,
+                    GrpcStatusMapper.percentEncodeMessage(grpcStreamResponse.getStatusMessage()));
             }
 
             ctx.writeAndFlush(trailers).addListener(future -> {

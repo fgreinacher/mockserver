@@ -138,6 +138,18 @@ Test-scoped dependencies used for Docker-gated integration tests. These are neve
 
 The Testcontainers version (1.21.4) is aligned with the existing `mockserver-testcontainers` module. Note that `mockserver-testcontainers` depends on `org.testcontainers:testcontainers` (and its transitive `docker-java-*` 3.4.2 artifacts) at **compile scope** — not test scope — because its public `MockServerContainer` extends Testcontainers' `GenericContainer`; consumers of `mockserver-testcontainers` therefore resolve Testcontainers 1.21.4 transitively (overridable via their own dependency management), and these artifacts are in CodeQL/Dependabot scan scope for that module. The 1.20.6 to 1.21.4 bump was required to fix `DockerClientFactory.isDockerAvailable()` returning false on Docker Desktop 4.67+ / Engine 29.x / API 1.54 — the bundled docker-java 3.4.1 in 1.20.6 got a 400 on the info endpoint; 1.21.4 bundles docker-java 3.4.2 and includes explicit fixes for recent Docker Engine API changes. MQTT integration tests use a `GenericContainer` with `eclipse-mosquitto:2.0` (no additional Testcontainers module needed). Transparent-proxy end-to-end tests (`SoOriginalDstEndToEndIT`, `TproxyEndToEndIT`) use the Docker CLI directly (via `ProcessBuilder`) to build and run privileged containers with NET_ADMIN for iptables REDIRECT/TPROXY rule setup — they do not use Testcontainers.
 
+### Test Dependencies (gRPC Client)
+
+Test-scoped only, and never bundled in released artifacts. Added so the gRPC wire contract is driven by a **real gRPC client** rather than only asserted at handler level — the gap that let issue #2419 ship, where 34 green handler-level tests coexisted with a 1-in-4 real-client success rate.
+
+| Dependency | Version | Module | Purpose |
+|------------|---------|--------|---------|
+| `io.grpc:grpc-netty-shaded` | 1.70.0 | `mockserver-netty` (test) | gRPC transport for `GrpcUnaryClientIntegrationTest`, including its concurrent-call cases |
+| `io.grpc:grpc-stub` | 1.70.0 | `mockserver-netty` (test) | `ClientCalls.blockingUnaryCall` |
+| `io.grpc:grpc-protobuf` | 1.70.0 | `mockserver-netty` (test) | `ProtoUtils.marshaller` for `DynamicMessage`, so the tests need no protoc-generated stubs |
+
+`grpc-netty-shaded` is used in preference to `grpc-netty` deliberately: grpc-java targets Netty 4.1.x while MockServer runs Netty 4.2, and the shaded artifact bundles its own relocated Netty so the test client can neither be broken by, nor break, the server's Netty version. These artifacts pull `com.google.api.grpc:proto-google-common-protos` transitively; all are test scope in a single module. **Note that `grpc-netty-shaded` bundles a *relocated* copy of Netty inside its own jar, which Dependabot, CodeQL and Snyk cannot see into — it is effectively unscannable rather than narrowly scanned.** That is acceptable here only because it is test-scoped and never reaches a released artifact; it would not be acceptable at compile scope. If a Netty CVE is announced, the shaded copy must be checked manually by bumping `grpc.version` rather than relying on tooling to flag it.
+
 ### Maven Dependency Graph Submission
 
 GitHub's built-in dependency graph automatically indexes all manifest files (`pom.xml`, `package.json`, `Gemfile`, `requirements.txt`) and their transitive dependencies. This enables Dependabot vulnerability alerts for the full dependency tree -- currently tracking 2000+ packages including 347 Maven dependencies.

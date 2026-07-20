@@ -53,6 +53,7 @@ The first three feed into the **static** `ConfigurationProperties`. The fourth u
 | Dev mode | `devMode` |
 | Memory usage | `maxExpectations`, `maxLogEntries`, `ringBufferSize` (in-flight log event ring buffer size, decoupled from `maxLogEntries` retention; default `min(maxLogEntries, 16384)`, rounded up to a power of two — see [memory-management.md](memory-management.md#ring-buffer-sizing)), `maxWebSocketExpectations`, `webSocketProxyMaxRecordedFrames` (max relayed WebSocket frames recorded per proxied passthrough connection; default `1000`, `0` disables frame recording — see [netty-pipeline.md](netty-pipeline.md#websocket-proxy-passthrough)), `webSocketProxyIdleTimeoutSeconds` (idle timeout in seconds for a proxied passthrough WebSocket relay; default `0` = disabled — see [netty-pipeline.md](netty-pipeline.md#websocket-proxy-passthrough)), `outputMemoryUsageCsv` |
 | HTTP behaviour | `nioEventLoopThreadCount`, `actionHandlerThreadCount`, `webSocketClientEventLoopThreadCount`, `clientNioEventLoopThreadCount`, `streamingResponsesEnabled`, `maxStreamingCaptureBytes` |
+| gRPC | `maxGrpcMessageSize`, `grpcBidiStreamingEnabled` |
 | Matching | `matchersFailFast`, `matchExactCase` (when `true`, method/path/string-body matching is case-sensitive, and response reason-phrase matching in verification is also case-sensitive; header/cookie/query matching always stays case-insensitive — default `false`) |
 | JSON Schema matching (internal tuning) | `jsonSchemaAllowRemoteRefs`, `mockserver.candidateIndexThreshold` — **JVM system-property-only tuning knobs**, not part of the standard four-equivalent-forms property set; see [Internal Tuning-Only System Properties](#internal-tuning-only-system-properties) below |
 | Initialisation / OpenAPI | `initializationClass`, `initializationJsonPath`, `persistExpectations`, `persistedExpectationsPath`, `openAPIContextPathPrefix`, `openAPIResponseValidation`, `enforceResponseValidationForMocks`, `validateRequestsAgainstOpenApiSpec` (when `true`, requests matched by an OpenAPI-backed mock that violate the spec are rejected with a `400` instead of serving the mock response — default `false`; OpenAPI-backed expectations only), `generateRealisticExampleValues`, `validateProxyOpenAPISpec`, `validateProxyEnforce`, `failOnInitializationError` |
@@ -151,6 +152,16 @@ Opt-in API-driven load generation that backs `PUT /mockserver/loadScenario` (see
 | `loadGenerationMaxSteps` | `50` | Hard cap on the number of request steps a single scenario may define. |
 
 The caps are enforced both at validation (VU count, duration, step count) and live at dispatch (in-flight, RPS), so the feature cannot self-DoS the server even when enabled.
+
+### `maxGrpcMessageSize`
+
+Maximum size in bytes of a single **decoded** gRPC message, checked both against the declared frame length and against the running total while decompressing (so a compression bomb cannot exceed it either). Default `4194304` (4 MiB), matching grpc-java's and grpc-go's default `maxReceiveMessageSize`.
+
+A request message above the limit is rejected with `grpc-status: 8 RESOURCE_EXHAUSTED` — the status the gRPC specification and both reference implementations use for exceeding the receive-message-size limit, so a client can tell "too big" from "server broke". (It was previously reported as `13 INTERNAL`.)
+
+This is deliberately separate from `maxRequestBodySize`, which bounds the whole aggregated HTTP body: one HTTP body may carry several gRPC messages (client streaming), and the gRPC limit applies per message. The limit is what stops a declared frame length from allocating unbounded memory, so raise it only if you intentionally mock large gRPC messages.
+
+Defined once in `GrpcFrameCodec.maxMessageSize()` and read from there by `IncrementalGrpcFrameDecoder`; the two previously kept separate hard-coded copies that could drift.
 
 ## Internal Tuning-Only System Properties
 

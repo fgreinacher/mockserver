@@ -69,7 +69,7 @@ public class Http3GrpcBidiTemplatingTest {
             ctx, method, converter, config, () -> { }, logger);
 
         // when: HEADERS (start), then a single inbound message, then the client half-closes
-        handler.start();
+        handler.start(org.mockserver.model.HttpRequest.request());
         byte[] proto = converter.toProtobuf("{\"name\":\"Alice\"}", method.getInputType());
         handler.onData(GrpcFrameCodec.encode(proto));
         handler.onInputClosed();

@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.mockserver.grpc.GrpcStatusMapper.*;
 
 public class GrpcStatusMapperTest {
@@ -48,6 +49,31 @@ public class GrpcStatusMapperTest {
         assertThat(fromHttpStatus(400), is(GrpcStatusCode.INVALID_ARGUMENT));
         assertThat(fromHttpStatus(404), is(GrpcStatusCode.NOT_FOUND));
         assertThat(fromHttpStatus(500), is(GrpcStatusCode.UNKNOWN));
+    }
+
+    /**
+     * The gRPC-over-HTTP/2 spec's "HTTP-Status to Status code" mapping, used when a call fails at
+     * the HTTP transport level and carries no {@code grpc-status} of its own.
+     * <p>
+     * Deliberately different from {@link GrpcStatusMapper#fromHttpStatus(int)}: 404 here means "the
+     * server does not implement this method" ({@code UNIMPLEMENTED}), not "the status whose
+     * canonical HTTP rendering is 404" ({@code NOT_FOUND}). MockServer relies on this so an
+     * unmatched gRPC request surfaces the way a real gRPC server would.
+     */
+    @Test
+    public void shouldMapHttpTransportStatusToGrpcPerSpec() {
+        assertThat(fromHttpTransportStatus(400), is(GrpcStatusCode.INTERNAL));
+        assertThat(fromHttpTransportStatus(401), is(GrpcStatusCode.UNAUTHENTICATED));
+        assertThat(fromHttpTransportStatus(403), is(GrpcStatusCode.PERMISSION_DENIED));
+        assertThat(fromHttpTransportStatus(404), is(GrpcStatusCode.UNIMPLEMENTED));
+        assertThat(fromHttpTransportStatus(429), is(GrpcStatusCode.UNAVAILABLE));
+        assertThat(fromHttpTransportStatus(502), is(GrpcStatusCode.UNAVAILABLE));
+        assertThat(fromHttpTransportStatus(503), is(GrpcStatusCode.UNAVAILABLE));
+        assertThat(fromHttpTransportStatus(504), is(GrpcStatusCode.UNAVAILABLE));
+        assertThat("anything unlisted falls back to UNKNOWN",
+            fromHttpTransportStatus(418), is(GrpcStatusCode.UNKNOWN));
+        assertThat("this mapping must not agree with fromHttpStatus on 404",
+            fromHttpTransportStatus(404), is(not(fromHttpStatus(404))));
     }
 
     @Test

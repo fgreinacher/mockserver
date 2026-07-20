@@ -290,4 +290,137 @@ public class GrpcHttp3AdapterTest {
         assertThat(parts[0], is(""));
         assertThat(parts[1], is(""));
     }
+
+    // ---- transport parity: an expectation must behave the same on HTTP/3 as on HTTP/1.1 and HTTP/2 ----
+
+    /**
+     * The status must be read from the response TRAILERS as well as the headers.
+     * <p>
+     * The consumer documentation recommends authoring gRPC statuses with
+     * {@code withTrailer("grpc-status", ...)}. HTTP/3 previously read headers only, so the very
+     * same expectation returned NOT_FOUND over HTTP/2 but OK over HTTP/3 -- opposite results per
+     * transport for identical user input.
+     */
+    @Test
+    public void shouldResolveGrpcStatusFromTrailersNotJustHeaders() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withTrailer(GrpcStatusMapper.GRPC_STATUS_HEADER, "5")
+            .withTrailer(GrpcStatusMapper.GRPC_MESSAGE_HEADER, "no such greeting");
+
+        GrpcHttp3Adapter.GrpcResponseParts parts = GrpcHttp3Adapter.transformGrpcResponse(
+            response, "com.example.grpc.GreetingService", "Greeting", descriptorStore);
+
+        assertThat(parts.grpcStatus(), is("5"));
+        assertThat(parts.grpcMessage(), is("no such greeting"));
+    }
+
+    /**
+     * A numeric status outside the enum must survive verbatim on HTTP/3 too.
+     */
+    @Test
+    public void shouldEmitUnmappedNumericStatusVerbatim() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER, "42");
+
+        GrpcHttp3Adapter.GrpcResponseParts parts = GrpcHttp3Adapter.transformGrpcResponse(
+            response, "com.example.grpc.GreetingService", "Greeting", descriptorStore);
+
+        assertThat(parts.grpcStatus(), is("42"));
+    }
+
+    /**
+     * An unmatched request (the 404 notFoundResponse) must not be reported as success, and must
+     * not carry a body -- the twin of the HTTP/2 defect from issue #2419.
+     */
+    @Test
+    public void shouldMapUnmatchedNotFoundToUnimplementedWithNoBody() {
+        GrpcHttp3Adapter.GrpcResponseParts parts = GrpcHttp3Adapter.transformGrpcResponse(
+            HttpResponse.notFoundResponse(), "com.example.grpc.GreetingService", "Greeting", descriptorStore);
+
+        assertThat(parts.grpcStatus(),
+            is(String.valueOf(GrpcStatusMapper.GrpcStatusCode.UNIMPLEMENTED.getCode())));
+        assertThat(parts.grpcMessage(), containsString("404"));
+        assertThat("no body may be framed for a request that matched nothing",
+            parts.hasBody(), is(false));
+    }
+
+    /**
+     * A unary HTTP/3 gRPC response must carry the expectation's own headers.
+     * <p>
+     * They were silently dropped: the initial HEADERS frame emitted only {@code :status},
+     * {@code content-type} and {@code server}. HTTP/2 preserves them by cloning the response and
+     * the HTTP/3 server-streaming path copies them explicitly, so unary HTTP/3 was the only path
+     * that lost them.
+     */
+    @Test
+    public void shouldCopyExpectationHeadersOntoInitialHeadersFrame() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader("x-tenant-id", "acme")
+            .withBody("{\"greeting\":\"Hello\"}");
+
+        DefaultHttp3HeadersFrame frame = GrpcHttp3Adapter.buildInitialHeadersFrame(response);
+
+        assertThat(frame.headers().get("x-tenant-id"), is("acme"));
+        assertThat("content-type stays the gRPC one, not the expectation's",
+            frame.headers().get("content-type"), is(GrpcStatusMapper.GRPC_CONTENT_TYPE));
+    }
+
+    /**
+     * The same applies to a trailers-only response, where that single frame is all the client gets.
+     * gRPC protocol metadata must NOT be copied through -- it is emitted by the frame builder, and
+     * a duplicate grpc-status would be ambiguous.
+     */
+    /**
+     * Connection-specific headers must NOT be copied onto an HTTP/3 frame.
+     * <p>
+     * RFC 9114 section 4.2 forbids them, and Netty enforces it: copying {@code connection} raises
+     * {@code Http3Exception: connection header included} and the response is never written at all,
+     * so the client receives no frames and hangs. These arrive on a matched response legitimately —
+     * {@code ResponseWriter.addConnectionHeader} sets {@code connection: keep-alive} on every
+     * response and the streaming path sets {@code transfer-encoding: chunked} — so header
+     * pass-through must filter them.
+     */
+    @Test
+    public void shouldNotCopyConnectionSpecificHeadersOntoHttp3Frames() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader("connection", "keep-alive")
+            .withHeader("transfer-encoding", "chunked")
+            .withHeader("keep-alive", "timeout=5")
+            .withHeader("upgrade", "h2c")
+            .withHeader("x-tenant-id", "acme")
+            .withBody("{\"greeting\":\"Hello\"}");
+
+        for (DefaultHttp3HeadersFrame frame : new DefaultHttp3HeadersFrame[]{
+            GrpcHttp3Adapter.buildInitialHeadersFrame(response),
+            GrpcHttp3Adapter.buildTrailersOnlyFrame("0", null, response)
+        }) {
+            for (String forbidden : new String[]{"connection", "transfer-encoding", "keep-alive", "upgrade"}) {
+                assertThat(forbidden + " is illegal on HTTP/3 and must not be copied through",
+                    frame.headers().get(forbidden), is(nullValue()));
+            }
+            assertThat("ordinary headers must still be copied",
+                frame.headers().get("x-tenant-id"), is("acme"));
+        }
+    }
+
+    @Test
+    public void shouldCopyExpectationHeadersOntoTrailersOnlyFrameButNotProtocolMetadata() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader("x-tenant-id", "acme")
+            .withHeader(GrpcStatusMapper.GRPC_STATUS_HEADER, "0")
+            .withHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER, "OK");
+
+        DefaultHttp3HeadersFrame frame = GrpcHttp3Adapter.buildTrailersOnlyFrame("7", null, response);
+
+        assertThat(frame.headers().get("x-tenant-id"), is("acme"));
+        assertThat("exactly one grpc-status, from the builder",
+            frame.headers().getAll(GrpcStatusMapper.GRPC_STATUS_HEADER), contains("7"));
+        assertThat("grpc-status-name is internal and must not reach the client",
+            frame.headers().get(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER), is(nullValue()));
+    }
 }

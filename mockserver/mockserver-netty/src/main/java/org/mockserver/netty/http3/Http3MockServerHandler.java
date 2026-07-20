@@ -396,7 +396,7 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
             configuration, inboundStreamId, inboundBreakpointClientId, inboundBreakpointId,
             httpState.getWebSocketClientRegistry()
         );
-        bidiHandler.start();
+        bidiHandler.start(request);
         return true;
     }
 
@@ -423,6 +423,7 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
                 configuration, mockServerLogger, ctx, descriptorStore, null, null,
                 httpState.getWebSocketClientRegistry()
             );
+            grpcResponseWriter.scheduleDeadline(request);
             processRequestThroughPipeline(ctx, request, grpcResponseWriter);
             return;
         }
@@ -437,6 +438,7 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
                 configuration, mockServerLogger, ctx, descriptorStore, grpcService, grpcMethod,
                 httpState.getWebSocketClientRegistry()
             );
+            grpcResponseWriter.scheduleDeadline(grpcRequest);
             processRequestThroughPipeline(ctx, grpcRequest, grpcResponseWriter);
         } catch (GrpcException e) {
             mockServerLogger.logEvent(
@@ -446,10 +448,12 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
                     .setMessageFormat("gRPC request error over HTTP/3:{}:{}")
                     .setArguments(request.getPath(), e.getMessage())
             );
+            // the status travels on the exception, so oversize -> RESOURCE_EXHAUSTED and an
+            // unsupported grpc-encoding -> UNIMPLEMENTED, as on HTTP/1.1 and HTTP/2
             GrpcStatusMapper.GrpcStatusCode statusCode =
                 e.getMessage() != null && e.getMessage().startsWith("unknown gRPC method")
                     ? GrpcStatusMapper.GrpcStatusCode.UNIMPLEMENTED
-                    : GrpcStatusMapper.GrpcStatusCode.INTERNAL;
+                    : e.getStatusCode();
             Http3GrpcResponseWriter errorWriter = new Http3GrpcResponseWriter(
                 configuration, mockServerLogger, ctx, descriptorStore, null, null
             );
