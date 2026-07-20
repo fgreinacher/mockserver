@@ -230,7 +230,11 @@ class ResponseBuildersTest extends TestCase
     {
         // test-fixtures/expectations/action_websocket_graphql_filter.json
         $built = GraphQLSubscriptionFilter::query('subscription OnMessage { messageAdded { id body } }')
+            ->type('GRAPHQL')
             ->operationName('OnMessage')
+            ->variablesSchema(
+                '{"type":"object","properties":{"roomId":{"type":"string"}},"required":["roomId"]}',
+            )
             ->selectionSetMatchType(GraphQLSubscriptionFilter::AST_SUBSET)
             ->fields(['messageAdded'])
             ->toArray();
