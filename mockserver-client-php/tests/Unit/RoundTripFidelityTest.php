@@ -21,9 +21,23 @@ use PHPUnit\Framework\TestCase;
  * shared reference in {@code .tmp/reference_compare.py} so every language port
  * produces the same diff paths for the same client behaviour.
  *
- * The PHP client stores the decoded array verbatim in {@code rawData} and
- * replays it unchanged from {@code toArray()}, so PHP is expected to round-trip
- * every field with ZERO gaps.
+ * WHAT THIS DOES AND DOES NOT PROVE. {@see Expectation::fromArray()} stores the
+ * decoded array verbatim in {@code rawData} and {@see Expectation::toArray()}
+ * replays it unchanged, so PHP is lossless for retrieve-then-resubmit BY
+ * CONSTRUCTION and this harness records zero gaps for every fixture. That zero
+ * is a property of the raw-replay design, NOT evidence that PHP's typed model
+ * (HttpResponse, HttpForward, HttpError, ...) covers the fixture corpus — none
+ * of those classes has a {@code fromArray()} and none is on the path this test
+ * exercises. Dropping a field from a typed {@code toArray()} does not fail a
+ * single fixture here; dropping one from {@code Expectation::fromArray()} fails
+ * every fixture that carries it, which is the regression this harness is
+ * actually armed against (and the reason it is kept: if raw replay is ever
+ * swapped for typed reconstruction, this becomes a real per-field gate with no
+ * further work).
+ *
+ * Typed-builder coverage is asserted by the per-class unit tests
+ * ({@see HttpResponseTest}, {@see HttpForwardTest}, {@see HttpErrorTest}, ...),
+ * not here.
  */
 final class RoundTripFidelityTest extends TestCase
 {
@@ -352,12 +366,68 @@ final class RoundTripFidelityTest extends TestCase
     }
 
     /**
-     * Confirms the fixture set is the expected size (guards against a broken
-     * glob / path silently testing nothing).
+     * Confirms the fixture set is present (guards against a broken glob / path
+     * silently testing nothing — an empty provider makes PHPUnit report zero
+     * fidelity tests as success).
+     *
+     * A LOWER BOUND, not an exact count, matching the Python and Ruby harnesses:
+     * the shared corpus grows whenever a server feature gains a probe, and an
+     * exact count turns every such addition into an unrelated failure in every
+     * client at once (which is exactly what happened when the corpus went 44 ->
+     * 56 and PHP was the client left un-bumped).
+     *
+     * Deliberately a hand-written literal rather than a value derived from the
+     * fixture directory: deriving it would make the assertion compare the glob
+     * to itself and it could never fail, which is the one thing this guard
+     * exists to prevent. The literal is safe to keep as a lower bound because a
+     * stale one under-claims (still catches an empty/broken glob) rather than
+     * failing the build.
      */
     public function testFixtureCount(): void
     {
-        $this->assertCount(44, self::fixtureFiles(), 'Expected 44 fixtures (excluding known-gaps.json)');
+        $this->assertGreaterThanOrEqual(
+            44,
+            count(self::fixtureFiles()),
+            'Expected at least 44 fixtures (excluding known-gaps.json)',
+        );
+    }
+
+    /**
+     * Every fixture file on disk must be exercised by {@see fixtureProvider()}.
+     *
+     * The lower bound above cannot catch a fixture that is PRESENT but silently
+     * not run: drop one file from {@see fixtureFiles()} and 55 >= 44 still
+     * passes, the suite just quietly runs one test fewer. This closes that hole
+     * by enumerating the directory a SECOND time through a different API
+     * ({@code scandir()} here vs {@code glob()} there) and asserting the two
+     * sets agree. Because the enumerations are independent, the assertion is not
+     * self-agreeing — a bad pattern, a mis-scoped filter or an off-by-one in
+     * {@see fixtureFiles()} shows up as a concrete set difference, while simply
+     * adding a fixture to the corpus keeps both sides in step and fails nothing.
+     */
+    public function testEveryFixtureOnDiskIsExercised(): void
+    {
+        $dir = self::repoRoot() . 'test-fixtures/expectations';
+        $entries = scandir($dir);
+        $this->assertNotFalse($entries, "Cannot read fixture directory: $dir");
+
+        $onDisk = array_values(array_filter(
+            $entries,
+            static fn(string $e): bool => str_ends_with($e, '.json') && $e !== 'known-gaps.json',
+        ));
+        sort($onDisk);
+
+        $exercised = array_map(
+            static fn(array $args): string => basename($args[0]),
+            iterator_to_array(self::fixtureProvider(), false),
+        );
+        sort($exercised);
+
+        $this->assertSame(
+            $onDisk,
+            $exercised,
+            'Fixtures present on disk but not exercised by the data provider (or vice versa)',
+        );
     }
 
     /**
