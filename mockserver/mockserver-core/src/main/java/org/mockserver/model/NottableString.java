@@ -141,6 +141,24 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
         return nottableValues;
     }
 
+    /**
+     * Build a list of {@link NottableString}s <b>without</b> parsing leading {@code !}/{@code ?}
+     * markers, by passing {@code not} through to {@link #string(String, Boolean)} for every value.
+     * <p>
+     * For recording an actual HTTP message (a parsed request or response), whose names and values
+     * are literal text and never matchers — so a header value that happens to begin with {@code !}
+     * must stay that literal value rather than being read as a negation. Pass {@code not = false}.
+     */
+    public static List<NottableString> strings(Collection<String> values, Boolean not) {
+        List<NottableString> nottableValues = new ArrayList<>();
+        if (values != null) {
+            for (String value : values) {
+                nottableValues.add(string(value, not));
+            }
+        }
+        return nottableValues;
+    }
+
     public static List<NottableString> strings(Collection<String> values) {
         List<NottableString> nottableValues = new ArrayList<>();
         if (values != null) {

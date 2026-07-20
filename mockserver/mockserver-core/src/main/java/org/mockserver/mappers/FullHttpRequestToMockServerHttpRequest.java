@@ -25,6 +25,8 @@ import java.util.Set;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.*;
 import static io.netty.handler.codec.http.HttpUtil.isKeepAlive;
+import static org.mockserver.model.NottableString.string;
+import static org.mockserver.model.NottableString.strings;
 
 /**
  * @author jamesdbloom
@@ -142,7 +144,11 @@ public class FullHttpRequestToMockServerHttpRequest {
                 if (hasPreservedTransferEncoding && headerName.equalsIgnoreCase(CONTENT_LENGTH.toString())) {
                     continue;
                 }
-                headers.withEntry(headerName, httpHeaders.getAll(headerName));
+                // Literal name and values: this is an actual incoming request, so a header genuinely
+                // named "!foo" (or valued "!foo") must be recorded verbatim, not read as a negation
+                // matcher. The withEntry(String, ...) overloads route through NottableString.string(name)
+                // which strips a leading !/? — correct for matcher input, wrong for a real message.
+                headers.withEntry(string(headerName, false), strings(httpHeaders.getAll(headerName), false));
             }
             httpRequest.withHeaders(headers);
         }
@@ -179,9 +185,10 @@ public class FullHttpRequestToMockServerHttpRequest {
             for (String cookieHeader : cookieHeaders) {
                 Set<Cookie> decodedCookies = ServerCookieDecoder.LAX.decode(cookieHeader);
                 for (io.netty.handler.codec.http.cookie.Cookie decodedCookie : decodedCookies) {
+                    // literal name and value — a real cookie, not a matcher (see the header note above)
                     cookies.withEntry(
-                        decodedCookie.name(),
-                        decodedCookie.value()
+                        string(decodedCookie.name(), false),
+                        string(decodedCookie.value(), false)
                     );
                 }
             }

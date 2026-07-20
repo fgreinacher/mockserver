@@ -14,6 +14,8 @@ import java.util.Enumeration;
 import java.util.List;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import static org.mockserver.model.NottableString.string;
+import static org.mockserver.model.NottableString.strings;
 
 /**
  * @author jamesdbloom
@@ -77,7 +79,9 @@ public class HttpServletRequestToMockServerHttpRequestDecoder {
                 while (headerValues.hasMoreElements()) {
                     mappedHeaderValues.add(headerValues.nextElement());
                 }
-                headers.withEntry(headerName, mappedHeaderValues);
+                // literal name and values — an actual incoming request, not a matcher, so a header
+                // named or valued "!foo" is recorded verbatim rather than read as a negation
+                headers.withEntry(string(headerName, false), strings(mappedHeaderValues, false));
             }
             httpRequest.withHeaders(headers);
         }
@@ -88,7 +92,8 @@ public class HttpServletRequestToMockServerHttpRequestDecoder {
         if (httpServletRequestCookies != null && httpServletRequestCookies.length > 0) {
             Cookies cookies = new Cookies();
             for (jakarta.servlet.http.Cookie cookie : httpServletRequestCookies) {
-                cookies.withEntry(new Cookie(cookie.getName(), stripSurroundingQuotes(cookie.getValue())));
+                // literal name and value — see the header note above
+                cookies.withEntry(new Cookie(string(cookie.getName(), false), string(stripSurroundingQuotes(cookie.getValue()), false)));
             }
             httpRequest.withCookies(cookies);
         }

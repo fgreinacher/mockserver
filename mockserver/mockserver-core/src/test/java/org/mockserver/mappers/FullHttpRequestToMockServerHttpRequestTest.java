@@ -183,6 +183,108 @@ public class FullHttpRequestToMockServerHttpRequestTest {
         }
     }
 
+    // --- literal marker names/values (an actual request is never a matcher) ---
+    //
+    // A parsed incoming request must record header/cookie names and values verbatim. The plain
+    // NottableString form strips a leading '!' (negation) or '?' (optional) on read, so before the
+    // fix a header genuinely named "!foo" was recorded as the negation NOT(foo) — matching every
+    // request that does NOT carry it, the exact inverse. The discriminating fact these tests assert
+    // is that "!foo" and "foo" now map to DIFFERENT names (isNot() == false, value preserved),
+    // which is precisely what a fixture using only non-marker names, or only asserting the value,
+    // could never see.
+
+    @Test
+    public void shouldMapAHeaderNameThatBeginsWithANegationMarkerAsLiteral() {
+        // given
+        FullHttpRequest nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/path");
+        nettyRequest.headers().add("!foo", "bar");
+
+        try {
+            // when
+            HttpRequest result = createMapper(false, 80)
+                .mapFullHttpRequestToMockServerRequest(nettyRequest, null, null, null, Protocol.HTTP_1_1);
+
+            // then — the name is the literal "!foo", NOT a negation of "foo"
+            Header header = result.getHeaderList().stream()
+                .filter(h -> h.getName().getValue().equals("!foo"))
+                .findFirst().orElseThrow(() -> new AssertionError("no header literally named '!foo': " + result.getHeaderList()));
+            assertThat(header.getName().isNot(), is(false));
+            assertThat(header.getValues().get(0).getValue(), equalTo("bar"));
+            // and there is no header named "foo" (the stripped form)
+            assertThat(result.getFirstHeader("foo"), is(emptyString()));
+        } finally {
+            nettyRequest.release();
+        }
+    }
+
+    @Test
+    public void shouldMapAHeaderValueThatBeginsWithANegationMarkerAsLiteral() {
+        // given
+        FullHttpRequest nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/path");
+        nettyRequest.headers().add("X-Tag", "!foo");
+
+        try {
+            // when
+            HttpRequest result = createMapper(false, 80)
+                .mapFullHttpRequestToMockServerRequest(nettyRequest, null, null, null, Protocol.HTTP_1_1);
+
+            // then — the value is the literal "!foo", not NOT(foo)
+            Header header = result.getHeaderList().stream()
+                .filter(h -> h.getName().getValue().equalsIgnoreCase("X-Tag"))
+                .findFirst().orElseThrow(AssertionError::new);
+            assertThat(header.getValues().get(0).getValue(), equalTo("!foo"));
+            assertThat(header.getValues().get(0).isNot(), is(false));
+        } finally {
+            nettyRequest.release();
+        }
+    }
+
+    @Test
+    public void shouldMapACookieNameThatBeginsWithANegationMarkerAsLiteral() {
+        // given
+        FullHttpRequest nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/path");
+        nettyRequest.headers().add(COOKIE, "!c=1; plain=2");
+
+        try {
+            // when
+            HttpRequest result = createMapper(false, 80)
+                .mapFullHttpRequestToMockServerRequest(nettyRequest, null, null, null, Protocol.HTTP_1_1);
+
+            // then — literal "!c", built with the non-parsing constructor for comparison
+            List<Cookie> cookies = result.getCookieList();
+            assertThat(cookies, hasItem(new Cookie(string("!c", false), string("1", false))));
+            assertThat(cookies, hasItem(new Cookie("plain", "2")));
+            Cookie literal = cookies.stream()
+                .filter(c -> c.getName().getValue().equals("!c"))
+                .findFirst().orElseThrow(AssertionError::new);
+            assertThat(literal.getName().isNot(), is(false));
+        } finally {
+            nettyRequest.release();
+        }
+    }
+
+    @Test
+    public void shouldMapACookieValueThatBeginsWithANegationMarkerAsLiteral() {
+        // given
+        FullHttpRequest nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/path");
+        nettyRequest.headers().add(COOKIE, "sess=!bar");
+
+        try {
+            // when
+            HttpRequest result = createMapper(false, 80)
+                .mapFullHttpRequestToMockServerRequest(nettyRequest, null, null, null, Protocol.HTTP_1_1);
+
+            // then
+            Cookie cookie = result.getCookieList().stream()
+                .filter(c -> c.getName().getValue().equals("sess"))
+                .findFirst().orElseThrow(AssertionError::new);
+            assertThat(cookie.getValue().getValue(), equalTo("!bar"));
+            assertThat(cookie.getValue().isNot(), is(false));
+        } finally {
+            nettyRequest.release();
+        }
+    }
+
     @Test
     public void shouldHandleNoCookies() {
         // given

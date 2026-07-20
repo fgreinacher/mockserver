@@ -212,6 +212,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `keyToMultiValue` and `keyToValue` now type `name` and `values`/`value` as `stringOrJsonSchema` rather
   than plain strings, so a malformed entry reports both the failing branch and the enclosing `oneOf` — one
   extra line per bad entry, matching how the map form has always reported.
+- **An incoming request whose header or cookie name (or value) begins with `!` or `?` is now recorded
+  and matched literally, completing the round-trip the previous change opened.** The serialisation fix
+  above let an expectation *express* a literal `!foo` name, but the inbound request parser still stripped
+  the marker — a real request carrying a header named `!foo` was recorded as `foo`, so the literal matcher
+  could never match it. The parser built header and cookie names and values through the same
+  marker-parsing `NottableString.string(name)` used for matcher input, which is wrong for an actual HTTP
+  message: a real request has literal names and values, never matchers. The netty and servlet request
+  mappers now construct them as literals, so a header named `!foo` is recorded as `!foo` and matched by a
+  literal `!foo` expectation while remaining distinct from a plain `foo` header — the two now match
+  **differently**, which is the whole point. Query-parameter names were already recorded literally (they
+  go through a different constructor) and are unchanged. `?`-prefixed header names remain unreachable, as
+  `?` is not a legal `tchar` and such a header does not survive the HTTP transport. **Behaviour note:** this
+  changes matching only for the rare case of a request whose actual header or cookie name starts with `!` or
+  `?`. Such a name was previously recorded as the negation of the un-prefixed name — a `!foo` header was
+  indistinguishable from a negated `foo` — and is now recorded literally, so it is matched by a literal
+  `!foo` matcher and no longer conflated with `foo`. A "name is NOT `foo`" matcher still matches a `!foo`
+  header, both before and after this change, since `!foo` is itself a name that is not `foo`.
 - **The Go client can now match a header, query parameter, cookie or path parameter whose value starts
   with `!` or `?`.** MockServer's plain-string matcher form encodes negation as a leading `!` and
   optionality as a leading `?`, and the server strips those markers unconditionally when reading. A value
