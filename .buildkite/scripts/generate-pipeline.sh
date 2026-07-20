@@ -131,14 +131,21 @@ if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "^(\.buildkite/|\.github/|terraf
 "
 fi
 
+# Runs on EVERY build, deliberately outside the path-filtered triggers above. The client version
+# pins it guards live in per-client directories (mockserver-client-rust/Cargo.toml,
+# mockserver-client-python/mockserver/launcher.py, ...), so a commit that drifts one of them routes
+# only to that client's own pipeline. Attaching this to any path filter means the guard never sees
+# the change it exists to catch. It is a few greps and costs ~1s.
+ALWAYS_STEPS='  - label: ":package: validate client version pins"
+    command: ".buildkite/scripts/steps/clients-version-consistency.sh"
+    timeout_in_minutes: 5
+    agents:
+      queue: trigger
+'
+
 if [ -z "$STEPS" ]; then
-  echo "--- :pipeline: No project-specific changes detected"
-  cat <<EOF | buildkite-agent pipeline upload
-steps:
-  - label: ":white_check_mark: no project changes detected"
-    command: "echo 'No project-specific files changed — skipping build'"
-    timeout_in_minutes: 1
-EOF
+  echo "--- :pipeline: No project-specific changes detected (running always-on gates)"
+  printf "steps:\n%s" "$ALWAYS_STEPS" | buildkite-agent pipeline upload
 else
-  printf "steps:\n%s" "$STEPS" | buildkite-agent pipeline upload
+  printf "steps:\n%s%s" "$ALWAYS_STEPS" "$STEPS" | buildkite-agent pipeline upload
 fi

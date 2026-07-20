@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Configuration` instance or via `PUT /mockserver/configuration` takes effect — previously both were read
   from the static property store, so only the system-property route worked while the others were accepted
   and ignored. `wasmEnabled` is read the same way for the same reason.
+- **CI now guards that every client library pins the same MockServer binary version.** Each client
+  decides for itself which server binary its launcher downloads, through seven different mechanisms,
+  and three of them had no release-time bump at all: the Python and PHP launchers sat at `7.1.0` and
+  the Rust crate at `7.3.0` while the project released `7.4.0`, so those clients silently downloaded
+  a three-minor-old server and the shared binary cache the documentation promises was never shared.
+  All three are now corrected to `7.4.0`, `scripts/release/prepare.sh` bumps them (hard-failing if a
+  pattern no longer matches), and `.buildkite/scripts/steps/clients-version-consistency.sh` asserts
+  agreement so drift is caught between releases rather than at the next one. The check is emitted
+  unconditionally by `generate-pipeline.sh` rather than behind a changed-path filter: the pins it
+  guards live in per-client directories, so a commit that drifts one routes only to that client's own
+  pipeline and would never reach a path-filtered gate — the drift vector and the guard would never
+  meet. The expected version is read from the topmost released `changelog.md` heading, so it also
+  works on shallow, tagless CI checkouts.
 - **Event-log eviction is now observable.** `MockServerEventLog.getEvictedLogEntryCount()` reports how many
   entries have been discarded because the log reached `maxLogEntries` (or `maxEventLogSizeInBytes`), a WARN is
   logged once on the first eviction (naming the current `maxLogEntries` and the fact that verifications are

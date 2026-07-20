@@ -104,8 +104,12 @@ NON_MAVEN_VERSION_PATHS=(
   mockserver-node/package.json
   mockserver-client-node/package.json
   mockserver-client-python/pyproject.toml
+  mockserver-client-python/mockserver/launcher.py
+  mockserver-client-php/src/BinaryLauncher.php
+  mockserver-client-rust/Cargo.toml
   mockserver-client-ruby/lib/mockserver/version.rb
   mockserver-client-go/VERSION
+  mockserver-client-dotnet/src/MockServer.Client/MockServer.Client.csproj
   mockserver-client-dotnet/src/MockServer.Client/MockServerBinaryLauncher.cs
   mockserver/mockserver-core/src/main/resources/org/mockserver/openapi/mock-server-openapi-embedded-model.yaml
   jekyll-www.mock-server.com/mockserver-openapi.yaml
@@ -142,6 +146,28 @@ sub_once("mockserver-client-python/pyproject.toml",
          r'(?m)^version\s*=\s*"[^"]+"', f'version = "{new_v}"',
          '^version = "..."')
 
+# Python binary launcher — _CLIENT_VERSION is the version ensure_binary() downloads
+# by default. It is NOT derived from pyproject.toml, so without this bump it froze
+# (it sat at 7.1.0 for three minors while every other client tracked the release).
+sub_once("mockserver-client-python/mockserver/launcher.py",
+         r'_CLIENT_VERSION = "[^"]+"', f'_CLIENT_VERSION = "{new_v}"',
+         '_CLIENT_VERSION = "..."')
+
+# PHP binary launcher — same situation. composer.json carries no version field at
+# all, so this constant is the only place PHP records which binary it fetches.
+sub_once("mockserver-client-php/src/BinaryLauncher.php",
+         r"private const DEFAULT_VERSION = '[^']+'",
+         f"private const DEFAULT_VERSION = '{new_v}'",
+         "DEFAULT_VERSION = '...'")
+
+# Rust — launcher.rs reads env!("CARGO_PKG_VERSION"), so the Cargo.toml package
+# version IS the launcher pin. components/client-rust.sh also bumps this at publish
+# time, but that commit is explicitly non-fatal on failure and had already silently
+# drifted a minor behind; bumping here (where a miss is a hard error) is the guard.
+sub_once("mockserver-client-rust/Cargo.toml",
+         r'(?m)^version = "[^"]+"', f'version = "{new_v}"',
+         '^version = "..."')
+
 # version.rb — Ruby uses single quotes here; mockserver-client.gemspec reads
 # MockServer::VERSION from this file, so the gemspec needs no separate bump.
 sub_once("mockserver-client-ruby/lib/mockserver/version.rb",
@@ -153,6 +179,15 @@ sub_once("mockserver-client-ruby/lib/mockserver/version.rb",
 go_version_file = repo_root / "mockserver-client-go" / "VERSION"
 go_version_file.write_text(new_v + "\n")
 print(f"  updated: mockserver-client-go/VERSION")
+
+# .NET client — the <Version> in the csproj is the version that actually SHIPS: the launcher reads
+# AssemblyInformationalVersionAttribute (derived from this property) FIRST and only falls back to the
+# constant below. components/client-dotnet.sh also sets it at publish time, but that is late and this
+# is the value the consistency check asserts on every build, so bump it here too. Re-bumping to the
+# same value later is a harmless no-op.
+sub_once("mockserver-client-dotnet/src/MockServer.Client/MockServer.Client.csproj",
+         r'<Version>[^<]+</Version>', f'<Version>{new_v}</Version>',
+         '<Version>...</Version>')
 
 # .NET client — FallbackVersion constant in MockServerBinaryLauncher.cs.
 # The primary DefaultVersion is derived from the assembly version at runtime

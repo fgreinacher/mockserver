@@ -480,7 +480,31 @@ implementation; every other client mirrors the same contract.
 | Integrity | downloads to a `.part` temp, verifies the published `<file>.sha256` (**fail-closed** on missing/empty/mismatch), atomic rename, then `tar -xf` extract |
 | Versioned cache GC | after a successful install, prunes other version dirs keeping the current + **one** previous (`maxPrevious = 1`); semver-aware so a **release outranks its `-SNAPSHOT`** (a stable release is never pruned in favour of a pre-release) |
 | Env knobs | `MOCKSERVER_BINARY_BASE_URL` (mirror / air-gap), `MOCKSERVER_BINARY_CACHE`, `MOCKSERVER_SKIP_BINARY_DOWNLOAD` (fail instead of download — pre-seeded caches) |
-| Default version | the shared MockServer version (`7.4.0`), pinned per client so all clients fetch the same server bundle and share one cache |
+| Default version | the last released MockServer version (`7.4.0`) — see *Version pinning* below |
+
+**Version pinning.** All clients must resolve to the same default version so they fetch the same
+bundle and share one cache, but there is no single shared constant: each client records the version
+in its own idiomatic place, and the release bump has to touch every one of them.
+
+| Client | Where the version lives | Kind |
+|--------|------------------------|------|
+| Node | `mockserver-node/package.json` → `version` (passed in by `bin/mockserver.js`; `ensureBinary` has no default) | package manifest |
+| Python | `mockserver-client-python/mockserver/launcher.py` → `_CLIENT_VERSION` | source constant |
+| PHP | `mockserver-client-php/src/BinaryLauncher.php` → `DEFAULT_VERSION` | source constant |
+| Ruby | `mockserver-client-ruby/lib/mockserver/version.rb` → `MockServer::VERSION` (default for the `version:` kwarg) | source constant |
+| Go | `mockserver-client-go/VERSION`, embedded via `//go:embed` | build artefact |
+| Rust | `Cargo.toml` → `version`, read via `env!("CARGO_PKG_VERSION")` | package manifest |
+| .NET | assembly `AssemblyInformationalVersionAttribute` (from the csproj `<Version>`), with `FallbackVersion` in `MockServerBinaryLauncher.cs` if reflection fails | assembly metadata |
+
+Two guards keep these in step, because they have drifted before — Python and PHP sat at `7.1.0` and
+Rust at `7.3.0` across three releases, so those clients silently downloaded a stale server:
+
+- `scripts/release/prepare.sh` bumps every path above and **hard-fails** if any pattern does not
+  match exactly once, so a renamed constant breaks the release rather than being skipped.
+- `.buildkite/scripts/steps/clients-version-consistency.sh` (infra pipeline) asserts on every build
+  that all pins equal the last released version, catching drift between releases.
+
+When adding a client, add its version location to **both**.
 
 **Per-client location & API:**
 
