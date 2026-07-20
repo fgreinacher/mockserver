@@ -1,6 +1,7 @@
 package org.mockserver.wasm;
 
 import com.google.common.annotations.VisibleForTesting;
+import org.mockserver.configuration.Configuration;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.Header;
@@ -42,9 +43,19 @@ public class WasmResponseShaper {
     private static final Set<String> WARNED_MODULES = ConcurrentHashMap.newKeySet();
 
     private final MockServerLogger mockServerLogger;
+    private final Configuration configuration;
 
     public WasmResponseShaper(MockServerLogger mockServerLogger) {
+        this(mockServerLogger, null);
+    }
+
+    /**
+     * @param configuration the live configuration supplying the WASM limits; {@code null} falls back to
+     *                      the static property store
+     */
+    public WasmResponseShaper(MockServerLogger mockServerLogger, Configuration configuration) {
         this.mockServerLogger = mockServerLogger;
+        this.configuration = configuration;
     }
 
     /**
@@ -61,7 +72,7 @@ public class WasmResponseShaper {
             WasmRequest wasmRequest = request != null
                 ? WasmRequest.fromHttpRequest(request, request.getBodyAsString())
                 : WasmRequest.ofBody(null);
-            WasmResponse shaped = new WasmRuntime(wasmBytes).callShape(wasmRequest, currentResponse(response));
+            WasmResponse shaped = new WasmRuntime(wasmBytes, configuration).callShape(wasmRequest, currentResponse(response));
             if (shaped != null) {
                 applyShaped(response, shaped);
             }

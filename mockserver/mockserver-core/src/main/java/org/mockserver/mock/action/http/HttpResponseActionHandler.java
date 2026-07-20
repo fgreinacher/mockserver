@@ -105,7 +105,7 @@ public class HttpResponseActionHandler {
         if (wasmBytes == null) {
             return;
         }
-        new WasmResponseShaper(mockServerLogger).shape(response, httpRequest, moduleName, wasmBytes);
+        new WasmResponseShaper(mockServerLogger, configuration).shape(response, httpRequest, moduleName, wasmBytes);
     }
 
     /**

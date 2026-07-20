@@ -319,15 +319,39 @@ public class NettySslContextFactory {
         return x509Certificates.toArray(new X509Certificate[0]);
     }
 
+    /**
+     * The client-authentication inputs baked into the cached {@link #serverSslContext}.
+     *
+     * <p>Kept so a change to mTLS enforcement is detected at the point of use rather than relying on every
+     * setter remembering to raise {@link Configuration#rebuildServerTLSContext(boolean)}. Neither
+     * {@code Configuration.tlsMutualAuthenticationRequired(Boolean)} nor the static
+     * {@code ConfigurationProperties.tlsMutualAuthenticationRequired(boolean)} raised that flag, so
+     * requiring mTLS at runtime left the cached context pinned at {@link ClientAuth#OPTIONAL} with
+     * {@link InsecureTrustManagerFactory} and certificateless clients kept connecting. The flag is still
+     * raised by the setters (matching the subject-alternative-name siblings); this signature is the
+     * backstop that also covers the system-property route, which has no Configuration instance to flag.
+     *
+     * <p>Deliberately NOT gated on {@code preventCertificateDynamicUpdate}: that option suppresses
+     * certificate REGENERATION when the domain list changes, and must not be able to suppress a
+     * tightening of client-authentication policy.
+     */
+    private volatile String serverSslContextClientAuthenticationSignature;
+
+    private String clientAuthenticationSignature() {
+        return configuration.tlsMutualAuthenticationRequired() + "|" + configuration.tlsMutualAuthenticationCertificateChain();
+    }
+
     public SslContext createServerSslContext() {
         if (serverSslContext != null
             && !keyAndCertificateFactory.certificateNotYetCreated()
+            && clientAuthenticationSignature().equals(serverSslContextClientAuthenticationSignature)
             && !(configuration.rebuildServerTLSContext() && !configuration.preventCertificateDynamicUpdate())) {
             return serverSslContext;
         }
         synchronized (sslContextLock) {
             if (serverSslContext != null
                 && !keyAndCertificateFactory.certificateNotYetCreated()
+                && clientAuthenticationSignature().equals(serverSslContextClientAuthenticationSignature)
                 && !(configuration.rebuildServerTLSContext() && !configuration.preventCertificateDynamicUpdate())) {
                 return serverSslContext;
             }
@@ -351,6 +375,9 @@ public class NettySslContextFactory {
                 serverSslContext = sslServerContextBuilderCustomizer
                     .apply(sslContextBuilder)
                     .build();
+                // record the client-authentication inputs this context was built from, so a later change
+                // to them forces a rebuild even if no setter raised rebuildServerTLSContext
+                serverSslContextClientAuthenticationSignature = clientAuthenticationSignature();
                 configuration.rebuildServerTLSContext(false);
             } catch (Error error) {
                 throw error;

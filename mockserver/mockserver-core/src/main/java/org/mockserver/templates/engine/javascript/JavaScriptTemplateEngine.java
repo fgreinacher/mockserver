@@ -71,11 +71,12 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
             : null;
         if (mockServerLogger != null
             && mockServerLogger.isEnabledForInstance(Level.WARN)
-            && !isNotBlank(this.configuration.javascriptDisallowedClasses())) {
+            && !isNotBlank(this.configuration.javascriptDisallowedClasses())
+            && !isNotBlank(this.configuration.javascriptAllowedClasses())) {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)
-                    .setMessageFormat("JavaScript template engine has no class restrictions (mockserver.javascriptDisallowedClasses is empty). Templates can use Java.type(\"...\") to instantiate arbitrary Java classes including Runtime — only use JavaScript templates from trusted sources, or populate mockserver.javascriptDisallowedClasses with at least java.lang.Runtime,java.lang.ProcessBuilder,java.lang.System.")
+                    .setMessageFormat("JavaScript template engine has no class restrictions (both mockserver.javascriptAllowedClasses and mockserver.javascriptDisallowedClasses are empty). Templates can use Java.type(\"...\") to instantiate arbitrary Java classes including Runtime — only use JavaScript templates from trusted sources, or set mockserver.javascriptAllowedClasses to the classes your templates legitimately need. Prefer the allow-list: a deny-list cannot enumerate every dangerous class, so denying java.lang.Runtime still leaves java.lang.ProcessBuilder and Class.forName reach-through available.")
             );
         }
     }
@@ -84,13 +85,63 @@ public class JavaScriptTemplateEngine implements TemplateEngine {
         return POLYGLOT_AVAILABLE;
     }
 
+    /**
+     * Decide whether a JavaScript template may resolve {@code className} via {@code Java.type(...)}.
+     *
+     * <p>Evaluated in this order:
+     * <ol>
+     *   <li><strong>Allow-list</strong> ({@code javascriptAllowedClasses}) — when set, ONLY entries on the
+     *       list resolve and everything else is refused. This is the only form that is safe by
+     *       construction and is the recommended setting.</li>
+     *   <li><strong>Deny-list</strong> ({@code javascriptDisallowedClasses}) — when set (and no allow-list
+     *       is), listed entries are refused and everything else resolves.</li>
+     *   <li>Otherwise unrestricted (the default, unchanged).</li>
+     * </ol>
+     *
+     * <p>Both lists match a class name exactly (case-insensitively, as before) OR as a package prefix when
+     * the entry ends in {@code .*} or {@code .} — e.g. {@code java.lang.*}. Prefix support matters because
+     * exact-match entries cannot express intent: denying {@code java.lang.Runtime} leaves
+     * {@code java.lang.ProcessBuilder} — and reach-through via {@code Class.forName} — wide open, which is
+     * exactly why a deny-list should not be relied on as a security boundary.
+     *
+     * <p>Note the guest context is built with {@code HostAccess.ALL} (see {@link PolyglotRunner}), so this
+     * predicate is the ONLY gate on which host classes a template can reach.
+     */
     private static boolean isClassAllowed(String className, Configuration configuration) {
-        if (isNotBlank(configuration.javascriptDisallowedClasses())) {
-            Iterable<String> restrictedClasses = Splitter.on(",").trimResults().split(configuration.javascriptDisallowedClasses());
-            return StreamSupport.stream(restrictedClasses.spliterator(), false)
-                .noneMatch(restrictedClass -> restrictedClass.equalsIgnoreCase(className));
+        String allowedClasses = configuration.javascriptAllowedClasses();
+        if (isNotBlank(allowedClasses)) {
+            return matchesAny(allowedClasses, className);
+        }
+        String disallowedClasses = configuration.javascriptDisallowedClasses();
+        if (isNotBlank(disallowedClasses)) {
+            return !matchesAny(disallowedClasses, className);
         }
         return true;
+    }
+
+    /**
+     * @return true if {@code className} matches any entry in the comma-separated {@code entries}, either
+     * exactly (case-insensitive) or as a package prefix for entries ending in {@code .*} or {@code .}
+     */
+    private static boolean matchesAny(String entries, String className) {
+        if (className == null) {
+            return false;
+        }
+        Iterable<String> entryList = Splitter.on(",").trimResults().omitEmptyStrings().split(entries);
+        return StreamSupport.stream(entryList.spliterator(), false)
+            .anyMatch(entry -> {
+                if (entry.endsWith(".*")) {
+                    return startsWithIgnoreCase(className, entry.substring(0, entry.length() - 1));
+                }
+                if (entry.endsWith(".")) {
+                    return startsWithIgnoreCase(className, entry);
+                }
+                return entry.equalsIgnoreCase(className);
+            });
+    }
+
+    private static boolean startsWithIgnoreCase(String value, String prefix) {
+        return value.regionMatches(true, 0, prefix, 0, prefix.length());
     }
 
     @Override

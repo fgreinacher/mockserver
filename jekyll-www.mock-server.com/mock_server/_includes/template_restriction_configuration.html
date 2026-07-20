@@ -2,6 +2,24 @@
 
 <h2>Template Restriction Configuration:</h2>
 
+<button id="button_configuration_allow_classes_in_javascript_templates" class="accordion title"><strong>Allow only specific classes in javascript templates</strong></button>
+<div class="panel title">
+    <p>Set comma separated list of the only classes javascript templates are allowed to use via <code>Java.type(...)</code>. This is the recommended setting if your templates come from anywhere you do not fully control.</p>
+    <p>Prefer this over the disallowed-classes list below. A list of banned classes can never be complete &mdash; banning <code>java.lang.Runtime</code> still leaves <code>java.lang.ProcessBuilder</code>, and a template can reach other classes indirectly. Listing what is allowed avoids that problem entirely: anything not on the list is refused.</p>
+    <p>When set, this takes precedence over <code>javascriptDisallowedClasses</code>. Entries match a class name exactly, or match a whole package when they end in <code>.*</code> (for example <code>java.util.*</code>).</p>
+    <p>Type: <span class="keyword">string</span> Default: <span class="this_value">""</span> (no restrictions)</p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.javascriptAllowedClasses(String javascriptAllowedClasses)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.javascriptAllowedClasses=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_JAVASCRIPT_ALLOWED_CLASSES=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.javascriptAllowedClasses=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.javascriptAllowedClasses="java.util.*,java.time.Instant"</code></pre>
+</div>
+
 <button id="button_configuration_disable_classes_in_javascript_templates" class="accordion title"><strong>Disable classes in javascript templates</strong></button>
 <div class="panel title">
     <p>Set comma separate list of classes not allowed to be used by javascript templates</p>

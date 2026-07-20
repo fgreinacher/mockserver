@@ -1,5 +1,6 @@
 package org.mockserver.matchers;
 
+import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.RequestDefinition;
@@ -22,23 +23,38 @@ import org.mockserver.wasm.WasmStore;
  */
 public class WasmBodyMatcher extends BodyMatcher<String> {
 
-    private static final String[] EXCLUDED_FIELDS = new String[0];
+    // "configuration" is an injected collaborator, not part of the matcher's identity — two matchers for
+    // the same module must compare EQUAL even when handed different Configuration instances. Same
+    // convention as the mockServerLogger exclusion on the sibling matchers.
+    private static final String[] EXCLUDED_FIELDS = {"configuration"};
     private final String moduleName;
+    private final Configuration configuration;
 
     public WasmBodyMatcher(String moduleName) {
+        this(moduleName, null);
+    }
+
+    /**
+     * @param configuration the live configuration supplying the WASM limits; {@code null} falls back to
+     *                      the static property store
+     */
+    public WasmBodyMatcher(String moduleName, Configuration configuration) {
         this.moduleName = moduleName;
+        this.configuration = configuration;
     }
 
     @Override
     public boolean matches(MatchDifference context, String actual) {
-        if (!ConfigurationProperties.wasmEnabled()) {
+        // read through the live configuration where one was supplied, so wasmEnabled honours a value set
+        // on a Configuration instance or via PUT /mockserver/configuration rather than only the static store
+        if (!(configuration == null ? ConfigurationProperties.wasmEnabled() : configuration.wasmEnabled())) {
             return false;
         }
         byte[] wasmBytes = WasmStore.getInstance().get(moduleName);
         if (wasmBytes == null) {
             return false;
         }
-        boolean result = new WasmRuntime(wasmBytes).callMatch(buildWasmRequest(context, actual));
+        boolean result = new WasmRuntime(wasmBytes, configuration).callMatch(buildWasmRequest(context, actual));
         return not != result;
     }
 

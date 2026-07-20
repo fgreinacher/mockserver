@@ -237,6 +237,7 @@ public class ConfigurationProperties {
     // WASM
     private static final String MOCKSERVER_WASM_ENABLED = "mockserver.wasmEnabled";
     private static final String MOCKSERVER_WASM_MAX_MEMORY_PAGES = "mockserver.wasmMaxMemoryPages";
+    private static final String MOCKSERVER_WASM_EXECUTION_TIMEOUT_MILLIS = "mockserver.wasmExecutionTimeoutMillis";
 
     // gRPC
     private static final String MOCKSERVER_GRPC_DESCRIPTOR_DIRECTORY = "mockserver.grpcDescriptorDirectory";
@@ -279,6 +280,7 @@ public class ConfigurationProperties {
 
     // template restrictions
     private static final String MOCKSERVER_JAVASCRIPT_DISALLOWED_CLASSES = "mockserver.javascriptDisallowedClasses";
+    private static final String MOCKSERVER_JAVASCRIPT_ALLOWED_CLASSES = "mockserver.javascriptAllowedClasses";
     private static final String MOCKSERVER_JAVASCRIPT_DISALLOWED_TEXT = "mockserver.javascriptDisallowedText";
     private static final String MOCKSERVER_JAVASCRIPT_TEMPLATE_EXECUTION_TIMEOUT = "mockserver.javascriptTemplateExecutionTimeout";
     private static final String MOCKSERVER_VELOCITY_DISALLOW_CLASS_LOADING = "mockserver.velocityDisallowClassLoading";
@@ -477,6 +479,18 @@ public class ConfigurationProperties {
         "private_key",
         "credential",
         "passphrase"
+    ).collect(Collectors.toCollection(LinkedHashSet::new));
+
+    /**
+     * Property names (lower-cased, {@code mockserver.} prefix stripped) that end in {@code key} but are
+     * NOT credentials, so the "ends in key" rule in {@link #isSensitivePropertyName} must not redact them.
+     * These are connection-pool sizing limits keyed by route — the word "key" refers to the pool key, not
+     * to a secret. Keep this list SHORT and justified: everything ending in {@code key} is treated as a
+     * credential unless it appears here, which is the safe direction to fail.
+     */
+    private static final Set<String> NON_SENSITIVE_KEY_SUFFIXED_NAMES = Stream.of(
+        "forwardconnectionpoolmaxidleperkey",
+        "forwardconnectionpoolmaxtotalperkey"
     ).collect(Collectors.toCollection(LinkedHashSet::new));
 
     public static final Properties PROPERTIES = readPropertyFile();
@@ -1234,6 +1248,24 @@ public class ConfigurationProperties {
 
     public static void wasmMaxMemoryPages(int pages) {
         setProperty(MOCKSERVER_WASM_MAX_MEMORY_PAGES, "" + pages);
+    }
+
+    public static long wasmExecutionTimeoutMillis() {
+        return readLongProperty(MOCKSERVER_WASM_EXECUTION_TIMEOUT_MILLIS, "MOCKSERVER_WASM_EXECUTION_TIMEOUT_MILLIS", 5000L);
+    }
+
+    /**
+     * Maximum wall-clock time a single WASM module invocation may run before it is aborted and treated as
+     * a non-match (fail closed).
+     * <p>
+     * WASM custom rules run DURING request matching, so a module containing an unbounded loop would
+     * otherwise pin the calling matcher thread permanently and can starve the event loop. Set to 0 to
+     * disable the limit (unbounded execution — not recommended).
+     *
+     * @param timeoutMillis maximum milliseconds a WASM invocation may run, or 0 for no limit
+     */
+    public static void wasmExecutionTimeoutMillis(long timeoutMillis) {
+        setProperty(MOCKSERVER_WASM_EXECUTION_TIMEOUT_MILLIS, "" + timeoutMillis);
     }
 
     public static String grpcDescriptorDirectory() {
@@ -3770,6 +3802,27 @@ public class ConfigurationProperties {
         setProperty(MOCKSERVER_JAVASCRIPT_DISALLOWED_CLASSES, javascriptDisallowedClasses);
     }
 
+    public static String javascriptAllowedClasses() {
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_JAVASCRIPT_ALLOWED_CLASSES, "MOCKSERVER_JAVASCRIPT_ALLOWED_CLASSES", "");
+    }
+
+    /**
+     * Set comma separated ALLOW-list of classes (or package prefixes ending in {@code .*}) that javascript
+     * templates may resolve via {@code Java.type(...)}.
+     * <p>
+     * When set, this takes precedence over {@code javascriptDisallowedClasses} and NOTHING outside the list
+     * can be resolved. An allow-list is the only form that is safe by construction: a deny-list cannot
+     * enumerate every dangerous class, so denying {@code java.lang.Runtime} still leaves
+     * {@code java.lang.ProcessBuilder} and {@code Class.forName} reach-through available.
+     * <p>
+     * The default is empty, which leaves the (deny-list or unrestricted) legacy behaviour unchanged.
+     *
+     * @param javascriptAllowedClasses comma separated list of classes / package prefixes templates may use
+     */
+    public static void javascriptAllowedClasses(String javascriptAllowedClasses) {
+        setProperty(MOCKSERVER_JAVASCRIPT_ALLOWED_CLASSES, javascriptAllowedClasses);
+    }
+
     public static String javascriptDisallowedText() {
         return readPropertyHierarchically(PROPERTIES, MOCKSERVER_JAVASCRIPT_DISALLOWED_TEXT, "MOCKSERVER_JAVASCRIPT_DISALLOWED_TEXT", "");
     }
@@ -5844,8 +5897,19 @@ public class ConfigurationProperties {
 
     /**
      * Returns {@code true} when the property name (with or without the
-     * {@code mockserver.} prefix) contains a substring that indicates the
-     * value is a secret and must not be logged verbatim.
+     * {@code mockserver.} prefix) indicates the value is a secret and must not be logged verbatim.
+     *
+     * <p>Two rules apply:
+     * <ol>
+     *   <li>the name contains one of {@link #SENSITIVE_SUBSTRINGS}, and</li>
+     *   <li>the name ENDS in {@code key} — a name-shape rule, not an enumeration.</li>
+     * </ol>
+     *
+     * <p>Rule 2 exists because the substring list omitted bare {@code key}, so
+     * {@code mockserver.dashboardAnalyticsKey} matched none of the 13 substrings and its value was logged
+     * in clear. Enumerating credential substrings cannot keep up with new properties: any future
+     * {@code ...Key} property would silently leak the same way. {@link #NON_SENSITIVE_KEY_SUFFIXED_NAMES}
+     * carries the documented exceptions.
      */
     static boolean isSensitivePropertyName(String name) {
         if (name == null) {
@@ -5861,7 +5925,7 @@ public class ConfigurationProperties {
                 return true;
             }
         }
-        return false;
+        return lower.endsWith("key") && !NON_SENSITIVE_KEY_SUFFIXED_NAMES.contains(lower);
     }
 
     @SuppressWarnings("ConstantConditions")

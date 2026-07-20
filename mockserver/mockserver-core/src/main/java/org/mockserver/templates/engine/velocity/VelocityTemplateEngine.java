@@ -54,8 +54,19 @@ public class VelocityTemplateEngine implements TemplateEngine {
     private final MockServerLogger mockServerLogger;
     private final Configuration configuration;
     private HttpTemplateOutputDeserializer httpTemplateOutputDeserializer;
-    private final VelocityEngine velocityEngine;
-    private final ToolManager toolManager;
+
+    // ----- runtime-reconfigurable engine (see EngineHolder) -----
+    // velocityDisallowClassLoading installs the SecureUberspector sandbox, but that can only be applied
+    // when the VelocityEngine is built. The engine used to be built once in the constructor and every
+    // call site caches the engine instance, so toggling the setting at runtime (system property,
+    // Configuration setter, or PUT /mockserver/configuration) was completely inert: templates kept
+    // being able to instantiate arbitrary Java classes even though the operator was told the setting
+    // had been applied. Everything derived from the engine now lives in one immutable EngineHolder held
+    // in a single volatile field, rebuilt (under engineRebuildLock) only when the configured flag
+    // differs from the flag the current engine was built with. Steady state therefore costs one
+    // volatile read plus a boolean compare, so the parse-once/render-many work below is not regressed.
+    private volatile EngineHolder engineHolder;
+    private final Object engineRebuildLock = new Object();
 
     // ----- shared, request-independent function/helper bindings (built once, read by every render) -----
     // The BUILT_IN_FUNCTIONS ($uuid, $now, $rand_int, ...) and BUILT_IN_HELPERS ($faker, $strings,
@@ -106,21 +117,47 @@ public class VelocityTemplateEngine implements TemplateEngine {
     // path if the string loader is unavailable, keeping behaviour identical.
     static final int PARSED_TEMPLATE_CACHE_MAX = 1000;
     private static final AtomicLong ENGINE_INSTANCE_COUNTER = new AtomicLong();
-    private final StringResourceRepository templateRepository;
-    private final String templateRepositoryName;
-    // template strings currently registered in the repository; access-ordered LRU bounded at
-    // PARSED_TEMPLATE_CACHE_MAX, wrapped in Collections.synchronizedMap so concurrent renders read and
-    // insert safely. The value is unused (a marker) — the key is the template string.
-    private final Map<String, Boolean> registeredTemplates;
+
+    /**
+     * Immutable snapshot of a built {@link VelocityEngine} and everything derived from it, so nothing
+     * can be left stale when the engine is rebuilt and no reader can observe a torn
+     * (engine, toolManager, repository) triple. Published through a single volatile field; a reader
+     * takes ONE reference into a local and uses that local for the whole render, so a rebuild part-way
+     * through a render can never mix an old engine with a new tool context or repository.
+     * <p>
+     * {@code templateRepositoryName} is unique per built engine because it keys a STATIC repository
+     * registry — every rebuild takes a fresh counter value and a name is never reused.
+     * {@code registeredTemplates} is the bounded access-ordered LRU whose eviction hook removes from
+     * THIS holder's own repository, keeping that pairing intact across rebuilds.
+     */
+    private static final class EngineHolder {
+        private final VelocityEngine velocityEngine;
+        private final ToolManager toolManager;
+        private final StringResourceRepository templateRepository;
+        private final String templateRepositoryName;
+        // template strings currently registered in the repository; access-ordered LRU bounded at
+        // PARSED_TEMPLATE_CACHE_MAX, wrapped in Collections.synchronizedMap so concurrent renders read
+        // and insert safely. The value is unused (a marker) — the key is the template string.
+        private final Map<String, Boolean> registeredTemplates;
+        // the velocityDisallowClassLoading value this engine was actually built with, compared against
+        // the live configuration on every render to decide whether a rebuild is required
+        private final boolean disallowClassLoading;
+
+        private EngineHolder(VelocityEngine velocityEngine, ToolManager toolManager, StringResourceRepository templateRepository, String templateRepositoryName, Map<String, Boolean> registeredTemplates, boolean disallowClassLoading) {
+            this.velocityEngine = velocityEngine;
+            this.toolManager = toolManager;
+            this.templateRepository = templateRepository;
+            this.templateRepositoryName = templateRepositoryName;
+            this.registeredTemplates = registeredTemplates;
+            this.disallowClassLoading = disallowClassLoading;
+        }
+    }
 
     public VelocityTemplateEngine(MockServerLogger mockServerLogger, Configuration configuration) {
         this.mockServerLogger = mockServerLogger;
         this.configuration = configuration;
         this.httpTemplateOutputDeserializer = new HttpTemplateOutputDeserializer(mockServerLogger);
-        // unique per engine instance so concurrently-constructed engines never share a repository
-        this.templateRepositoryName = "mockserver-velocity-templates-" + ENGINE_INSTANCE_COUNTER.incrementAndGet();
-        velocityEngine = buildVelocityEngine(configuration);
-        toolManager = buildToolManager(velocityEngine);
+        this.engineHolder = buildEngineHolder(disallowClassLoadingConfigured());
         // Build the shared, request-independent function/helper map once. It is referenced (not copied)
         // by every render via context chaining and is never mutated after construction, so it is safe for
         // concurrent reads. unmodifiableMap makes that read-only contract explicit and fail-fast.
@@ -135,21 +172,73 @@ public class VelocityTemplateEngine implements TemplateEngine {
             functionsAndHelpers.put("faker", TemplateFunctions.resolveFaker(configuration.templateFakerSeed()));
         }
         this.sharedFunctionsAndHelpers = Collections.unmodifiableMap(functionsAndHelpers);
-        this.templateRepository = StringResourceLoader.getRepository(templateRepositoryName);
-        this.registeredTemplates = Collections.synchronizedMap(new LinkedHashMap<String, Boolean>(256, 0.75f, true) {
+    }
+
+    private boolean disallowClassLoadingConfigured() {
+        return Boolean.TRUE.equals(configuration.velocityDisallowClassLoading());
+    }
+
+    /**
+     * Build a {@link VelocityEngine} for the given sandbox setting together with everything derived
+     * from it. The repository name is freshly allocated on every call — it keys a STATIC registry, so
+     * names are never reused, and concurrently-constructed or rebuilt engines never share a repository.
+     */
+    private EngineHolder buildEngineHolder(boolean disallowClassLoading) {
+        String repositoryName = "mockserver-velocity-templates-" + ENGINE_INSTANCE_COUNTER.incrementAndGet();
+        VelocityEngine newVelocityEngine = buildVelocityEngine(repositoryName, disallowClassLoading);
+        ToolManager newToolManager = buildToolManager(newVelocityEngine);
+        final StringResourceRepository newTemplateRepository = StringResourceLoader.getRepository(repositoryName);
+        Map<String, Boolean> newRegisteredTemplates = Collections.synchronizedMap(new LinkedHashMap<String, Boolean>(256, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
                 if (size() > PARSED_TEMPLATE_CACHE_MAX) {
                     // drop the body from the string repository so the matching parsed Template ages
                     // out of the engine's resource cache too — keeps both caches bounded together.
-                    if (templateRepository != null) {
-                        templateRepository.removeStringResource(eldest.getKey());
+                    // Deliberately bound to THIS holder's own repository, so an evicted entry can
+                    // never remove a body from a different (rebuilt) engine's repository.
+                    if (newTemplateRepository != null) {
+                        newTemplateRepository.removeStringResource(eldest.getKey());
                     }
                     return true;
                 }
                 return false;
             }
         });
+        return new EngineHolder(newVelocityEngine, newToolManager, newTemplateRepository, repositoryName, newRegisteredTemplates, disallowClassLoading);
+    }
+
+    /**
+     * Return the holder to use for a render, rebuilding the engine first when
+     * {@code velocityDisallowClassLoading} has changed since the current engine was built — this is
+     * what makes the sandbox setting take effect at runtime rather than only at construction.
+     * <p>
+     * The steady-state path (the flag has not changed, which is overwhelmingly the common case) is a
+     * single volatile read plus a boolean compare; rebuilding is expensive, so it happens only on an
+     * actual change. Callers MUST take the returned reference into a local and use that local for the
+     * whole render.
+     */
+    private EngineHolder currentEngineHolder() {
+        boolean disallowClassLoading = disallowClassLoadingConfigured();
+        EngineHolder currentHolder = engineHolder;
+        if (currentHolder.disallowClassLoading == disallowClassLoading) {
+            return currentHolder;
+        }
+        synchronized (engineRebuildLock) {
+            // re-check under the lock so concurrent renders observing the same change rebuild once
+            currentHolder = engineHolder;
+            if (currentHolder.disallowClassLoading == disallowClassLoading) {
+                return currentHolder;
+            }
+            EngineHolder rebuiltHolder = buildEngineHolder(disallowClassLoading);
+            engineHolder = rebuiltHolder;
+            // release the superseded repository from StringResourceLoader's STATIC registry so
+            // repeated toggles cannot grow it without bound. A render already in flight on the old
+            // holder keeps its own direct reference to the old repository object, and if the old
+            // engine misses its resource cache it simply falls back to the re-parsing evaluate(...)
+            // path, so output stays correct.
+            StringResourceLoader.removeRepository(currentHolder.templateRepositoryName);
+            return rebuiltHolder;
+        }
     }
 
     /**
@@ -169,7 +258,8 @@ public class VelocityTemplateEngine implements TemplateEngine {
      * stays byte-for-byte identical to the original path. Invalid templates are rare and never cached,
      * so this fallback costs nothing on the hot path.
      */
-    private Template parsedTemplate(String template) {
+    private Template parsedTemplate(EngineHolder holder, String template) {
+        StringResourceRepository templateRepository = holder.templateRepository;
         if (templateRepository == null) {
             return null;
         }
@@ -181,13 +271,13 @@ public class VelocityTemplateEngine implements TemplateEngine {
         // unable to find the resource.
         templateRepository.putStringResource(template, template, StandardCharsets.UTF_8.name());
         // touch the access-ordered LRU so this template is most-recently-used for bound accounting
-        registeredTemplates.put(template, Boolean.TRUE);
+        holder.registeredTemplates.put(template, Boolean.TRUE);
         try {
-            return velocityEngine.getTemplate(template, StandardCharsets.UTF_8.name());
+            return holder.velocityEngine.getTemplate(template, StandardCharsets.UTF_8.name());
         } catch (Exception parseOrLoadFailure) {
             // drop the bad entry so it is neither cached nor counted against the bound, then let the
             // caller reproduce the original error message via evaluate(...)
-            registeredTemplates.remove(template);
+            holder.registeredTemplates.remove(template);
             templateRepository.removeStringResource(template);
             return null;
         }
@@ -200,16 +290,16 @@ public class VelocityTemplateEngine implements TemplateEngine {
      * point, so the output — and any surfaced parse error — is byte-for-byte identical to
      * {@code velocityEngine.evaluate(context, writer, "VelocityResponseTemplate", template)}.
      */
-    private void renderTemplate(String template, VelocityContext context, Writer writer) throws Exception {
-        Template parsed = parsedTemplate(template);
+    private void renderTemplate(EngineHolder holder, String template, VelocityContext context, Writer writer) throws Exception {
+        Template parsed = parsedTemplate(holder, template);
         if (parsed != null) {
             parsed.merge(context, writer);
         } else {
-            velocityEngine.evaluate(context, writer, "VelocityResponseTemplate", template);
+            holder.velocityEngine.evaluate(context, writer, "VelocityResponseTemplate", template);
         }
     }
 
-    private VelocityEngine buildVelocityEngine(Configuration configuration) {
+    private VelocityEngine buildVelocityEngine(String templateRepositoryName, boolean disallowClassLoading) {
         VelocityEngine velocityEngine;
 
         // See: https://velocity.apache.org/engine/2.0/configuration.html
@@ -254,7 +344,7 @@ public class VelocityTemplateEngine implements TemplateEngine {
         velocityProperties.put("resource.loader.string.repository.encoding", "UTF-8");
         velocityProperties.put("resource.loader.string.cache", "true");
         velocityProperties.put("resource.loader.string.modification_check_interval", "0");
-        if (configuration.velocityDisallowClassLoading()) {
+        if (disallowClassLoading) {
             velocityProperties.put(RuntimeConstants.UBERSPECT_CLASSNAME, SecureUberspector.class.getName());
         } else if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(Level.WARN)) {
             mockServerLogger.logEvent(
@@ -334,15 +424,18 @@ public class VelocityTemplateEngine implements TemplateEngine {
     public String renderTemplate(String template, HttpRequest request, org.mockserver.load.IterationContext iteration) {
         try {
             validateTemplate(template);
+            // read the holder ONCE for the whole render so a concurrent rebuild cannot mix an old
+            // engine with a new tool context or repository
+            EngineHolder holder = currentEngineHolder();
             Writer writer = new StringWriter();
-            VelocityContext context = newRenderContext(request);
+            VelocityContext context = newRenderContext(holder, request);
             if (iteration != null) {
                 context.put("iteration", iteration);
             }
             RequestBodyExtractionHelper bodyExtractionHelper = new RequestBodyExtractionHelper(request, mockServerLogger);
             context.put("jsonPath", new RequestBodyExtractionHelper.JsonPathTool(bodyExtractionHelper));
             context.put("xPath", new RequestBodyExtractionHelper.XPathTool(bodyExtractionHelper));
-            renderTemplate(template, context, writer);
+            renderTemplate(holder, template, context, writer);
             return writer.toString();
         } catch (Exception e) {
             throw new RuntimeException(formatLogMessage("Exception:{}transforming template:{}for request:{}", isNotBlank(e.getMessage()) ? e.getMessage() : e.getClass().getSimpleName(), template, request), e);
@@ -353,15 +446,18 @@ public class VelocityTemplateEngine implements TemplateEngine {
         T result;
         try {
             validateTemplate(template);
+            // read the holder ONCE for the whole render so a concurrent rebuild cannot mix an old
+            // engine with a new tool context or repository
+            EngineHolder holder = currentEngineHolder();
             Writer writer = new StringWriter();
-            VelocityContext context = newRenderContext(request);
+            VelocityContext context = newRenderContext(holder, request);
             if (response != null) {
                 context.put("response", new HttpResponseTemplateObject(response));
             }
             RequestBodyExtractionHelper bodyExtractionHelper = new RequestBodyExtractionHelper(request, mockServerLogger);
             context.put("jsonPath", new RequestBodyExtractionHelper.JsonPathTool(bodyExtractionHelper));
             context.put("xPath", new RequestBodyExtractionHelper.XPathTool(bodyExtractionHelper));
-            renderTemplate(template, context, writer);
+            renderTemplate(holder, template, context, writer);
             JsonNode generatedObject = null;
             try {
                 generatedObject = objectMapper.readTree(writer.toString());
@@ -407,9 +503,9 @@ public class VelocityTemplateEngine implements TemplateEngine {
      * shared map and its layer are never mutated. Output is byte-for-byte identical to copying every
      * binding into a single flat context.
      */
-    private VelocityContext newRenderContext(HttpRequest request) {
+    private VelocityContext newRenderContext(EngineHolder holder, HttpRequest request) {
         // fresh per render: $json/$xml are request-scoped and hold per-request parse state
-        VelocityContext functionsLayer = new VelocityContext(sharedFunctionsAndHelpers, toolManager.createContext());
+        VelocityContext functionsLayer = new VelocityContext(sharedFunctionsAndHelpers, holder.toolManager.createContext());
         VelocityContext context = new VelocityContext(functionsLayer);
         context.put("request", new HttpRequestTemplateObject(request));
         return context;

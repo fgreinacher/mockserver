@@ -80,6 +80,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private String defaultResponseHeaders;
 
     private String javascriptDisallowedClasses;
+    private String javascriptAllowedClasses;
     private String javascriptDisallowedText;
     private Long javascriptTemplateExecutionTimeout;
     private Boolean velocityDisallowClassLoading;
@@ -204,6 +205,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Boolean otelGenerateTraceId;
     private Boolean wasmEnabled;
     private Integer wasmMaxMemoryPages;
+    private Long wasmExecutionTimeoutMillis;
     private String grpcDescriptorDirectory;
     private String grpcProtoDirectory;
     private Boolean grpcEnabled;
@@ -377,6 +379,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.defaultResponseHeaders = configuration.defaultResponseHeaders();
 
             this.javascriptDisallowedClasses = configuration.javascriptDisallowedClasses();
+            this.javascriptAllowedClasses = configuration.javascriptAllowedClasses();
             this.javascriptDisallowedText = configuration.javascriptDisallowedText();
             this.javascriptTemplateExecutionTimeout = configuration.javascriptTemplateExecutionTimeout();
             this.velocityDisallowClassLoading = configuration.velocityDisallowClassLoading();
@@ -512,6 +515,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.otelGenerateTraceId = configuration.otelGenerateTraceId();
             this.wasmEnabled = configuration.wasmEnabled();
             this.wasmMaxMemoryPages = configuration.wasmMaxMemoryPages();
+            this.wasmExecutionTimeoutMillis = configuration.wasmExecutionTimeoutMillis();
             this.grpcDescriptorDirectory = configuration.grpcDescriptorDirectory();
             this.grpcProtoDirectory = configuration.grpcProtoDirectory();
             this.grpcEnabled = configuration.grpcEnabled();
@@ -736,6 +740,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.defaultResponseHeaders(defaultResponseHeaders);
 
         configuration.javascriptDisallowedClasses(javascriptDisallowedClasses);
+        configuration.javascriptAllowedClasses(javascriptAllowedClasses);
         configuration.javascriptDisallowedText(javascriptDisallowedText);
         configuration.javascriptTemplateExecutionTimeout(javascriptTemplateExecutionTimeout);
         configuration.velocityDisallowClassLoading(velocityDisallowClassLoading);
@@ -873,6 +878,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.otelGenerateTraceId(otelGenerateTraceId);
         configuration.wasmEnabled(wasmEnabled);
         configuration.wasmMaxMemoryPages(wasmMaxMemoryPages);
+        configuration.wasmExecutionTimeoutMillis(wasmExecutionTimeoutMillis);
         configuration.grpcDescriptorDirectory(grpcDescriptorDirectory);
         configuration.grpcProtoDirectory(grpcProtoDirectory);
         configuration.grpcEnabled(grpcEnabled);
@@ -1153,6 +1159,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (javascriptDisallowedClasses != null) {
             target.javascriptDisallowedClasses(javascriptDisallowedClasses);
+        }
+        if (javascriptAllowedClasses != null) {
+            target.javascriptAllowedClasses(javascriptAllowedClasses);
         }
         if (javascriptDisallowedText != null) {
             target.javascriptDisallowedText(javascriptDisallowedText);
@@ -1483,6 +1492,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (wasmMaxMemoryPages != null) {
             target.wasmMaxMemoryPages(wasmMaxMemoryPages);
+        }
+        if (wasmExecutionTimeoutMillis != null) {
+            target.wasmExecutionTimeoutMillis(wasmExecutionTimeoutMillis);
         }
         if (grpcDescriptorDirectory != null) {
             target.grpcDescriptorDirectory(grpcDescriptorDirectory);
@@ -2298,6 +2310,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setJavascriptDisallowedClasses(String javascriptDisallowedClasses) {
         this.javascriptDisallowedClasses = javascriptDisallowedClasses;
+        return this;
+    }
+
+    public String getJavascriptAllowedClasses() {
+        return javascriptAllowedClasses;
+    }
+
+    public ConfigurationDTO setJavascriptAllowedClasses(String javascriptAllowedClasses) {
+        this.javascriptAllowedClasses = javascriptAllowedClasses;
         return this;
     }
 
@@ -3302,6 +3323,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setWasmMaxMemoryPages(Integer wasmMaxMemoryPages) {
         this.wasmMaxMemoryPages = wasmMaxMemoryPages;
+        return this;
+    }
+
+    public Long getWasmExecutionTimeoutMillis() {
+        return wasmExecutionTimeoutMillis;
+    }
+
+    public ConfigurationDTO setWasmExecutionTimeoutMillis(Long wasmExecutionTimeoutMillis) {
+        this.wasmExecutionTimeoutMillis = wasmExecutionTimeoutMillis;
         return this;
     }
 

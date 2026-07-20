@@ -86,7 +86,7 @@ public class BodyMatcherBuilder {
                     break;
                 case WASM:
                     WasmBody wasmBody = (WasmBody) body;
-                    bodyMatcher = new WasmBodyMatcher(wasmBody.getModuleName());
+                    bodyMatcher = new WasmBodyMatcher(wasmBody.getModuleName(), configuration);
                     break;
                 case ALL_OF:
                     AllOfBody allOfBody = (AllOfBody) body;

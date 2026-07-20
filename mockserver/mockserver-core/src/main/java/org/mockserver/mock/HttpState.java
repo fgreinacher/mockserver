@@ -3,6 +3,7 @@ package org.mockserver.mock;
 import com.google.common.annotations.VisibleForTesting;
 import org.mockserver.authentication.AuthenticationException;
 import org.mockserver.authentication.AuthenticationHandler;
+import org.mockserver.authentication.ControlPlaneAuthenticationHandlerFactory;
 import org.mockserver.closurecallback.websocketregistry.LocalCallbackRegistry;
 import org.mockserver.closurecallback.websocketregistry.WebSocketClientRegistry;
 import org.mockserver.configuration.Configuration;
@@ -137,7 +138,30 @@ public class HttpState {
     private HttpRequestSerializer httpRequestSerializer;
     private HttpResponseSerializer httpResponseSerializer;
     private org.mockserver.serialization.curl.HttpRequestToCurlSerializer httpRequestToCurlSerializer;
-    private AuthenticationHandler controlPlaneAuthenticationHandler;
+    // Explicitly installed control-plane authentication handler. When set (embedded users and tests
+    // that supply their own handler) it WINS over the configuration-derived handler below.
+    private volatile AuthenticationHandler controlPlaneAuthenticationHandler;
+    // Configuration-derived control-plane authentication handler, rebuilt whenever the auth-relevant
+    // configuration changes. This is what makes enabling control-plane authentication at RUNTIME (system
+    // property, Configuration setter, ConfigurationDTO, or PUT /mockserver/configuration) actually take
+    // effect: previously the chain was built once at server bootstrap, so a later enable returned 200,
+    // echoed back "true" on GET, and left the handler null — and a null handler means "authenticated",
+    // leaving the control plane (including the recorded request log) fully open. Held as one immutable
+    // holder behind a single volatile field so a concurrent reader can never observe a torn
+    // (handler, signature) pair.
+    private volatile DerivedControlPlaneAuthenticationHandler derivedControlPlaneAuthenticationHandler;
+    private final Object derivedControlPlaneAuthenticationHandlerLock = new Object();
+
+    private static final class DerivedControlPlaneAuthenticationHandler {
+        private final String signature;
+        private final AuthenticationHandler handler;
+
+        private DerivedControlPlaneAuthenticationHandler(String signature, AuthenticationHandler handler) {
+            this.signature = signature;
+            this.handler = handler;
+        }
+    }
+
     // Memoized control-plane authorizer, keyed on the raw scope-mapping it was built
     // from, so the mapping is parsed (and the authorizer allocated) once and reused
     // across requests, but stays correct if configuration reload changes the mapping.
@@ -364,8 +388,41 @@ public class HttpState {
         return crudDispatcher;
     }
 
+    /**
+     * The control-plane authentication handler currently in force, or {@code null} when the control plane
+     * is unauthenticated.
+     *
+     * <p>An explicitly {@link #setControlPlaneAuthenticationHandler installed} handler wins. Otherwise the
+     * handler is DERIVED from the live {@link Configuration} and rebuilt whenever the auth-relevant
+     * configuration changes, so enabling (or disabling) control-plane authentication at runtime through
+     * any configuration route takes effect at the enforcement point instead of being accepted and ignored.
+     */
     public AuthenticationHandler getControlPlaneAuthenticationHandler() {
-        return controlPlaneAuthenticationHandler;
+        AuthenticationHandler explicitHandler = controlPlaneAuthenticationHandler;
+        if (explicitHandler != null) {
+            return explicitHandler;
+        }
+        if (!ControlPlaneAuthenticationHandlerFactory.authenticationRequired(configuration)) {
+            // fast path for the default (unauthenticated) control plane: three boolean reads, no signature
+            // built and no handler retained
+            return null;
+        }
+        String signature = ControlPlaneAuthenticationHandlerFactory.signature(configuration);
+        DerivedControlPlaneAuthenticationHandler derived = derivedControlPlaneAuthenticationHandler;
+        if (derived != null && derived.signature.equals(signature)) {
+            return derived.handler;
+        }
+        synchronized (derivedControlPlaneAuthenticationHandlerLock) {
+            derived = derivedControlPlaneAuthenticationHandler;
+            if (derived == null || !derived.signature.equals(signature)) {
+                derived = new DerivedControlPlaneAuthenticationHandler(
+                    signature,
+                    ControlPlaneAuthenticationHandlerFactory.build(configuration, mockServerLogger)
+                );
+                derivedControlPlaneAuthenticationHandler = derived;
+            }
+            return derived.handler;
+        }
     }
 
     public void setControlPlaneAuthenticationHandler(AuthenticationHandler controlPlaneAuthenticationHandler) {
@@ -5952,10 +6009,14 @@ public class HttpState {
      */
     public ControlPlaneAuthDecision evaluateControlPlaneAuthentication(HttpRequest request) {
         try {
+            // Resolve through the getter, NOT the raw field: the handler may be derived from the live
+            // configuration, so reading the field directly would miss a control-plane authentication
+            // mechanism enabled after startup and fall through to the null => "authenticated" branch.
+            AuthenticationHandler resolvedControlPlaneAuthenticationHandler = getControlPlaneAuthenticationHandler();
             org.mockserver.authentication.AuthenticationResult authenticationResult =
-                controlPlaneAuthenticationHandler == null
+                resolvedControlPlaneAuthenticationHandler == null
                     ? org.mockserver.authentication.AuthenticationResult.authenticated(null, "none", java.util.Map.of(), java.util.Set.of())
-                    : controlPlaneAuthenticationHandler.authenticate(request);
+                    : resolvedControlPlaneAuthenticationHandler.authenticate(request);
             if (authenticationResult.isAuthenticated()) {
                 if (configuration.controlPlaneAuthorizationEnabled() && !controlPlaneAuthorized(request, authenticationResult)) {
                     recordAudit(request, authenticationResult, "FORBIDDEN");

@@ -22,6 +22,7 @@ import org.mockserver.netty.proxy.connect.HttpConnectHandler;
 import org.mockserver.netty.responsewriter.NettyResponseWriter;
 import org.mockserver.responsewriter.ResponseWriter;
 import org.mockserver.scheduler.Scheduler;
+import org.mockserver.authentication.ProxyAuthenticationValidator;
 import org.mockserver.serialization.Base64Converter;
 import org.mockserver.serialization.ConfigurationSerializer;
 import org.mockserver.serialization.ObjectMapperFactory;
@@ -30,7 +31,6 @@ import org.mockserver.serialization.model.ConfigurationDTO;
 import org.slf4j.event.Level;
 
 import java.net.BindException;
-import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -355,6 +355,16 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
 
                 } else if (request.matches("GET", PATH_PREFIX + "/http3status", "/http3status")) {
 
+                    // Reports the live HTTP/3 listener port and active connection count, so it takes the
+                    // SAME control-plane authn + authorization + audit decision as every neighbouring
+                    // control-plane GET (/llm/optimisationReport, /llm/diffRuns, /dashboard,
+                    // /openapi.yaml). It previously had no gate at all — an omission rather than a
+                    // deliberate posture, since it stood alone among its siblings. It is a READ, so a
+                    // read-only control-plane role may view it. Default (no control-plane auth
+                    // configured) is unchanged: the gate returns true.
+                    if (!httpState.controlPlaneRequestAuthenticated(request, responseWriter)) {
+                        return;
+                    }
                     int http3Port = server instanceof MockServer ? ((MockServer) server).getHttp3Port() : -1;
                     int activeConnections = server instanceof MockServer ? ((MockServer) server).getHttp3ActiveConnectionCount() : 0;
                     boolean enabled = http3Port > 0;
@@ -402,6 +412,28 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                     // above). MetricsHandler serves the metrics when enabled and a CORS-decorated
                     // 404 when disabled, so a cross-origin dashboard reads the disabled state
                     // cleanly instead of the request falling through to mock matching.
+                    //
+                    // Gated like every neighbouring control-plane GET. This endpoint previously had no
+                    // authentication gate at all, which leaked more than it appears to: metric
+                    // cardinality scales with the number of configured expectations, so an
+                    // unauthenticated caller can infer the expectation surface of a running instance —
+                    // a real disclosure on a shared CI or sidecar deployment.
+                    //
+                    // NOTE for operators scraping with Prometheus: control-plane authentication is
+                    // opt-in and OFF by default, so an unauthenticated scrape keeps working unchanged
+                    // on a default instance. It is only refused where the operator has explicitly
+                    // required control-plane authentication — in which case leaving this one endpoint
+                    // open would contradict that expressly-stated intent, and every other control-plane
+                    // endpoint is already refused to the same scraper. Deliberately NOT given a
+                    // separate opt-out property: a scraper that must reach a locked control plane
+                    // should present control-plane credentials like any other client.
+                    //
+                    // Note this path deliberately has NO bare "/metrics" alias (unlike /http3status and
+                    // its other siblings, which accept both forms): "/metrics" is a plausible path for a
+                    // user's own mocked API, and reserving it would shadow their expectation.
+                    if (!httpState.controlPlaneRequestAuthenticated(request, responseWriter)) {
+                        return;
+                    }
                     // Direct ctx write bypasses NettyResponseWriter — complete the in-flight token.
                     completeInFlight(inFlightRequest);
                     metricsHandler.renderMetrics(ctx, request);
@@ -410,8 +442,12 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
 
                     String username = configuration.proxyAuthenticationUsername();
                     String password = configuration.proxyAuthenticationPassword();
-                    if (isNotBlank(username) && isNotBlank(password) &&
-                        !request.containsHeader(PROXY_AUTHORIZATION.toString(), "Basic " + BASE_64_CONVERTER.bytesToBase64String((username + ':' + password).getBytes(StandardCharsets.UTF_8), StandardCharsets.US_ASCII))) {
+                    // Credential comparison MUST go through ProxyAuthenticationValidator: the previous
+                    // containsHeader(...) check compared with equalsIgnoreCase, which both accepts
+                    // case-mutated base64 and short-circuits (timing channel). See
+                    // ProxyAuthenticationValidator.
+                    if (ProxyAuthenticationValidator.proxyAuthenticationConfigured(username, password)
+                        && !ProxyAuthenticationValidator.isAuthenticated(request, username, password)) {
                         HttpResponse response = response()
                             .withStatusCode(PROXY_AUTHENTICATION_REQUIRED.code())
                             .withHeader(PROXY_AUTHENTICATE.toString(), "Basic realm=\"" + StringEscapeUtils.escapeJava(configuration.proxyAuthenticationRealm()) + "\", charset=\"UTF-8\"");

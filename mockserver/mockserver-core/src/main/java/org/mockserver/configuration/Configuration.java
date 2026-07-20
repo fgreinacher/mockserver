@@ -83,6 +83,7 @@ public class Configuration {
     private Integer breakpointMaxHeld;
     private Boolean wasmEnabled;
     private Integer wasmMaxMemoryPages;
+    private Long wasmExecutionTimeoutMillis;
     private String grpcDescriptorDirectory;
     private String grpcProtoDirectory;
     private Boolean grpcEnabled;
@@ -209,6 +210,7 @@ public class Configuration {
 
     // template restrictions
     private String javascriptDisallowedClasses;
+    private String javascriptAllowedClasses;
     private String javascriptDisallowedText;
     private Long javascriptTemplateExecutionTimeout;
     private Boolean velocityDisallowClassLoading;
@@ -1273,6 +1275,25 @@ public class Configuration {
 
     public Configuration wasmMaxMemoryPages(Integer wasmMaxMemoryPages) {
         this.wasmMaxMemoryPages = wasmMaxMemoryPages;
+        return this;
+    }
+
+    public Long wasmExecutionTimeoutMillis() {
+        if (wasmExecutionTimeoutMillis == null) {
+            return ConfigurationProperties.wasmExecutionTimeoutMillis();
+        }
+        return wasmExecutionTimeoutMillis;
+    }
+
+    /**
+     * Maximum wall-clock time a single WASM module invocation may run before it is aborted and treated as
+     * a non-match (fail closed). WASM custom rules run during request matching, so an unbounded loop would
+     * otherwise pin the calling matcher thread permanently. Set to 0 to disable the limit.
+     *
+     * @param wasmExecutionTimeoutMillis maximum milliseconds a WASM invocation may run, or 0 for no limit
+     */
+    public Configuration wasmExecutionTimeoutMillis(Long wasmExecutionTimeoutMillis) {
+        this.wasmExecutionTimeoutMillis = wasmExecutionTimeoutMillis;
         return this;
     }
 
@@ -3079,6 +3100,27 @@ public class Configuration {
      */
     public Configuration javascriptDisallowedClasses(String javascriptDisallowedClasses) {
         this.javascriptDisallowedClasses = javascriptDisallowedClasses;
+        return this;
+    }
+
+    public String javascriptAllowedClasses() {
+        if (javascriptAllowedClasses == null) {
+            return ConfigurationProperties.javascriptAllowedClasses();
+        }
+        return javascriptAllowedClasses;
+    }
+
+    /**
+     * Set comma separated ALLOW-list of classes (or package prefixes ending in {@code .*}) that javascript
+     * templates may resolve via {@code Java.type(...)}. When set it takes precedence over
+     * {@code javascriptDisallowedClasses} and nothing outside the list can be resolved.
+     * <p>
+     * The default is empty, which leaves the legacy deny-list behaviour unchanged.
+     *
+     * @param javascriptAllowedClasses comma separated list of classes / package prefixes templates may use
+     */
+    public Configuration javascriptAllowedClasses(String javascriptAllowedClasses) {
+        this.javascriptAllowedClasses = javascriptAllowedClasses;
         return this;
     }
 
@@ -5219,6 +5261,11 @@ public class Configuration {
      */
     public Configuration tlsMutualAuthenticationRequired(Boolean tlsMutualAuthenticationRequired) {
         this.tlsMutualAuthenticationRequired = tlsMutualAuthenticationRequired;
+        // The server SSL context bakes in clientAuth (REQUIRE vs OPTIONAL) and the trust manager, so a
+        // cached context must be discarded when this changes — otherwise requiring mTLS at runtime is
+        // accepted and silently ignored, and certificateless clients keep connecting. Mirrors
+        // addSslSubjectAlternativeName*/clearSslSubjectAlternativeName*, which already do this.
+        rebuildServerTLSContext(true);
         return this;
     }
 
@@ -5239,6 +5286,8 @@ public class Configuration {
     public Configuration tlsMutualAuthenticationCertificateChain(String tlsMutualAuthenticationCertificateChain) {
         fileExists(tlsMutualAuthenticationCertificateChain);
         this.tlsMutualAuthenticationCertificateChain = tlsMutualAuthenticationCertificateChain;
+        // same reasoning as tlsMutualAuthenticationRequired: this feeds the server context's trust manager
+        rebuildServerTLSContext(true);
         return this;
     }
 

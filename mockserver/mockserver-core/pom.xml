@@ -687,6 +687,15 @@
                         <exclude>**/HttpStateAuditTest.java</exclude>
                         <exclude>**/HttpStateAuthorizationTest.java</exclude>
                         <exclude>**/HttpStateAuditEndpointTest.java</exclude>
+                        <!-- Enables control-plane authentication through the STATIC ConfigurationProperties
+                             store (the system-property route), which leaks across classes if run in parallel. -->
+                        <exclude>**/ControlPlaneAuthenticationRouteDenialTest.java</exclude>
+                        <!-- Reads wasmExecutionTimeoutMillis from the STATIC ConfigurationProperties store and
+                             exercises the shared WasmRuntime.MODULE_CACHE, like its WASM siblings. -->
+                        <exclude>**/WasmRuntimeExecutionBudgetTest.java</exclude>
+                        <exclude>**/WasmRuntimeConfigurationRouteTest.java</exclude>
+                        <!-- Toggles tlsMutualAuthenticationRequired in the STATIC ConfigurationProperties store. -->
+                        <exclude>**/MutualAuthenticationRuntimeReconfigurationTest.java</exclude>
                         <exclude>**/OtelMetricsExporterTest.java</exclude>
                         <exclude>**/TimeServiceTest.java</exclude>
                         <exclude>**/TimeToLiveTest.java</exclude>
@@ -864,6 +873,10 @@
                                 <include>**/HttpStateAuditTest.java</include>
                                 <include>**/HttpStateAuthorizationTest.java</include>
                                 <include>**/HttpStateAuditEndpointTest.java</include>
+                                <include>**/ControlPlaneAuthenticationRouteDenialTest.java</include>
+                                <include>**/WasmRuntimeExecutionBudgetTest.java</include>
+                                <include>**/WasmRuntimeConfigurationRouteTest.java</include>
+                                <include>**/MutualAuthenticationRuntimeReconfigurationTest.java</include>
                                 <include>**/OtelMetricsExporterTest.java</include>
                                 <include>**/TimeServiceTest.java</include>
                                 <include>**/TimeToLiveTest.java</include>

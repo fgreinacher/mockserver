@@ -33,3 +33,20 @@
     <p>Example:</p>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.wasmMaxMemoryPages="512"</code></pre>
 </div>
+
+<button id="button_configuration_wasm_execution_timeout_millis" class="accordion title"><strong>WASM Execution Timeout</strong></button>
+<div class="panel title">
+    <p>Maximum time in milliseconds a single WASM module invocation is allowed to run before it is aborted. WASM rules are evaluated while MockServer is matching a request, so a module containing an infinite loop would otherwise occupy that thread indefinitely and can eventually stop MockServer serving requests at all.</p>
+    <p>A module that exceeds the limit is aborted and treated as <em>not</em> matching, so a runaway rule fails safe rather than blocking. The default of <code>5000</code> (5 seconds) is far longer than any normal rule needs. Set it to <code>0</code> to disable the limit and restore the previous unbounded behaviour.</p>
+    <p>Type: <span class="keyword">long</span> Default: <span class="this_value">5000</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.wasmExecutionTimeoutMillis(long timeoutMillis)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.wasmExecutionTimeoutMillis=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_WASM_EXECUTION_TIMEOUT_MILLIS=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.wasmExecutionTimeoutMillis=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.wasmExecutionTimeoutMillis="1000"</code></pre>
+</div>

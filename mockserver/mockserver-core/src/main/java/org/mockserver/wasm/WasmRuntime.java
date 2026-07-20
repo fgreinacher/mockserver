@@ -10,7 +10,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.mockserver.serialization.ObjectMapperFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -20,6 +23,15 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Thin wrapper around a compiled chicory WASM instance.
@@ -47,7 +59,27 @@ import java.util.Map;
  * falls back to {@code match} with the body only, so existing body-only modules keep
  * working unchanged.
  * <p>
- * This class <strong>fails closed</strong>: any error returns {@code false}.
+ * <strong>Execution budget.</strong> A WASM module is user-supplied code with unrestricted control
+ * flow, so nothing in the module itself bounds how long an invocation runs — a module containing an
+ * unbounded loop would otherwise pin the calling thread forever. Because {@link #callMatch(WasmRequest)}
+ * runs <em>during request matching</em>, that would wedge matcher threads and starve the event loop.
+ * Every invocation is therefore run on a {@link #EXECUTOR shared daemon worker} under a wall-clock
+ * budget ({@code mockserver.wasmExecutionTimeoutMillis}, default 5000ms; {@code 0} disables the budget
+ * and runs inline on the calling thread). On expiry the worker is interrupted — chicory's interpreter
+ * polls {@link Thread#isInterrupted()} and unwinds with a {@code ChicoryInterruptedException} — and the
+ * call fails closed <em>without waiting</em> for the worker to die, so a module that somehow ignores
+ * interruption still cannot delay the caller.
+ * <p>
+ * This class <strong>fails closed</strong>: any error returns {@code false} ({@link #callMatch}) or
+ * leaves the response unshaped ({@link #callShape}). The boundary catches {@link Throwable}, not merely
+ * {@link Exception}, because the guest is untrusted code whose failure modes are not all
+ * {@link Exception}s. Chicory happens to convert a guest {@link StackOverflowError} into a
+ * {@code ChicoryException} at its call boundary, but that is chicory's implementation detail and covers
+ * only stack exhaustion <em>inside a guest call</em> — an {@link OutOfMemoryError} from an allocating
+ * module, or stack exhaustion in the surrounding host code (envelope serialisation, module parsing), is
+ * not wrapped. Letting any of those escape into the matcher would break the fail-closed guarantee
+ * precisely when a hostile module is exercising it. Errors caught here are logged at WARN rather than
+ * swallowed silently, so a genuine JVM-level problem stays diagnosable.
  */
 public class WasmRuntime {
 
@@ -118,26 +150,110 @@ public class WasmRuntime {
             }
         });
 
-    private final byte[] wasmBytes;
-    private final int maxMemoryPages;
+    private static final Logger LOGGER = LoggerFactory.getLogger(WasmRuntime.class);
 
     /**
-     * Create a runtime with the default memory page limit from
-     * {@link org.mockserver.configuration.ConfigurationProperties#wasmMaxMemoryPages()}.
+     * Cap on live WASM worker threads. A budgeted invocation holds its worker for up to the whole
+     * timeout (5s by default — far longer than a regex evaluation), so the pool is capped well below
+     * {@link org.mockserver.matchers.MatchingTimeoutExecutor}'s: a hostile module burst must not be able
+     * to spawn unbounded threads and turn the DoS protection into a DoS amplifier.
+     */
+    static final int EXECUTOR_MAX_POOL_SIZE = Math.max(32, Runtime.getRuntime().availableProcessors() * 8);
+
+    /**
+     * Shared executor running guest WASM code off the calling (matcher / event-loop) thread so an
+     * unbounded module can be abandoned on timeout instead of pinning the caller.
+     * <p>
+     * Deliberately <strong>not</strong> {@link org.mockserver.matchers.MatchingTimeoutExecutor}, despite
+     * solving the same shape of problem, for two reasons. First, that pool's saturation policy runs the
+     * task <em>inline on the calling thread without a timeout</em> — a correct trade for a regex (never
+     * lose a real match result) but the exact failure this class exists to prevent: an inline unbounded
+     * module pins the matcher thread, and under a WASM-driven burst every subsequent call would go inline,
+     * cascading into the wedge. Here a rejected submission fails <em>closed</em> instead. Second, WASM
+     * invocations occupy a worker for orders of magnitude longer than regex evaluations, so sharing one
+     * pool would let a slow module starve regex/XPath matching.
+     * <p>
+     * Core size 0 with a 60s keep-alive so idle workers reap; a {@link SynchronousQueue} means there is
+     * no backlog — a task either gets a worker immediately (creating one up to {@link #EXECUTOR_MAX_POOL_SIZE})
+     * or is rejected — both because queueing time would silently eat into the caller's timeout budget and
+     * because an unbounded queue is itself a memory-exhaustion vector. Threads are daemons so a stuck
+     * module can never block JVM shutdown.
+     */
+    private static final ExecutorService EXECUTOR = new ThreadPoolExecutor(
+        0,
+        EXECUTOR_MAX_POOL_SIZE,
+        60L,
+        TimeUnit.SECONDS,
+        new SynchronousQueue<>(),
+        new ThreadFactoryBuilder()
+            .setNameFormat("mockserver-wasm-exec-%d")
+            .setDaemon(true)
+            .build(),
+        new ThreadPoolExecutor.AbortPolicy()
+    );
+
+    private final byte[] wasmBytes;
+    private final int maxMemoryPages;
+    private final long executionTimeoutMillis;
+
+    /**
+     * Create a runtime with the default memory page and execution budget limits from
+     * {@link org.mockserver.configuration.ConfigurationProperties#wasmMaxMemoryPages()} and
+     * {@link org.mockserver.configuration.ConfigurationProperties#wasmExecutionTimeoutMillis()}.
      */
     public WasmRuntime(byte[] wasmBytes) {
         this(wasmBytes, org.mockserver.configuration.ConfigurationProperties.wasmMaxMemoryPages());
     }
 
     /**
-     * Create a runtime with an explicit memory page limit.
+     * Create a runtime whose limits come from the LIVE {@link org.mockserver.configuration.Configuration}
+     * rather than the static property store.
+     *
+     * <p>This is the constructor production call sites must use. Reading the static store instead means a
+     * limit set through a {@code Configuration} instance or {@code PUT /mockserver/configuration} is
+     * accepted — the endpoint returns 200 and echoes the new value back — while the enforcement point
+     * keeps using the old one. A {@code null} configuration falls back to the static store, which is the
+     * correct source when no instance is in scope.
+     *
+     * @param wasmBytes     the compiled WASM binary
+     * @param configuration the live configuration supplying the memory-page and execution-budget limits
+     */
+    public WasmRuntime(byte[] wasmBytes, org.mockserver.configuration.Configuration configuration) {
+        this(
+            wasmBytes,
+            configuration == null
+                ? org.mockserver.configuration.ConfigurationProperties.wasmMaxMemoryPages()
+                : configuration.wasmMaxMemoryPages(),
+            configuration == null
+                ? org.mockserver.configuration.ConfigurationProperties.wasmExecutionTimeoutMillis()
+                : configuration.wasmExecutionTimeoutMillis()
+        );
+    }
+
+    /**
+     * Create a runtime with an explicit memory page limit and the default execution budget from
+     * {@link org.mockserver.configuration.ConfigurationProperties#wasmExecutionTimeoutMillis()}.
      *
      * @param wasmBytes      the compiled WASM binary
      * @param maxMemoryPages maximum number of WASM linear memory pages (each page is 64 KiB)
      */
     public WasmRuntime(byte[] wasmBytes, int maxMemoryPages) {
+        this(wasmBytes, maxMemoryPages, org.mockserver.configuration.ConfigurationProperties.wasmExecutionTimeoutMillis());
+    }
+
+    /**
+     * Create a runtime with explicit memory page and execution budget limits.
+     *
+     * @param wasmBytes              the compiled WASM binary
+     * @param maxMemoryPages         maximum number of WASM linear memory pages (each page is 64 KiB)
+     * @param executionTimeoutMillis maximum wall-clock milliseconds a single invocation may run before it
+     *                               is interrupted and fails closed; {@code 0} or negative disables the
+     *                               budget and runs the invocation inline on the calling thread
+     */
+    public WasmRuntime(byte[] wasmBytes, int maxMemoryPages, long executionTimeoutMillis) {
         this.wasmBytes = wasmBytes;
         this.maxMemoryPages = maxMemoryPages;
+        this.executionTimeoutMillis = executionTimeoutMillis;
     }
 
     /**
@@ -164,30 +280,38 @@ public class WasmRuntime {
      */
     public boolean callMatch(WasmRequest request) {
         try {
-            Instance instance = buildInstance(parseModule(wasmBytes));
-
-            byte[] input;
-            ExportFunction matchFn = tryExport(instance, MATCH_REQUEST);
-            if (matchFn != null) {
-                // richer ABI: pass the full request envelope as JSON
-                input = buildEnvelope(request).getBytes(StandardCharsets.UTF_8);
-            } else {
-                // legacy ABI: pass only the body
-                matchFn = instance.export(MATCH);
-                input = request.getBody() != null
-                    ? request.getBody().getBytes(StandardCharsets.UTF_8)
-                    : new byte[0];
-            }
-
-            // Write input into the WASM module's linear memory at offset 0
-            instance.memory().write(0, input);
-
-            long[] result = matchFn.apply(0L, input.length);
-            return result.length > 0 && result[0] != 0;
-        } catch (Exception e) {
-            // fail closed
+            return callWithinBudget(MATCH, () -> doMatch(request));
+        } catch (Throwable t) {
+            // fail closed — see the class javadoc for why this catches Throwable and not just Exception
+            logFailedClosed(MATCH, t);
             return false;
         }
+    }
+
+    /**
+     * The actual guest invocation behind {@link #callMatch(WasmRequest)}, run under the execution budget.
+     */
+    private boolean doMatch(WasmRequest request) {
+        Instance instance = buildInstance(parseModule(wasmBytes));
+
+        byte[] input;
+        ExportFunction matchFn = tryExport(instance, MATCH_REQUEST);
+        if (matchFn != null) {
+            // richer ABI: pass the full request envelope as JSON
+            input = buildEnvelope(request).getBytes(StandardCharsets.UTF_8);
+        } else {
+            // legacy ABI: pass only the body
+            matchFn = instance.export(MATCH);
+            input = request.getBody() != null
+                ? request.getBody().getBytes(StandardCharsets.UTF_8)
+                : new byte[0];
+        }
+
+        // Write input into the WASM module's linear memory at offset 0
+        instance.memory().write(0, input);
+
+        long[] result = matchFn.apply(0L, input.length);
+        return result.length > 0 && result[0] != 0;
     }
 
     /**
@@ -208,6 +332,22 @@ public class WasmRuntime {
      *         unshaped response and logs once (see {@link WasmResponseShaper})
      */
     public WasmResponse callShape(WasmRequest request, WasmResponse response) {
+        try {
+            return callWithinBudget(SHAPE_RESPONSE, () -> doShape(request, response));
+        } catch (WasmShapeException e) {
+            // already the caller's expected failure type — propagate unchanged
+            throw e;
+        } catch (Throwable t) {
+            // fail closed: the shaper falls back to the unshaped response and warns once per module
+            logFailedClosed(SHAPE_RESPONSE, t);
+            throw new WasmShapeException("WASM shape_response failed: " + t.getMessage(), t);
+        }
+    }
+
+    /**
+     * The actual guest invocation behind {@link #callShape}, run under the execution budget.
+     */
+    private WasmResponse doShape(WasmRequest request, WasmResponse response) {
         Instance instance;
         ExportFunction shapeFn;
         try {
@@ -235,6 +375,117 @@ public class WasmRuntime {
             throw new WasmShapeException("WASM shape_response trapped", e);
         }
         return readShapedResult(instance.memory(), packed);
+    }
+
+    /**
+     * Run a guest invocation under the configured wall-clock execution budget.
+     * <p>
+     * A non-positive budget disables the limit and runs {@code invocation} inline on the calling thread,
+     * which both preserves the pre-budget behaviour exactly for users who opt out and keeps the opt-out
+     * path free of any thread hand-off cost.
+     * <p>
+     * Otherwise the invocation runs on a {@link #EXECUTOR} worker. On expiry the worker is interrupted via
+     * {@link Future#cancel(boolean)} — which returns immediately, so a module that ignores interruption
+     * delays no one — and a {@link WasmExecutionBudgetException} is thrown for the caller to fail closed on.
+     * <p>
+     * The budget spans the <em>whole</em> invocation — module parse, instantiation and the guest call —
+     * not just guest execution, since a pathological module can be slow to parse too. A first call on an
+     * uncached module therefore consumes more of the budget than subsequent ones (parsing is cached by
+     * {@link #MODULE_CACHE}), which is why the budget is measured in seconds rather than milliseconds:
+     * budgets near the cost of parse plus thread hand-off would fail legitimate modules closed.
+     *
+     * @throws WasmExecutionBudgetException if the budget expires, the pool is saturated, or the calling
+     *                                      thread is interrupted while waiting
+     */
+    private <T> T callWithinBudget(String operation, Callable<T> invocation) throws Exception {
+        if (executionTimeoutMillis <= 0) {
+            return invocation.call();
+        }
+        // Clear any interrupt flag left on a recycled worker by a previous timed-out invocation before
+        // this one starts — otherwise chicory's interrupt polling would abort this (innocent) module
+        // immediately, turning a prior module's timeout into a spurious non-match for an unrelated one.
+        Callable<T> task = () -> {
+            Thread.interrupted();
+            return invocation.call();
+        };
+        final Future<T> future;
+        try {
+            future = EXECUTOR.submit(task);
+        } catch (RejectedExecutionException e) {
+            // Saturation means EXECUTOR_MAX_POOL_SIZE modules are already in flight. Unlike regex
+            // matching we do NOT fall back to running inline: an inline unbounded module pins the calling
+            // matcher thread, which is precisely the wedge this budget exists to prevent, and under a
+            // WASM-driven burst every subsequent call would take that path. Fail closed instead.
+            LOGGER.warn("WASM execution pool saturated ({} workers in use) — failing {} closed for module {}; reduce concurrent WASM matching load or lower mockserver.wasmExecutionTimeoutMillis so stuck modules are reclaimed sooner", EXECUTOR_MAX_POOL_SIZE, operation, moduleIdentity());
+            throw new WasmExecutionBudgetException("WASM execution pool saturated", e);
+        }
+        try {
+            return future.get(executionTimeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            // interrupt the worker but do NOT wait for it to die — chicory's interpreter polls the
+            // interrupt flag and unwinds, but the caller must be released regardless of whether it does
+            future.cancel(true);
+            LOGGER.warn("WASM module {} exceeded the {}ms {} execution budget — interrupted and failed closed (raise mockserver.wasmExecutionTimeoutMillis, or set it to 0 to disable the budget, if the module legitimately needs longer)", moduleIdentity(), executionTimeoutMillis, operation);
+            throw new WasmExecutionBudgetException("WASM " + operation + " exceeded the " + executionTimeoutMillis + "ms execution budget", e);
+        } catch (InterruptedException e) {
+            // the CALLING thread was interrupted (e.g. cooperative shutdown), not the guest: abandon the
+            // worker, restore the flag so the interrupt is not lost, and fail closed
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new WasmExecutionBudgetException("interrupted while awaiting WASM " + operation, e);
+        } catch (ExecutionException e) {
+            // unwrap so the caller sees the guest's real failure (e.g. WasmShapeException, or a
+            // StackOverflowError from a recursive module) rather than an ExecutionException wrapper
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception) {
+                throw (Exception) cause;
+            }
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Log a fail-closed invocation. Budget failures already logged their own WARN with full context, so
+     * they are not logged twice. An {@link Error} is logged at WARN because silently swallowing (say) an
+     * {@link OutOfMemoryError} would make heap exhaustion look like a plain non-match; ordinary
+     * exceptions (invalid module bytes, a trap, a missing export) are expected on this path and would be
+     * per-request log noise at anything above DEBUG.
+     */
+    private void logFailedClosed(String operation, Throwable t) {
+        if (t instanceof WasmExecutionBudgetException) {
+            return;
+        }
+        if (t instanceof Error) {
+            LOGGER.warn("WASM module {} {} failed with {} — failing closed", moduleIdentity(), operation, t.getClass().getName(), t);
+        } else if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("WASM module {} {} failed — failing closed", moduleIdentity(), operation, t);
+        }
+    }
+
+    /**
+     * Identify the module in a log line. {@link WasmRuntime} is constructed from bytes alone and never
+     * sees the user-facing module name, so the content hash (already the cache key) plus the byte length
+     * is the identity available here — and it correlates directly with {@link #MODULE_CACHE} entries.
+     */
+    private String moduleIdentity() {
+        String key = contentKey(wasmBytes);
+        String hash = key == null ? "unknown" : key.substring(0, 12);
+        return hash + " (" + (wasmBytes == null ? 0 : wasmBytes.length) + " bytes)";
+    }
+
+    /**
+     * Raised when an invocation could not be completed within its execution budget (timed out, was
+     * rejected by a saturated pool, or the calling thread was interrupted). Internal to the fail-closed
+     * plumbing: {@link #callMatch(WasmRequest)} turns it into {@code false} and {@link #callShape} into a
+     * {@link WasmShapeException}, so it never escapes this class.
+     */
+    private static final class WasmExecutionBudgetException extends RuntimeException {
+        WasmExecutionBudgetException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     /**

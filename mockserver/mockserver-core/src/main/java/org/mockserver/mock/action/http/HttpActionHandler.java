@@ -1,9 +1,8 @@
 package org.mockserver.mock.action.http;
 
-import io.netty.buffer.Unpooled;
+import org.mockserver.authentication.ProxyAuthenticationValidator;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.EventLoopGroup;
-import io.netty.handler.codec.base64.Base64;
 import io.netty.util.AttributeKey;
 import org.apache.commons.text.StringEscapeUtils;
 import org.mockserver.closurecallback.websocketregistry.LocalCallbackRegistry;
@@ -938,8 +937,12 @@ public class HttpActionHandler {
             String username = configuration.proxyAuthenticationUsername();
             String password = configuration.proxyAuthenticationPassword();
             // only authenticate potentiallyHttpProxy because other proxied requests should have already been authenticated (i.e. in CONNECT request)
-            if (potentiallyHttpProxy && isNotBlank(username) && isNotBlank(password) &&
-                !request.containsHeader(PROXY_AUTHORIZATION.toString(), "Basic " + Base64.encode(Unpooled.copiedBuffer(username + ':' + password, StandardCharsets.UTF_8), false).toString(StandardCharsets.US_ASCII))) {
+            // Credential comparison MUST go through ProxyAuthenticationValidator: the previous
+            // containsHeader(...) check compared with equalsIgnoreCase, which both accepts case-mutated
+            // base64 and short-circuits (timing channel). See ProxyAuthenticationValidator.
+            if (potentiallyHttpProxy
+                && ProxyAuthenticationValidator.proxyAuthenticationConfigured(username, password)
+                && !ProxyAuthenticationValidator.isAuthenticated(request, username, password)) {
 
                 HttpResponse response = response()
                     .withStatusCode(PROXY_AUTHENTICATION_REQUIRED.code())

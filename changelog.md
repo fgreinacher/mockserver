@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **New `javascriptAllowedClasses` — an ALLOW-list for the classes JavaScript templates may resolve via
+  `Java.type(...)`.** When set it takes precedence over `javascriptDisallowedClasses` and nothing outside the
+  list can be resolved. Entries match a class name exactly or, when they end in `.*`, as a package prefix
+  (e.g. `java.util.*`). An allow-list is the only form that is safe by construction: the existing deny-list
+  matched class names by exact string equality, so denying `java.lang.Runtime` still left
+  `java.lang.ProcessBuilder` — and `Class.forName` reach-through — available. Both lists now also support
+  package prefixes. The default is unchanged (no restrictions) so existing templates keep working; setting
+  `javascriptAllowedClasses` is the recommended hardening step for any instance that renders templates from
+  a source you do not fully control.
+- **New `wasmExecutionTimeoutMillis` (default 5000) — a wall-clock execution budget for WASM custom rules.**
+  WASM modules ran with no fuel, timeout or interrupt, so a module containing an unbounded loop pinned the
+  calling thread permanently; because WASM rules are evaluated during request matching this could wedge
+  matcher threads. An invocation exceeding the budget is now aborted and fails closed (treated as a
+  non-match). Set to 0 to restore the previous unbounded behaviour. Both this and the existing
+  `wasmMaxMemoryPages` are now read from the live configuration at the point of use, so setting either on a
+  `Configuration` instance or via `PUT /mockserver/configuration` takes effect — previously both were read
+  from the static property store, so only the system-property route worked while the others were accepted
+  and ignored. `wasmEnabled` is read the same way for the same reason.
 - **Event-log eviction is now observable.** `MockServerEventLog.getEvictedLogEntryCount()` reports how many
   entries have been discarded because the log reached `maxLogEntries` (or `maxEventLogSizeInBytes`), a WARN is
   logged once on the first eviction (naming the current `maxLogEntries` and the fact that verifications are
@@ -36,6 +54,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restores the previous, unsound behaviour when set to `false`.
 
 ### Fixed
+- **SECURITY: enabling control-plane authentication at runtime now actually takes effect.** The mTLS, JWT and
+  OIDC handler chain was built once during server bootstrap, so enabling
+  `controlPlaneJWTAuthenticationRequired`, `controlPlaneTLSMutualAuthenticationRequired` or
+  `controlPlaneOidcAuthenticationRequired` afterwards — through a system property, a `Configuration` setter,
+  or `PUT /mockserver/configuration` — was accepted and silently ignored: the `PUT` returned 200, a
+  subsequent `GET` echoed back `true`, and the enforcement point still saw no handler, which it treated as
+  "authenticated". An operator hardening a running shared or CI instance was told it was locked while it
+  remained fully open, including the recorded request log, which in proxy mode can hold real captured
+  credentials. The handler is now derived from the live configuration and rebuilt whenever the
+  authentication-relevant configuration changes, so every route takes effect — and disabling it works too. If
+  authentication is required but the handler cannot be constructed (for example an unreachable JWKS source)
+  the control plane now denies every request rather than falling open.
+- **SECURITY: requiring mTLS at runtime now reaches the TLS layer.** `tlsMutualAuthenticationRequired` did not
+  invalidate the cached server SSL context, so enabling it on a running instance left the context pinned at
+  `ClientAuth.OPTIONAL` with a trust-all trust manager and certificateless clients kept connecting. The
+  context is now rebuilt whenever the client-authentication settings change, via the `Configuration` setter,
+  `PUT /mockserver/configuration`, or the system property. `preventCertificateDynamicUpdate` no longer
+  suppresses this rebuild — it governs certificate regeneration, not client-authentication policy.
+- **SECURITY: forward-proxy credentials are now compared exactly and in constant time.** Both the `CONNECT`
+  and plain-HTTP proxy paths checked `Proxy-Authorization` through a case-INSENSITIVE, short-circuiting
+  comparison. Base64 is case-sensitive, so this accepted credentials differing from the configured one in
+  case — roughly one bit of entropy lost per alphabetic character — and reintroduced the timing side channel
+  the constant-time helper exists to close. Both paths now share one validated comparison.
+- **BEHAVIOUR: `GET /mockserver/metrics` and `GET /mockserver/http3status` now require control-plane
+  credentials when control-plane authentication is enabled.** Both were served with no authentication gate
+  at all, alone among the control-plane endpoints served alongside them (`/dashboard`, `/openapi.yaml`,
+  `/llm/optimisationReport`, `/llm/diffRuns`). `/metrics` leaks more than it appears to: metric cardinality
+  scales with the number of configured expectations, so an unauthenticated caller could infer the
+  expectation surface of a running instance — a real disclosure on a shared CI or sidecar deployment.
+  **Default behaviour is unchanged**: control-plane authentication is opt-in and off by default, so an
+  instance that has not enabled it keeps serving both endpoints unauthenticated, and no existing scrape
+  configuration breaks. **If you enable control-plane authentication, scrapers must now present
+  control-plane credentials** or they will start receiving `401`. This affects the Prometheus
+  `ServiceMonitor` shipped in the Helm chart (`helm/mockserver/templates/servicemonitor.yaml`, which
+  scrapes `/mockserver/metrics`) and the dashboard's own metrics polling. There is deliberately no
+  per-endpoint opt-out: a scraper reaching a locked control plane should authenticate like any other
+  client. Note `/metrics` keeps its prefixed path only — unlike its siblings it has no bare `/metrics`
+  alias, so it cannot shadow a user's own mocked `/metrics` API.
+- **SECURITY: `dashboardAnalyticsKey` is no longer logged in clear.** The redaction predicate matched 13
+  hard-coded substrings that omitted bare `key`, so this property matched none of them. Redaction is now
+  driven by the name shape (any property ending in `key`, with documented exceptions), and is guarded by a
+  test that enumerates the real property surface so a future credential-shaped property cannot slip through.
+- **Enabling the Velocity template sandbox at runtime now takes effect.** `velocityDisallowClassLoading` was
+  read once when the engine was constructed and the engine was cached for the process lifetime, so enabling
+  the sandbox later was inert. The engine is now rebuilt when the setting changes. The default is unchanged
+  (the sandbox remains off).
 - **Verification could miss a just-forwarded request (race on every forward path).** The visibility guarantee
   for `verify`/`retrieve` rests on disruptor FIFO ordering — `drainDisruptor()` waits only for entries already
   *published*, so it cannot wait for one that has not been published yet. The mocked-response path logs before
