@@ -96,7 +96,13 @@ schema_faq:
 			</td>
 			<td style="vertical-align: top;">
 				<ul>
-					<li><a href="#chaos_experiments">Scheduled experiments</a></li>
+					<li><a href="#chaos_experiments">Scheduled experiments</a>
+						<ul>
+							<li><a href="#chaos_experiment_scheduling">Recurring &amp; scheduled starts</a></li>
+							<li><a href="#chaos_experiment_baseline">Steady-state pre-check</a></li>
+							<li><a href="#chaos_experiment_history">Experiment history</a></li>
+						</ul>
+					</li>
 					<li><a href="#chaos_profile_library">Saved profile library</a></li>
 					<li><a href="#chaos_auto_halt">Auto-halt circuit-breaker</a></li>
 					<li><a href="#slo_resilience_verdicts">SLO resilience verdicts</a></li>
@@ -4218,6 +4224,8 @@ curl_close($ch);</code></pre>{% endraw %}
 
 <p>This experiment progressively degrades <code class="inline code">payments.svc</code>: first light errors and latency for one minute, then heavier errors for another minute, then a complete connection drop for 30 seconds. After the last stage completes, chaos is cleared automatically.</p>
 
+<a id="chaos_experiment_scheduling" class="anchor" href="#chaos_experiment_scheduling">&nbsp;</a>
+
 <h3>Scheduling the start (delayed / cron)</h3>
 
 <p>By default an experiment starts the moment you <code class="inline code">PUT</code> it. To start it later instead, add either of two optional fields to the experiment definition:</p>
@@ -4279,7 +4287,7 @@ curl_close($ch);</code></pre>{% endraw %}
 
 <h3>Staging TCP / connection-lifecycle faults</h3>
 
-<p>A stage can also carry <strong>TCP-layer</strong> faults &mdash; connection drops, RST, HTTP/2 GOAWAY, latency, bandwidth throttling and the other <a href="#tcp_chaos">TCP chaos</a> primitives &mdash; alongside (or instead of) the HTTP <code class="inline code">profiles</code>. Add a <code class="inline code">tcpProfiles</code> map (host &rarr; TCP chaos profile) to any stage; it is applied and reset with exactly the same discipline as <code class="inline code">profiles</code> at each stage boundary. A stage is valid with HTTP profiles, TCP profiles, or both, so you can compose transport-level and application-level faults into one timeline. Only an experiment that actually uses <code class="inline code">tcpProfiles</code> takes ownership of the TCP chaos registry &mdash; a purely HTTP experiment leaves any manually-registered TCP chaos untouched.</p>
+<p>A stage can also carry <strong>TCP-layer</strong> faults &mdash; connection drops, RST, HTTP/2 GOAWAY, latency, bandwidth throttling and the other <a href="#tcp_layer_chaos">TCP chaos</a> primitives &mdash; alongside (or instead of) the HTTP <code class="inline code">profiles</code>. Add a <code class="inline code">tcpProfiles</code> map (host &rarr; TCP chaos profile) to any stage; it is applied and reset with exactly the same discipline as <code class="inline code">profiles</code> at each stage boundary. A stage is valid with HTTP profiles, TCP profiles, or both, so you can compose transport-level and application-level faults into one timeline. Only an experiment that actually uses <code class="inline code">tcpProfiles</code> takes ownership of the TCP chaos registry &mdash; a purely HTTP experiment leaves any manually-registered TCP chaos untouched.</p>
 
 <pre class="code"><code class="code">curl -sf -X PUT http://mockserver:1080/mockserver/chaosExperiment \
   -H 'Content-Type: application/json' \
@@ -4291,6 +4299,8 @@ curl_close($ch);</code></pre>{% endraw %}
       {"durationMillis": 60000, "profiles":    {"payments.svc": {"errorStatus": 503}}}
     ]
   }'</code></pre>
+
+<a id="chaos_experiment_baseline" class="anchor" href="#chaos_experiment_baseline">&nbsp;</a>
 
 <h3>Steady-state baseline pre-check</h3>
 

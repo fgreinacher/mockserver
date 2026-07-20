@@ -119,6 +119,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The count includes only true evictions: an explicit `reset()`/`clear()` resets it to zero.
 
 ### Changed
+- **Chaos testing doc navigation refreshed for the multi-stage experiment features.** The "On this page"
+  feature map on `chaos_testing.html` now surfaces the scheduled-experiment sub-capabilities that were
+  documented in the body but not linked from the top of the page: recurring/scheduled (cron and delayed)
+  starts, the steady-state baseline pre-check, and experiment history. Two missing section anchors were
+  added so the new links resolve, and a pre-existing broken in-page link (`#tcp_chaos` &rarr;
+  `#tcp_layer_chaos`) was fixed.
 - **The control-plane trust anchor is now mutable at runtime rather than frozen at startup.** The
   control-plane authentication handler (mTLS CA chain, JWT JWK source, OIDC issuer/audience/JWKS) is derived
   from the LIVE configuration on every request instead of being built once during server bootstrap. This is
