@@ -84,6 +84,12 @@
       "additionalProperties": false,
       "description": "GraphQL subscription query filter for graphql-transport-ws protocol. When set, incoming subscribe messages are AST-matched against this filter.",
       "properties": {
+        "type": {
+          "description": "body-type discriminator emitted by the clients when serialising a GraphQL body; optional, and only GRAPHQL is meaningful here",
+          "enum": [
+            "GRAPHQL"
+          ]
+        },
         "query": {
           "type": "string"
         },

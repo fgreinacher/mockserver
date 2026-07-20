@@ -1,21 +1,28 @@
 package org.mockserver.netty.integration.mock;
 
+import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
+import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.sse.EventSource;
 import okhttp3.sse.EventSourceListener;
 import okhttp3.sse.EventSources;
 import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.drafts.Draft_6455;
 import org.java_websocket.framing.CloseFrame;
 import org.java_websocket.handshake.ServerHandshake;
+import org.java_websocket.protocols.Protocol;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.mockserver.client.MockServerClient;
+import org.mockserver.mock.Expectation;
+import org.mockserver.model.GraphQLBody;
 import org.mockserver.model.HttpSseResponse;
 import org.mockserver.model.HttpWebSocketResponse;
+import org.mockserver.model.SelectionSetMatchType;
 import org.mockserver.model.SseEvent;
 import org.mockserver.model.WebSocketMessage;
 import org.mockserver.netty.MockServer;
@@ -23,6 +30,7 @@ import org.mockserver.netty.MockServer;
 import java.net.Socket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -331,23 +339,208 @@ public class ThirdPartyStreamingClientConformanceIntegrationTest {
     }
 
     // ------------------------------------------------------------------
-    // GraphQL subscription wire order -- NOT COVERED HERE, and why
+    // GraphQL subscriptions, via a real graphql-transport-ws exchange
     // ------------------------------------------------------------------
     //
-    // The delayed-subscription ordering fix (`complete` must never precede the `next` frames)
-    // is covered by GraphQLSubscriptionHandlerTest at unit level, not here, because the feature
-    // cannot currently be configured on a running server at all:
+    // These exist because `graphqlSubscriptionFilter` was, until this was fixed, unreachable on a
+    // running server by ANY route -- so the delayed-subscription ordering fix (`complete` must never
+    // precede the `next` frames) was latent: correct code that nothing could invoke. Two independent
+    // blocks, each sufficient on its own:
     //
-    //   * `HttpWebSocketResponseDTO.graphqlSubscriptionFilter` is typed `GraphQLBodyDTO`, whose
-    //     fields are all final, whose only constructors take a `GraphQLBody`, and which carries
-    //     no `@JsonCreator` -- so Jackson cannot instantiate it and *any* control-plane JSON
-    //     setting `graphqlSubscriptionFilter` fails to parse; and
-    //   * the Java client cannot get that far regardless, because `GraphQLBody` always emits a
-    //     `"type":"GRAPHQL"` discriminator that model/schema/httpWebSocketResponse.json rejects
-    //     under `additionalProperties: false`.
+    //   * the Java client emits a `"type":"GRAPHQL"` discriminator (GraphQLBodyDTOSerializer always
+    //     writes it) that model/schema/httpWebSocketResponse.json rejected under
+    //     `additionalProperties: false`; and
+    //   * behind that, `HttpWebSocketResponseDTO.graphqlSubscriptionFilter` is declared as the
+    //     concrete `GraphQLBodyDTO`, so the polymorphic BodyDTODeserializer -- registered against
+    //     `BodyDTO` and matched by exact class -- never ran for it, and the all-final DTO had no
+    //     creator for Jackson to fall back on, so raw JSON failed too.
     //
-    // Both are separate serialization defects from the wire behaviour, and both must be fixed
-    // before a third-party GraphQL subscription client can be pointed at MockServer at all.
+    // The two are deliberately covered by different routes so a regression in either is
+    // attributable: the Java-client tests below exercise the discriminator path, and
+    // shouldAcceptATypelessGraphqlSubscriptionFilterAsRawJson exercises ONLY the DTO creator
+    // (a typeless filter was always schema-legal, so it isolates the deserialisation fix).
+
+    private static final String SUBSCRIPTION_QUERY =
+        "subscription OnMessage { messageAdded { id body } }";
+
+    /** A Java-WebSocket client that negotiates graphql-transport-ws and records protocol messages. */
+    private static class GraphQLWebSocketClient extends WebSocketClient {
+        final CountDownLatch opened = new CountDownLatch(1);
+        final CountDownLatch terminal = new CountDownLatch(1);
+        final List<String> messages = new CopyOnWriteArrayList<>();
+
+        GraphQLWebSocketClient(String path) {
+            super(URI.create("ws://localhost:" + mockServerPort + path),
+                new Draft_6455(Collections.emptyList(),
+                    Collections.singletonList(new Protocol(GRAPHQL_TRANSPORT_WS))));
+        }
+
+        @Override
+        public void onOpen(ServerHandshake handshake) {
+            opened.countDown();
+        }
+
+        @Override
+        public void onMessage(String message) {
+            messages.add(message);
+            if (message.contains("\"type\":\"complete\"") || message.contains("\"type\":\"error\"")) {
+                terminal.countDown();
+            }
+        }
+
+        @Override
+        public void onClose(int code, String reason, boolean remote) {
+            terminal.countDown();
+        }
+
+        @Override
+        public void onError(Exception ex) {
+            // recorded via the terminal latch
+        }
+
+        /** Perform the connection_init/connection_ack handshake the protocol requires before subscribe. */
+        void handshakeAndSubscribe(String query) throws Exception {
+            assertTrue("websocket never opened", connectBlocking(10, TimeUnit.SECONDS));
+            send("{\"type\":\"connection_init\"}");
+            send("{\"id\":\"sub-1\",\"type\":\"subscribe\",\"payload\":{\"query\":\"" + query + "\"}}");
+            assertTrue("subscription never reached a terminal message",
+                terminal.await(10, TimeUnit.SECONDS));
+        }
+    }
+
+    private static final String GRAPHQL_TRANSPORT_WS = "graphql-transport-ws";
+
+    private void mockGraphQLSubscriptionAt(String path, String filterQuery) {
+        mockServerClient
+            .when(request().withMethod("GET").withPath(path))
+            .respondWithWebSocket(
+                HttpWebSocketResponse.webSocketResponse()
+                    .withSubprotocol(GRAPHQL_TRANSPORT_WS)
+                    .withGraphqlSubscriptionFilter(
+                        GraphQLBody.graphQL(filterQuery)
+                            .withSelectionSetMatchType(SelectionSetMatchType.AST_SUBSET))
+                    .withMessage(WebSocketMessage.webSocketMessage(
+                        "{\"messageAdded\":{\"id\":\"1\",\"body\":\"hello\"}}"))
+            );
+    }
+
+    /**
+     * The control-plane round trip: an expectation carrying a {@code graphqlSubscriptionFilter} is
+     * accepted by a <em>running</em> server and can be read back off it. Before the fix the
+     * {@code .when(...)} call itself failed — the Java client's {@code "type":"GRAPHQL"} discriminator
+     * was rejected by the schema — so this never got as far as the read-back.
+     */
+    @Test
+    public void shouldRoundTripGraphqlSubscriptionFilterThroughTheControlPlane() {
+        mockServerClient
+            .when(request().withMethod("GET").withPath("/ws/graphql-roundtrip"))
+            .respondWithWebSocket(
+                HttpWebSocketResponse.webSocketResponse()
+                    .withSubprotocol(GRAPHQL_TRANSPORT_WS)
+                    .withGraphqlSubscriptionFilter(
+                        GraphQLBody.graphQL(SUBSCRIPTION_QUERY, "OnMessage")
+                            .withSelectionSetMatchType(SelectionSetMatchType.AST_SUBSET)
+                            .withFields("messageAdded"))
+            );
+
+        Expectation[] active = mockServerClient
+            .retrieveActiveExpectations(request().withPath("/ws/graphql-roundtrip"));
+
+        assertThat("the expectation was not stored on the server", active.length, is(1));
+        GraphQLBody filter = active[0].getHttpWebSocketResponse().getGraphqlSubscriptionFilter();
+        assertThat("graphqlSubscriptionFilter was dropped on the round trip", filter, notNullValue());
+        assertThat(filter.getQuery(), is(SUBSCRIPTION_QUERY));
+        assertThat(filter.getOperationName(), is("OnMessage"));
+        assertThat(filter.getSelectionSetMatchType(), is(SelectionSetMatchType.AST_SUBSET));
+        assertThat(filter.getFields(), contains("messageAdded"));
+    }
+
+    /**
+     * A raw-JSON expectation with a <em>typeless</em> filter. This form was always permitted by the
+     * schema, so it isolates the {@code GraphQLBodyDTO} creator: it fails on an unfixed server with a
+     * Jackson instantiation error even though the schema is satisfied.
+     *
+     * <p><b>Both the write and the read-back are done over raw HTTP on purpose.</b> Going through
+     * {@code MockServerClient.retrieveActiveExpectations} would re-validate the server's response
+     * against the expectation schema on the client side, which drags the discriminator fix back into
+     * this test and destroys the isolation — the server re-serialises the stored filter <em>with</em>
+     * {@code "type":"GRAPHQL"}, so its own output is schema-invalid without that fix. That coupling is
+     * real and is covered by the round-trip test above; here it would only make this test
+     * non-attributable.
+     */
+    @Test
+    public void shouldAcceptATypelessGraphqlSubscriptionFilterAsRawJson() throws Exception {
+        String expectationJson = "{"
+            + "\"httpRequest\":{\"method\":\"GET\",\"path\":\"/ws/graphql-raw\"},"
+            + "\"httpWebSocketResponse\":{"
+            + "\"subprotocol\":\"" + GRAPHQL_TRANSPORT_WS + "\","
+            + "\"graphqlSubscriptionFilter\":{"
+            + "\"query\":\"" + SUBSCRIPTION_QUERY + "\","
+            + "\"selectionSetMatchType\":\"AST_SUBSET\"},"
+            + "\"messages\":[{\"text\":\"{}\"}]}}";
+
+        OkHttpClient http = new OkHttpClient.Builder().readTimeout(15, TimeUnit.SECONDS).build();
+        try (Response response = http.newCall(new Request.Builder()
+            .url("http://localhost:" + mockServerPort + "/mockserver/expectation")
+            .put(RequestBody.create(expectationJson, MediaType.parse("application/json")))
+            .build()).execute()) {
+            String body = response.body() != null ? response.body().string() : "";
+            assertThat("control plane rejected a typeless graphqlSubscriptionFilter: " + body,
+                response.code(), is(201));
+        }
+
+        try (Response retrieved = http.newCall(new Request.Builder()
+            .url("http://localhost:" + mockServerPort
+                + "/mockserver/retrieve?type=active_expectations&format=json")
+            .put(RequestBody.create("", MediaType.parse("application/json")))
+            .build()).execute()) {
+            String stored = retrieved.body() != null ? retrieved.body().string() : "";
+            assertThat(retrieved.code(), is(200));
+            assertThat("the stored expectation did not survive the round trip",
+                stored, containsString("/ws/graphql-raw"));
+            assertThat("graphqlSubscriptionFilter was dropped on deserialisation",
+                stored, containsString("graphqlSubscriptionFilter"));
+            assertThat("the filter query was not retained",
+                stored, containsString("messageAdded"));
+        }
+    }
+
+    /**
+     * The filter, once configured over the wire, actually drives the subscription: a matching query
+     * is answered with the scripted {@code next} payload followed by {@code complete}.
+     */
+    @Test
+    public void shouldPushScriptedPayloadsWhenTheSubscriptionQueryMatchesTheFilter() throws Exception {
+        mockGraphQLSubscriptionAt("/ws/graphql-match", SUBSCRIPTION_QUERY);
+
+        GraphQLWebSocketClient client = new GraphQLWebSocketClient("/ws/graphql-match");
+        client.handshakeAndSubscribe(SUBSCRIPTION_QUERY);
+
+        assertThat("no connection_ack", client.messages,
+            hasItem(containsString("\"type\":\"connection_ack\"")));
+        assertThat("scripted payload was not delivered", client.messages,
+            hasItem(both(containsString("\"type\":\"next\"")).and(containsString("hello"))));
+        assertThat("subscription never completed", client.messages,
+            hasItem(containsString("\"type\":\"complete\"")));
+    }
+
+    /**
+     * The discriminating half: a query that does <em>not</em> match the configured filter must be
+     * rejected with {@code error}. Without this, a server that ignored the filter entirely — or
+     * silently dropped it on the round trip — would still pass the matching test above.
+     */
+    @Test
+    public void shouldErrorWhenTheSubscriptionQueryDoesNotMatchTheFilter() throws Exception {
+        mockGraphQLSubscriptionAt("/ws/graphql-mismatch", SUBSCRIPTION_QUERY);
+
+        GraphQLWebSocketClient client = new GraphQLWebSocketClient("/ws/graphql-mismatch");
+        client.handshakeAndSubscribe("subscription OnOther { userJoined { id } }");
+
+        assertThat("a non-matching subscription was not rejected", client.messages,
+            hasItem(containsString("\"type\":\"error\"")));
+        assertThat("a non-matching subscription was answered with scripted payloads", client.messages,
+            not(hasItem(containsString("\"type\":\"next\""))));
+    }
 
     // ------------------------------------------------------------------
     // SSE framing, via okhttp-sse (a real WHATWG event-stream parser)

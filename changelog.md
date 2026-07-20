@@ -217,6 +217,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   these now load as ON, matching the server. gRPC streaming is deliberately left reading absent as "don't
   close", which is what its handler does. `secure` was reviewed and deliberately left alone: its matcher
   treats absent as a wildcard and the switch means "HTTPS only", so omitting `false` is correct there.
+- **`graphqlSubscriptionFilter` can now actually be set on a running server — previously it was unreachable
+  by every route, making the GraphQL subscription frame-ordering fix latent.** Two independent blocks each
+  made it impossible. The expectation schema declared the filter object with `additionalProperties: false`
+  and no `type` property, so it rejected the `"type":"GRAPHQL"` discriminator that every client emits when
+  serialising a GraphQL body; and behind that,
+  `HttpWebSocketResponseDTO.graphqlSubscriptionFilter` is declared as the concrete `GraphQLBodyDTO` rather
+  than the polymorphic `BodyDTO`, so the `BodyDTODeserializer` — registered against `BodyDTO` and matched by
+  exact class — never ran for it, leaving Jackson to instantiate an all-final type with no creator, which it
+  cannot do. Raw JSON therefore failed too, with an opaque parse error rather than a schema error. The
+  schema now accepts the discriminator and `GraphQLBodyDTO` has a `@JsonCreator`, so both the typed clients
+  and hand-written JSON work; a typeless filter (`{"query": ...}`, the form the documentation shows) keeps
+  working unchanged. This was a single site, not a class of defect: every other body DTO shares the
+  all-final/no-creator shape, but no other field anywhere declares a concrete body DTO subtype, so all of
+  them are deserialised polymorphically and were never affected.
 - **WASM custom rules now actually work in the standalone jar and the Docker images — previously they never
   matched.** The chicory WASM interpreter was declared an optional dependency of `mockserver-core`. Maven
   keeps an optional dependency on its own module's classpath but does not propagate it to consumers, so
