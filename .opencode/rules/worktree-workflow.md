@@ -240,7 +240,10 @@ away gate-passed commits that were recovered only via reflog.
 # Respect the operator halt before any reintegration (see [[operator-halt]]).
 .opencode/scripts/check-halt.sh || { echo "operator halt engaged — not merging"; exit 1; }
 
-LOCK_FILE=".git/agent-rebase.lock"
+# Resolve the SHARED .git common dir so every worktree contends on the SAME
+# lock — in a linked worktree `.git` is a file, so a relative `.git/…` path
+# resolves per-worktree and the mutex would not actually serialise.
+LOCK_FILE="$(git rev-parse --git-common-dir)/agent-rebase.lock"
 flock --timeout 300 "${LOCK_FILE}" bash -c '
     set -euo pipefail
     git fetch origin master --quiet
@@ -252,7 +255,7 @@ flock --timeout 300 "${LOCK_FILE}" bash -c '
 5-minute (`--timeout 300`) wait if another agent holds the lock. If
 timeout exceeded, fail with a clear error: *"Rebase lock held for >5m
 by another session — retry in a few minutes or check `lsof
-.git/agent-rebase.lock` for the holder."*
+"$(git rev-parse --git-common-dir)/agent-rebase.lock"` for the holder."*
 
 **Post-push changelog verification.** `changelog.md` uses a union merge
 driver that silently drops a bullet added in this session when a
@@ -280,7 +283,7 @@ fast-forward (no intervening commits) needs no re-run. Record the lock wait as
 without `flock`, fall back to `mkdir`-based mutex (atomic on POSIX):
 
 ```bash
-LOCK_DIR=".git/agent-rebase.lockdir"
+LOCK_DIR="$(git rev-parse --git-common-dir)/agent-rebase.lockdir"
 while ! mkdir "${LOCK_DIR}" 2>/dev/null; do
     [ "$(($(date +%s) - START))" -gt 300 ] && { echo "Lock timeout"; exit 1; }
     sleep 2

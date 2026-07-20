@@ -23,7 +23,7 @@ Run all four gates in order. **Any failure stops the merge** and leaves the work
    - Gate 1/2/3 results in one line each
    Then **proceed automatically** to the locked rebase. Do NOT wait for approval. Fail-closed: if any of gates 1–3 did not return a clean PASS, stop and leave the worktree intact. A user can interject at any time to halt.
 
-6. **Locked rebase (linear history — never a merge commit).** Time the wait to acquire `flock --timeout 300 .git/agent-rebase.lock` (e.g. capture an epoch before and after the `flock`), then inside the lock:
+6. **Locked rebase (linear history — never a merge commit).** Time the wait to acquire `flock --timeout 300 "$(git rev-parse --git-common-dir)/agent-rebase.lock"` (the common dir so all worktrees share one lock — a relative `.git/…` path resolves per-worktree and would not serialise; e.g. capture an epoch before and after the `flock`), then inside the lock:
    ```bash
    git fetch origin master --quiet
    git rebase origin/master            # rebase, never merge

@@ -24,14 +24,24 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-if [ -z "${REPO_ROOT}" ]; then
+# Resolve the shared .git common dir so paths are correct whether this runs from
+# the main checkout or a linked worktree (in a worktree, `.git` is a file and
+# `--show-toplevel` points at the worktree, not the main checkout).
+COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"
+if [ -z "${COMMON_DIR}" ]; then
     echo "Not inside a git repository" >&2
     exit 1
 fi
+case "${COMMON_DIR}" in
+    /*) ;;
+    *) COMMON_DIR="$(pwd)/${COMMON_DIR}" ;;
+esac
+COMMON_DIR="$(cd "${COMMON_DIR}" && pwd)"
+# The main checkout root is the parent of the shared .git common dir.
+REPO_ROOT="$(dirname "${COMMON_DIR}")"
 
 WORKTREE_BASE="${REPO_ROOT}/.worktrees"
-LOCK_FILE="${REPO_ROOT}/.git/agent-rebase.lock"
+LOCK_FILE="${COMMON_DIR}/agent-rebase.lock"
 
 if [ ! -d "${WORKTREE_BASE}" ]; then
     echo "No agent worktrees active (${WORKTREE_BASE} does not exist)."
