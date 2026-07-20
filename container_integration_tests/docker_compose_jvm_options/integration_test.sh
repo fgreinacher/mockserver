@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/../logging.sh"
 printMessage "Start: \"${SCRIPT_DIR/\//}\""
 
 function integration_test() {
-  trap 'tear-down 2>/dev/null || true' EXIT
+  trap 'dump_compose_diagnostics_on_failure "$?"; tear-down 2>/dev/null || true' EXIT
   start-up
   TEST_EXIT_CODE=0
   wait_ready "mockserver" || { TEST_EXIT_CODE=1; logTestResult "${TEST_EXIT_CODE}" "${TEST_CASE}"; return ${TEST_EXIT_CODE}; }
@@ -27,10 +27,19 @@ function integration_test() {
   # The JVM logs JAVA_TOOL_OPTIONS to stderr on startup; verify via docker logs
   if [[ "${TEST_EXIT_CODE}" == "0" ]]; then
     CONTAINER_ID=$(docker-compose -p "${TEST_CASE}" ps -q mockserver)
-    JVM_LOG=$(docker logs "${CONTAINER_ID}" 2>&1 | head -5)
-    if ! echo "${JVM_LOG}" | grep -q "Xmx256m"; then
-      printFailureMessage "JAVA_TOOL_OPTIONS not found in container startup logs. Expected '-Xmx256m' in: \"${JVM_LOG}\""
+    if [[ -z "${CONTAINER_ID}" ]]; then
+      printFailureMessage "Could not resolve the mockserver container id for the JVM-options log check"
       TEST_EXIT_CODE=1
+    else
+      # `head -5` closes the pipe after 5 lines; under `set -o pipefail` `docker logs` is then
+      # killed by SIGPIPE (exit 141), the pipeline returns 141, and `set -e` would abort the whole
+      # test BEFORE logTestResult — so the test recorded no result at all. `|| true` keeps the 5
+      # lines head already captured and lets the test proceed to record a real pass/fail.
+      JVM_LOG=$(docker logs "${CONTAINER_ID}" 2>&1 | head -5 || true)
+      if ! echo "${JVM_LOG}" | grep -q "Xmx256m"; then
+        printFailureMessage "JAVA_TOOL_OPTIONS not found in container startup logs. Expected '-Xmx256m' in: \"${JVM_LOG}\""
+        TEST_EXIT_CODE=1
+      fi
     fi
   fi
 

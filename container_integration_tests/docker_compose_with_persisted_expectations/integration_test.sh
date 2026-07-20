@@ -35,7 +35,12 @@ function integration_test() {
       TEST_EXIT_CODE=1
     else
       printMessage "Expectations were persisted to: \"${SCRIPT_DIR}/config/persistedExpectations.json\":"
-      cat "${SCRIPT_DIR}/config/persistedExpectations.json"
+      # Read the persisted file from INSIDE the container via docker cp, not from the host
+      # bind-mount: MockServer writes it as the container's non-root uid, and on Linux CI that
+      # file is not readable by the agent user, so a host `cat` aborts this test under `set -e`
+      # before it can record a result. (Docker Desktop for macOS hides this by remapping the
+      # ownership to the caller.) See read_container_file in docker-compose.sh.
+      read_container_file "mockserver" "/config/persistedExpectations.json" || true
       echo
     fi
   fi

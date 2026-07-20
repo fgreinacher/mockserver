@@ -62,6 +62,51 @@ function docker-exec-client() {
   docker-exec "client" "${1}"
 }
 
+# Read a file OUT of a compose container (running OR stopped) to stdout.
+#
+# The mockserver image is distroless (gcr.io/distroless/java-base-debian12:nonroot):
+# it has no shell and no coreutils, so `docker-compose exec <svc> cat <file>` does not
+# work. It also runs as a non-root uid, so a bind-mounted persisted file lands on the
+# host owned by that in-container uid and is not reliably readable by the CI agent user
+# — which is exactly why a host-side `cat` aborted these tests under `set -e` (the
+# failure only reproduces on Linux; Docker Desktop for macOS remaps the ownership).
+#
+# `docker cp` goes through the docker daemon (root), so it reads the file regardless of
+# in-container tooling or file ownership, and writes the host copy as the calling user.
+# Args: <compose-service> <path-in-container>. Returns non-zero (never aborts) if the
+# container or file is missing, so callers can guard with `|| true`.
+function read_container_file() {
+  local service="${1}" path="${2}"
+  local cid tmp
+  cid="$(docker-compose -p "${TEST_CASE}" ps -aq "${service}" 2>/dev/null | head -1)" || return 1
+  [[ -n "${cid}" ]] || return 1
+  tmp="$(mktemp)" || return 1
+  if docker cp "${cid}:${path}" "${tmp}" 2>/dev/null; then
+    cat "${tmp}"
+    rm -f "${tmp}"
+    return 0
+  fi
+  rm -f "${tmp}"
+  return 1
+}
+
+# Dump bounded container state + logs when a compose test is exiting non-zero, BEFORE
+# tear-down removes the containers and the evidence with them. Pass the exiting status
+# as $1 (call it FIRST in an EXIT trap so `$?` is still the failing status).
+#
+# Strictly additive to output: it records nothing to the PASS/FAIL logs and never alters
+# the exit status. Every command is `|| true`-guarded so the diagnostic can neither abort
+# the trap under `set -e` nor mask the real failure. Bounded (`--tail=50`) to stay inside
+# the noise budget that 143bce6ca deliberately restored.
+function dump_compose_diagnostics_on_failure() {
+  local rc="${1:-0}"
+  [[ "${rc}" -ne 0 ]] || return 0
+  printMessage "--- ${TEST_CASE}: container state + logs (exit ${rc}, captured before tear-down) ---" || true
+  docker-compose -p "${TEST_CASE}" ps || true
+  docker-compose -p "${TEST_CASE}" logs --tail=50 || true
+  return 0
+}
+
 function tear-down() {
   local files
   files="$(compose-files "${TEST_CASE}")"
@@ -98,8 +143,12 @@ function wait_ready() {
     fi
     sleep 1
   done
+  # A container that never came up is exactly when its logs are needed. Dump the target
+  # service's recent logs + the project's container state (bounded, so a wedged container
+  # cannot flood the build), guarded so the diagnostic itself can never abort the caller.
   printMessage "FAIL: ${host}:${port} did not become ready"
-  container-logs || true
+  docker-compose -p "${TEST_CASE}" ps || true
+  docker-compose -p "${TEST_CASE}" logs --tail=50 "${host}" || true
   return 1
 }
 

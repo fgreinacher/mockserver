@@ -9,6 +9,9 @@ source "${SCRIPT_DIR}/../logging.sh"
 printMessage "Start: \"${SCRIPT_DIR/\//}\""
 
 function cleanup() {
+  # Capture container state + logs on a failing exit BEFORE tear-down removes the
+  # containers. Must be the FIRST line so `$?` is still the failing status.
+  dump_compose_diagnostics_on_failure "$?"
   tear-down 2>/dev/null || true
   rm -rf "${SCRIPT_DIR}/config"
 }
@@ -58,7 +61,10 @@ function integration_test() {
     # Record the modification time of the persisted file BEFORE stopping the container
     PRE_STOP_MTIME=$(stat -f "%m" "${SCRIPT_DIR}/config/persistedExpectations.json" 2>/dev/null \
                      || stat -c "%Y" "${SCRIPT_DIR}/config/persistedExpectations.json" 2>/dev/null)
-    PRE_STOP_CONTENT=$(cat "${SCRIPT_DIR}/config/persistedExpectations.json")
+    # Read from inside the container (docker cp) — the host bind-mount file is written by the
+    # container's non-root uid and is not readable by the CI agent on Linux, so a host `cat`
+    # aborts under `set -e`. See read_container_file in docker-compose.sh.
+    PRE_STOP_CONTENT=$(read_container_file "mockserver" "/config/persistedExpectations.json" || true)
     printMessage "Pre-stop mtime: ${PRE_STOP_MTIME}"
     printMessage "Pre-stop content: ${PRE_STOP_CONTENT}"
 
@@ -78,7 +84,10 @@ function integration_test() {
   if [[ "${TEST_EXIT_CODE}" == "0" ]]; then
     POST_STOP_MTIME=$(stat -f "%m" "${SCRIPT_DIR}/config/persistedExpectations.json" 2>/dev/null \
                       || stat -c "%Y" "${SCRIPT_DIR}/config/persistedExpectations.json" 2>/dev/null)
-    POST_STOP_CONTENT=$(cat "${SCRIPT_DIR}/config/persistedExpectations.json")
+    # Container is stopped (not removed) here; `docker cp` still reads its filesystem, and
+    # read_container_file's `ps -aq` resolves the stopped container. Host `cat` would abort
+    # under `set -e` for the same uid/permission reason as pre-stop.
+    POST_STOP_CONTENT=$(read_container_file "mockserver" "/config/persistedExpectations.json" || true)
     printMessage "Post-stop mtime: ${POST_STOP_MTIME}"
     printMessage "Post-stop content: ${POST_STOP_CONTENT}"
 

@@ -130,9 +130,15 @@ function test() {
   local blocking_mode="${2:-blocking}"
   printMessage "Running Test: \"${TEST_CASE}\""
   local rc=0
+  local test_log="${TMPDIR:-/tmp}/mockserver-integration-test-${TEST_CASE}.log"
   runCommand "cd ${SCRIPT_DIR}/${TEST_CASE}" || rc=1
   if [[ ${rc} -eq 0 ]]; then
-    runCommand "./integration_test.sh" || rc=1
+    # tee keeps the output streaming live to the console (unchanged for a passing run) while
+    # ALSO capturing it, so the no-result branch below can show what the test was doing when it
+    # crashed. The `{ ...; } || true` wrapper suspends `set -e` across the pipeline so a failing
+    # test cannot abort test() before its status is read; PIPESTATUS[0] is runCommand's own exit
+    # (tee always succeeds), so the pass/fail signal is exactly what it was before the tee.
+    { runCommand "./integration_test.sh" 2>&1 | tee "${test_log}"; rc=${PIPESTATUS[0]}; } || true
   fi
   runCommand "cd ${SCRIPT_DIR}" || true
 
@@ -162,6 +168,16 @@ function test() {
   done
 
   if [[ "${recorded}" != "true" ]]; then
+    # The script crashed before reaching logTestResult, so the summary alone would say only
+    # "exited N without a result". Show the tail of its captured output so the crash
+    # self-explains — the failing command is almost always in the last few lines. Strictly
+    # additive: this prints only and touches neither the PASS/FAIL logs nor the exit status,
+    # so it cannot become a false-green vector. Bounded to 40 lines to respect the noise budget.
+    if [[ -s "${test_log:-}" ]]; then
+      printMessage "--- last output before \"${TEST_CASE}\" crashed (no result recorded) ---"
+      tail -n 40 "${test_log}" || true
+      printMessage "--- end of \"${TEST_CASE}\" output ---"
+    fi
     local how="exited ${rc}"
     if [[ "${blocking_mode}" == "non_blocking" ]]; then
       printMessageWithColourAndBorders >&2 "Warning (non-blocking): ${TEST_CASE} ${how} without recording a result" "\e[0;33m"
