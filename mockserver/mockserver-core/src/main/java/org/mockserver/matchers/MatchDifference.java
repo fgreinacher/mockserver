@@ -64,6 +64,18 @@ public class MatchDifference {
     // and would saturate its bounded log window. This flag is request-scoped (a fresh
     // MatchDifference per evaluation), so it is thread-safe unlike toggling the matcher.
     private boolean suppressMatchResultLogging;
+    // When true, a matcher must evaluate EVERY field rather than returning on the first
+    // non-matching one, so that this context ends up holding the complete set of differing
+    // fields. Diagnostics that rank expectations by how close they were (debugMismatch)
+    // cannot do so otherwise: fail-fast stops at the first difference, so every mismatched
+    // expectation records exactly one differing field and they all tie. Like
+    // suppressMatchResultLogging this is request-scoped (a fresh MatchDifference per
+    // evaluation), so it is thread-safe — unlike toggling the matcher's failFast
+    // configuration, which is global and would change production matching for concurrent
+    // requests. The final match result is unaffected: it is
+    // applyNotOperators(failures == 0, ...) computed once all fields are evaluated, which
+    // is the same verdict the short-circuit reaches by a shorter route.
+    private boolean collectAllDifferences;
 
     public MatchDifference(boolean detailedMatchFailures, RequestDefinition httpRequest) {
         this.detailedMatchFailures = detailedMatchFailures;
@@ -82,6 +94,24 @@ public class MatchDifference {
 
     public boolean isSuppressMatchResultLogging() {
         return suppressMatchResultLogging;
+    }
+
+    /**
+     * Ask matchers to evaluate every field instead of stopping at the first non-matching one, so
+     * this context collects the complete set of differing fields.
+     * <p>
+     * Only for read-only diagnostics that need to know <em>how much</em> of a request matched
+     * (notably {@code debugMismatch}, which ranks expectations by closeness). It is scoped to this
+     * one evaluation and never touches the shared matcher configuration, so it cannot slow or alter
+     * matching for any other request.
+     */
+    public MatchDifference collectAllDifferences() {
+        this.collectAllDifferences = true;
+        return this;
+    }
+
+    public boolean isCollectAllDifferences() {
+        return collectAllDifferences;
     }
 
     @SuppressWarnings("UnusedReturnValue")

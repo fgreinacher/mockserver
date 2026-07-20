@@ -579,8 +579,15 @@ public class HttpRequestPropertiesMatcher extends AbstractHttpRequestMatcher {
         // short-circuit: let matches() evaluate every field (the per-field failure
         // bookkeeping above still runs for all of them) and rely on the single correct
         // final applyNotOperators(failures == 0, ...).
+        // A diagnostic evaluation may also opt out, per request, so it can see every differing
+        // field rather than only the first (MatchDifference.collectAllDifferences). No production
+        // match path sets the flag — only debugMismatch and explainUnmatched do — so matching
+        // BEHAVIOUR for real requests is unchanged. The cost is one null check plus at most one
+        // boolean load on a context already dereferenced above: a single well-predicted branch,
+        // not zero. This path is benchmark-guarded (MatchingBenchmark), so state it accurately.
         boolean anyNotOperator = matchDifferenceCount.getHttpRequest().isNot() || compiled.httpRequest.isNot() || not;
-        if (!anyNotOperator && matcher != null && !matcher.isBlank() && configuration.matchersFailFast()) {
+        if (!anyNotOperator && (context == null || !context.isCollectAllDifferences())
+            && matcher != null && !matcher.isBlank() && configuration.matchersFailFast()) {
             return matchDifferenceCount.getFailures() != 0;
         }
         return false;

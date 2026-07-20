@@ -784,6 +784,14 @@ public class HttpState {
             int closestMatchFailures = Integer.MAX_VALUE;
             String closestMatchId = null;
             int closestMatchedFields = 0;
+            // Approximate denominator, deliberately: this is the size of the whole match-field enum,
+            // but HttpRequestPropertiesMatcher gates only 12 of those 18 fields. OPERATION, OPENAPI,
+            // DNS_NAME, DNS_TYPE, DNS_CLASS and BINARY_BODY belong to other matcher types and are never
+            // assessed for an HTTP expectation, yet are counted as matched below. Hard-coding 12 would be
+            // no more correct — the evaluated set varies per expectation (PATH_PARAMETERS only when the
+            // expectation declares them, JWT only when configured), so an exact denominator would require
+            // the matcher to report which fields it actually evaluated. matchedFieldCount is therefore
+            // meaningful for comparing expectations against each other, not as an absolute score.
             int totalFields = MatchDifference.Field.values().length;
             boolean truncated = matchers.size() > DEBUG_MISMATCH_MAX_EXPECTATIONS;
             int evaluateCount = Math.min(matchers.size(), DEBUG_MISMATCH_MAX_EXPECTATIONS);
@@ -802,7 +810,15 @@ public class HttpState {
                 }
 
                 HttpRequest clonedRequest = debugRequest.clone();
-                MatchDifference matchDifference = new MatchDifference(true, clonedRequest).suppressMatchResultLogging();
+                // collectAllDifferences: rank by closeness, which requires knowing how many fields
+                // actually differed. Matching normally fails fast on the first non-matching field,
+                // so every mismatched expectation would record exactly one difference, every
+                // candidate would tie on the count, and "closest" would collapse to "first
+                // registered". The flag is scoped to this evaluation and does not affect the
+                // matching path for real requests.
+                MatchDifference matchDifference = new MatchDifference(true, clonedRequest)
+                    .suppressMatchResultLogging()
+                    .collectAllDifferences();
                 boolean matches = matcher.matches(matchDifference, clonedRequest);
                 matchResult.put("matches", matches);
 
@@ -935,6 +951,8 @@ public class HttpState {
 
                         // compute per-expectation diffs, ranked by closeness
                         List<HttpRequestMatcher> matchers = requestMatchers.retrieveRequestMatchers(null);
+                        // approximate denominator — see the note in debugMismatch above: six of these
+                        // 18 fields are never assessed for an HTTP expectation but count as matched
                         int totalFields = MatchDifference.Field.values().length;
                         int evaluateCount = Math.min(matchers.size(), EXPLAIN_UNMATCHED_MAX_EXPECTATIONS);
 
@@ -953,7 +971,15 @@ public class HttpState {
                             }
 
                             HttpRequest clonedRequest = unmatchedRequest.clone();
-                            MatchDifference matchDifference = new MatchDifference(true, clonedRequest).suppressMatchResultLogging();
+                            // collectAllDifferences: these results are sorted by differingFieldCount
+                            // below, which is only meaningful if every differing field was counted.
+                            // Fail-fast stops at the first one, leaving every mismatched expectation
+                            // on a count of exactly 1 — so the sort would tie for all of them and,
+                            // being stable, would simply preserve registration order while claiming
+                            // to rank by closeness.
+                            MatchDifference matchDifference = new MatchDifference(true, clonedRequest)
+                                .suppressMatchResultLogging()
+                                .collectAllDifferences();
                             boolean matches = matcher.matches(matchDifference, clonedRequest);
                             totalEvaluations++;
 

@@ -171,6 +171,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **`/mockserver/debugMismatch` now reports the genuinely closest expectation instead of the first one
+  registered.** The endpoint ranked candidates by the number of differing fields, but request matching
+  fails fast on the first non-matching field — so every mismatched expectation recorded exactly one
+  difference, every candidate tied on the count, and the comparison could only ever be won by the first
+  mismatched expectation encountered. An expectation differing solely in one header was reported as no
+  closer than one differing in method, path and header. `matchedFieldCount` was affected for the same
+  reason, reporting `totalFields - 1` for every expectation however badly it missed; it now varies with
+  how much actually matched, so expectations can be compared against one another. Note the **absolute**
+  value remains approximate: `totalFieldCount` is the size of the whole match-field enum (18), six members
+  of which — `operation`, `openapi`, `dnsName`, `dnsType`, `dnsClass`, `binaryBody` — belong to other
+  matcher types and are never assessed for an HTTP expectation, so they are still counted as matched.
+  Treat these counts as a relative ranking signal rather than an exact score. Diagnostic evaluations now opt
+  out of fail-fast for the duration of that one evaluation (`MatchDifference.collectAllDifferences()`), so
+  the endpoint sees every differing field and can rank on it. The opt-out is request-scoped rather than a
+  change to the shared matcher configuration, so matching for real requests is unchanged — the fail-fast
+  short-circuit that normal matching depends on still applies, and the match verdict is unaffected either
+  way because it is decided by the same all-fields-evaluated calculation.
 - **The Node client's type declarations are no longer generated from a schema three major versions stale,
   and CI now fails when they drift.** `mockserver-client-node/scripts/build_server_typescript.sh` generated
   `mockServer.d.ts` from a *remote* SwaggerHub schema pinned to `mock-server-openapi/5.15.x`, fetched over
