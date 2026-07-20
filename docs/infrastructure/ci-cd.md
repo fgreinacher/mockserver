@@ -72,11 +72,14 @@ generate-pipeline.sh"]
 git diff against base"]
     DIFF --> MATCH{"Match changed paths
 against rules"}
-    MATCH -->|mockserver/ excluding maven-plugin, or mockserver-ui/| JAVA["trigger: mockserver-java"]
+    MATCH -->|mockserver/ excluding maven-plugin, mockserver-ui/, or test-fixtures/| JAVA["trigger: mockserver-java"]
     MATCH -->|mockserver-ui/| UI["trigger: mockserver-ui"]
-    MATCH -->|mockserver-node/ or mockserver-client-node/| NODE["trigger: mockserver-node"]
-    MATCH -->|mockserver-client-python/| PYTHON["trigger: mockserver-python"]
-    MATCH -->|mockserver-client-ruby/| RUBY["trigger: mockserver-ruby"]
+    MATCH -->|"mockserver-node/, mockserver-client-node/
+    OR any server / test-fixtures change"| NODE["trigger: mockserver-node"]
+    MATCH -->|"mockserver-client-python/
+    OR any server / test-fixtures change"| PYTHON["trigger: mockserver-python"]
+    MATCH -->|"mockserver-client-ruby/
+    OR any server / test-fixtures change"| RUBY["trigger: mockserver-ruby"]
     MATCH -->|mockserver/mockserver-maven-plugin/| MAVEN_PLUGIN["trigger: mockserver-maven-plugin"]
     MATCH -->|mockserver-performance-test/| PERF["trigger: mockserver-performance-test"]
     MATCH -->|container_integration_tests/| CONTAINER["trigger: mockserver-container-tests"]
@@ -85,6 +88,39 @@ against rules"}
     MATCH -->|".buildkite/ .github/ terraform/ scripts/ examples/ OpenAPI spec etc."| INFRA["trigger: mockserver-infra"]
     MATCH -->|no match| DEFAULT["inline: no-op step"]
 ```
+
+#### Client Conformance Triggering
+
+Client pipelines trigger on **their own directory OR any server / `test-fixtures/`
+change** (`trigger_client_if_changed` in `generate-pipeline.sh`). A server change
+alters the wire format every client library encodes against, and `test-fixtures/`
+is the shared parity corpus each client round-trips — so gating clients purely on
+their own directory meant wire-format drift shipped with **zero** non-Java
+verification, and editing the parity corpus triggered no build at all.
+`mockserver/mockserver-maven-plugin/` is excluded: it has its own pipeline and does
+not define the wire format.
+
+#### Gates That Must Fail Closed
+
+Several suites previously reported green while executing nothing. A skip is
+indistinguishable from a pass, so these gates now fail loudly instead:
+
+| Gate | Failure mode removed | Mechanism |
+|------|---------------------|-----------|
+| Cloud blob-store contract suites | `Assume` Docker guard skipped them on 100% of builds (`java-build.sh` never passed `-s`) | Own socket-enabled step (`java-cloud-store-test.sh`) + `assert-suite-ran.sh` asserts non-skipped tests actually ran |
+| `container_integration_tests` | A test script crashing before `logTestResult` left no record; `EXIT_CODE` is only set from a non-empty fail log, so a total harness crash exited 0 | `test()` records unaccounted-for non-zero exits; the summary fails when nothing at all was recorded |
+| Go / .NET / PHP client integration | Skipped silently without `MOCKSERVER_URL` (never set in CI) | Dedicated steps run a live server built from HEAD (`with-mockserver.sh`); `MOCKSERVER_REQUIRE_SERVER=true` turns any skip into a hard failure |
+| Rust client integration | Entirely `#[ignore]`d; CI never passed `-- --ignored` | `rust-integration-test.sh` passes `-- --ignored` against a live server |
+| Node client tests | A hand-maintained 7-file list while the suite had 15 | Test files are **discovered by glob**, in CI, `npm test`, and `test:coverage` alike |
+| Go / .NET / Rust testcontainers | `soft_fail: true` made failures green | `soft_fail` removed |
+
+**Why the cloud suites are a separate step, not `-s` on `java-build.sh`:**
+`run-in-docker.sh` withholds the Docker socket from PR builds and `exit 0`s the
+step when one is requested. Adding `-s` to the main build would therefore make the
+**entire Java reactor** silently exit 0 on every PR build — trading a narrow false
+positive for a total one. The split keeps the main build socket-free and confines
+the PR-build socket skip to the three cloud modules, where it is announced in the
+log rather than hidden behind an `Assume`.
 
 The `mockserver-infra` pipeline (`pipeline-infra.yml`) runs lightweight validation
 steps in Docker: opencode config lint, shell-script lint, Dockerfile sync, Helm
