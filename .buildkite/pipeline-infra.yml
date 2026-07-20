@@ -18,3 +18,11 @@ steps:
   - label: ":mailbox: validate API collections"
     command: ".buildkite/scripts/steps/collections-validate.sh"
     timeout_in_minutes: 5
+
+  # Complements the step above rather than duplicating it: that one proves the committed collections
+  # match what the generator produces, this one proves the examples inside them are actually accepted
+  # by a running MockServer. The first can be green while every user who imports the collection gets a
+  # 400 — which is exactly what happened for /mockserver/baseline/compare and /mockserver/pact/import.
+  - label: ":mailbox: validate API collection examples against a live server"
+    command: ".buildkite/scripts/steps/collections-live-validate.sh"
+    timeout_in_minutes: 10

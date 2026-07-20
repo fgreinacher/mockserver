@@ -1,0 +1,17 @@
+meta {
+  name: not supported
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/mockserver/mcp
+  body: none
+  auth: inherit
+}
+
+docs {
+  Documented so the behaviour is not mistaken for SSE support: MockServer's MCP endpoint does not implement the server-initiated SSE stream, and a GET is always refused.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

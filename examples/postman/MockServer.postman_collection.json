@@ -900,6 +900,78 @@
             },
             "description": "only supported on Netty version\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
           }
+        },
+        {
+          "name": "readiness probe",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "ready"
+              ]
+            },
+            "description": "Readiness probe, distinct from the liveness/status endpoints, which answer 200 the instant the port binds. Stays 503 until the synchronous expectation initializers and any OpenAPI seeding have completed, so an orchestrator does not route traffic before the seeded expectations exist. This is the one control-plane endpoint with no authentication gate, so it remains usable as a Kubernetes readiness probe on an instance whose control plane requires credentials.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
+        },
+        {
+          "name": "retrieve the effective configuration",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "config"
+              ]
+            },
+            "description": "Returns every configuration property with its resolved value and the source tier that supplied it, so an operator can see which of the property file, system properties, environment variables or defaults won. Values detected as sensitive are redacted. Distinct from `/mockserver/configuration`, which reads and writes the mutable runtime configuration.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
+        },
+        {
+          "name": "retrieve client proxy setup details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/proxyConfiguration",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "proxyConfiguration"
+              ]
+            },
+            "description": "Returns everything a client needs to route through this instance as a proxy: the CA certificate (path and PEM), the proxy URL, and ready-to-paste environment-variable snippets for Unix shells and PowerShell. Send `Accept: text/plain` to get the copy-paste snippet on its own instead of the JSON document.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
+        },
+        {
+          "name": "retrieve experimental HTTP/3 (QUIC) listener status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/http3status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "http3status"
+              ]
+            },
+            "description": "Reports whether the experimental HTTP/3 listener is enabled, the UDP port it is bound to, and how many QUIC connections are currently active. When the running server is not an HTTP/3-capable instance, `enabled` is false and `port` is -1.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
         }
       ]
     },
@@ -938,7 +1010,7 @@
                 },
                 {
                   "key": "redactSensitiveData",
-                  "value": "True",
+                  "value": "true",
                   "disabled": true
                 },
                 {
@@ -957,6 +1029,66 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"log\": {\n    \"version\": \"1.2\",\n    \"entries\": [\n      {\n        \"request\": {\n          \"method\": \"GET\",\n          \"url\": \"http://example.com/api/users\",\n          \"headers\": [],\n          \"queryString\": []\n        },\n        \"response\": {\n          \"status\": 200,\n          \"headers\": [],\n          \"content\": {\n            \"text\": \"{\\\"users\\\":[{\\\"id\\\":1,\\\"name\\\":\\\"Alice\\\"}]}\"\n          }\n        }\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "promote recorded traffic to active expectations",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/recordings/promote",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "recordings",
+                "promote"
+              ],
+              "query": [
+                {
+                  "key": "consolidate",
+                  "value": "true",
+                  "disabled": true
+                },
+                {
+                  "key": "parameterize",
+                  "value": "true",
+                  "disabled": true
+                },
+                {
+                  "key": "redactSensitiveData",
+                  "value": "true",
+                  "disabled": true
+                },
+                {
+                  "key": "additionalRedactedHeaders",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "additionalRedactedBodyFields",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Retrieves recorded (forwarded) exchanges matching an optional request-matcher filter, consolidates them into reusable mocks and ACTIVATES them by adding them to the expectation set. Redaction is on by default so promoted mocks never carry captured credentials; consolidation and parameterization are also on by default, so a single recorded id does not pin the mock. The request body is optional \u2014 omit it to promote every recorded exchange.\n\noptional filter selecting which recorded exchanges to promote; omit to promote all\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"path\": \"/api/orders.*\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1624,6 +1756,25 @@
             },
             "description": "Starts the chaos experiment previously saved under the given name (as if its definition had been sent to PUT /mockserver/chaosExperiment). The request body is ignored.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
           }
+        },
+        {
+          "name": "retrieve completed chaos experiment history",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/chaosExperiment/history",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "chaosExperiment",
+                "history"
+              ]
+            },
+            "description": "Returns the record of chaos experiments that have run, most recent first, bounded by a fixed in-memory history size that is not caller-controllable.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
         }
       ]
     },
@@ -2071,6 +2222,65 @@
             },
             "description": "returns the names of all currently loaded WebAssembly custom rule modules\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
           }
+        },
+        {
+          "name": "unload a WebAssembly custom rule module",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/wasm/modules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "wasm",
+                "modules"
+              ],
+              "query": [
+                {
+                  "key": "name",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Removes the named WebAssembly custom rule module from the module store. Succeeds with an empty body; the module name is required as a query parameter.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
+        },
+        {
+          "name": "evaluate a WebAssembly custom rule against a sample request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/wasm/test",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "wasm",
+                "test"
+              ]
+            },
+            "description": "Runs a WebAssembly custom rule module against a sample request and reports whether it matched, without registering an expectation. Supply the module either inline as base64 (\"module\") or by the name of an already-loaded module (\"moduleName\"); when both are present \"module\" wins. When a \"response\" object is also supplied the ABI v3 `shape_response` hook runs and the shaped response is returned alongside the match result.\n\nthe module to evaluate and the sample request to evaluate it against\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moduleName\": \"header-rule\",\n  \"request\": {\n    \"method\": \"GET\",\n    \"path\": \"/api/orders\",\n    \"headers\": {\n      \"x-tenant\": [\n        \"acme\"\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -2248,10 +2458,75 @@
                 "debugMismatch"
               ]
             },
-            "description": "Evaluates the supplied HttpRequest against every active expectation and returns, for each, whether it matched and the per-field differences, plus the closest match. Only HttpRequest definitions are supported (not OpenAPI definitions).\n\nthe request to evaluate against all active expectations\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "description": "Evaluates the supplied HttpRequest against every active expectation and returns, for each, whether it matched and the per-field differences, plus a closest match. Only HttpRequest definitions are supported (not OpenAPI definitions).\n\nthe request to evaluate against all active expectations\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"method\": \"GET\",\n  \"path\": \"/api/unknown-endpoint\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "diff a baseline set of expectations against another",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/baseline/compare",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "baseline",
+                "compare"
+              ]
+            },
+            "description": "Compares a \"baseline\" array of expectations against a \"current\" array and returns a structured diff of what was added, removed and changed. When \"current\" is omitted the baseline is diffed against the instance's live active expectations, which makes this usable as a drift check against a committed baseline.\n\nthe baseline expectations, and optionally the set to compare them against\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"baseline\": [\n    {\n      \"httpRequest\": {\n        \"method\": \"GET\",\n        \"path\": \"/api/orders\"\n      },\n      \"httpResponse\": {\n        \"statusCode\": 200,\n        \"body\": \"{\\\"orders\\\":[]}\"\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "validate recorded traffic against an OpenAPI specification",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/trafficValidate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "trafficValidate"
+              ]
+            },
+            "description": "Validates the request/response pairs already recorded in the event log against an OpenAPI specification, and reports per-exchange which operation it matched and any request or response violations. Supply the spec as a URL, file path or inline JSON/YAML under \"spec\" (or its alias \"specUrlOrPayload\"). A spec fetched by URL is subject to the SSRF policy (forwardProxyBlockPrivateNetworks). The traffic validated comes from the recorded event log, not from the request body.\n\nthe OpenAPI specification to validate the recorded traffic against. The example uses an inline spec so it works offline and behind an egress-restricted proxy; a URL or file path is equally valid, but a URL is fetched by the server and is subject to the SSRF policy.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec\": \"{\\\"openapi\\\":\\\"3.0.0\\\",\\\"info\\\":{\\\"title\\\":\\\"orders\\\",\\\"version\\\":\\\"1.0.0\\\"},\\\"paths\\\":{\\\"/api/orders\\\":{\\\"get\\\":{\\\"responses\\\":{\\\"200\\\":{\\\"description\\\":\\\"orders\\\"}}}}}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2320,6 +2595,56 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"consumer\": {\n    \"name\": \"web-app\"\n  },\n  \"provider\": {\n    \"name\": \"api-service\"\n  },\n  \"interactions\": [\n    {\n      \"description\": \"a health check request\",\n      \"request\": {\n        \"method\": \"GET\",\n        \"path\": \"/api/health\"\n      },\n      \"response\": {\n        \"status\": 200,\n        \"headers\": {\n          \"content-type\": \"application/json\"\n        },\n        \"body\": {\n          \"status\": \"ok\"\n        }\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "import a Pact contract as expectations",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/pact/import",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "pact",
+                "import"
+              ],
+              "query": [
+                {
+                  "key": "redactSensitiveData",
+                  "value": "true",
+                  "disabled": true
+                },
+                {
+                  "key": "additionalRedactedHeaders",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "additionalRedactedBodyFields",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Parses a Pact v3 consumer-driven contract and adds the interactions it describes to the active expectation set. Redaction is applied on import so credentials present in the contract are not retained.\n\nthe Pact v3 contract to import\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consumer\": {\n    \"name\": \"checkout-service\"\n  },\n  \"provider\": {\n    \"name\": \"orders-service\"\n  },\n  \"interactions\": [\n    {\n      \"description\": \"a request for all orders\",\n      \"request\": {\n        \"method\": \"GET\",\n        \"path\": \"/api/orders\"\n      },\n      \"response\": {\n        \"status\": 200,\n        \"headers\": {\n          \"Content-Type\": \"application/json\"\n        },\n        \"body\": {\n          \"orders\": []\n        }\n      }\n    }\n  ],\n  \"metadata\": {\n    \"pactSpecification\": {\n      \"version\": \"3.0.0\"\n    }\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2645,6 +2970,204 @@
                 }
               }
             }
+          }
+        }
+      ]
+    },
+    {
+      "name": "llm",
+      "item": [
+        {
+          "name": "retrieve the LLM optimisation report",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/llm/optimisationReport",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "llm",
+                "optimisationReport"
+              ],
+              "query": [
+                {
+                  "key": "format",
+                  "value": "json",
+                  "disabled": true
+                },
+                {
+                  "key": "session",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "host",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "provider",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Analyses captured LLM traffic and reports optimisation signals (cost, latency, token usage, prompt and response characteristics) with an overall verdict. The report can also be emitted in evaluation-dataset formats for downstream tooling. An empty capture is a 200 with an empty report, not an error.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
+        },
+        {
+          "name": "diff two captured LLM agent runs",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/llm/diffRuns",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "llm",
+                "diffRuns"
+              ]
+            },
+            "description": "Compares two captured agent runs, each selected by session, host and/or provider, and reports where they diverge. Normalization options control which incidental differences are ignored before comparing. The request body is optional \u2014 an empty body is treated as an empty filter on both sides.\n\noptional selectors for the two runs to compare\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"before\": {\n    \"session\": \"run-1\"\n  },\n  \"after\": {\n    \"session\": \"run-2\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "cluster",
+      "item": [
+        {
+          "name": "retrieve cluster membership status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/cluster",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "cluster"
+              ]
+            },
+            "description": "Reports whether this instance is running clustered, its node id, whether it is the coordinator, and the current member list. `clusterName` is omitted entirely when the instance is not clustered.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
+        }
+      ]
+    },
+    {
+      "name": "metrics",
+      "item": [
+        {
+          "name": "scrape Prometheus metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "metrics"
+              ]
+            },
+            "description": "Serves the Prometheus metrics exposition when `metricsEnabled` is set, negotiating the text or OpenMetrics format from the Accept header. Returns 404 when metrics are disabled. Unlike its sibling control-plane endpoints this path has deliberately NO bare `/metrics` alias, because `/metrics` is a plausible path for a user's own mocked API and reserving it would shadow their expectation. It is gated by control-plane authentication like every neighbouring endpoint; since control-plane authentication is off by default an unauthenticated scrape keeps working on a default instance.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mcp",
+      "item": [
+        {
+          "name": "MCP (Model Context Protocol) JSON-RPC endpoint",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "mcp"
+              ]
+            },
+            "description": "Streamable-HTTP MCP endpoint, letting AI agents and LLM tooling drive MockServer as an MCP server. The body is a JSON-RPC 2.0 request object or a batch array. Call `initialize` first; the response carries a new session id in the `Mcp-Session-Id` response header, which subsequent calls must send back in the `Mcp-Session-Id` request header. Protocol versions 2025-06-18 (default), 2025-03-26 and 2024-11-05 are negotiated. Note that a missing or invalid session is reported as a JSON-RPC error inside a 200 response, not as a 4xx. Unlike its sibling endpoints this path has no bare `/mcp` alias, and sub-paths under `/mockserver/mcp/` also route here.\n\nJSON-RPC 2.0 request or batch\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2025-06-18\",\n    \"capabilities\": {},\n    \"clientInfo\": {\n      \"name\": \"example-client\",\n      \"version\": \"1.0.0\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "end an MCP session",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "mcp"
+              ]
+            },
+            "description": "Removes the MCP session identified by the `Mcp-Session-Id` request header.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+          }
+        },
+        {
+          "name": "not supported",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/mockserver/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mockserver",
+                "mcp"
+              ]
+            },
+            "description": "Documented so the behaviour is not mistaken for SSE support: MockServer's MCP endpoint does not implement the server-initiated SSE stream, and a GET is always refused.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
           }
         }
       ]

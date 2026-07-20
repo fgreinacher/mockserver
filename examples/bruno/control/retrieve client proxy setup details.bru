@@ -1,0 +1,17 @@
+meta {
+  name: retrieve client proxy setup details
+  type: http
+  seq: 25
+}
+
+get {
+  url: {{baseUrl}}/mockserver/proxyConfiguration
+  body: none
+  auth: inherit
+}
+
+docs {
+  Returns everything a client needs to route through this instance as a proxy: the CA certificate (path and PEM), the proxy URL, and ready-to-paste environment-variable snippets for Unix shells and PowerShell. Send `Accept: text/plain` to get the copy-paste snippet on its own instead of the JSON document.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

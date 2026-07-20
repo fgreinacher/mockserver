@@ -1,0 +1,40 @@
+meta {
+  name: diff a baseline set of expectations against another
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/mockserver/baseline/compare
+  body: json
+  auth: inherit
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "baseline": [
+      {
+        "httpRequest": {
+          "method": "GET",
+          "path": "/api/orders"
+        },
+        "httpResponse": {
+          "statusCode": 200,
+          "body": "{\"orders\":[]}"
+        }
+      }
+    ]
+  }
+}
+
+docs {
+  Compares a "baseline" array of expectations against a "current" array and returns a structured diff of what was added, removed and changed. When "current" is omitted the baseline is diffed against the instance's live active expectations, which makes this usable as a drift check against a committed baseline.
+  
+  the baseline expectations, and optionally the set to compare them against
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

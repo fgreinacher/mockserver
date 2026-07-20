@@ -58,14 +58,23 @@ import static org.hamcrest.Matchers.is;
  *
  * <p><strong>What this test does not guard.</strong> It compares one copy of the specification to
  * the other. It says nothing about whether either copy matches the Java model, so a property that
- * exists in {@code ExpectationDTO} but in neither copy is invisible here. That gap is real today:
- * {@code Expectation} accepts at least {@code httpLlmResponse}, {@code grpcStreamResponse},
- * {@code grpcBidiResponse}, {@code binaryResponse}, {@code dnsResponse},
- * {@code httpForwardValidateAction}, {@code httpForwardWithFallback}, {@code beforeActions},
- * {@code afterActions}, {@code steps} and {@code capture}, none of which the specification declares —
- * and since the schema is {@code additionalProperties: false}, it rejects valid LLM, gRPC, binary and
- * DNS expectations. Closing that needs a separate spec-versus-DTO test; the known direction of error
- * is omission only (no property is declared in the schema that does not exist in Java).
+ * exists in {@code ExpectationDTO} but in neither copy is invisible here. That gap was real when
+ * this test was written — eleven {@code Expectation} properties, covering the LLM, gRPC streaming,
+ * gRPC bidi, binary and DNS actions plus forward validation, forward fallback, before/after actions,
+ * multi-step expectations and capture rules, were declared in neither copy. It is now closed and
+ * guarded by {@link OpenApiSpecExpectationSchemaTest}, which drives the comparison from the DTO.
+ *
+ * <p><strong>Correction.</strong> An earlier version of this javadoc claimed that because the schema
+ * is {@code additionalProperties: false}, the specification "rejects valid LLM, gRPC, binary and DNS
+ * expectations". That was wrong, and it is worth stating plainly because the mistake is an easy one
+ * to repeat: this YAML is <em>documentation</em>. {@code OpenAPISpecHandler} serves its bytes
+ * verbatim and never parses it, and nothing else on the runtime path reads it. Incoming expectation
+ * JSON is validated against a different artefact entirely —
+ * {@code org/mockserver/model/schema/expectation.json}, loaded by
+ * {@code JsonSchemaExpectationValidator} — which does declare all eleven, so those expectations
+ * always validated and were always accepted. The cost of spec drift is borne by consumers of the
+ * specification (documentation readers, generated clients, external validators, and the Postman and
+ * Bruno collections), not by the server.
  */
 public class OpenApiSpecSyncTest {
 

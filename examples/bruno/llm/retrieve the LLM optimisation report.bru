@@ -1,0 +1,24 @@
+meta {
+  name: retrieve the LLM optimisation report
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/mockserver/llm/optimisationReport
+  body: none
+  auth: inherit
+}
+
+params:query {
+  ~format: json
+  ~session: 
+  ~host: 
+  ~provider: 
+}
+
+docs {
+  Analyses captured LLM traffic and reports optimisation signals (cost, latency, token usage, prompt and response characteristics) with an overall verdict. The report can also be emitted in evaluation-dataset formats for downstream tooling. An empty capture is a 200 with an empty report, not an error.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

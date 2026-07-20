@@ -1,0 +1,17 @@
+meta {
+  name: readiness probe
+  type: http
+  seq: 23
+}
+
+get {
+  url: {{baseUrl}}/mockserver/ready
+  body: none
+  auth: inherit
+}
+
+docs {
+  Readiness probe, distinct from the liveness/status endpoints, which answer 200 the instant the port binds. Stays 503 until the synchronous expectation initializers and any OpenAPI seeding have completed, so an orchestrator does not route traffic before the seeded expectations exist. This is the one control-plane endpoint with no authentication gate, so it remains usable as a Kubernetes readiness probe on an instance whose control plane requires credentials.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

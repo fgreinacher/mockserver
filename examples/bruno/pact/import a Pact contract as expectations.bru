@@ -1,0 +1,63 @@
+meta {
+  name: import a Pact contract as expectations
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/mockserver/pact/import
+  body: json
+  auth: inherit
+}
+
+headers {
+  Content-Type: application/json
+}
+
+params:query {
+  ~redactSensitiveData: true
+  ~additionalRedactedHeaders: 
+  ~additionalRedactedBodyFields: 
+}
+
+body:json {
+  {
+    "consumer": {
+      "name": "checkout-service"
+    },
+    "provider": {
+      "name": "orders-service"
+    },
+    "interactions": [
+      {
+        "description": "a request for all orders",
+        "request": {
+          "method": "GET",
+          "path": "/api/orders"
+        },
+        "response": {
+          "status": 200,
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "orders": []
+          }
+        }
+      }
+    ],
+    "metadata": {
+      "pactSpecification": {
+        "version": "3.0.0"
+      }
+    }
+  }
+}
+
+docs {
+  Parses a Pact v3 consumer-driven contract and adds the interactions it describes to the active expectation set. Redaction is applied on import so credentials present in the contract are not retained.
+  
+  the Pact v3 contract to import
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

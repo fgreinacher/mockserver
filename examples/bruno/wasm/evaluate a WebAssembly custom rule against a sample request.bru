@@ -1,0 +1,38 @@
+meta {
+  name: evaluate a WebAssembly custom rule against a sample request
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/mockserver/wasm/test
+  body: json
+  auth: inherit
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "moduleName": "header-rule",
+    "request": {
+      "method": "GET",
+      "path": "/api/orders",
+      "headers": {
+        "x-tenant": [
+          "acme"
+        ]
+      }
+    }
+  }
+}
+
+docs {
+  Runs a WebAssembly custom rule module against a sample request and reports whether it matched, without registering an expectation. Supply the module either inline as base64 ("module") or by the name of an already-loaded module ("moduleName"); when both are present "module" wins. When a "response" object is also supplied the ABI v3 `shape_response` hook runs and the shaped response is returned alongside the match result.
+  
+  the module to evaluate and the sample request to evaluate it against
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

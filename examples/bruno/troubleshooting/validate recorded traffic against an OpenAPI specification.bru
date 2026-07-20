@@ -1,0 +1,29 @@
+meta {
+  name: validate recorded traffic against an OpenAPI specification
+  type: http
+  seq: 4
+}
+
+put {
+  url: {{baseUrl}}/mockserver/trafficValidate
+  body: json
+  auth: inherit
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "spec": "{\"openapi\":\"3.0.0\",\"info\":{\"title\":\"orders\",\"version\":\"1.0.0\"},\"paths\":{\"/api/orders\":{\"get\":{\"responses\":{\"200\":{\"description\":\"orders\"}}}}}}"
+  }
+}
+
+docs {
+  Validates the request/response pairs already recorded in the event log against an OpenAPI specification, and reports per-exchange which operation it matched and any request or response violations. Supply the spec as a URL, file path or inline JSON/YAML under "spec" (or its alias "specUrlOrPayload"). A spec fetched by URL is subject to the SSRF policy (forwardProxyBlockPrivateNetworks). The traffic validated comes from the recorded event log, not from the request body.
+  
+  the OpenAPI specification to validate the recorded traffic against. The example uses an inline spec so it works offline and behind an egress-restricted proxy; a URL or file path is equally valid, but a URL is fetched by the server and is subject to the SSRF policy.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

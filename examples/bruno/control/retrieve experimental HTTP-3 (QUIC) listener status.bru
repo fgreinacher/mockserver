@@ -1,0 +1,17 @@
+meta {
+  name: retrieve experimental HTTP/3 (QUIC) listener status
+  type: http
+  seq: 26
+}
+
+get {
+  url: {{baseUrl}}/mockserver/http3status
+  body: none
+  auth: inherit
+}
+
+docs {
+  Reports whether the experimental HTTP/3 listener is enabled, the UDP port it is bound to, and how many QUIC connections are currently active. When the running server is not an HTTP/3-capable instance, `enabled` is false and `port` is -1.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

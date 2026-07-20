@@ -1,0 +1,17 @@
+meta {
+  name: retrieve completed chaos experiment history
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{baseUrl}}/mockserver/chaosExperiment/history
+  body: none
+  auth: inherit
+}
+
+docs {
+  Returns the record of chaos experiments that have run, most recent first, bounded by a fixed in-memory history size that is not caller-controllable.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

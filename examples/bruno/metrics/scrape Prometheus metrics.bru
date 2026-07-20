@@ -1,0 +1,17 @@
+meta {
+  name: scrape Prometheus metrics
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/mockserver/metrics
+  body: none
+  auth: inherit
+}
+
+docs {
+  Serves the Prometheus metrics exposition when `metricsEnabled` is set, negotiating the text or OpenMetrics format from the Accept header. Returns 404 when metrics are disabled. Unlike its sibling control-plane endpoints this path has deliberately NO bare `/metrics` alias, because `/metrics` is a plausible path for a user's own mocked API and reserving it would shadow their expectation. It is gated by control-plane authentication like every neighbouring endpoint; since control-plane authentication is off by default an unauthenticated scrape keeps working on a default instance.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

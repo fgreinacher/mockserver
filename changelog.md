@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Sixteen implemented control-plane endpoints are now described by the OpenAPI specification**, and
+  therefore by the published Postman and Bruno collections, which are generated from it:
+  `GET /mockserver/ready`, `GET /mockserver/config`, `GET /mockserver/proxyConfiguration`,
+  `GET /mockserver/http3status`, `GET /mockserver/metrics`, `GET /mockserver/cluster`,
+  `GET /mockserver/chaosExperiment/history`, `PUT /mockserver/recordings/promote`,
+  `PUT /mockserver/pact/import`, `PUT /mockserver/baseline/compare`, `PUT /mockserver/trafficValidate`,
+  `GET /mockserver/llm/optimisationReport`, `PUT /mockserver/llm/diffRuns`, `POST /mockserver/wasm/test`,
+  `DELETE /mockserver/wasm/modules` and the MCP endpoint `/mockserver/mcp`. All of these were
+  implemented and reachable but documented nowhere, so they were absent from the collections and from
+  any client generated from the spec. `GET /mockserver/http3status` had no documentation at all
+  anywhere. Each signature was verified against its handler rather than transcribed, which corrected
+  four things a plausible reading would have got wrong: `GET /mockserver/metrics` deliberately has
+  **no** bare `/metrics` alias (unlike its siblings, because `/metrics` is a plausible path for a
+  user's own mocked API and reserving it would shadow their expectation); `PUT /mockserver/trafficValidate`
+  accepts `specUrlOrPayload` as an alias for `spec` and can answer 403 and 503, not just 200/400;
+  `PUT /mockserver/llm/diffRuns` treats an empty body as an empty filter rather than rejecting it; and
+  the MCP endpoint reports a missing or invalid session as a JSON-RPC error inside a **200**, with
+  `GET /mockserver/mcp` a hard 405 rather than an SSE stream.
+- **The `Expectation` schema now declares all eleven properties it was missing** — `httpLlmResponse`,
+  `grpcStreamResponse`, `grpcBidiResponse`, `binaryResponse`, `dnsResponse`,
+  `httpForwardValidateAction`, `httpForwardWithFallback`, `beforeActions`, `afterActions`, `steps` and
+  `capture` — together with the supporting component schemas. The published specification described a
+  substantially smaller API than MockServer implements, so the LLM, gRPC streaming, gRPC bidi, binary
+  and DNS actions could not be expressed by any client generated from it. Note this was a
+  documentation gap only: the OpenAPI document is served verbatim and never parsed at runtime, and
+  incoming expectation JSON is validated against `org/mockserver/model/schema/expectation.json`, which
+  already declared all eleven — so these expectations were always accepted on the wire.
+- **New `OpenApiSpecExpectationSchemaTest` guards the specification against the Java model.** The
+  existing `OpenApiSpecSyncTest` asserts the two copies of the spec are byte-identical, which makes
+  them one document but is blind to both copies being wrong together — which is exactly how the eleven
+  properties above went missing. The new test drives the comparison from `ExpectationDTO`, using the
+  same Jackson `ObjectMapper` that serialises expectations at runtime, so it fails when the server
+  gains a property the spec does not declare. It deliberately does not enumerate the schema and look
+  for matching Java fields: a test whose cases come from the artefact it polices cannot detect an
+  omission in that artefact. The reverse direction is asserted too, which is the shape that would have
+  caught `HttpChaosProfile.connectionDrop` — documented, implemented nowhere, and propagated into the
+  Go client where users set a property the server silently ignored.
+- **New `OpenApiSpecEndpointCoverageTest` asserts every control-plane route the server dispatches is
+  described by the specification.** This is the guard whose absence let the sixteen endpoints above go
+  undocumented: nothing compared the routes to the document. It extracts the route literals from the
+  canonical `request.matches("METHOD", PATH_PREFIX + "/path", "/path")` dispatch shape in
+  `HttpState` and `HttpRequestHandler` and checks each against the spec's `paths`. Because the control
+  plane is dispatched by an `if / else if` chain rather than a route registry, there is no structured
+  object to enumerate and the extraction has to read source text — so the test also asserts a floor on
+  the number of routes it finds. That floor is the point: a refactor that changes the call shape then
+  fails loudly, instead of silently extracting zero routes and passing while guarding nothing. Three
+  dispatch mechanisms are deliberately out of scope rather than approximated (`/mockserver/metrics`,
+  matched by regex; `/mockserver/mcp`, matched by prefix; and the four templated `{name}` routes); all
+  are documented, just not machine-checked. Covering them cleanly needs a route registry the
+  dispatcher and the test can both read, which is the durable fix.
+- **New end-to-end tests for `PUT /mockserver/crud` and `PUT /mockserver/debugMismatch`**, the two
+  least-defended endpoints in the control plane, both of which previously had no test reaching the
+  server's HTTP dispatch at all. `/crud` is covered behaviourally rather than by status code: the test
+  registers a resource and then drives POST/GET/PUT/PATCH/DELETE against the registered base path,
+  asserting auto-increment continues past seeded ids, PATCH merges without clobbering, insertion order
+  holds, deletes 404 afterwards, and the UUID strategy yields non-numeric ids under a custom `idField`.
+  Both endpoints' bare aliases (`/crud`, `/debugMismatch`) are covered, as are their error paths.
+- **CI now fires every generated API-collection example at a live MockServer.** The existing
+  collections gate regenerates the Postman and Bruno collections and diffs them against the committed
+  copies, which proves the generator is deterministic and the artifacts are current — but proves
+  nothing about whether the documented examples actually work. An endpoint whose `requestBody` is
+  `required: true` with no `example` generates a bodyless request; the committed collection contains
+  it, regeneration reproduces it exactly, and the gate is green while every user who imports the
+  collection gets a 400. That had happened to `/mockserver/baseline/compare` and
+  `/mockserver/pact/import`, both now fixed with examples. `scripts/collections/test_collections.py`
+  already existed and was wired into no pipeline; it now runs as its own step. The step starts
+  MockServer on the agent and runs the checker over `--network host` rather than mounting the Docker
+  socket, because `run-in-docker.sh` always withholds the socket from PR builds — a socket-based
+  wiring would have silently degraded to "cannot start a server" on exactly the builds that most need
+  checking, which is the same defect as the cloud-storage contract suites that skipped on 100% of CI
+  builds while reporting green. Examples that are known to be rejected today are listed in
+  `KNOWN_FAILING` as a ratchet rather than an exemption list: each entry carries a reason, and an entry
+  that stops failing fails the run, so the list can only shrink.
 - **New `javascriptAllowedClasses` — an ALLOW-list for the classes JavaScript templates may resolve via
   `Java.type(...)`.** When set it takes precedence over `javascriptDisallowedClasses` and nothing outside the
   list can be resolved. Entries match a class name exactly or, when they end in `.*`, as a package prefix

@@ -1,0 +1,34 @@
+meta {
+  name: diff two captured LLM agent runs
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/mockserver/llm/diffRuns
+  body: json
+  auth: inherit
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "before": {
+      "session": "run-1"
+    },
+    "after": {
+      "session": "run-2"
+    }
+  }
+}
+
+docs {
+  Compares two captured agent runs, each selected by session, host and/or provider, and reports where they diverge. Normalization options control which incidental differences are ignored before comparing. The request body is optional — an empty body is treated as an empty filter on both sides.
+  
+  optional selectors for the two runs to compare
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

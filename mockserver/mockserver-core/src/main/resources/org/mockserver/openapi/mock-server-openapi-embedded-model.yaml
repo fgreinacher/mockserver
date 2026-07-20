@@ -62,6 +62,14 @@ tags:
     description: Evaluate service-level objectives (latency percentiles, error rate) over a window and return a PASS / FAIL / INCONCLUSIVE verdict; off by default, enable with sloTrackingEnabled (only supported by MockServer)
   - name: contract
     description: Run an OpenAPI specification as a contract test against a live service (only supported by MockServer)
+  - name: llm
+    description: Analyse and diff captured LLM traffic - optimisation signals, evaluation-dataset export and agent-run comparison (only supported by MockServer)
+  - name: cluster
+    description: Inspect clustered deployment membership (only supported by MockServer when a clustered state backend is configured)
+  - name: metrics
+    description: Scrape Prometheus metrics; off by default, enable with metricsEnabled (both MockServer & MockServer Proxy)
+  - name: mcp
+    description: Model Context Protocol (MCP) endpoint letting AI agents drive MockServer as an MCP server (only supported by MockServer)
 
 paths:
   /mockserver/expectation:
@@ -1604,6 +1612,140 @@ paths:
                   type: string
         '400':
           description: failed to list WASM modules
+    delete:
+      tags:
+        - wasm
+      summary: unload a WebAssembly custom rule module
+      description: >-
+        Removes the named WebAssembly custom rule module from the module store. Succeeds with an empty
+        body; the module name is required as a query parameter.
+      parameters:
+        - in: query
+          name: name
+          schema:
+            type: string
+          required: true
+          description: name of the WASM module to unload
+      responses:
+        '200':
+          description: WASM module unloaded (empty body)
+        '400':
+          description: missing 'name' query parameter
+          content:
+            text/plain:
+              schema:
+                type: string
+        '403':
+          description: WASM support is disabled (enable with wasmEnabled=true)
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: no WASM module is loaded under that name
+          content:
+            text/plain:
+              schema:
+                type: string
+  /mockserver/wasm/test:
+    post:
+      tags:
+        - wasm
+      summary: evaluate a WebAssembly custom rule against a sample request
+      description: >-
+        Runs a WebAssembly custom rule module against a sample request and reports whether it matched,
+        without registering an expectation. Supply the module either inline as base64 ("module") or by
+        the name of an already-loaded module ("moduleName"); when both are present "module" wins. When
+        a "response" object is also supplied the ABI v3 `shape_response` hook runs and the shaped
+        response is returned alongside the match result.
+      responses:
+        '200':
+          description: module evaluated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matched:
+                    type: boolean
+        '400':
+          description: missing body, no module source supplied, or 'module' was not valid base64
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '403':
+          description: WASM support is disabled (enable with wasmEnabled=true)
+          content:
+            text/plain:
+              schema:
+                type: string
+        '404':
+          description: no WASM module is loaded under the supplied 'moduleName'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                module:
+                  type: string
+                  format: byte
+                  description: base64-encoded compiled WebAssembly module bytes
+                moduleName:
+                  type: string
+                  description: name of an already-loaded WASM module to evaluate instead of an inline module
+                request:
+                  type: object
+                  description: the sample request the rule is evaluated against
+                  properties:
+                    method:
+                      type: string
+                    path:
+                      type: string
+                    headers:
+                      type: object
+                      additionalProperties:
+                        type: array
+                        items:
+                          type: string
+                    queryStringParameters:
+                      type: object
+                      additionalProperties:
+                        type: array
+                        items:
+                          type: string
+                    cookies:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    body:
+                      type: string
+                response:
+                  type: object
+                  description: >-
+                    optional sample response; when present the ABI v3 shape_response hook runs and the
+                    shaped response is returned with the match result
+            example:
+              moduleName: header-rule
+              request:
+                method: GET
+                path: /api/orders
+                headers:
+                  x-tenant:
+                    - acme
+        description: the module to evaluate and the sample request to evaluate it against
+        required: true
   /mockserver/grpc/descriptors:
     put:
       tags:
@@ -1673,7 +1815,10 @@ paths:
               properties:
                 service:
                   type: string
-                  description: gRPC service name; an empty string sets the default status
+                  description: >-
+                    gRPC service name; an empty string sets the overall server status (the empty
+                    service name defined by the gRPC health checking protocol), rather than the status
+                    of any named service
                 status:
                   type: string
                   enum: [ "UNKNOWN", "SERVING", "NOT_SERVING", "SERVICE_UNKNOWN" ]
@@ -2446,7 +2591,7 @@ paths:
       summary: return per-expectation mismatch debug information for a request
       description: >-
         Evaluates the supplied HttpRequest against every active expectation and returns, for each, whether
-        it matched and the per-field differences, plus the closest match. Only HttpRequest definitions are
+        it matched and the per-field differences, plus a closest match. Only HttpRequest definitions are
         supported (not OpenAPI definitions).
       responses:
         '200':
@@ -3674,6 +3819,751 @@ paths:
               operationId: listPets
         description: the OpenAPI spec and live-service base URL to contract-test
         required: true
+  /mockserver/ready:
+    get:
+      tags:
+        - control
+      summary: readiness probe
+      description: >-
+        Readiness probe, distinct from the liveness/status endpoints, which answer 200 the instant the
+        port binds. Stays 503 until the synchronous expectation initializers and any OpenAPI seeding
+        have completed, so an orchestrator does not route traffic before the seeded expectations exist.
+        This is the one control-plane endpoint with no authentication gate, so it remains usable as a
+        Kubernetes readiness probe on an instance whose control plane requires credentials.
+      responses:
+        '200':
+          description: initialization complete, ready to serve
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - READY
+        '503':
+          description: still initializing, not ready to serve
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - NOT_READY
+  /mockserver/config:
+    get:
+      tags:
+        - control
+      summary: retrieve the effective configuration
+      description: >-
+        Returns every configuration property with its resolved value and the source tier that supplied
+        it, so an operator can see which of the property file, system properties, environment variables
+        or defaults won. Values detected as sensitive are redacted. Distinct from
+        `/mockserver/configuration`, which reads and writes the mutable runtime configuration.
+      responses:
+        '200':
+          description: effective configuration returned
+          content:
+            application/json:
+              schema:
+                type: object
+                description: property name to resolved value and source tier
+  /mockserver/proxyConfiguration:
+    get:
+      tags:
+        - control
+      summary: retrieve client proxy setup details
+      description: >-
+        Returns everything a client needs to route through this instance as a proxy: the CA certificate
+        (path and PEM), the proxy URL, and ready-to-paste environment-variable snippets for Unix shells
+        and PowerShell. Send `Accept: text/plain` to get the copy-paste snippet on its own instead of
+        the JSON document.
+      responses:
+        '200':
+          description: proxy configuration returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  caCertificatePath:
+                    type: string
+                  caCertificatePem:
+                    type: string
+                  httpsProxy:
+                    type: string
+                  environmentVariables:
+                    type: object
+                    properties:
+                      unix:
+                        type: string
+                      powershell:
+                        type: string
+                  usingDefaultCa:
+                    type: boolean
+                  warning:
+                    type: string
+                    nullable: true
+            text/plain:
+              schema:
+                type: string
+                description: copy-paste proxy setup snippet, returned when the Accept header requests text/plain
+        '400':
+          description: failed to determine the proxy configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+  /mockserver/http3status:
+    get:
+      tags:
+        - control
+      summary: retrieve experimental HTTP/3 (QUIC) listener status
+      description: >-
+        Reports whether the experimental HTTP/3 listener is enabled, the UDP port it is bound to, and
+        how many QUIC connections are currently active. When the running server is not an HTTP/3-capable
+        instance, `enabled` is false and `port` is -1.
+      responses:
+        '200':
+          description: HTTP/3 status returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  port:
+                    type: integer
+                  activeConnections:
+                    type: integer
+  /mockserver/metrics:
+    get:
+      tags:
+        - metrics
+      summary: scrape Prometheus metrics
+      description: >-
+        Serves the Prometheus metrics exposition when `metricsEnabled` is set, negotiating the text or
+        OpenMetrics format from the Accept header. Returns 404 when metrics are disabled. Unlike its
+        sibling control-plane endpoints this path has deliberately NO bare `/metrics` alias, because
+        `/metrics` is a plausible path for a user's own mocked API and reserving it would shadow their
+        expectation. It is gated by control-plane authentication like every neighbouring endpoint;
+        since control-plane authentication is off by default an unauthenticated scrape keeps working on
+        a default instance.
+      responses:
+        '200':
+          description: metrics exposition returned
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: Prometheus text exposition format (or OpenMetrics, per the Accept header)
+        '404':
+          description: metrics are disabled (enable with metricsEnabled=true)
+  /mockserver/cluster:
+    get:
+      tags:
+        - cluster
+      summary: retrieve cluster membership status
+      description: >-
+        Reports whether this instance is running clustered, its node id, whether it is the coordinator,
+        and the current member list. `clusterName` is omitted entirely when the instance is not
+        clustered.
+      responses:
+        '200':
+          description: cluster status returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clustered:
+                    type: boolean
+                  nodeId:
+                    type: string
+                  coordinator:
+                    type: boolean
+                  clusterName:
+                    type: string
+                  memberCount:
+                    type: integer
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        coordinator:
+                          type: boolean
+                        local:
+                          type: boolean
+        '400':
+          description: failed to determine cluster status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+  /mockserver/chaosExperiment/history:
+    get:
+      tags:
+        - chaos
+      summary: retrieve completed chaos experiment history
+      description: >-
+        Returns the record of chaos experiments that have run, most recent first, bounded by a fixed
+        in-memory history size that is not caller-controllable.
+      responses:
+        '200':
+          description: chaos experiment history returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                  history:
+                    type: array
+                    items:
+                      type: object
+        '400':
+          description: failed to retrieve the chaos experiment history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+  /mockserver/recordings/promote:
+    put:
+      tags:
+        - import
+      summary: promote recorded traffic to active expectations
+      description: >-
+        Retrieves recorded (forwarded) exchanges matching an optional request-matcher filter,
+        consolidates them into reusable mocks and ACTIVATES them by adding them to the expectation set.
+        Redaction is on by default so promoted mocks never carry captured credentials; consolidation
+        and parameterization are also on by default, so a single recorded id does not pin the mock.
+        The request body is optional — omit it to promote every recorded exchange.
+      parameters:
+        - in: query
+          name: consolidate
+          schema:
+            type: boolean
+            default: true
+          required: false
+          description: collapse matching exchanges into unlimited-times expectations; set false to promote verbatim
+        - in: query
+          name: parameterize
+          schema:
+            type: boolean
+            default: true
+          required: false
+          description: generalise volatile path, query, header and body values
+        - in: query
+          name: redactSensitiveData
+          schema:
+            type: boolean
+            default: true
+          required: false
+          description: redact credentials captured in the recorded traffic
+        - in: query
+          name: additionalRedactedHeaders
+          schema:
+            type: string
+          required: false
+          description: comma-separated additional header names to redact
+        - in: query
+          name: additionalRedactedBodyFields
+          schema:
+            type: string
+          required: false
+          description: comma-separated additional body field names to redact
+      responses:
+        '201':
+          description: recordings promoted to active expectations
+          content:
+            application/json:
+              schema:
+                description: "list of activated expectations"
+                type: array
+                items:
+                  $ref: "#/components/schemas/Expectation"
+        '400':
+          description: failed to promote the recorded exchanges
+          content:
+            text/plain:
+              schema:
+                type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RequestDefinition"
+            example:
+              path: /api/orders.*
+        description: optional filter selecting which recorded exchanges to promote; omit to promote all
+        required: false
+  /mockserver/pact/import:
+    put:
+      tags:
+        - pact
+      summary: import a Pact contract as expectations
+      description: >-
+        Parses a Pact v3 consumer-driven contract and adds the interactions it describes to the active
+        expectation set. Redaction is applied on import so credentials present in the contract are not
+        retained.
+      parameters:
+        - in: query
+          name: redactSensitiveData
+          schema:
+            type: boolean
+            default: true
+          required: false
+          description: redact credentials found in the imported contract
+        - in: query
+          name: additionalRedactedHeaders
+          schema:
+            type: string
+          required: false
+          description: comma-separated additional header names to redact
+        - in: query
+          name: additionalRedactedBodyFields
+          schema:
+            type: string
+          required: false
+          description: comma-separated additional body field names to redact
+      responses:
+        '201':
+          description: Pact contract imported as expectations
+          content:
+            application/json:
+              schema:
+                description: "list of upserted expectations"
+                type: array
+                items:
+                  $ref: "#/components/schemas/Expectation"
+        '400':
+          description: missing body, or the body was not a parseable Pact v3 contract
+          content:
+            text/plain:
+              schema:
+                type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Pact v3 consumer-driven contract document
+            example:
+              consumer:
+                name: checkout-service
+              provider:
+                name: orders-service
+              interactions:
+                - description: a request for all orders
+                  request:
+                    method: GET
+                    path: /api/orders
+                  response:
+                    status: 200
+                    headers:
+                      Content-Type: application/json
+                    body:
+                      orders: []
+              metadata:
+                pactSpecification:
+                  version: 3.0.0
+        description: the Pact v3 contract to import
+        required: true
+  /mockserver/baseline/compare:
+    put:
+      tags:
+        - troubleshooting
+      summary: diff a baseline set of expectations against another
+      description: >-
+        Compares a "baseline" array of expectations against a "current" array and returns a structured
+        diff of what was added, removed and changed. When "current" is omitted the baseline is diffed
+        against the instance's live active expectations, which makes this usable as a drift check
+        against a committed baseline.
+      responses:
+        '200':
+          description: baseline diff report returned
+          content:
+            application/json:
+              schema:
+                type: object
+                description: baseline diff report (added, removed and changed expectations)
+        '400':
+          description: missing body, or the body did not contain a "baseline" array
+          content:
+            text/plain:
+              schema:
+                type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                baseline:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/Expectation"
+                current:
+                  type: array
+                  description: optional; when omitted the live active expectations are used
+                  items:
+                    $ref: "#/components/schemas/Expectation"
+              required:
+                - baseline
+            example:
+              baseline:
+                - httpRequest:
+                    method: GET
+                    path: /api/orders
+                  httpResponse:
+                    statusCode: 200
+                    body: '{"orders":[]}'
+        description: the baseline expectations, and optionally the set to compare them against
+        required: true
+  /mockserver/trafficValidate:
+    put:
+      tags:
+        - troubleshooting
+      summary: validate recorded traffic against an OpenAPI specification
+      description: >-
+        Validates the request/response pairs already recorded in the event log against an OpenAPI
+        specification, and reports per-exchange which operation it matched and any request or response
+        violations. Supply the spec as a URL, file path or inline JSON/YAML under "spec" (or its alias
+        "specUrlOrPayload"). A spec fetched by URL is subject to the SSRF policy
+        (forwardProxyBlockPrivateNetworks). The traffic validated comes from the recorded event log,
+        not from the request body.
+      responses:
+        '200':
+          description: validation completed (inspect allPassed and the per-request results)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalRequests:
+                    type: integer
+                  passed:
+                    type: integer
+                  failed:
+                    type: integer
+                  allPassed:
+                    type: boolean
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        method:
+                          type: string
+                        path:
+                          type: string
+                        matchedOperation:
+                          type: string
+                        passed:
+                          type: boolean
+                        requestErrors:
+                          type: array
+                          items:
+                            type: string
+                        responseErrors:
+                          type: array
+                          items:
+                            type: string
+        '400':
+          description: missing body, no recognised spec, or an error running the validation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '403':
+          description: spec fetch blocked by SSRF policy (target is a private/loopback/metadata address)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '503':
+          description: validation could not be scheduled (server shutting down)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                spec:
+                  type: string
+                  description: OpenAPI spec as a URL, file path or inline JSON/YAML
+                specUrlOrPayload:
+                  type: string
+                  description: accepted alias for "spec"
+            example:
+              spec: >-
+                {"openapi":"3.0.0","info":{"title":"orders","version":"1.0.0"},"paths":{"/api/orders":{"get":{"responses":{"200":{"description":"orders"}}}}}}
+        description: >-
+          the OpenAPI specification to validate the recorded traffic against. The example uses an
+          inline spec so it works offline and behind an egress-restricted proxy; a URL or file path is
+          equally valid, but a URL is fetched by the server and is subject to the SSRF policy.
+        required: true
+  /mockserver/llm/optimisationReport:
+    get:
+      tags:
+        - llm
+      summary: retrieve the LLM optimisation report
+      description: >-
+        Analyses captured LLM traffic and reports optimisation signals (cost, latency, token usage,
+        prompt and response characteristics) with an overall verdict. The report can also be emitted in
+        evaluation-dataset formats for downstream tooling. An empty capture is a 200 with an empty
+        report, not an error.
+      parameters:
+        - in: query
+          name: format
+          schema:
+            type: string
+            default: json
+            enum:
+              - json
+              - markdown
+              - csv
+              - openai-evals
+              - fine-tune
+              - promptfoo
+          required: false
+          description: >-
+            output format; defaults to json. The dataset formats also accept the aliases `evals`
+            (openai-evals) and `finetune` (fine-tune), and underscores in place of hyphens.
+        - in: query
+          name: session
+          schema:
+            type: string
+          required: false
+          description: restrict the report to a single captured session
+        - in: query
+          name: host
+          schema:
+            type: string
+          required: false
+          description: restrict the report to a single upstream host
+        - in: query
+          name: provider
+          schema:
+            type: string
+          required: false
+          description: restrict the report to a single LLM provider
+      responses:
+        '200':
+          description: optimisation report returned in the requested format
+          content:
+            application/json:
+              schema:
+                type: object
+            text/markdown:
+              schema:
+                type: string
+            text/csv:
+              schema:
+                type: string
+            application/x-ndjson:
+              schema:
+                type: string
+                description: newline-delimited JSON, returned for the openai-evals and fine-tune formats
+        '400':
+          description: unrecognised format
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: internal error generating the optimisation report
+          content:
+            text/plain:
+              schema:
+                type: string
+  /mockserver/llm/diffRuns:
+    put:
+      tags:
+        - llm
+      summary: diff two captured LLM agent runs
+      description: >-
+        Compares two captured agent runs, each selected by session, host and/or provider, and reports
+        where they diverge. Normalization options control which incidental differences are ignored
+        before comparing. The request body is optional — an empty body is treated as an empty filter on
+        both sides.
+      responses:
+        '200':
+          description: diff of the two runs returned
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: internal error diffing the agent runs
+          content:
+            text/plain:
+              schema:
+                type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                before:
+                  type: object
+                  properties:
+                    session:
+                      type: string
+                    host:
+                      type: string
+                    provider:
+                      type: string
+                after:
+                  type: object
+                  properties:
+                    session:
+                      type: string
+                    host:
+                      type: string
+                    provider:
+                      type: string
+                normalization:
+                  type: object
+                  description: options controlling which incidental differences are ignored
+            example:
+              before:
+                session: run-1
+              after:
+                session: run-2
+        description: optional selectors for the two runs to compare
+        required: false
+  /mockserver/mcp:
+    post:
+      tags:
+        - mcp
+      summary: MCP (Model Context Protocol) JSON-RPC endpoint
+      description: >-
+        Streamable-HTTP MCP endpoint, letting AI agents and LLM tooling drive MockServer as an MCP
+        server. The body is a JSON-RPC 2.0 request object or a batch array. Call `initialize` first;
+        the response carries a new session id in the `Mcp-Session-Id` response header, which subsequent
+        calls must send back in the `Mcp-Session-Id` request header. Protocol versions 2025-06-18
+        (default), 2025-03-26 and 2024-11-05 are negotiated. Note that a missing or invalid session is
+        reported as a JSON-RPC error inside a 200 response, not as a 4xx. Unlike its sibling endpoints
+        this path has no bare `/mcp` alias, and sub-paths under `/mockserver/mcp/` also route here.
+      parameters:
+        - in: header
+          name: Mcp-Session-Id
+          schema:
+            type: string
+          required: false
+          description: session id returned by a previous `initialize` call; omit on `initialize` itself
+      responses:
+        '200':
+          description: >-
+            JSON-RPC response. Also used for JSON-RPC-level errors such as an missing or invalid
+            session. On `initialize` the response carries the new session id in the Mcp-Session-Id
+            header.
+          headers:
+            Mcp-Session-Id:
+              schema:
+                type: string
+              description: session id, returned on a successful `initialize`
+          content:
+            application/json:
+              schema:
+                type: object
+        '202':
+          description: notification accepted (empty body; notifications receive no JSON-RPC response)
+        '400':
+          description: empty body, unparseable JSON, or not a valid JSON-RPC request or batch
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: control-plane authentication failed
+          content:
+            application/json:
+              schema:
+                type: object
+        '503':
+          description: server busy, retry later
+          content:
+            application/json:
+              schema:
+                type: object
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: a JSON-RPC 2.0 request object, or an array of them for a batch
+            example:
+              jsonrpc: "2.0"
+              id: 1
+              method: initialize
+              params:
+                protocolVersion: "2025-06-18"
+                capabilities: {}
+                clientInfo:
+                  name: example-client
+                  version: "1.0.0"
+        description: JSON-RPC 2.0 request or batch
+        required: true
+    delete:
+      tags:
+        - mcp
+      summary: end an MCP session
+      description: Removes the MCP session identified by the `Mcp-Session-Id` request header.
+      parameters:
+        - in: header
+          name: Mcp-Session-Id
+          schema:
+            type: string
+          required: true
+          description: the session to end
+      responses:
+        '200':
+          description: session ended (empty body)
+        '404':
+          description: no Mcp-Session-Id header, or no such session (empty body)
+    get:
+      tags:
+        - mcp
+      summary: not supported
+      description: >-
+        Documented so the behaviour is not mistaken for SSE support: MockServer's MCP endpoint does not
+        implement the server-initiated SSE stream, and a GET is always refused.
+      responses:
+        '405':
+          description: method not allowed (empty body)
 components:
   schemas:
     ScenarioError:
@@ -3738,6 +4628,40 @@ components:
           $ref: '#/components/schemas/HttpSseResponse'
         httpWebSocketResponse:
           $ref: '#/components/schemas/HttpWebSocketResponse'
+        httpLlmResponse:
+          $ref: '#/components/schemas/HttpLlmResponse'
+        grpcStreamResponse:
+          $ref: '#/components/schemas/GrpcStreamResponse'
+        grpcBidiResponse:
+          $ref: '#/components/schemas/GrpcBidiResponse'
+        binaryResponse:
+          $ref: '#/components/schemas/BinaryResponse'
+        dnsResponse:
+          $ref: '#/components/schemas/DnsResponse'
+        httpForwardValidateAction:
+          $ref: '#/components/schemas/HttpForwardValidateAction'
+        httpForwardWithFallback:
+          $ref: '#/components/schemas/HttpForwardWithFallback'
+        beforeActions:
+          type: array
+          description: actions run before the expectation's own action
+          items:
+            $ref: '#/components/schemas/AfterAction'
+        afterActions:
+          type: array
+          description: actions run after the expectation's own action
+          items:
+            $ref: '#/components/schemas/AfterAction'
+        steps:
+          type: array
+          description: ordered steps for a multi-step expectation
+          items:
+            $ref: '#/components/schemas/ExpectationStep'
+        capture:
+          type: array
+          description: rules extracting values from the matched request into scenario state
+          items:
+            $ref: '#/components/schemas/CaptureRule'
         namespace:
           type: string
           description: optional namespace (tenant) this expectation belongs to; when set, the expectation
@@ -6144,3 +7068,516 @@ components:
                 $ref: '#/components/schemas/Delay'
         closeConnection:
           type: boolean
+    HttpLlmResponse:
+      description: LLM response to return
+      type: object
+      additionalProperties: false
+      properties:
+        delay:
+          $ref: '#/components/schemas/Delay'
+        provider:
+          enum:
+            - ANTHROPIC
+            - OPENAI
+            - OPENAI_RESPONSES
+            - GEMINI
+            - BEDROCK
+            - AZURE_OPENAI
+            - OLLAMA
+            - COHERE
+            - VOYAGE
+        model:
+          type: string
+        completion:
+          type: object
+          additionalProperties: false
+          properties:
+            text:
+              type: string
+            toolCalls:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  arguments:
+                    type: string
+            stopReason:
+              type: string
+            usage:
+              type: object
+              additionalProperties: false
+              properties:
+                inputTokens:
+                  type: integer
+                  minimum: 0
+                outputTokens:
+                  type: integer
+                  minimum: 0
+                cachedInputTokens:
+                  type: integer
+                  minimum: 0
+                cacheCreationTokens:
+                  type: integer
+                  minimum: 0
+                reasoningTokens:
+                  type: integer
+                  minimum: 0
+            streaming:
+              type: boolean
+            outputSchema:
+              type: string
+            enforceOutputSchema:
+              type: boolean
+            toolChoice:
+              type: string
+            reasoningText:
+              type: string
+            reasoningSignature:
+              type: string
+            model:
+              type: string
+            streamingPhysics:
+              type: object
+              additionalProperties: false
+              properties:
+                timeToFirstToken:
+                  $ref: '#/components/schemas/Delay'
+                tokensPerSecond:
+                  type: integer
+                  minimum: 1
+                  maximum: 10000
+                jitter:
+                  type: number
+                  minimum: 0.0
+                  maximum: 1.0
+                seed:
+                  type: integer
+                subwordStreaming:
+                  type: boolean
+                  default: true
+        embedding:
+          type: object
+          additionalProperties: false
+          properties:
+            dimensions:
+              type: integer
+            deterministicFromInput:
+              type: boolean
+            seed:
+              type: integer
+        rerank:
+          type: object
+          additionalProperties: false
+          properties:
+            topN:
+              type: integer
+              minimum: 0
+            deterministicFromInput:
+              type: boolean
+            seed:
+              type: integer
+        moderation:
+          type: object
+          additionalProperties: false
+          properties:
+            flaggedCategories:
+              type: array
+              items:
+                type: string
+            model:
+              type: string
+        contentFilter:
+          type: object
+          additionalProperties: false
+          properties:
+            hate:
+              type: string
+            sexual:
+              type: string
+            violence:
+              type: string
+            selfHarm:
+              type: string
+        conversationPredicates:
+          type: object
+          additionalProperties: false
+          properties:
+            turnIndex:
+              type: integer
+              minimum: 0
+            latestMessageContains:
+              type: string
+            latestMessageMatches:
+              type: string
+            latestMessageRole:
+              enum:
+                - USER
+                - ASSISTANT
+                - TOOL
+                - SYSTEM
+            containsToolResultFor:
+              type: string
+            semanticMatchAgainst:
+              type: string
+            normalization:
+              type: object
+              additionalProperties: false
+              properties:
+                collapseWhitespace:
+                  type: boolean
+                lowercase:
+                  type: boolean
+                sortJsonKeys:
+                  type: boolean
+                dropBuiltInVolatileFields:
+                  type: boolean
+                dropVolatileFields:
+                  type: array
+                  items:
+                    type: string
+        chaos:
+          type: object
+          additionalProperties: false
+          properties:
+            errorStatus:
+              type: integer
+            retryAfter:
+              type: string
+            errorProbability:
+              type: number
+              minimum: 0.0
+              maximum: 1.0
+            truncateMode:
+              enum:
+                - NONE
+                - MID_STREAM
+            truncateAtFraction:
+              type: number
+              minimum: 0.0
+              maximum: 1.0
+            malformedSse:
+              type: boolean
+            seed:
+              type: integer
+            quotaName:
+              type: string
+            quotaLimit:
+              type: integer
+              minimum: 0
+            quotaWindowMillis:
+              type: integer
+              minimum: 1
+            quotaErrorStatus:
+              type: integer
+            tokenQuotaLimit:
+              type: integer
+              minimum: 1
+            tokenQuotaWindowMillis:
+              type: integer
+              minimum: 1
+            contentFilterBlockProbability:
+              type: number
+              minimum: 0.0
+              maximum: 1.0
+            errorKind:
+              type: string
+        primary:
+          type: boolean
+    GrpcMessage:
+      description: a single gRPC stream message
+      type: object
+      additionalProperties: false
+      properties:
+        json:
+          type: string
+        templateType:
+          enum:
+            - VELOCITY
+            - JAVASCRIPT
+            - MUSTACHE
+        delay:
+          $ref: '#/components/schemas/Delay'
+    GrpcStreamResponse:
+      description: gRPC stream response to return
+      type: object
+      additionalProperties: false
+      properties:
+        delay:
+          $ref: '#/components/schemas/Delay'
+        headers:
+          $ref: '#/components/schemas/KeyToMultiValue'
+        statusName:
+          type: string
+        statusMessage:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrpcMessage'
+        closeConnection:
+          type: boolean
+        primary:
+          type: boolean
+    GrpcBidiResponse:
+      description: gRPC bidi response for bidirectional streaming
+      type: object
+      additionalProperties: false
+      properties:
+        delay:
+          $ref: '#/components/schemas/Delay'
+        headers:
+          $ref: '#/components/schemas/KeyToMultiValue'
+        statusName:
+          type: string
+        statusMessage:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrpcMessage'
+        rules:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              matchJson:
+                $ref: '#/components/schemas/StringOrJsonSchema'
+              responses:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GrpcMessage'
+        closeConnection:
+          type: boolean
+        primary:
+          type: boolean
+    BinaryResponse:
+      description: binary response to return
+      type: object
+      additionalProperties: false
+      properties:
+        delay:
+          $ref: '#/components/schemas/Delay'
+        binaryData:
+          type: string
+          format: byte
+        primary:
+          type: boolean
+    DnsRecord:
+      description: DNS record
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        type:
+          enum:
+            - A
+            - AAAA
+            - CNAME
+            - MX
+            - SRV
+            - TXT
+            - PTR
+        dnsClass:
+          enum:
+            - IN
+            - CH
+            - HS
+            - ANY
+        ttl:
+          type: integer
+          minimum: 0
+        value:
+          type: string
+        priority:
+          type: integer
+          minimum: 0
+        weight:
+          type: integer
+          minimum: 0
+        port:
+          type: integer
+          minimum: 0
+          maximum: 65535
+    DnsResponse:
+      description: DNS response to return
+      type: object
+      additionalProperties: false
+      properties:
+        delay:
+          $ref: '#/components/schemas/Delay'
+        answerRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/DnsRecord'
+        authorityRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/DnsRecord'
+        additionalRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/DnsRecord'
+        responseCode:
+          enum:
+            - NOERROR
+            - FORMERR
+            - SERVFAIL
+            - NXDOMAIN
+            - NOTIMP
+            - REFUSED
+        primary:
+          type: boolean
+    HttpForwardValidateAction:
+      description: forward and validate against an OpenAPI spec
+      type: object
+      additionalProperties: false
+      properties:
+        delay:
+          $ref: '#/components/schemas/Delay'
+        specUrlOrPayload:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+        scheme:
+          enum:
+            - HTTP
+            - HTTPS
+        validateRequest:
+          type: boolean
+        validateResponse:
+          type: boolean
+        validationMode:
+          enum:
+            - STRICT
+            - LOG_ONLY
+        primary:
+          type: boolean
+      required:
+        - specUrlOrPayload
+        - host
+    HttpForwardWithFallback:
+      description: forward with a fallback response on failure
+      type: object
+      additionalProperties: false
+      properties:
+        delay:
+          $ref: '#/components/schemas/Delay'
+        httpForward:
+          $ref: '#/components/schemas/HttpForward'
+        fallbackResponse:
+          $ref: '#/components/schemas/HttpResponse'
+        fallbackOnStatusCodes:
+          type: array
+          items:
+            type: integer
+        fallbackOnTimeout:
+          type: boolean
+        primary:
+          type: boolean
+      required:
+        - httpForward
+        - fallbackResponse
+    AfterAction:
+      description: an action run before or after the expectation's own action
+      type: object
+      additionalProperties: false
+      properties:
+        httpRequest:
+          $ref: '#/components/schemas/HttpRequest'
+        httpClassCallback:
+          $ref: '#/components/schemas/HttpClassCallback'
+        httpObjectCallback:
+          $ref: '#/components/schemas/HttpObjectCallback'
+        delay:
+          $ref: '#/components/schemas/Delay'
+        blocking:
+          type: boolean
+        timeout:
+          $ref: '#/components/schemas/Delay'
+        failurePolicy:
+          enum:
+            - FAIL_FAST
+            - BEST_EFFORT
+      oneOf:
+        - required:
+            - httpRequest
+        - required:
+            - httpClassCallback
+        - required:
+            - httpObjectCallback
+    ExpectationStep:
+      description: a single step of a multi-step expectation
+      type: object
+      additionalProperties: false
+      properties:
+        httpRequest:
+          $ref: '#/components/schemas/HttpRequest'
+        httpClassCallback:
+          $ref: '#/components/schemas/HttpClassCallback'
+        httpObjectCallback:
+          $ref: '#/components/schemas/HttpObjectCallback'
+        httpForward:
+          $ref: '#/components/schemas/HttpForward'
+        httpOverrideForwardedRequest:
+          $ref: '#/components/schemas/HttpOverrideForwardedRequest'
+        httpResponse:
+          $ref: '#/components/schemas/HttpResponse'
+        httpError:
+          $ref: '#/components/schemas/HttpError'
+        responder:
+          type: boolean
+        delay:
+          $ref: '#/components/schemas/Delay'
+        blocking:
+          type: boolean
+        timeout:
+          $ref: '#/components/schemas/Delay'
+        failurePolicy:
+          enum:
+            - FAIL_FAST
+            - BEST_EFFORT
+      oneOf:
+        - required:
+            - httpRequest
+        - required:
+            - httpClassCallback
+        - required:
+            - httpObjectCallback
+        - required:
+            - httpForward
+        - required:
+            - httpOverrideForwardedRequest
+        - required:
+            - httpResponse
+        - required:
+            - httpError
+    CaptureRule:
+      description: a rule extracting a value from the matched request into scenario state
+      type: object
+      additionalProperties: false
+      properties:
+        source:
+          enum:
+            - jsonPath
+            - xpath
+            - header
+            - queryStringParameter
+            - cookie
+            - pathParameter
+        expression:
+          type: string
+        into:
+          type: string
+      required:
+        - source
+        - expression
+        - into

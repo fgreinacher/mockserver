@@ -1,0 +1,17 @@
+meta {
+  name: end an MCP session
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/mockserver/mcp
+  body: none
+  auth: inherit
+}
+
+docs {
+  Removes the MCP session identified by the `Mcp-Session-Id` request header.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

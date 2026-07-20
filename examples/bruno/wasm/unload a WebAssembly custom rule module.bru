@@ -1,0 +1,21 @@
+meta {
+  name: unload a WebAssembly custom rule module
+  type: http
+  seq: 3
+}
+
+delete {
+  url: {{baseUrl}}/mockserver/wasm/modules
+  body: none
+  auth: inherit
+}
+
+params:query {
+  ~name: 
+}
+
+docs {
+  Removes the named WebAssembly custom rule module from the module store. Succeeds with an empty body; the module name is required as a query parameter.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

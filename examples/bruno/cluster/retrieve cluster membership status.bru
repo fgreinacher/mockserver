@@ -1,0 +1,17 @@
+meta {
+  name: retrieve cluster membership status
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/mockserver/cluster
+  body: none
+  auth: inherit
+}
+
+docs {
+  Reports whether this instance is running clustered, its node id, whether it is the coordinator, and the current member list. `clusterName` is omitted entirely when the instance is not clustered.
+  
+  Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
+}

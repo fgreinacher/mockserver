@@ -175,8 +175,24 @@ def query_params(op, method, path):
         if key in enable:
             out.append((key, enable[key], True))
         else:
-            out.append((key, "" if val is None else str(val), False))
+            out.append((key, _query_value(val), False))
     return out
+
+
+def _query_value(val):
+    """Render a spec default/example as it must appear on the wire.
+
+    `str(True)` is Python's `repr`, "True" — which is not what any of MockServer's handlers parse.
+    They compare against "true"/"false" (`"true".equalsIgnoreCase(...)`), so a boolean default has to
+    be lower-cased or the generated collections carry a value the server does not recognise. This is
+    cosmetic for the handlers that treat "not false" as true, but it is still wrong in a user-facing
+    artifact, and a user copying it into their own tooling inherits the error.
+    """
+    if val is None:
+        return ""
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    return str(val)
 
 
 def iter_ops(spec):
