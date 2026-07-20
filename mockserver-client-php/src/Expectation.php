@@ -29,12 +29,17 @@ class Expectation implements \JsonSerializable
     private ?HttpRequest $httpRequest = null;
     private ?HttpResponse $httpResponse = null;
     private ?HttpForward $httpForward = null;
+    private ?HttpTemplate $httpResponseTemplate = null;
+    private ?HttpTemplate $httpForwardTemplate = null;
+    private ?HttpForwardValidateAction $httpForwardValidateAction = null;
+    private ?HttpForwardWithFallback $httpForwardWithFallback = null;
     private ?HttpClassCallback $httpResponseClassCallback = null;
     private ?HttpClassCallback $httpForwardClassCallback = null;
     private ?HttpError $httpError = null;
     private ?HttpSseResponse $httpSseResponse = null;
     private ?HttpWebSocketResponse $httpWebSocketResponse = null;
     private ?GrpcStreamResponse $grpcStreamResponse = null;
+    private ?GrpcBidiResponse $grpcBidiResponse = null;
     private ?BinaryResponse $binaryResponse = null;
     private ?DnsResponse $dnsResponse = null;
     private ?HttpLlmResponse $httpLlmResponse = null;
@@ -79,6 +84,45 @@ class Expectation implements \JsonSerializable
     public function httpForward(HttpForward $forward): self
     {
         $this->httpForward = $forward;
+        return $this;
+    }
+
+    /**
+     * Respond with a rendered template (serialises to {@code httpResponseTemplate}).
+     */
+    public function httpResponseTemplate(HttpTemplate $httpResponseTemplate): self
+    {
+        $this->httpResponseTemplate = $httpResponseTemplate;
+        return $this;
+    }
+
+    /**
+     * Forward a request built from a rendered template (serialises to
+     * {@code httpForwardTemplate}).
+     */
+    public function httpForwardTemplate(HttpTemplate $httpForwardTemplate): self
+    {
+        $this->httpForwardTemplate = $httpForwardTemplate;
+        return $this;
+    }
+
+    /**
+     * Forward and validate the exchange against an OpenAPI spec (serialises to
+     * {@code httpForwardValidateAction}).
+     */
+    public function httpForwardValidateAction(HttpForwardValidateAction $httpForwardValidateAction): self
+    {
+        $this->httpForwardValidateAction = $httpForwardValidateAction;
+        return $this;
+    }
+
+    /**
+     * Forward with a fallback response on upstream failure (serialises to
+     * {@code httpForwardWithFallback}).
+     */
+    public function httpForwardWithFallback(HttpForwardWithFallback $httpForwardWithFallback): self
+    {
+        $this->httpForwardWithFallback = $httpForwardWithFallback;
         return $this;
     }
 
@@ -146,6 +190,12 @@ class Expectation implements \JsonSerializable
     public function grpcStreamResponse(GrpcStreamResponse $grpcStreamResponse): self
     {
         $this->grpcStreamResponse = $grpcStreamResponse;
+        return $this;
+    }
+
+    public function grpcBidiResponse(GrpcBidiResponse $grpcBidiResponse): self
+    {
+        $this->grpcBidiResponse = $grpcBidiResponse;
         return $this;
     }
 
@@ -358,6 +408,18 @@ class Expectation implements \JsonSerializable
         if ($this->httpForward !== null) {
             $data['httpForward'] = $this->httpForward->toArray();
         }
+        if ($this->httpResponseTemplate !== null) {
+            $data['httpResponseTemplate'] = $this->httpResponseTemplate->toArray();
+        }
+        if ($this->httpForwardTemplate !== null) {
+            $data['httpForwardTemplate'] = $this->httpForwardTemplate->toArray();
+        }
+        if ($this->httpForwardValidateAction !== null) {
+            $data['httpForwardValidateAction'] = $this->httpForwardValidateAction->toArray();
+        }
+        if ($this->httpForwardWithFallback !== null) {
+            $data['httpForwardWithFallback'] = $this->httpForwardWithFallback->toArray();
+        }
         if ($this->httpResponseClassCallback !== null) {
             $data['httpResponseClassCallback'] = $this->httpResponseClassCallback->toArray();
         }
@@ -375,6 +437,9 @@ class Expectation implements \JsonSerializable
         }
         if ($this->grpcStreamResponse !== null) {
             $data['grpcStreamResponse'] = $this->grpcStreamResponse->toArray();
+        }
+        if ($this->grpcBidiResponse !== null) {
+            $data['grpcBidiResponse'] = $this->grpcBidiResponse->toArray();
         }
         if ($this->binaryResponse !== null) {
             $data['binaryResponse'] = $this->binaryResponse->toArray();

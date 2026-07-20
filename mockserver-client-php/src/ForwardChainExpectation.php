@@ -63,6 +63,52 @@ class ForwardChainExpectation
     }
 
     /**
+     * Respond with a rendered template ({@code httpResponseTemplate}).
+     *
+     * @return array The created expectation(s) as returned by the server.
+     */
+    public function respondWithTemplate(HttpTemplate $httpTemplate): array
+    {
+        $this->expectation->httpResponseTemplate($httpTemplate);
+        return $this->client->upsertExpectation($this->expectation);
+    }
+
+    /**
+     * Forward a request built from a rendered template ({@code httpForwardTemplate}).
+     *
+     * @return array The created expectation(s) as returned by the server.
+     */
+    public function forwardWithTemplate(HttpTemplate $httpTemplate): array
+    {
+        $this->expectation->httpForwardTemplate($httpTemplate);
+        return $this->client->upsertExpectation($this->expectation);
+    }
+
+    /**
+     * Forward and validate the exchange against an OpenAPI spec
+     * ({@code httpForwardValidateAction}).
+     *
+     * @return array The created expectation(s) as returned by the server.
+     */
+    public function forwardWithValidation(HttpForwardValidateAction $validateAction): array
+    {
+        $this->expectation->httpForwardValidateAction($validateAction);
+        return $this->client->upsertExpectation($this->expectation);
+    }
+
+    /**
+     * Forward with a fallback response on upstream failure
+     * ({@code httpForwardWithFallback}).
+     *
+     * @return array The created expectation(s) as returned by the server.
+     */
+    public function forwardWithFallback(HttpForwardWithFallback $forwardWithFallback): array
+    {
+        $this->expectation->httpForwardWithFallback($forwardWithFallback);
+        return $this->client->upsertExpectation($this->expectation);
+    }
+
+    /**
      * Return an error.
      *
      * @return array The created expectation(s) as returned by the server.
@@ -103,6 +149,17 @@ class ForwardChainExpectation
     public function respondWithGrpcStream(GrpcStreamResponse $grpcStreamResponse): array
     {
         $this->expectation->grpcStreamResponse($grpcStreamResponse);
+        return $this->client->upsertExpectation($this->expectation);
+    }
+
+    /**
+     * Respond with a gRPC bidirectional stream.
+     *
+     * @return array The created expectation(s) as returned by the server.
+     */
+    public function respondWithGrpcBidi(GrpcBidiResponse $grpcBidiResponse): array
+    {
+        $this->expectation->grpcBidiResponse($grpcBidiResponse);
         return $this->client->upsertExpectation($this->expectation);
     }
 

@@ -8,9 +8,17 @@ use MockServer\BinaryResponse;
 use MockServer\Delay;
 use MockServer\DnsRecord;
 use MockServer\DnsResponse;
+use MockServer\GrpcBidiMessage;
+use MockServer\GrpcBidiResponse;
+use MockServer\GrpcBidiRule;
 use MockServer\GrpcStreamMessage;
 use MockServer\GrpcStreamResponse;
+use MockServer\HttpForward;
+use MockServer\HttpForwardValidateAction;
+use MockServer\HttpForwardWithFallback;
+use MockServer\HttpResponse;
 use MockServer\HttpSseResponse;
+use MockServer\HttpTemplate;
 use MockServer\GraphQLSubscriptionFilter;
 use MockServer\HttpWebSocketResponse;
 use MockServer\Tests\Support\SharedFixtures;
@@ -266,5 +274,206 @@ class ResponseBuildersTest extends TestCase
     {
         $this->assertArrayNotHasKey('templateType', HttpSseResponse::response()->statusCode(200)->toArray());
         $this->assertArrayNotHasKey('templateType', HttpWebSocketResponse::response()->subprotocol('c')->toArray());
+    }
+
+    // ------------------------------------------------------------------
+    // gRPC bidirectional-streaming response — grpcBidiResponse
+    // ------------------------------------------------------------------
+
+    public function testGrpcBidiResponseMatchesTheSharedFixture(): void
+    {
+        // test-fixtures/expectations/action_grpc_bidi.json — exercises rules[] with a
+        // templated response, which GrpcStreamMessage cannot express (no templateType).
+        $built = GrpcBidiResponse::response()
+            ->statusName('OK')
+            ->header('x-meta', 'v')
+            ->message(GrpcBidiMessage::message('{"greeting":"hi"}'))
+            ->rule(
+                GrpcBidiRule::matchJson('{"name":"world"}')
+                    ->response(
+                        GrpcBidiMessage::message('{"reply":"hello world"}')
+                            ->templateType(GrpcBidiMessage::MUSTACHE),
+                    ),
+            )
+            ->closeConnection(true)
+            ->statusMessage('success')
+            ->delay(Delay::milliseconds(10))
+            ->primary(true)
+            ->toArray();
+
+        $this->assertSame(
+            SharedFixtures::sortedDeep(
+                SharedFixtures::action('action_grpc_bidi.json', 'grpcBidiResponse', 8),
+            ),
+            SharedFixtures::sortedDeep($built),
+        );
+    }
+
+    public function testGrpcBidiKeepOpenMatchesTheSharedFixture(): void
+    {
+        // test-fixtures/expectations/action_grpc_bidi_keep_open.json — closeConnection and
+        // primary are BOTH false here, so this fixture only round-trips if those are emitted
+        // rather than dropped by a truthiness guard.
+        $built = GrpcBidiResponse::response()
+            ->statusName('OK')
+            ->message(GrpcBidiMessage::message('{"greeting":"hi"}'))
+            ->rule(
+                GrpcBidiRule::matchJson('!{"name":"ignored"}')
+                    ->response(GrpcBidiMessage::message('{"reply":"anything but ignored"}')),
+            )
+            ->closeConnection(false)
+            ->primary(false)
+            ->toArray();
+
+        $this->assertSame(
+            SharedFixtures::sortedDeep(
+                SharedFixtures::action('action_grpc_bidi_keep_open.json', 'grpcBidiResponse', 5),
+            ),
+            SharedFixtures::sortedDeep($built),
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // forward + OpenAPI validation — httpForwardValidateAction
+    // ------------------------------------------------------------------
+
+    public function testHttpForwardValidateMatchesTheSharedFixture(): void
+    {
+        // test-fixtures/expectations/action_forward_validate.json
+        $built = HttpForwardValidateAction::forward('https://example.com/openapi.json', 'backend.example.com')
+            ->port(443)
+            ->scheme(HttpForwardValidateAction::HTTPS)
+            ->validateRequest(true)
+            ->validateResponse(true)
+            ->validationMode(HttpForwardValidateAction::STRICT)
+            ->delay(Delay::milliseconds(10))
+            ->primary(true)
+            ->toArray();
+
+        $this->assertSame(
+            SharedFixtures::sortedDeep(
+                SharedFixtures::action('action_forward_validate.json', 'httpForwardValidateAction', 9),
+            ),
+            SharedFixtures::sortedDeep($built),
+        );
+    }
+
+    public function testHttpForwardValidateResponseOnlyMatchesTheSharedFixture(): void
+    {
+        // test-fixtures/expectations/action_forward_validate_response_only.json — validateRequest,
+        // validateResponse and primary are all false (falsy-survival), and validationMode is
+        // "LENIENT", a value NOT in the schema enum (STRICT, LOG_ONLY) — so validationMode() must
+        // pass arbitrary strings through rather than restrict to the two constants.
+        $built = HttpForwardValidateAction::forward('https://example.com/openapi.json', 'backend.example.com')
+            ->port(443)
+            ->scheme(HttpForwardValidateAction::HTTPS)
+            ->validateRequest(false)
+            ->validateResponse(false)
+            ->validationMode('LENIENT')
+            ->primary(false)
+            ->toArray();
+
+        $this->assertSame(
+            SharedFixtures::sortedDeep(
+                SharedFixtures::action('action_forward_validate_response_only.json', 'httpForwardValidateAction', 8),
+            ),
+            SharedFixtures::sortedDeep($built),
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // forward with fallback — httpForwardWithFallback
+    // ------------------------------------------------------------------
+
+    public function testHttpForwardWithFallbackMatchesTheSharedFixture(): void
+    {
+        // test-fixtures/expectations/action_forward_fallback.json
+        $built = HttpForwardWithFallback::forward(
+            HttpForward::forward()->scheme('HTTPS')->host('backend.example.com')->port(443),
+            HttpResponse::response()->statusCode(503)->body('unavailable'),
+        )
+            ->fallbackOnStatusCodes(500, 502, 503)
+            ->fallbackOnTimeout(true)
+            ->delay(Delay::milliseconds(10))
+            ->primary(true)
+            ->toArray();
+
+        $this->assertSame(
+            SharedFixtures::sortedDeep(
+                SharedFixtures::action('action_forward_fallback.json', 'httpForwardWithFallback', 6),
+            ),
+            SharedFixtures::sortedDeep($built),
+        );
+    }
+
+    public function testHttpForwardWithFallbackStatusOnlyMatchesTheSharedFixture(): void
+    {
+        // test-fixtures/expectations/action_forward_fallback_status_only.json — fallbackOnTimeout
+        // and primary are both false (falsy-survival).
+        $built = HttpForwardWithFallback::forward(
+            HttpForward::forward()->scheme('HTTPS')->host('backend.example.com')->port(443),
+            HttpResponse::response()->statusCode(503)->body('unavailable'),
+        )
+            ->fallbackOnStatusCodes(500)
+            ->fallbackOnTimeout(false)
+            ->primary(false)
+            ->toArray();
+
+        $this->assertSame(
+            SharedFixtures::sortedDeep(
+                SharedFixtures::action('action_forward_fallback_status_only.json', 'httpForwardWithFallback', 5),
+            ),
+            SharedFixtures::sortedDeep($built),
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // template action — httpTemplate (no bare-httpTemplate shared fixture;
+    // the shape is served under httpResponseTemplate / httpForwardTemplate)
+    // ------------------------------------------------------------------
+
+    public function testHttpTemplateToArrayEmitsExactlyTheSetFields(): void
+    {
+        $arr = HttpTemplate::template(HttpTemplate::MUSTACHE, '{"statusCode": 200, "body": "{{request.path}}"}')
+            ->delay(Delay::milliseconds(5))
+            ->primary(true)
+            ->responseOverride(HttpResponse::response()->statusCode(200))
+            ->toArray();
+
+        $this->assertSame([
+            'delay' => ['timeUnit' => 'MILLISECONDS', 'value' => 5],
+            'templateType' => 'MUSTACHE',
+            'template' => '{"statusCode": 200, "body": "{{request.path}}"}',
+            'primary' => true,
+            'responseOverride' => ['statusCode' => 200],
+        ], $arr);
+    }
+
+    public function testHttpTemplateFileFactoryAndFalsyPrimary(): void
+    {
+        $arr = HttpTemplate::templateFile(HttpTemplate::VELOCITY, '/tmpl/response.vm')
+            ->primary(false)
+            ->toArray();
+
+        // templateFile rather than template; primary false must survive.
+        $this->assertSame([
+            'templateType' => 'VELOCITY',
+            'templateFile' => '/tmpl/response.vm',
+            'primary' => false,
+        ], $arr);
+    }
+
+    public function testHttpTemplateWiresUnderBothActionKeys(): void
+    {
+        // The one shape serves two distinct expectation action keys; both must round-trip.
+        $tmpl = HttpTemplate::template(HttpTemplate::MUSTACHE, '{"body":"x"}');
+
+        $response = (new \MockServer\Expectation())->httpResponseTemplate($tmpl)->toArray();
+        $this->assertArrayHasKey('httpResponseTemplate', $response);
+        $this->assertArrayNotHasKey('httpForwardTemplate', $response);
+
+        $forward = (new \MockServer\Expectation())->httpForwardTemplate($tmpl)->toArray();
+        $this->assertArrayHasKey('httpForwardTemplate', $forward);
+        $this->assertArrayNotHasKey('httpResponseTemplate', $forward);
     }
 }

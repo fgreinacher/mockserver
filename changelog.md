@@ -178,6 +178,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the logger filters on level rather than type — so at the WARN/ERROR log levels a production operator is
   most likely to run, the entries were dropped and the fail-safe was completely silent. They now log at WARN
   as intended.
+- **The PHP client can now express four more action types the server accepts.** `grpcBidiResponse` (gRPC
+  bidirectional streaming, with a `GrpcBidiRule` sub-builder for its per-inbound-message rules and a
+  `GrpcBidiMessage` type that — unlike `GrpcStreamMessage` — carries the `templateType` the bidi wire shape
+  allows), `httpForwardValidateAction` (forward and validate against an OpenAPI spec), `httpForwardWithFallback`
+  (forward with a fallback response on failure), and the `httpTemplate` shape served under both
+  `httpResponseTemplate` and `httpForwardTemplate`. Each is attachable via `Expectation` and the fluent
+  `when(...)` chain. Two nested fields remain unmodelled and are called out in the source: `httpTemplate`'s
+  `responseModifier`, and the `httpObjectCallback` action (which needs a callback WebSocket the REST-only PHP
+  client does not implement).
 - **A header, query-parameter or cookie whose name literally begins with `!` or `?` is no longer inverted
   when an expectation is serialised and re-read.** Collection keys go on the wire as JSON field names, and
   the plain-string encoding prefixes `!` for negation and `?` for optional — markers the reader strips
