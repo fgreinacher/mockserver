@@ -31,6 +31,56 @@ import { monospaceFontFamily } from '../theme';
 import { useDashboardStore } from '../store';
 import { extractGenericExpectationFromCapture } from '../lib/expectationFromCapture';
 import { expectationToJsonObject } from '../lib/llmExpectationCodegen';
+// This import does double duty: it supplies the parser for the pill below, and
+// its module side effect is what installs the GraphQL-aware resolver on the
+// shared `operation:` filter field. That has to happen before ANY search surface
+// filters, and this module is in the eagerly-imported startup graph
+// (App -> DashboardGrid -> LogPanel -> LogEntry), so every panel — including the
+// lazily-loaded Traffic inspector, which imports this file directly — sees the
+// real resolver rather than the weak built-in one. Deliberately NOT registered
+// from `store/index.ts`: that would pull `lib/filterDSL` into the module graph of
+// every store consumer, including views (the Composer) that have no search
+// surface at all.
+import {
+  graphqlOperationOfRequest,
+  graphqlOperationLabel,
+  type GraphqlOperation,
+} from '../lib/graphqlOperation';
+
+// ---------------------------------------------------------------------------
+// GraphQL operation pill — shared by the log row and the Traffic inspector (as
+// with CreateFromMenu below, TrafficInspector imports it from here rather than
+// the other way round, which would be a cycle).
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact badge naming the GraphQL operation a request carries, so a row reads
+ * as `GQL GetUser` instead of an anonymous `POST /graphql`. Anonymous operations
+ * fall back to their type (`GQL query`) — there is nothing else to show, and
+ * omitting the badge would hide that the request is GraphQL at all.
+ */
+export function GraphqlOperationPill({ operation }: { operation: GraphqlOperation }) {
+  const label = graphqlOperationLabel(operation);
+  const tooltip = `GraphQL ${operation.operationType ?? 'operation'}: ${operation.operationName ?? '(anonymous)'}`;
+  return (
+    <Tooltip title={tooltip}>
+      <Chip
+        label={`GQL ${label}`}
+        size="small"
+        color="secondary"
+        variant="outlined"
+        sx={{
+          height: 18,
+          fontSize: '0.6rem',
+          fontFamily: monospaceFontFamily,
+          maxWidth: 160,
+          ml: 0.5,
+          '& .MuiChip-label': { px: 0.5, overflow: 'hidden', textOverflow: 'ellipsis' },
+        }}
+      />
+    </Tooltip>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // "Create From This…" launchpad menu — shared by LogEntry (log-row hover) and
@@ -461,6 +511,22 @@ function hostFromRequestHeaders(headers: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * The GraphQL operation a log row's request carries, or `null` when the row
+ * carries no request or the request is not GraphQL. Handles both message-part
+ * request shapes (a bare `{method, path, body}` and one nested under
+ * `httpRequest`), mirroring `extractLaunchpadData`.
+ */
+function extractGraphqlOperation(entry: LogEntryValue): GraphqlOperation | null {
+  const found = extractRequestFromEntry(entry);
+  if (!found) return null;
+  const nested = found['httpRequest'];
+  const request = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? (nested as Record<string, unknown>)
+    : found;
+  return graphqlOperationOfRequest(request);
+}
+
 interface LaunchpadData {
   /** Captured value wrapping the request (`{ httpRequest, ... }`) for mock extraction. */
   itemValue: Record<string, unknown>;
@@ -569,6 +635,10 @@ function LogEntry({ entry, indent = false, divider = false, collapsible = false,
   const showWhyButton = isUnmatched && debugMismatch !== null;
   const showGenerateStubButton = isUnmatched && generateStub !== null;
   const traceparent = useMemo(() => extractTraceparent(entry), [entry]);
+  // GraphQL rows are otherwise indistinguishable from any other POST /graphql,
+  // so name the operation inline. Null (and thus no badge) for every non-GraphQL
+  // row and for any body the dashboard cannot parse client-side.
+  const graphql = useMemo(() => extractGraphqlOperation(entry), [entry]);
   // A breakpoint can be seeded from any row that carries a request (matched or
   // not), so the user can pause future occurrences of this exact method+path.
   const breakpointPrefill = useMemo(() => extractBreakpointPrefill(entry), [entry]);
@@ -632,6 +702,7 @@ function LogEntry({ entry, indent = false, divider = false, collapsible = false,
             >
               {descriptionText(entry) || 'SYSTEM_MESSAGE'}
             </Box>
+            {graphql && <GraphqlOperationPill operation={graphql} />}
             {traceparent && <TraceparentPill info={traceparent} />}
             {showWhyButton && (
               <Tooltip title="Analyze why this request didn't match">
@@ -722,6 +793,7 @@ function LogEntry({ entry, indent = false, divider = false, collapsible = false,
             >
               {entry.timestamp && <LogTime timestamp={entry.timestamp} />}
               {descriptionText(entry)}
+              {graphql && <GraphqlOperationPill operation={graphql} />}
               {traceparent && <TraceparentPill info={traceparent} />}
             </Box>
           ) : (

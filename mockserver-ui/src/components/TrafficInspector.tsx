@@ -12,6 +12,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Checkbox from '@mui/material/Checkbox';
 import ToggleButton from '@mui/material/ToggleButton';
 import Popover from '@mui/material/Popover';
+import Collapse from '@mui/material/Collapse';
 import IconButton from '@mui/material/IconButton';
 import Alert from '@mui/material/Alert';
 import CircularProgress from '@mui/material/CircularProgress';
@@ -35,13 +36,16 @@ import AutoAwesomeMotionIcon from '@mui/icons-material/AutoAwesomeMotion';
 import LibraryAddIcon from '@mui/icons-material/LibraryAdd';
 import LibraryAddCheckIcon from '@mui/icons-material/LibraryAddCheck';
 import CloseIcon from '@mui/icons-material/Close';
+import DnsIcon from '@mui/icons-material/Dns';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { useDashboardStore } from '../store';
 import { useConnectionParams } from '../hooks/useConnectionParams';
 import { useDragResize } from '../hooks/useDragResize';
 import { useDebugMismatchContext } from '../hooks/DebugMismatchContext';
 import { useGenerateStubContext } from '../hooks/GenerateStubContext';
 import { useSetBreakpointContext } from '../hooks/SetBreakpointContext';
-import { CreateFromMenu, buildLaunchpadActions } from './LogEntry';
+import { CreateFromMenu, buildLaunchpadActions, GraphqlOperationPill } from './LogEntry';
 import JsonViewer from './JsonViewer';
 import ErrorBoundary from './ErrorBoundary';
 import ConfirmDialog from './ConfirmDialog';
@@ -54,6 +58,7 @@ import OperatorSearchField from './OperatorSearchField';
 import CopyButton from './CopyButton';
 import { clearLoggedRequest, requestDefinitionOf } from '../lib/traffic';
 import { parseSearchTerm, matchesItemSearch } from '../lib/searchMatcher';
+import { graphqlOperationOf, type GraphqlOperation } from '../lib/graphqlOperation';
 import LlmUsageDetail from './LlmUsageDetail';
 import {
   AnthropicConversationView,
@@ -446,6 +451,74 @@ function matchesSearch(item: JsonListItem, summary: TrafficSummary, term: string
 }
 
 // ---------------------------------------------------------------------------
+// Host focus — group captured traffic by upstream host and pin one into the
+// search as a `host:` operator (Charles / Proxyman style noise control).
+//
+// The pin is expressed ENTIRELY as a `host:` token in the existing traffic
+// search term rather than as a separate piece of state: the search term is
+// already store-backed and persisted to localStorage (store/index.ts
+// `setTrafficSearch`), so a pinned host survives a view switch and a reload for
+// free, stays visible/editable in the search box, and composes with the other
+// operators instead of fighting them.
+// ---------------------------------------------------------------------------
+
+/** One distinct upstream host in the captured traffic, with its request count. */
+interface HostCount {
+  host: string;
+  count: number;
+}
+
+/**
+ * Distinct hosts across the captured traffic, busiest first then alphabetical.
+ *
+ * Rows with no `Host` header are omitted — there is nothing to pin for them, and
+ * a synthetic "(no host)" bucket would not be expressible as a `host:` operator.
+ * Hosts are read from the already-computed row summary (`TrafficSummary.host`),
+ * which reads the first `Host` header case-insensitively — the same value the
+ * shared `host:` filter operator resolves — so a pinned host always selects
+ * exactly the rows counted here.
+ *
+ * That invariant only holds for hosts the search DSL can round-trip, so values
+ * outside the RFC 3986 host/port character set are omitted rather than offered
+ * as a broken pin. A client may send anything in a `Host` header: a space would
+ * tokenise into `host:foo` plus stray free text (selecting nothing, and
+ * appending another stray token on every further click), and a `*` would pin
+ * `host:*`, whose glob matches every row while the facet claims one.
+ */
+const PINNABLE_HOST = /^[A-Za-z0-9._:[\]-]+$/;
+
+function hostCounts(rows: readonly { summary: TrafficSummary }[]): HostCount[] {
+  const counts = new Map<string, number>();
+  for (const { summary } of rows) {
+    if (!summary.host || !PINNABLE_HOST.test(summary.host)) continue;
+    counts.set(summary.host, (counts.get(summary.host) ?? 0) + 1);
+  }
+  return [...counts]
+    .map(([host, count]) => ({ host, count }))
+    .sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
+}
+
+/** The host currently pinned by a `host:` operator in a search term, or null. */
+function pinnedHostOf(term: string): string | null {
+  const op = parseSearchTerm(term).operators.find((o) => o.field === 'host');
+  return op && op.expr.length > 0 ? op.expr : null;
+}
+
+/**
+ * Replace — or, with `host === null`, remove — the `host:` operator in a search
+ * term, leaving every other token (free text and other operators) untouched, so
+ * pinning a host narrows an existing search rather than replacing it.
+ */
+function pinHostInSearch(term: string, host: string | null): string {
+  const tokens = term
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !/^host:/i.test(t));
+  if (host) tokens.push(`host:${host}`);
+  return tokens.join(' ');
+}
+
+// ---------------------------------------------------------------------------
 // Unmatched detection + "copy as curl"
 // ---------------------------------------------------------------------------
 
@@ -565,6 +638,12 @@ export function buildRequestCurl(value: Record<string, unknown>, summary: Traffi
 
 interface TrafficRowProps {
   summary: TrafficSummary;
+  /**
+   * Parsed GraphQL operation for this request, or null when it is not GraphQL.
+   * Supplied by the parent (from the memoised `graphqlOperationOf`, whose result
+   * is reference-stable per request) so this stays a memo-friendly prop.
+   */
+  graphql?: GraphqlOperation | null;
   /** Stable identity of the request this row renders; passed back to the handlers. */
   itemKey: string;
   index: number;
@@ -594,6 +673,7 @@ interface TrafficRowProps {
 // the memoized `LogEntry`.
 function TrafficRowImpl({
   summary,
+  graphql,
   itemKey,
   index,
   selected,
@@ -699,6 +779,7 @@ function TrafficRowImpl({
           {summary.host ? `${summary.host}` : ''}{summary.path ?? ''}
         </Typography>
       </Tooltip>
+      {graphql && <GraphqlOperationPill operation={graphql} />}
       {summary.statusCode !== null && (
         <Chip
           label={summary.statusCode}
@@ -734,6 +815,137 @@ function TrafficRowImpl({
 }
 
 const TrafficRow = memo(TrafficRowImpl);
+
+// ---------------------------------------------------------------------------
+// Host tree — collapsible host facet docked at the top of the master list
+// ---------------------------------------------------------------------------
+
+interface HostTreeProps {
+  hosts: readonly HostCount[];
+  /** Host currently pinned into the search term, or null when none is. */
+  pinnedHost: string | null;
+  /** Pin a host (or unpin, with null). */
+  onPin: (host: string | null) => void;
+}
+
+/**
+ * Collapsible host facet for the traffic list: every distinct upstream host with
+ * its request count, clicking one pins `host:<value>` into the search (clicking
+ * the pinned host again unpins it).
+ *
+ * VISIBILITY: the caller renders this ONLY when more than one distinct host
+ * appears in the captured traffic. In mock-only mode every request targets the
+ * same MockServer host, so a single-host facet would partition nothing while
+ * permanently costing a strip of the (already narrow, resizable) master list —
+ * it earns its space exactly when there is more than one thing to choose
+ * between. It therefore appears by itself as soon as proxied traffic spans
+ * several upstreams, and disappears again when it stops being useful.
+ *
+ * It is docked as a collapsible strip at the top of the master list rather than
+ * as a side column because the master/detail split is already user-resized down
+ * to ~260px; a second vertical column inside it would leave too little for the
+ * rows themselves.
+ */
+function HostTree({ hosts, pinnedHost, onPin }: HostTreeProps) {
+  const [expanded, setExpanded] = useState(true);
+
+  return (
+    <Box sx={{ borderBottom: 1, borderColor: 'divider', flexShrink: 0 }}>
+      <Box
+        component="button"
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-label={expanded ? 'Collapse hosts' : 'Expand hosts'}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.5,
+          width: '100%',
+          px: 1,
+          py: 0.25,
+          border: 0,
+          bgcolor: 'transparent',
+          color: 'inherit',
+          font: 'inherit',
+          textAlign: 'left',
+          cursor: 'pointer',
+          '&:hover': { bgcolor: 'action.hover' },
+        }}
+      >
+        {expanded
+          ? <ExpandMoreIcon sx={{ fontSize: '0.9rem' }} />
+          : <ChevronRightIcon sx={{ fontSize: '0.9rem' }} />}
+        <DnsIcon sx={{ fontSize: '0.85rem', color: 'text.secondary' }} />
+        <Typography variant="caption" sx={{ fontWeight: 600 }}>
+          Hosts ({hosts.length})
+        </Typography>
+        {pinnedHost && (
+          <Typography
+            component="span"
+            variant="caption"
+            sx={{ fontFamily: monospaceFontFamily, color: 'primary.main', ml: 0.5, overflow: 'hidden', textOverflow: 'ellipsis' }}
+          >
+            pinned: {pinnedHost}
+          </Typography>
+        )}
+      </Box>
+      <Collapse in={expanded} unmountOnExit>
+        <Box sx={{ maxHeight: 140, overflowY: 'auto', pb: 0.5 }}>
+          {hosts.map(({ host, count }) => {
+            const active = host === pinnedHost;
+            return (
+              <Box
+                key={host}
+                component="button"
+                type="button"
+                aria-pressed={active}
+                aria-label={`Filter traffic by host ${host} (${count} request${count === 1 ? '' : 's'})`}
+                onClick={() => onPin(active ? null : host)}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                  width: '100%',
+                  px: 1,
+                  py: 0.25,
+                  border: 0,
+                  bgcolor: active ? 'action.selected' : 'transparent',
+                  color: 'inherit',
+                  font: 'inherit',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  '&:hover': { bgcolor: active ? 'action.selected' : 'action.hover' },
+                }}
+              >
+                <Typography
+                  variant="caption"
+                  noWrap
+                  sx={{
+                    fontFamily: monospaceFontFamily,
+                    fontWeight: active ? 600 : 400,
+                    flex: 1,
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {host}
+                </Typography>
+                <Chip
+                  label={count}
+                  size="small"
+                  variant="outlined"
+                  sx={{ height: 16, fontSize: '0.6rem', '& .MuiChip-label': { px: 0.5 } }}
+                />
+              </Box>
+            );
+          })}
+        </Box>
+      </Collapse>
+    </Box>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Messages panel: Anthropic
@@ -2098,6 +2310,16 @@ export default function TrafficInspector() {
     [summaries, trafficSearch],
   );
 
+  // Host facet. Derived from the UNFILTERED summaries so pinning a host does not
+  // collapse the facet to the single host just pinned (which would leave no way
+  // back to the others without hand-editing the search box).
+  const hosts = useMemo(() => hostCounts(summaries), [summaries]);
+  const pinnedHost = useMemo(() => pinnedHostOf(trafficSearch), [trafficSearch]);
+  const handlePinHost = useCallback(
+    (host: string | null) => setTrafficSearch(pinHostInSearch(trafficSearch, host)),
+    [trafficSearch, setTrafficSearch],
+  );
+
   // Select by stable item key, not array position: the store fully replaces the traffic lists
   // on every WebSocket refresh and `filtered` is re-derived on each search keystroke, so a
   // positional index would point at a different (or missing) request after any update.
@@ -2432,6 +2654,11 @@ export default function TrafficInspector() {
             </span>
           </Tooltip>
         </Box>
+        {/* Only worth the vertical space once the traffic actually spans more
+            than one upstream — see HostTree's docstring. */}
+        {hosts.length > 1 && (
+          <HostTree hosts={hosts} pinnedHost={pinnedHost} onPin={handlePinHost} />
+        )}
         <Box sx={{ flex: 1, overflowY: 'auto', bgcolor: 'background.default' }}>
           {filtered.length === 0 ? (
             allRequests.length === 0 ? (
@@ -2474,6 +2701,9 @@ export default function TrafficInspector() {
                 key={item.key}
                 itemKey={item.key}
                 summary={summary}
+                // Memoised on the request reference, so this is a stable prop
+                // and the row stays skippable by React.memo.
+                graphql={graphqlOperationOf(item.value)}
                 index={filtered.length - index}
                 selected={
                   compareMode
@@ -2737,221 +2967,3 @@ export default function TrafficInspector() {
     </Box>
   );
 }
-import Collapse from '@mui/material/Collapse';
-import DnsIcon from '@mui/icons-material/Dns';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import ChevronRightIcon from '@mui/icons-material/ChevronRight';
-// ---------------------------------------------------------------------------
-// Host focus — group captured traffic by upstream host and pin one into the
-// search as a `host:` operator (Charles / Proxyman style noise control).
-//
-// The pin is expressed ENTIRELY as a `host:` token in the existing traffic
-// search term rather than as a separate piece of state: the search term is
-// already store-backed and persisted to localStorage (store/index.ts
-// `setTrafficSearch`), so a pinned host survives a view switch and a reload for
-// free, stays visible/editable in the search box, and composes with the other
-// operators instead of fighting them.
-// ---------------------------------------------------------------------------
-
-/** One distinct upstream host in the captured traffic, with its request count. */
-interface HostCount {
-  host: string;
-  count: number;
-}
-
-/**
- * Distinct hosts across the captured traffic, busiest first then alphabetical.
- *
- * Rows with no `Host` header are omitted — there is nothing to pin for them, and
- * a synthetic "(no host)" bucket would not be expressible as a `host:` operator.
- * Hosts are read from the already-computed row summary (`TrafficSummary.host`),
- * which reads the first `Host` header case-insensitively — the same value the
- * shared `host:` filter operator resolves — so a pinned host always selects
- * exactly the rows counted here.
- *
- * That invariant only holds for hosts the search DSL can round-trip, so values
- * outside the RFC 3986 host/port character set are omitted rather than offered
- * as a broken pin. A client may send anything in a `Host` header: a space would
- * tokenise into `host:foo` plus stray free text (selecting nothing, and
- * appending another stray token on every further click), and a `*` would pin
- * `host:*`, whose glob matches every row while the facet claims one.
- */
-const PINNABLE_HOST = /^[A-Za-z0-9._:[\]-]+$/;
-
-function hostCounts(rows: readonly { summary: TrafficSummary }[]): HostCount[] {
-  const counts = new Map<string, number>();
-  for (const { summary } of rows) {
-    if (!summary.host || !PINNABLE_HOST.test(summary.host)) continue;
-    counts.set(summary.host, (counts.get(summary.host) ?? 0) + 1);
-  }
-  return [...counts]
-    .map(([host, count]) => ({ host, count }))
-    .sort((a, b) => b.count - a.count || a.host.localeCompare(b.host));
-}
-
-/** The host currently pinned by a `host:` operator in a search term, or null. */
-function pinnedHostOf(term: string): string | null {
-  const op = parseSearchTerm(term).operators.find((o) => o.field === 'host');
-  return op && op.expr.length > 0 ? op.expr : null;
-}
-
-/**
- * Replace — or, with `host === null`, remove — the `host:` operator in a search
- * term, leaving every other token (free text and other operators) untouched, so
- * pinning a host narrows an existing search rather than replacing it.
- */
-function pinHostInSearch(term: string, host: string | null): string {
-  const tokens = term
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length > 0 && !/^host:/i.test(t));
-  if (host) tokens.push(`host:${host}`);
-  return tokens.join(' ');
-}
-
-// ---------------------------------------------------------------------------
-// Host tree — collapsible host facet docked at the top of the master list
-// ---------------------------------------------------------------------------
-
-interface HostTreeProps {
-  hosts: readonly HostCount[];
-  /** Host currently pinned into the search term, or null when none is. */
-  pinnedHost: string | null;
-  /** Pin a host (or unpin, with null). */
-  onPin: (host: string | null) => void;
-}
-
-/**
- * Collapsible host facet for the traffic list: every distinct upstream host with
- * its request count, clicking one pins `host:<value>` into the search (clicking
- * the pinned host again unpins it).
- *
- * VISIBILITY: the caller renders this ONLY when more than one distinct host
- * appears in the captured traffic. In mock-only mode every request targets the
- * same MockServer host, so a single-host facet would partition nothing while
- * permanently costing a strip of the (already narrow, resizable) master list —
- * it earns its space exactly when there is more than one thing to choose
- * between. It therefore appears by itself as soon as proxied traffic spans
- * several upstreams, and disappears again when it stops being useful.
- *
- * It is docked as a collapsible strip at the top of the master list rather than
- * as a side column because the master/detail split is already user-resized down
- * to ~260px; a second vertical column inside it would leave too little for the
- * rows themselves.
- */
-function HostTree({ hosts, pinnedHost, onPin }: HostTreeProps) {
-  const [expanded, setExpanded] = useState(true);
-
-  return (
-    <Box sx={{ borderBottom: 1, borderColor: 'divider', flexShrink: 0 }}>
-      <Box
-        component="button"
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        aria-label={expanded ? 'Collapse hosts' : 'Expand hosts'}
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 0.5,
-          width: '100%',
-          px: 1,
-          py: 0.25,
-          border: 0,
-          bgcolor: 'transparent',
-          color: 'inherit',
-          font: 'inherit',
-          textAlign: 'left',
-          cursor: 'pointer',
-          '&:hover': { bgcolor: 'action.hover' },
-        }}
-      >
-        {expanded
-          ? <ExpandMoreIcon sx={{ fontSize: '0.9rem' }} />
-          : <ChevronRightIcon sx={{ fontSize: '0.9rem' }} />}
-        <DnsIcon sx={{ fontSize: '0.85rem', color: 'text.secondary' }} />
-        <Typography variant="caption" sx={{ fontWeight: 600 }}>
-          Hosts ({hosts.length})
-        </Typography>
-        {pinnedHost && (
-          <Typography
-            component="span"
-            variant="caption"
-            sx={{ fontFamily: monospaceFontFamily, color: 'primary.main', ml: 0.5, overflow: 'hidden', textOverflow: 'ellipsis' }}
-          >
-            pinned: {pinnedHost}
-          </Typography>
-        )}
-      </Box>
-      <Collapse in={expanded} unmountOnExit>
-        <Box sx={{ maxHeight: 140, overflowY: 'auto', pb: 0.5 }}>
-          {hosts.map(({ host, count }) => {
-            const active = host === pinnedHost;
-            return (
-              <Box
-                key={host}
-                component="button"
-                type="button"
-                aria-pressed={active}
-                aria-label={`Filter traffic by host ${host} (${count} request${count === 1 ? '' : 's'})`}
-                onClick={() => onPin(active ? null : host)}
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 0.5,
-                  width: '100%',
-                  px: 1,
-                  py: 0.25,
-                  border: 0,
-                  bgcolor: active ? 'action.selected' : 'transparent',
-                  color: 'inherit',
-                  font: 'inherit',
-                  textAlign: 'left',
-                  cursor: 'pointer',
-                  '&:hover': { bgcolor: active ? 'action.selected' : 'action.hover' },
-                }}
-              >
-                <Typography
-                  variant="caption"
-                  noWrap
-                  sx={{
-                    fontFamily: monospaceFontFamily,
-                    fontWeight: active ? 600 : 400,
-                    flex: 1,
-                    minWidth: 0,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {host}
-                </Typography>
-                <Chip
-                  label={count}
-                  size="small"
-                  variant="outlined"
-                  sx={{ height: 16, fontSize: '0.6rem', '& .MuiChip-label': { px: 0.5 } }}
-                />
-              </Box>
-            );
-          })}
-        </Box>
-      </Collapse>
-    </Box>
-  );
-}
-
-  // Host facet. Derived from the UNFILTERED summaries so pinning a host does not
-  // collapse the facet to the single host just pinned (which would leave no way
-  // back to the others without hand-editing the search box).
-  const hosts = useMemo(() => hostCounts(summaries), [summaries]);
-  const pinnedHost = useMemo(() => pinnedHostOf(trafficSearch), [trafficSearch]);
-  const handlePinHost = useCallback(
-    (host: string | null) => setTrafficSearch(pinHostInSearch(trafficSearch, host)),
-    [trafficSearch, setTrafficSearch],
-  );
-
-        {/* Only worth the vertical space once the traffic actually spans more
-            than one upstream — see HostTree's docstring. */}
-        {hosts.length > 1 && (
-          <HostTree hosts={hosts} pinnedHost={pinnedHost} onPin={handlePinHost} />
-        )}

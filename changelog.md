@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The dashboard recognises GraphQL operations in captured traffic.** Every GraphQL request is a
+  `POST /graphql`, so the Traffic and Log views showed a wall of identical rows and the operation name
+  — the only thing distinguishing them — was buried in the body. Rows carrying a GraphQL request now
+  show the operation type and name as a chip, and the shared `operation:` search operator filters by
+  name (globs supported), so `operation:Get*` narrows to the queries you care about. The name is read
+  from the `operationName` member when present and otherwise parsed out of the query document itself,
+  which is where it usually lives. Detection is deliberately strict — an ordinary JSON body that
+  happens to carry a `query` key is not treated as GraphQL — and parsing is bounded and never throws,
+  so a large, binary or malformed body degrades to no chip rather than an error.
 - **The dashboard Traffic view can focus on a single upstream host.** In proxy mode a session can
   capture traffic from dozens of hosts. A collapsible host list at the top of the traffic list shows
   each distinct host with its request count, busiest first; clicking one pins `host:<value>` into the
