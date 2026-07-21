@@ -14,17 +14,20 @@
 # It now generates from the IN-REPO spec, so the input is versioned alongside the
 # code and reviewable in the same diff.
 #
-# IMPORTANT: the in-repo OpenAPI spec is currently INCOMPLETE relative to the
-# server's own authoritative expectation schema
-# (mockserver-core/.../model/schema/expectation.json). It does not yet declare
-# every expectation action the server accepts, so a straight regeneration TODAY
-# would DROP actions from mockServer.d.ts and break the type-level fidelity gate
-# in test/roundtrip_fidelity_types.ts (measured: 98 tsc errors).
+# STATUS: the in-repo OpenAPI spec is now COMPLETE relative to the server's own
+# authoritative expectation schema (mockserver-core/.../model/schema/expectation.json)
+# — it declares every expectation action the server accepts, so the completeness
+# guard below passes and regeneration no longer drops actions.
 #
-# The guard below therefore refuses to overwrite the committed file when the
-# regenerated output would lose actions. When the spec is completed, the guard
-# passes and this script becomes the normal way to refresh the types.
-# The same gap is pinned as a ratchet by test/no_proxy/generated_types_drift_test.js.
+# It is still NOT wired as an automatic refresh: swagger-typescript-api emits a
+# structurally different artefact from the hand-maintained mockServer.d.ts (more
+# lines, renamed members), so overwriting the committed file wholesale would break
+# the type-level fidelity gate in test/roundtrip_fidelity_types.ts. Run this script
+# only as an aid when hand-editing the types, and reconcile the output by hand.
+#
+# The guard below still refuses to overwrite the committed file if a future spec
+# change would lose actions. The same completeness property is gated from the test
+# side as a forward ratchet by test/no_proxy/generated_types_drift_test.js.
 
 set -euo pipefail
 

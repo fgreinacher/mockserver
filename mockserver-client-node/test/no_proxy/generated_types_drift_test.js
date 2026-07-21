@@ -9,11 +9,15 @@
  * So the file quietly stopped being generated and became hand-maintained, while the script
  * still claimed to produce it. Running it would have reverted the types to a 5.15 contract.
  *
- * The obvious gate — "regenerate and byte-diff against the committed file" — CANNOT be
- * turned on today, and the reason is the substantive finding here: the in-repo OpenAPI spec
- * is itself behind the server. Regenerating from it drops 7 expectation actions and breaks
- * the type-level fidelity gate in test/roundtrip_fidelity_types.ts with 98 tsc errors. The
- * hand-maintained d.ts is AHEAD of the spec, not behind it.
+ * The obvious gate — "regenerate and byte-diff against the committed file" — still CANNOT be
+ * turned on, though the reason has narrowed. The in-repo OpenAPI spec USED to be behind the
+ * server, dropping 7 expectation actions; that gap is now CLOSED — the spec declares every
+ * action the server accepts and scripts/build_server_typescript.sh's completeness guard passes.
+ * But swagger-typescript-api still regenerates a structurally different artefact (~1000 more
+ * lines, renamed members such as loadScenarioDelete2) from the hand-maintained d.ts, so a
+ * straight byte-diff would fail and adopting the generated output would break the type-level
+ * fidelity gate in test/roundtrip_fidelity_types.ts. The hand-maintained d.ts remains
+ * authoritative; the action-completeness assertion below is the gate that actually matters.
  *
  * So this file gates the property that actually matters, against the artefact that is
  * actually authoritative — the server's own expectation.json schema, the same source the
@@ -69,26 +73,23 @@ var DTS_KNOWN_EXTRA_KEYS = [];
 /*
  * The OpenAPI spec's KNOWN GAP against the server schema, pinned exactly.
  *
- * Every entry is an expectation action the SERVER accepts and the spec does not declare.
- * The consequence is concrete: mockServer.d.ts cannot be regenerated from the spec without
- * losing these, which is why scripts/build_server_typescript.sh refuses to overwrite.
+ * Each entry would be an expectation action the SERVER accepts and the spec does not declare.
+ * The gap is now CLOSED — the spec declares every action the server accepts (the 7 that were
+ * pinned here, binary/dns/grpcBidi/grpcStream/httpForwardValidate/httpForwardWithFallback/
+ * httpLlm, are all declared as of the control-plane spec reconciliation), so this list is empty.
  *
- * This list must only ever SHRINK. The assertion is an equality, not a subset check, so:
+ * It stays here, asserted for equality (not a subset), as a forward ratchet:
  *   - a new action added to the server but not the spec FAILS (the gap widened);
- *   - an action added to the spec FAILS until it is removed from this list (the ratchet
- *     advances deliberately, and cannot quietly stop ratcheting).
- * When it reaches [], the byte-diff regeneration gate becomes possible and this file should
- * be replaced by one.
+ *   - the list may only ever be [] or shrinking toward it, and must never regain an entry
+ *     except to record a genuine, reviewed, transitional server/spec gap.
+ *
+ * The comment above once said reaching [] would let this file be replaced by a
+ * regenerate-and-byte-diff gate. It cannot: swagger-typescript-api emits a structurally
+ * different artefact from the hand-maintained mockServer.d.ts (see the file header), so the
+ * action-completeness assertion in the 'mockServer.d.ts drift' suite is the real gate and this
+ * remains the spec-side forward ratchet.
  */
-var SPEC_KNOWN_MISSING_ACTIONS = [
-    'binaryResponse',
-    'dnsResponse',
-    'grpcBidiResponse',
-    'grpcStreamResponse',
-    'httpForwardValidateAction',
-    'httpForwardWithFallback',
-    'httpLlmResponse'
-].sort();
+var SPEC_KNOWN_MISSING_ACTIONS = [];
 
 /* Parse the member names out of `export type Expectation = { ... };` in the .d.ts. */
 function declaredExpectationKeys() {
@@ -179,8 +180,10 @@ describe('OpenAPI spec drift', function () {
             '  pinned:   ' + JSON.stringify(SPEC_KNOWN_MISSING_ACTIONS) + '\n' +
             '  actual:   ' + JSON.stringify(actuallyMissing) + '\n' +
             'If the gap GREW, an action was added to the server without being added to the ' +
-            'spec — add it to the spec rather than to this list. If the gap SHRANK, remove ' +
-            'the now-declared action from SPEC_KNOWN_MISSING_ACTIONS; when the list reaches ' +
-            '[] this file should be replaced by a regenerate-and-byte-diff gate.');
+            'spec — add it to the spec (both committed copies) rather than to this list. If ' +
+            'the gap SHRANK below the pinned set, remove the now-declared action from ' +
+            'SPEC_KNOWN_MISSING_ACTIONS. The pinned set is now [] and should stay that way; ' +
+            'it remains the spec-side forward ratchet (see the comment on ' +
+            'SPEC_KNOWN_MISSING_ACTIONS for why a regenerate-and-byte-diff gate is not viable).');
     });
 });
