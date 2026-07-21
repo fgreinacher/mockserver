@@ -220,6 +220,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   affected), and the count is mirrored to the `mock_server_evicted_log_entries` Prometheus counter when
   metrics are enabled. Previously eviction was completely silent — no counter, no log line, no metric.
   The count includes only true evictions: an explicit `reset()`/`clear()` resets it to zero.
+- **The cassette-registry control-plane endpoints now have end-to-end test coverage.** A new
+  over-the-wire integration test drives `GET`/`PUT`/`DELETE /mockserver/cassettes` against a running
+  server and pins the documented contract: `PUT` registers a cassette and returns `201` with the stored
+  entry, `GET` lists cassettes most-recently-used first (and re-registering an existing cassette moves it
+  to the front without duplicating it), `DELETE` (by query parameter or JSON body) removes a cassette so a
+  later `GET` no longer lists it, a server reset empties the registry, and — when control-plane
+  authentication is required — every verb is rejected with `401`. No production behaviour changed.
 
 ### Changed
 - **Chaos testing doc navigation refreshed for the multi-stage experiment features.** The "On this page"
