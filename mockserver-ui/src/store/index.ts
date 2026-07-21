@@ -26,6 +26,7 @@ export const ALL_VIEWS: readonly ViewMode[] = [
 
 const VIEW_STORAGE_KEY = 'mockserver-view';
 const SEARCH_STORAGE_KEY = 'mockserver-search';
+const WORKSPACES_STORAGE_KEY = 'mockserver-workspaces';
 
 /**
  * Coerce an arbitrary string into a valid ViewMode, applying legacy migrations.
@@ -116,6 +117,212 @@ function getInitialSearch(): PersistedSearch {
 /** Persist the current set of per-panel search/filter terms to localStorage. */
 function persistSearch(search: PersistedSearch): void {
   try { globalThis.localStorage?.setItem(SEARCH_STORAGE_KEY, JSON.stringify(search)); } catch { /* noop */ }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Workspaces
+ *
+ * A workspace is an independent investigation context: its own view and its own
+ * per-panel search terms. Multiple workspaces let one window hold two separate
+ * lines of enquiry without one clobbering the other's filters.
+ *
+ * DESIGN — "live state + snapshots", deliberately NOT a nested per-workspace
+ * store. The ACTIVE workspace's state remains the existing top-level store
+ * fields (`view`, `logSearch`, …) exactly as before, so every panel keeps its
+ * current selector and every existing setter (`setView`, `setLogSearch`, …) is
+ * untouched. `workspaces` holds a *snapshot* of each workspace; the snapshot for
+ * the active workspace is only refreshed when the active workspace changes
+ * (switch / add / close). This means:
+ *   - with a single workspace nothing ever reads or writes a snapshot, so the
+ *     behaviour is byte-for-byte what it was before workspaces existed;
+ *   - no consumer of the store changes, so a view switch cannot silently reset
+ *     filter state — `setView` still only writes `view`.
+ *
+ * PERSISTENCE — `mockserver-view` and `mockserver-search` continue to hold the
+ * ACTIVE workspace's state (unchanged keys, unchanged format), and the new
+ * `mockserver-workspaces` key holds the workspace list. On load the active
+ * workspace's snapshot is overwritten from those two legacy keys, so an existing
+ * user upgrading (who has no `mockserver-workspaces` entry at all) lands in a
+ * single workspace carrying exactly their previously-persisted view and searches.
+ *
+ * That last rule assumes a SINGLE WRITER per origin. Two dashboard browser tabs
+ * share one `localStorage`, so if tab B switches to workspace 2 and tab A (still
+ * on workspace 1) then edits a search, the legacy keys hold workspace 1's terms
+ * while the blob says workspace 2 is active, and on reload workspace 2's
+ * snapshot is overwritten with workspace 1's state. Multi-tab was already
+ * last-writer-wins for view and search before workspaces existed; what is new is
+ * that the loss now lands on a named workspace, so it reads as data loss rather
+ * than as a shared setting. The payload is a view name and five search strings,
+ * which is not worth a cross-tab coordination mechanism — but anything that
+ * makes a workspace hold more state should revisit this.
+ * ------------------------------------------------------------------------- */
+
+/** The slice of store state that belongs to one workspace rather than the app. */
+export interface WorkspaceState {
+  view: ViewMode;
+  logSearch: string;
+  expectationSearch: string;
+  receivedSearch: string;
+  proxiedSearch: string;
+  trafficSearch: string;
+}
+
+/** A named workspace: an id, a user-editable label, and its own state. */
+export interface Workspace extends WorkspaceState {
+  id: string;
+  name: string;
+}
+
+/**
+ * The view a newly-created workspace opens on. Deliberately NOT 'get-started':
+ * a user creating a second workspace is past onboarding, and the dashboard is
+ * the primary data view. (A genuine first visit still lands on Get Started —
+ * that is {@link getInitialView}, which is unchanged.)
+ */
+const NEW_WORKSPACE_VIEW: ViewMode = 'dashboard';
+
+/** Longest accepted workspace name — keeps one tab from monopolising the bar. */
+const MAX_WORKSPACE_NAME_LENGTH = 40;
+
+/** Extract the per-workspace slice from anything carrying those fields. */
+function workspaceStateOf(state: WorkspaceState): WorkspaceState {
+  return {
+    view: state.view,
+    logSearch: state.logSearch,
+    expectationSearch: state.expectationSearch,
+    receivedSearch: state.receivedSearch,
+    proxiedSearch: state.proxiedSearch,
+    trafficSearch: state.trafficSearch,
+  };
+}
+
+/** The five persisted search terms of a workspace, for {@link persistSearch}. */
+function searchOf(state: WorkspaceState): PersistedSearch {
+  return {
+    logSearch: state.logSearch,
+    expectationSearch: state.expectationSearch,
+    receivedSearch: state.receivedSearch,
+    proxiedSearch: state.proxiedSearch,
+    trafficSearch: state.trafficSearch,
+  };
+}
+
+/** Coerce an unknown value to a string, defaulting to empty. */
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * Monotonic counter behind {@link nextWorkspaceId}. Ids only need to be unique
+ * within one browser session's workspace list; collisions with rehydrated ids
+ * are resolved by the uniqueness loop below rather than by seeding the counter.
+ */
+let workspaceIdCounter = 0;
+
+function nextWorkspaceId(existing: readonly Workspace[]): string {
+  let id: string;
+  do {
+    workspaceIdCounter += 1;
+    id = `workspace-${workspaceIdCounter}`;
+  } while (existing.some((w) => w.id === id));
+  return id;
+}
+
+function nextWorkspaceName(existing: readonly Workspace[]): string {
+  const taken = new Set(existing.map((w) => w.name));
+  let n = existing.length + 1;
+  while (taken.has(`Workspace ${n}`)) n += 1;
+  return `Workspace ${n}`;
+}
+
+interface PersistedWorkspaces {
+  activeWorkspaceId: string;
+  workspaces: Workspace[];
+}
+
+/**
+ * Restore the workspace list. Every field is validated: an unknown/hand-edited
+ * view falls back to the new-workspace default rather than poisoning the store,
+ * non-string searches become empty, entries without a usable id are dropped, and
+ * duplicate ids are discarded. Any failure (absent key, malformed JSON, wrong
+ * shape) degrades to a single workspace carrying `live` — which is precisely the
+ * upgrade path for a user who has `mockserver-view`/`mockserver-search` but has
+ * never seen workspaces.
+ *
+ * The active workspace's snapshot is always replaced by `live`, because the two
+ * legacy keys — not the workspaces blob — are authoritative for whichever
+ * workspace was active when the page was last open.
+ */
+function getInitialWorkspaces(live: WorkspaceState): PersistedWorkspaces {
+  const fallback = (): PersistedWorkspaces => {
+    const only: Workspace = { id: 'workspace-1', name: 'Workspace 1', ...live };
+    return { activeWorkspaceId: only.id, workspaces: [only] };
+  };
+  let parsed: unknown;
+  try {
+    const raw = globalThis.localStorage?.getItem(WORKSPACES_STORAGE_KEY);
+    if (!raw) return fallback();
+    parsed = JSON.parse(raw);
+  } catch {
+    return fallback();
+  }
+  if (typeof parsed !== 'object' || parsed === null) return fallback();
+  const candidate = parsed as Partial<PersistedWorkspaces>;
+  if (!Array.isArray(candidate.workspaces)) return fallback();
+
+  const seen = new Set<string>();
+  const workspaces: Workspace[] = [];
+  for (const entry of candidate.workspaces) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const e = entry as Partial<Workspace>;
+    if (typeof e.id !== 'string' || e.id === '' || seen.has(e.id)) continue;
+    seen.add(e.id);
+    workspaces.push({
+      id: e.id,
+      name: typeof e.name === 'string' && e.name.trim() !== ''
+        ? e.name.trim().slice(0, MAX_WORKSPACE_NAME_LENGTH)
+        : `Workspace ${workspaces.length + 1}`,
+      view: coerceView(typeof e.view === 'string' ? e.view : null) ?? NEW_WORKSPACE_VIEW,
+      logSearch: asString(e.logSearch),
+      expectationSearch: asString(e.expectationSearch),
+      receivedSearch: asString(e.receivedSearch),
+      proxiedSearch: asString(e.proxiedSearch),
+      trafficSearch: asString(e.trafficSearch),
+    });
+  }
+  if (workspaces.length === 0) return fallback();
+
+  const activeWorkspaceId = typeof candidate.activeWorkspaceId === 'string'
+    && workspaces.some((w) => w.id === candidate.activeWorkspaceId)
+    ? candidate.activeWorkspaceId
+    : workspaces[0]!.id;
+
+  return {
+    activeWorkspaceId,
+    // The legacy keys win for the active workspace — see the doc comment above.
+    workspaces: workspaces.map((w) => (w.id === activeWorkspaceId ? { ...w, ...live } : w)),
+  };
+}
+
+/** Persist the workspace list. Never called during store init (read-only there). */
+function persistWorkspaces(workspaces: Workspace[], activeWorkspaceId: string): void {
+  try {
+    globalThis.localStorage?.setItem(
+      WORKSPACES_STORAGE_KEY,
+      JSON.stringify({ activeWorkspaceId, workspaces } satisfies PersistedWorkspaces),
+    );
+  } catch { /* noop */ }
+}
+
+/**
+ * Make `next` the live state: persist it through the SAME keys a manual
+ * navigation/search would use, so a reload restores the newly-activated
+ * workspace exactly as if the user had navigated there by hand.
+ */
+function activateWorkspace(next: Workspace): WorkspaceState {
+  persistView(next.view);
+  persistSearch(searchOf(next));
+  return workspaceStateOf(next);
 }
 
 /**
@@ -250,6 +457,16 @@ interface DashboardState {
   filterEnabled: boolean;
   filterExpanded: boolean;
 
+  /**
+   * Every workspace, in tab order. The entry whose id is
+   * {@link DashboardState.activeWorkspaceId} is the one currently live — its
+   * authoritative state is the top-level `view`/`*Search` fields above, and its
+   * snapshot here is only refreshed when the active workspace changes. Read this
+   * for the tab bar; read the top-level fields for everything else.
+   */
+  workspaces: Workspace[];
+  activeWorkspaceId: string;
+
   connectionStatus: ConnectionStatus;
   themeMode: ThemeMode;
   autoScroll: boolean;
@@ -345,6 +562,26 @@ interface DashboardState {
   /** Clear the pending chaos draft (called by the panel once consumed). */
   clearPendingChaosDraft: () => void;
 
+  /**
+   * Create a new workspace (default view, empty searches) and switch to it. The
+   * outgoing workspace's live state is snapshotted first so nothing is lost.
+   */
+  addWorkspace: () => void;
+  /**
+   * Switch to `id`. Snapshots the outgoing workspace's live view/searches, then
+   * makes the incoming workspace's snapshot live. A no-op for the already-active
+   * or an unknown id.
+   */
+  switchWorkspace: (id: string) => void;
+  /**
+   * Close `id`. Closing an inactive workspace leaves the live state untouched;
+   * closing the active one activates its left neighbour (or the right one when
+   * closing the first). Closing the last remaining workspace is a no-op.
+   */
+  closeWorkspace: (id: string) => void;
+  /** Rename `id`. Blank names are rejected; long names are truncated. */
+  renameWorkspace: (id: string, name: string) => void;
+
   applyMessage: (message: WebSocketMessage) => void;
   clearUI: () => void;
   setView: (view: ViewMode) => void;
@@ -388,6 +625,11 @@ function getInitialTheme(): ThemeMode {
 }
 
 const initialSearch = getInitialSearch();
+// Restore the last-used view (URL hash wins over localStorage); a genuine first
+// visit with nothing persisted falls back to 'get-started'. Hoisted out of the
+// initializer below so the seed workspace carries exactly the same values.
+const initialView = getInitialView();
+const initialWorkspaces = getInitialWorkspaces({ view: initialView, ...initialSearch });
 
 export const useDashboardStore = create<DashboardState>()((set) => ({
   logMessages: [],
@@ -395,12 +637,13 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
   recordedRequests: [],
   proxiedRequests: [],
 
-  // Restore the last-used view (URL hash wins over localStorage); a genuine
-  // first visit with nothing persisted falls back to 'get-started'.
-  view: getInitialView(),
+  view: initialView,
   requestFilter: {},
   filterEnabled: false,
   filterExpanded: false,
+
+  workspaces: initialWorkspaces.workspaces,
+  activeWorkspaceId: initialWorkspaces.activeWorkspaceId,
 
   connectionStatus: 'disconnected',
   themeMode: getInitialTheme(),
@@ -446,6 +689,81 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
   }),
   setLlmProviderFilter: (providers) => set({
     llmProviderFilter: providers.filter((p) => (LLM_PROVIDERS as readonly string[]).includes(p)),
+  }),
+
+  // --- workspaces -----------------------------------------------------------
+  // Each action snapshots the OUTGOING workspace's live state before changing
+  // which workspace is live, so a switch can never lose the view or the search
+  // terms the user had in the workspace they are leaving.
+
+  addWorkspace: () => set((s) => {
+    const snapshotted = s.workspaces.map((w) =>
+      (w.id === s.activeWorkspaceId ? { ...w, ...workspaceStateOf(s) } : w));
+    const created: Workspace = {
+      id: nextWorkspaceId(snapshotted),
+      name: nextWorkspaceName(snapshotted),
+      view: NEW_WORKSPACE_VIEW,
+      ...EMPTY_SEARCH,
+    };
+    const workspaces = [...snapshotted, created];
+    persistWorkspaces(workspaces, created.id);
+    return {
+      workspaces,
+      activeWorkspaceId: created.id,
+      ...activateWorkspace(created),
+      selectedTrafficKey: null,
+    };
+  }),
+
+  switchWorkspace: (id) => set((s) => {
+    if (id === s.activeWorkspaceId) return {};
+    const workspaces = s.workspaces.map((w) =>
+      (w.id === s.activeWorkspaceId ? { ...w, ...workspaceStateOf(s) } : w));
+    const target = workspaces.find((w) => w.id === id);
+    if (!target) return {};
+    persistWorkspaces(workspaces, target.id);
+    return {
+      workspaces,
+      activeWorkspaceId: target.id,
+      ...activateWorkspace(target),
+      selectedTrafficKey: null,
+    };
+  }),
+
+  closeWorkspace: (id) => set((s) => {
+    // The last workspace is never closable — there must always be one live.
+    if (s.workspaces.length <= 1) return {};
+    const index = s.workspaces.findIndex((w) => w.id === id);
+    if (index === -1) return {};
+    if (id !== s.activeWorkspaceId) {
+      // Closing a background workspace: the live state is not involved, so only
+      // the active workspace's (possibly stale) snapshot needs refreshing.
+      const workspaces = s.workspaces
+        .filter((w) => w.id !== id)
+        .map((w) => (w.id === s.activeWorkspaceId ? { ...w, ...workspaceStateOf(s) } : w));
+      persistWorkspaces(workspaces, s.activeWorkspaceId);
+      return { workspaces };
+    }
+    // Closing the active workspace: its state is being discarded, so there is
+    // nothing to snapshot. Activate the left neighbour, or the new first entry
+    // when the leftmost workspace was the one closed.
+    const workspaces = s.workspaces.filter((w) => w.id !== id);
+    const next = workspaces[Math.max(0, index - 1)]!;
+    persistWorkspaces(workspaces, next.id);
+    return {
+      workspaces,
+      activeWorkspaceId: next.id,
+      ...activateWorkspace(next),
+      selectedTrafficKey: null,
+    };
+  }),
+
+  renameWorkspace: (id, name) => set((s) => {
+    const trimmed = name.trim().slice(0, MAX_WORKSPACE_NAME_LENGTH);
+    if (trimmed === '' || !s.workspaces.some((w) => w.id === id)) return {};
+    const workspaces = s.workspaces.map((w) => (w.id === id ? { ...w, name: trimmed } : w));
+    persistWorkspaces(workspaces, s.activeWorkspaceId);
+    return { workspaces };
   }),
 
   applyMessage: (message) =>

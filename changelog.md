@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The dashboard supports multiple workspaces in one browser tab.** Investigating two things at once
+  meant losing your filters every time you switched between them, because the whole window shared one
+  view and one set of search terms. A workspace now bundles the current view and the five panel search
+  terms, so you can keep a filtered Traffic investigation in one and a Log Messages search in another
+  and switch between them without either losing state. Workspaces can be named, and are restored on
+  reload. The switcher row appears only once a second workspace exists, so a single-workspace user
+  sees no change beyond one new app-bar icon, and existing persisted view and search settings carry
+  over into the first workspace on upgrade. Captured data, the connection target, the request filter
+  and the theme stay shared — a workspace is a lens over one server's data, not a second connection,
+  and targeting a different MockServer instance per workspace is not yet supported.
 - **The dashboard recognises GraphQL operations in captured traffic.** Every GraphQL request is a
   `POST /graphql`, so the Traffic and Log views showed a wall of identical rows and the operation name
   — the only thing distinguishing them — was buried in the body. Rows carrying a GraphQL request now

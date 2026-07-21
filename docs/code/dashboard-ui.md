@@ -174,6 +174,18 @@ ViewMode = 'dashboard' | 'traffic' | 'sessions' | 'composer' | 'library'
 
 The active view and per-panel search terms persist across page reloads: the view is mirrored in the URL hash (`#/<view>`) and in `localStorage`, resolved at startup by `coerceView`/`persistView` in `store/index.ts`; per-panel search terms are stored under a separate `localStorage` key. Unknown or stale values are silently ignored and fall back to `'get-started'`.
 
+### Workspaces
+
+A **workspace** bundles a view and the five panel search terms, so one browser tab can hold several independent investigations. The captured data (log messages, expectations, received and proxied requests), the connection target, the WebSocket subscription filter and the theme are all **global** — a workspace is a lens over one server's data, not a second connection.
+
+The active workspace's state *is* the existing top-level store state (`view`, `logSearch`, …); `workspaces` holds a **snapshot** per workspace, refreshed only when the active workspace changes. Every panel keeps its existing selector and every setter is unchanged, which is what makes a view switch structurally unable to reset filter state. With a single workspace no snapshot is ever read or written, so the behaviour is exactly what it was before workspaces existed.
+
+Persistence keeps `mockserver-view` and `mockserver-search` as the **authoritative** record of the *active* workspace (unchanged keys and formats); the new `mockserver-workspaces` key holds the workspace list, and the active snapshot is overwritten from the two legacy keys on load. An upgrading user with no `mockserver-workspaces` entry therefore lands in a single workspace carrying exactly their previous view and searches, and nothing is written to the new key until they create a second workspace. Malformed blobs — bad JSON, wrong shape, duplicate or missing ids, unknown views, non-string searches — degrade field by field to safe defaults. This assumes a single writer per origin; see the design comment in `store/index.ts` for the two-browser-tab caveat.
+
+`WorkspaceTabBar.tsx` renders a switcher row below the app bar, and only once a second workspace exists — the app bar itself gains a single icon button. That placement is deliberate: an earlier tab bar of pinned/recent *views* was reverted in `d55d7077d` because labelled tabs in the flexible nav region stopped the bar fitting at typical widths.
+
+Per-workspace **connection params** are not yet implemented: `useConnectionParams` derives purely from the URL, and several components call it directly, so a partial override would route destructive control-plane calls (`deleteExpectation`, `clearLoggedRequest`, `replayRequests`, `setServerMode`) at the wrong instance.
+
 The Request Filter panel is shown on Dashboard, Traffic, and Trace views. It is hidden on all other views.
 
 | View | Nav label | Component | Description |

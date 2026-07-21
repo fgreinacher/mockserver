@@ -17,6 +17,7 @@ import { GenerateStubContext } from './hooks/GenerateStubContext';
 import { SetBreakpointContext } from './hooks/SetBreakpointContext';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import AppBar, { NAV_TAB_DESCRIPTIONS } from './components/AppBar';
+import WorkspaceTabBar from './components/WorkspaceTabBar';
 import FilterPanel from './components/FilterPanel';
 import DashboardGrid from './components/DashboardGrid';
 import DebugMismatchDialog from './components/DebugMismatchDialog';
@@ -251,6 +252,12 @@ export default function App() {
             onClearExpectations={handleClearExpectations}
             onShowShortcuts={() => setShortcutsOpen(true)}
           />
+          {/* Workspace switcher: its own row below the app bar so the tabs never
+              compete with the navigation for horizontal space. Renders nothing
+              until a second workspace exists. Kept OUTSIDE the ErrorBoundary
+              below, like the AppBar, so a crashing view can still be escaped by
+              switching workspace. */}
+          <WorkspaceTabBar />
           {NAV_TAB_DESCRIPTIONS[view] && (
             <Typography
               variant="body2"

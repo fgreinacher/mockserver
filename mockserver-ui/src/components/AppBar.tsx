@@ -53,6 +53,7 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
 import MenuIcon from '@mui/icons-material/Menu';
 import KeyboardIcon from '@mui/icons-material/Keyboard';
+import TabIcon from '@mui/icons-material/Tab';
 import type { ReactNode } from 'react';
 // Snackbar/Alert removed — mode errors now use the app-wide notification store
 import BuildIcon from '@mui/icons-material/Build';
@@ -306,6 +307,7 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
   const toggleAutoScroll = useDashboardStore((s) => s.toggleAutoScroll);
   const view = useDashboardStore((s) => s.view);
   const setView = useDashboardStore((s) => s.setView);
+  const addWorkspace = useDashboardStore((s) => s.addWorkspace);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const theme = useTheme();
   // Below this width the grouped group-button bar would crowd the toolbar, so
@@ -565,6 +567,22 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
           </Box>
         )}
         <Box sx={{ flex: compactNav ? 1 : '0 0 auto' }} />
+        {/* The ONLY workspace control in the app bar: a single icon in the fixed
+            utility cluster, deliberately not a labelled tab in the flexible nav
+            region (that is what crowded the bar in the reverted d536433f1). Every
+            other workspace affordance — switching, closing, renaming — lives in
+            the WorkspaceTabBar row below, which only appears once a second
+            workspace exists. */}
+        <Tooltip title="New workspace — an independent view and set of search filters">
+          <IconButton
+            size="small"
+            color="inherit"
+            onClick={addWorkspace}
+            aria-label="New workspace"
+          >
+            <TabIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
         <Tooltip title="Keyboard shortcuts">
           <IconButton size="small" color="inherit" onClick={onShowShortcuts} aria-label="Keyboard shortcuts">
             <KeyboardIcon fontSize="small" />
