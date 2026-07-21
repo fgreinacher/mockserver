@@ -62,6 +62,32 @@ describe('LogPanel', () => {
     expect(screen.getByText('No matching log messages')).toBeInTheDocument();
   });
 
+  it('explains an operator it cannot satisfy instead of silently showing nothing', async () => {
+    const user = userEvent.setup();
+    useDashboardStore.setState({
+      logMessages: [
+        { key: 'log1', value: { messageParts: [{ key: 'msg1', value: 'error occurred' }] } },
+      ],
+    });
+
+    render(<LogPanel />);
+    // Log rows have no request/response, so `status:` can never match. The panel
+    // must say so rather than leaving a bare "No matching log messages".
+    await user.type(screen.getByLabelText('Search'), 'status:>=400 error');
+
+    expect(screen.getByText(/No field operators are supported here/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Search')).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('does not advertise field operators it cannot satisfy', () => {
+    render(<LogPanel />);
+    const placeholder = screen.getByLabelText('Search').getAttribute('placeholder') ?? '';
+    expect(placeholder).toContain('/regex/');
+    for (const operator of ['status:', 'method:', 'path:', 'host:', 'operation:']) {
+      expect(placeholder).not.toContain(operator);
+    }
+  });
+
   it('hides forwarded request entries when "Show forwarded" is off', () => {
     useDashboardStore.setState({
       logShowForwarded: false,

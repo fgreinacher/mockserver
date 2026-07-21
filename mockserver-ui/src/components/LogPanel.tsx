@@ -8,6 +8,13 @@ import LogGroup from './LogGroup';
 import ProgressiveList from './ProgressiveList';
 import { useExpansion } from '../hooks/useExpansion';
 import { matchesLogSearch, isForwardedLogEntry } from '../lib/searchMatcher';
+import { LOG_FILTER_OPTIONS } from '../lib/filterDSL';
+
+// Log rows carry no httpRequest/httpResponse, so `matchesLogSearch` can satisfy
+// no field operator at all. Declaring that to the search box (rather than
+// leaving the full vocabulary advertised) is what turns a typed `status:>=400`
+// into a visible "not supported here" instead of a silent empty list.
+const LOG_SEARCH_FIELDS = LOG_FILTER_OPTIONS.fields ?? [];
 
 export default function LogPanel() {
   const logMessages = useDashboardStore((s) => s.logMessages);
@@ -33,6 +40,7 @@ export default function LogPanel() {
       searchValue={search}
       onSearchChange={setSearch}
       searchInputRef={searchRef}
+      searchFields={LOG_SEARCH_FIELDS}
       liveRegion
     >
       {filtered.length === 0 ? (

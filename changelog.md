@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The dashboard search operators are now a shared, extensible filter DSL, and a search box no longer
+  offers an operator it cannot honour.** The `status:`/`method:`/`path:` vocabulary was hard-coded into
+  the traffic/expectation/request search matcher; it is now a field registry (`lib/filterDSL.ts`) where
+  each field declares how to resolve its value and whether it supports numeric comparison or glob
+  matching. The three existing operators behave exactly as before. Two new fields ship with it —
+  `host:` (glob, from the request `Host` header, resolved identically to the Traffic view's own host
+  column) and `operation:` (glob, from a request body `operationName`). A call site can now declare
+  which subset of operators it supports: the Log Messages panel declares none, so its placeholder
+  advertises only `/regex/`, and typing `status:>=400 error` there marks the field invalid and explains
+  that no field operators apply, instead of silently returning an empty list.
 - **The declarative `rateLimit` expectation clause is now enforced on streaming response actions.**
   Previously the general-purpose `rateLimit` clause was applied only to buffered `RESPONSE`/`FORWARD`
   actions, so a matched `SSE_RESPONSE`, `GRPC_STREAM_RESPONSE` or `WEBSOCKET_RESPONSE` was never

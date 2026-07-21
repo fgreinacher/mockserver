@@ -16,6 +16,14 @@ interface PanelProps {
   onSearchChange: (value: string) => void;
   searchInputRef?: React.RefObject<HTMLInputElement | null>;
   /**
+   * Field operators this panel's rows can actually satisfy (`lib/filterDSL`
+   * field names). Omit to advertise the whole vocabulary; pass `[]` for a panel
+   * whose rows have no request/response to compare against (the Log panel). The
+   * search box then advertises only what it can answer and flags an operator it
+   * cannot, instead of silently returning an empty list.
+   */
+  searchFields?: readonly string[];
+  /**
    * Optional controls rendered in the panel header, between the count chip and
    * the search box (e.g. a sort toggle). Omitted by most panels.
    */
@@ -36,6 +44,7 @@ export default function Panel({
   searchValue,
   onSearchChange,
   searchInputRef,
+  searchFields,
   headerActions,
   liveRegion,
   children,
@@ -102,6 +111,7 @@ export default function Panel({
           value={searchValue}
           onChange={onSearchChange}
           inputRef={searchInputRef}
+          fields={searchFields}
         />
       </Box>
       <Box
