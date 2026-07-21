@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
@@ -56,6 +56,13 @@ import {
   type StreamFrameDecision,
 } from '../lib/breakpointCallbackClient';
 import { MultiValueField, SingleValueField } from './FilterPanel';
+import OperatorSearchField from './OperatorSearchField';
+import {
+  parseRequestScope,
+  isApplicableScope,
+  withHostHeaderRow,
+  REQUEST_SCOPE_FIELDS,
+} from '../lib/filterScope';
 import type { KeyToMultiValue, KeyToValue } from '../types';
 import ConfirmDialog from './ConfirmDialog';
 import TruncatedText from './TruncatedText';
@@ -114,6 +121,12 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
   const [formSkipCount, setFormSkipCount] = useState('');
   const [formBusy, setFormBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Filter-DSL "quick scope" shorthand for the intercept condition. It FILLS the
+  // fields below rather than replacing them: the form stays the single source of
+  // truth (and keeps the full-regex Path field, the headers/query/cookie matchers
+  // and the phase checkboxes, none of which the DSL can express).
+  const [scopeTerm, setScopeTerm] = useState('');
 
   // -- Callback WS state --
   const [wsState, setWsState] = useState<CallbackClientState>('disconnected');
@@ -242,6 +255,28 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
   // -------------------------------------------------------------------------
   // Matcher registration
   // -------------------------------------------------------------------------
+
+  // Quick scope: the filter-DSL shorthand, translated into the fields below.
+  const parsedScope = useMemo(() => parseRequestScope(scopeTerm), [scopeTerm]);
+  // The Method control is a fixed dropdown, so a method outside it could not be
+  // shown (MUI would render a blank Select). Say so rather than dropping it.
+  const scopeMethodUnknown =
+    parsedScope.scope.method != null &&
+    !(HTTP_METHODS as readonly string[]).includes(parsedScope.scope.method);
+  const scopeApplicable = isApplicableScope(parsedScope) && !scopeMethodUnknown;
+  // `unsupportedFields` is already explained in the input's own helper text, so
+  // only the other refusals get a message here — never two for one mistake.
+  const scopeMessage = scopeMethodUnknown
+    ? `method:${parsedScope.scope.method} is not one of ${HTTP_METHODS.filter(Boolean).join(', ')}.`
+    : parsedScope.error;
+
+  const applyScope = useCallback(() => {
+    const { method, path, host } = parsedScope.scope;
+    if (method) setFormMethod(method);
+    if (path) setFormPath(path);
+    if (host) setFormHeaders((prev) => withHostHeaderRow(prev, host));
+    setScopeTerm('');
+  }, [parsedScope]);
 
   const handleRegister = useCallback(async () => {
     if (!clientId) {
@@ -600,6 +635,34 @@ export default function BreakpointsPanel({ connectionParams }: BreakpointsPanelP
             <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
               Register a New Breakpoint Matcher
             </Typography>
+            {/* Quick scope — the same filter-DSL operator syntax as the Traffic and
+                dashboard search boxes, narrowed to the three operators a breakpoint
+                matcher can genuinely intercept on. Applying FILLS the fields below
+                (a glob becomes the equivalent regex) so what will be registered stays
+                visible and editable; the richer matchers keep their own controls. */}
+            <Box sx={{ display: 'flex', gap: 1, mb: 0.5, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+              <OperatorSearchField
+                id="breakpoint-scope"
+                value={scopeTerm}
+                onChange={setScopeTerm}
+                fields={REQUEST_SCOPE_FIELDS}
+                maxWidth={520}
+                sx={{ ml: 0, flex: 1, minWidth: 240 }}
+              />
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={!scopeApplicable || formBusy}
+                onClick={applyScope}
+              >
+                Apply scope
+              </Button>
+            </Box>
+            {scopeMessage && (
+              <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>
+                {scopeMessage}
+              </Typography>
+            )}
             <Box sx={{ display: 'flex', gap: 1, mb: 1, flexWrap: 'wrap' }}>
               <TextField
                 select

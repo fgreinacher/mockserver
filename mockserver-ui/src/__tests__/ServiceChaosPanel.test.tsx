@@ -1387,3 +1387,186 @@ describe('ServiceChaosPanel — launchpad chaos draft consumption', () => {
     expect(useDashboardStore.getState().pendingChaosDraft).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Exact-host targeting
+// ---------------------------------------------------------------------------
+//
+// Chaos is not a filter. The server keys ServiceChaosRegistry / TcpChaosRegistry by
+// host in a plain map and looks the request's Host header up by exact (lower-cased,
+// port-stripped) key — there is no pattern matching. A wildcard accepted here would
+// be stored as the literal key `*.example.com` and silently never fire, which is why
+// this panel deliberately does not use the shared filter-DSL search field (whose
+// `host:` operator is a glob advertised as `host:*.example.com`).
+
+describe('ServiceChaosPanel — exact-host targeting', () => {
+  it('refuses a wildcard host on the HTTP register form', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('No service-scoped chaos registered.')).toBeInTheDocument());
+
+    await expandHttp(user);
+    await user.type(screen.getByLabelText('Host'), '*.example.com');
+    await user.type(screen.getByLabelText('Error status'), '503');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+
+    expect(await screen.findByText(/wildcards such as \*\.example\.com are not supported/)).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('refuses a pasted host: search operator, pointing at the bare host', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('No service-scoped chaos registered.')).toBeInTheDocument());
+
+    await expandHttp(user);
+    await user.type(screen.getByLabelText('Host'), 'host:api.example.com');
+    await user.type(screen.getByLabelText('Error status'), '503');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+
+    expect(await screen.findByText(/the host: search operator is not used here/)).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('still registers an ordinary host unchanged', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('No service-scoped chaos registered.')).toBeInTheDocument());
+
+    await expandHttp(user);
+    await user.type(screen.getByLabelText('Host'), 'pay.svc:8080');
+    await user.type(screen.getByLabelText('Error status'), '503');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+
+    await waitFor(() => expect(puts.length).toBeGreaterThan(0));
+    expect(puts[0]?.body).toEqual({ host: 'pay.svc:8080', chaos: { errorStatus: 503 } });
+  });
+
+  it('refuses a wildcard host on the Quick Chaos strip, which uses the same registry', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await screen.findByText('Quick Chaos');
+
+    await user.type(screen.getByLabelText('Target Host'), '*.example.com');
+    await user.click(screen.getByRole('switch', { name: 'Enable Chaos' }));
+
+    expect(await screen.findByText(/wildcards such as \*\.example\.com are not supported/)).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('refuses a wildcard stage host in the experiment editor, blocking the run', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Experiments')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Expand experiments' }));
+    await waitFor(() => expect(screen.getByLabelText('Experiment name')).toBeInTheDocument());
+    await user.type(screen.getByLabelText('Experiment name'), 'wildcard-run');
+
+    const editor = screen.getByText('Define experiment').closest('.MuiPaper-root') as HTMLElement;
+    await user.type(within(editor).getAllByLabelText(/^Host$/)[0]!, '*.example.com');
+    await user.type(within(editor).getAllByLabelText('Error status')[0]!, '503');
+
+    await user.click(screen.getByRole('button', { name: /Start Experiment/ }));
+
+    // A stage host is applied verbatim as a registry key, so a wildcard would run an
+    // experiment that faults nothing while still reporting progress and a verdict.
+    expect(await screen.findByText(/Stage 1: Chaos targets one exact host/)).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('refuses a wildcard stage host on Save Profile too, not just Start', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Experiments')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Expand experiments' }));
+    await waitFor(() => expect(screen.getByLabelText('Experiment name')).toBeInTheDocument());
+    await user.type(screen.getByLabelText('Experiment name'), 'wildcard-profile');
+
+    const editor = screen.getByText('Define experiment').closest('.MuiPaper-root') as HTMLElement;
+    await user.type(within(editor).getAllByLabelText(/^Host$/)[0]!, '*.example.com');
+    await user.type(within(editor).getAllByLabelText('Error status')[0]!, '503');
+
+    await user.click(screen.getByRole('button', { name: /Save as Profile/ }));
+
+    expect(await screen.findByText(/Stage 1: Chaos targets one exact host/)).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('still starts an experiment whose stage hosts are ordinary', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('Experiments')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Expand experiments' }));
+    await waitFor(() => expect(screen.getByLabelText('Experiment name')).toBeInTheDocument());
+    await user.type(screen.getByLabelText('Experiment name'), 'ordinary-run');
+
+    const editor = screen.getByText('Define experiment').closest('.MuiPaper-root') as HTMLElement;
+    await user.type(within(editor).getAllByLabelText(/^Host$/)[0]!, 'api.svc');
+    await user.type(within(editor).getAllByLabelText('Error status')[0]!, '503');
+
+    await user.click(screen.getByRole('button', { name: /Start Experiment/ }));
+
+    await waitFor(() => expect(puts.length).toBeGreaterThan(0));
+    const body = puts[0]?.body as { stages: Array<{ profiles: Record<string, unknown> }> };
+    expect(body.stages[0]?.profiles['api.svc']).toEqual({ errorStatus: 503 });
+  });
+
+  it('refuses a scheme-prefixed host, which is also a dead registry key', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('No service-scoped chaos registered.')).toBeInTheDocument());
+
+    await expandHttp(user);
+    await user.type(screen.getByLabelText('Host'), 'https://api.example.com');
+    await user.type(screen.getByLabelText('Error status'), '503');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+
+    expect(await screen.findByText(/a URL scheme such as https:\/\/ is not part of the host key/)).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('refuses a path-suffixed host, which normalizeHost never produces', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByText('No service-scoped chaos registered.')).toBeInTheDocument());
+
+    await expandHttp(user);
+    // Copied out of a URL bar with the scheme already trimmed. normalizeHost
+    // splits host from port but never strips a path, so this key is unhittable.
+    await user.type(screen.getByLabelText('Host'), 'api.example.com/v1/orders');
+    await user.type(screen.getByLabelText('Error status'), '503');
+    await user.click(screen.getByRole('button', { name: 'Register' }));
+
+    expect(await screen.findByText(/a path is not part of the host key/)).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+  });
+
+  it('refuses a wildcard host on the TCP register form', async () => {
+    const user = userEvent.setup({ delay: null });
+    const { puts } = stubServiceChaos({ services: {} });
+    render(<ServiceChaosPanel connectionParams={params} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Expand TCP chaos' })).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Expand TCP chaos' }));
+    // The collapsed HTTP form keeps its own "Host" field mounted, so scope the
+    // lookup to the TCP register card.
+    const tcpForm = (await screen.findByText('Register TCP chaos for a host')).parentElement!;
+    await user.type(within(tcpForm).getByLabelText('Host'), '*.example.com');
+    await user.click(within(tcpForm).getByRole('button', { name: 'Register' }));
+
+    expect(await screen.findByText(/wildcards such as \*\.example\.com are not supported/)).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+  });
+});

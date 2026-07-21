@@ -1120,3 +1120,135 @@ describe('BreakpointsPanel — UTF-8-safe stream-frame editing (M5)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Quick scope (filter DSL -> intercept condition)
+// ---------------------------------------------------------------------------
+//
+// The scope box FILLS the registration form; it never replaces it. So these tests
+// assert two things: the translated matcher that actually reaches the server, and
+// that an operator a breakpoint matcher cannot honour is visibly refused rather
+// than silently doing nothing.
+
+describe('BreakpointsPanel — quick scope', () => {
+  /** Stub the matcher endpoints, capturing the registration PUT body. */
+  function stubRegister() {
+    const captured: { body: Record<string, unknown> | null } = { body: null };
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const urlStr = String(url);
+      if (urlStr.endsWith('/mockserver/breakpoint/matcher') && init?.method === 'PUT') {
+        captured.body = JSON.parse(init.body as string) as Record<string, unknown>;
+        return { ok: true, status: 200, json: async () => ({ id: 'new-1', phases: ['REQUEST'] }) };
+      }
+      return { ok: true, status: 200, json: async () => emptyMatchers };
+    }));
+    return captured;
+  }
+
+  async function renderConnected() {
+    renderPanel();
+    await waitFor(() => { expect(MockWebSocket.instances.length).toBeGreaterThan(0); });
+    connectCallbackWs('scope-client');
+  }
+
+  const scopeInput = () => screen.getByLabelText('Search');
+  const applyButton = () => screen.getByRole('button', { name: 'Apply scope' });
+
+  it('advertises only the operators a breakpoint matcher can intercept on', async () => {
+    stubRegister();
+    await renderConnected();
+
+    const placeholder = scopeInput().getAttribute('placeholder') ?? '';
+    expect(placeholder).toContain('method:POST');
+    expect(placeholder).toContain('path:/api/*');
+    expect(placeholder).toContain('host:*.example.com');
+    // A matcher has no response and no body matcher wired here.
+    expect(placeholder).not.toContain('status:');
+    expect(placeholder).not.toContain('operation:');
+  });
+
+  it('registers the matcher a method/path scope translates to', async () => {
+    const user = userEvent.setup();
+    const captured = stubRegister();
+    await renderConnected();
+
+    await user.type(scopeInput(), 'method:post path:/api/*');
+    await user.click(applyButton());
+
+    // The glob is compiled to the equivalent server-side regex, and shown in the
+    // Path field so what will be registered stays visible and editable.
+    expect(screen.getByLabelText(/Path/)).toHaveValue('/api/.*');
+    expect(scopeInput()).toHaveValue('');
+
+    await user.click(screen.getByRole('button', { name: /Register Matcher/ }));
+    await waitFor(() => { expect(captured.body).not.toBeNull(); });
+    expect(captured.body!.httpRequest).toEqual({ method: 'POST', path: '/api/.*' });
+  });
+
+  it('registers a host scope as a Host header matcher', async () => {
+    const user = userEvent.setup();
+    const captured = stubRegister();
+    await renderConnected();
+
+    await user.type(scopeInput(), 'host:*.example.com');
+    await user.click(applyButton());
+
+    expect(screen.getByDisplayValue('Host')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Register Matcher/ }));
+    await waitFor(() => { expect(captured.body).not.toBeNull(); });
+    expect(captured.body!.httpRequest).toEqual({
+      headers: [{ name: 'Host', values: ['.*\\.example\\.com'] }],
+    });
+  });
+
+  it('refuses an operator a matcher cannot honour, explaining what is supported', async () => {
+    const user = userEvent.setup();
+    stubRegister();
+    await renderConnected();
+
+    await user.type(scopeInput(), 'status:>=400');
+
+    const explanation = screen.getByText(/not supported here/i);
+    expect(explanation).toHaveTextContent('status:');
+    expect(explanation).toHaveTextContent('Supported here: method:, path:, host:');
+    expect(scopeInput()).toHaveAttribute('aria-invalid', 'true');
+    expect(applyButton()).toBeDisabled();
+    expect(screen.getByLabelText(/Path/)).toHaveValue('');
+  });
+
+  it('refuses free text and an unrepresentable method', async () => {
+    const user = userEvent.setup();
+    stubRegister();
+    await renderConnected();
+
+    await user.type(scopeInput(), 'method:GET orders');
+    expect(screen.getByText(/is not a scope operator/i)).toBeInTheDocument();
+    expect(applyButton()).toBeDisabled();
+    expect(screen.getByLabelText(/Path/)).toHaveValue('');
+
+    await user.clear(scopeInput());
+    await user.type(scopeInput(), 'method:TRACE');
+    expect(screen.getByText(/method:TRACE is not one of/)).toBeInTheDocument();
+    expect(applyButton()).toBeDisabled();
+  });
+
+  it('keeps the richer matcher controls the DSL cannot express', async () => {
+    const user = userEvent.setup();
+    const captured = stubRegister();
+    await renderConnected();
+
+    // The header / query-parameter / cookie matchers are still there.
+    expect(screen.getByText('Headers')).toBeInTheDocument();
+    expect(screen.getByText('Query parameters')).toBeInTheDocument();
+    expect(screen.getByText('Cookies')).toBeInTheDocument();
+
+    // And a raw regex path — which the glob DSL cannot express — still registers
+    // verbatim, untouched by the scope box.
+    await user.type(screen.getByLabelText(/Path/), '/api/(orders|carts)');
+    await user.click(screen.getByRole('button', { name: /Register Matcher/ }));
+
+    await waitFor(() => { expect(captured.body).not.toBeNull(); });
+    expect(captured.body!.httpRequest).toEqual({ path: '/api/(orders|carts)' });
+  });
+});

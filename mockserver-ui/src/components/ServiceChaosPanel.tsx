@@ -278,6 +278,45 @@ const EMPTY_FORM: FormState = {
   graphqlNullifyData: true,
 };
 
+/**
+ * Reject a chaos host target that cannot ever be matched, or null when it is usable.
+ *
+ * Chaos is *not* a filter: the server keys its registries by host in a plain map and
+ * looks the incoming request's Host header up by exact (lower-cased, port-stripped)
+ * key — see `ServiceChaosRegistry.get` / `normalizeHost`, and the identical shape in
+ * `TcpChaosRegistry`. There is no pattern matching at either level.
+ *
+ * That is why this panel deliberately does NOT use the shared filter-DSL search
+ * field: the DSL's `host:` operator is a glob whose own advertised example is
+ * `host:*.example.com`, and a wildcard registered here would be stored as the literal
+ * key `*.example.com` and silently never fire. Users fluent in the DSL from the
+ * Traffic search box will try exactly that, so the wildcard is caught here with the
+ * reason instead of being accepted into a dead registration.
+ *
+ * Applied to every surface that writes a host into one of those registries: the HTTP
+ * register form (`validateForm`), the Quick Chaos strip (`handleQuickToggle`), the TCP
+ * register form (`validateTcpForm`), and each stage of the chaos-experiment editor
+ * (`buildDefinitionFromEditor`, which feeds both Start Experiment and Save Profile).
+ */
+function hostTargetError(rawHost: string): string | null {
+  const host = rawHost.trim();
+  if (host.includes('*')) {
+    return 'Chaos targets one exact host (matched case-insensitively, port ignored) - wildcards such as *.example.com are not supported here.';
+  }
+  if (/^host:/i.test(host)) {
+    return 'Enter the host on its own - the host: search operator is not used here.';
+  }
+  if (host.includes('://')) {
+    return 'Enter the host on its own - a URL scheme such as https:// is not part of the host key.';
+  }
+  // normalizeHost splits host from port; it never strips a path, so a key
+  // carrying one can never be produced from a real Host header.
+  if (host.includes('/')) {
+    return 'Enter the host on its own - a path is not part of the host key.';
+  }
+  return null;
+}
+
 /** Parse a trimmed numeric field, or undefined when blank. NaN is treated as undefined. */
 function num(raw: string): number | undefined {
   const trimmed = raw.trim();
@@ -351,6 +390,8 @@ function buildChaosProfile(form: FormState): HttpChaosProfileDTO {
 /** Returns a validation message for the form, or null when it is valid to submit. */
 function validateForm(form: FormState): string | null {
   if (form.host.trim() === '') return 'Host is required';
+  const hostError = hostTargetError(form.host);
+  if (hostError) return hostError;
   const errorStatus = num(form.errorStatus);
   if (form.errorStatus.trim() !== '' && (errorStatus == null || !Number.isInteger(errorStatus) || errorStatus < 100 || errorStatus > 599)) {
     return 'Error status must be a whole number between 100 and 599';
@@ -500,6 +541,8 @@ function buildTcpChaosProfile(form: TcpFormState): TcpChaosProfileDTO {
 
 function validateTcpForm(form: TcpFormState): string | null {
   if (form.host.trim() === '') return 'Host is required';
+  const hostError = hostTargetError(form.host);
+  if (hostError) return hostError;
   const profile = buildTcpChaosProfile(form);
   if (summarizeTcpChaosProfile(profile).length === 0) {
     return 'Set at least one fault (latency, bandwidth, down, reset, etc.)';
@@ -1060,6 +1103,13 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
           setActionError({ message: 'Enter a target host to enable Quick Chaos' });
           return;
         }
+        // Quick Chaos registers straight into the same host-keyed registry, so it
+        // needs the same exact-host guard as the full form (which goes via validateForm).
+        const hostError = hostTargetError(host);
+        if (hostError) {
+          setActionError({ message: hostError });
+          return;
+        }
         if (quickModes.length === 0) {
           setActionError({ message: 'Select at least one fault mode' });
           return;
@@ -1388,6 +1438,17 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
       }
       if (!s.host.trim()) {
         setActionError({ message: `Stage ${i + 1}: host is required` });
+        return null;
+      }
+      // A stage host becomes a registry key verbatim (ChaosExperimentOrchestrator
+      // applies each stage via ServiceChaosRegistry.put), so it needs the same
+      // exact-host guard as the register forms. An unmatched key here is worse than
+      // a dead registration: the experiment still reports running/completed and the
+      // auto-halt monitor still sees chaos registered, so the user reads an
+      // affirmative resilience verdict from a run that faulted nothing.
+      const stageHostError = hostTargetError(s.host);
+      if (stageHostError) {
+        setActionError({ message: `Stage ${i + 1}: ${stageHostError}` });
         return null;
       }
       const profile: HttpChaosProfileDTO = {};

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The breakpoint and verification forms accept the same search syntax as the Traffic view.** A quick
+  scope box on both forms takes `method:`, `path:` and `host:` terms and fills the matcher fields from
+  them, so the operator vocabulary learned in the Traffic search works when writing a breakpoint
+  condition or a verification. It only ever fills the form — every existing field, including full
+  regex paths and the header, query-parameter and cookie matchers, still works exactly as before, and
+  a term using an operator the form cannot express (such as `status:`) applies nothing rather than
+  half of itself. Path globs are translated to the regex form MockServer matches paths with, so
+  `path:/api/*` selects the same requests in the form as it does in the search box.
+- **Chaos host targeting now rejects targets that could never fire.** MockServer matches a chaos host
+  exactly (case-insensitively, ignoring the port), so a wildcard, a pasted `host:` search operator, a
+  URL scheme or a path silently produced a registration that appeared active and never faulted a
+  request. All four places a chaos host can be entered — the HTTP and TCP register forms, the Quick
+  Chaos strip and each stage of a chaos experiment — now refuse those with an explanation. The
+  experiment case mattered most: a dead wildcard there produced a completed experiment reporting a
+  clean resilience verdict having injected no faults at all.
 - **The dashboard supports multiple workspaces in one browser tab.** Investigating two things at once
   meant losing your filters every time you switched between them, because the whole window shared one
   view and one set of search terms. A workspace now bundles the current view and the five panel search

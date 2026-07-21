@@ -26,6 +26,13 @@ import {
   type VerifyResult,
 } from '../lib/verification';
 import VerificationReview from './VerificationReview';
+import OperatorSearchField from './OperatorSearchField';
+import {
+  parseRequestScope,
+  isApplicableScope,
+  withHostHeaderLine,
+  REQUEST_SCOPE_FIELDS,
+} from '../lib/filterScope';
 import HumanErrorAlert from './HumanErrorAlert';
 import { useDashboardStore } from '../store';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
@@ -84,9 +91,63 @@ function buildHttpResponse(form: ResponseForm): Record<string, unknown> {
   return resp;
 }
 
-function RequestFields({ form, onChange }: { form: RequestForm; onChange: (f: RequestForm) => void }) {
+/**
+ * Filter-DSL "quick scope" for a request matcher. Uses the same operator syntax as
+ * the Traffic and dashboard search boxes, narrowed via `REQUEST_SCOPE_FIELDS` to the
+ * three operators a MockServer `httpRequest` matcher can genuinely honour — anything
+ * else (`status:`, `operation:`) is flagged in the input instead of silently doing
+ * nothing. Applying FILLS the fields below (a glob becomes the equivalent regex), so
+ * the form stays the single source of truth and every field remains editable.
+ */
+function ScopeField({ id, form, onChange, busy }: { id: string; form: RequestForm; onChange: (f: RequestForm) => void; busy?: boolean }) {
+  const [term, setTerm] = useState('');
+  const parsed = useMemo(() => parseRequestScope(term), [term]);
+  const methodUnknown = parsed.scope.method != null && !METHODS.includes(parsed.scope.method);
+  const applicable = isApplicableScope(parsed) && !methodUnknown;
+  // `unsupportedFields` already has its own helper text inside the input, so only
+  // the other refusals get a message here — never two messages for one mistake.
+  const message = methodUnknown
+    ? `method:${parsed.scope.method} is not one of ${METHODS.filter(Boolean).join(', ')}.`
+    : parsed.error;
+
+  const apply = () => {
+    const { scope } = parsed;
+    const next = { ...form };
+    if (scope.method) next.method = scope.method;
+    if (scope.path) next.path = scope.path;
+    if (scope.host) next.headers = withHostHeaderLine(next.headers, scope.host);
+    onChange(next);
+    setTerm('');
+  };
+
+  return (
+    <Box>
+      <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <OperatorSearchField
+          id={id}
+          value={term}
+          onChange={setTerm}
+          fields={REQUEST_SCOPE_FIELDS}
+          maxWidth={520}
+          sx={{ ml: 0, flex: 1, minWidth: 240 }}
+        />
+        <Button size="small" variant="outlined" disabled={!applicable || busy} onClick={apply}>
+          Apply scope
+        </Button>
+      </Box>
+      {message && (
+        <Typography variant="caption" color="error" sx={{ display: 'block', mt: 0.5 }}>
+          {message}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
+function RequestFields({ scopeId, form, onChange, busy }: { scopeId: string; form: RequestForm; onChange: (f: RequestForm) => void; busy?: boolean }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <ScopeField id={scopeId} form={form} onChange={onChange} busy={busy} />
       <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
         <Select
           size="small"
@@ -327,7 +388,7 @@ export default function VerificationView({ connectionParams }: { connectionParam
             expanded={singleRequestExpanded}
             onToggle={() => setSingleRequestExpanded(!singleRequestExpanded)}
           >
-            <RequestFields form={single} onChange={setSingle} />
+            <RequestFields scopeId="verify-scope-single" form={single} onChange={setSingle} busy={busy} />
           </MatcherSection>
           <MatcherSection
             title="Response matcher (optional)"
@@ -374,7 +435,7 @@ export default function VerificationView({ connectionParams }: { connectionParam
                   expanded={seqRequestExpanded[i] ?? true}
                   onToggle={() => setSeqRequestExpanded(seqRequestExpanded.map((v, j) => j === i ? !v : v))}
                 >
-                  <RequestFields form={row} onChange={(f) => setSequence(sequence.map((r, j) => j === i ? f : r))} />
+                  <RequestFields scopeId={`verify-scope-step-${i}`} form={row} onChange={(f) => setSequence(sequence.map((r, j) => j === i ? f : r))} busy={busy} />
                 </MatcherSection>
                 <MatcherSection
                   title="Response matcher (optional)"
