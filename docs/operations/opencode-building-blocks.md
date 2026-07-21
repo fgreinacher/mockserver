@@ -15,10 +15,10 @@ This guide is generic — applicable to any project using opencode. It uses the 
 | 1 | [Config](#1-config-opencodejsonc) | `opencode.jsonc` | Models, permissions, agent definitions, session behaviour |
 | 2 | [Global instructions](#2-global-instructions-agentsmd) | `AGENTS.md` | Project context loaded into every session |
 | 3 | [Agents](#3-agents) | `.opencode/agents/*.md` | Identity, model, tool permissions — the security boundary |
-| 4 | [Rules](#4-rules) | `.opencode/rules/*.md` | Always-on mandatory constraints |
+| 4 | [Rules](#4-rules) | `.opencode/rules/*.md` | Mandatory constraints, loaded on reference |
 | 5 | [Skills](#5-skills) | `.opencode/skills/*/SKILL.md` | On-demand workflows and reference knowledge |
 | 6 | [Commands](#6-commands) | `.opencode/commands/*.md` | Framework-level routing to agents |
-| 7 | [Plugins](#7-plugins) | `.opencode/plugins/*.ts` | Session lifecycle hooks |
+| 7 | [Plugins](#7-plugins) | `.opencode/plugins/*.ts` | Session lifecycle and tool-execution hooks |
 | 8 | [Tools](#8-tools) | `opencode.jsonc` (agent `tools` map) | What an agent can physically do |
 | 9 | [References](#9-references) | `.opencode/reference/*` or inline in skills | Static domain knowledge |
 
@@ -38,7 +38,7 @@ flowchart TD
     end
 
     subgraph Knowledge["Knowledge Layer"]
-        RULES["Rules\n(always loaded)"]
+        RULES["Rules\n(loaded on reference)"]
         SKILLS["Skills\n(loaded on demand)"]
         AGENTSMD["AGENTS.md\n(always loaded)"]
     end
@@ -69,14 +69,14 @@ This is the prescriptive heart of the document. When you have a piece of configu
 
 ```mermaid
 flowchart TD
-    START([New content to add]) --> Q1{Always needed\nin every session?}
+    START([New content to add]) --> Q1{A standing constraint\nacross agents?}
 
     Q1 -->|Yes| Q2{What kind?}
     Q2 -->|"Constraint / guardrail"| RULE[Rule]
     Q2 -->|"Project context / onboarding"| AGENTSMD[AGENTS.md]
     Q2 -->|"Agent identity / persona"| AGENT_PROMPT[Agent prompt]
 
-    Q1 -->|No| Q3{Too large for\nalways-on context?}
+    Q1 -->|No| Q3{Too large to\ncarry inline?}
     Q3 -->|"No — fits in < 50 lines"| AGENT_PROMPT
     Q3 -->|Yes| Q4{What kind?}
     Q4 -->|"Multi-step procedure"| SKILL_WF["Skill (workflow)"]
@@ -88,7 +88,7 @@ flowchart TD
     START --> Q6{Needs specific model\nor tool restrictions?}
     Q6 -->|Yes| AGENT_DEF["Agent definition\n(opencode.jsonc)"]
 
-    START --> Q7{Runs at session\nstart/end/idle?}
+    START --> Q7{Runs at session start/end/idle,\nor must gate every tool call?}
     Q7 -->|Yes| PLUGIN[Plugin]
 
     style RULE fill:#fef8ec,stroke:#f5a623
@@ -106,9 +106,9 @@ flowchart TD
 | "I want to..." | Use a... | Because... |
 |-----------------|----------|------------|
 | Restrict an AI persona to read-only | Agent | Tool permissions are agent-level only |
-| Run a 15-step investigation procedure | Skill (workflow) | Too large for always-on context, loaded on demand |
+| Run a multi-phase investigation procedure | Skill (workflow) | Too large to carry inline, loaded on demand |
 | Teach the agent how to use a browser tool | Skill (reference) | Domain knowledge, reusable across agents |
-| Define review lenses for adversarial review | Rule or skill (reference) | If always loaded → rule. If only loaded for reviews → skill |
+| Define review lenses for adversarial review | Rule or skill (reference) | If a standing constraint → rule. If only needed for reviews → skill |
 | Ensure no one force-pushes to main | Rule + config permission | Defence in depth: rule is soft (instruction), config is hard (framework block) |
 | Give users a `/investigate` shortcut | Command | Framework-level routing, bypasses LLM decision-making |
 | Check CI status when a session starts | Plugin | Session lifecycle hook, runs before user interaction |
@@ -294,21 +294,23 @@ Why this matters:
 
 Different tasks have different cognitive demands. Using a premium model for test execution wastes money; using a cheap model for security auditing misses vulnerabilities.
 
-| Tier | Model | Agents | Rationale |
-|------|-------|--------|-----------|
-| Premium | `opus-4.6` | implementer, simplifier | Highest quality for production code and complex refactoring |
-| Standard | `sonnet-4.6` | code-reviewer, security-auditor, docs-writer | Strong analysis at moderate cost |
-| Independent | `gpt-5.5` | review-final, debugger, pipeline-investigator | Different provider avoids "same model reviewing its own output" |
-| Budget | `kimi-k2.6` | review-cheap | Non-authoritative intermediate review; cheap enough to iterate |
-| Fast | `haiku-4.5` | test-runner, council-seat | Rote operations — speed over depth |
+MockServer runs the same agent roster under two harnesses, each tiering to its own provider's models:
 
-The `review-final` agent deliberately uses a different provider (OpenAI) than the implementation agents (Anthropic). This ensures the final quality gate has genuinely independent reasoning.
+| Tier | opencode (`opencode.jsonc`) | Claude Code (`.claude/agents/*.md`) | Agents | Rationale |
+|------|------|------|--------|-----------|
+| Reasoning | `openai/gpt-5` | `claude-opus-4-8` | implementer, review-final, security-auditor, debugger, pipeline-investigator | Production code, binding verdicts, and open-ended investigation |
+| Standard | `openai/gpt-4o` | `claude-sonnet-4-6` | code-reviewer, review-cheap, simplifier, docs-writer, taskify-agent | Strong analysis at moderate cost |
+| Fast | `openai/gpt-4o-mini` | `claude-haiku-4-5-20251001` | test-runner, council-seat | Rote operations — speed over depth |
+
+The escalation `review-cheap` (gpt-4o / sonnet) → `review-final` (gpt-5 / opus) is a real capability gradient, so the binding gate is a stronger second brain rather than a same-model re-run. But note what the tiering does **not** buy you: within one harness `review-final` runs the *same* model as `implementer`, so its independence comes from a **fresh context and a distinct adversarial prompt**, not from model diversity. Genuine provider diversity appears only across harnesses — an opencode `review-final` (gpt-5) reviewing work an implementer produced under Claude Code, or the reverse. See `docs/operations/opencode-configuration.md` for the full per-agent model, `effort`, and `temperature` tables.
 
 ---
 
 ## 4. Rules
 
-Rules are mandatory constraints loaded into every session. They encode what experienced engineers know but an AI does not. Rules are the "never do this" and "always do this" layer.
+Rules are mandatory constraints. They encode what experienced engineers know but an AI does not — the "never do this" and "always do this" layer.
+
+Only `AGENTS.md` is loaded into every session (it is the sole entry in `instructions[]`). Every rule is **read on reference**: `AGENTS.md`, an agent, a command, a skill, or another rule points at it, and the agent reads it when it reaches that point. A rule nothing references is inert, so `scripts/validate_opencode_config.sh` fails CI on any unreachable rule. The constraint is still mandatory — it is the *reading* that is on demand, not the obligation.
 
 **What rules control:** Cross-cutting constraints that apply to all agents in all sessions.
 
@@ -318,7 +320,7 @@ Rules are mandatory constraints loaded into every session. They encode what expe
 
 | | Rule | Agent prompt |
 |--|------|-------------|
-| Loaded | Every session, every agent | Only when that specific agent runs |
+| Loaded | On reference, from any agent | Only when that specific agent runs |
 | Scope | Cross-cutting (applies everywhere) | Agent-specific (one persona) |
 | Content | Constraints and guardrails | Identity, behaviour, output format |
 | Example | "Never force-push without confirmation" | "You are a code reviewer. Report findings in this format..." |
@@ -327,7 +329,7 @@ Rules are mandatory constraints loaded into every session. They encode what expe
 
 | | Rule | Skill |
 |--|------|-------|
-| Loaded | Always | On demand |
+| Loaded | On reference from the rule graph | On demand, when invoked |
 | Size | Small (< 100 lines typically) | Can be large (100-300+ lines) |
 | Content | Constraints, policies, principles | Workflows, reference knowledge, tool guides |
 | Example | "Use `.tmp/` not `/tmp/`" | "How to investigate a pipeline failure (15 steps)" |
@@ -362,7 +364,7 @@ Skills are the **on-demand loading mechanism** for knowledge that is too large t
 
 **What skills control:** Domain-specific knowledge and procedures, loaded when a specific task is triggered.
 
-**What skills do NOT control:** Agent identity (use agent prompts), tool permissions (use agent config), routing (use commands), always-on constraints (use rules).
+**What skills do NOT control:** Agent identity (use agent prompts), tool permissions (use agent config), routing (use commands), cross-cutting constraints (use rules).
 
 ### Two Subtypes of Skills
 
@@ -547,10 +549,12 @@ Plugins are for **environment-level concerns** that shouldn't be in the AI's ins
 - Status checks on session start (CI status, infrastructure health)
 - Telemetry or logging
 - File cleanup or setup
+- Mechanical policy gates that must not depend on the AI choosing to comply (the operator halt kill-switch)
 
-MockServer uses two plugins:
+MockServer uses three plugins:
 - `buildkite-status.ts` — checks CI status on session start, shows a toast if builds are failing
 - `session-notification.ts` — sends macOS notifications when sessions complete or error
+- `operator-halt.ts` — gates `tool.execute.before`, denying `bash`/`write`/`edit`/`patch`/`task` while an operator halt is engaged (see `.opencode/rules/operator-halt.md`)
 
 ---
 
@@ -627,7 +631,7 @@ References can live in several places:
 | | Reference | Rule | Skill |
 |--|-----------|------|-------|
 | Purpose | Provide context | Enforce constraint | Provide workflow or instructions |
-| Loaded | On demand (agent reads when needed) | Always | On demand (via skill tool) |
+| Reaches context | Agent reads it when needed | Agent reads it when a referrer points at it (reachability CI-enforced) | Invoked through the `skill` tool (deniable per agent) |
 | Tone | Descriptive ("here's how X works") | Prescriptive ("you MUST do X") | Procedural ("step 1, step 2...") |
 | Example | Architecture doc, API spec | "Never force-push" | "How to investigate a pipeline failure" |
 
@@ -670,7 +674,7 @@ sequenceDiagram
     CMD->>FW: Route to pipeline-investigator agent
     FW->>A: Create subagent session
 
-    Note over A: Model: gpt-5.5
+    Note over A: Model: openai/gpt-5
     Note over A: Tools: read + bash + skill
     Note over A: No write, no edit
 
@@ -700,10 +704,10 @@ sequenceDiagram
 | Block | Role in This Trace |
 |-------|-------------------|
 | **Command** (`pipeline-investigation.md`) | Guaranteed routing to `pipeline-investigator` agent. Without this, the parent LLM would have to decide which agent to use. |
-| **Config** (`opencode.jsonc`) | Defined the agent's model (gpt-5.5) and tool permissions (no write/edit). Also blocked destructive bash commands globally. |
+| **Config** (`opencode.jsonc`) | Defined the agent's model (`openai/gpt-5` under opencode) and tool permissions (no write/edit). Also blocked destructive bash commands globally. |
 | **Agent prompt** (`pipeline-investigator.md`) | Defined the agent's identity, constraints, and output format. |
 | **Rules** (`git-safety.md`, `tmp-directory.md`, etc.) | Cross-cutting constraints: don't force-push, use `.tmp/` for scratch files. |
-| **Skill** (`pipeline-investigation/SKILL.md`) | The 10-step investigation workflow: what commands to run, what to look for, how to classify failures. |
+| **Skill** (`pipeline-investigation/SKILL.md`) | The investigation workflow: what commands to run, what to look for, how to classify failures. |
 | **Tools** | The agent used `bash` (to run `gh`, `bk`, `curl`) and `read` (to examine code). It could not use `write` or `edit`. |
 | **Plugin** (`session-notification.ts`) | Fired a macOS notification when the session went idle. |
 | **Reference** (`report-template.md`) | The parent agent used it to format the structured JSON into a readable report. |
@@ -718,14 +722,16 @@ Every constraint in the system is enforced at multiple layers. No single layer i
 |-------|-----------|----------|---------|
 | **Config permissions** | `permission.bash` deny-list in `opencode.jsonc` | Hard — framework blocks the command before the AI sees it | `"git push --force*": "deny"` |
 | **Agent tool restrictions** | `tools: { write: false }` in agent config | Hard — agent physically cannot call the tool | Code reviewer cannot write files |
-| **Rules** | `.opencode/rules/*.md` loaded as instructions | Soft — relies on LLM following instructions | "Run `git status` before any destructive command" |
+| **Rules** | `.opencode/rules/*.md`, read by the agent when a referrer points at them | Soft — relies on LLM following instructions | "Run `git status` before any destructive command" |
+| **Plugin gates** | `tool.execute.before` hook in `.opencode/plugins/*.ts` | Hard — the plugin denies the call before the tool runs | Operator halt kill-switch (`operator-halt.ts`) |
 | **Agent prompts** | Agent-specific constraints in prompt files | Soft — reinforces rules in the agent's persona | "You are a reviewer. Report findings. Do NOT fix code." |
 
-Why all four? Defence in depth:
+Why all five? Defence in depth:
 - The config blocks `git push --force` at the framework level (even if the AI tries).
 - The rule explains *why* force-push is dangerous and provides safer alternatives.
 - The agent prompt reinforces the constraint in the agent's identity.
 - The tool restriction ensures a read-only agent cannot accidentally cause harm through write operations.
+- The plugin gate stops work mechanically when an operator engages the halt, without depending on the AI choosing to comply.
 
 ---
 
@@ -740,8 +746,8 @@ Common mistakes when setting up an opencode configuration.
 | Skipping commands, relying on LLM routing | LLM picks the wrong agent in edge cases | Add commands for every common workflow |
 | Putting tool integration guides in agent prompts | Duplicated across agents, bloats every session | Make it a reference skill, loaded on demand |
 | One model for everything | Overspend on rote tasks, underspend on critical tasks | Tier models by cognitive demand |
-| Workflows in rules | Rules are always loaded; a 200-line workflow wastes context in sessions that don't need it | Move workflows to skills (loaded on demand) |
-| Reference knowledge in rules | Same problem — always loaded, rarely needed | Move to skills or the `docs/` directory |
+| Workflows in rules | A rule is read whole whenever it is referenced; a 200-line workflow wastes context in sessions that only need its one constraint | Move workflows to skills (invoked on demand) |
+| Reference knowledge in rules | Same problem — pulled in wholesale, rarely needed | Move to skills or the `docs/` directory |
 | Giant skill files (500+ lines) | Eats a large chunk of the agent's context window when loaded | Split into phases or separate skills |
 | Hard-coding infrastructure values in prompts | Values change; stale prompts cause wrong commands | Read from config files or Terraform state at runtime |
 
@@ -772,7 +778,7 @@ AGENTS.md (WHAT IS THIS PROJECT? — the onboarding doc)
 | Model selection | Agent (config) | No — only agents define which model runs |
 | Tool permissions | Agent (config) | No — only agent tool maps restrict capabilities |
 | Identity / persona | Agent (prompt) | No — skills and rules cannot define persona |
-| Always-on constraints | Rules | No — skills are on-demand, agent prompts are per-agent |
+| Cross-cutting constraints | Rules | No — skills are workflow-scoped, agent prompts are per-agent |
 | On-demand workflows | Skills (workflow) | Partially — could be a very long agent prompt, but wastes context |
 | On-demand knowledge | Skills (reference) | Partially — could be in AGENTS.md, but wastes context if rarely needed |
 | Lifecycle hooks | Plugins | No — no other block can run code at session start/end |
