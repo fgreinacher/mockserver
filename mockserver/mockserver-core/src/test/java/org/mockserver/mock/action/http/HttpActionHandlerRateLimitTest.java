@@ -240,6 +240,92 @@ public class HttpActionHandlerRateLimitTest {
         assertThat(second.getBodyAsString(), is("{\"error\":{\"type\":\"rate_limit_exceeded\",\"message\":\"request rate limit exceeded\"}}"));
     }
 
+    // --- streaming action paths (SSE / WebSocket / gRPC server-stream) ---
+    //
+    // These are dispatched with a null ChannelHandlerContext in this unit harness, so an
+    // ALLOWED request falls through to the deployment's WAR-501 branch (streaming needs a
+    // live Netty channel). The point under test is that an OVER-LIMIT request is throttled
+    // with the synthetic 429 BEFORE the stream path — without the wiring both requests would
+    // return 501 and the second would never be a 429.
+
+    @Test
+    public void sseStreamRequestIsRateLimited() {
+        HttpRequest request = request("sse_path");
+        HttpSseResponse sseResponse = HttpSseResponse.sseResponse();
+        RateLimit rl = rateLimit().withName("sse-acct").withLimit(1).withWindowMillis(60_000L);
+        Expectation expectation = new Expectation(request).thenRespondWithSse(sseResponse).withRateLimit(rl);
+
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        ArgumentCaptor<HttpResponse> captor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(mockResponseWriter, times(2)).writeResponse(eq(request), captor.capture(), eq(false));
+        // first request: allowed (WAR 501 in this harness, i.e. NOT a 429)
+        assertThat(captor.getAllValues().get(0).getStatusCode(), is(501));
+        // second request: over the rate limit -> 429
+        HttpResponse second = captor.getAllValues().get(1);
+        assertThat(second.getStatusCode(), is(429));
+        assertThat(second.getFirstHeader("X-RateLimit-Limit"), is("1"));
+        assertThat(second.getBodyAsString(), is("{\"error\":{\"type\":\"rate_limit_exceeded\",\"message\":\"request rate limit exceeded\"}}"));
+    }
+
+    @Test
+    public void webSocketStreamRequestIsRateLimited() {
+        HttpRequest request = request("ws_path");
+        HttpWebSocketResponse wsResponse = HttpWebSocketResponse.webSocketResponse();
+        RateLimit rl = rateLimit().withName("ws-acct").withLimit(1).withWindowMillis(60_000L);
+        Expectation expectation = new Expectation(request).thenRespondWithWebSocket(wsResponse).withRateLimit(rl);
+
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        ArgumentCaptor<HttpResponse> captor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(mockResponseWriter, times(2)).writeResponse(eq(request), captor.capture(), eq(false));
+        assertThat(captor.getAllValues().get(0).getStatusCode(), is(501));
+        HttpResponse wsSecond = captor.getAllValues().get(1);
+        assertThat(wsSecond.getStatusCode(), is(429));
+        assertThat(wsSecond.getFirstHeader("X-RateLimit-Limit"), is("1"));
+    }
+
+    @Test
+    public void grpcStreamRequestIsRateLimited() {
+        HttpRequest request = request("grpc_path");
+        GrpcStreamResponse grpcResponse = GrpcStreamResponse.grpcStreamResponse();
+        RateLimit rl = rateLimit().withName("grpc-acct").withLimit(1).withWindowMillis(60_000L);
+        Expectation expectation = new Expectation(request).thenRespondWithGrpcStream(grpcResponse).withRateLimit(rl);
+
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        ArgumentCaptor<HttpResponse> captor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(mockResponseWriter, times(2)).writeResponse(eq(request), captor.capture(), eq(false));
+        assertThat(captor.getAllValues().get(0).getStatusCode(), is(501));
+        HttpResponse grpcSecond = captor.getAllValues().get(1);
+        assertThat(grpcSecond.getStatusCode(), is(429));
+        assertThat(grpcSecond.getFirstHeader("X-RateLimit-Limit"), is("1"));
+    }
+
+    @Test
+    public void sseStreamWithinLimitIsNotThrottled() {
+        // a generous limit leaves the SSE path unthrottled: the allowed request is NOT a 429
+        HttpRequest request = request("sse_ok_path");
+        HttpSseResponse sseResponse = HttpSseResponse.sseResponse();
+        RateLimit rl = rateLimit().withName("sse-ok").withLimit(1000).withWindowMillis(60_000L);
+        Expectation expectation = new Expectation(request).thenRespondWithSse(sseResponse).withRateLimit(rl);
+
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        ArgumentCaptor<HttpResponse> captor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(mockResponseWriter).writeResponse(eq(request), captor.capture(), eq(false));
+        HttpResponse written = captor.getValue();
+        assertThat(written.getStatusCode(), is(501)); // WAR 501 (allowed), not a 429
+        assertThat(written.getFirstHeader("X-RateLimit-Limit").isEmpty(), is(true));
+    }
+
     @Test
     public void noRateLimitClausePassesThroughUnchanged() {
         // given - no rate limit

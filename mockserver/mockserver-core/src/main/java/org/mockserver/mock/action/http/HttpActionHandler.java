@@ -620,7 +620,12 @@ public class HttpActionHandler {
                     req -> getHttpForwardWithFallbackActionHandler().handle((HttpForwardWithFallback) action, req));
             }, expectationPostProcessor), synchronous, combineWithGlobalDelay(actionDelay));
             case SSE_RESPONSE -> {
-                if (ctx == null) {
+                // rate limit (declarative, protocol-agnostic): an over-limit request is throttled with
+                // the synthetic 429 instead of opening the stream. Records one acquire per matched request.
+                final HttpResponse sseRateLimited = rateLimitResponseOrNull(rateLimit, action.getExpectationId());
+                if (sseRateLimited != null) {
+                    writeResponseActionResponse(sseRateLimited, responseWriter, request, action, synchronous, null, expectationPostProcessor);
+                } else if (ctx == null) {
                     writeResponseActionResponse(
                         response().withStatusCode(501).withBody("SSE streaming is not supported in WAR deployments"),
                         responseWriter, request, action, synchronous, null, expectationPostProcessor
@@ -773,7 +778,12 @@ public class HttpActionHandler {
                 }
             }
             case WEBSOCKET_RESPONSE -> {
-                if (ctx == null) {
+                // rate limit: an over-limit request is throttled with the synthetic 429 instead of
+                // completing the WebSocket upgrade / emitting messages. Records one acquire per matched request.
+                final HttpResponse wsRateLimited = rateLimitResponseOrNull(rateLimit, action.getExpectationId());
+                if (wsRateLimited != null) {
+                    writeResponseActionResponse(wsRateLimited, responseWriter, request, action, synchronous, null, expectationPostProcessor);
+                } else if (ctx == null) {
                     writeResponseActionResponse(
                         response().withStatusCode(501).withBody("WebSocket mocking is not supported in WAR deployments"),
                         responseWriter, request, action, synchronous, null, expectationPostProcessor
@@ -812,7 +822,12 @@ public class HttpActionHandler {
                 }
             }
             case GRPC_STREAM_RESPONSE -> {
-                if (ctx == null && !(responseWriter instanceof GrpcStreamResponseWriter)) {
+                // rate limit: an over-limit request is throttled with the synthetic 429 instead of
+                // opening the gRPC server-stream. Records one acquire per matched request.
+                final HttpResponse grpcRateLimited = rateLimitResponseOrNull(rateLimit, action.getExpectationId());
+                if (grpcRateLimited != null) {
+                    writeResponseActionResponse(grpcRateLimited, responseWriter, request, action, synchronous, null, expectationPostProcessor);
+                } else if (ctx == null && !(responseWriter instanceof GrpcStreamResponseWriter)) {
                     writeResponseActionResponse(
                         response().withStatusCode(501).withBody("gRPC streaming is not supported in WAR deployments"),
                         responseWriter, request, action, synchronous, null, expectationPostProcessor

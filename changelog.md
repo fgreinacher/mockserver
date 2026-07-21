@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The declarative `rateLimit` expectation clause is now enforced on streaming response actions.**
+  Previously the general-purpose `rateLimit` clause was applied only to buffered `RESPONSE`/`FORWARD`
+  actions, so a matched `SSE_RESPONSE`, `GRPC_STREAM_RESPONSE` or `WEBSOCKET_RESPONSE` was never
+  throttled. The same `rateLimitResponseOrNull` check now runs once per matched request at the top of
+  each of those three stream cases, so an over-limit request receives the deterministic `429` (with
+  `Retry-After` and `X-RateLimit-*` headers) instead of opening the stream; within the limit the stream
+  proceeds unchanged. Reuses the existing `RateLimitRegistry` (no second implementation). The
+  `LLM_RESPONSE` action keeps its own token-based TPM/TPD limiter and is unaffected.
 - **The generic CRUD simulation GET-list endpoint now supports pagination, sorting and field filtering.**
   The list path accepts optional query parameters — `filterField`+`filterValue` (case-insensitive
   equality on a dot-separated attribute path), `sortBy`+`sortOrder` (`asc`/`desc`, missing values sort
