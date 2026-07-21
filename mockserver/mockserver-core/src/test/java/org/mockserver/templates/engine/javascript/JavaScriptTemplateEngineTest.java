@@ -809,6 +809,215 @@ public class JavaScriptTemplateEngineTest {
     }
 
     @Test
+    public void shouldAllowOnlyListedClassWhenJavaScriptAllowedClassesIsSet() {
+        // The allow-list (javascriptAllowedClasses) is the recommended, safe-by-construction restriction
+        // documented at JavaScriptTemplateEngine:79 as the real protection (a deny-list is bypassable via
+        // ProcessBuilder / Class.forName reach-through). This verifies that when an allow-list is set, ONLY
+        // listed classes resolve via host-class lookup and every other host class is refused at render time.
+        String originalJavaScriptAllowedClass = configuration.javascriptAllowedClasses();
+        String originalJavaScriptRestrictedClass = configuration.javascriptDisallowedClasses();
+        String originalJavaScriptRestrictedText = configuration.javascriptDisallowedText();
+
+        try {
+            // given only java.lang.Integer is permitted
+            graalJsAvailable();
+            configuration.javascriptAllowedClasses("java.lang.Integer");
+            configuration.javascriptDisallowedClasses(null);
+            configuration.javascriptDisallowedText(null);
+
+            // then the allowed class resolves and is invoked
+            HttpResponse allowedResponse = new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': java.lang.Integer.parseInt('418'), 'body': 'allowed' };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            );
+            assertThat(allowedResponse, is(response().withStatusCode(418).withBody("allowed")));
+
+            // then java.lang.Runtime is NOT on the allow-list, so it is refused (resolves to undefined; the
+            // dangerous getRuntime()/exec() never runs). Under a working allow-list this is "not a function";
+            // if host-class lookup were unrestricted the message would instead be "Cannot run program".
+            Exception runtimeException = assertThrows(RuntimeException.class, () -> new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': java.lang.Runtime.getRuntime().exec('does_not_exist.sh') };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            ));
+            assertThat(runtimeException.getMessage(), containsString("Runtime.getRuntime is not a function"));
+            assertThat(runtimeException.getMessage(), not(containsString("Cannot run program")));
+
+            // then java.lang.ProcessBuilder (the deny-list reach-through the warning calls out) is also refused
+            Exception processBuilderException = assertThrows(RuntimeException.class, () -> new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': new java.lang.ProcessBuilder('does_not_exist.sh').start().toString() };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            ));
+            assertThat(processBuilderException.getMessage(), containsString("Access to host class java.lang.ProcessBuilder is not allowed"));
+            assertThat(processBuilderException.getMessage(), not(containsString("Cannot run program")));
+
+            // then java.lang.Class (the Class.forName reach-through the warning calls out) is also refused
+            Exception classForNameException = assertThrows(RuntimeException.class, () -> new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': java.lang.Class.forName('java.lang.Runtime').getName() };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            ));
+            assertThat(classForNameException.getMessage(), containsString("Class.forName is not a function"));
+
+            // then the same denial holds for the explicit Java.type(...) host-class lookup form
+            Exception javaTypeException = assertThrows(RuntimeException.class, () -> new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': Java.type('java.lang.Runtime').getRuntime().exec('does_not_exist.sh') };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            ));
+            assertThat(javaTypeException.getMessage(), containsString("Access to host class java.lang.Runtime is not allowed or does not exist"));
+            assertThat(javaTypeException.getMessage(), not(containsString("Cannot run program")));
+
+        } finally {
+            configuration.javascriptAllowedClasses(originalJavaScriptAllowedClass);
+            configuration.javascriptDisallowedClasses(originalJavaScriptRestrictedClass);
+            configuration.javascriptDisallowedText(originalJavaScriptRestrictedText);
+        }
+    }
+
+    @Test
+    public void shouldPreferJavaScriptAllowedClassesOverDisallowedClassesWhenBothAreSet() {
+        // JavaScriptTemplateEngine:110-120 consults javascriptAllowedClasses first and returns its verdict
+        // immediately, so when both restrictions are set the deny-list is never reached. That precedence is
+        // advertised to users in jekyll-www.mock-server.com/mock_server/_includes/template_restriction_configuration.html
+        // and is what makes the allow-list a usable hardening step on an instance that already sets a deny-list.
+        String originalJavaScriptAllowedClass = configuration.javascriptAllowedClasses();
+        String originalJavaScriptRestrictedClass = configuration.javascriptDisallowedClasses();
+        String originalJavaScriptRestrictedText = configuration.javascriptDisallowedText();
+
+        try {
+            // given the same class is both allowed and denied
+            graalJsAvailable();
+            configuration.javascriptAllowedClasses("java.lang.Integer");
+            configuration.javascriptDisallowedClasses("java.lang.Integer");
+            configuration.javascriptDisallowedText(null);
+
+            // then the allow-list wins and the class still resolves
+            HttpResponse allowedResponse = new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': java.lang.Integer.parseInt('418'), 'body': 'allowed' };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            );
+            assertThat(allowedResponse, is(response().withStatusCode(418).withBody("allowed")));
+
+            // then the allow-list remains exclusive - a class on NEITHER list is still refused, which proves the
+            // deny-list was not the operative gate (were it, java.lang.ProcessBuilder would have resolved)
+            Exception processBuilderException = assertThrows(RuntimeException.class, () -> new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': new java.lang.ProcessBuilder('does_not_exist.sh').start().toString() };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            ));
+            assertThat(processBuilderException.getMessage(), containsString("Access to host class java.lang.ProcessBuilder is not allowed"));
+            assertThat(processBuilderException.getMessage(), not(containsString("Cannot run program")));
+
+        } finally {
+            configuration.javascriptAllowedClasses(originalJavaScriptAllowedClass);
+            configuration.javascriptDisallowedClasses(originalJavaScriptRestrictedClass);
+            configuration.javascriptDisallowedText(originalJavaScriptRestrictedText);
+        }
+    }
+
+    @Test
+    public void shouldAllowPackagePrefixWhenJavaScriptAllowedClassesEndsWithWildcardOrDot() {
+        // JavaScriptTemplateEngine:126-141 matches an entry ending in ".*" (or a bare trailing ".") as a
+        // package prefix rather than an exact class name. Both forms are documented for users, and a
+        // prefix bug in an ALLOW-list is over-permissive, so both are covered here.
+        String originalJavaScriptAllowedClass = configuration.javascriptAllowedClasses();
+        String originalJavaScriptRestrictedClass = configuration.javascriptDisallowedClasses();
+        String originalJavaScriptRestrictedText = configuration.javascriptDisallowedText();
+
+        try {
+            // given a "java.lang.*" package prefix
+            graalJsAvailable();
+            configuration.javascriptDisallowedClasses(null);
+            configuration.javascriptDisallowedText(null);
+            configuration.javascriptAllowedClasses("java.lang.*");
+
+            // then any class in the permitted package resolves, without being listed by name
+            HttpResponse wildcardResponse = new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': java.lang.Integer.parseInt('418'), 'body': 'allowed' };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            );
+            assertThat(wildcardResponse, is(response().withStatusCode(418).withBody("allowed")));
+
+            // then a class outside the permitted package is still refused
+            Exception wildcardRandomException = assertThrows(RuntimeException.class, () -> new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': Java.type('java.util.Random').toString() };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            ));
+            assertThat(wildcardRandomException.getMessage(), containsString("Access to host class java.util.Random is not allowed or does not exist"));
+
+            // given the bare trailing-dot form of the same prefix
+            configuration.javascriptAllowedClasses("java.lang.");
+
+            // then it behaves identically
+            HttpResponse trailingDotResponse = new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': java.lang.Integer.parseInt('418'), 'body': 'allowed' };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            );
+            assertThat(trailingDotResponse, is(response().withStatusCode(418).withBody("allowed")));
+
+            Exception trailingDotRandomException = assertThrows(RuntimeException.class, () -> new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': Java.type('java.util.Random').toString() };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            ));
+            assertThat(trailingDotRandomException.getMessage(), containsString("Access to host class java.util.Random is not allowed or does not exist"));
+
+        } finally {
+            configuration.javascriptAllowedClasses(originalJavaScriptAllowedClass);
+            configuration.javascriptDisallowedClasses(originalJavaScriptRestrictedClass);
+            configuration.javascriptDisallowedText(originalJavaScriptRestrictedText);
+        }
+    }
+
+    @Test
+    public void shouldNotMatchBeyondTrailingDotWhenJavaScriptAllowedClassesUsesPackagePrefix() {
+        // The prefix must stop at the trailing dot: "a.b.c.*" permits package a.b.c but NOT the sibling
+        // package a.b.c2 whose name merely starts with the same characters. Were the "*" and the "." both
+        // stripped, an allow-list would silently widen to every package sharing the prefix - an
+        // over-permissive failure, which is the only kind that matters for an allow-list. Netty's
+        // io.netty.handler.codec.http / io.netty.handler.codec.http2 pair gives a real classpath example.
+        String originalJavaScriptAllowedClass = configuration.javascriptAllowedClasses();
+        String originalJavaScriptRestrictedClass = configuration.javascriptDisallowedClasses();
+        String originalJavaScriptRestrictedText = configuration.javascriptDisallowedText();
+
+        try {
+            // given
+            graalJsAvailable();
+            configuration.javascriptAllowedClasses("io.netty.handler.codec.http.*");
+            configuration.javascriptDisallowedClasses(null);
+            configuration.javascriptDisallowedText(null);
+
+            // then a class in the permitted package resolves
+            HttpResponse allowedResponse = new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': Java.type('io.netty.handler.codec.http.HttpMethod').GET.name() };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            );
+            assertThat(allowedResponse, is(response().withStatusCode(200).withBody("GET")));
+
+            // then the sibling package sharing the leading characters is NOT covered by the prefix
+            Exception http2Exception = assertThrows(RuntimeException.class, () -> new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': Java.type('io.netty.handler.codec.http2.Http2Error').toString() };",
+                request().withPath("/somePath").withMethod("POST").withBody("some_body"),
+                HttpResponseDTO.class
+            ));
+            assertThat(http2Exception.getMessage(), containsString("Access to host class io.netty.handler.codec.http2.Http2Error is not allowed or does not exist"));
+
+        } finally {
+            configuration.javascriptAllowedClasses(originalJavaScriptAllowedClass);
+            configuration.javascriptDisallowedClasses(originalJavaScriptRestrictedClass);
+            configuration.javascriptDisallowedText(originalJavaScriptRestrictedText);
+        }
+    }
+
+    @Test
     public void shouldHandleHttpRequestsWithSlowJavaScriptTemplate() {
         // given
         graalJsAvailable();

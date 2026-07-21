@@ -187,7 +187,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `java.lang.ProcessBuilder` — and `Class.forName` reach-through — available. Both lists now also support
   package prefixes. The default is unchanged (no restrictions) so existing templates keep working; setting
   `javascriptAllowedClasses` is the recommended hardening step for any instance that renders templates from
-  a source you do not fully control.
+  a source you do not fully control. Behavioural tests cover all three semantics: only listed classes
+  resolve (`java.lang.Runtime`, `java.lang.ProcessBuilder`, `java.lang.Class.forName(...)` and the explicit
+  `Java.type('java.lang.Runtime')` form are all refused at render time), the allow-list wins when a class is
+  on both lists, and a `.*`/`.` package prefix matches the package it names without leaking into a sibling
+  package that merely shares its leading characters.
 - **New `wasmExecutionTimeoutMillis` (default 5000) — a wall-clock execution budget for WASM custom rules.**
   WASM modules ran with no fuel, timeout or interrupt, so a module containing an unbounded loop pinned the
   calling thread permanently; because WASM rules are evaluated during request matching this could wedge
