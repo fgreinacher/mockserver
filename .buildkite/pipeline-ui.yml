@@ -3,18 +3,36 @@ steps:
     command: ".buildkite/scripts/cache-restore.sh npm"
     timeout_in_minutes: 10
     soft_fail: true
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - wait
 
   - label: ":react: UI lint and typecheck"
     command: ".buildkite/scripts/steps/ui-lint.sh"
     timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":jest: UI tests"
     command: ".buildkite/scripts/steps/ui-test.sh"
     artifact_paths:
       - "mockserver-ui/test-reports/*.xml"
     timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - wait: ~
     continue_on_failure: true
@@ -30,8 +48,20 @@ steps:
   - label: ":package: UI build"
     command: ".buildkite/scripts/steps/ui-build.sh"
     timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":s3: save npm cache"
     command: ".buildkite/scripts/cache-save.sh npm"
     timeout_in_minutes: 10
     soft_fail: true
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2

@@ -2,6 +2,12 @@ steps:
   - label: ":bash: validate container integration test scripts"
     command: ".buildkite/scripts/steps/container-tests-validate.sh"
     timeout_in_minutes: 5
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":helm: Helm integration tests (k3d)"
     command: ".buildkite/scripts/steps/helm-integration-test.sh"
@@ -9,3 +15,9 @@ steps:
     depends_on: ~
     agents:
       queue: default
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2

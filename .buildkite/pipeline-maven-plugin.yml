@@ -3,17 +3,35 @@ steps:
     command: ".buildkite/scripts/cache-restore.sh maven"
     timeout_in_minutes: 10
     soft_fail: true
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - wait
 
   - label: ":docker: update docker image"
     command: "docker pull mockserver/mockserver:maven"
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":maven: maven-plugin build"
     command: ".buildkite/scripts/steps/maven-plugin-build.sh"
     artifact_paths:
       - "mockserver/mockserver-maven-plugin/**/TEST-*.xml"
     timeout_in_minutes: 45
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - wait: ~
     continue_on_failure: true
@@ -29,3 +47,9 @@ steps:
     command: ".buildkite/scripts/cache-save.sh maven"
     timeout_in_minutes: 15
     soft_fail: true
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2

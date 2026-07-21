@@ -2,6 +2,12 @@ steps:
   - label: ":dotnet: .NET client unit tests"
     command: ".buildkite/scripts/steps/dotnet-unit-test.sh"
     timeout_in_minutes: 15
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   # Runs the integration suite against a live MockServer built from HEAD.
   # Without this every [SkippableFact] skipped (MOCKSERVER_URL was never set)
@@ -9,8 +15,20 @@ steps:
   - label: ":dotnet: :docker: .NET client integration tests"
     command: ".buildkite/scripts/steps/dotnet-integration-test.sh"
     timeout_in_minutes: 20
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   # soft_fail removed: a failing testcontainers suite reported green.
   - label: ":dotnet: :docker: .NET testcontainers tests"
     command: ".buildkite/scripts/steps/dotnet-testcontainers-test.sh"
     timeout_in_minutes: 15
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2

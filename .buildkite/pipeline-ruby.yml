@@ -3,6 +3,12 @@ steps:
     command: ".buildkite/scripts/cache-restore.sh bundler"
     timeout_in_minutes: 10
     soft_fail: true
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - wait
 
@@ -11,12 +17,24 @@ steps:
     artifact_paths:
       - "mockserver-client-ruby/test-reports/*.xml"
     timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":ruby: Ruby client integration tests"
     command: ".buildkite/scripts/steps/ruby-integration-test.sh"
     artifact_paths:
       - "mockserver-client-ruby/test-reports/*.xml"
     timeout_in_minutes: 20
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - wait: ~
     continue_on_failure: true
@@ -31,3 +49,9 @@ steps:
     command: ".buildkite/scripts/cache-save.sh bundler"
     timeout_in_minutes: 10
     soft_fail: true
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2

@@ -2,6 +2,12 @@ steps:
   - label: ":docker: Build maven CI image"
     command: ".buildkite/scripts/steps/maven-image-build.sh"
     timeout_in_minutes: 30
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - wait
 
@@ -9,3 +15,9 @@ steps:
     if: "build.branch == 'master'"
     command: ".buildkite/scripts/steps/maven-image-push.sh"
     timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2

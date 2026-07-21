@@ -2,22 +2,52 @@ steps:
   - label: ":lint-roller: opencode config"
     command: ".buildkite/scripts/steps/infra-validate-config.sh"
     timeout_in_minutes: 5
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":bash: validate shell scripts"
     command: ".buildkite/scripts/steps/infra-validate-scripts.sh"
     timeout_in_minutes: 5
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":docker: validate Dockerfile sync"
     command: ".buildkite/scripts/steps/docker-validate-sync.sh"
     timeout_in_minutes: 5
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":helm: validate Helm charts"
     command: ".buildkite/scripts/steps/helm-validate.sh"
     timeout_in_minutes: 5
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":mailbox: validate API collections"
     command: ".buildkite/scripts/steps/collections-validate.sh"
     timeout_in_minutes: 5
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   # Complements the step above rather than duplicating it: that one proves the committed collections
   # match what the generator produces, this one proves the examples inside them are actually accepted
@@ -26,3 +56,9 @@ steps:
   - label: ":mailbox: validate API collection examples against a live server"
     command: ".buildkite/scripts/steps/collections-live-validate.sh"
     timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2

@@ -145,6 +145,12 @@ ALWAYS_STEPS='  - label: ":package: validate client version pins"
     timeout_in_minutes: 5
     agents:
       queue: trigger
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 '
 
 if [ -z "$STEPS" ]; then

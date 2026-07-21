@@ -3,33 +3,75 @@ steps:
     command: ".buildkite/scripts/cache-restore.sh npm"
     timeout_in_minutes: 10
     soft_fail: true
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - wait
 
   - label: ":node: client-node lint and typecheck"
     command: ".buildkite/scripts/steps/node-client-lint.sh"
     timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":node: :docker: client-node functional tests"
     command: ".buildkite/scripts/steps/node-client-test.sh"
     timeout_in_minutes: 15
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   # Browser integration tests via Playwright (headless Chromium). Hard gate.
   - label: ":node: :chrome: client-node browser tests"
     command: ".buildkite/scripts/steps/node-client-browser-test.sh"
     timeout_in_minutes: 15
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":node: node launcher lint"
     command: ".buildkite/scripts/steps/node-launcher-lint.sh"
     timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":node: :java: node launcher integration tests"
     command: ".buildkite/scripts/steps/node-launcher-test.sh"
     timeout_in_minutes: 15
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - label: ":node: testcontainers-node build + unit tests"
     command: ".buildkite/scripts/steps/node-testcontainers-test.sh"
     timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
 
   - wait: ~
     continue_on_failure: true
@@ -38,3 +80,9 @@ steps:
     command: ".buildkite/scripts/cache-save.sh npm"
     timeout_in_minutes: 10
     soft_fail: true
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2

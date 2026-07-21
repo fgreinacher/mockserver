@@ -2,3 +2,9 @@ steps:
   - label: ":white_check_mark: no project changes detected"
     command: "echo 'No project-specific files changed — skipping build'"
     timeout_in_minutes: 1
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
