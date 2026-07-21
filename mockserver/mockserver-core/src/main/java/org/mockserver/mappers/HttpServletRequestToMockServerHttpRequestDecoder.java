@@ -55,7 +55,35 @@ public class HttpServletRequestToMockServerHttpRequestDecoder {
     }
 
     private void setPath(HttpRequest httpRequest, HttpServletRequest httpServletRequest) {
-        httpRequest.withPath(httpServletRequest.getPathInfo() != null && httpServletRequest.getContextPath() != null ? httpServletRequest.getPathInfo() : httpServletRequest.getRequestURI());
+        if (httpServletRequest.getPathInfo() != null && httpServletRequest.getContextPath() != null) {
+            // getPathInfo() is already percent-decoded by the servlet container, so a request
+            // for /ab%40c.de is reported here as /ab@c.de and matches an expectation for /ab@c.de.
+            httpRequest.withPath(httpServletRequest.getPathInfo());
+        } else {
+            // getRequestURI() is the raw, still-percent-encoded request target. Some containers and
+            // servlet-mapping/normalisation edge cases (notably a ROOT context, where "/" is
+            // normalised to "") return a null pathInfo even for a "/*" mapping, in which case we
+            // fall back to getRequestURI(). Percent-decode it ourselves so a request for /ab%40c.de
+            // still matches an expectation for /ab@c.de, staying consistent with the decoded
+            // pathInfo branch above rather than leaving the "%40" undecoded (which 404s the match).
+            httpRequest.withPath(percentDecodePath(httpServletRequest.getRequestURI()));
+        }
+    }
+
+    /**
+     * Percent-decode a request path (e.g. {@code %40} to {@code @}) while preserving a literal
+     * {@code +}. Unlike query-string decoding, {@code +} in a path is a literal plus, not a space,
+     * so it must not be turned into a space. Malformed input is returned unchanged.
+     */
+    private static String percentDecodePath(String rawPath) {
+        if (rawPath == null || rawPath.indexOf('%') < 0) {
+            return rawPath;
+        }
+        try {
+            return java.net.URLDecoder.decode(rawPath.replace("+", "%2B"), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException malformedEncoding) {
+            return rawPath;
+        }
     }
 
     private void setQueryString(HttpRequest httpRequest, HttpServletRequest httpServletRequest) {

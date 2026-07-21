@@ -87,6 +87,40 @@ public class HttpServletRequestToMockServerHttpRequestDecoderTest {
         assertThat(httpRequest.getPath(), is(string("/pathInfo")));
     }
 
+    @Test
+    public void shouldPercentDecodePathWhenFallingBackToRequestURI() {
+        // given - a ROOT-context style request where the container reports a null pathInfo, so the
+        // decoder falls back to the raw, still-percent-encoded getRequestURI() (reproduces the WAR
+        // deployment 404 where /ab%40c.de failed to match an expectation for /ab@c.de)
+        MockHttpServletRequest httpServletRequest = new MockHttpServletRequest("GET", "/ab%40c.de");
+        httpServletRequest.setContextPath("");
+        httpServletRequest.setPathInfo(null);
+        httpServletRequest.setRequestURI("/ab%40c.de");
+        httpServletRequest.setContent("".getBytes(UTF_8));
+
+        // when
+        HttpRequest httpRequest = new HttpServletRequestToMockServerHttpRequestDecoder(configuration(), new MockServerLogger()).mapHttpServletRequestToMockServerRequest(httpServletRequest);
+
+        // then
+        assertThat(httpRequest.getPath(), is(string("/ab@c.de")));
+    }
+
+    @Test
+    public void shouldPreserveLiteralPlusWhenDecodingRequestURIPath() {
+        // given - a literal '+' in a path is not a space (unlike a query string), so it must survive
+        MockHttpServletRequest httpServletRequest = new MockHttpServletRequest("GET", "/a+b%40c");
+        httpServletRequest.setContextPath("");
+        httpServletRequest.setPathInfo(null);
+        httpServletRequest.setRequestURI("/a+b%40c");
+        httpServletRequest.setContent("".getBytes(UTF_8));
+
+        // when
+        HttpRequest httpRequest = new HttpServletRequestToMockServerHttpRequestDecoder(configuration(), new MockServerLogger()).mapHttpServletRequestToMockServerRequest(httpServletRequest);
+
+        // then
+        assertThat(httpRequest.getPath(), is(string("/a+b@c")));
+    }
+
     @Test(expected = RuntimeException.class)
     public void shouldHandleExceptionWhenReadingBody() throws IOException {
         // given

@@ -273,6 +273,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **Percent-encoded request paths are now matched under the WAR / servlet deployment.** When MockServer
+  runs as a WAR (e.g. in Tomcat), a request for a path such as `/ab%40c.de` was not decoded back to
+  `/ab@c.de` in one servlet-mapping case — a ROOT-context deployment where the container reports a `null`
+  path-info even for a `/*` mapping. The decoder then fell back to the still-percent-encoded raw request
+  URI, so the request failed to match an expectation registered for the decoded path and returned `404`
+  instead of the mocked response. The fallback now percent-decodes the raw request URI (preserving a
+  literal `+`, which in a path is not a space), so encoded paths match consistently regardless of servlet
+  container or context configuration.
 - **The Rust client can now match a header, query parameter, cookie or path parameter whose value starts
 - **The .NET client can now match a header, query parameter, cookie or path parameter whose value starts
   with `!` or `?`.** MockServer's plain-string matcher form encodes negation as a leading `!` and
