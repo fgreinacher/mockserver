@@ -55,8 +55,11 @@ describe('Composer body matcher JSON validation gate', () => {
     await user.click(await screen.findByRole('option', { name: 'JSON' }));
 
     // Scope to the request-body matcher editor (its aria-label tracks the body
-    // type) — the static response action also renders a Monaco editor.
-    const bodyEditor = within(screen.getByLabelText('JSON body matcher')).getByTestId('monaco-textarea');
+    // type) — the static response action also renders a Monaco editor. Queried
+    // with findBy: the editor is behind a lazy import, so how many ticks it
+    // takes to appear depends on the module graph, and a synchronous getBy here
+    // fails as soon as anything widens ComposerView's imports.
+    const bodyEditor = within(await screen.findByLabelText('JSON body matcher')).getByTestId('monaco-textarea');
     // Unclosed array — invalid JSON. `[[` escapes userEvent's `[` special key
     // so the literal text typed is `[1,2`.
     await user.type(bodyEditor, '[[1,2');
