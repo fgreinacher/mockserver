@@ -50,7 +50,6 @@ KNOWN_FAILING = {
     "/mockserver/loadScenario/generateFromOpenAPI": "example fetches a spec by URL; needs egress",
     "/mockserver/loadScenario/generateFromRecording": "requires recorded traffic that does not exist yet",
     "/mockserver/verifySLO": "requires sloTrackingEnabled, off by default",
-    "/mockserver/contractTest": "example fetches a spec by URL; needs egress",
 }
 
 
