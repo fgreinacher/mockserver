@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The dashboard TCP chaos form offers named network-condition presets.** Seven one-click presets —
+  dial-up, Slow/Fast 3G (throughput and latency variants), satellite and a fragmented link — fill the
+  TCP chaos latency, bandwidth or fragmentation field for the host being registered. Throughput and
+  latency figures are anchored to Chrome DevTools' throttling profiles and every preset shows its
+  concrete numbers in the picker, since names like "3G" carry era-dependent implicit values. Because
+  MockServer's TCP chaos engine applies only the highest-priority configured fault
+  (`down > reset_peer > limit_data > slicer > bandwidth > latency`) rather than composing them, each
+  preset sets exactly one fault, so the panel never advertises a number the engine would discard;
+  throughput presets also show the read size below which the bandwidth ceiling has no effect. The
+  panel notes that TCP faults shape inbound request bytes only, not the response, and that latency is
+  charged per read rather than per round trip.
 - **The dashboard search operators are now a shared, extensible filter DSL, and a search box no longer
   offers an operator it cannot honour.** The `status:`/`method:`/`path:` vocabulary was hard-coded into
   the traffic/expectation/request search matcher; it is now a field registry (`lib/filterDSL.ts`) where

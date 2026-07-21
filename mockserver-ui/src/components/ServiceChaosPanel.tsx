@@ -62,6 +62,14 @@ import {
   type TcpChaosResponse,
 } from '../lib/tcpChaos';
 import {
+  NETWORK_PRESETS,
+  emptyNetworkPresetFields,
+  findNetworkPreset,
+  matchNetworkPresetId,
+  networkPresetFields,
+  summarizeNetworkPreset,
+} from '../lib/networkPresets';
+import {
   fetchGrpcChaos,
   registerGrpcChaos,
   removeGrpcChaos,
@@ -1243,6 +1251,23 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
   const setTcpToggle = (field: keyof TcpFormState) => (_e: ChangeEvent<HTMLInputElement>, checked: boolean) =>
     setTcpForm((prev) => ({ ...prev, [field]: checked }));
 
+  // The network-condition preset selection is DERIVED from the form, not stored
+  // alongside it, so hand-editing latency/bandwidth/slicer after picking a preset
+  // drops the picker back to "Custom" rather than leaving a stale name claiming
+  // numbers the form no longer holds.
+  const tcpPresetId = matchNetworkPresetId(tcpForm);
+  const selectedTcpPreset = findNetworkPreset(tcpPresetId);
+
+  const applyNetworkPreset = (id: string) => {
+    const preset = findNetworkPreset(id);
+    // "Custom" clears the preset-controlled fields; every other field (host, TTL,
+    // the lifecycle toggles) is deliberately left alone. A preset populates exactly
+    // one of latency/bandwidth/slicer, because TcpChaosHandler applies only the
+    // highest-priority fault configured and discards the rest.
+    const fields = preset ? networkPresetFields(preset) : emptyNetworkPresetFields();
+    setTcpForm((prev) => ({ ...prev, ...fields }));
+  };
+
   const handleRegisterTcp = useCallback(() => {
     const validationError = validateTcpForm(tcpForm);
     if (validationError !== null) {
@@ -2198,6 +2223,42 @@ export default function ServiceChaosPanel({ connectionParams }: ServiceChaosPane
             {/* TCP Register form */}
             <Paper variant="outlined" sx={{ p: 1, mb: 1 }}>
               <Typography variant="caption" color="text.secondary">Register TCP chaos for a host</Typography>
+              {/* Network-condition presets. Each sets exactly ONE fault: TcpChaosHandler
+                  evaluates faults first-match-wins (down > reset_peer > limit_data >
+                  slicer > bandwidth > latency) and silently discards the rest, so a
+                  preset showing two numbers would advertise one the engine never applies.
+                  Names like "3G" mean different things in different eras, so every option
+                  carries its concrete value. */}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.75, flexWrap: 'wrap' }}>
+                <Select
+                  size="small"
+                  displayEmpty
+                  value={tcpPresetId}
+                  onChange={(e) => applyNetworkPreset(e.target.value)}
+                  inputProps={{ 'aria-label': 'Network condition preset' }}
+                  sx={{ minWidth: 300 }}
+                >
+                  <MenuItem value="">Custom (no preset)</MenuItem>
+                  {NETWORK_PRESETS.map((preset) => (
+                    <MenuItem key={preset.id} value={preset.id}>
+                      {`${preset.label} — ${summarizeNetworkPreset(preset)}`}
+                    </MenuItem>
+                  ))}
+                </Select>
+                {selectedTcpPreset && (
+                  <Typography variant="caption" color="text.secondary" sx={{ flex: 1, minWidth: 200 }}>
+                    {`${selectedTcpPreset.label}: ${summarizeNetworkPreset(selectedTcpPreset)} — ${selectedTcpPreset.description}`}
+                  </Typography>
+                )}
+              </Box>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                Each preset sets one fault: only the highest-priority fault configured is
+                applied (down &gt; reset peer &gt; limit &gt; slicer &gt; bandwidth &gt; latency)
+                and the rest are discarded. TCP faults shape inbound request bytes only — not
+                the response — and latency is charged per read, not per round trip. There is
+                no packet-loss or jitter fault; for loss use drop-connection probability in
+                HTTP Service Chaos.
+              </Typography>
               <Box sx={{ ...CHAOS_GRID, mt: 0.75 }}>
                 <TextField size="small" label="Host" placeholder="upstream.svc" value={tcpForm.host} onChange={setTcpField('host')} onKeyDown={(e) => { if (e.key === 'Enter') handleRegisterTcp(); }} fullWidth />
                 <TextField size="small" label="Latency ms" placeholder="200" value={tcpForm.latencyMs} onChange={setTcpField('latencyMs')} fullWidth />
