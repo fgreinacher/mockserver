@@ -14,6 +14,7 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
+import static org.hamcrest.Matchers.containsString;
 import static org.mockito.Mockito.*;
 import static org.mockito.MockitoAnnotations.openMocks;
 import static org.mockserver.model.HttpForwardValidateAction.forwardValidate;
@@ -87,6 +88,64 @@ public class HttpForwardValidateActionHandlerTest {
         // then - request is rejected with a bad gateway and never forwarded
         assertThat(response.getStatusCode(), is(502));
         verify(mockHttpClient, never()).sendRequest(any(HttpRequest.class), any());
+    }
+
+    @Test
+    public void shouldRejectNonConformantRequestWithoutForwardingInStrictMode() throws Exception {
+        // given - STRICT validation and a request whose body violates the Pet schema (id must be an
+        // integer, here it is a string). A valid POST body would pass, so the fixture genuinely
+        // violates the schema rather than matching a permissive default.
+        CompletableFuture<HttpResponse> upstreamFuture = new CompletableFuture<>();
+        upstreamFuture.complete(response().withStatusCode(200).withBody("forwarded"));
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), any())).thenReturn(upstreamFuture);
+
+        // when
+        HttpForwardActionResult result = handler.handle(
+            forwardValidate()
+                .withSpecUrlOrPayload("org/mockserver/openapi/openapi_petstore_example.json")
+                .withValidateRequest(true)
+                .withValidateResponse(false)
+                .withValidationMode(HttpForwardValidateAction.ValidationMode.STRICT),
+            request("/pets")
+                .withMethod("POST")
+                .withHeader("content-type", "application/json")
+                .withBody("{\"id\": \"not_a_number\", \"name\": \"Fido\"}")
+        );
+
+        // then - the request is rejected with a 400 and is never forwarded upstream
+        HttpResponse actualResponse = result.getHttpResponse().get();
+        assertThat(actualResponse.getStatusCode(), is(400));
+        assertThat(actualResponse.getBodyAsString(), containsString("OpenAPI request validation failed"));
+        verify(mockHttpClient, never()).sendRequest(any(HttpRequest.class), any());
+    }
+
+    @Test
+    public void shouldRejectNonConformantUpstreamResponseWithBadGatewayInStrictMode() throws Exception {
+        // given - STRICT validation, a valid request (so it is forwarded), and a stubbed upstream
+        // response that violates the listPets schema (an object where an array of Pet is required).
+        CompletableFuture<HttpResponse> upstreamFuture = new CompletableFuture<>();
+        upstreamFuture.complete(
+            response()
+                .withStatusCode(200)
+                .withHeader("content-type", "application/json")
+                .withBody("{\"not\": \"an array\"}")
+        );
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), any())).thenReturn(upstreamFuture);
+
+        // when
+        HttpForwardActionResult result = handler.handle(
+            forwardValidate()
+                .withSpecUrlOrPayload("org/mockserver/openapi/openapi_petstore_example.json")
+                .withValidateRequest(false)
+                .withValidateResponse(true)
+                .withValidationMode(HttpForwardValidateAction.ValidationMode.STRICT),
+            request("/pets").withMethod("GET")
+        );
+
+        // then - the non-conformant upstream response is rejected with a 502
+        HttpResponse actualResponse = result.getHttpResponse().get();
+        assertThat(actualResponse.getStatusCode(), is(502));
+        assertThat(actualResponse.getBodyAsString(), containsString("OpenAPI response validation failed"));
     }
 
     @Test

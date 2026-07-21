@@ -360,6 +360,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **The strict forward-validate reject paths are now covered by behavioural tests.** `forwardValidate`
+  in `STRICT` mode rejects a request that does not conform to its OpenAPI spec with a `400` (and never
+  forwards it upstream) and rejects a non-conformant upstream response with a `502`. Both reject
+  branches previously had no test; they are now pinned so a regression that silently forwarded an
+  invalid request, or accepted an invalid upstream response, is caught.
 - **Percent-encoded request paths are now matched under the WAR / servlet deployment.** When MockServer
   runs as a WAR (e.g. in Tomcat), a request for a path such as `/ab%40c.de` was not decoded back to
   `/ab@c.de` whenever the container reports a `null` path-info — which a servlet container does for a
