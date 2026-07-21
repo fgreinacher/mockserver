@@ -237,6 +237,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AWS credential chain when not), and the bucket and key prefix are passed through. Previously only
   registration idempotency and a Docker-gated MinIO contract test (which hand-built its own client)
   were covered, so a mis-wired property could pass unnoticed.
+- **Node package lockfiles refreshed to clear six open denial-of-service advisories.** `brace-expansion`
+  (`1.1.15` &rarr; `1.1.16`, `2.1.1` &rarr; `2.1.2`) in `mockserver-client-node`, `mockserver-node` and
+  `mockserver-testcontainers/node`, plus `js-yaml` (`4.2.0` &rarr; `4.3.0`) and `protobufjs`
+  (`7.6.4` &rarr; `7.6.5`) in `mockserver-testcontainers/node`. All are transitive dev/test-tooling
+  dependencies, and every fixed version was already inside the existing declared ranges, so this is a
+  lockfile refresh only — no `package.json` dependency bump and no new `overrides` entry was required.
 - **Chaos testing doc navigation refreshed for the multi-stage experiment features.** The "On this page"
   feature map on `chaos_testing.html` now surfaces the scheduled-experiment sub-capabilities that were
   documented in the body but not linked from the top of the page: recurring/scheduled (cron and delayed)
