@@ -123,6 +123,23 @@ The 27 properties below previously existed **only** on `ConfigurationProperties`
 
 Three of them are **write-only**: settable over `PUT /mockserver/configuration` and on the instance, but `GET /mockserver/configuration` returns `***REDACTED***` (`ConfigurationProperties.REDACTED_VALUE`) instead of the real value. A `PUT` that echoes that mask back is ignored rather than applied, so a GET-then-PUT of the whole configuration blob never destroys a working credential.
 
+Two further properties carry a credential *inside* a structured value — `prometheusRemoteWriteHeaders` (a `k=v,k2=v2` list) and `llmBackendsConfig` (a file path, or an inline JSON document) — and are masked per header / per field by `EmbeddedCredentialRedaction`, so the surrounding non-secret configuration stays readable.
+
+The write path is the inverse: `ConfigurationProperties.restoreRedactedValue(...)` rebuilds each masked part from the value the target already holds. Its contract has **two** halves, and only enforcing one of them was the original defect:
+
+| Failure | Rule |
+|---|---|
+| the mask becomes the outbound credential | the result never contains the mask — checked in each `restore*` method and again in `restoreRedactedValue` |
+| the credential is silently deleted instead | a mask that cannot be resolved makes the **whole value** unmergeable — never "drop that part and write the rest" |
+
+Both return `null`, meaning "leave the held value untouched", and **every** refusal is logged: a `PUT` that writes nothing must not answer `200 OK` in silence. A mask is unresolvable when it is buried inside a value, welded to extra text (`***REDACTED***-my-new-key`, which reads as a *new* credential typed over the mask), in a field that is not credential-named, names a header/backend nothing is held under, or is ambiguous (below). A held value that itself contains the literal mask is also unresolvable, which locks that property against edited `PUT`s until a real value is set — accepted, logged, and recoverable, rather than weakening the "never store the mask" invariant with an exception.
+
+Header names are matched **exactly first**, falling back to a case-insensitive match only when it is unambiguous — exactly one held name and one incoming name share that spelling. The fallback exists because re-casing a header name is a legitimate edit; the exact-match-first rule exists because `PrometheusRemoteWriteExporter#parseHeaders` is case-*sensitive* and applies its result additively, so `X-Api-Key` and `x-api-key` are two headers and both are sent. Folding them into one case-insensitive key resolved one credential onto both names and destroyed the other.
+
+Two parsing rules are load-bearing for disclosure. A JSON document is detected more widely than "starts with `{` or `[`" — a quoted member name counts and a leading BOM is stripped — so a document embedded behind a prefix is masked whole rather than disclosed; and the mapper enables `FAIL_ON_TRAILING_TOKENS`, without which Jackson parses only the first document and the rest of the value (which may hold the credential) is judged to contain no secret and returned verbatim. A file path matches neither detection rule and passes through byte-identical.
+
+`restoreRedactedValue` is not the only write path: `ConfigurationDTO.applyTo` merges against the held value and comes through it, while `ConfigurationDTO.buildObject` builds a *fresh* configuration with nothing to merge against and applies the simpler `containsRedactionMask` → leave-unset rule directly. A third embedded-credential property must be wired into **both**.
+
 | Property | Type | Default | Notes |
 |----------|------|---------|-------|
 | `customJsonUnitMatchersClass` | String | `""` | Custom json-unit matcher provider class |

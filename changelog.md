@@ -384,6 +384,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forwards it upstream) and rejects a non-conformant upstream response with a `502`. Both reject
   branches previously had no test; they are now pinned so a regression that silently forwarded an
   invalid request, or accepted an invalid upstream response, is caught.
+- **Reading the configuration back and sending it straight to `PUT /mockserver/configuration` can no
+  longer break a credential.** Header values in `prometheusRemoteWriteHeaders` are masked with
+  `***REDACTED***` when the configuration is read, and MockServer puts the real value back when that
+  masked list is sent in again. If a masked header was followed by a segment with no `=` in it — for
+  example `Api-Key=***REDACTED***,junk,X-B=2` — the two were read as one header value, which then did
+  not match the mask, so the whole thing was stored verbatim: the real API key was lost and the literal
+  text `***REDACTED***` became the credential sent to the remote-write endpoint. The same could happen
+  for a `llmBackendsConfig` document whose field merely contained the mask rather than being it. A
+  resolved value is now re-checked before it is stored, and a value still carrying the mask is refused
+  with a warning, leaving the credential MockServer already holds untouched.
+- **A `PUT` that MockServer cannot make sense of no longer deletes a credential in silence.** When a
+  masked header or backend key sent back to MockServer could not be matched to the real value it stands
+  for — because the header name was re-cased, the backend was renamed or reordered, or nothing was held
+  under that name at all — the unresolvable part was quietly dropped and the rest was stored. The mask
+  did not leak, but the credential was simply gone while the `PUT` still answered `200 OK`, so the next
+  outbound call failed to authenticate for no visible reason. A re-cased header name now still finds
+  its value, since HTTP header names are case-insensitive — though where a list holds two names that
+  differ only in case, they are two distinct headers that are both sent, so the mask is ambiguous and
+  is not guessed. Anything unresolvable makes MockServer refuse the whole value with a logged warning
+  and keep the configuration it already has.
+- **The configuration API no longer discloses a secret hidden in a JSON document.** `llmBackendsConfig`
+  normally holds the path of a backends JSON file, and a path is returned as you set it. If an inline
+  JSON document was set instead, its `apiKey` fields were masked — but only when the value began with a
+  brace or bracket and held exactly one document. A document behind a prefix (such as
+  `backends=[{...}]`), one behind an invisible byte-order mark, and one placed *after* a first document
+  (`{"a":1}{"apiKey":"sk-..."}`, where everything after the first document was silently ignored) were
+  all returned in clear — including in the configuration line logged at startup. Any value that embeds
+  JSON but cannot be read as exactly one document is now masked whole. File paths are unaffected.
+- **More credential names are recognised.** Values whose property, header or JSON field name contains
+  `passwd`, `pwd`, `signature`, `hmac`, `salt`, `session`, `otp` or `bearer` are now masked, as are
+  header and field names containing `auth` (covering `Authentication`, `WWW-Authenticate` and a bare
+  `X-Auth`) or `jwt`. Previously names such as `X-Hub-Signature-256` — the GitHub webhook signing
+  convention — were shown in clear wherever configuration is displayed or logged. Property names
+  containing `auth` or `jwt` are deliberately *not* masked, so settings such as
+  `tlsMutualAuthenticationRequired` and `proxyAuthenticationUsername` stay readable in `--print-config`.
 - **Percent-encoded request paths are now matched under the WAR / servlet deployment.** When MockServer
   runs as a WAR (e.g. in Tomcat), a request for a path such as `/ab%40c.de` was not decoded back to
   `/ab@c.de` whenever the container reports a `null` path-info — which a servlet container does for a

@@ -469,8 +469,26 @@ public class ConfigurationProperties {
     // than inventing a second, divergent redaction token.
     public static final String REDACTED_VALUE = "***REDACTED***";
 
+    // Matched as substrings of the lower-cased, mockserver.-stripped name — see
+    // isSensitivePropertyName. Also reached, via EmbeddedCredentialRedaction.isSensitiveName, by every
+    // HEADER name and JSON FIELD name inside a structured value.
+    //
+    // NOTE the four underscore forms (access_key, api_key, private_key, connection_string) are dead on
+    // the header/field path: isSensitiveName strips "-" and "_" before delegating here, so an
+    // "api_key" header has already become "apikey". They still match a property FILE key written with
+    // underscores, which is why they stay. Do not add another underscore form expecting it to catch a
+    // header — add the unpunctuated spelling instead.
+    //
+    // Names that are credential-bearing as HEADERS but ordinary as PROPERTY names (authentication,
+    // jwt) belong in EmbeddedCredentialRedaction.HEADER_ONLY_SENSITIVE_SUBSTRINGS, not here: this set
+    // masks property names too, and hiding tlsMutualAuthenticationRequired from --print-config helps
+    // nobody. Everything here was checked against all 303 property names for over-matching.
     private static final Set<String> SENSITIVE_SUBSTRINGS = Stream.of(
         "password",
+        // the abbreviated spellings are NOT substrings of "password" and do not end in "key", so
+        // neither rule in isSensitivePropertyName reached them (the import redactor already lists both)
+        "passwd",
+        "pwd",
         "secret",
         "accesskey",
         "access_key",
@@ -479,10 +497,20 @@ public class ConfigurationProperties {
         "connectionstring",
         "connection_string",
         "token",
+        "bearer",
         "privatekey",
         "private_key",
         "credential",
-        "passphrase"
+        "passphrase",
+        // HMAC/webhook signing material — X-Signature and X-Hub-Signature-256 are the GitHub webhook
+        // convention, and a signing salt is as disclosing as the key it is mixed with
+        "signature",
+        "hmac",
+        "salt",
+        // session and one-time-password credentials: a session id is a bearer credential in a cookie
+        // or an X-Session-Id header, and an OTP is a single-use one
+        "session",
+        "otp"
     ).collect(Collectors.toCollection(LinkedHashSet::new));
 
     /**
@@ -5998,17 +6026,41 @@ public class ConfigurationProperties {
      * holds — so a {@code GET}-then-{@code PUT} round trip cannot overwrite a working credential with
      * the mask, while the unmasked parts of the same value are applied normally.
      *
+     * <p>The result is <strong>never</strong> a value still carrying the mask, and a value refused for
+     * that reason is logged rather than dropped in silence. The check lives here so it covers every
+     * caller of this method at once — a mask written into the live configuration destroys the real
+     * credential AND makes the literal mask the outbound one, so it must be impossible for any present
+     * or future caller, not just the two known ones.
+     *
+     * <p>Note this is <strong>not</strong> the only write path for these properties.
+     * {@code ConfigurationDTO.applyTo} merges an incoming value against the value the target holds and
+     * comes through here; {@code ConfigurationDTO.buildObject} builds a FRESH configuration with
+     * nothing to merge against and so applies the simpler rule directly — a value carrying the mask is
+     * left unset, letting the static store resolve. A third embedded-credential property must be wired
+     * into BOTH.
+     *
      * @return the value to write, or {@code null} to leave the held value untouched
      */
     public static String restoreRedactedValue(String propertyName, String incomingValue, String heldValue) {
         String normalised = normalisePropertyName(propertyName);
+        String restored;
         if (HEADER_LIST_CREDENTIAL_PROPERTIES.contains(normalised)) {
-            return EmbeddedCredentialRedaction.restoreHeaderList(propertyName, incomingValue, heldValue);
+            restored = EmbeddedCredentialRedaction.restoreHeaderList(propertyName, incomingValue, heldValue);
+        } else if (JSON_DOCUMENT_CREDENTIAL_PROPERTIES.contains(normalised)) {
+            restored = EmbeddedCredentialRedaction.restoreJsonDocument(propertyName, incomingValue, heldValue);
+        } else {
+            restored = incomingValue;
         }
-        if (JSON_DOCUMENT_CREDENTIAL_PROPERTIES.contains(normalised)) {
-            return EmbeddedCredentialRedaction.restoreJsonDocument(propertyName, incomingValue, heldValue);
+        if (containsRedactionMask(restored)) {
+            // reachable for a property with no embedded-credential shape, and for a non-document value
+            // carrying the mask, neither of which the restore* methods examine — so this is the point
+            // that must tell the operator, or the enclosing PUT answers 200 OK having written nothing.
+            // Cannot double-log: every restore* path that already logged returned null, and
+            // containsRedactionMask(null) is false.
+            return EmbeddedCredentialRedaction.dropUnmergeableValue(propertyName,
+                "it still carries the mask once every masked part has been resolved");
         }
-        return incomingValue;
+        return restored;
     }
 
     /**

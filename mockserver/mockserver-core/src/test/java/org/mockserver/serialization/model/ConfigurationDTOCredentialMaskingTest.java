@@ -203,6 +203,28 @@ public class ConfigurationDTOCredentialMaskingTest {
             json, containsString("X-Scope-OrgID=tenant-a"));
     }
 
+    @Test
+    public void shouldNotCorruptTheStoredValueWhenMaskingEmbeddedSecretsOnRead() throws Exception {
+        // redaction is a READ-side transform: it rewrites the value handed to the reader and must never
+        // write the masked form back onto the Configuration it read from. The round-trip test below
+        // would still pass if it did (it re-reads through the same masking getter), so assert the
+        // stored value directly.
+        Configuration configuration = configuration()
+            .llmBackendsConfig(EMBEDDED_REAL_VALUES.get("llmBackendsConfig"))
+            .prometheusRemoteWriteHeaders(EMBEDDED_REAL_VALUES.get("prometheusRemoteWriteHeaders"));
+
+        serializer.serialize(configuration);
+
+        assertThat("serializing must not mutate the llmBackendsConfig held by the Configuration",
+            configuration.llmBackendsConfig(), is(EMBEDDED_REAL_VALUES.get("llmBackendsConfig")));
+        assertThat("serializing must not mutate the prometheusRemoteWriteHeaders held by the Configuration",
+            configuration.prometheusRemoteWriteHeaders(), is(EMBEDDED_REAL_VALUES.get("prometheusRemoteWriteHeaders")));
+        assertThat("the real backend key must still be usable in-process after a read",
+            configuration.llmBackendsConfig(), containsString(REAL_SECRET_PREFIX + "llmBackendsConfig"));
+        assertThat("the real header credential must still be usable in-process after a read",
+            configuration.prometheusRemoteWriteHeaders(), containsString(REAL_SECRET_PREFIX + "prometheusRemoteWriteHeaders"));
+    }
+
     // ---------------------------------------------------------------------------------------------
     // 2. the round-trip guard: a masked GET echoed back by a PUT must not destroy the credential
     // ---------------------------------------------------------------------------------------------
@@ -272,13 +294,98 @@ public class ConfigurationDTOCredentialMaskingTest {
     }
 
     @Test
-    public void shouldDropAMaskedHeaderForWhichNoRealValueIsHeld() throws Exception {
+    public void shouldRefuseTheWholeListWhenAMaskedHeaderHasNoRealValueHeld() throws Exception {
+        // dropping just the unresolvable header (what this did before) writes a list whose credential is
+        // simply GONE — the mask does not leak, but outbound auth breaks and the PUT answers 200 OK.
+        // Refusing the whole value keeps whatever is held and tells the operator.
         Configuration live = configuration().prometheusRemoteWriteHeaders("");
 
         applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"Api-Key=" + MASK + ",X-Tenant=acme\"}", live);
 
-        assertThat("with nothing held under that header name the mask must be dropped, never written as "
-                + "the header value", live.prometheusRemoteWriteHeaders(), is("X-Tenant=acme"));
+        assertThat(live.prometheusRemoteWriteHeaders(), is(""));
+    }
+
+    @Test
+    public void shouldResolveAMaskedHeaderWhoseNameTheOperatorReCased() throws Exception {
+        // HTTP header names are case-insensitive, so re-casing one is a legitimate edit. Looking the
+        // held value up case-sensitively found nothing, and the header — the credential — was dropped
+        // from a list that was then written, with no warning.
+        Configuration live = configuration().prometheusRemoteWriteHeaders(
+            "Authorization=Bearer " + REAL_SECRET_PREFIX + "held,X-B=2");
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"authorization=" + MASK + ",X-B=3\"}", live);
+
+        assertThat(live.prometheusRemoteWriteHeaders(),
+            containsString(REAL_SECRET_PREFIX + "held"));
+        assertThat(live.prometheusRemoteWriteHeaders(),
+            is("authorization=Bearer " + REAL_SECRET_PREFIX + "held,X-B=3"));
+    }
+
+    @Test
+    public void shouldKeepBothCredentialsWhenTwoHeldHeaderNamesDifferOnlyInCase() throws Exception {
+        // the consumer (PrometheusRemoteWriteExporter#parseHeaders) is case-SENSITIVE and applies its
+        // result additively, so these are two headers and both are sent. Folding them together to
+        // resolve the mask case-insensitively would restore one credential onto both names and destroy
+        // the other — silently, with the PUT answering 200 OK.
+        Configuration live = configuration().prometheusRemoteWriteHeaders(
+            "X-Api-Key=" + REAL_SECRET_PREFIX + "A,x-api-key=" + REAL_SECRET_PREFIX + "B");
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"X-Api-Key=" + MASK + ",x-api-key=" + MASK
+            + ",X-Env=prod\"}", live);
+
+        assertThat(live.prometheusRemoteWriteHeaders(),
+            is("X-Api-Key=" + REAL_SECRET_PREFIX + "A,x-api-key=" + REAL_SECRET_PREFIX + "B,X-Env=prod"));
+        assertThat("the credential held under the upper-cased name must survive",
+            live.prometheusRemoteWriteHeaders(), containsString(REAL_SECRET_PREFIX + "A"));
+    }
+
+    @Test
+    public void shouldResolveEachCaseSpellingSeparatelyWhenOnlyOneOfThemIsSentBack() throws Exception {
+        Configuration live = configuration().prometheusRemoteWriteHeaders(
+            "X-Api-Key=" + REAL_SECRET_PREFIX + "A,x-api-key=" + REAL_SECRET_PREFIX + "B");
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"x-api-key=" + MASK + ",X-Env=prod\"}", live);
+
+        assertThat("the exact name must select ITS value, not the other spelling's",
+            live.prometheusRemoteWriteHeaders(), is("x-api-key=" + REAL_SECRET_PREFIX + "B,X-Env=prod"));
+    }
+
+    @Test
+    public void shouldRefuseWhenAMaskedHeaderNameMatchesTwoHeldNamesDifferingOnlyInCase() throws Exception {
+        String held = "X-Api-Key=" + REAL_SECRET_PREFIX + "A,x-api-key=" + REAL_SECRET_PREFIX + "B";
+        Configuration live = configuration().prometheusRemoteWriteHeaders(held);
+
+        // a THIRD casing matches neither exactly, and the mask could stand for either held value
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"X-API-KEY=" + MASK + ",X-Env=prod\"}", live);
+
+        assertThat(live.prometheusRemoteWriteHeaders(), is(held));
+    }
+
+    @Test
+    public void shouldRefuseWhenTwoIncomingMaskedHeadersWouldResolveToTheSameHeldValue() throws Exception {
+        // the inverse: only one spelling is held, so a case-insensitive fallback would hand the SAME
+        // credential to both names — fabricating a second credential header the operator never had
+        String held = "X-Api-Key=" + REAL_SECRET_PREFIX + "A";
+        Configuration live = configuration().prometheusRemoteWriteHeaders(held);
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"X-Api-Key=" + MASK + ",x-api-key=" + MASK + "\"}", live);
+
+        assertThat(live.prometheusRemoteWriteHeaders(), is(held));
+    }
+
+    @Test
+    public void shouldRefuseANewCredentialTypedOverTheMaskRatherThanWeldItToTheOldOne() throws Exception {
+        // "***REDACTED***-my-new-key" reads as an operator typing a new credential over the mask.
+        // Splitting it as "mask + appended text" persists OLD-REAL-my-new-key — neither the credential
+        // that was held nor the one that was intended.
+        Configuration live = configuration().prometheusRemoteWriteHeaders(
+            "Api-Key=" + REAL_SECRET_PREFIX + "held");
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"Api-Key=" + MASK + "-my-new-key\"}", live);
+
+        assertThat(live.prometheusRemoteWriteHeaders(), is("Api-Key=" + REAL_SECRET_PREFIX + "held"));
+        assertThat(live.prometheusRemoteWriteHeaders(), not(containsString("my-new-key")));
+        assertThat(live.prometheusRemoteWriteHeaders(), not(containsString(MASK)));
     }
 
     @Test
@@ -338,6 +445,71 @@ public class ConfigurationDTOCredentialMaskingTest {
     }
 
     @Test
+    public void shouldNotWriteTheMaskAsAHeaderValueWhenAMaskedHeaderCarriesACommaTail() throws Exception {
+        // an =-less segment is read as the tail of the preceding header value (the format cannot escape
+        // a comma), so the incoming entry reads as Api-Key=***REDACTED***,junk — which is NOT equal to
+        // the mask. Writing it verbatim would destroy the real key AND make the literal mask the
+        // outbound credential: outbound auth breaks and a fake secret is persisted.
+        Configuration live = configuration().prometheusRemoteWriteHeaders(
+            "Api-Key=" + REAL_SECRET_PREFIX + "held,X-B=2");
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"Api-Key=" + MASK + ",junk,X-B=2\"}", live);
+
+        assertThat("the real credential must survive a masked header carrying a comma tail",
+            live.prometheusRemoteWriteHeaders(), containsString(REAL_SECRET_PREFIX + "held"));
+        assertThat("the literal mask must never be persisted as the outbound credential",
+            live.prometheusRemoteWriteHeaders(), not(containsString(MASK)));
+        assertThat(live.prometheusRemoteWriteHeaders(),
+            is("Api-Key=" + REAL_SECRET_PREFIX + "held,junk,X-B=2"));
+    }
+
+    @Test
+    public void shouldLeaveTheHeldHeaderListUntouchedWhenAMaskIsBuriedInsideAHeaderValue() throws Exception {
+        // "Bearer ***REDACTED***" is not a value redaction ever produced (a masked header value is
+        // replaced WHOLE), so there is nothing it can be resolved against. Writing it would persist the
+        // mask; dropping just that header would destroy the credential — leave the held value alone.
+        Configuration live = configuration().prometheusRemoteWriteHeaders(
+            "Authorization=Bearer " + REAL_SECRET_PREFIX + "held,X-B=2");
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"Authorization=Bearer " + MASK + ",X-B=3\"}", live);
+
+        assertThat(live.prometheusRemoteWriteHeaders(),
+            is("Authorization=Bearer " + REAL_SECRET_PREFIX + "held,X-B=2"));
+        assertThat(live.prometheusRemoteWriteHeaders(), not(containsString(MASK)));
+    }
+
+    @Test
+    public void shouldLeaveTheHeldBackendsDocumentUntouchedWhenAFieldMerelyContainsTheMask() throws Exception {
+        // the JSON-side twin of the header case: restore matches a field value EQUAL to the mask, so a
+        // value that merely contains it fell through and was written as supplied
+        String held = "[{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "held\"}]";
+        Configuration live = configuration().llmBackendsConfig(held);
+
+        applyJsonTo("{\"llmBackendsConfig\":\"[{\\\"name\\\":\\\"openai\\\",\\\"provider\\\":\\\"OPENAI\\\","
+            + "\\\"apiKey\\\":\\\"sk-" + MASK + "\\\"}]\"}", live);
+
+        assertThat("the real backend key must survive a field that merely contains the mask",
+            live.llmBackendsConfig(), containsString(REAL_SECRET_PREFIX + "held"));
+        assertThat("the literal mask must never be persisted as a backend credential",
+            live.llmBackendsConfig(), not(containsString(MASK)));
+        assertThat(live.llmBackendsConfig(), is(held));
+    }
+
+    @Test
+    public void shouldLeaveTheHeldBackendsDocumentUntouchedWhenTheMaskLandsInANonCredentialField() throws Exception {
+        // a mask outside a credential-named field is never restored, so without a fail-closed check on
+        // the merged document it would be written straight through
+        String held = "[{\"name\":\"openai\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "held\"}]";
+        Configuration live = configuration().llmBackendsConfig(held);
+
+        applyJsonTo("{\"llmBackendsConfig\":\"[{\\\"name\\\":\\\"openai\\\",\\\"baseUrl\\\":\\\"https://"
+            + MASK + "/v1\\\",\\\"apiKey\\\":\\\"" + MASK + "\\\"}]\"}", live);
+
+        assertThat(live.llmBackendsConfig(), not(containsString(MASK)));
+        assertThat(live.llmBackendsConfig(), is(held));
+    }
+
+    @Test
     public void shouldMaskACredentialFieldWhateverItsJsonType() throws Exception {
         // a secret is not always a string: recursing past a credential-named field would publish an
         // array of tokens or a numeric key untouched
@@ -382,14 +554,41 @@ public class ConfigurationDTOCredentialMaskingTest {
     }
 
     @Test
-    public void shouldDropAMaskedBackendApiKeyForWhichNoRealValueIsHeld() throws Exception {
+    public void shouldRefuseTheWholeDocumentWhenAMaskedBackendKeyHasNoRealValueHeld() throws Exception {
         Configuration live = configuration().llmBackendsConfig("");
 
         applyJsonTo("{\"llmBackendsConfig\":\"[{\\\"name\\\":\\\"openai\\\",\\\"provider\\\":\\\"OPENAI\\\","
             + "\\\"apiKey\\\":\\\"" + MASK + "\\\"}]\"}", live);
 
-        assertThat("with no held backend of that name the masked key must be dropped, never written",
-            live.llmBackendsConfig(), is("[{\"name\":\"openai\",\"provider\":\"OPENAI\"}]"));
+        assertThat("removing the unresolvable key writes a document with the credential DELETED, which "
+                + "breaks the backend as surely as writing the mask would",
+            live.llmBackendsConfig(), is(""));
+    }
+
+    @Test
+    public void shouldRefuseTheWholeDocumentWhenAMaskedBackendIsRenamed() throws Exception {
+        // renaming a backend leaves its masked key with no counterpart to restore from. Silently
+        // removing the field wrote a document in which openai-2 has no credential at all.
+        String held = "[{\"name\":\"openai\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "held\"}]";
+        Configuration live = configuration().llmBackendsConfig(held);
+
+        applyJsonTo("{\"llmBackendsConfig\":\"[{\\\"name\\\":\\\"openai-2\\\",\\\"apiKey\\\":\\\""
+            + MASK + "\\\"}]\"}", live);
+
+        assertThat(live.llmBackendsConfig(), is(held));
+    }
+
+    @Test
+    public void shouldRefuseTheWholeDocumentWhenAnUnnamedBackendHasNoHeldCounterpart() throws Exception {
+        // matched by INDEX when there is no name: a second unnamed backend has no held element, so its
+        // masked key resolved to nothing and was written out as an empty object
+        String held = "[{\"apiKey\":\"" + REAL_SECRET_PREFIX + "a\"}]";
+        Configuration live = configuration().llmBackendsConfig(held);
+
+        applyJsonTo("{\"llmBackendsConfig\":\"[{\\\"apiKey\\\":\\\"" + MASK + "\\\"},"
+            + "{\\\"apiKey\\\":\\\"" + MASK + "\\\"}]\"}", live);
+
+        assertThat(live.llmBackendsConfig(), is(held));
     }
 
     @Test
@@ -398,14 +597,16 @@ public class ConfigurationDTOCredentialMaskingTest {
             "[{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "openai\"}]");
 
         // a NEW backend is prepended, so index 0 no longer refers to the held one — matching by
-        // position here would hand openai's key to a backend the operator never gave it to
+        // position here would hand openai's key to a backend the operator never gave it to. The new
+        // backend's masked key cannot be resolved either, so the whole document is refused.
         applyJsonTo("{\"llmBackendsConfig\":\"[{\\\"name\\\":\\\"anthropic\\\",\\\"provider\\\":\\\"ANTHROPIC\\\","
             + "\\\"apiKey\\\":\\\"" + MASK + "\\\"},{\\\"name\\\":\\\"openai\\\",\\\"provider\\\":\\\"OPENAI\\\","
             + "\\\"apiKey\\\":\\\"" + MASK + "\\\"}]\"}", live);
 
+        assertThat("openai's key must never appear under anthropic",
+            live.llmBackendsConfig(), not(containsString("\"anthropic\",\"provider\":\"ANTHROPIC\",\"apiKey\"")));
         assertThat(live.llmBackendsConfig(),
-            is("[{\"name\":\"anthropic\",\"provider\":\"ANTHROPIC\"},"
-                + "{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "openai\"}]"));
+            is("[{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "openai\"}]"));
     }
 
     // ---------------------------------------------------------------------------------------------
