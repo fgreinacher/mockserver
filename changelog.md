@@ -227,6 +227,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the front without duplicating it), `DELETE` (by query parameter or JSON body) removes a cassette so a
   later `GET` no longer lists it, a server reset empties the registry, and — when control-plane
   authentication is required — every verb is rejected with `401`. No production behaviour changed.
+  authentication is required — every verb is rejected with `401`. The bare `/cassettes` aliases are
+  exercised alongside the `/mockserver`-prefixed paths, each rejected-input branch (`PUT` with no body,
+  `PUT` with no `path`, `DELETE` with neither a `path` query parameter nor a body `path`) is pinned to its
+  `400` and its message, and the CORS headers that let the dashboard call these endpoints cross-origin are
+  asserted. No production behaviour changed.
 
 ### Changed
 - **The S3 blob-store config-to-client wiring is now covered by a behavioural unit test.** A new

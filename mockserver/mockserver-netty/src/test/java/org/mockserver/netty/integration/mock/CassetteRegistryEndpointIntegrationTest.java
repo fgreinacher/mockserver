@@ -29,8 +29,8 @@ import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.stop.Stop.stopQuietly;
 
 /**
- * End-to-end tests for the {@code GET/PUT/DELETE /mockserver/cassettes} control-plane endpoints,
- * driving a real MockServer over a real socket.
+ * End-to-end tests for the {@code GET/PUT/DELETE /mockserver/cassettes} control-plane endpoints
+ * (and their bare {@code /cassettes} aliases), driving a real MockServer over a real socket.
  * <p>
  * The endpoints expose the process-wide {@link org.mockserver.mock.CassetteRegistry} — lightweight
  * metadata about recorded/loaded cassette fixture files — so the dashboard can surface them across
@@ -40,6 +40,9 @@ import static org.mockserver.stop.Stop.stopQuietly;
  *     <li>GET lists cassettes most-recently-used first with the documented body shape,</li>
  *     <li>re-registering (touching) a cassette moves it to the front of the MRU order,</li>
  *     <li>DELETE removes a cassette so a subsequent GET no longer lists it,</li>
+ *     <li>a missing body (PUT) or a missing path (PUT and DELETE) is rejected as {@code 400},</li>
+ *     <li>the bare {@code /cassettes} alias behaves identically to the prefixed path,</li>
+ *     <li>responses carry CORS headers so the dashboard can call them cross-origin,</li>
  *     <li>server reset empties the registry,</li>
  *     <li>and every verb is refused when control-plane authentication is required.</li>
  * </ul>
@@ -68,6 +71,10 @@ public class CassetteRegistryEndpointIntegrationTest {
 
     @Before
     public void resetBefore() throws Exception {
+        // ensure auth is off before the reset call itself - the toggle is process-wide, so an
+        // upstream suite that failed mid-test could otherwise leave it on and turn every test in
+        // this class into an unattributable 401
+        ConfigurationProperties.controlPlaneJWTAuthenticationRequired(false);
         reset();
     }
 
@@ -79,14 +86,23 @@ public class CassetteRegistryEndpointIntegrationTest {
     }
 
     private void reset() throws Exception {
-        send("PUT", "/mockserver/reset", null);
+        HttpResponse response = send("PUT", "/mockserver/reset", null);
+        // fail here rather than leaving a broken reset to surface later as an unrelated assertion
+        assertThat("reset must succeed so each test starts from an empty registry", response.getStatusCode(), is(200));
     }
 
     private HttpResponse send(String method, String path, String body) throws Exception {
+        return send(method, path, body, null, null);
+    }
+
+    private HttpResponse send(String method, String path, String body, String headerName, String headerValue) throws Exception {
         org.mockserver.model.HttpRequest httpRequest = request()
             .withMethod(method)
             .withHeader(HOST.toString(), "localhost:" + mockServer.getLocalPort())
             .withPath(path);
+        if (headerName != null) {
+            httpRequest = httpRequest.withHeader(headerName, headerValue);
+        }
         if (body != null) {
             httpRequest = httpRequest.withBody(body);
         }
@@ -143,6 +159,19 @@ public class CassetteRegistryEndpointIntegrationTest {
         // then
         assertThat(response.getStatusCode(), is(400));
         assertThat(json(response).get("error").asText(), containsString("'path' field is required"));
+    }
+
+    @Test
+    public void shouldRejectPutWithoutBody() throws Exception {
+        // when - no request body at all, rather than a body missing the path field
+        HttpResponse response = send("PUT", "/mockserver/cassettes", null);
+
+        // then - the distinct "missing body" diagnostic, not the "missing path field" one
+        assertThat(response.getStatusCode(), is(400));
+        assertThat(json(response).get("error").asText(), containsString("request body is required with a 'path' field"));
+
+        // then - nothing was registered
+        assertThat(json(send("GET", "/mockserver/cassettes", null)).get("cassettes").size(), is(0));
     }
 
     // ------------------------------------------------------------------
@@ -241,6 +270,22 @@ public class CassetteRegistryEndpointIntegrationTest {
         assertThat(json(deleteResponse).get("removed").asBoolean(), is(false));
     }
 
+    @Test
+    public void shouldRejectDeleteWithoutPathQueryParameterOrBodyField() throws Exception {
+        // given - a registered cassette that must survive a malformed delete
+        assertThat(send("PUT", "/mockserver/cassettes", "{\"path\":\"/c/survivor.json\"}").getStatusCode(), is(201));
+
+        // when - neither ?path= nor a body path is supplied
+        HttpResponse response = send("DELETE", "/mockserver/cassettes", null);
+
+        // then
+        assertThat(response.getStatusCode(), is(400));
+        assertThat(json(response).get("error").asText(), containsString("'path' is required (query parameter or body field)"));
+
+        // then - the rejected delete removed nothing
+        assertThat(json(send("GET", "/mockserver/cassettes", null)).get("cassettes").size(), is(1));
+    }
+
     // ------------------------------------------------------------------
     // registry lifecycle
     // ------------------------------------------------------------------
@@ -257,6 +302,68 @@ public class CassetteRegistryEndpointIntegrationTest {
 
         // then - the registry is empty
         assertThat(json(send("GET", "/mockserver/cassettes", null)).get("cassettes").size(), is(0));
+    }
+
+    // ------------------------------------------------------------------
+    // bare alias — GET/PUT/DELETE /cassettes must behave identically to /mockserver/cassettes
+    // ------------------------------------------------------------------
+
+    @Test
+    public void shouldServeAllCassetteVerbsViaBareAlias() throws Exception {
+        // when - registering through the bare alias
+        HttpResponse registration = send("PUT", "/cassettes", "{\"path\":\"/c/bare.json\",\"expectationCount\":2,\"origin\":\"recorded\"}");
+
+        // then - identical to the prefixed form
+        assertThat("PUT /cassettes (bare alias) must register a cassette", registration.getStatusCode(), is(201));
+        JsonNode registrationBody = json(registration);
+        assertThat(registrationBody.get("path").asText(), is("/c/bare.json"));
+        assertThat(registrationBody.get("filename").asText(), is("bare.json"));
+        assertThat(registrationBody.get("expectationCount").asInt(), is(2));
+        assertThat(registrationBody.get("origin").asText(), is("recorded"));
+
+        // then - the bare alias lists from the same registry the prefixed form writes to
+        HttpResponse bareList = send("GET", "/cassettes", null);
+        assertThat("GET /cassettes (bare alias) must list cassettes", bareList.getStatusCode(), is(200));
+        JsonNode bareCassettes = json(bareList).get("cassettes");
+        assertThat(bareCassettes.size(), is(1));
+        assertThat(bareCassettes.get(0).get("path").asText(), is("/c/bare.json"));
+        assertThat("prefixed and bare paths must share one registry",
+            json(send("GET", "/mockserver/cassettes", null)).get("cassettes").size(), is(1));
+
+        // when - deleting through the bare alias
+        HttpResponse bareDelete = send("DELETE", "/cassettes?path=/c/bare.json", null);
+
+        // then
+        assertThat("DELETE /cassettes (bare alias) must remove a cassette", bareDelete.getStatusCode(), is(200));
+        assertThat(json(bareDelete).get("removed").asBoolean(), is(true));
+        assertThat(json(send("GET", "/mockserver/cassettes", null)).get("cassettes").size(), is(0));
+    }
+
+    // ------------------------------------------------------------------
+    // cross-origin access for the dashboard
+    // ------------------------------------------------------------------
+
+    @Test
+    public void shouldReturnCORSHeadersSoDashboardCanCallCassetteEndpointsCrossOrigin() throws Exception {
+        String origin = "https://dashboard.example.com";
+
+        // when - each verb is called with an Origin header, as a browser would
+        HttpResponse putResponse = send("PUT", "/mockserver/cassettes", "{\"path\":\"/c/cors.json\"}", "origin", origin);
+        HttpResponse getResponse = send("GET", "/mockserver/cassettes", null, "origin", origin);
+        HttpResponse deleteResponse = send("DELETE", "/mockserver/cassettes?path=/c/cors.json", null, "origin", origin);
+
+        // then - the requesting origin is reflected and the cassette verbs are advertised as allowed
+        assertThat(putResponse.getStatusCode(), is(201));
+        assertThat(getResponse.getStatusCode(), is(200));
+        assertThat(deleteResponse.getStatusCode(), is(200));
+        for (HttpResponse response : new HttpResponse[]{putResponse, getResponse, deleteResponse}) {
+            assertThat("cassette responses must reflect the requesting Origin",
+                response.getFirstHeader("access-control-allow-origin"), is(origin));
+            String allowMethods = response.getFirstHeader("access-control-allow-methods");
+            assertThat("cassette responses must advertise the cassette verbs", allowMethods, containsString("GET"));
+            assertThat("cassette responses must advertise the cassette verbs", allowMethods, containsString("PUT"));
+            assertThat("cassette responses must advertise the cassette verbs", allowMethods, containsString("DELETE"));
+        }
     }
 
     // ------------------------------------------------------------------
