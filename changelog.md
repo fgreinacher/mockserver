@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The dashboard Traffic view can focus on a single upstream host.** In proxy mode a session can
+  capture traffic from dozens of hosts. A collapsible host list at the top of the traffic list shows
+  each distinct host with its request count, busiest first; clicking one pins `host:<value>` into the
+  search box and narrows the list, and clicking it again unpins. Pinning composes with whatever else
+  is in the search box rather than replacing it, and because the pin is just a search term it persists
+  across a view switch and a reload like any other search. The list appears only when captured traffic
+  spans more than one host, so mock-only sessions — where everything targets localhost — are
+  unaffected. Hosts are grouped by the same value the row displays and the `host:` operator matches.
 - **The dashboard expectation composer can fire a real request against the draft matcher and show the
   live response.** A "Try It" button beside "Test Matcher" opens an inline panel that derives an
   editable HTTP request from the expectation being authored, sends it to MockServer, and renders the
