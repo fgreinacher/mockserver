@@ -29,6 +29,9 @@ public class ConfigurationPropertiesEffectiveConfigGlobalStateTest {
     private static final String SENSITIVE_KEY = "mockserver.llmApiKey";
     // A recognised key we deliberately leave unset so it reports its built-in default.
     private static final String DEFAULT_KEY = "mockserver.metricsEnabled";
+    // A key whose VALUE embeds a credential rather than being one: whole-property-name redaction does
+    // not reach it, so it needs the per-header rule this diagnostic shares with the configuration DTO.
+    private static final String EMBEDDED_CREDENTIAL_KEY = "mockserver.prometheusRemoteWriteHeaders";
 
     private static Optional<ConfigurationProperties.ResolvedProperty> find(List<ConfigurationProperties.ResolvedProperty> properties, String name) {
         return properties.stream().filter(property -> name.equals(property.getName())).findFirst();
@@ -125,6 +128,38 @@ public class ConfigurationPropertiesEffectiveConfigGlobalStateTest {
         } finally {
             restoreCacheEntry(SENSITIVE_KEY, previousCachedSensitive);
             restore(SENSITIVE_KEY, previousSensitive);
+        }
+    }
+
+    @Test
+    public void redactsACredentialEmbeddedInsideAStructuredValueOnEverySurface() throws Exception {
+        // GET /mockserver/config is the SIBLING of GET /mockserver/configuration on the same, by
+        // default unauthenticated, control plane. Redacting by whole property name only leaves this
+        // endpoint disclosing a credential the configuration endpoint masks — one leak closed, its
+        // twin left open. Both must apply the same rule.
+        String previous = System.getProperty(EMBEDDED_CREDENTIAL_KEY);
+        String previousCached = getCacheEntry(EMBEDDED_CREDENTIAL_KEY);
+        try {
+            clearCacheEntry(EMBEDDED_CREDENTIAL_KEY);
+            System.setProperty(EMBEDDED_CREDENTIAL_KEY, "Authorization=Bearer REAL-TOKEN-XYZ,X-Scope-OrgID=tenant-a");
+
+            String expected = "Authorization=" + REDACTED_VALUE + ",X-Scope-OrgID=tenant-a";
+
+            ConfigurationProperties.ResolvedProperty resolved = find(ConfigurationProperties.effectiveConfiguration(), EMBEDDED_CREDENTIAL_KEY)
+                .orElseThrow(() -> new AssertionError("expected " + EMBEDDED_CREDENTIAL_KEY + " in effective configuration"));
+            assertThat(resolved.getValue(), is(expected));
+            assertThat(resolved.getSource(), is(SOURCE_SYSTEM_PROPERTY));
+
+            String json = ConfigurationProperties.effectiveConfigurationAsJson();
+            assertThat("GET /mockserver/config must not disclose a credential embedded in a value",
+                json, not(containsString("REAL-TOKEN-XYZ")));
+            assertThat(json, containsString("\"value\":\"" + expected + "\""));
+
+            assertThat("--print-config must not disclose it either",
+                ConfigurationProperties.effectiveConfigurationAsText(), not(containsString("REAL-TOKEN-XYZ")));
+        } finally {
+            restoreCacheEntry(EMBEDDED_CREDENTIAL_KEY, previousCached);
+            restore(EMBEDDED_CREDENTIAL_KEY, previous);
         }
     }
 

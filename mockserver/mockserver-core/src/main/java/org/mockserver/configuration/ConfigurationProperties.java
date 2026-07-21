@@ -497,6 +497,30 @@ public class ConfigurationProperties {
         "forwardconnectionpoolmaxtotalperkey"
     ).collect(Collectors.toCollection(LinkedHashSet::new));
 
+    /**
+     * Properties whose value is a {@code k=v,k2=v2} list that can carry a credential-bearing header.
+     * The whole value is not a secret, so it is redacted per header rather than masked whole — see
+     * {@link #redactSensitiveValue(String, String)}. Keyed on the normalised (lower-cased,
+     * {@code mockserver.}-stripped) name.
+     *
+     * <p>Declared BEFORE PROPERTIES for the same reason as the two sets above: the PROPERTIES
+     * initialiser runs readPropertyFile() during {@code <clinit>}, whose log dump redacts through
+     * {@link #redactSensitiveValue(String, String)}, which reads these — a later declaration leaves
+     * them null at that point.
+     */
+    private static final Set<String> HEADER_LIST_CREDENTIAL_PROPERTIES = Stream.of(
+        "prometheusremotewriteheaders"
+    ).collect(Collectors.toCollection(LinkedHashSet::new));
+
+    /**
+     * Properties whose value may be a JSON document carrying credential-bearing fields, redacted per
+     * field. {@code llmBackendsConfig}'s documented shape is a file PATH (which is not a secret and is
+     * returned unchanged); an inline document is redacted as defence-in-depth.
+     */
+    private static final Set<String> JSON_DOCUMENT_CREDENTIAL_PROPERTIES = Stream.of(
+        "llmbackendsconfig"
+    ).collect(Collectors.toCollection(LinkedHashSet::new));
+
     public static final Properties PROPERTIES = readPropertyFile();
 
     // --- Unknown-configuration-key detection state (see the section near the end of this class) ---
@@ -5919,17 +5943,80 @@ public class ConfigurationProperties {
         if (name == null) {
             return false;
         }
-        String lower = name.toLowerCase(Locale.ROOT);
-        // Strip prefix so "mockserver.llmApiKey" matches "apikey"
-        if (lower.startsWith("mockserver.")) {
-            lower = lower.substring("mockserver.".length());
-        }
+        String lower = normalisePropertyName(name);
         for (String sensitive : SENSITIVE_SUBSTRINGS) {
             if (lower.contains(sensitive)) {
                 return true;
             }
         }
         return lower.endsWith("key") && !NON_SENSITIVE_KEY_SUFFIXED_NAMES.contains(lower);
+    }
+
+    /** Lower-cased and {@code mockserver.}-stripped, so "mockserver.llmApiKey" matches "apikey". */
+    private static String normalisePropertyName(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.startsWith("mockserver.") ? lower.substring("mockserver.".length()) : lower;
+    }
+
+    /**
+     * The value to disclose for a configuration property — THE single redaction rule, shared by every
+     * surface that hands a configuration value to a reader: {@code GET /mockserver/configuration} (via
+     * {@code ConfigurationDTO}), {@code GET /mockserver/config} and {@code --print-config} (via
+     * {@link #effectiveConfiguration()}), and the startup property-file log dump.
+     *
+     * <p>Three outcomes: a property that IS a credential ({@link #isSensitivePropertyName(String)}) is
+     * masked whole; a property that CARRIES credentials inside a structured value is redacted per
+     * header / per JSON field by {@link EmbeddedCredentialRedaction}, leaving the surrounding
+     * configuration readable; anything else is returned unchanged.
+     *
+     * <p>Adding a second, endpoint-local notion of "credential" is exactly the failure this replaces —
+     * a leak closed on one endpoint and left open on its sibling.
+     */
+    public static String redactSensitiveValue(String propertyName, String value) {
+        if (value == null) {
+            return null;
+        }
+        if (isSensitivePropertyName(propertyName)) {
+            return REDACTED_VALUE;
+        }
+        if (value.isEmpty()) {
+            return value;
+        }
+        String normalised = normalisePropertyName(propertyName);
+        if (HEADER_LIST_CREDENTIAL_PROPERTIES.contains(normalised)) {
+            return EmbeddedCredentialRedaction.redactHeaderList(value);
+        }
+        if (JSON_DOCUMENT_CREDENTIAL_PROPERTIES.contains(normalised)) {
+            return EmbeddedCredentialRedaction.redactJsonDocument(value);
+        }
+        return value;
+    }
+
+    /**
+     * The inverse of {@link #redactSensitiveValue(String, String)} for a value being written back:
+     * each redacted header/field is restored from {@code heldValue} — the value the server already
+     * holds — so a {@code GET}-then-{@code PUT} round trip cannot overwrite a working credential with
+     * the mask, while the unmasked parts of the same value are applied normally.
+     *
+     * @return the value to write, or {@code null} to leave the held value untouched
+     */
+    public static String restoreRedactedValue(String propertyName, String incomingValue, String heldValue) {
+        String normalised = normalisePropertyName(propertyName);
+        if (HEADER_LIST_CREDENTIAL_PROPERTIES.contains(normalised)) {
+            return EmbeddedCredentialRedaction.restoreHeaderList(propertyName, incomingValue, heldValue);
+        }
+        if (JSON_DOCUMENT_CREDENTIAL_PROPERTIES.contains(normalised)) {
+            return EmbeddedCredentialRedaction.restoreJsonDocument(propertyName, incomingValue, heldValue);
+        }
+        return incomingValue;
+    }
+
+    /**
+     * True when a value carries the redaction mask anywhere inside it, so it is not wholly real and
+     * must not be stored as-is where there is no held value to restore the masked parts from.
+     */
+    public static boolean containsRedactionMask(String value) {
+        return value != null && value.contains(REDACTED_VALUE);
     }
 
     @SuppressWarnings("ConstantConditions")
@@ -5999,7 +6086,7 @@ public class ConfigurationProperties {
             propertiesLogDump.append("Reading properties from property file [").append(propertyFile()).append("]:").append(NEW_LINE);
             while (propertyNames.hasMoreElements()) {
                 String propertyName = String.valueOf(propertyNames.nextElement());
-                String displayValue = isSensitivePropertyName(propertyName) ? REDACTED_VALUE : properties.getProperty(propertyName);
+                String displayValue = redactSensitiveValue(propertyName, properties.getProperty(propertyName));
                 propertiesLogDump.append("  ").append(propertyName).append(" = ").append(displayValue).append(NEW_LINE);
             }
 
@@ -6483,10 +6570,10 @@ public class ConfigurationProperties {
             String value;
             if (resolvedValue == null) {
                 value = "(default)";
-            } else if (isSensitivePropertyName(systemPropertyKey)) {
-                value = REDACTED_VALUE;
             } else {
-                value = resolvedValue;
+                // one rule for every disclosing surface: whole-value credentials masked whole, and
+                // credentials embedded in a structured value redacted per header / per JSON field
+                value = redactSensitiveValue(systemPropertyKey, resolvedValue);
             }
             resolved.add(new ResolvedProperty(systemPropertyKey, value, source));
         }
@@ -6517,9 +6604,12 @@ public class ConfigurationProperties {
     /**
      * Renders the effective configuration as a JSON array of
      * {@code {"name":..,"value":..,"source":..}} objects, suitable for the
-     * {@code GET /mockserver/config} control-plane endpoint. Hand-built (rather than via
-     * Jackson) to keep this diagnostic free of serialization-configuration coupling and
-     * usable from the lowest module layers.
+     * {@code GET /mockserver/config} control-plane endpoint. The envelope is hand-built rather
+     * than produced by the MockServer {@code ObjectMapperFactory}, so this diagnostic does not
+     * depend on the MockServer serializer CONFIGURATION (its modules, DTO bindings and inclusion
+     * rules) and stays usable from the lowest module layers. Redacting an individual value may
+     * still parse it with a plain, unconfigured {@link com.fasterxml.jackson.databind.ObjectMapper}
+     * — see {@link EmbeddedCredentialRedaction} — which carries none of that coupling.
      */
     public static String effectiveConfigurationAsJson() {
         StringBuilder builder = new StringBuilder();

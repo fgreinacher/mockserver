@@ -1137,16 +1137,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place, including a value originally supplied by system property or environment variable. Applying a previously
   retrieved (masked) configuration back is safe: a masked value is ignored rather than written, so a `GET`-then-`PUT`
   round trip cannot silently overwrite one of these credentials with the placeholder.
-- **KNOWN GAP — credentials embedded *inside* `llmBackendsConfig` and `prometheusRemoteWriteHeaders` are NOT masked and
-  ARE disclosed by `GET /mockserver/configuration`.** These two properties are now settable and readable over the
-  configuration API, and both can legitimately carry secrets in their values: `llmBackendsConfig` is a JSON document
-  whose backend entries each hold an `apiKey`, and `prometheusRemoteWriteHeaders` is an arbitrary header list that
-  typically contains `Authorization` or an `Api-Key`. The write-only masking above is keyed on the whole-property name,
-  so it does not reach a secret nested in a value, and `GET` therefore returns these two in clear once set. On a
-  control plane left unauthenticated (the default) anyone who can reach it can read them back. **If you set either
-  property with an embedded secret, protect the control plane (`controlPlane*Authentication*`) or do not rely on the
-  endpoint keeping the secret private.** Per-field / per-header redaction is a planned follow-up; until it lands this
-  is the documented behaviour, not an oversight.
+- **Credentials embedded *inside* `prometheusRemoteWriteHeaders` and `llmBackendsConfig` are now redacted per header /
+  per field on every surface that discloses a configuration value** — `GET /mockserver/configuration`,
+  `GET /mockserver/config` (the effective-configuration diagnostic), `--print-config`, and the startup property-file
+  log dump, which all now share one redaction rule rather than one per endpoint. The write-only masking above is keyed on the whole property name, so
+  it could not reach a secret nested in a structured value; these two properties are now masked field-by-field instead.
+  For `prometheusRemoteWriteHeaders` the value of each credential-bearing header (`Authorization`, `Api-Key`,
+  `X-Auth-Token`, …) becomes `***REDACTED***` while every other header — and the ordering and spacing of the list — is
+  returned exactly as configured, so `Api-Key=secret,X-Scope-OrgID=tenant-a` reads back as
+  `Api-Key=***REDACTED***,X-Scope-OrgID=tenant-a`. `llmBackendsConfig` is documented as a *path* to a backends JSON
+  file — the `apiKey`s live in that file, which the configuration API never returns — so a path is returned unchanged;
+  a value that is itself a JSON document has each `apiKey`-shaped field redacted as defence-in-depth, and an
+  unparseable document is redacted whole rather than disclosed. Applying a previously retrieved (masked) configuration
+  back is safe in the same way whole-value credentials are, and safe when only *part* of the value was masked: each
+  masked header/field is restored from the value the server already holds (backends are matched by `name`, so
+  reordering cannot transplant one backend's key onto another) while the edits around it are applied normally. A
+  masked header or field with no held value is dropped rather than written, so `***REDACTED***` can never become a
+  credential. **Remaining limitation — redaction is keyed on the header/field *name*, so a credential carried inside
+  an otherwise ordinary value (classically a URL with an inline `user:pass@`) is still returned in clear.** If you
+  configure a secret in that shape, protect the control plane (`controlPlane*Authentication*`) or do not rely on these
+  endpoints keeping it private.
 - **SLO tracking, chaos auto-halt and preemption-simulation properties now take effect when set on a
   `Configuration` instance or via the config API.** `sloTrackingEnabled`, `sloWindowMaxSamples` and
   `sloWindowRetentionMillis` (SLO sample store), `chaosAutoHaltEnabled`, `chaosAutoHaltErrorThreshold` and

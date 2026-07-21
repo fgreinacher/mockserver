@@ -254,27 +254,29 @@ public class ConfigurationEnforcementClassificationTest {
      * if a new credential is added to one and not the other,
      * {@link #shouldKeepTheWriteOnlyCredentialListInSyncWithTheMaskingGuard()} fails.
      *
-     * <p><strong>KNOWN GAP — deliberately not listed here.</strong> This masking is keyed on the
-     * whole-property name, so it only covers properties whose <em>entire value</em> is a credential.
-     * Two properties carry secrets <em>embedded inside</em> a structured value and are therefore NOT
-     * masked — {@code GET /mockserver/configuration} discloses them in clear once set:
+     * <p>Two shapes of credential are covered. Three properties are credentials in their
+     * <em>entirety</em> and are masked whole. Two carry credentials <em>embedded inside</em> a
+     * structured value and are masked per field, by
+     * {@code ConfigurationProperties.redactSensitiveValue(..)} — the one rule shared by this endpoint,
+     * {@code GET /mockserver/config}, {@code --print-config} and the startup property-file log dump:
      * <ul>
-     *   <li>{@code llmBackendsConfig} — a JSON document whose backend entries each hold an
-     *       {@code apiKey} (parsed at {@code LlmBackendResolver} {@code node.path("apiKey")}).</li>
-     *   <li>{@code prometheusRemoteWriteHeaders} — an arbitrary header list that typically carries
-     *       {@code Authorization} or an {@code Api-Key}.</li>
+     *   <li>{@code prometheusRemoteWriteHeaders} — an arbitrary {@code k=v,k2=v2} header list; the
+     *       value of each credential-bearing header name ({@code Authorization}, {@code Api-Key}, …)
+     *       is redacted and every other header is returned untouched.</li>
+     *   <li>{@code llmBackendsConfig} — documented as a <em>path</em> to a backends JSON file (the
+     *       secrets live in that file, which the configuration API never returns), so a path is
+     *       returned unchanged; a value that is itself a JSON document has each {@code apiKey}-shaped
+     *       field redacted as defence-in-depth.</li>
      * </ul>
-     * They are intentionally absent from this set because listing them here would make the masking
-     * guard assert a masking that does not happen. The current (unmasked) behaviour is pinned by
-     * {@link ConfigurationDTOCredentialMaskingTest#embeddedValueCredentialsAreNotYetMaskedOnRead()}
-     * so a future reader sees it and it cannot silently regress to "assumed masked". Per-field /
-     * per-header redaction is a planned follow-up (see docs/plans); when it lands, move these two in
-     * here, add them to the masking guard, and flip that pinning test to assert redaction.
+     * Because a partially-masked value is still mostly real configuration, the masking guard asserts
+     * the exact expected masked form for these two, not merely the presence of the mask.
      */
     static final java.util.Set<String> WRITE_ONLY_CREDENTIALS = new TreeSet<>(java.util.Arrays.asList(
         "llmApiKey",
+        "llmBackendsConfig",
         "prometheusRemoteWriteBasicAuthPassword",
-        "prometheusRemoteWriteBearerToken"
+        "prometheusRemoteWriteBearerToken",
+        "prometheusRemoteWriteHeaders"
     ));
 
     @Test

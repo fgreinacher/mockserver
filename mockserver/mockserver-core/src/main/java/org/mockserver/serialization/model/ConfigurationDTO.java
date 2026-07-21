@@ -1059,7 +1059,11 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.llmProvider(llmProvider);
         configuration.llmModel(llmModel);
         configuration.llmBaseUrl(llmBaseUrl);
-        configuration.llmBackendsConfig(llmBackendsConfig);
+        // value-embedded credentials: buildObject() has no previously-held configuration to restore a
+        // redacted field from, so a value carrying the mask is left UNSET rather than stored in a
+        // reduced form that would then shadow the static store — exactly as a whole-value credential
+        // is left unset below
+        configuration.llmBackendsConfig(ConfigurationProperties.containsRedactionMask(llmBackendsConfig) ? null : llmBackendsConfig);
         configuration.llmRequestTimeoutMillis(llmRequestTimeoutMillis);
         configuration.llmSemanticMatchingEnabled(llmSemanticMatchingEnabled);
         configuration.llmInferUsageEnabled(llmInferUsageEnabled);
@@ -1075,7 +1079,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.prometheusRemoteWriteUrl(prometheusRemoteWriteUrl);
         configuration.prometheusRemoteWriteIntervalSeconds(prometheusRemoteWriteIntervalSeconds);
         configuration.prometheusRemoteWriteBasicAuthUsername(prometheusRemoteWriteBasicAuthUsername);
-        configuration.prometheusRemoteWriteHeaders(prometheusRemoteWriteHeaders);
+        configuration.prometheusRemoteWriteHeaders(ConfigurationProperties.containsRedactionMask(prometheusRemoteWriteHeaders) ? null : prometheusRemoteWriteHeaders);
         configuration.prometheusRemoteWriteProtocolVersion(prometheusRemoteWriteProtocolVersion);
         configuration.regexMatchingTimeoutMillis(regexMatchingTimeoutMillis);
         configuration.xpathMatchingTimeoutMillis(xpathMatchingTimeoutMillis);
@@ -1928,7 +1932,13 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.llmBaseUrl(llmBaseUrl);
         }
         if (llmBackendsConfig != null) {
-            target.llmBackendsConfig(llmBackendsConfig);
+            // value-embedded credentials: each redacted field is restored from the value the target
+            // already holds, so an edit to the surrounding document is applied while a field the
+            // client only ever saw masked keeps its real value instead of being overwritten by it
+            String restored = ConfigurationProperties.restoreRedactedValue("llmBackendsConfig", llmBackendsConfig, target.llmBackendsConfig());
+            if (restored != null) {
+                target.llmBackendsConfig(restored);
+            }
         }
         if (llmRequestTimeoutMillis != null) {
             target.llmRequestTimeoutMillis(llmRequestTimeoutMillis);
@@ -1976,7 +1986,10 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.prometheusRemoteWriteBasicAuthUsername(prometheusRemoteWriteBasicAuthUsername);
         }
         if (prometheusRemoteWriteHeaders != null) {
-            target.prometheusRemoteWriteHeaders(prometheusRemoteWriteHeaders);
+            String restored = ConfigurationProperties.restoreRedactedValue("prometheusRemoteWriteHeaders", prometheusRemoteWriteHeaders, target.prometheusRemoteWriteHeaders());
+            if (restored != null) {
+                target.prometheusRemoteWriteHeaders(restored);
+            }
         }
         if (prometheusRemoteWriteProtocolVersion != null) {
             target.prometheusRemoteWriteProtocolVersion(prometheusRemoteWriteProtocolVersion);
@@ -4459,7 +4472,18 @@ public class ConfigurationDTO implements DTO<Configuration> {
         return this;
     }
 
+    /**
+     * Documented shape is a PATH to a backends JSON file, which holds no secret and is returned
+     * unchanged. A value that is itself a JSON document has each credential-bearing field redacted —
+     * by the same {@link ConfigurationProperties#redactSensitiveValue(String, String)} rule every
+     * other disclosing surface uses.
+     */
     public String getLlmBackendsConfig() {
+        return ConfigurationProperties.redactSensitiveValue("llmBackendsConfig", llmBackendsConfig);
+    }
+
+    @JsonIgnore
+    public String getLlmBackendsConfigRawValue() {
         return llmBackendsConfig;
     }
 
@@ -4603,7 +4627,18 @@ public class ConfigurationDTO implements DTO<Configuration> {
         return this;
     }
 
+    /**
+     * The value of every credential-bearing header ({@code Authorization}, {@code Api-Key}, …) is
+     * redacted; every other header is returned exactly as supplied — by the same
+     * {@link ConfigurationProperties#redactSensitiveValue(String, String)} rule every other
+     * disclosing surface uses.
+     */
     public String getPrometheusRemoteWriteHeaders() {
+        return ConfigurationProperties.redactSensitiveValue("prometheusRemoteWriteHeaders", prometheusRemoteWriteHeaders);
+    }
+
+    @JsonIgnore
+    public String getPrometheusRemoteWriteHeadersRawValue() {
         return prometheusRemoteWriteHeaders;
     }
 
@@ -4656,6 +4691,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
     // read the private fields directly, so full functionality is preserved while the wire stays clean.
     // Each has an @JsonIgnore-d *Raw accessor for in-process callers that legitimately need the real
     // value; those are excluded from serialization so they cannot leak through a JSON round trip.
+    //
+    // Two further properties — prometheusRemoteWriteHeaders and llmBackendsConfig — carry credentials
+    // INSIDE a structured value rather than as the whole value. They are masked per header / per JSON
+    // field by ConfigurationProperties.redactSensitiveValue(...) — the same rule GET /mockserver/config
+    // and the startup log dump use — which gives them the same never-leaked, never-clobbered
+    // guarantee. See their getters, above, and the write paths in buildObject()/applyTo().
     // ---------------------------------------------------------------------------------------------
 
     public String getLlmApiKey() {

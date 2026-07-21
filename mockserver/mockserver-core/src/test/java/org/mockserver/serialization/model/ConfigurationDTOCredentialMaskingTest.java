@@ -1,16 +1,20 @@
 package org.mockserver.serialization.model;
 
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.Test;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.serialization.ConfigurationSerializer;
+import org.mockserver.serialization.ObjectMapperFactory;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -25,12 +29,24 @@ import static org.mockserver.configuration.Configuration.configuration;
  * Security guard for WRITE-ONLY credential configuration properties.
  *
  * <p>These properties are fully settable — over the {@code Configuration} instance and over
- * {@code PUT /mockserver/configuration} — but must never be readable: {@code GET /mockserver/configuration}
- * returns {@link ConfigurationProperties#REDACTED_VALUE} in their place.
+ * {@code PUT /mockserver/configuration} — but their credential content must never be readable:
+ * {@code GET /mockserver/configuration} returns {@link ConfigurationProperties#REDACTED_VALUE} in
+ * its place.
  *
- * <p>Three distinct failures are asserted, because masking a secret is easy to get half-right:
+ * <p>Two shapes are covered, and both are enumerated from {@link #WRITE_ONLY_CREDENTIALS}:
+ * <ul>
+ *   <li><strong>whole-value</strong> credentials, whose entire value is the secret, mask to the bare
+ *       {@link ConfigurationProperties#REDACTED_VALUE};</li>
+ *   <li><strong>value-embedded</strong> credentials, which carry a secret inside a structured value
+ *       (a {@code k=v} header list, a JSON document), mask <em>per header / per field</em> — the
+ *       surrounding, non-secret configuration must survive intact.</li>
+ * </ul>
+ *
+ * <p>Four distinct failures are asserted, because masking a secret is easy to get half-right:
  * <ol>
  *   <li><strong>Leak</strong> — the real secret appearing anywhere in the serialized configuration.</li>
+ *   <li><strong>Over-masking</strong> — a partial mask swallowing the non-secret configuration around
+ *       it, so an operator can no longer read back the headers/backends they configured.</li>
  *   <li><strong>Round-trip destruction</strong> — a client doing GET-then-PUT of the whole blob writing
  *       the literal mask back over a working credential. This is the classic bug in the masking pattern:
  *       the secret does not leak, it is silently destroyed instead.</li>
@@ -45,16 +61,44 @@ import static org.mockserver.configuration.Configuration.configuration;
 public class ConfigurationDTOCredentialMaskingTest {
 
     /**
-     * Every configuration property that is settable but must be masked on read. Kept in sync with the
-     * copy in {@link ConfigurationEnforcementClassificationTest} by a test in that class.
+     * Every configuration property that is settable but whose credential content must be masked on
+     * read. Kept in sync with the copy in {@link ConfigurationEnforcementClassificationTest} by a test
+     * in that class.
      */
     static final Set<String> WRITE_ONLY_CREDENTIALS = new LinkedHashSet<>(Arrays.asList(
         "llmApiKey",
+        "llmBackendsConfig",
         "prometheusRemoteWriteBearerToken",
-        "prometheusRemoteWriteBasicAuthPassword"
+        "prometheusRemoteWriteBasicAuthPassword",
+        "prometheusRemoteWriteHeaders"
     ));
 
     private static final String REAL_SECRET_PREFIX = "sk-real-secret-do-not-leak-";
+
+    private static final String MASK = ConfigurationProperties.REDACTED_VALUE;
+
+    /**
+     * The value-embedded credentials, each mapped to a realistic structured value that carries BOTH a
+     * secret and ordinary configuration, and to the exact form {@code GET} must return for it. Asserting
+     * the exact masked form (rather than "contains the mask") is what pins partial masking: an
+     * implementation that redacted the whole value, dropped the other headers, or reordered the
+     * document would fail.
+     */
+    private static final Map<String, String> EMBEDDED_REAL_VALUES = new LinkedHashMap<>();
+    private static final Map<String, String> EMBEDDED_MASKED_VALUES = new LinkedHashMap<>();
+
+    static {
+        EMBEDDED_REAL_VALUES.put("llmBackendsConfig",
+            "[{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "llmBackendsConfig\"},"
+                + "{\"name\":\"ollama\",\"provider\":\"OLLAMA\",\"baseUrl\":\"http://localhost:11434\"}]");
+        EMBEDDED_MASKED_VALUES.put("llmBackendsConfig",
+            "[{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + MASK + "\"},"
+                + "{\"name\":\"ollama\",\"provider\":\"OLLAMA\",\"baseUrl\":\"http://localhost:11434\"}]");
+        EMBEDDED_REAL_VALUES.put("prometheusRemoteWriteHeaders",
+            "Authorization=Bearer " + REAL_SECRET_PREFIX + "prometheusRemoteWriteHeaders,X-Scope-OrgID=tenant-a");
+        EMBEDDED_MASKED_VALUES.put("prometheusRemoteWriteHeaders",
+            "Authorization=" + MASK + ",X-Scope-OrgID=tenant-a");
+    }
 
     private final ConfigurationSerializer serializer = new ConfigurationSerializer(new MockServerLogger());
 
@@ -75,7 +119,7 @@ public class ConfigurationDTOCredentialMaskingTest {
             }
         }
 
-        assertThat("write-only credentials whose REAL value appears in the serialized configuration — "
+        assertThat("write-only credentials whose REAL secret appears in the serialized configuration — "
                 + "GET /mockserver/configuration would hand the secret to any reader: " + leaked,
             leaked, is(empty()));
     }
@@ -91,24 +135,26 @@ public class ConfigurationDTOCredentialMaskingTest {
                 json, containsString(credential));
         }
         assertThat("the mask must be the shared ConfigurationProperties.REDACTED_VALUE, not a locally "
-                + "invented token", json, containsString(ConfigurationProperties.REDACTED_VALUE));
+                + "invented token", json, containsString(MASK));
     }
 
     @Test
     public void shouldMaskEachCredentialOnTheDtoGetterThatJacksonSerializes() throws Exception {
         ConfigurationDTO dto = new ConfigurationDTO(configurationWithEveryCredentialSet());
 
-        List<String> unmasked = new ArrayList<>();
+        List<String> wrong = new ArrayList<>();
         for (String credential : WRITE_ONLY_CREDENTIALS) {
             Object value = dtoGetter(credential).invoke(dto);
-            if (!ConfigurationProperties.REDACTED_VALUE.equals(value)) {
-                unmasked.add(credential + " (getter returned <" + value + ">)");
+            if (!expectedMaskFor(credential).equals(value)) {
+                wrong.add(credential + " (getter returned <" + value + "> but should return <"
+                    + expectedMaskFor(credential) + ">)");
             }
         }
 
-        assertThat("write-only credential getters that did NOT return the redaction mask — Jackson "
-                + "serializes exactly these getters, so an unmasked one is a live secret leak: " + unmasked,
-            unmasked, is(empty()));
+        assertThat("write-only credential getters that did NOT return the expected masked form — Jackson "
+                + "serializes exactly these getters, so an unmasked one is a live secret leak and an "
+                + "over-masked one destroys readable configuration: " + wrong,
+            wrong, is(empty()));
     }
 
     @Test
@@ -125,9 +171,36 @@ public class ConfigurationDTOCredentialMaskingTest {
                 // value for this credential, so "unset" cannot be observed here — masking it IS correct
                 continue;
             }
-            assertThat("unset credential " + credential + " should mask to null, not to the mask literal",
-                dtoGetter(credential).invoke(dto), is(nullValue()));
+            Object masked = dtoGetter(credential).invoke(dto);
+            if (isEmbeddedValueCredential(credential)) {
+                assertThat("an unset structured value carries no embedded secret, so " + credential
+                        + " must serialize unchanged rather than claim a secret exists", masked, is(effective));
+            } else {
+                assertThat("unset credential " + credential + " should mask to null, not to the mask literal",
+                    masked, is(nullValue()));
+            }
         }
+    }
+
+    @Test
+    public void embeddedValueCredentialsAreRedactedFieldByFieldOnRead() throws Exception {
+        Configuration configuration = configuration()
+            .llmBackendsConfig(EMBEDDED_REAL_VALUES.get("llmBackendsConfig"))
+            .prometheusRemoteWriteHeaders(EMBEDDED_REAL_VALUES.get("prometheusRemoteWriteHeaders"));
+
+        String json = serializer.serialize(configuration);
+
+        assertThat("the apiKey embedded in llmBackendsConfig must not be disclosed by GET /mockserver/configuration",
+            json, not(containsString(REAL_SECRET_PREFIX + "llmBackendsConfig")));
+        assertThat("the credential embedded in prometheusRemoteWriteHeaders must not be disclosed by "
+                + "GET /mockserver/configuration", json, not(containsString(REAL_SECRET_PREFIX + "prometheusRemoteWriteHeaders")));
+
+        // only the secret is removed — the rest of each value is ordinary configuration an operator
+        // must still be able to read back
+        assertThat("the non-secret backends configuration must survive redaction",
+            json, containsString("http://localhost:11434"));
+        assertThat("headers that are not credentials must survive redaction",
+            json, containsString("X-Scope-OrgID=tenant-a"));
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -140,7 +213,7 @@ public class ConfigurationDTOCredentialMaskingTest {
 
         // GET: serialize the live configuration — every credential comes back masked
         String maskedJson = serializer.serialize(live);
-        assertThat(maskedJson, containsString(ConfigurationProperties.REDACTED_VALUE));
+        assertThat(maskedJson, containsString(MASK));
 
         // PUT: apply that very same body straight back, exactly as a GET-then-PUT client would
         applyJsonTo(maskedJson, live);
@@ -148,7 +221,7 @@ public class ConfigurationDTOCredentialMaskingTest {
         List<String> destroyed = new ArrayList<>();
         for (String credential : WRITE_ONLY_CREDENTIALS) {
             Object value = configurationGetter(credential).invoke(live);
-            if (!realSecretFor(credential).equals(value)) {
+            if (!realValueFor(credential).equals(value)) {
                 destroyed.add(credential + " (became <" + value + ">)");
             }
         }
@@ -169,14 +242,211 @@ public class ConfigurationDTOCredentialMaskingTest {
         List<String> poisoned = new ArrayList<>();
         for (String credential : WRITE_ONLY_CREDENTIALS) {
             Object value = configurationGetter(credential).invoke(rebuilt);
-            if (ConfigurationProperties.REDACTED_VALUE.equals(value)) {
-                poisoned.add(credential);
+            if (value != null && String.valueOf(value).contains(MASK)) {
+                poisoned.add(credential + " (became <" + value + ">)");
             }
         }
 
         assertThat("configuration rebuilt from a masked body carries the literal mask as a credential — "
-                + "outbound auth would send \"" + ConfigurationProperties.REDACTED_VALUE + "\": " + poisoned,
+                + "outbound auth would send \"" + MASK + "\": " + poisoned,
             poisoned, is(empty()));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 2b. the mixed case: only SOME fields of a structured value are masked. The masked ones must keep
+    //     their real values and the edited ones must actually be written — getting either half wrong
+    //     is invisible until outbound auth breaks or an edit is silently ignored.
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    public void shouldRestoreOnlyTheMaskedHeaderAndStillApplyTheEditedOnes() throws Exception {
+        Configuration live = configuration().prometheusRemoteWriteHeaders(
+            "Authorization=Bearer " + REAL_SECRET_PREFIX + "held,X-Scope-OrgID=tenant-a");
+
+        // the operator edited one header and added another, leaving the masked one exactly as GET showed it
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"Authorization=" + MASK
+            + ",X-Scope-OrgID=tenant-b,X-Custom=abc\"}", live);
+
+        assertThat(live.prometheusRemoteWriteHeaders(),
+            is("Authorization=Bearer " + REAL_SECRET_PREFIX + "held,X-Scope-OrgID=tenant-b,X-Custom=abc"));
+    }
+
+    @Test
+    public void shouldDropAMaskedHeaderForWhichNoRealValueIsHeld() throws Exception {
+        Configuration live = configuration().prometheusRemoteWriteHeaders("");
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"Api-Key=" + MASK + ",X-Tenant=acme\"}", live);
+
+        assertThat("with nothing held under that header name the mask must be dropped, never written as "
+                + "the header value", live.prometheusRemoteWriteHeaders(), is("X-Tenant=acme"));
+    }
+
+    @Test
+    public void shouldRestoreOnlyTheMaskedBackendApiKeyAndStillApplyTheEditedOnes() throws Exception {
+        Configuration live = configuration().llmBackendsConfig(
+            "[{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "held\"},"
+                + "{\"name\":\"azure\",\"provider\":\"OPENAI\",\"apiKey\":\"old-azure-key\"}]");
+
+        // openai's key was only ever seen masked; azure's is rotated to a real new value
+        applyJsonTo("{\"llmBackendsConfig\":\"[{\\\"name\\\":\\\"openai\\\",\\\"provider\\\":\\\"OPENAI\\\","
+            + "\\\"apiKey\\\":\\\"" + MASK + "\\\"},{\\\"name\\\":\\\"azure\\\",\\\"provider\\\":\\\"OPENAI\\\","
+            + "\\\"apiKey\\\":\\\"new-azure-key\\\"}]\"}", live);
+
+        assertThat("the masked backend key must keep its held value and the rotated one must be applied",
+            live.llmBackendsConfig(),
+            is("[{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "held\"},"
+                + "{\"name\":\"azure\",\"provider\":\"OPENAI\",\"apiKey\":\"new-azure-key\"}]"));
+    }
+
+    @Test
+    public void shouldLeaveTheHeldHeaderListUntouchedWhenNoMaskedHeaderCanBeResolved() throws Exception {
+        // every incoming header is masked and none is held, so nothing survives the merge. Writing the
+        // empty result would PIN "" on the instance, whose getter then prefers it over the static
+        // store — silently suppressing a property-file or environment value. Leave it unset instead.
+        Configuration live = configuration();
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"Api-Key=" + MASK + ",Authorization=" + MASK + "\"}", live);
+
+        assertThat(instanceField(live, "prometheusRemoteWriteHeaders"), is(nullValue()));
+    }
+
+    @Test
+    public void shouldRestoreTheCredentialTheConsumerWouldActuallyHaveUsedWhenAHeaderNameRepeats() throws Exception {
+        // PrometheusRemoteWriteExporter#parseHeaders is last-wins, so "second" is the live credential;
+        // restoring "first" would leave the secret un-leaked but the outbound auth silently wrong
+        Configuration live = configuration().prometheusRemoteWriteHeaders("Api-Key=first,Api-Key=second");
+
+        applyJsonTo("{\"prometheusRemoteWriteHeaders\":\"Api-Key=" + MASK + ",X-Tenant=acme\"}", live);
+
+        assertThat(live.prometheusRemoteWriteHeaders(), is("Api-Key=second,X-Tenant=acme"));
+    }
+
+    @Test
+    public void shouldMaskTheWholeOfAHeaderValueContainingAComma() throws Exception {
+        // the k=v,k2=v2 format cannot escape a comma, so the tail reads as a separate entry — masking
+        // only up to the comma would publish the rest of the secret
+        String headers = "Authorization=Bearer " + REAL_SECRET_PREFIX + "head,TAIL-OF-THE-SECRET,X-Tenant=acme";
+        Configuration live = configuration().prometheusRemoteWriteHeaders(headers);
+
+        assertThat(new ConfigurationDTO(live).getPrometheusRemoteWriteHeaders(),
+            is("Authorization=" + MASK + ",X-Tenant=acme"));
+        assertThat(serializer.serialize(live), not(containsString("TAIL-OF-THE-SECRET")));
+
+        // and the whole value, comma included, survives an unedited round trip
+        applyJsonTo(serializer.serialize(live), live);
+        assertThat(live.prometheusRemoteWriteHeaders(), is(headers));
+    }
+
+    @Test
+    public void shouldMaskACredentialFieldWhateverItsJsonType() throws Exception {
+        // a secret is not always a string: recursing past a credential-named field would publish an
+        // array of tokens or a numeric key untouched
+        ConfigurationDTO dto = new ConfigurationDTO(configuration().llmBackendsConfig(
+            "{\"tokens\":[\"" + REAL_SECRET_PREFIX + "a\",\"" + REAL_SECRET_PREFIX + "b\"],"
+                + "\"apiKey\":9876543210,\"model\":\"gpt-4\"}"));
+
+        assertThat(dto.getLlmBackendsConfig(),
+            is("{\"tokens\":\"" + MASK + "\",\"apiKey\":\"" + MASK + "\",\"model\":\"gpt-4\"}"));
+    }
+
+    @Test
+    public void shouldLeaveAPartiallyMaskedValueUnsetWhenBuildingAFreshConfiguration() throws Exception {
+        // buildObject() has no held configuration to restore the masked header from. Storing the
+        // reduced value would PIN it, shadowing ConfigurationProperties — whereas a whole-value
+        // credential is left unset so the static store resolves. Both must behave the same way.
+        ConfigurationDTO dto = ObjectMapperFactory.createObjectMapper().readValue(
+            "{\"prometheusRemoteWriteHeaders\":\"Api-Key=" + MASK + ",X-Tenant=acme\","
+                + "\"llmBackendsConfig\":\"[{\\\"name\\\":\\\"openai\\\",\\\"apiKey\\\":\\\"" + MASK + "\\\"}]\"}",
+            ConfigurationDTO.class);
+
+        Configuration built = dto.buildObject();
+
+        // assert the INSTANCE FIELD is unset, not the effective getter: the getter falls back to the
+        // static store, so comparing it against ConfigurationProperties would read shared global state
+        // twice and could false-negative if another (parallel) test mutated it in between
+        assertThat("a partially-masked header list must be left unset, not pinned to its reduced form",
+            instanceField(built, "prometheusRemoteWriteHeaders"), is(nullValue()));
+        assertThat("a partially-masked backends document must be left unset, not pinned to its reduced form",
+            instanceField(built, "llmBackendsConfig"), is(nullValue()));
+    }
+
+    /**
+     * The raw value held on the {@link Configuration} instance, {@code null} when the property was
+     * never set on it (so its getter falls back to {@link ConfigurationProperties}). Read reflectively
+     * because {@code Configuration} exposes only the effective getter.
+     */
+    private static Object instanceField(Configuration configuration, String name) throws Exception {
+        java.lang.reflect.Field field = Configuration.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(configuration);
+    }
+
+    @Test
+    public void shouldDropAMaskedBackendApiKeyForWhichNoRealValueIsHeld() throws Exception {
+        Configuration live = configuration().llmBackendsConfig("");
+
+        applyJsonTo("{\"llmBackendsConfig\":\"[{\\\"name\\\":\\\"openai\\\",\\\"provider\\\":\\\"OPENAI\\\","
+            + "\\\"apiKey\\\":\\\"" + MASK + "\\\"}]\"}", live);
+
+        assertThat("with no held backend of that name the masked key must be dropped, never written",
+            live.llmBackendsConfig(), is("[{\"name\":\"openai\",\"provider\":\"OPENAI\"}]"));
+    }
+
+    @Test
+    public void shouldNotTransplantAHeldKeyOntoADifferentBackend() throws Exception {
+        Configuration live = configuration().llmBackendsConfig(
+            "[{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "openai\"}]");
+
+        // a NEW backend is prepended, so index 0 no longer refers to the held one — matching by
+        // position here would hand openai's key to a backend the operator never gave it to
+        applyJsonTo("{\"llmBackendsConfig\":\"[{\\\"name\\\":\\\"anthropic\\\",\\\"provider\\\":\\\"ANTHROPIC\\\","
+            + "\\\"apiKey\\\":\\\"" + MASK + "\\\"},{\\\"name\\\":\\\"openai\\\",\\\"provider\\\":\\\"OPENAI\\\","
+            + "\\\"apiKey\\\":\\\"" + MASK + "\\\"}]\"}", live);
+
+        assertThat(live.llmBackendsConfig(),
+            is("[{\"name\":\"anthropic\",\"provider\":\"ANTHROPIC\"},"
+                + "{\"name\":\"openai\",\"provider\":\"OPENAI\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "openai\"}]"));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 2c. values with nothing to redact must be untouched — masking must not reformat, reorder or
+    //     swallow ordinary configuration, and must never throw on a value it cannot parse
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    public void shouldLeaveABackendsFilePathExactlyAsConfigured() throws Exception {
+        // the DOCUMENTED shape of llmBackendsConfig is a path to a JSON file — the secrets live in that
+        // file, which the configuration API never returns, so the path itself must not be masked
+        String path = "/etc/mockserver/llm-backends.json";
+        ConfigurationDTO dto = new ConfigurationDTO(configuration().llmBackendsConfig(path));
+
+        assertThat(dto.getLlmBackendsConfig(), is(path));
+    }
+
+    @Test
+    public void shouldLeaveAHeaderListWithoutCredentialsExactlyAsConfigured() throws Exception {
+        String headers = "X-Scope-OrgID=tenant-a, X-Custom=abc";
+        ConfigurationDTO dto = new ConfigurationDTO(configuration().prometheusRemoteWriteHeaders(headers));
+
+        assertThat("a header list with no credential-bearing header must be byte-identical, spacing included",
+            dto.getPrometheusRemoteWriteHeaders(), is(headers));
+    }
+
+    @Test
+    public void shouldFailClosedOnAMalformedBackendsDocumentRatherThanThrowOrDisclose() throws Exception {
+        // truncated JSON: it cannot be parsed, but it plainly still contains a secret
+        String malformed = "[{\"name\":\"openai\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "malformed\"";
+        Configuration live = configuration().llmBackendsConfig(malformed);
+
+        String json = serializer.serialize(live);
+
+        assertThat("an unparseable backends document must be redacted whole, not disclosed",
+            json, not(containsString(REAL_SECRET_PREFIX + "malformed")));
+        assertThat(new ConfigurationDTO(live).getLlmBackendsConfig(), is(MASK));
+
+        // and applying that fully-masked value back must leave the real one alone
+        applyJsonTo(json, live);
+        assertThat(live.llmBackendsConfig(), is(malformed));
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -188,23 +458,17 @@ public class ConfigurationDTOCredentialMaskingTest {
         Configuration target = configuration();
 
         // a PUT body carrying REAL credential values (not the mask) must be applied in full
-        StringBuilder json = new StringBuilder("{");
-        boolean first = true;
+        ObjectNode body = ObjectMapperFactory.createObjectMapper().createObjectNode();
         for (String credential : WRITE_ONLY_CREDENTIALS) {
-            if (!first) {
-                json.append(",");
-            }
-            json.append("\"").append(credential).append("\":\"").append(realSecretFor(credential)).append("\"");
-            first = false;
+            body.put(credential, realValueFor(credential));
         }
-        json.append("}");
 
-        applyJsonTo(json.toString(), target);
+        applyJsonTo(body.toString(), target);
 
         List<String> notApplied = new ArrayList<>();
         for (String credential : WRITE_ONLY_CREDENTIALS) {
             Object value = configurationGetter(credential).invoke(target);
-            if (!realSecretFor(credential).equals(value)) {
+            if (!realValueFor(credential).equals(value)) {
                 notApplied.add(credential + " (was <" + value + ">)");
             }
         }
@@ -222,7 +486,7 @@ public class ConfigurationDTOCredentialMaskingTest {
             assertThat("credential " + credential + " set on the Configuration instance should be readable "
                     + "in-process (masking is a wire concern, not an in-process one)",
                 configuration.getClass().getMethod(credential).invoke(configuration),
-                is(realSecretFor(credential)));
+                is(realValueFor(credential)));
         }
     }
 
@@ -234,41 +498,10 @@ public class ConfigurationDTOCredentialMaskingTest {
             Method raw = ConfigurationDTO.class.getMethod("get"
                 + Character.toUpperCase(credential.charAt(0)) + credential.substring(1) + "RawValue");
             assertThat("the raw accessor must return the real value so the functional paths keep working",
-                raw.invoke(dto), is(realSecretFor(credential)));
+                raw.invoke(dto), is(realValueFor(credential)));
             assertThat("the raw accessor must be @JsonIgnore-d so it cannot leak through serialization",
                 raw.getAnnotation(com.fasterxml.jackson.annotation.JsonIgnore.class), is(not(nullValue())));
         }
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // 4. KNOWN GAP — value-embedded credentials are NOT masked. This test PINS the current
-    //    (unmasked, disclosed-on-read) behaviour so it is visible and cannot silently regress to
-    //    "assumed masked". It is a characterisation test of a documented gap, not an endorsement:
-    //    when per-field/per-header redaction lands, flip these assertions to expect the mask and
-    //    move the two properties into WRITE_ONLY_CREDENTIALS. See docs/plans and the KNOWN GAP note
-    //    on ConfigurationEnforcementClassificationTest.WRITE_ONLY_CREDENTIALS.
-    // ---------------------------------------------------------------------------------------------
-
-    @Test
-    public void embeddedValueCredentialsAreNotYetMaskedOnRead() throws Exception {
-        Configuration configuration = configuration()
-            // a secret nested inside a JSON backends document
-            .llmBackendsConfig("[{\"name\":\"openai\",\"apiKey\":\"" + REAL_SECRET_PREFIX + "llmBackends\"}]")
-            // a secret nested inside an arbitrary header list
-            .prometheusRemoteWriteHeaders("Authorization=Bearer " + REAL_SECRET_PREFIX + "promHeaders");
-
-        String json = serializer.serialize(configuration);
-
-        // whole-property-name masking does not reach a secret embedded in a value, so GET discloses
-        // both in clear. Asserting the leak explicitly is what makes the gap impossible to overlook.
-        assertThat("EXPECTED (documented gap): the apiKey embedded in llmBackendsConfig is disclosed by "
-                + "GET /mockserver/configuration — if this now fails because the value is masked, delete "
-                + "this assertion and add llmBackendsConfig to WRITE_ONLY_CREDENTIALS",
-            json, containsString(REAL_SECRET_PREFIX + "llmBackends"));
-        assertThat("EXPECTED (documented gap): the credential embedded in prometheusRemoteWriteHeaders is "
-                + "disclosed by GET /mockserver/configuration — if this now fails because the value is "
-                + "masked, delete this assertion and add prometheusRemoteWriteHeaders to WRITE_ONLY_CREDENTIALS",
-            json, containsString(REAL_SECRET_PREFIX + "promHeaders"));
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -278,7 +511,7 @@ public class ConfigurationDTOCredentialMaskingTest {
         for (String credential : WRITE_ONLY_CREDENTIALS) {
             Configuration.class
                 .getMethod(credential, String.class)
-                .invoke(configuration, realSecretFor(credential));
+                .invoke(configuration, realValueFor(credential));
         }
         return configuration;
     }
@@ -288,14 +521,31 @@ public class ConfigurationDTOCredentialMaskingTest {
      * {@link ConfigurationDTO} and call {@code applyTo}.
      */
     private void applyJsonTo(String json, Configuration target) throws Exception {
-        ConfigurationDTO dto = org.mockserver.serialization.ObjectMapperFactory
+        ConfigurationDTO dto = ObjectMapperFactory
             .createObjectMapper()
             .readValue(json, ConfigurationDTO.class);
         dto.applyTo(target);
     }
 
+    private static boolean isEmbeddedValueCredential(String credential) {
+        return EMBEDDED_REAL_VALUES.containsKey(credential);
+    }
+
+    /** The secret itself — the string that must never appear on the wire. */
     private static String realSecretFor(String credential) {
         return REAL_SECRET_PREFIX + credential;
+    }
+
+    /** The value the property is set to: the bare secret, or a structured value that embeds it. */
+    private static String realValueFor(String credential) {
+        String embedded = EMBEDDED_REAL_VALUES.get(credential);
+        return embedded != null ? embedded : realSecretFor(credential);
+    }
+
+    /** The exact value {@code GET /mockserver/configuration} must return for that value. */
+    private static String expectedMaskFor(String credential) {
+        String embedded = EMBEDDED_MASKED_VALUES.get(credential);
+        return embedded != null ? embedded : MASK;
     }
 
     private static Method configurationGetter(String credential) throws Exception {

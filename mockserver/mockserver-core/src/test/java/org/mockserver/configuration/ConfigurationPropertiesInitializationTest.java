@@ -37,13 +37,24 @@ import static org.hamcrest.MatcherAssert.assertThat;
 public class ConfigurationPropertiesInitializationTest {
 
     private static final String PROPERTY_FILE_NAME = "mockserver.properties";
-    // A normal property plus a "sensitive" one (password) so the redaction path in readPropertyFile() —
-    // the code that NPEs in #2338 — is exercised during <clinit>. None of these are file-validated, so
-    // the test can never crash another test even if isolation ever regressed.
+    // A normal property plus one of EACH redaction shape, so every branch of the redaction path in
+    // readPropertyFile() — the code that NPEs in #2338 — is exercised during <clinit>:
+    //   * proxyAuthenticationPassword  -> whole-value masking (SENSITIVE_SUBSTRINGS)
+    //   * prometheusRemoteWriteHeaders -> per-header masking  (HEADER_LIST_CREDENTIAL_PROPERTIES)
+    //   * llmBackendsConfig            -> per-field masking   (JSON_DOCUMENT_CREDENTIAL_PROPERTIES,
+    //                                     which also forces EmbeddedCredentialRedaction.<clinit> and
+    //                                     its ObjectMapper to initialise inside this window)
+    // Without the last two, this guard would still pass if those sets were moved below the PROPERTIES
+    // initialiser, or if EmbeddedCredentialRedaction gained a non-constant back-reference to
+    // ConfigurationProperties — both of which are #2338 and both of which break server startup.
+    // None of these are file-validated, so the test can never crash another test even if isolation
+    // ever regressed.
     private static final byte[] PROPERTY_FILE_CONTENT = (
         "mockserver.serverPort=1080\n" +
         "mockserver.maxExpectations=42\n" +
-        "mockserver.proxyAuthenticationPassword=super-secret\n"
+        "mockserver.proxyAuthenticationPassword=super-secret\n" +
+        "mockserver.prometheusRemoteWriteHeaders=Authorization=Bearer secret,X-Scope-OrgID=t\n" +
+        "mockserver.llmBackendsConfig=[{\"name\":\"a\",\"apiKey\":\"sk-secret\"}]\n"
     ).getBytes(StandardCharsets.UTF_8);
 
     @Test
@@ -60,6 +71,12 @@ public class ConfigurationPropertiesInitializationTest {
             loaded, is(notNullValue()));
         assertThat(loaded.getProperty("mockserver.serverPort"), is("1080"));
         assertThat(loaded.getProperty("mockserver.maxExpectations"), is("42"));
+        // the two value-embedded-credential shapes survive load intact — redacting them is a display
+        // concern of the log dump, and must never alter the properties the server then reads
+        assertThat(loaded.getProperty("mockserver.prometheusRemoteWriteHeaders"),
+            is("Authorization=Bearer secret,X-Scope-OrgID=t"));
+        assertThat(loaded.getProperty("mockserver.llmBackendsConfig"),
+            is("[{\"name\":\"a\",\"apiKey\":\"sk-secret\"}]"));
     }
 
     /**
@@ -99,8 +116,13 @@ public class ConfigurationPropertiesInitializationTest {
 
         @Override
         protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            // EmbeddedCredentialRedaction is loaded child-first too, so the fresh copy resolves
+            // ConfigurationProperties through THIS loader — i.e. back into the class whose <clinit>
+            // is still running. That is the exact re-entrancy #2338 is about, and loading it from the
+            // parent (already initialised) would quietly skip it.
             if (name.equals("org.mockserver.configuration.ConfigurationProperties")
-                || name.startsWith("org.mockserver.configuration.ConfigurationProperties$")) {
+                || name.startsWith("org.mockserver.configuration.ConfigurationProperties$")
+                || name.equals("org.mockserver.configuration.EmbeddedCredentialRedaction")) {
                 synchronized (getClassLoadingLock(name)) {
                     Class<?> loaded = findLoadedClass(name);
                     if (loaded == null) {
