@@ -62,8 +62,8 @@ vi.mock('monaco-editor', () => ({
   languages: { json: { jsonDefaults: { diagnosticsOptions: { schemas: [] }, setDiagnosticsOptions: vi.fn() } } },
 }));
 
-vi.mock('monaco-editor/esm/vs/editor/editor.worker?worker', () => ({ default: class {} }));
-vi.mock('monaco-editor/esm/vs/language/json/json.worker?worker', () => ({ default: class {} }));
+vi.mock('monaco-editor/editor/editor.worker?worker', () => ({ default: class {} }));
+vi.mock('monaco-editor/language/json/json.worker?worker', () => ({ default: class {} }));
 
 import JsonEditor from '../components/JsonEditor';
 

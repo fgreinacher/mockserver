@@ -67,8 +67,8 @@ vi.mock('monaco-editor', () => ({
   languages: { json: { jsonDefaults: { diagnosticsOptions: { schemas: [] }, setDiagnosticsOptions: vi.fn() } } },
 }));
 
-vi.mock('monaco-editor/esm/vs/editor/editor.worker?worker', () => ({ default: class {} }));
-vi.mock('monaco-editor/esm/vs/language/json/json.worker?worker', () => ({ default: class {} }));
+vi.mock('monaco-editor/editor/editor.worker?worker', () => ({ default: class {} }));
+vi.mock('monaco-editor/language/json/json.worker?worker', () => ({ default: class {} }));
 
 // jsdom does not implement ResizeObserver, which @mui/x-charts (and other
 // responsive components) rely on. Provide a no-op so charts can render in tests.

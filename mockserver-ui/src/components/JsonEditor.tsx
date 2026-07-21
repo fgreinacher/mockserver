@@ -8,8 +8,11 @@ import { useTheme } from '@mui/material/styles';
 import { monospaceFontFamily } from '../theme';
 // Vite ?worker imports — types declared in monaco-workers.d.ts so this stays
 // self-contained without a shared vite-env.d.ts dependency.
-import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
-import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
+// monaco-editor 0.56.0 added an `exports` map ("./*" -> "./esm/vs/*.js"), so
+// subpaths are now resolved relative to esm/vs and must NOT include that prefix
+// themselves (the old "esm/vs/..." form double-prefixes to "esm/vs/esm/vs/...").
+import EditorWorker from 'monaco-editor/editor/editor.worker?worker';
+import JsonWorker from 'monaco-editor/language/json/json.worker?worker';
 
 // The top-level `monaco-editor` package marks `languages.json` as a deprecated
 // stub type, so the real json-language defaults API is described locally below.
