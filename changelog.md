@@ -229,6 +229,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authentication is required — every verb is rejected with `401`. No production behaviour changed.
 
 ### Changed
+- **The S3 blob-store config-to-client wiring is now covered by a behavioural unit test.** A new
+  network-free test exercises `S3BlobStoreRegistrar.createS3BlobStore(...)` directly and asserts the
+  resulting client/store reflects the configuration: a missing bucket throws, the region defaults to
+  `us-east-1` when unset (and honours an explicit region), an explicit endpoint override is applied
+  (and left unset otherwise), static credentials are used when supplied (falling back to the default
+  AWS credential chain when not), and the bucket and key prefix are passed through. Previously only
+  registration idempotency and a Docker-gated MinIO contract test (which hand-built its own client)
+  were covered, so a mis-wired property could pass unnoticed.
 - **Chaos testing doc navigation refreshed for the multi-stage experiment features.** The "On this page"
   feature map on `chaos_testing.html` now surfaces the scheduled-experiment sub-capabilities that were
   documented in the body but not linked from the top of the page: recurring/scheduled (cron and delayed)
