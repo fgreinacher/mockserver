@@ -388,6 +388,172 @@ public class BreakpointMatcherRegistryTest {
         }
     }
 
+    // --- one-shot / bounded (maxHits) breakpoints ---
+
+    @Test
+    public void shouldAutoDeregisterOneShotBreakpointAfterFirstPause() {
+        BreakpointMatcherRegistry registry = BreakpointMatcherRegistry.getInstance();
+
+        // maxHits = 1 => pause once, then auto-deregister so the 2nd request is NOT intercepted
+        String id = registry.register(
+            request().withPath("/api/oneshot"),
+            EnumSet.of(BreakpointPhase.REQUEST),
+            "client-1", null, null, null, null, 1,
+            configuration, logger
+        );
+        assertThat(registry.size(), is(1));
+
+        HttpRequest matching = request().withPath("/api/oneshot");
+
+        // hit 1 — pauses
+        BreakpointMatcher firstHit = registry.findMatch(matching, BreakpointPhase.REQUEST);
+        assertThat("hit 1 should pause", firstHit, is(notNullValue()));
+        assertThat("hit 1 id", firstHit.getId(), is(id));
+
+        // breakpoint auto-deregistered after the one-shot pause
+        assertThat("breakpoint removed after maxHits reached", registry.size(), is(0));
+
+        // hit 2 — NOT intercepted (breakpoint gone from the registry)
+        assertThat("hit 2 should not pause (breakpoint deregistered)",
+            registry.findMatch(matching, BreakpointPhase.REQUEST), is(nullValue()));
+        assertThat("registry still empty", registry.size(), is(0));
+    }
+
+    @Test
+    public void shouldAutoDeregisterBoundedBreakpointAfterMaxHitsPauses() {
+        BreakpointMatcherRegistry registry = BreakpointMatcherRegistry.getInstance();
+
+        // maxHits = 3 => pause on hits 1..3, then auto-deregister; the 4th request is NOT intercepted
+        registry.register(
+            request().withPath("/api/bounded"),
+            EnumSet.of(BreakpointPhase.REQUEST),
+            "client-1", null, null, null, null, 3,
+            configuration, logger
+        );
+
+        HttpRequest matching = request().withPath("/api/bounded");
+        for (int i = 1; i <= 3; i++) {
+            assertThat("hit " + i + " should pause",
+                registry.findMatch(matching, BreakpointPhase.REQUEST), is(notNullValue()));
+        }
+        assertThat("breakpoint removed after 3 pauses", registry.size(), is(0));
+        assertThat("hit 4 should not pause (breakpoint deregistered)",
+            registry.findMatch(matching, BreakpointPhase.REQUEST), is(nullValue()));
+    }
+
+    @Test
+    public void shouldCountOnlyRealPausesAgainstMaxHitsWithSkipCount() {
+        BreakpointMatcherRegistry registry = BreakpointMatcherRegistry.getInstance();
+
+        // skipCount = 2, maxHits = 1 => skip hits 1,2 (no pause, no budget spent),
+        // pause once on hit 3, then auto-deregister; hit 4 is NOT intercepted
+        registry.register(
+            request().withPath("/api/skipmax"),
+            EnumSet.of(BreakpointPhase.REQUEST),
+            "client-1", 2, null, null, null, 1,
+            configuration, logger
+        );
+
+        HttpRequest matching = request().withPath("/api/skipmax");
+        assertThat("hit 1 skipped", registry.findMatch(matching, BreakpointPhase.REQUEST), is(nullValue()));
+        assertThat("hit 2 skipped", registry.findMatch(matching, BreakpointPhase.REQUEST), is(nullValue()));
+        assertThat("registry retains skipped breakpoint", registry.size(), is(1));
+        assertThat("hit 3 pauses", registry.findMatch(matching, BreakpointPhase.REQUEST), is(notNullValue()));
+        assertThat("breakpoint removed after its single pause", registry.size(), is(0));
+        assertThat("hit 4 not intercepted", registry.findMatch(matching, BreakpointPhase.REQUEST), is(nullValue()));
+    }
+
+    @Test
+    public void shouldNeverAutoDeregisterWhenMaxHitsAbsent() {
+        BreakpointMatcherRegistry registry = BreakpointMatcherRegistry.getInstance();
+
+        registry.register(
+            request().withPath("/api/unbounded"),
+            EnumSet.of(BreakpointPhase.REQUEST),
+            configuration, logger
+        );
+
+        HttpRequest matching = request().withPath("/api/unbounded");
+        for (int i = 1; i <= 5; i++) {
+            assertThat("hit " + i + " should pause",
+                registry.findMatch(matching, BreakpointPhase.REQUEST), is(notNullValue()));
+        }
+        assertThat("breakpoint never auto-deregisters", registry.size(), is(1));
+        for (BreakpointMatcher entry : registry.entries()) {
+            assertThat(entry.getMaxHits(), is(nullValue()));
+            assertThat(entry.isExhausted(), is(false));
+        }
+    }
+
+    @Test
+    public void shouldAutoDeregisterOneShotBreakpointViaFindResponseMatch() {
+        BreakpointMatcherRegistry registry = BreakpointMatcherRegistry.getInstance();
+
+        // maxHits = 1 on a RESPONSE-phase breakpoint with no response condition:
+        // pauses once via findResponseMatch, then auto-deregisters
+        registry.register(
+            request().withPath("/api/resp"),
+            EnumSet.of(BreakpointPhase.RESPONSE),
+            "client-1", null, null, null, null, 1,
+            configuration, logger
+        );
+
+        HttpRequest matching = request().withPath("/api/resp");
+        HttpResponse anyResponse = response().withStatusCode(200);
+
+        assertThat("first response hit should pause",
+            registry.findResponseMatch(matching, anyResponse, BreakpointPhase.RESPONSE), is(notNullValue()));
+        assertThat("breakpoint removed after its single pause", registry.size(), is(0));
+        assertThat("second response hit not intercepted",
+            registry.findResponseMatch(matching, anyResponse, BreakpointPhase.RESPONSE), is(nullValue()));
+    }
+
+    @Test
+    public void shouldNotConsumeMaxHitsWhenResponseConditionFailsInFindResponseMatch() {
+        BreakpointMatcherRegistry registry = BreakpointMatcherRegistry.getInstance();
+
+        // maxHits = 1 gated on a 500-599 response: a 200 must NOT consume the budget or
+        // remove the breakpoint (the condition falls through), a 500 pauses once then removes it
+        registry.register(
+            request().withPath("/api/cond"),
+            EnumSet.of(BreakpointPhase.RESPONSE),
+            "client-1", null, 500, 599, null, 1,
+            configuration, logger
+        );
+
+        HttpRequest matching = request().withPath("/api/cond");
+
+        // response 200: condition fails => no pause, budget untouched, breakpoint retained
+        assertThat("200 does not pause",
+            registry.findResponseMatch(matching, response().withStatusCode(200), BreakpointPhase.RESPONSE), is(nullValue()));
+        assertThat("breakpoint retained after non-matching response", registry.size(), is(1));
+
+        // response 500: condition matches => pause once, then auto-deregister
+        assertThat("500 pauses",
+            registry.findResponseMatch(matching, response().withStatusCode(500), BreakpointPhase.RESPONSE), is(notNullValue()));
+        assertThat("breakpoint removed after its single qualifying pause", registry.size(), is(0));
+        assertThat("subsequent 500 not intercepted",
+            registry.findResponseMatch(matching, response().withStatusCode(500), BreakpointPhase.RESPONSE), is(nullValue()));
+    }
+
+    @Test
+    public void shouldTreatZeroAndNegativeMaxHitsAsUnbounded() {
+        BreakpointMatcherRegistry registry = BreakpointMatcherRegistry.getInstance();
+
+        registry.register(request().withPath("/zeromax"),
+            EnumSet.of(BreakpointPhase.REQUEST), "c", null, null, null, null, 0, configuration, logger);
+        registry.register(request().withPath("/negmax"),
+            EnumSet.of(BreakpointPhase.REQUEST), "c", null, null, null, null, -3, configuration, logger);
+
+        for (BreakpointMatcher entry : registry.entries()) {
+            assertThat(entry.getMaxHits(), is(nullValue()));
+        }
+        // both still pause repeatedly (never auto-deregister)
+        assertThat(registry.findMatch(request().withPath("/zeromax"), BreakpointPhase.REQUEST), is(notNullValue()));
+        assertThat(registry.findMatch(request().withPath("/zeromax"), BreakpointPhase.REQUEST), is(notNullValue()));
+        assertThat(registry.size(), is(2));
+    }
+
     @Test
     public void shouldKeepSkipCounterPerBreakpoint() {
         BreakpointMatcherRegistry registry = BreakpointMatcherRegistry.getInstance();

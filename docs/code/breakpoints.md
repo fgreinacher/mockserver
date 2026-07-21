@@ -241,6 +241,24 @@ PUT /mockserver/breakpoint/matcher
 
 The hit counter lives on `BreakpointMatcher` as an `AtomicLong` and is incremented exactly once per matching exchange/phase inside `BreakpointMatcherRegistry.findMatch` (via `BreakpointMatcher.shouldPause()`), so it is correct under concurrent matching on the data plane / event loop. The counter is **per-breakpoint** (each registered matcher has its own). First-match semantics are preserved: the first matcher to match a request owns the decision for that hit — if it is still inside its skip window, `findMatch` returns `null` (do not pause) rather than falling through to a later matcher. `skipCount` is validated as a non-negative integer at registration (400 otherwise); `0` is normalised to "no skip".
 
+#### One-shot / bounded (maxHits) breakpoints
+
+An optional `maxHits` bounds how many times a breakpoint may **pause** before it **auto-deregisters** from the registry. `"maxHits": 1` is a one-shot breakpoint: it pauses once, then removes itself so the next matching request is no longer intercepted. `"maxHits": 3` pauses on the first three real pauses, then removes itself. Absent (or `0`/null) means the breakpoint never auto-deregisters — the legacy behaviour.
+
+```
+PUT /mockserver/breakpoint/matcher
+{
+  "httpRequest": { "path": "/api/.*" },
+  "phases": ["REQUEST"],
+  "clientId": "my-ws-client-id",
+  "maxHits": 1
+}
+```
+
+Only **real pauses** count against `maxHits`: hits suppressed by a `skipCount` window do not consume the budget, so `skipCount` and `maxHits` compose (e.g. `skipCount:2` + `maxHits:1` skips hits 1–2, pauses once on hit 3, then removes the breakpoint). Each actual pause increments a per-matcher `pauseCount` (a second `AtomicLong`); when it reaches `maxHits` the entry is `isExhausted()` and `findMatch`/`findResponseMatch` remove it from the `CopyOnWriteArrayList` after returning the winning match. `maxHits` is validated as a positive integer at registration (400 otherwise); `0`/negative is normalised to "unbounded".
+
+**Multi-phase interaction:** each phase a matcher pauses at counts as a separate pause against `maxHits`. A breakpoint registered with `phases: ["REQUEST", "RESPONSE"]` and `maxHits: 1` therefore exhausts its budget at the first REQUEST pause and auto-deregisters before the RESPONSE phase of that same exchange — so it fires exactly once (at REQUEST), not once per phase. Size the budget accordingly (e.g. `maxHits: 2`) if you want a two-phase breakpoint to fire at both phases of a single exchange.
+
 #### Response-content conditional breakpoints (RESPONSE phase)
 
 Three optional fields gate a **RESPONSE-phase** breakpoint on the actual response about to be written, so you can break only on (for example) a 5xx status or a body that contains a particular substring/regex:
@@ -269,12 +287,12 @@ Evaluation happens in `BreakpointMatcherRegistry.findResponseMatch(request, resp
 
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
-| PUT | `/mockserver/breakpoint/matcher` | `{httpRequest, phases, clientId, skipCount?, responseStatusCodeMin?, responseStatusCodeMax?, responseBodyContains?}` | Register a matcher; returns `{id, phases, clientId, skipCount?, responseStatusCodeMin?, responseStatusCodeMax?, responseBodyContains?}` (optional fields echoed only when set) |
-| GET/PUT | `/mockserver/breakpoint/matchers` | — | List all registered matchers: `{matchers:[{id,httpRequest,phases,clientId,skipCount?,responseStatusCodeMin?,responseStatusCodeMax?,responseBodyContains?}]}` (optional fields present only when set) |
+| PUT | `/mockserver/breakpoint/matcher` | `{httpRequest, phases, clientId, skipCount?, maxHits?, responseStatusCodeMin?, responseStatusCodeMax?, responseBodyContains?}` | Register a matcher; returns `{id, phases, clientId, skipCount?, maxHits?, responseStatusCodeMin?, responseStatusCodeMax?, responseBodyContains?}` (optional fields echoed only when set) |
+| GET/PUT | `/mockserver/breakpoint/matchers` | — | List all registered matchers: `{matchers:[{id,httpRequest,phases,clientId,skipCount?,maxHits?,responseStatusCodeMin?,responseStatusCodeMax?,responseBodyContains?}]}` (optional fields present only when set) |
 | PUT | `/mockserver/breakpoint/matcher/remove` | `{id}` | Remove a matcher by id; returns `{status:"removed",id}` or 404 |
 | PUT | `/mockserver/breakpoint/matcher/clear` | — | Remove all matchers; returns `{status:"cleared",count}` |
 
-**Validation:** `httpRequest` and `phases` are required; `phases` must be non-empty and contain only `REQUEST`, `RESPONSE`, `RESPONSE_STREAM`, or `INBOUND_STREAM` — unknown values return 400. The optional `skipCount` must be a non-negative integer (400 otherwise). `responseStatusCodeMin`/`responseStatusCodeMax` must be integers and `min` must not exceed `max`; `responseBodyContains` must be a valid regular expression (400 otherwise). The registry is cleared on `/mockserver/reset`.
+**Validation:** `httpRequest` and `phases` are required; `phases` must be non-empty and contain only `REQUEST`, `RESPONSE`, `RESPONSE_STREAM`, or `INBOUND_STREAM` — unknown values return 400. The optional `skipCount` must be a non-negative integer and the optional `maxHits` must be a positive integer (400 otherwise). `responseStatusCodeMin`/`responseStatusCodeMax` must be integers and `min` must not exceed `max`; `responseBodyContains` must be a valid regular expression (400 otherwise). The registry is cleared on `/mockserver/reset`.
 
 **Matching semantics:** the `httpRequest` body uses the same matcher fields as an expectation request matcher (`method`, `path`, `headers`, `queryStringParameters`, `body`, etc.). An exchange pauses at a phase if any registered matcher matches the request for that phase.
 
@@ -481,7 +499,7 @@ The dashboard is also a full callback WebSocket client: it connects to `/_mockse
 ## Key classes
 
 ### Breakpoint matcher registry
-- `BreakpointMatcher` — a registered breakpoint: request matcher, phases, required `clientId`, optional `skipCount` (Nth-hit) with a per-matcher `AtomicLong` hit counter and `shouldPause()` decision, and optional response-content conditions (`responseStatusCodeMin`/`responseStatusCodeMax` range + `responseBodyContains` regex, compiled once at construction) evaluated via `responseConditionMatches(HttpResponse)` / `hasResponseCondition()`
+- `BreakpointMatcher` — a registered breakpoint: request matcher, phases, required `clientId`, optional `skipCount` (Nth-hit) with a per-matcher `AtomicLong` hit counter and `shouldPause()` decision, optional `maxHits` (one-shot / bounded) with a per-matcher `pauseCount` and `isExhausted()` auto-deregistration, and optional response-content conditions (`responseStatusCodeMin`/`responseStatusCodeMax` range + `responseBodyContains` regex, compiled once at construction) evaluated via `responseConditionMatches(HttpResponse)` / `hasResponseCondition()`
 - `BreakpointMatcherRegistry` — process-wide singleton registry of breakpoint matchers with `findMatch` (request-only, REQUEST/stream phases), `findResponseMatch(request, response, phase)` (RESPONSE phase, evaluates response-content conditions), `removeByClientId`
 - `BreakpointPhase` — enum: REQUEST, RESPONSE, RESPONSE_STREAM, INBOUND_STREAM
 

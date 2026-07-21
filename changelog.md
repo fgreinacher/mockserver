@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Interactive breakpoints support an optional `maxHits` one-shot / bounded budget.** A breakpoint
+  registered with `"maxHits": 1` pauses once and then auto-deregisters, so the next matching request
+  is no longer intercepted; `"maxHits": 3` fires three times then removes itself. Only real pauses
+  count against the budget, so `maxHits` composes with `skipCount` (hits skipped by a `skipCount`
+  window do not consume the budget). Absent (or `0`/negative) keeps the legacy behaviour of never
+  auto-deregistering. `maxHits` is validated as a positive integer (400 otherwise) and is echoed by
+  `PUT /mockserver/breakpoint/matcher` and listed by `GET /mockserver/breakpoint/matchers`.
 - **Sixteen implemented control-plane endpoints are now described by the OpenAPI specification**, and
   therefore by the published Postman and Bruno collections, which are generated from it:
   `GET /mockserver/ready`, `GET /mockserver/config`, `GET /mockserver/proxyConfiguration`,

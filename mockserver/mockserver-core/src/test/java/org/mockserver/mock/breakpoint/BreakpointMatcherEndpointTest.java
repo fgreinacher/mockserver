@@ -187,6 +187,83 @@ public class BreakpointMatcherEndpointTest {
         assertThat(responseWriter.response.getBodyAsString(), containsString("skipCount"));
     }
 
+    // --- one-shot / bounded (maxHits) breakpoints ---
+
+    @Test
+    public void shouldRegisterWithMaxHits() {
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+        HttpRequest registerRequest = request("/mockserver/breakpoint/matcher")
+            .withMethod("PUT")
+            .withBody("{\"httpRequest\":{\"path\":\"/api/oneshot\"},\"phases\":[\"REQUEST\"],\"clientId\":\"test-client\",\"maxHits\":1}");
+        httpState.handle(registerRequest, responseWriter, false);
+
+        assertThat(responseWriter.response.getStatusCode(), is(201));
+        assertThat(responseWriter.response.getBodyAsString(), containsString("\"maxHits\""));
+
+        BreakpointMatcher entry = BreakpointMatcherRegistry.getInstance().entries().get(0);
+        assertThat(entry.getMaxHits(), is(1));
+    }
+
+    @Test
+    public void shouldListMaxHits() {
+        registerMatcher("{\"httpRequest\":{\"path\":\"/bounded\"},\"phases\":[\"REQUEST\"],\"clientId\":\"test-client\",\"maxHits\":5}");
+
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+        httpState.handle(request("/mockserver/breakpoint/matchers").withMethod("GET"), responseWriter, false);
+
+        assertThat(responseWriter.response.getStatusCode(), is(200));
+        assertThat(responseWriter.response.getBodyAsString(), containsString("\"maxHits\""));
+        assertThat(responseWriter.response.getBodyAsString(), containsString("5"));
+    }
+
+    @Test
+    public void shouldOmitMaxHitsWhenAbsent() {
+        registerMatcher("{\"httpRequest\":{\"path\":\"/plain\"},\"phases\":[\"REQUEST\"],\"clientId\":\"test-client\"}");
+
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+        httpState.handle(request("/mockserver/breakpoint/matchers").withMethod("GET"), responseWriter, false);
+
+        assertThat(responseWriter.response.getStatusCode(), is(200));
+        assertThat(responseWriter.response.getBodyAsString(), not(containsString("maxHits")));
+        assertThat(BreakpointMatcherRegistry.getInstance().entries().get(0).getMaxHits(), is(nullValue()));
+    }
+
+    @Test
+    public void shouldReturn400WhenMaxHitsZero() {
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+        HttpRequest registerRequest = request("/mockserver/breakpoint/matcher")
+            .withMethod("PUT")
+            .withBody("{\"httpRequest\":{\"path\":\"/zero\"},\"phases\":[\"REQUEST\"],\"clientId\":\"test-client\",\"maxHits\":0}");
+        httpState.handle(registerRequest, responseWriter, false);
+
+        assertThat(responseWriter.response.getStatusCode(), is(400));
+        assertThat(responseWriter.response.getBodyAsString(), containsString("maxHits"));
+    }
+
+    @Test
+    public void shouldReturn400WhenMaxHitsNegative() {
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+        HttpRequest registerRequest = request("/mockserver/breakpoint/matcher")
+            .withMethod("PUT")
+            .withBody("{\"httpRequest\":{\"path\":\"/neg\"},\"phases\":[\"REQUEST\"],\"clientId\":\"test-client\",\"maxHits\":-1}");
+        httpState.handle(registerRequest, responseWriter, false);
+
+        assertThat(responseWriter.response.getStatusCode(), is(400));
+        assertThat(responseWriter.response.getBodyAsString(), containsString("maxHits"));
+    }
+
+    @Test
+    public void shouldReturn400WhenMaxHitsNotInteger() {
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+        HttpRequest registerRequest = request("/mockserver/breakpoint/matcher")
+            .withMethod("PUT")
+            .withBody("{\"httpRequest\":{\"path\":\"/nan\"},\"phases\":[\"REQUEST\"],\"clientId\":\"test-client\",\"maxHits\":\"one\"}");
+        httpState.handle(registerRequest, responseWriter, false);
+
+        assertThat(responseWriter.response.getStatusCode(), is(400));
+        assertThat(responseWriter.response.getBodyAsString(), containsString("maxHits"));
+    }
+
     // --- response-content conditions ---
 
     @Test

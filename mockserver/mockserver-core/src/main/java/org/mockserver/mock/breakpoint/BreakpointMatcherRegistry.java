@@ -122,10 +122,34 @@ public class BreakpointMatcherRegistry {
                            String clientId, Integer skipCount,
                            Integer responseStatusCodeMin, Integer responseStatusCodeMax, String responseBodyContains,
                            Configuration configuration, MockServerLogger logger) {
+        return register(matcher, phases, clientId, skipCount,
+            responseStatusCodeMin, responseStatusCodeMax, responseBodyContains, null, configuration, logger);
+    }
+
+    /**
+     * As {@link #register(RequestDefinition, Set, String, Integer, Integer, Integer, String, Configuration, MockServerLogger)}
+     * but with an optional {@code maxHits} one-shot / bounded budget.
+     *
+     * <p>The optional {@code maxHits} bounds how many times the breakpoint may pause
+     * before it auto-deregisters from this registry. Each actual pause counts against
+     * the budget (hits skipped by a {@code skipCount} window do not); once the budget is
+     * spent the entry is {@linkplain BreakpointMatcher#isExhausted() exhausted} and is
+     * removed by {@link #findMatch}/{@link #findResponseMatch} so subsequent matching
+     * requests are not intercepted. {@code maxHits = 1} is a one-shot breakpoint.
+     * {@code null} (or a non-positive value) means the breakpoint never auto-deregisters
+     * (legacy behaviour).
+     *
+     * @param maxHits the maximum number of pauses before auto-deregistration, or {@code null} for unbounded
+     */
+    public String register(RequestDefinition matcher, Set<BreakpointPhase> phases,
+                           String clientId, Integer skipCount,
+                           Integer responseStatusCodeMin, Integer responseStatusCodeMax, String responseBodyContains,
+                           Integer maxHits,
+                           Configuration configuration, MockServerLogger logger) {
         String id = UUIDService.getUUID();
         HttpRequestMatcher prebuilt = new MatcherBuilder(configuration, logger).transformsToMatcher(matcher);
         BreakpointMatcher entry = new BreakpointMatcher(id, matcher, phases, prebuilt, clientId, skipCount,
-            responseStatusCodeMin, responseStatusCodeMax, responseBodyContains);
+            responseStatusCodeMin, responseStatusCodeMax, responseBodyContains, maxHits);
         entries.add(entry);
         return id;
     }
@@ -160,7 +184,12 @@ public class BreakpointMatcherRegistry {
             if (entry.getPhases().contains(phase) && entry.getPrebuiltMatcher().matches(request)) {
                 // First matcher to match owns the decision for this hit. Record the
                 // hit and pause only if it falls outside any configured skip window.
-                return entry.shouldPause() ? entry : null;
+                boolean pause = entry.shouldPause();
+                if (entry.isExhausted()) {
+                    // maxHits budget spent: auto-deregister so later requests are not intercepted.
+                    entries.remove(entry);
+                }
+                return pause ? entry : null;
             }
         }
         return null;
@@ -205,7 +234,12 @@ public class BreakpointMatcherRegistry {
                     // response does not satisfy this matcher's condition — try later matchers
                     continue;
                 }
-                return entry.shouldPause() ? entry : null;
+                boolean pause = entry.shouldPause();
+                if (entry.isExhausted()) {
+                    // maxHits budget spent: auto-deregister so later requests are not intercepted.
+                    entries.remove(entry);
+                }
+                return pause ? entry : null;
             }
         }
         return null;

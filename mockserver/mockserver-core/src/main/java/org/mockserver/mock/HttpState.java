@@ -7744,6 +7744,19 @@ public class HttpState {
                 skipCount = sc > 0 ? sc : null;
             }
 
+            // optional maxHits — one-shot / bounded breakpoint: after the breakpoint has
+            // paused maxHits times it auto-deregisters and stops intercepting. maxHits=1 is
+            // a one-shot breakpoint; absent/null => never auto-deregister (legacy behaviour).
+            com.fasterxml.jackson.databind.JsonNode maxHitsNode = node.get("maxHits");
+            Integer maxHits = null;
+            if (maxHitsNode != null && !maxHitsNode.isNull() && !maxHitsNode.isMissingNode()) {
+                if (!maxHitsNode.isIntegralNumber() || !maxHitsNode.canConvertToInt() || maxHitsNode.asInt() < 1) {
+                    return response().withStatusCode(BAD_REQUEST.code())
+                        .withBody("{\"error\":\"'maxHits' must be a positive integer\"}", MediaType.JSON_UTF_8);
+                }
+                maxHits = maxHitsNode.asInt();
+            }
+
             // optional response-content conditions — RESPONSE-phase only: pause only when
             // the response status code falls within [responseStatusCodeMin, responseStatusCodeMax]
             // (inclusive) and/or the response body matches the responseBodyContains regex.
@@ -7792,7 +7805,7 @@ public class HttpState {
             // register
             String id = org.mockserver.mock.breakpoint.BreakpointMatcherRegistry.getInstance()
                 .register(requestMatcher, phases, clientId, skipCount,
-                    responseStatusCodeMin, responseStatusCodeMax, responseBodyContains, configuration, mockServerLogger);
+                    responseStatusCodeMin, responseStatusCodeMax, responseBodyContains, maxHits, configuration, mockServerLogger);
 
             // build response
             com.fasterxml.jackson.databind.node.ObjectNode result = objectMapper.createObjectNode();
@@ -7805,6 +7818,9 @@ public class HttpState {
             result.put("clientId", clientId);
             if (skipCount != null) {
                 result.put("skipCount", skipCount);
+            }
+            if (maxHits != null) {
+                result.put("maxHits", maxHits);
             }
             if (responseStatusCodeMin != null) {
                 result.put("responseStatusCodeMin", responseStatusCodeMin);
@@ -7846,6 +7862,9 @@ public class HttpState {
                 }
                 if (matcher.getSkipCount() != null) {
                     matcherNode.put("skipCount", matcher.getSkipCount());
+                }
+                if (matcher.getMaxHits() != null) {
+                    matcherNode.put("maxHits", matcher.getMaxHits());
                 }
                 if (matcher.getResponseStatusCodeMin() != null) {
                     matcherNode.put("responseStatusCodeMin", matcher.getResponseStatusCodeMin());
