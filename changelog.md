@@ -433,6 +433,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convention — were shown in clear wherever configuration is displayed or logged. Property names
   containing `auth` or `jwt` are deliberately *not* masked, so settings such as
   `tlsMutualAuthenticationRequired` and `proxyAuthenticationUsername` stay readable in `--print-config`.
+- **The cluster fan-in peer auth token is no longer returned by `GET /mockserver/configuration`.** The
+  credential each node presents to its peers on cross-node verify/retrieve queries — sent verbatim as
+  the control-plane `Authorization` header — was serialized in clear by the configuration endpoint, so
+  anyone able to read the configuration could lift a token granting write access to every node in the
+  cluster. `clusterFanInPeerAuthToken` is now write-only, like every other credential MockServer holds:
+  still settable with `PUT /mockserver/configuration`, absent from the `GET` response, and a
+  GET-then-PUT round trip leaves the token MockServer already holds untouched. The sibling
+  `GET /mockserver/config` endpoint had always masked it, so this closes an inconsistency between the
+  two. A new guard test derives the credential set by reflection over the configuration properties and
+  fails the build for any future property with a credential-shaped name that is readable, so the class
+  of bug cannot recur silently — it also documents, and asserts, the one property deliberately left
+  readable (`dashboardAnalyticsKey`, an ingest-only analytics project key the browser dashboard must
+  read back to start up, so masking it would break analytics while protecting nothing).
 - **Percent-encoded request paths are now matched under the WAR / servlet deployment.** When MockServer
   runs as a WAR (e.g. in Tomcat), a request for a path such as `/ab%40c.de` was not decoded back to
   `/ab@c.de` whenever the container reports a `null` path-info — which a servlet container does for a

@@ -1,5 +1,6 @@
 package org.mockserver.serialization.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.Test;
 import org.mockserver.configuration.Configuration;
@@ -8,22 +9,30 @@ import org.mockserver.logging.MockServerLogger;
 import org.mockserver.serialization.ConfigurationSerializer;
 import org.mockserver.serialization.ObjectMapperFactory;
 
+import java.beans.Introspector;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockserver.configuration.Configuration.configuration;
+// statically imported so this file carries no qualified ConfigurationProperties.<call>(arg)
+// text, which GlobalStateMutationGuardTest reads as a global-state MUTATION — this predicate
+// is a pure read. Same import style, for the same reason, as ConfigurationPropertiesRedactionTest.
+import static org.mockserver.configuration.ConfigurationProperties.isSensitivePropertyName;
 
 /**
  * Security guard for WRITE-ONLY credential configuration properties.
@@ -101,6 +110,312 @@ public class ConfigurationDTOCredentialMaskingTest {
     }
 
     private final ConfigurationSerializer serializer = new ConfigurationSerializer(new MockServerLogger());
+
+    // ---------------------------------------------------------------------------------------------
+    // 0. the REFLECTIVE guard — the only part of this class that cannot be defeated by forgetting to
+    //    update it.
+    //
+    //    Everything below enumerates WRITE_ONLY_CREDENTIALS, a list somebody has to remember to add to.
+    //    clusterFanInPeerAuthToken — a control-plane bearer token granting MUTATE on every peer node —
+    //    was disclosed in clear by GET /mockserver/configuration for exactly that reason: nobody added
+    //    it to the list, so nothing here ever looked at it. The guard below does not take a list —
+    //    it enumerates ConfigurationDTO's own getters, asks ConfigurationProperties which NAMES are
+    //    credential-shaped (the SAME predicate GET /mockserver/config and the startup log dump use, so
+    //    the two endpoints cannot diverge again), and asserts the real value does not reach the wire.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * ConfigurationDTO properties whose NAME is credential-shaped under
+     * {@link ConfigurationProperties#isSensitivePropertyName(String)} but whose VALUE is not a secret,
+     * so {@code GET /mockserver/configuration} deliberately returns it in clear.
+     *
+     * <p>This is an explicit, per-entry-justified allow-list, not a convenience: the default for a
+     * credential-shaped name is to be unreadable, and adding an entry here is a reviewable security
+     * decision. The reason string is asserted to be non-trivial so an entry cannot be added silently.
+     */
+    private static final Map<String, String> READABLE_DESPITE_CREDENTIAL_SHAPED_NAME = new LinkedHashMap<>();
+
+    static {
+        READABLE_DESPITE_CREDENTIAL_SHAPED_NAME.put("dashboardAnalyticsKey",
+            "a PostHog PROJECT key: an ingest-only (write-only) token designed to be embedded in a "
+                + "public web page, granting no read access to anything. The browser dashboard reads it "
+                + "back from THIS endpoint to call posthog.init(...) (mockserver-ui/src/lib/analytics.ts "
+                + "gatesPass/initAnalytics). The browser must receive this key for analytics to function "
+                + "at all, and an ingest-only project key is designed for exactly that exposure, so "
+                + "masking it would break the feature while protecting nothing. GET /mockserver/config and "
+                + "the startup property-file log dump still mask it: those are diagnostic surfaces whose "
+                + "output gets pasted into issues, where even a semi-public key does not belong.");
+        READABLE_DESPITE_CREDENTIAL_SHAPED_NAME.put("dataPlaneApiKeyAuthenticationHeader",
+            "the NAME of the header that carries the API key, not the key. The credential itself is "
+                + "dataPlaneApiKeyAuthenticationValue, which is @JsonIgnore-d. Also allow-listed for the "
+                + "same reason in ConfigurationPropertiesRedactionTest.KNOWN_NON_CREDENTIALS.");
+        READABLE_DESPITE_CREDENTIAL_SHAPED_NAME.put("privateKeyPath",
+            "a filesystem PATH to a private key, not the key material. The secret lives in that file, "
+                + "which no endpoint returns, and an operator must be able to read back which key file "
+                + "the server was told to use. Same reasoning as llmBackendsConfig's documented path "
+                + "shape, and the same treatment as its sibling x509CertificatePath.");
+        READABLE_DESPITE_CREDENTIAL_SHAPED_NAME.put("controlPlanePrivateKeyPath",
+            "a filesystem PATH to the control-plane private key, not the key material — see "
+                + "privateKeyPath above.");
+    }
+
+    @Test
+    public void shouldNotDiscloseAnyCredentialNamedPropertyOverTheConfigurationControlPlane() throws Exception {
+        List<String> properties = credentialShapedStringProperties();
+
+        // sanity: the guard must actually be enumerating the credential surface, so a regression that
+        // stops discovering getters (a rename, a return-type change) cannot make it pass vacuously
+        assertThat("reflection should discover ConfigurationDTO's credential-shaped property surface",
+            properties.size(), greaterThan(10));
+
+        Configuration configuration = configuration();
+        List<String> unsettable = new ArrayList<>();
+        for (String property : properties) {
+            try {
+                setCredentialOn(configuration, property);
+            } catch (Exception e) {
+                unsettable.add(property + " (" + e + ")");
+            }
+        }
+        assertThat("credential-shaped ConfigurationDTO properties this guard could not set on a "
+                + "Configuration, so it could not prove they stay off the wire — give the property a "
+                + "Configuration setter, or teach this guard how to populate it: " + unsettable,
+            unsettable, is(empty()));
+
+        // the real GET /mockserver/configuration path: Configuration -> ConfigurationDTO -> JSON
+        String json = serializer.serialize(configuration);
+
+        List<String> disclosed = new ArrayList<>();
+        for (String property : properties) {
+            if (json.contains(reflectiveSecretFor(property))) {
+                disclosed.add(property);
+            }
+        }
+
+        assertThat("credential-named configuration properties whose REAL value is returned in clear by "
+                + "GET /mockserver/configuration. Make each one unreadable, using the pattern already "
+                + "established in ConfigurationDTO: either annotate the getter @JsonIgnore and its setter "
+                + "@JsonProperty (write-only — settable over the control plane, absent from the response, "
+                + "so a GET-then-PUT cannot destroy it), or return maskCredential(...) from the getter and "
+                + "add the matching isMaskedCredential(...) round-trip guard in applyTo() and "
+                + "buildObject(). If the value is genuinely NOT a secret, add it to "
+                + "READABLE_DESPITE_CREDENTIAL_SHAPED_NAME with the reason. Disclosed: " + disclosed,
+            disclosed, is(empty()));
+    }
+
+    @Test
+    public void shouldNotAllowACredentialShapedPropertyOfATypeTheDisclosureGuardCannotCheck() {
+        // the guard above only populates String properties. A credential-named getter returning any
+        // other text-bearing type (CharSequence, a collection or a map of them) would be enumerated by
+        // nothing and serialized in clear — close that hole at the type level rather than hoping.
+        List<String> unchecked = new ArrayList<>();
+        for (Method getter : ConfigurationDTO.class.getMethods()) {
+            String property = serializedPropertyNameOf(getter);
+            if (property == null
+                || getter.getReturnType().equals(String.class)
+                || !isSensitivePropertyName(property)) {
+                continue;
+            }
+            Class<?> type = getter.getReturnType();
+            if (CharSequence.class.isAssignableFrom(type)
+                || Collection.class.isAssignableFrom(type)
+                || Map.class.isAssignableFrom(type)
+                || type.isArray()) {
+                unchecked.add(property + " (" + type.getSimpleName() + ")");
+            }
+        }
+
+        assertThat("credential-named ConfigurationDTO properties whose type can carry text but which the "
+                + "disclosure guard cannot populate, so nothing proves they are not serialized in clear — "
+                + "extend credentialShapedStringProperties()/the guard to cover the type: " + unchecked,
+            unchecked, is(empty()));
+    }
+
+    @Test
+    public void shouldJustifyEveryEntryInTheReadableAllowList() {
+        Set<String> serializedProperties = new TreeSet<>();
+        for (Method getter : ConfigurationDTO.class.getMethods()) {
+            String property = serializedPropertyNameOf(getter);
+            if (property != null) {
+                serializedProperties.add(property);
+            }
+        }
+
+        List<String> unjustified = new ArrayList<>();
+        for (Map.Entry<String, String> entry : READABLE_DESPITE_CREDENTIAL_SHAPED_NAME.entrySet()) {
+            if (!serializedProperties.contains(entry.getKey())) {
+                // the property is gone (renamed, removed, or now @JsonIgnore-d via a different getter
+                // shape); a dangling exemption would silently pre-approve a future property reusing the
+                // name, which is how an allow-list turns into a hole
+                unjustified.add(entry.getKey() + " (no such serialized ConfigurationDTO property — "
+                    + "remove the entry)");
+            } else if (!isSensitivePropertyName(entry.getKey())) {
+                // the property no longer trips the credential-name rule, so the exemption is dead
+                // weight that would silently cover a future property of the same name
+                unjustified.add(entry.getKey() + " (no longer credential-shaped — remove the entry)");
+            } else if (entry.getValue() == null || entry.getValue().length() < 60) {
+                unjustified.add(entry.getKey() + " (reason too thin to review)");
+            }
+        }
+
+        assertThat("entries in READABLE_DESPITE_CREDENTIAL_SHAPED_NAME that are stale or unjustified — "
+                + "each exemption publishes a credential-named value in clear and must carry a reason a "
+                + "reviewer can check: " + unjustified,
+            unjustified, is(empty()));
+    }
+
+    @Test
+    public void shouldRouteEveryMaskedCredentialShapedPropertyThroughTheRoundTripGuardToo() {
+        // A credential-shaped property masked with maskCredential(...) but missing from
+        // WRITE_ONLY_CREDENTIALS gets the leak guard above and NOTHING else — so a GET-then-PUT could
+        // still write "***REDACTED***" over the live credential. That failure is invisible until
+        // outbound auth breaks, which is why it is asserted separately from the leak.
+        List<String> unguarded = new ArrayList<>();
+        for (Method getter : ConfigurationDTO.class.getMethods()) {
+            String property = serializedPropertyNameOf(getter);
+            if (property == null
+                || !getter.getReturnType().equals(String.class)
+                || !isSensitivePropertyName(property)
+                || READABLE_DESPITE_CREDENTIAL_SHAPED_NAME.containsKey(property)
+                || getter.isAnnotationPresent(JsonIgnore.class)
+                || WRITE_ONLY_CREDENTIALS.contains(property)) {
+                continue;
+            }
+            unguarded.add(property);
+        }
+
+        assertThat("credential-shaped properties that are serialized (not @JsonIgnore-d) but are absent "
+                + "from WRITE_ONLY_CREDENTIALS, so no test proves a GET-then-PUT leaves the real "
+                + "credential intact — add them to WRITE_ONLY_CREDENTIALS (and to the copy in "
+                + "ConfigurationEnforcementClassificationTest): " + unguarded,
+            unguarded, is(empty()));
+    }
+
+    @Test
+    public void shouldExplainEveryHandListedCredentialTheReflectiveGuardCannotRediscover() {
+        // reconciles the hand-maintained list with reflection: an entry is legitimate only because its
+        // NAME betrays it (so the reflective guard covers it too) or because it carries a credential
+        // EMBEDDED in an otherwise-readable structured value, which no name rule can detect
+        List<String> unexplained = new ArrayList<>();
+        for (String credential : WRITE_ONLY_CREDENTIALS) {
+            if (!isSensitivePropertyName(credential)
+                && !isEmbeddedValueCredential(credential)) {
+                unexplained.add(credential);
+            }
+        }
+
+        assertThat("hand-listed write-only credentials that neither have a credential-shaped name nor a "
+                + "documented embedded-credential value — if the name betrays it the reflective guard "
+                + "already covers it; if it embeds a credential, give it entries in EMBEDDED_REAL_VALUES "
+                + "/ EMBEDDED_MASKED_VALUES so its partial masking is actually asserted: " + unexplained,
+            unexplained, is(empty()));
+    }
+
+    /**
+     * Every ConfigurationDTO property that Jackson serializes, whose name is credential-shaped, and
+     * which is not explicitly allow-listed as readable — discovered by reflection over the DTO's own
+     * getters, never from a list, because a list is what let two credentials leak.
+     */
+    private static List<String> credentialShapedStringProperties() {
+        Set<String> properties = new TreeSet<>();
+        for (Method getter : ConfigurationDTO.class.getMethods()) {
+            String property = serializedPropertyNameOf(getter);
+            if (property == null || !getter.getReturnType().equals(String.class)) {
+                continue;
+            }
+            if (isSensitivePropertyName(property)
+                && !READABLE_DESPITE_CREDENTIAL_SHAPED_NAME.containsKey(property)) {
+                properties.add(property);
+            }
+        }
+        return new ArrayList<>(properties);
+    }
+
+    /**
+     * The JSON property name a no-arg getter contributes, or {@code null} when it contributes none —
+     * an inherited {@code Object} method, or one of the {@code *RawValue} in-process accessors, which
+     * are @JsonIgnore-d by construction and asserted so by
+     * {@link #shouldExposeRealCredentialValuesOnlyThroughJsonIgnoredRawAccessors()}.
+     */
+    private static String serializedPropertyNameOf(Method getter) {
+        if (getter.getParameterCount() != 0
+            || getter.isSynthetic()
+            || getter.getDeclaringClass().equals(Object.class)
+            || !getter.getName().startsWith("get")
+            || getter.getName().length() <= 3) {
+            return null;
+        }
+        String property = Introspector.decapitalize(getter.getName().substring(3));
+        return property.endsWith("RawValue") ? null : property;
+    }
+
+    @Test
+    public void shouldNotDiscloseTheClusterFanInPeerAuthTokenAndShouldSurviveAGetThenPut() throws Exception {
+        // named regression for the leak the reflective guard above found: GET /mockserver/configuration
+        // returned this control-plane bearer token verbatim, so a read-only control-plane principal
+        // could lift a credential granting MUTATE on every peer node
+        String token = "Bearer eyJ-cluster-fan-in-token";
+        Configuration live = configuration().clusterFanInPeerAuthToken(token);
+
+        String json = serializer.serialize(live);
+
+        assertThat("the cluster control-plane bearer token must not be disclosed",
+            json, not(containsString(token)));
+        assertThat("nor should the property appear at all — it is write-only",
+            json, not(containsString("clusterFanInPeerAuthToken")));
+
+        // GET-then-PUT: the body a client echoes back simply lacks the property, so the held token stands
+        applyJsonTo(json, live);
+        assertThat("a GET-then-PUT round trip must not destroy the token",
+            live.clusterFanInPeerAuthToken(), is(token));
+
+        // and it stays settable over the control plane
+        Configuration target = configuration();
+        applyJsonTo("{\"clusterFanInPeerAuthToken\":\"" + token + "\"}", target);
+        assertThat("the token must remain settable via PUT /mockserver/configuration",
+            target.clusterFanInPeerAuthToken(), is(token));
+    }
+
+    @Test
+    public void shouldKeepTheDashboardAnalyticsKeyReadableSoTheDashboardCanInitialiseAnalytics() throws Exception {
+        // deliberate exemption, asserted so a well-meaning "mask everything ...Key" change fails here
+        // instead of silently switching dashboard analytics off — see
+        // READABLE_DESPITE_CREDENTIAL_SHAPED_NAME and mockserver-ui/src/lib/analytics.ts
+        String key = "phc_project_ingest_key";
+        Configuration live = configuration().dashboardAnalyticsKey(key);
+
+        assertThat("the browser dashboard reads this back to call posthog.init(...)",
+            serializer.serialize(live), containsString(key));
+
+        Configuration target = configuration();
+        applyJsonTo("{\"dashboardAnalyticsKey\":\"" + key + "\"}", target);
+        assertThat(target.dashboardAnalyticsKey(), is(key));
+    }
+
+    /**
+     * Put a value carrying this property's unique marker onto the Configuration.
+     *
+     * <p>Some credential properties are validated on write — {@code forwardProxyPrivateKey} is a PEM
+     * file location and its setter rejects a value that is not a readable file. For those the marker is carried by the FILE NAME of a real temporary
+     * file, so the value is accepted and the marker is still unique in the serialized output. Detected
+     * by attempting the plain value first rather than by naming the properties, so a property that
+     * gains or loses validation needs no change here.
+     */
+    private static void setCredentialOn(Configuration configuration, String property) throws Exception {
+        Method setter = Configuration.class.getMethod(property, String.class);
+        try {
+            setter.invoke(configuration, reflectiveSecretFor(property));
+        } catch (java.lang.reflect.InvocationTargetException rejected) {
+            java.io.File file = java.io.File.createTempFile(reflectiveSecretFor(property) + "-", ".pem");
+            file.deleteOnExit();
+            setter.invoke(configuration, file.getAbsolutePath());
+        }
+    }
+
+    /** Distinct from {@link #REAL_SECRET_PREFIX} so a leak report names which guard found it. */
+    private static String reflectiveSecretFor(String property) {
+        return "reflective-guard-secret-do-not-leak-" + property;
+    }
 
     // ---------------------------------------------------------------------------------------------
     // 1. the real secret must never reach the wire

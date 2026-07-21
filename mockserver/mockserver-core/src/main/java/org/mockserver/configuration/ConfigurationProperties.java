@@ -5966,8 +5966,14 @@ public class ConfigurationProperties {
      * in clear. Enumerating credential substrings cannot keep up with new properties: any future
      * {@code ...Key} property would silently leak the same way. {@link #NON_SENSITIVE_KEY_SUFFIXED_NAMES}
      * carries the documented exceptions.
+     *
+     * <p>public (was package-private) for the same reason as {@link #REDACTED_VALUE}: the guard over
+     * {@code ConfigurationDTO} — the {@code GET /mockserver/configuration} surface, in another package
+     * — must ask THIS predicate what counts as a credential rather than growing a second, divergent
+     * notion of one. A leak closed on one endpoint and left open on its sibling is exactly what a
+     * second notion produces.
      */
-    static boolean isSensitivePropertyName(String name) {
+    public static boolean isSensitivePropertyName(String name) {
         if (name == null) {
             return false;
         }

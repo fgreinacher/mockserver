@@ -2103,6 +2103,17 @@ public class ConfigurationDTO implements DTO<Configuration> {
         return this;
     }
 
+    /**
+     * DELIBERATELY READABLE, despite the credential-shaped name. This is a PostHog PROJECT key — an
+     * ingest-only token designed to be embedded in a public web page — and the browser dashboard reads
+     * it back from this endpoint to initialise its analytics client. The browser must receive this key
+     * for analytics to function at all, and an ingest-only project key is designed for exactly that
+     * exposure, so masking it would break the feature while protecting nothing.
+     *
+     * <p>{@code GET /mockserver/config} and the startup property-file log dump DO mask it — those are
+     * diagnostic surfaces whose output gets pasted into issues. The exemption is asserted, with its
+     * reasoning, in {@code ConfigurationDTOCredentialMaskingTest}; do not "fix" this without reading it.
+     */
     public String getDashboardAnalyticsKey() {
         return dashboardAnalyticsKey;
     }
@@ -4283,10 +4294,21 @@ public class ConfigurationDTO implements DTO<Configuration> {
         return this;
     }
 
+    /**
+     * WRITE-ONLY: the credential each node presents to its peers on cross-node fan-in queries, sent
+     * verbatim as the control-plane {@code Authorization} header — so disclosing it hands any reader of
+     * {@code GET /mockserver/configuration} a token granting MUTATE access to every node in the
+     * cluster. @JsonIgnore keeps it off the response entirely (the @JsonProperty setter keeps it
+     * settable over the control plane), which also makes a GET-then-PUT round trip safe: the property
+     * is absent from the body a client echoes back, and applyTo() leaves an absent value alone. Same
+     * pattern as dataPlaneBearerAuthenticationToken and the other credentials in this DTO.
+     */
+    @JsonIgnore
     public String getClusterFanInPeerAuthToken() {
         return clusterFanInPeerAuthToken;
     }
 
+    @JsonProperty
     public ConfigurationDTO setClusterFanInPeerAuthToken(String clusterFanInPeerAuthToken) {
         this.clusterFanInPeerAuthToken = clusterFanInPeerAuthToken;
         return this;
