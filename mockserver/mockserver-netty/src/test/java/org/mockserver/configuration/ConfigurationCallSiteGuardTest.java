@@ -146,6 +146,16 @@ public class ConfigurationCallSiteGuardTest {
         ALLOWED_STATIC_ONLY_CALL_SITES.put("org.mockserver.testing.integration.mock.AbstractBasicMockingIntegrationTest#shouldRetrieveRecordedLogMessages",
             "mockserver-integration-testing ships test-support code in src/main so downstream suites can reuse it; "
                 + "this is an assertion in a test body, not a server enforcement site");
+        ALLOWED_STATIC_ONLY_CALL_SITES.put("org.mockserver.client.MockServerClient#stop",
+            "client code: MockServerClient holds only a ClientConfiguration, never a server Configuration, so no "
+                + "Configuration instance can exist here. stopDrainMillis is a server property; the client reads it "
+                + "best-effort from its OWN JVM's static store to size how long to wait for a remote shutdown, and it "
+                + "is inherently unreachable from a server-side PUT /mockserver/configuration");
+        ALLOWED_STATIC_ONLY_CALL_SITES.put("org.mockserver.client.MockServerClient#lambda$stop$3",
+            "client code: the ClientStop thread body inside MockServerClient.stop(boolean). MockServerClient holds "
+                + "only a ClientConfiguration, never a server Configuration, so no Configuration instance can exist "
+                + "here. stopDrainMillis is a server property read best-effort from the client's OWN JVM to size the "
+                + "stop-wait deadline, and is inherently unreachable from a server-side PUT /mockserver/configuration");
     }
 
     /**
