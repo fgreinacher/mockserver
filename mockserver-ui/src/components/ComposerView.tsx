@@ -26,6 +26,7 @@ import ToggleButtonGroup from '@mui/material/ToggleButtonGroup';
 import DeleteIcon from '@mui/icons-material/Delete';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import ScienceOutlinedIcon from '@mui/icons-material/ScienceOutlined';
+import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import List from '@mui/material/List';
@@ -42,6 +43,7 @@ import LlmConversationForm from './LlmConversationForm';
 import HumanErrorAlert from './HumanErrorAlert';
 import StandardReview from './StandardReview';
 import MatcherPlaygroundDialog from './MatcherPlaygroundDialog';
+import LiveResponseWidget from './LiveResponseWidget';
 import {
   buildExpectationJson,
   unmodeledFieldNames,
@@ -4412,6 +4414,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
   }, [effectiveMatcher, draftAction]);
 
   const [matcherPlaygroundOpen, setMatcherPlaygroundOpen] = useState(false);
+  const [tryItOpen, setTryItOpen] = useState(false);
 
   return (
     <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
@@ -4762,7 +4765,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
               ) : (
                 <>
                   <MatcherPanel matcher={matcher} setMatcher={setMatcher} />
-                  <Box sx={{ mt: 1 }}>
+                  <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                     <Button
                       size="small"
                       variant="text"
@@ -4771,7 +4774,27 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
                     >
                       Test Matcher
                     </Button>
+                    {/* Dry-run's live sibling: Test Matcher predicts a verdict in the
+                        browser, Try It actually fires the request at MockServer and
+                        shows the real response. */}
+                    <Button
+                      size="small"
+                      variant="text"
+                      startIcon={<SendOutlinedIcon fontSize="small" />}
+                      onClick={() => setTryItOpen((open) => !open)}
+                    >
+                      {tryItOpen ? 'Hide Try It' : 'Try It'}
+                    </Button>
                   </Box>
+                  {/* Mounted only while open so it re-derives from the latest draft
+                      each time it is opened. */}
+                  {tryItOpen && (
+                    <LiveResponseWidget
+                      expectationJson={draftExpectationJson}
+                      connectionParams={connectionParams}
+                      onClose={() => setTryItOpen(false)}
+                    />
+                  )}
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
                     {kind === 'grpc'
                       ? 'gRPC path convention: /package.Service/Method. gRPC clients send Content-Type: application/grpc — add it to the matcher headers to restrict to gRPC traffic only.'

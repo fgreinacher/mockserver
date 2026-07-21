@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The dashboard expectation composer can fire a real request against the draft matcher and show the
+  live response.** A "Try It" button beside "Test Matcher" opens an inline panel that derives an
+  editable HTTP request from the expectation being authored, sends it to MockServer, and renders the
+  status, headers, body and round-trip time. Because a matcher is a pattern rather than a request,
+  only exact non-negated values are pre-filled: regex, glob, schema, JSON-path, XPath and negated
+  matcher forms — and the numeric-comparison and content-negotiation forms used by header and query
+  matchers — are left blank and listed as underivable, so a pattern is never fired verbatim as though
+  it were a literal. Headers the browser forbids a page from setting (`Cookie`, `Host`,
+  `Content-Length` and the rest of the Fetch forbidden list) are named as unexercisable from the
+  dashboard rather than silently stripped by `fetch`. The dashboard is served by the same listener
+  that serves mock traffic, so the default target is same-origin; selecting one of the server's other
+  bound ports raises a CORS warning up front and distinguishes a CORS block from an unreachable port
+  when a send fails.
 - **The dashboard TCP chaos form offers named network-condition presets.** Seven one-click presets —
   dial-up, Slow/Fast 3G (throughput and latency variants), satellite and a fragmented link — fill the
   TCP chaos latency, bandwidth or fragmentation field for the host being registered. Throughput and
