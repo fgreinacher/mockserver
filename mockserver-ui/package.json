@@ -65,6 +65,6 @@
   ],
   "overrides": {
     "@babel/core": "^7.29.6",
-    "dompurify": "^3.4.11"
+    "dompurify": "^3.4.12"
   }
 }

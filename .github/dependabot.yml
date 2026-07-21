@@ -67,6 +67,7 @@ updates:
       - "/mockserver-ui"
       - "/mockserver-client-node"
       - "/mockserver-node"
+      - "/mockserver-vscode"
       - "/.opencode"
     schedule:
       interval: "daily"

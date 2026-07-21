@@ -234,6 +234,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asserted. No production behaviour changed.
 
 ### Changed
+- **Editor and dashboard package lockfiles refreshed to clear three open advisories.** `dompurify`
+  (`3.4.11` &rarr; `3.4.12`) in `mockserver-ui`, where the fix matters most: the dashboard renders
+  captured request and response bodies it did not author, so a sanitiser bypass through
+  `CUSTOM_ELEMENT_HANDLING` is a cross-site-scripting vector rather than the low-severity issue its
+  rating suggests. `monaco-editor` pins `dompurify` to an exact version, so the existing `overrides`
+  floor was raised to `^3.4.12` rather than downgrading the editor. Also `fast-uri`
+  (`3.1.2` &rarr; `3.1.4`, host confusion from a literal backslash and failed international-domain
+  canonicalisation) and `linkify-it` (`5.0.1` &rarr; `5.0.2`, quadratic-time `mailto:` validation) in
+  `mockserver-vscode`, both transitive build/packaging tooling that is not shipped to extension users,
+  and both reachable by a lockfile refresh with no manifest change.
+- **Dependabot now watches the VS Code extension's npm dependencies.** `mockserver-vscode` has a
+  `package-lock.json` but was missing from the npm `directories` list, so unlike every other Node
+  project it never received routine minor and patch update pull requests and drifted until its
+  dependencies raised security alerts.
 - **The S3 blob-store config-to-client wiring is now covered by a behavioural unit test.** A new
   network-free test exercises `S3BlobStoreRegistrar.createS3BlobStore(...)` directly and asserts the
   resulting client/store reflects the configuration: a missing bucket throws, the region defaults to
