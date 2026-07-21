@@ -40,7 +40,9 @@
     "httpSseResponse.templateType",
     "httpWebSocketResponse.templateType",
     "httpWebSocketResponse.graphqlSubscriptionFilter",
-    "<unrepresentable-expectation>:matcher_request_literal_not"
+    "httpRequest.path",
+    "httpRequest.method",
+    "httpRequest.headers.X-Negated.*"
   ],
   "node": [],
   "php": [],
