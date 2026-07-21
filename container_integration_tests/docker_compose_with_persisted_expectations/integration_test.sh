@@ -23,7 +23,10 @@ function integration_test() {
                         }
                       }\\\"" || TEST_EXIT_CODE=1
   if [[ "${TEST_EXIT_CODE}" == "0" ]]; then
-    RESPONSE_BODY=$(docker-exec-client "curl -v -s -X PUT 'http://mockserver:1080/some/path'")
+    # `|| true` so a failed request yields an empty body the assertion below reports as a
+    # FAIL, rather than aborting the command-substitution assignment under `set -e` before
+    # logTestResult records a result.
+    RESPONSE_BODY=$(docker-exec-client "curl -v -s -X PUT 'http://mockserver:1080/some/path'" || true)
 
     if [[ "${RESPONSE_BODY}" != "some_response_body" ]]; then
       printFailureMessage "Failed to retrieve response body for expectation matched by path, found: \"${RESPONSE_BODY}\""
