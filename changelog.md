@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The generic CRUD simulation GET-list endpoint now supports pagination, sorting and field filtering.**
+  The list path accepts optional query parameters — `filterField`+`filterValue` (case-insensitive
+  equality on a dot-separated attribute path), `sortBy`+`sortOrder` (`asc`/`desc`, missing values sort
+  last, stable), and `page`+`size` (0-based page, `size`≤0 means no limit) — applied in the order
+  filter → sort → paginate. Malformed parameters return a 400. When any list parameter is active the
+  response adds `X-Total-Count`, `X-Page` and `X-Page-Size` headers; a plain list request with no
+  parameters returns the exact legacy response (unchanged body, no extra headers). This is the generic
+  CRUD store's own query surface and is independent of the SCIM list callback's sorting/filtering.
 - **Interactive breakpoints support an optional `maxHits` one-shot / bounded budget.** A breakpoint
   registered with `"maxHits": 1` pauses once and then auto-deregisters, so the next matching request
   is no longer intercepted; `"maxHits": 3` fires three times then removes itself. Only real pauses

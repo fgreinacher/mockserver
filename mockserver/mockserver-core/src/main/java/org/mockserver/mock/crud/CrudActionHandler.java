@@ -24,11 +24,31 @@ public class CrudActionHandler {
     }
 
     public HttpResponse handleList(HttpRequest request) {
+        final CrudListQuery query;
         try {
-            List<ObjectNode> items = store.getAll();
+            query = CrudListQuery.parse(request);
+        } catch (IllegalArgumentException e) {
             return response()
+                .withStatusCode(400)
+                .withBody("{\"error\":" + objectMapper.getNodeFactory().textNode(e.getMessage()) + "}", MediaType.JSON_UTF_8);
+        }
+        try {
+            List<ObjectNode> filteredAndSorted = query.filterAndSort(store.getAll());
+            int total = filteredAndSorted.size();
+            List<ObjectNode> page = query.paginate(filteredAndSorted);
+            HttpResponse response = response()
                 .withStatusCode(200)
-                .withBody(objectMapper.writeValueAsString(items), MediaType.JSON_UTF_8);
+                .withBody(objectMapper.writeValueAsString(page), MediaType.JSON_UTF_8);
+            // Surface pagination metadata via headers only when a list query was supplied,
+            // so a plain list request keeps its exact legacy response (body + no extra headers).
+            if (query.isActive()) {
+                response.withHeader("X-Total-Count", String.valueOf(total));
+                response.withHeader("X-Page", String.valueOf(query.getPage()));
+                if (query.getSize() != null) {
+                    response.withHeader("X-Page-Size", String.valueOf(query.getSize()));
+                }
+            }
+            return response;
         } catch (Exception e) {
             return response()
                 .withStatusCode(500)

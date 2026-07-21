@@ -64,6 +64,193 @@ public class CrudActionHandlerTest {
         assertThat(body.size(), is(0));
     }
 
+    // GET list — pagination / sorting / filtering
+
+    private CrudActionHandler handlerWith(ObjectNode... items) {
+        CrudDataStore s = new CrudDataStore("id", IdStrategy.AUTO_INCREMENT, Arrays.asList(items));
+        return new CrudActionHandler(s, "/api/users");
+    }
+
+    private ObjectNode person(int id, String name) {
+        return objectMapper.createObjectNode().put("id", id).put("name", name);
+    }
+
+    @Test
+    public void shouldReturnPlainListUnchangedWhenNoQueryParams() throws Exception {
+        HttpResponse response = handler.handleList(request("/api/users").withMethod("GET"));
+
+        assertThat(response.getStatusCode(), is(200));
+        // no pagination headers on a plain list request (legacy behaviour preserved)
+        assertThat(response.getFirstHeader("X-Total-Count"), is(""));
+        ArrayNode body = (ArrayNode) objectMapper.readTree(response.getBodyAsString());
+        assertThat(body.size(), is(2));
+    }
+
+    @Test
+    public void shouldSortByFieldAscendingAndDescending() throws Exception {
+        CrudActionHandler h = handlerWith(person(1, "Charlie"), person(2, "Alice"), person(3, "Bob"));
+
+        ArrayNode asc = (ArrayNode) objectMapper.readTree(h.handleList(
+            request("/api/users").withMethod("GET").withQueryStringParameter("sortBy", "name")).getBodyAsString());
+        assertThat(asc.get(0).get("name").asText(), is("Alice"));
+        assertThat(asc.get(1).get("name").asText(), is("Bob"));
+        assertThat(asc.get(2).get("name").asText(), is("Charlie"));
+
+        ArrayNode desc = (ArrayNode) objectMapper.readTree(h.handleList(
+            request("/api/users").withMethod("GET")
+                .withQueryStringParameter("sortBy", "name")
+                .withQueryStringParameter("sortOrder", "desc")).getBodyAsString());
+        assertThat(desc.get(0).get("name").asText(), is("Charlie"));
+        assertThat(desc.get(2).get("name").asText(), is("Alice"));
+    }
+
+    @Test
+    public void shouldSortMissingSortValuesLast() throws Exception {
+        ObjectNode noName = objectMapper.createObjectNode().put("id", 9);
+        CrudActionHandler h = handlerWith(person(1, "Bob"), noName, person(3, "Alice"));
+
+        ArrayNode asc = (ArrayNode) objectMapper.readTree(h.handleList(
+            request("/api/users").withMethod("GET").withQueryStringParameter("sortBy", "name")).getBodyAsString());
+        assertThat(asc.get(0).get("name").asText(), is("Alice"));
+        assertThat(asc.get(1).get("name").asText(), is("Bob"));
+        // the item missing the sort field is last regardless of order
+        assertThat(asc.get(2).get("id").asInt(), is(9));
+    }
+
+    @Test
+    public void shouldPaginateWithPageAndSizeAcrossBoundaries() throws Exception {
+        CrudActionHandler h = handlerWith(person(1, "A"), person(2, "B"), person(3, "C"), person(4, "D"), person(5, "E"));
+
+        HttpResponse firstPage = h.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("page", "0").withQueryStringParameter("size", "2"));
+        ArrayNode p0 = (ArrayNode) objectMapper.readTree(firstPage.getBodyAsString());
+        assertThat(p0.size(), is(2));
+        assertThat(p0.get(0).get("name").asText(), is("A"));
+        assertThat(p0.get(1).get("name").asText(), is("B"));
+        // total-count header reflects the full (filtered) set, not the page
+        assertThat(firstPage.getFirstHeader("X-Total-Count"), is("5"));
+        assertThat(firstPage.getFirstHeader("X-Page"), is("0"));
+        assertThat(firstPage.getFirstHeader("X-Page-Size"), is("2"));
+
+        ArrayNode p1 = (ArrayNode) objectMapper.readTree(h.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("page", "1").withQueryStringParameter("size", "2")).getBodyAsString());
+        assertThat(p1.size(), is(2));
+        assertThat(p1.get(0).get("name").asText(), is("C"));
+
+        // last partial page
+        ArrayNode p2 = (ArrayNode) objectMapper.readTree(h.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("page", "2").withQueryStringParameter("size", "2")).getBodyAsString());
+        assertThat(p2.size(), is(1));
+        assertThat(p2.get(0).get("name").asText(), is("E"));
+
+        // page beyond the end is an empty list, not an error
+        ArrayNode p3 = (ArrayNode) objectMapper.readTree(h.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("page", "3").withQueryStringParameter("size", "2")).getBodyAsString());
+        assertThat(p3.size(), is(0));
+    }
+
+    @Test
+    public void shouldFilterByField() throws Exception {
+        CrudActionHandler h = handlerWith(person(1, "Alice"), person(2, "Bob"), person(3, "alice"));
+
+        ArrayNode filtered = (ArrayNode) objectMapper.readTree(h.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("filterField", "name")
+            .withQueryStringParameter("filterValue", "alice")).getBodyAsString());
+        // case-insensitive equality matches both "Alice" and "alice"
+        assertThat(filtered.size(), is(2));
+    }
+
+    @Test
+    public void shouldCombineFilterSortAndPaginate() throws Exception {
+        ObjectNode a = objectMapper.createObjectNode().put("id", 1).put("name", "Zoe").put("team", "red");
+        ObjectNode b = objectMapper.createObjectNode().put("id", 2).put("name", "Amy").put("team", "red");
+        ObjectNode c = objectMapper.createObjectNode().put("id", 3).put("name", "Max").put("team", "blue");
+        ObjectNode d = objectMapper.createObjectNode().put("id", 4).put("name", "Bea").put("team", "red");
+        CrudActionHandler h = handlerWith(a, b, c, d);
+
+        HttpResponse response = h.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("filterField", "team")
+            .withQueryStringParameter("filterValue", "red")
+            .withQueryStringParameter("sortBy", "name")
+            .withQueryStringParameter("page", "0")
+            .withQueryStringParameter("size", "2"));
+        ArrayNode body = (ArrayNode) objectMapper.readTree(response.getBodyAsString());
+        // red team sorted by name: Amy, Bea, Zoe -> first page of size 2: Amy, Bea
+        assertThat(body.size(), is(2));
+        assertThat(body.get(0).get("name").asText(), is("Amy"));
+        assertThat(body.get(1).get("name").asText(), is("Bea"));
+        assertThat(response.getFirstHeader("X-Total-Count"), is("3"));
+    }
+
+    @Test
+    public void shouldReturn400ForInvalidPage() {
+        HttpResponse response = handler.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("page", "abc"));
+        assertThat(response.getStatusCode(), is(400));
+        assertThat(response.getBodyAsString(), containsString("page"));
+    }
+
+    @Test
+    public void shouldReturn400ForNegativePage() {
+        HttpResponse response = handler.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("page", "-1"));
+        assertThat(response.getStatusCode(), is(400));
+        assertThat(response.getBodyAsString(), containsString("page"));
+    }
+
+    @Test
+    public void shouldReturn400ForInvalidSortOrder() {
+        HttpResponse response = handler.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("sortBy", "name")
+            .withQueryStringParameter("sortOrder", "sideways"));
+        assertThat(response.getStatusCode(), is(400));
+        assertThat(response.getBodyAsString(), containsString("sortOrder"));
+    }
+
+    @Test
+    public void shouldReturn400WhenFilterFieldWithoutValue() {
+        HttpResponse response = handler.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("filterField", "name"));
+        assertThat(response.getStatusCode(), is(400));
+        assertThat(response.getBodyAsString(), containsString("filterField"));
+    }
+
+    @Test
+    public void shouldNotOverflowWithLargePageAndSize() throws Exception {
+        CrudActionHandler h = handlerWith(person(1, "A"), person(2, "B"), person(3, "C"));
+        // page 1 with a huge size must not overflow int math in subList — page beyond the
+        // end is an empty 200 response, not a 500
+        HttpResponse response = h.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("page", "1")
+            .withQueryStringParameter("size", String.valueOf(Integer.MAX_VALUE)));
+        assertThat(response.getStatusCode(), is(200));
+        ArrayNode body = (ArrayNode) objectMapper.readTree(response.getBodyAsString());
+        assertThat(body.size(), is(0));
+        assertThat(response.getFirstHeader("X-Total-Count"), is("3"));
+
+        // page 0 with a huge size returns everything
+        ArrayNode all = (ArrayNode) objectMapper.readTree(h.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("page", "0")
+            .withQueryStringParameter("size", String.valueOf(Integer.MAX_VALUE))).getBodyAsString());
+        assertThat(all.size(), is(3));
+    }
+
+    @Test
+    public void shouldReturn400WhenSortOrderWithoutSortBy() {
+        HttpResponse response = handler.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("sortOrder", "desc"));
+        assertThat(response.getStatusCode(), is(400));
+        assertThat(response.getBodyAsString(), containsString("sortBy"));
+    }
+
+    @Test
+    public void shouldTreatNonPositiveSizeAsUnlimited() throws Exception {
+        CrudActionHandler h = handlerWith(person(1, "A"), person(2, "B"), person(3, "C"));
+        ArrayNode body = (ArrayNode) objectMapper.readTree(h.handleList(request("/api/users").withMethod("GET")
+            .withQueryStringParameter("size", "0")).getBodyAsString());
+        assertThat(body.size(), is(3));
+    }
+
     // GET by ID
 
     @Test

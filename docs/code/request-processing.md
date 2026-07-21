@@ -949,6 +949,18 @@ CRUD requests are intercepted in `HttpActionHandler.processAction()` **before** 
 2. If matched, delegates to the appropriate `CrudActionHandler` method based on HTTP method and path structure
 3. If no CRUD match, falls through to normal expectation matching
 
+### List query parameters (pagination / sorting / filtering)
+
+The GET-list endpoint accepts optional query parameters, parsed and applied by `CrudListQuery` in the order **filter → sort → paginate**. When none are supplied the response body is byte-for-byte the legacy full array (and no pagination headers are added).
+
+| Parameter | Meaning |
+|-----------|---------|
+| `filterField` + `filterValue` | keep only items whose `filterField` (dot-separated path, e.g. `address.city`) equals `filterValue` (case-insensitive); both must be supplied together (400 otherwise) |
+| `sortBy` + `sortOrder` | sort by a dot-separated path, case-insensitive; `sortOrder` is `ascending`/`asc` (default) or `descending`/`desc` (400 otherwise); items missing the sort field sort last; stable |
+| `page` + `size` | 0-based `page` (default 0) and page `size` (default: all); `size` ≤ 0 means no limit; a non-integer `page`/`size` or a negative `page` is a 400 |
+
+When any list parameter is active the response adds `X-Total-Count` (total after filtering, before pagination), `X-Page`, and (when `size` is set) `X-Page-Size` headers; the body remains a plain JSON array of the page's items. This is the generic CRUD store's own query surface and is independent of the SCIM list callback's `startIndex`/`count`/`sortBy`/`filter` implementation.
+
 ### Key Classes
 
 | Class | Location | Purpose |
@@ -956,6 +968,7 @@ CRUD requests are intercepted in `HttpActionHandler.processAction()` **before** 
 | `CrudExpectationsDefinition` | `mockserver-core/.../model/` | POJO model for the CRUD definition (basePath, idField, idStrategy, initialData) |
 | `CrudDataStore` | `mockserver-core/.../mock/crud/` | Thread-safe in-memory store using ConcurrentHashMap + ConcurrentLinkedDeque |
 | `CrudActionHandler` | `mockserver-core/.../mock/crud/` | Handles CRUD operations, produces HttpResponse objects |
+| `CrudListQuery` | `mockserver-core/.../mock/crud/` | Parses + applies the GET-list pagination / sorting / filtering query params |
 | `CrudDispatcher` | `mockserver-core/.../mock/crud/` | Routes requests to the correct handler based on path and method |
 
 ### Thread Safety
