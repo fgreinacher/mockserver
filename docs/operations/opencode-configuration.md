@@ -201,12 +201,17 @@ For work that benefits from exploration before convergence, stage these
 temperatures as a descending **multi-pass pipeline** (explore → refine → validate)
 rather than a single pass — see `.opencode/rules/multi-pass-temperature.md`.
 
-### Provider Strategy
+### Provider Strategy and Reviewer Independence
 
-opencode uses OpenAI models exclusively. Claude Code (`.claude/`) uses Anthropic models exclusively. Independence between the implementation and review agents is achieved at two levels:
+opencode uses OpenAI models exclusively. Claude Code (`.claude/`) uses Anthropic models exclusively. Independence between the implementation and review agents rests on three mechanisms:
 
-1. **Fresh context and an adversarial prompt** (the primary mechanism): the reviewer never sees the implementing agent's reasoning, only the diff, and runs from a distinct agent definition. Note that model diversity applies to `review-cheap` (gpt-4o / sonnet, against the implementer's gpt-5 / opus) but **not** to `review-final`, which shares the implementer's model — for the binding gate the only in-harness differences are temperature (0.1 vs 0.2) and read-only tool permissions (`write`/`edit` denied), which enforce separation of duties mechanically rather than by instruction.
-2. **Cross-tool independence**: When switching between tools, a Claude Code session reviews OpenAI-generated work and vice versa, providing genuine cross-provider independence at the workflow level.
+1. **Fresh context** — the reviewer never sees the implementing agent's reasoning, only the diff. This is the primary mechanism and the one that does the most work in practice.
+2. **A distinct adversarial prompt** — `review-final` is a separate agent definition with its own review constitution, briefed to refute rather than to agree.
+3. **Restricted tools** — `write` and `edit` are denied, so the reviewer cannot edit through its normal tooling. This is **partial** mechanical enforcement, not a sandbox: `bash` remains granted for inspection and read-only validation, and `permission.bash` denies only destructive git and `rm -rf` patterns — so `sed -i`, `tee` and `>` redirection are still reachable. The prohibition on writing through the shell is instruction-level, spelled out in the read-only clause of `.opencode/agents/review-final.md` (and, identically, `.claude/settings.json` plus `.claude/agents/review-final.md` under Claude Code).
+
+A further lever, **temperature** (0.1 for reviewers against 0.2 for the implementer), applies on the opencode side only — Claude Code has no per-subagent temperature and uses `effort` instead — and is subject to the reasoning-model caveat above: `gpt-5` may ignore a custom sampling temperature. Do not count on it as load-bearing for the binding gate.
+
+**Model diversity is deliberately not a mechanism here, and is not pursued.** It applies to `review-cheap` (gpt-4o / sonnet against the implementer's gpt-5 / opus) but **not** to `review-final`, which runs the implementer's own model in both harnesses. Manufacturing diversity within a provider would mean downgrading one side — the configured alternatives are only Sonnet and Haiku under Claude Code, and `gpt-4o` / `gpt-4o-mini` under opencode — and weakening the implementer to differentiate the reviewer is a worse trade than having no diversity. Running the gate from the opposite harness would give true cross-provider independence, but that needs separate provider credentials and is not part of the normal workflow. Treat the three mechanisms above as the whole of `review-final`'s independence, and do not describe the binding gate as provider-independent.
 
 ---
 
@@ -331,7 +336,7 @@ Key commands blocked without explicit user confirmation:
 | `git push --force` | `git push --force-with-lease` |
 | `git rebase` on shared branches | Merge instead |
 
-These are enforced at two levels: the config file's `permission.bash` deny-list (hard block) and the rule file (instruction-level reinforcement).
+These are enforced at two levels, but **unevenly**: only three of the eleven — `git push --force`, `git reset --hard` and `git clean -fd` — appear in the `permission.bash` deny-list and are hard-blocked by the framework. The other eight (`git checkout -- …`, `git restore …`, `git stash drop`/`clear`, `git branch -D`, `git rebase` on shared branches) are **instruction-level only**: the rule tells the agent not to run them, and nothing stops it. Treat the table as policy, not as a sandbox.
 
 ### commit-workflow.md — The 5-Step Pre-Commit Process
 

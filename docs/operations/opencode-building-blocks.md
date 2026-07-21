@@ -302,7 +302,7 @@ MockServer runs the same agent roster under two harnesses, each tiering to its o
 | Standard | `openai/gpt-4o` | `claude-sonnet-4-6` | code-reviewer, review-cheap, simplifier, docs-writer, taskify-agent | Strong analysis at moderate cost |
 | Fast | `openai/gpt-4o-mini` | `claude-haiku-4-5-20251001` | test-runner, council-seat | Rote operations — speed over depth |
 
-The escalation `review-cheap` (gpt-4o / sonnet) → `review-final` (gpt-5 / opus) is a real capability gradient, so the binding gate is a stronger second brain rather than a same-model re-run. But note what the tiering does **not** buy you: within one harness `review-final` runs the *same* model as `implementer`, so its independence comes from a **fresh context and a distinct adversarial prompt**, not from model diversity. Genuine provider diversity appears only across harnesses — an opencode `review-final` (gpt-5) reviewing work an implementer produced under Claude Code, or the reverse. See `docs/operations/opencode-configuration.md` for the full per-agent model, `effort`, and `temperature` tables.
+The escalation `review-cheap` (gpt-4o / sonnet) → `review-final` (gpt-5 / opus) is a real capability gradient, so the binding gate is a stronger second brain rather than a same-model re-run. But note what the tiering does **not** buy you: within one harness `review-final` runs the *same* model as `implementer`. Its independence comes from a **fresh context**, a **distinct adversarial prompt**, and **restricted tools** (`write`/`edit` denied — though `bash` is granted, so the no-writing rule is partly instruction-level), plus a lower **temperature** on the opencode side — not from model diversity, which is deliberately not pursued (differentiating the models within one provider would mean downgrading the implementer). See `docs/operations/opencode-configuration.md` → Provider Strategy and Reviewer Independence for the reasoning, and for the full per-agent model, `effort`, and `temperature` tables.
 
 ---
 
@@ -742,7 +742,7 @@ Common mistakes when setting up an opencode configuration.
 | Anti-pattern | Why it fails | Fix |
 |--------------|-------------|-----|
 | Putting everything in `AGENTS.md` | Context window bloat — always-on content eats tokens every session | Move large workflows to skills, move constraints to rules |
-| Making every agent full-access | No security boundary — a reviewer can "fix" code instead of reporting | Use `tools: { write: false }` for read-only agents |
+| Making every agent full-access | No security boundary — a reviewer can "fix" code instead of reporting | Use `tools: { write: false }` — and `bash: false` where the agent needs no shell (as `council-seat` does), since a granted shell can still write |
 | Skipping commands, relying on LLM routing | LLM picks the wrong agent in edge cases | Add commands for every common workflow |
 | Putting tool integration guides in agent prompts | Duplicated across agents, bloats every session | Make it a reference skill, loaded on demand |
 | One model for everything | Overspend on rote tasks, underspend on critical tasks | Tier models by cognitive demand |
