@@ -123,8 +123,8 @@ the PR-build socket skip to the three cloud modules, where it is announced in th
 log rather than hidden behind an `Assume`.
 
 The `mockserver-infra` pipeline (`pipeline-infra.yml`) runs lightweight validation
-steps in Docker: opencode config lint, shell-script lint, Dockerfile sync, Helm
-chart validation, and **API-collection validation**. The collection step
+steps in Docker: opencode config lint, the **AI eval gate**, shell-script lint,
+Dockerfile sync, Helm chart validation, and **API-collection validation**. The collection step
 (`collections-validate.sh`) regenerates the Postman and Bruno collections from the
 OpenAPI spec and fails if the committed `examples/postman/**` or `examples/bruno/**`
 have drifted — so `examples/` and `jekyll-www.mock-server.com/mockserver-openapi.yaml`
@@ -233,7 +233,8 @@ Triggered by the orchestrator when files change in `mockserver/` or `mockserver-
 ```mermaid
 flowchart TD
     CONFIG["1. opencode config validation
-    java-validate-config.sh"]
+    java-validate-config.sh
+    + AI eval gate"]
     PULL["2. docker pull maven image"]
     CONFIG --> PULL
     PULL --> BUILD["3. Maven build
@@ -254,6 +255,9 @@ flowchart TD
 #### Step 1: Validate Config
 
 Runs `.buildkite/scripts/steps/java-validate-config.sh` to lint opencode configuration files.
+
+Alongside it, `.buildkite/scripts/steps/validate-ai-evals.sh` runs the AI-component
+eval harness with `STRICT=1` (see [AI Eval Gate](#ai-eval-gate) below).
 
 #### Step 2: Update Docker Image
 
@@ -319,6 +323,46 @@ A **coverage floor** asserts at least 23 emitted samples — a regression that s
 **Companion test:** `mockserver-ui/src/__tests__/fixtureCoverage.test.ts` is a Vitest meta-test that verifies the canonical fixture set at `test-fixtures/expectations/` collectively exercises every top-level key in the server `expectation.json` schema, every `ACTION_FAMILY_KEY`, every `StandardActionType`, and every `BodyMatcherType`. Adding a new server feature without a covering fixture fails CI until a fixture is added.
 
 **Ratchet ledger:** `test-fixtures/expectations/known-gaps.json` tracks accepted per-language JSON-path gaps in the cross-language round-trip fidelity tests. A stale entry (one that no longer excuses any diff) fails CI — the ratchet re-arms as client models are completed. This file conflicts on every rebase when multiple worktrees are active; always resolve from `origin/master` after a rebase.
+
+### AI Eval Gate
+
+**File:** `.buildkite/scripts/steps/validate-ai-evals.sh` (runs in both `pipeline-infra.yml` and `pipeline-java.yml`)
+
+Runs the AI-component eval harness (`.opencode/evals/run-evals.sh`) with `STRICT=1`.
+`STRICT` is what makes it a gate: without it the runner counts a fixture with no
+recorded baseline as `PENDING` and still exits 0 — which is exactly how the suite
+sat at "5 fixtures, 0 baselines, OK" until commit `aff5730a0`.
+
+Enforced mechanically:
+
+| Condition | Exit |
+|---|:--:|
+| A fixture has no committed `.result` baseline | 1 |
+| A committed baseline disagrees with the fixture's `expected_verdict` | 1 |
+| A fixture is malformed (bad frontmatter, `id` ≠ filename stem, invalid verdict, `FLAG` on a review agent) | 2 |
+| A `.result` is orphaned (its fixture was deleted or renamed) | 2 |
+| The corpus drops below the `MIN_TASKS` floor, or is empty | 2 |
+
+Buildkite is path-filtered, so this runs on builds that trigger `mockserver-infra`
+or `mockserver-java` rather than literally every build. All AI-component paths —
+`.opencode/`, `.claude/`, `AGENTS.md`, `CLAUDE.md`, `opencode.jsonc` — route to the
+infra pipeline, so any change that could move a verdict does run the gate. It is
+duplicated into the java pipeline for the same reason the opencode config lint is:
+consistency with that precedent, not extra coverage (AI-component paths never
+trigger the java pipeline on their own).
+
+**What this gate does not do (1): it cannot detect a laundered baseline.** Both
+`expected_verdict` and `.result` are committed, so editing them together to match a
+degraded agent passes silently. That is why `.opencode/evals/**` is an enumerated
+control path requiring `review-final` and explicit approval.
+
+**What this gate does not do (2): it does not re-invoke the agents.** Buildkite has no
+model credentials, and a live agent run is neither cheap nor deterministic.
+Recording a baseline stays an agent-in-the-loop step performed locally
+(`.opencode/evals/README.md`). So CI proves the corpus is **complete and
+self-consistent**; it does not prove the agents still behave that way today. The
+behavioural check is the local commit-workflow gate on AI-component changes
+(`.opencode/rules/evaluation-harness.md`).
 
 ### Spot Resilience (agent-lost auto-retry)
 

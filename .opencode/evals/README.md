@@ -14,8 +14,20 @@ STRICT=1 bash .opencode/evals/run-evals.sh   # gate mode: PENDING counts as fail
 ```
 
 The runner validates every fixture's frontmatter, prints the plan, scores any
-recorded results, and exits non-zero on a malformed fixture (2) or a regressed
-golden task (1).
+recorded results, and exits non-zero on a regressed golden task (1) or an unusable
+corpus (2 — a malformed fixture, an orphaned `.result`, or a suite below `MIN_TASKS`).
+
+**CI runs the `STRICT=1` form** (`.buildkite/scripts/steps/validate-ai-evals.sh`, in
+both the infra and java pipelines), so a fixture committed without a `.result`
+baseline reddens the build. Buildkite is path-filtered, but every AI-component path
+(`.opencode/`, `.claude/`, `AGENTS.md`, `CLAUDE.md`, `opencode.jsonc`) routes to the
+infra pipeline, so a change that could move a verdict always runs the gate. CI scores
+committed results only — it never invokes the agents, so recording a baseline remains
+a local, agent-in-the-loop step (below).
+
+Deleting fixtures is a corpus regression: the runner enforces a `MIN_TASKS` floor
+(currently 5) and fails on an orphaned `.result`. Raise the floor when you add
+fixtures; lowering it is a reviewed control change.
 
 ## Fixture format (`tasks/<id>.md`)
 

@@ -41,6 +41,44 @@ Any change to an AI component (a *higher-scrutiny control change*, see
 - a **model/provider version change** — treat it as a behavioural change, not a
   silent upgrade; re-run the suite to confirm no regression.
 
+For those changes, run the suite in gate mode — `STRICT=1 bash
+.opencode/evals/run-evals.sh` — so a fixture with no recorded baseline fails closed
+instead of reporting `PENDING … OK`.
+
+## Where it is enforced
+
+Two layers, and they check different things:
+
+- **CI (mechanical).** `.buildkite/scripts/steps/validate-ai-evals.sh` runs the
+  suite with `STRICT=1` on any build that triggers `mockserver-infra` or
+  `mockserver-java` — which includes every change under `.opencode/`, `.claude/`,
+  `AGENTS.md`, `CLAUDE.md` and `opencode.jsonc`, i.e. every AI-component path. It
+  fails the build if a fixture lacks a committed `.result`, if a committed baseline
+  disagrees with its `expected_verdict`, if a fixture is malformed, if a `.result`
+  is orphaned, or if the corpus drops below its `MIN_TASKS` floor.
+
+  **What it cannot catch:** `expected_verdict` and `.result` are both committed, so
+  editing them *together* to match a degraded agent passes silently — the
+  "update the golden file instead of fixing the code" move banned by
+  [[control-integrity]]. No gate can police that from inside the corpus, which is
+  why `.opencode/evals/**` is an enumerated **control path**: changing it requires
+  `review-final` and explicit approval, never an autonomous commit.
+
+  This deliberately makes **every** `.result` refresh a gated-approval commit —
+  including routine re-recording after a legitimate model upgrade. That cost is the
+  point: re-recording a baseline is indistinguishable, mechanically, from laundering
+  a regression, so a human sees each one.
+- **Locally (behavioural, on AI-component changes).** CI does **not** re-invoke the
+  agents — it only scores committed results. Re-running the named agent on each
+  fixture and re-recording `.result` is the agent-in-the-loop step, and it is the
+  only thing that detects an agent whose behaviour has actually drifted. That step
+  is required by the commit gate ([[commit-workflow]]) for AI-component changes and
+  cannot be delegated to CI.
+
+Treat a baseline flip after a model or provider change as **model drift until
+proven otherwise** — re-run the fixture before assuming the change under review
+caused it.
+
 ## Pass criteria
 
 A change **MUST NOT** regress correctness, safety, or cost beyond the thresholds

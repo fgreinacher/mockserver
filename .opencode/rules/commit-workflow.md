@@ -51,7 +51,7 @@ Run `git status --short` to see all changed, staged, and untracked files. From t
 | `npm` | `package.json`, `package-lock.json`, `*.js`, `*.ts`, `*.tsx`, `*.jsx` (in `mockserver-ui/`, `mockserver-client-node/`, `mockserver-node/`) |
 | `python` | `*.py`, `pyproject.toml`, `requirements*.txt` (in `mockserver-client-python/`) |
 | `ruby` | `*.rb`, `Gemfile`, `Gemfile.lock`, `*.gemspec` (in `mockserver-client-ruby/`) |
-| `control` (AI component) | `.opencode/rules/**`, `.opencode/agents/**`, `.claude/agents/**`, `.opencode/commands/**`, `.claude/commands/**`, `.opencode/skills/**`, `.opencode/plugins/**`, `.opencode/scripts/**`, `opencode.jsonc`, `.claude/settings*.json`, the review constitution, and CI / test-gate definitions — i.e. changes to **the controls AI is judged by** (the command/skill/plugin/script files that drive the gate chain are themselves controls — a degraded `/commit` is a fail-open hole) |
+| `control` (AI component) | `.opencode/rules/**`, `.opencode/agents/**`, `.claude/agents/**`, `.opencode/commands/**`, `.claude/commands/**`, `.opencode/skills/**`, `.opencode/plugins/**`, `.opencode/scripts/**`, `.opencode/evals/**`, `opencode.jsonc`, `.claude/settings*.json`, the review constitution, and CI / test-gate definitions — i.e. changes to **the controls AI is judged by** (the command/skill/plugin/script files that drive the gate chain are themselves controls — a degraded `/commit` is a fail-open hole; the eval corpus is a control because a fixture's `expected_verdict` and its `.result` can be edited together to launder a regression, which no gate can mechanically detect) |
 
 A commit may contain files from multiple categories. Run ALL applicable validations.
 

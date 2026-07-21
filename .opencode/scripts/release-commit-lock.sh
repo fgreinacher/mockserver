@@ -27,10 +27,10 @@ if [[ ! -f "$LOCK_FILE" ]]; then
     exit 0
 fi
 
-# Read lock file
+# Read lock file — the second field (timestamp) is consumed but unused here;
+# only acquire-commit-lock.sh needs it, to age out a stale lock.
 lock_pid=""
-lock_timestamp=""
-read -r lock_pid lock_timestamp < "$LOCK_FILE" || {
+read -r lock_pid _ < "$LOCK_FILE" || {
     echo "WARNING: Corrupt lock file, removing"
     rm -f "$LOCK_FILE"
     exit 0

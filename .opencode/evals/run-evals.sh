@@ -3,7 +3,16 @@
 # See .opencode/rules/evaluation-harness.md and .opencode/evals/README.md
 #
 # Exit codes: 0 = OK (no regressions), 1 = a golden task regressed,
-#             2 = a fixture is malformed. STRICT=1 makes PENDING count as failure.
+#             2 = the corpus is unusable — a malformed fixture, an orphaned
+#                 .result, or fewer tasks than MIN_TASKS (a shrunken suite).
+#             STRICT=1 makes PENDING count as failure.
+#
+# NOTE ON WHAT THIS CANNOT CATCH: both `expected_verdict` and `.result` are
+# committed files, so editing them *together* to match a degraded agent passes
+# silently. That is precisely the "update the golden file instead of fixing the
+# code" move banned by .opencode/rules/control-integrity.md, and it is why the
+# corpus is an enumerated control path requiring review-final, not a gate that
+# can police itself.
 set -uo pipefail
 
 EVAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,6 +20,11 @@ TASK_DIR="$EVAL_DIR/tasks"
 REQUIRED_KEYS="id category agent expected_verdict"
 VALID_VERDICTS="PASS BLOCK FLAG"
 STRICT="${STRICT:-0}"
+# Ratchet: the corpus may grow but must never silently shrink. Deleting fixtures
+# is the cheapest way to make this gate vacuous — an empty-suite check alone only
+# catches deleting *all* of them. Raise this when fixtures are added; lowering it
+# is a control change (see .opencode/rules/control-integrity.md).
+MIN_TASKS="${MIN_TASKS:-5}"
 
 # frontmatter <file> <key> -> value (reads the leading --- … --- block only)
 frontmatter() {
@@ -70,18 +84,25 @@ for f in "$TASK_DIR"/*.md; do
   fi
 done
 
-# orphan .result files (a fixture was renamed or removed)
+# Orphan .result files mean a fixture was renamed or deleted — i.e. coverage was
+# removed. That is a corpus regression, not a warning.
+orphans=0
 for r in "$TASK_DIR"/*.result; do
   [ -e "$r" ] || continue
   stem="$(basename "$r" .result)"
-  [ -f "$TASK_DIR/$stem.md" ] || echo "WARNING: orphan result $(basename "$r") has no matching fixture"
+  [ -f "$TASK_DIR/$stem.md" ] || { echo "ORPHAN  $(basename "$r") has no matching fixture — was a task deleted or renamed?"; orphans=$((orphans + 1)); }
 done
 
 echo "----"
-echo "tasks=$total pass=$pass fail=$fail pending=$pending malformed=$malformed strict=$STRICT"
+echo "tasks=$total pass=$pass fail=$fail pending=$pending malformed=$malformed orphans=$orphans strict=$STRICT"
 
-# An empty suite must NOT vacuously pass the gate.
+# An empty — or quietly shrunken — suite must NOT vacuously pass the gate.
 [ "$total" -gt 0 ] || { echo "NO TASKS FOUND — gate vacuously satisfied; add fixtures before rollout"; exit 2; }
+[ "$total" -ge "$MIN_TASKS" ] || { echo "CORPUS SHRANK: $total task(s) < floor of $MIN_TASKS — restore the deleted fixture(s), or lower MIN_TASKS as a reviewed control change"; exit 2; }
+# A floor left behind by a grown corpus silently re-opens the deletion gap it exists
+# to close, so nudge rather than let it rot (advisory — growth must not redden CI).
+[ "$total" -le "$MIN_TASKS" ] || echo "NOTE: corpus has grown to $total (floor is $MIN_TASKS) — raise MIN_TASKS to keep the ratchet tight"
+[ "$orphans" -gt 0 ] && { echo "ORPHANED RESULTS: $orphans .result file(s) without a fixture"; exit 2; }
 [ "$malformed" -gt 0 ] && { echo "FIXTURES MALFORMED"; exit 2; }
 [ "$fail" -gt 0 ] && { echo "REGRESSION: golden task(s) failed"; exit 1; }
 if [ "$STRICT" = "1" ] && [ "$pending" -gt 0 ]; then

@@ -17,8 +17,13 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
     set -eu
     apk add --no-cache --quiet bash >/dev/null
 
-    all_files=$(find scripts .buildkite/scripts -type f -name "*.sh" 2>/dev/null | sort)
-    ci_files=$(find scripts/ci .buildkite/scripts -type f -name "*.sh" 2>/dev/null | sort || true)
+    # .opencode/{scripts,evals} hold the scripts that drive the local commit gate
+    # chain (commit lock, operator halt, eval runner). One of them — run-evals.sh —
+    # CI now executes directly; the rest are local-only but equally load-bearing
+    # controls, so all of them are linted. .opencode/skills is deliberately still
+    # excluded: pr-monitor.sh has 10 pre-existing SC2155s to clean up first.
+    all_files=$(find scripts .buildkite/scripts .opencode/scripts .opencode/evals -type f -name "*.sh" 2>/dev/null | sort)
+    ci_files=$(find scripts/ci .buildkite/scripts .opencode/scripts .opencode/evals -type f -name "*.sh" 2>/dev/null | sort || true)
     legacy_files=$(find scripts -maxdepth 1 -type f -name "*.sh" 2>/dev/null | sort || true)
 
     if [ -z "$all_files" ]; then

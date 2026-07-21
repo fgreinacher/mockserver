@@ -10,6 +10,10 @@ steps:
     command: ".buildkite/scripts/steps/java-validate-config.sh"
     timeout_in_minutes: 5
 
+  - label: ":robot_face: AI eval gate"
+    command: ".buildkite/scripts/steps/validate-ai-evals.sh"
+    timeout_in_minutes: 5
+
   - label: ":docker: update docker image"
     command: "docker pull mockserver/mockserver:maven"
 

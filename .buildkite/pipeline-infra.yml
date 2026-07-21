@@ -9,6 +9,16 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
+  - label: ":robot_face: AI eval gate"
+    command: ".buildkite/scripts/steps/validate-ai-evals.sh"
+    timeout_in_minutes: 5
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
   - label: ":bash: validate shell scripts"
     command: ".buildkite/scripts/steps/infra-validate-scripts.sh"
     timeout_in_minutes: 5

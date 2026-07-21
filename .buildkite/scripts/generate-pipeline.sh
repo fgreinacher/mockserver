@@ -121,7 +121,12 @@ trigger_if_changed "^docker_build/maven/" "mockserver-build-image" "MockServer B
 
 # examples/ (generated Postman/Bruno collections) and the OpenAPI spec route to
 # infra too, so the collections-validate gate catches spec/collection drift.
-if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "^(\.buildkite/|\.github/|terraform/|docker/|scripts/|helm/|docs/|examples/|jekyll-www\.mock-server\.com/mockserver-openapi\.yaml|AGENTS\.md|opencode\.jsonc|\.opencode/)"; then
+#
+# .claude/ and CLAUDE.md route here as well: .claude/agents/** and .claude/commands/**
+# are enumerated AI-component control paths (commit-workflow.md, AGENTS.md), and both
+# the opencode config lint and the AI eval gate validate them — without this, a commit
+# that only weakens .claude/agents/review-final.md would trigger no pipeline at all.
+if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "^(\.buildkite/|\.github/|terraform/|docker/|scripts/|helm/|docs/|examples/|jekyll-www\.mock-server\.com/mockserver-openapi\.yaml|AGENTS\.md|CLAUDE\.md|opencode\.jsonc|\.opencode/|\.claude/)"; then
   echo "--- :pipeline: Triggering MockServer Infra (infra changes)"
   STEPS="${STEPS}  - label: \":pipeline: MockServer Infra\"
     command: \".buildkite/scripts/trigger-pipeline.sh mockserver-infra 'MockServer Infra'\"
