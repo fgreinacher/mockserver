@@ -393,6 +393,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **The editors no longer mark a valid expectation file as invalid when a header or cookie name uses
+  the object form.** MockServer writes a header, query-parameter or cookie name as
+  `{"name": {"not": false, "value": "!foo"}}` when the name itself begins with `!` or `?`, so that a
+  literal marker character is not read back as a negation. The expectation JSON Schema bundled into
+  the VS Code extension and the JetBrains plugin still typed that name — and the values in the same
+  array form — as a plain string, so an expectation file MockServer itself had written was underlined
+  as an error and completion stopped working inside the entry, even though the server accepted the
+  file. The bundled schema is regenerated from `mockserver-core`, so both editors again accept exactly
+  what the server accepts. Names and values written as plain strings are unaffected.
 - **The strict forward-validate reject paths are now covered by behavioural tests.** `forwardValidate`
   in `STRICT` mode rejects a request that does not conform to its OpenAPI spec with a `400` (and never
   forwards it upstream) and rejects a non-conformant upstream response with a `502`. Both reject
