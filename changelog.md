@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The OpenAPI validation-proxy enforce path is now proven end-to-end over a real socket.** A new
+  integration test stands up a validation proxy (`validateProxyOpenAPISpec` + `validateProxyEnforce`)
+  that forwards unmatched traffic to a second (upstream) MockServer, then drives real requests through
+  it and asserts on the bytes the client receives: a schema-invalid `POST /pets` is rejected with `400`
+  ("OpenAPI request validation failed") and never reaches the upstream, a conformant request is
+  forwarded and served normally, and a non-conformant upstream response is rejected with `502`
+  ("OpenAPI response validation failed"). Previously the enforce branch was only re-implemented inline
+  in a unit test, so the production short-circuit in `HttpActionHandler.validateProxyRequest` /
+  `validateProxyResponse` was never exercised over the wire.
 - **VCR cassette replay is now covered end-to-end at the data plane.** A new integration test loads a
   cassette (recorded `request -> response` pairs) through the `load_expectations_from_file` tool into
   a running server, then drives real requests over a socket and asserts on the bytes the client
