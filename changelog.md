@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("OpenAPI response validation failed"). Previously the enforce branch was only re-implemented inline
   in a unit test, so the production short-circuit in `HttpActionHandler.validateProxyRequest` /
   `validateProxyResponse` was never exercised over the wire.
+- **The core mocking-action matrix is now proven over cleartext HTTP/2 (h2c) with a real client.** A new
+  integration test drives a real prior-knowledge Netty HTTP/2 multiplex client over a socket against the
+  insecure port and asserts on the bytes the client receives on its own stream for each action: a
+  `respond` action delivers its status and body, a class `callback` delivers its produced body, a
+  `forward` action relays the upstream body back, and an `error` action resets the stream with the
+  configured HTTP/2 error code. Previously the full action matrix ran only over HTTP/1.1 and
+  h2-over-TLS; h2c was exercised only by an `EmbeddedChannel` pipeline-shape test and gRPC-unary, so no
+  test proved a real cleartext-HTTP/2 client actually received the response body for these actions (the
+  streaming / stream-id sibling of gRPC issue #2419). The shared integration harness cannot cover this
+  because its client has no h2c prior-knowledge path — an insecure request tagged HTTP/2 silently falls
+  back to HTTP/1.1.
 - **VCR cassette replay is now covered end-to-end at the data plane.** A new integration test loads a
   cassette (recorded `request -> response` pairs) through the `load_expectations_from_file` tool into
   a running server, then drives real requests over a socket and asserts on the bytes the client
