@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built bundle is present but broken (missing hashed reference, or the referenced asset is not served),
   and skips with a clear message only when the `build-ui` profile did not run and no real bundle is on
   the classpath.
+- **The served dashboard now has real-browser end-to-end coverage against a live MockServer.** A new
+  Playwright suite (`mockserver-ui/e2e/`) boots the runnable netty JAR — which serves the dashboard,
+  the `/mockserver/*` control plane, and the `_mockserver_ui_websocket` feed on one origin — loads the
+  dashboard in headless Chromium, and asserts real end-to-end behaviour: (1) an expectation authored in
+  the composer UI matches a request fired over the wire, which then streams into the log panel live over
+  the real WebSocket; and (2) expectation create, update, and clear driven through the dashboard change
+  the server's own active-expectation list, verified over real REST (`PUT /mockserver/retrieve`).
+  Previously the dashboard had no browser-level coverage at all — all 3,000+ UI tests run in jsdom with
+  a mocked `fetch` and a hand-written WebSocket, so expectation CRUD and the live log stream were never
+  exercised against the actual endpoints. Wired into the UI pipeline (`.buildkite/pipeline-ui.yml`) as a
+  fail-closed CI gate that builds the current JAR, boots it, and runs the suite in the Playwright image.
 - **Enabling `tlsMutualAuthenticationRequired` at runtime is now proven to be enforced over a real TLS
   socket.** A new integration test starts a live MockServer with mutual TLS OFF, confirms a
   certificateless client completes the handshake, then requires mutual authentication at runtime on the

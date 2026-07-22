@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig, configDefaults } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
@@ -11,6 +11,10 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // The Playwright end-to-end specs under e2e/ are *.spec.ts too, but they run
+    // in a real browser via `npm run test:e2e`, not under jsdom/vitest. Exclude
+    // them so vitest's default glob does not try to run them as unit tests.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
     // @mui/material's ESM build (Transition.mjs) uses an extensionless directory import of
     // `react-transition-group/TransitionGroupContext`, which Node's strict ESM resolver (used for
     // externalised deps) rejects. Inline @mui so Vite transforms it and resolves the import.

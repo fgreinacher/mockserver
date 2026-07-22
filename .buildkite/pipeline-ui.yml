@@ -55,6 +55,24 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
+  - label: ":playwright: UI end-to-end (real browser)"
+    # Drives the served dashboard in headless Chromium against a live MockServer
+    # (real REST + real WebSocket). Builds the current runnable JAR, boots it,
+    # and runs the Playwright suite against it. Heavier than the jsdom tests
+    # (JAR build + browser image), so it is a longer-timeout step.
+    command: ".buildkite/scripts/steps/ui-e2e.sh"
+    artifact_paths:
+      - "mockserver-ui/test-reports/*.xml"
+      - "mockserver-ui/test-results/**/*"
+      - "mockserver-ui/playwright-report/**/*"
+    timeout_in_minutes: 30
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
   - label: ":s3: save npm cache"
     command: ".buildkite/scripts/cache-save.sh npm"
     timeout_in_minutes: 10
