@@ -7,9 +7,42 @@ After making code changes, ALWAYS run unit tests for the affected module(s).
 - Identify which Maven module(s) were modified based on file paths (e.g., files in `mockserver-core/` → module `mockserver-core`)
 - Run unit tests with Maven targeting the specific module: `./mvnw test -pl <module>`
 - If tests fail, fix the issues before considering the task complete
-- When a specific test fails, re-run just that test: `./mvnw test -pl <module> -Dtest=<TestClassName>#<testMethodName>`
+- When a specific test fails, re-run just that test: `./mvnw test -pl <module> -Dtest=<TestClassName>#<testMethodName>` — but in `mockserver-core` first check whether the class is quarantined into the sequential phase (see "Quarantined (Sequential-Phase) Tests" below); for those, `-Dtest` is not evidence
 - Do NOT run integration tests automatically — they are slow and run in CI
 - If changes span multiple modules, run tests for ALL affected modules: `./mvnw test -pl <module1>,<module2>`
+
+## Quarantined (Sequential-Phase) Tests in `mockserver-core`
+
+**`mockserver-core` splits its unit tests across two Surefire executions, and `-Dtest=<Class>` defeats the split.** For the 123 classes quarantined into the sequential phase, a `-Dtest` run is **not evidence in either direction** — neither its pass nor its failure means anything. Verify those classes with a **full-module run** (`./mvnw test -pl mockserver-core`), or with the single-execution command below.
+
+**Mechanism.** `mockserver-core/pom.xml` declares two `surefire:test` executions: `default-test` (the plugin-level `<configuration>`, `<parallel>classes</parallel>` with `threadCount` 4) which `<exclude>`s the quarantined classes, and `sequential-tests` (`<parallel>none</parallel>`) which `<include>`s exactly those classes. Surefire's `test` parameter **replaces both the `<includes>` and the `<excludes>` of every execution** with the named class (`AbstractSurefireMojo.getIncludeList`/`getExcludeList` return only the `-Dtest` value / an empty list once a specific test is named), so both executions run it:
+
+- a **quarantined** class runs in the parallel phase it was quarantined out of — where it is driven by Surefire's parallel JUnitCore provider (`surefire.junitcore.pc.Scheduler`) rather than the plain JUnit4 runner, so it reports failures that are artefacts of the wrong phase — and then runs a second time, correctly, in `sequential-tests`
+- a **non-quarantined** class simply runs twice, once per execution
+
+The wrong-phase run happens **first**, so the tail of the log shows the clean second run. With `-Dmaven.test.failure.ignore=true` the reader records a pass (false green); without it the build fails in `default-test` before the correct execution ever runs (false red).
+
+Reproduction on unmodified `master`, one invocation:
+
+```
+./mvnw -o -pl mockserver-core test -Dtest=ControlPlaneAuthenticationRouteDenialTest
+  surefire:test (default-test)      Tests run: 45, Failures: 3   <- wrong phase, bogus failures
+  surefire:test (sequential-tests)  Tests run: 45, Failures: 0   <- correct phase, clean
+```
+
+**Is a class quarantined?** The `<includes>` of the `sequential-tests` execution in `mockserver-core/pom.xml` are the authoritative list (`ParallelStaticStateGuardTest` fails the build if they drift from the `default-test` `<excludes>`):
+
+```bash
+grep -q "<include>\*\*/<ClassName>.java</include>" mockserver/mockserver-core/pom.xml && echo QUARANTINED
+```
+
+**Verifying one quarantined class.** A full-module run is the default and remains the pre-merge gate (`worktree-workflow.md`). While iterating, invoke the sequential execution directly — this runs the class exactly once, in the phase it belongs to:
+
+```bash
+./mvnw -o -pl mockserver-core test-compile surefire:test@sequential-tests -Dtest=<ClassName>
+```
+
+Use that form **only** for quarantined classes: it skips `default-test` entirely, so for any other class it would run the wrong phase.
 
 ## Docker-Gated Tests
 
@@ -70,6 +103,9 @@ If unit tests already passed earlier in this conversation for the exact same cha
 
 # Run a specific test method
 ./mvnw test -pl mockserver-core -Dtest=HttpRequestTest#shouldCreateRequest
+
+# Run a single QUARANTINED mockserver-core class (see "Quarantined (Sequential-Phase) Tests")
+./mvnw -o -pl mockserver-core test-compile surefire:test@sequential-tests -Dtest=HttpStateTest
 
 # All unit tests (slow — avoid unless needed)
 ./mvnw test
