@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **gRPC client-streaming and bidirectional-streaming are now covered by a real grpc-java client
+  end-to-end.** A new integration test drives an actual `io.grpc` channel over h2c and asserts on the
+  bytes the client deframes — a single collected response for client-streaming, and two interleaved
+  replies plus the terminal `grpc-status` trailer for bidi. Previously these two RPC shapes were
+  exercised only through `EmbeddedChannel`, the same mocked seam that let issue #2419 ship for the
+  unary and server-streaming paths.
 - **The breakpoint and verification forms accept the same search syntax as the Traffic view.** A quick
   scope box on both forms takes `method:`, `path:` and `host:` terms and fills the matcher fields from
   them, so the operator vocabulary learned in the Traffic search works when writing a breakpoint
