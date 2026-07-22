@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SniHandlerTest` (an `EmbeddedChannel` asserting the hostname was added to the SAN configuration
   set); no handshake test connected with a chosen SNI host and inspected the certificate the server
   actually served.
+- **The forward/proxy-path GenAI span emission is now covered end-to-end through a running server.**
+  A new test boots a real forwarding `MockServer` that proxies a chat-completions POST to an upstream
+  MockServer stubbed as an OpenAI endpoint, and reads the emitted span back out of an in-process
+  `InMemorySpanExporter` wired into the process-wide tracer — so the assertion exercises production
+  `HttpActionHandler.emitForwardGenAiSpan` (provider sniffing, response parsing, span recording) rather
+  than reconstructing it. Previously the forward path's span emission was only guarded by a core test
+  that hand-mirrored the production logic and never drove the running server.
 - **gRPC client-streaming and bidirectional-streaming are now covered by a real grpc-java client
   end-to-end.** A new integration test drives an actual `io.grpc` channel over h2c and asserts on the
   bytes the client deframes — a single collected response for client-streaming, and two interleaved

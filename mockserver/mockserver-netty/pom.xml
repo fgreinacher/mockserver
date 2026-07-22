@@ -214,6 +214,15 @@
             <artifactId>asm</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- in-memory OpenTelemetry span exporter for driving the production forward-path
+             GenAI span emission end-to-end (ForwardPathGenAiSpanEmissionTest). The OTel SDK
+             (trace/api) reaches this module transitively at compile scope via mockserver-core;
+             only the test-support artifact carrying InMemorySpanExporter must be declared here. -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-testing</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!--
             chicory (WASM interpreter) is NOT declared here on purpose. It used to be declared
             test-scope as a workaround while mockserver-core marked it <optional>true</optional>;
