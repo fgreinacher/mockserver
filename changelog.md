@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replies plus the terminal `grpc-status` trailer for bidi. Previously these two RPC shapes were
   exercised only through `EmbeddedChannel`, the same mocked seam that let issue #2419 ship for the
   unary and server-streaming paths.
+- **The SPY and CAPTURE operating modes are now covered end-to-end at the data plane.** A new
+  integration test drives an unmatched request through each mode and asserts the documented
+  behaviour: the request is proxied to the real upstream (the client receives the upstream body) and
+  the exchange is recorded so it can be retrieved as an expectation. The test proves the operating
+  mode is the decisive factor — the same request returns 404 in SIMULATE mode and is only proxied
+  and recorded once the mode is switched to SPY or CAPTURE.
 - **The breakpoint and verification forms accept the same search syntax as the Traffic view.** A quick
   scope box on both forms takes `method:`, `path:` and `host:` terms and fills the matcher fields from
   them, so the operator vocabulary learned in the Traffic search works when writing a breakpoint
