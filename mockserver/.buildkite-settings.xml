@@ -9,26 +9,15 @@
             <password>${env.SONATYPE_PASSWORD}</password>
         </server>
     </servers>
-    <profiles>
-        <profile>
-            <id>sonatype</id>
-            <activation>
-                <activeByDefault>true</activeByDefault>
-            </activation>
-            <repositories>
-                <repository>
-                    <id>central-portal-snapshots</id>
-                    <name>Central Portal Snapshots</name>
-                    <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-                    <layout>default</layout>
-                    <releases>
-                        <enabled>false</enabled>
-                    </releases>
-                    <snapshots>
-                        <enabled>true</enabled>
-                    </snapshots>
-                </repository>
-            </repositories>
-        </profile>
-    </profiles>
+    <!--
+        Publish-side credentials only. The snapshot repository itself is declared by
+        <distributionManagement> in mockserver/pom.xml, so `mvn deploy` needs nothing
+        further here.
+
+        Deliberately NO <repositories> entry for central-portal-snapshots: this build
+        produces every org.mock-server SNAPSHOT it consumes, so declaring the remote
+        repository only adds a network dependency on our own artifacts — and lets a
+        previously published snapshot win whenever the locally installed one is older.
+        See docker_build/maven/settings.xml for the full rationale.
+    -->
 </settings>

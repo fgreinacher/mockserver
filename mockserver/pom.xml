@@ -1446,14 +1446,17 @@
                         <fileset>
                             <directory>${basedir}/mods</directory>
                         </fileset>
+                        <!-- Tomcat baseDir scratch directories created by the WAR
+                             tests. The suffix varies per test (tomcat,
+                             tomcat_mockserver, tomcat_proxy,
+                             tomcat_control_plane_smoke,
+                             tomcat_root_default_servlet, ...) so match the whole
+                             family rather than enumerating it. -->
                         <fileset>
-                            <directory>${basedir}/tomcat</directory>
-                        </fileset>
-                        <fileset>
-                            <directory>${basedir}/tomcat_mockserver</directory>
-                        </fileset>
-                        <fileset>
-                            <directory>${basedir}/tomcat_proxy</directory>
+                            <directory>${basedir}</directory>
+                            <includes>
+                                <include>tomcat*/**</include>
+                            </includes>
                         </fileset>
                         <fileset>
                             <directory>${basedir}/.extract</directory>

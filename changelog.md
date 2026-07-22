@@ -441,6 +441,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as an error and completion stopped working inside the entry, even though the server accepted the
   file. The bundled schema is regenerated from `mockserver-core`, so both editors again accept exactly
   what the server accepts. Names and values written as plain strings are unaffected.
+- **A build could fail with a `403` in a module that had nothing to do with the change being tested.**
+  `central-portal-snapshots` was declared as a *resolution* repository in the maven-invoker settings,
+  the `mockserver-maven-plugin` POM, the Gradle integration test and the CI image's global Maven
+  settings — so the build reached over the network for `-SNAPSHOT` artifacts it had just produced
+  itself. Any failure to fetch one (a Sonatype outage, or a TLS-inspection proxy holding a `.jar` for
+  scanning) failed the whole reactor long after the affected module's own tests had passed, which reads
+  as a test failure to anyone who does not open the log. It was also intermittent, because Maven only
+  re-checks a snapshot once a day.
+  Two further consequences are fixed with it. Maven picks the snapshot with the newest `lastUpdated`
+  across all repositories, so whenever the locally installed artifact was *older* than the last
+  published one — routine on a developer machine, or in any tree whose upstream modules had not been
+  rebuilt — an integration test silently verified a previously published build instead of the code
+  under test. And `<repositories>` is copied into the POM published to Maven Central, so every consumer
+  of a released `mockserver-maven-plugin` inherited a third-party repository their own Maven would
+  query for release artifacts too; that injection stops from the next release onwards.
+  Nothing in the build needs a remote snapshot: every `-SNAPSHOT` it consumes is one it produces. The
+  repository is now declared only where snapshots are *published*. Consuming MockServer snapshots from
+  outside the repository is unaffected and still documented in `README.md`.
+- **`mvn clean` removes every Tomcat scratch directory the WAR tests create, and `git status` stays
+  clean if one is left behind.** The `maven-clean-plugin` filesets and the `.gitignore` patterns both
+  predated the move into the `mockserver/` sub-directory, so the ignore rules matched nothing at all and
+  the clean filesets missed the newer `tomcat_control_plane_smoke` and `tomcat_root_default_servlet`
+  directories. Both now cover the whole `tomcat*` family under both servlet modules.
 - **The strict forward-validate reject paths are now covered by behavioural tests.** `forwardValidate`
   in `STRICT` mode rejects a request that does not conform to its OpenAPI spec with a `400` (and never
   forwards it upstream) and rejects a non-conformant upstream response with a `502`. Both reject

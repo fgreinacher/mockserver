@@ -1,41 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Global Maven settings for the CI build image (copied to conf/settings.xml by
+    the Dockerfile). These apply to EVERY Maven invocation in the container,
+    including the child builds started by maven-invoker-plugin — a child's own
+    `-s <settings>` replaces the *user* settings but not these.
+
+    Deliberately declares NO remote snapshot repository.
+
+    The build produces every org.mock-server SNAPSHOT it consumes, and nothing in
+    the reactor depends on a third-party SNAPSHOT, so central-portal-snapshots can
+    only ever return our own artifacts from an earlier build. Declaring it makes
+    Maven merge its maven-metadata.xml with the locally installed one and take the
+    newest lastUpdated, which risks:
+
+      * false red — an unnecessary hard network dependency; a failed fetch
+        (Sonatype outage, or a TLS-inspection proxy holding a .jar for sandbox
+        analysis and answering 403) fails the reactor in an unrelated module long
+        after that module's own tests passed; and
+      * false green — whenever the locally installed snapshot is OLDER than the
+        last published one, the remote wins and the test verifies a previously
+        published build instead of the code under test.
+
+    This pipeline runs `clean install` over the whole reactor before any
+    integration test, and deploys the snapshot only after the build (behind a
+    `wait` in .buildkite/pipeline-java.yml), so the just-installed copy is normally
+    the newer one and CI is not expected to have hit either mode. It was still a
+    latent hazard here: these settings apply to every Maven process in the
+    container, so it would take effect the moment a module was skipped, a partial
+    reactor was built, or the ordering changed.
+
+    Consuming a MockServer snapshot from OUTSIDE this repository is documented in
+    README.md and jekyll-www.mock-server.com/where/maven_central.html; that is a
+    user-side repository declaration, not a build-side one.
+-->
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
-    <profiles>
-        <profile>
-            <id>sonatype</id>
-            <activation>
-                <activeByDefault>true</activeByDefault>
-            </activation>
-            <repositories>
-                <repository>
-                    <id>central-portal-snapshots</id>
-                    <name>central-portal-snapshots</name>
-                    <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-                    <layout>default</layout>
-                    <releases>
-                        <enabled>true</enabled>
-                    </releases>
-                    <snapshots>
-                        <enabled>true</enabled>
-                    </snapshots>
-                </repository>
-            </repositories>
-            <pluginRepositories>
-                <pluginRepository>
-                    <id>central-portal-snapshots</id>
-                    <name>central-portal-snapshots</name>
-                    <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-                    <layout>default</layout>
-                    <releases>
-                        <enabled>true</enabled>
-                    </releases>
-                    <snapshots>
-                        <enabled>true</enabled>
-                    </snapshots>
-                </pluginRepository>
-            </pluginRepositories>
-        </profile>
-    </profiles>
 </settings>

@@ -292,6 +292,61 @@ Artifacts are published to:
 
 GPG signing is required for releases (configured in the `release` profile).
 
+### The build never *resolves* from the snapshot repository
+
+`central.sonatype.com/repository/maven-snapshots` is a **publish-only** destination for this
+repository. It is declared in `mockserver/pom.xml` `<distributionManagement>` (plus the matching
+`central-portal` credentials in `mockserver/.buildkite-settings.xml`) and **nowhere else**.
+
+Do not add it as a `<repository>`/`<pluginRepository>` — in a POM, in a maven-invoker `settings.xml`,
+in `docker_build/maven/settings.xml`, or as a Gradle `maven { url ... }`. Every `-SNAPSHOT` the build
+consumes is one it produces, and no third-party SNAPSHOT dependency exists anywhere in the reactor, so
+the repository can only ever return *our own* artifacts from a previous CI build.
+
+Maven resolves a `-SNAPSHOT` by merging `maven-metadata.xml` from every configured repository and taking
+the newest `lastUpdated`. Two failure modes follow:
+
+| Failure mode | When it fires | Symptom |
+|---|---|---|
+| **False red** | Whenever the remote copy is chosen and cannot be fetched | Sonatype outage, or a corporate TLS-inspection proxy holding a `.jar` for sandbox analysis and answering `403`. The reactor fails in whatever module happened to trigger the refresh — typically long after that module's own tests passed, so it reads as a test failure. |
+| **False green** | Whenever the **locally installed** snapshot is **older** than the last published one | The remote wins and an integration test verifies a *previously published* build rather than the code under test. Routine on a developer machine, and in any tree whose upstream modules have not been rebuilt. |
+
+Both are intermittent because Maven's default snapshot `updatePolicy` is `daily`: a build only re-checks
+the remote once the interval has elapsed, or when `-U` is passed.
+
+The false-green mode needs a *stale* local install, so CI's normal ordering avoids it: `java-build.sh`
+runs `./mvnw -T 1C clean install` over the whole reactor before any module reaches `integration-test`,
+`invoker:install` stages the module's own artifacts before `invoker:run`, and `java-deploy-snapshot`
+runs after the build behind a `wait` in `.buildkite/pipeline-java.yml` — so the newest remote snapshot
+during a build is always from a *previous* build and loses to the just-installed copy. Declaring the
+repository was still a latent hazard there: it applied to every Maven process in the CI image (see
+[CI/CD → Build Docker Image](../infrastructure/ci-cd.md#build-docker-image)) and would take effect the
+moment a partial reactor was built or the ordering changed.
+
+Reproduce/verify the difference with the maven-invoker test that first exposed it — `-Dinvoker.updateSnapshots=true`
+forces the child build to refresh:
+
+```bash
+cd mockserver
+./mvnw -pl mockserver-netty invoker:run -Dinvoker.updateSnapshots=true
+```
+
+Note that `-Dinvoker.settingsFile=...` does **not** override the `<settingsFile>` configured in the POM,
+so A/B testing this requires editing `mockserver-netty/src/integration-tests/settings.xml` itself.
+
+#### Consequence: build the reactor with `install`, not `verify`
+
+With no remote fallback, the maven-invoker and Gradle integration tests can only get MockServer
+artifacts from the local repository, so on a clean `~/.m2` the reactor must be built with `install`.
+`./mvnw verify` on a fresh clone fails inside a **child** Maven process with an opaque
+`Could not resolve … org.mock-server:mockserver-integration-testing:<version>-SNAPSHOT` and no remote
+repository in the log to explain it — the fix is `./mvnw install` (or `-DskipTests` first). This was
+previously masked by a silent remote fallback that fetched the last published snapshot instead.
+
+Consuming MockServer snapshots from *outside* this repository is a different thing and is unaffected —
+see `README.md` and `jekyll-www.mock-server.com/where/maven_central.html` for the repository declaration
+users should add.
+
 ## Performance regression pipeline — local runs
 
 `mockserver-performance-test/k6/regression.js` and `growth.js` can be run locally against the compose stack in `mockserver-performance-test/stack/`. The `forward` behaviour requires a dedicated upstream MockServer because it proxies to a separate instance (not itself). Use `K6_FORWARD_SELF=true` to skip the upstream requirement on a single-container local smoke run.

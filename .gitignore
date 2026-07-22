@@ -96,10 +96,12 @@ drone.io
 
 # tomcat working directories #
 ##############################
-mockserver-proxy-war/tomcat/
-mockserver-proxy-war/tomcat_proxy/
-mockserver-war/tomcat/
-mockserver-war/tomcat_mockserver/
+# The WAR tests set Tomcat's baseDir to <module>/tomcat[_<suffix>], where the
+# suffix is derived from the servlet context or the test's own scratch name, so
+# match every tomcat* directory in the two servlet modules rather than listing
+# them individually.
+mockserver/mockserver-proxy-war/tomcat*/
+mockserver/mockserver-war/tomcat*/
 
 # test report output (JUnit XML) #
 ###################################

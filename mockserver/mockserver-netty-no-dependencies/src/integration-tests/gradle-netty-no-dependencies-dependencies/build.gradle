@@ -3,9 +3,38 @@ plugins {
     id 'groovy'
 }
 
+// The org.mock-server artifacts under test are the ones the reactor has just
+// installed, so they come from mavenLocal(). Deliberately no remote snapshot
+// repository: Gradle is first-match-wins and mavenLocal() was already first, so
+// the remote was never used on the success path — it only served as a silent
+// fallback that would satisfy this test from a PREVIOUSLY PUBLISHED snapshot
+// instead of the build's own output.
+//
+// ACCEPTED RISK — the reactor does not guarantee the ordering this now relies on.
+// This test runs from exec-maven-plugin bound to the `install` phase of
+// mockserver-netty-no-dependencies (../../../pom.xml), and needs three artifacts.
+// Only mockserver-netty-no-dependencies is ordered by the build graph (via
+// invoker:install on that module); mockserver-client-java-no-dependencies and
+// mockserver-integration-testing-no-dependencies are siblings that this module
+// does not depend on, so under `-T 1C` the parallel builder is free to schedule
+// them concurrently — declaration order in mockserver/pom.xml is not an ordering
+// guarantee. In practice both become eligible far earlier (they need only
+// mockserver-client-java / mockserver-integration-testing, neither of which
+// depends on mockserver-netty), so they finish long before this module, and
+// `gradlew --refresh-dependencies` has never been observed to lose the race.
+//
+// The ordering is NOT expressed as a dependency on purpose: Maven has no
+// ordering-only dependency, and every scope that creates a reactor edge also puts
+// the artifact on this module's test classpath — precisely the hazard the pom
+// comment above ExtendedNoDependenciesJarMockingIntegrationTest warns about, since
+// mockserver-integration-testing-no-dependencies bundles shaded mockserver-core
+// classes that must not sit alongside the unshaded ones. (maven-invoker-plugin
+// <extraArtifacts> does not help either: it resolves at execution time and creates
+// no reactor edge, so it could itself pick up a stale artifact.)
+// If this ever does fail intermittently, express the ordering rather than
+// reinstating the remote repository.
 repositories {
     mavenLocal()
-    maven { url "https://central.sonatype.com/repository/maven-snapshots/" }
     mavenCentral()
 }
 

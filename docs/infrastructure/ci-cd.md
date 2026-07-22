@@ -489,6 +489,17 @@ The `mockserver/mockserver:maven` image is defined in `docker_build/maven/Docker
 - Maven: 3.9.16 (manually installed from Apache)
 - Dependencies: Pre-fetched by running a throwaway build during image creation
 - Corporate CA: Optional certificate injection for TLS proxy environments (see [Docker](docker.md#maven-ci-image))
+- Global Maven settings: `docker_build/maven/settings.xml` is copied to `conf/settings.xml`. It
+  deliberately declares **no** repositories. These settings apply to every Maven process in the
+  container — including the child builds started by `maven-invoker-plugin`, whose own `-s <settings>`
+  replaces the *user* settings but not the global ones. Adding a snapshot repository here therefore
+  makes the *whole* CI build reach over the network for MockServer's own artifacts, which can fail a
+  build with a `403`/timeout in an unrelated module, and lets a previously published snapshot win
+  whenever a locally installed one is older; see
+  [Build System → The build never resolves from the snapshot repository](../operations/build-system.md#the-build-never-resolves-from-the-snapshot-repository).
+
+Changes to `docker_build/maven/settings.xml` only reach CI once the `docker-push-maven` pipeline
+rebuilds and pushes the image.
 
 ### Docker Registry Authentication
 

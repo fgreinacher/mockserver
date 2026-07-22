@@ -2,40 +2,28 @@
 <settings>
     <profiles>
         <!-- multiple repository sections query in reverse order -->
-        <profile>
-            <id>sonatype</id>
-            <activation>
-                <activeByDefault>true</activeByDefault>
-            </activation>
-            <repositories>
-                <repository>
-                    <id>central-portal-snapshots</id>
-                    <name>central-portal-snapshots</name>
-                    <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-                    <layout>default</layout>
-                    <releases>
-                        <enabled>false</enabled>
-                    </releases>
-                    <snapshots>
-                        <enabled>true</enabled>
-                    </snapshots>
-                </repository>
-            </repositories>
-            <pluginRepositories>
-                <pluginRepository>
-                    <id>central-portal-snapshots</id>
-                    <name>central-portal-snapshots</name>
-                    <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-                    <layout>default</layout>
-                    <releases>
-                        <enabled>false</enabled>
-                    </releases>
-                    <snapshots>
-                        <enabled>true</enabled>
-                    </snapshots>
-                </pluginRepository>
-            </pluginRepositories>
-        </profile>
+        <!--
+            NOTE: deliberately NO remote snapshot repository.
+
+            These maven-invoker projects depend on org.mock-server:*:<version>-SNAPSHOT,
+            which the reactor has just installed into the local repository. Declaring a
+            remote snapshot repository here (e.g. central-portal-snapshots) makes Maven
+            merge its maven-metadata.xml with the local one and take the newest
+            lastUpdated, which has two consequences:
+
+              * false red — when the remote copy wins, fetching the timestamped jar can
+                fail (Sonatype outage, or a TLS-inspection proxy holding a .jar for
+                sandbox analysis and answering 403). That fails the reactor in this
+                module long after its own tests passed; and
+              * false green — whenever the locally installed snapshot is OLDER than the
+                last published one, the remote wins and the invoker test verifies a
+                previously published build instead of the code under test. Routine on a
+                developer machine, or in any tree whose upstream modules were not
+                rebuilt.
+
+            Both are intermittent: Maven's default snapshot updatePolicy is daily.
+            Resolve from the local repository only.
+        -->
         <profile>
             <id>securecentral</id>
             <repositories>

@@ -32,34 +32,21 @@
         <maven-plugin.version>3.9.16</maven-plugin.version>
     </properties>
 
-    <repositories>
-        <repository>
-            <id>central-portal-snapshots</id>
-            <name>central-portal-snapshots</name>
-            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-            <layout>default</layout>
-            <releases>
-                <enabled>true</enabled>
-            </releases>
-            <snapshots>
-                <enabled>true</enabled>
-            </snapshots>
-        </repository>
-    </repositories>
-    <pluginRepositories>
-        <pluginRepository>
-            <id>central-portal-snapshots</id>
-            <name>central-portal-snapshots</name>
-            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-            <layout>default</layout>
-            <releases>
-                <enabled>true</enabled>
-            </releases>
-            <snapshots>
-                <enabled>true</enabled>
-            </snapshots>
-        </pluginRepository>
-    </pluginRepositories>
+    <!--
+        NOTE: deliberately NO <repositories>/<pluginRepositories> here.
+
+        Every org.mock-server dependency of this plugin is a sibling module built by
+        the same reactor (or installed into the local repository by the preceding
+        `mvn install`), so a remote snapshot repository only adds a network dependency
+        on our own artifacts and lets a previously published snapshot win whenever the
+        locally installed one is older.
+
+        It also leaked: <repositories> is copied into the POM published to Maven
+        Central, so every consumer of a released mockserver-maven-plugin inherited
+        central-portal-snapshots with <releases><enabled>true</enabled> — a
+        third-party repository their Maven would query for RELEASE artifacts too.
+        Already-published POMs are immutable, so this stops the injection from here on.
+    -->
 
     <dependencyManagement>
         <dependencies>
