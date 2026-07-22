@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The REAL built dashboard bundle is now proven to be packaged and served, not just synthetic
+  fixtures.** A new integration test starts a live MockServer, GETs `/mockserver/dashboard`, and
+  asserts the response is the genuine React application shell (the `id="root"` mount point and the
+  `MockServer Dashboard` title) that references a hashed JS entry chunk (`assets/index-<hash>.js`),
+  then GETs that referenced asset and asserts it is served (200) with a JavaScript content-type.
+  Previously the only dashboard-serving coverage used synthetic test fixtures placed at the same
+  classpath path the `build-ui` Maven profile copies the real Vite output into, so a broken or missing
+  real bundle (for example a Monaco-worker regression) reddened nothing. The test fails closed when the
+  built bundle is present but broken (missing hashed reference, or the referenced asset is not served),
+  and skips with a clear message only when the `build-ui` profile did not run and no real bundle is on
+  the classpath.
 - **Enabling `tlsMutualAuthenticationRequired` at runtime is now proven to be enforced over a real TLS
   socket.** A new integration test starts a live MockServer with mutual TLS OFF, confirms a
   certificateless client completes the handshake, then requires mutual authentication at runtime on the
