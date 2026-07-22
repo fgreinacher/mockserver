@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The transparent-proxy original-destination end-to-end suites are now collectable by CI.** The three
+  privileged interception suites — `SoOriginalDstEndToEndIntegrationTest` (iptables REDIRECT +
+  SO_ORIGINAL_DST), `TproxyEndToEndIntegrationTest` (iptables TPROXY / IP_TRANSPARENT) and
+  `EbpfOriginalDestinationEndToEndIntegrationTest` (pinned BPF map read path) — were previously named
+  `*EndToEndIT`, a suffix that matches NEITHER Surefire's `**/*Test.java` include NOR Failsafe's
+  `**/*IntegrationTest.java` include, so they were never compiled into a run set and never executed on
+  any build. They are renamed to `*EndToEndIntegrationTest` so Failsafe collects them, and each now
+  additionally SKIPS cleanly (rather than erroring) when the Docker daemon refuses to start the required
+  NET_ADMIN / `--privileged` sibling container (e.g. a user-namespace-remapped daemon), via
+  `DockerCliTestSupport.containerStartRejected(...)`. A new opt-in CI step
+  (`.buildkite/scripts/steps/java-transparent-proxy-test.sh`, `RUN_TRANSPARENT_PROXY_E2E=true`) runs
+  them under the Docker socket and asserts via `assert-suite-ran.sh` that they actually executed; by
+  default it prints a loud, visible notice that they were not run, because the standard build agents
+  lack the `docker` CLI and reject `--privileged` containers.
+
 ### Added
 - **The REAL built dashboard bundle is now proven to be packaged and served, not just synthetic
   fixtures.** A new integration test starts a live MockServer, GETs `/mockserver/dashboard`, and

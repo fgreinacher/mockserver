@@ -161,7 +161,8 @@ With `transparentProxyTproxy=true`, iptables uses `-j TPROXY` instead of `-j RED
 - `SoOriginalDstResolverTest` verifies sockaddr decoding and platform-support gating
 - `TproxyOriginalDestinationResolverTest` verifies TPROXY mode flag and local-address extraction
 - `CompositeOriginalDestinationResolverTest` verifies chain ordering and null fall-through
-- `SoOriginalDstEndToEndIT` and `TproxyEndToEndIT` require Linux with `NET_ADMIN` (Docker-gated)
+- `SoOriginalDstEndToEndIntegrationTest`, `TproxyEndToEndIntegrationTest` and `EbpfOriginalDestinationEndToEndIntegrationTest` are the privileged end-to-end suites. They spin up a sibling Linux container via the Docker CLI (not Testcontainers) with `--cap-add=NET_ADMIN` (SO_ORIGINAL_DST / TPROXY) or `--privileged` (eBPF) to set up iptables/BPF rules. They are Docker-gated via `DockerCliTestSupport.isDockerAvailable()` (a `docker info` probe), and additionally SKIP cleanly when the kernel lacks the required module (`xt_TPROXY`/BPF) or when the daemon refuses to start the privileged container (`DockerCliTestSupport.containerStartRejected(...)` — e.g. a user-namespace-remapped daemon rejecting `--privileged`).
+- **CI collection:** these three suites are named `*EndToEndIntegrationTest` so Maven Failsafe (`**/*IntegrationTest.java`) collects them. Prior to this they were named `*EndToEndIT`, which matches neither Surefire (`**/*Test.java`) nor Failsafe, so they were never executed on any build. A capable CI step must supply the Docker socket AND run on a daemon that permits `NET_ADMIN`/`--privileged` containers; on the user-namespace-remapped elastic-ci-stack agents the `--privileged` eBPF suite is rejected and SKIPS. See `docs/infrastructure/ci-cd.md` (transparent-proxy end-to-end step).
 - The `TransparentProxyHandler` is tested with an `EmbeddedChannel` to verify `REMOTE_SOCKET` attribute setting and graceful fallback
 
 ## Limitations

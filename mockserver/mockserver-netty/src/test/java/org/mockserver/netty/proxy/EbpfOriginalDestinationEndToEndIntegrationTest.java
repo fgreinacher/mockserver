@@ -61,10 +61,10 @@ import static org.hamcrest.MatcherAssert.assertThat;
  * @see EbpfOriginalDestinationResolver
  * @see CompositeOriginalDestinationResolver
  */
-public class EbpfOriginalDestinationEndToEndIT {
+public class EbpfOriginalDestinationEndToEndIntegrationTest {
 
     private static final org.slf4j.Logger LOG =
-        org.slf4j.LoggerFactory.getLogger(EbpfOriginalDestinationEndToEndIT.class);
+        org.slf4j.LoggerFactory.getLogger(EbpfOriginalDestinationEndToEndIntegrationTest.class);
 
     /**
      * Validates that the eBPF resolver can read a pinned BPF map entry and decode
@@ -234,6 +234,15 @@ public class EbpfOriginalDestinationEndToEndIT {
         Assume.assumeTrue("Container did not finish in time", finished);
 
         LOG.info("Container output:\n{}", output);
+
+        // If the daemon refused to start the privileged container (e.g. a
+        // user-namespace-remapped CI daemon rejecting --privileged), skip rather
+        // than fail — the privilege is absent, not the behaviour broken.
+        Assume.assumeFalse(
+            "Docker daemon refused to start the --privileged container "
+                + "(e.g. user-namespace remapping) — skipping eBPF e2e test.",
+            DockerCliTestSupport.containerStartRejected(output)
+        );
 
         // Skip if BPF is not supported in this kernel
         Assume.assumeFalse(

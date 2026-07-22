@@ -113,6 +113,27 @@ indistinguishable from a pass, so these gates now fail loudly instead:
 | Rust client integration | Entirely `#[ignore]`d; CI never passed `-- --ignored` | `rust-integration-test.sh` passes `-- --ignored` against a live server |
 | Node client tests | A hand-maintained 7-file list while the suite had 15 | Test files are **discovered by glob**, in CI, `npm test`, and `test:coverage` alike |
 | Go / .NET / Rust testcontainers | `soft_fail: true` made failures green | `soft_fail` removed |
+| Transparent-proxy end-to-end suites | Named `*EndToEndIT`, matching neither Surefire (`**/*Test.java`) nor Failsafe (`**/*IntegrationTest.java`), so `SoOriginalDstEndToEndIntegrationTest`, `TproxyEndToEndIntegrationTest` and `EbpfOriginalDestinationEndToEndIntegrationTest` never ran on any build | Renamed to `*EndToEndIntegrationTest` so Failsafe collects them; opt-in step (`java-transparent-proxy-test.sh`, `RUN_TRANSPARENT_PROXY_E2E=true`) runs them under the Docker socket and asserts via `assert-suite-ran.sh` that they executed — see below |
+
+**Why the transparent-proxy end-to-end suites are opt-in, not run by default:**
+Unlike the cloud/async Docker-gated suites — which reach the daemon through
+docker-java over the mounted socket — these three shell out to the **`docker` CLI**
+to build and run a **sibling** container, and need real kernel privilege inside it
+(`--cap-add=NET_ADMIN` for SO_ORIGINAL_DST/TPROXY, `--privileged` for eBPF). Two
+facts about the current agents make them unable to pass today: the maven CI image
+(`docker_build/maven/Dockerfile`) ships **no `docker` CLI binary**, and the
+elastic-ci-stack agents run dockerd with **user-namespace remapping**, which
+rejects `--privileged` outright. Under those conditions every suite SKIPS, and a
+fail-closed `assert-suite-ran.sh` over skip-only suites would turn the pipeline
+**permanently red without testing anything** — the exact ordering trap
+`DockerAvailability`'s javadoc warns about ("a fail-closed assertion is only safe
+once the suite can actually pass"). So `java-transparent-proxy-test.sh` defaults to
+a **loud, expanded notice** that the suites were not executed (making the untested
+state visible rather than a silent green), and runs + asserts them only when
+`RUN_TRANSPARENT_PROXY_E2E=true` on an agent with the docker CLI, the socket, and
+NET_ADMIN/`--privileged` support. The suites themselves skip cleanly (never error)
+when the daemon refuses the privileged container, via
+`DockerCliTestSupport.containerStartRejected(...)`.
 
 **Why the cloud suites are a separate step, not `-s` on `java-build.sh`:**
 `run-in-docker.sh` withholds the Docker socket from PR builds and `exit 0`s the

@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Shared test infrastructure for Docker-CLI-based end-to-end integration tests
- * ({@link SoOriginalDstEndToEndIT}, {@link TproxyEndToEndIT}). These tests use
+ * ({@link SoOriginalDstEndToEndIntegrationTest}, {@link TproxyEndToEndIntegrationTest}). These tests use
  * {@code docker build} / {@code docker run} directly (via {@link ProcessBuilder})
  * rather than Testcontainers, to avoid version-compatibility issues between
  * docker-java and newer Docker Engine releases.
@@ -49,6 +49,43 @@ final class DockerCliTestSupport {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /**
+     * Detects whether the Docker daemon <em>refused to start</em> the privileged /
+     * {@code NET_ADMIN} container these transparent-proxy end-to-end tests require,
+     * rather than the container running and the test proper failing.
+     * <p>
+     * The three transparent-proxy suites need either {@code --privileged} (eBPF) or
+     * {@code --cap-add=NET_ADMIN} (SO_ORIGINAL_DST / TPROXY) to set up iptables/BPF
+     * inside a sibling container. A daemon configured with <b>user-namespace
+     * remapping</b> — as the CI build agents are — rejects {@code --privileged}
+     * outright ("privileged mode is incompatible with user namespaces") and can
+     * reject added capabilities or the OCI runtime setup. In that case the container
+     * never runs, so asserting a clean exit would turn a <em>missing capability</em>
+     * into a hard FAILURE. This lets the suites SKIP cleanly instead, so they degrade
+     * gracefully wherever the privilege is unavailable (per AGENTS.md).
+     * <p>
+     * Because {@code redirectErrorStream(true)} folds the {@code docker run} CLI's own
+     * stderr into the captured output, the daemon's rejection message is visible here.
+     * The markers are specific to container-start refusal, so a genuine in-container
+     * test failure is NOT masked.
+     *
+     * @param dockerRunOutput combined stdout+stderr captured from {@code docker run}
+     * @return {@code true} if the daemon refused to start the privileged container
+     */
+    static boolean containerStartRejected(String dockerRunOutput) {
+        if (dockerRunOutput == null) {
+            return false;
+        }
+        String lower = dockerRunOutput.toLowerCase(java.util.Locale.ROOT);
+        // Scoped to container-START refusals so a genuine in-container test failure is
+        // never masked: user-namespace remapping rejecting --privileged, or the OCI
+        // runtime refusing the requested capabilities when the container is created.
+        return lower.contains("incompatible with user namespaces")
+            || lower.contains("privileged mode is incompatible")
+            || (lower.contains("error response from daemon") && lower.contains("cap_"))
+            || (lower.contains("oci runtime create failed") && lower.contains("capabilit"));
     }
 
     /**

@@ -15,7 +15,7 @@ import static org.mockito.Mockito.when;
  * Unit tests for {@link TproxyOriginalDestinationResolver}. These tests verify the
  * resolver's behaviour by mocking the channel's local address and configuration.
  * <p>
- * The actual TPROXY iptables integration is tested by {@link TproxyEndToEndIT}
+ * The actual TPROXY iptables integration is tested by {@link TproxyEndToEndIntegrationTest}
  * which runs in a Docker container with NET_ADMIN on Linux CI.
  */
 public class TproxyOriginalDestinationResolverTest {

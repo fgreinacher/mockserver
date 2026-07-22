@@ -16,7 +16,7 @@ import static org.mockito.Mockito.mock;
  * These tests verify the resolver's config-gating logic, value decoding, and
  * graceful fallthrough behaviour. The actual BPF syscall interactions are not
  * testable without a Linux kernel with BPF support — those are covered by the
- * Docker-gated {@link EbpfOriginalDestinationEndToEndIT}.
+ * Docker-gated {@link EbpfOriginalDestinationEndToEndIntegrationTest}.
  */
 public class EbpfOriginalDestinationResolverTest {
 
