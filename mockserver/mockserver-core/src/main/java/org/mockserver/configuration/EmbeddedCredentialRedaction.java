@@ -150,7 +150,8 @@ final class EmbeddedCredentialRedaction {
     static String dropUnmergeableValue(String propertyName, String reason) {
         LoggerFactory.getLogger(EmbeddedCredentialRedaction.class).warn(
             "ignoring the value supplied for {}: it carries the {} redaction mask but {}, so it cannot be "
-                + "resolved against the value currently held — the existing value is left unchanged",
+                + "resolved against the value currently held — the existing value is left unchanged. To "
+                + "change the credential, supply the new secret on its own in place of the entire mask",
             propertyName, MASK, reason);
         return null;
     }

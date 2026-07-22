@@ -590,6 +590,131 @@ public class ConfigurationDTOCredentialMaskingTest {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // 2a. the EDITED round trip for a WHOLE-VALUE credential: the operator typed text around the mask
+    //     rather than echoing it verbatim, so the value CARRIES the mask without BEING it.
+    //
+    //     An equals-only round-trip guard reads that as a real new secret and writes it through, which
+    //     destroys the held credential AND makes the literal "***REDACTED***" the outbound credential.
+    //     That is the same defect closed for value-embedded credentials (2b/2c below), one field over,
+    //     so the notion of "masked" must be the same one: CONTAINS the mask, not EQUALS it.
+    //
+    //     The legitimate cases must keep working, and are covered by:
+    //       - unedited round trip (value is exactly the mask) leaves the credential intact —
+    //         shouldNotOverwriteRealCredentialsWhenAMaskedConfigurationIsAppliedBack
+    //       - a real new credential over the control plane applies —
+    //         shouldStillApplyRealCredentialValuesSuppliedOverTheControlPlane (applyTo) and
+    //         shouldStillBuildAFreshConfigurationCarryingARealWholeValueCredential (buildObject)
+    //       - clearing a credential stays possible — shouldStillAllowAWholeValueCredentialToBeCleared
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Each whole-value credential mapped to a realistic value that CARRIES the mask without BEING it:
+     * a key prefix typed in front of it, an auth scheme prepended to it, a suffix welded onto it. None
+     * of these is a real credential, so none of them may reach the live configuration.
+     */
+    private static final Map<String, String> MASK_CARRYING_WHOLE_VALUES = new LinkedHashMap<>();
+
+    static {
+        MASK_CARRYING_WHOLE_VALUES.put("llmApiKey", "sk-" + MASK);
+        MASK_CARRYING_WHOLE_VALUES.put("prometheusRemoteWriteBearerToken", "Bearer " + MASK);
+        MASK_CARRYING_WHOLE_VALUES.put("prometheusRemoteWriteBasicAuthPassword", MASK + "-rotated");
+    }
+
+    @Test
+    public void shouldCoverEveryWholeValueCredentialWithAMaskCarryingInput() {
+        Set<String> wholeValue = new LinkedHashSet<>(WRITE_ONLY_CREDENTIALS);
+        wholeValue.removeAll(EMBEDDED_REAL_VALUES.keySet());
+
+        assertThat("every WHOLE-VALUE write-only credential needs a mask-carrying input below, or the "
+                + "guards in this section silently prove nothing about it",
+            MASK_CARRYING_WHOLE_VALUES.keySet(), is(wholeValue));
+    }
+
+    @Test
+    public void shouldLeaveTheHeldCredentialUntouchedWhenAWholeValueMerelyContainsTheMask() throws Exception {
+        List<String> destroyed = new ArrayList<>();
+        for (Map.Entry<String, String> entry : MASK_CARRYING_WHOLE_VALUES.entrySet()) {
+            String credential = entry.getKey();
+            Configuration live = configuration();
+            Configuration.class.getMethod(credential, String.class).invoke(live, realValueFor(credential));
+
+            applyJsonTo(bodyWith(credential, entry.getValue()), live);
+
+            Object value = configurationGetter(credential).invoke(live);
+            if (!realValueFor(credential).equals(value)) {
+                destroyed.add(credential + " (supplied <" + entry.getValue() + ">, became <" + value + ">)");
+            }
+        }
+
+        assertThat("a whole-value credential CARRYING the mask was written through by applyTo — the "
+                + "working credential is destroyed and \"" + MASK + "\" becomes the outbound one: " + destroyed,
+            destroyed, is(empty()));
+    }
+
+    @Test
+    public void shouldLeaveAWholeValueCredentialUnsetWhenTheValueSuppliedCarriesTheMask() throws Exception {
+        List<String> poisoned = new ArrayList<>();
+        for (Map.Entry<String, String> entry : MASK_CARRYING_WHOLE_VALUES.entrySet()) {
+            String credential = entry.getKey();
+            ConfigurationDTO dto = ObjectMapperFactory
+                .createObjectMapper()
+                .readValue(bodyWith(credential, entry.getValue()), ConfigurationDTO.class);
+
+            // buildObject() has no held configuration to fall back on, so the field must be left UNSET
+            // (letting the static store resolve it) rather than pinned to the mask — or to an empty
+            // value, which would shadow a property-file or environment credential just as badly
+            Object value = instanceField(dto.buildObject(), credential);
+            if (value != null) {
+                poisoned.add(credential + " (supplied <" + entry.getValue() + ">, became <" + value + ">)");
+            }
+        }
+
+        assertThat("a whole-value credential CARRYING the mask was written into a freshly built "
+                + "Configuration — it must be left unset so the static store still resolves: " + poisoned,
+            poisoned, is(empty()));
+    }
+
+    @Test
+    public void shouldStillBuildAFreshConfigurationCarryingARealWholeValueCredential() throws Exception {
+        // the other half of the guard above: refusing mask-carrying values must not refuse real ones
+        List<String> notApplied = new ArrayList<>();
+        for (String credential : MASK_CARRYING_WHOLE_VALUES.keySet()) {
+            ConfigurationDTO dto = ObjectMapperFactory
+                .createObjectMapper()
+                .readValue(bodyWith(credential, realValueFor(credential)), ConfigurationDTO.class);
+
+            Object value = instanceField(dto.buildObject(), credential);
+            if (!realValueFor(credential).equals(value)) {
+                notApplied.add(credential + " (was <" + value + ">)");
+            }
+        }
+
+        assertThat("real whole-value credentials NOT written by buildObject — the round-trip guard has "
+                + "over-reached and broken the write path: " + notApplied,
+            notApplied, is(empty()));
+    }
+
+    @Test
+    public void shouldStillAllowAWholeValueCredentialToBeCleared() throws Exception {
+        // an empty value carries no mask, so it is a real instruction: clear the credential
+        List<String> notCleared = new ArrayList<>();
+        for (String credential : MASK_CARRYING_WHOLE_VALUES.keySet()) {
+            Configuration live = configuration();
+            Configuration.class.getMethod(credential, String.class).invoke(live, realValueFor(credential));
+
+            applyJsonTo(bodyWith(credential, ""), live);
+
+            Object value = instanceField(live, credential);
+            if (!"".equals(value)) {
+                notCleared.add(credential + " (was <" + value + ">)");
+            }
+        }
+
+        assertThat("write-only credentials that could no longer be CLEARED over the control plane: "
+                + notCleared, notCleared, is(empty()));
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // 2b. the mixed case: only SOME fields of a structured value are masked. The masked ones must keep
     //     their real values and the edited ones must actually be written — getting either half wrong
     //     is invisible until outbound auth breaks or an edit is silently ignored.
@@ -1041,6 +1166,13 @@ public class ConfigurationDTOCredentialMaskingTest {
             .createObjectMapper()
             .readValue(json, ConfigurationDTO.class);
         dto.applyTo(target);
+    }
+
+    /** A single-property PUT body, built through Jackson so quoting/escaping matches the real wire. */
+    private static String bodyWith(String property, String value) {
+        ObjectNode body = ObjectMapperFactory.createObjectMapper().createObjectNode();
+        body.put(property, value);
+        return body.toString();
     }
 
     private static boolean isEmbeddedValueCredential(String credential) {

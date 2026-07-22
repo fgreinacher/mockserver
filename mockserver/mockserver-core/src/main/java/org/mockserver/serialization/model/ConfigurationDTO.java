@@ -1088,9 +1088,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.xpathMatchingTimeoutMillis(xpathMatchingTimeoutMillis);
         configuration.customJsonUnitMatchersClass(customJsonUnitMatchersClass);
 
-        // write-only credentials: a value echoed back from a masked GET carries the literal mask, which
-        // must never become the credential — leave the field unset so the Configuration falls back to
-        // the static store rather than being poisoned with "***REDACTED***"
+        // write-only credentials: a value derived from a masked GET carries the literal mask — whether
+        // echoed back untouched or with text typed around it — and must never become the credential.
+        // buildObject() has no held configuration to restore it from (the value-embedded credentials
+        // above are in the same position), so leave the field UNSET: the Configuration then falls back
+        // to the static store, rather than being poisoned with a value carrying "***REDACTED***" or
+        // pinned to an empty value that would shadow a property-file or environment credential.
         if (!isMaskedCredential(llmApiKey)) {
             configuration.llmApiKey(llmApiKey);
         }
@@ -1105,15 +1108,22 @@ public class ConfigurationDTO implements DTO<Configuration> {
     }
 
     /**
-     * True when an incoming credential value is the redaction mask emitted by a previous
-     * {@code GET /mockserver/configuration}, rather than a real secret.
+     * True when an incoming credential value CARRIES the redaction mask emitted by a previous
+     * {@code GET /mockserver/configuration}, so it is not wholly a real secret.
      *
      * <p>This is the round-trip guard: a client that does GET-then-PUT of the whole configuration blob
      * (the dashboard, an operator with curl, a config-as-code tool) would otherwise write the literal
      * {@code ***REDACTED***} over a working credential and silently break outbound auth.
+     *
+     * <p>CONTAINS, not EQUALS. An equals-only check handled the untouched round trip and nothing else:
+     * an operator who typed around the mask — {@code "sk-***REDACTED***"}, {@code "Bearer ***REDACTED***"} —
+     * produced a value that is not the mask, so it was written through VERBATIM, destroying the held
+     * credential and making the literal mask the outbound one. That is exactly the failure closed for
+     * value-embedded credentials, so it uses the same notion of "masked" they do,
+     * {@link ConfigurationProperties#containsRedactionMask(String)}.
      */
     private static boolean isMaskedCredential(String value) {
-        return ConfigurationProperties.REDACTED_VALUE.equals(value);
+        return ConfigurationProperties.containsRedactionMask(value);
     }
 
     /**
@@ -2009,17 +2019,29 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (customJsonUnitMatchersClass != null) {
             target.customJsonUnitMatchersClass(customJsonUnitMatchersClass);
         }
-        // write-only credentials: null means "not supplied" (leave the existing credential alone) and
-        // the redaction mask means "this is the value a masked GET handed me" — which must ALSO leave
-        // the existing credential alone, or a GET-then-PUT round trip silently destroys it
-        if (llmApiKey != null && !isMaskedCredential(llmApiKey)) {
-            target.llmApiKey(llmApiKey);
+        // write-only credentials: null means "not supplied" (leave the existing credential alone) and a
+        // value CARRYING the redaction mask means "this came from a masked GET" — which must ALSO leave
+        // the existing credential alone, or a GET-then-PUT round trip silently destroys it. Reconciled
+        // through the same door as the value-embedded credentials above, so the refusal is logged and
+        // the "no value carrying the mask ever reaches the live configuration" invariant is enforced in
+        // one place for both shapes.
+        if (llmApiKey != null) {
+            String restored = ConfigurationProperties.restoreRedactedValue("llmApiKey", llmApiKey, target.llmApiKey());
+            if (restored != null) {
+                target.llmApiKey(restored);
+            }
         }
-        if (prometheusRemoteWriteBearerToken != null && !isMaskedCredential(prometheusRemoteWriteBearerToken)) {
-            target.prometheusRemoteWriteBearerToken(prometheusRemoteWriteBearerToken);
+        if (prometheusRemoteWriteBearerToken != null) {
+            String restored = ConfigurationProperties.restoreRedactedValue("prometheusRemoteWriteBearerToken", prometheusRemoteWriteBearerToken, target.prometheusRemoteWriteBearerToken());
+            if (restored != null) {
+                target.prometheusRemoteWriteBearerToken(restored);
+            }
         }
-        if (prometheusRemoteWriteBasicAuthPassword != null && !isMaskedCredential(prometheusRemoteWriteBasicAuthPassword)) {
-            target.prometheusRemoteWriteBasicAuthPassword(prometheusRemoteWriteBasicAuthPassword);
+        if (prometheusRemoteWriteBasicAuthPassword != null) {
+            String restored = ConfigurationProperties.restoreRedactedValue("prometheusRemoteWriteBasicAuthPassword", prometheusRemoteWriteBasicAuthPassword, target.prometheusRemoteWriteBasicAuthPassword());
+            if (restored != null) {
+                target.prometheusRemoteWriteBasicAuthPassword(restored);
+            }
         }
     }
 

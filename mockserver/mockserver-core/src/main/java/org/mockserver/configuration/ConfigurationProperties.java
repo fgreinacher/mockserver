@@ -6071,12 +6071,27 @@ public class ConfigurationProperties {
      * credential AND makes the literal mask the outbound one, so it must be impossible for any present
      * or future caller, not just the two known ones.
      *
+     * <p>Both credential shapes come through here, as they do through
+     * {@link #redactSensitiveValue(String, String)} on the read side: a value-embedded credential is
+     * reconciled header by header / field by field, while a WHOLE-VALUE credential (the whole value is
+     * the secret) has no unmasked part to merge: an untouched round trip — the value is exactly the
+     * mask — short-circuits silently, and everything else is decided by the mask check at the end,
+     * refused if it still carries the mask anywhere and applied otherwise. Whole-value credentials must not
+     * grow their own notion of "masked": the endpoint-local {@code equals(mask)} guard they used to
+     * have let {@code "sk-***REDACTED***"} through as a real key, destroying the held credential and
+     * making the literal mask the outbound one.
+     *
      * <p>Note this is <strong>not</strong> the only write path for these properties.
      * {@code ConfigurationDTO.applyTo} merges an incoming value against the value the target holds and
      * comes through here; {@code ConfigurationDTO.buildObject} builds a FRESH configuration with
      * nothing to merge against and so applies the simpler rule directly — a value carrying the mask is
-     * left unset, letting the static store resolve. A third embedded-credential property must be wired
-     * into BOTH.
+     * left unset, letting the static store resolve. A third credential property of either shape must be
+     * wired into BOTH.
+     *
+     * <p>Note the two methods test {@link #isSensitivePropertyName(String)} at OPPOSITE ends —
+     * {@code redactSensitiveValue} first, this one last — so a property that was both credential-NAMED
+     * and structured would be masked whole on read but routed to the per-header/per-field restore on
+     * write. The two categories must stay mutually exclusive; today they are.
      *
      * @return the value to write, or {@code null} to leave the held value untouched
      */
@@ -6087,6 +6102,20 @@ public class ConfigurationProperties {
             restored = EmbeddedCredentialRedaction.restoreHeaderList(propertyName, incomingValue, heldValue);
         } else if (JSON_DOCUMENT_CREDENTIAL_PROPERTIES.contains(normalised)) {
             restored = EmbeddedCredentialRedaction.restoreJsonDocument(propertyName, incomingValue, heldValue);
+        } else if (isSensitivePropertyName(propertyName) && REDACTED_VALUE.equals(incomingValue)) {
+            // the UNTOUCHED round trip for a WHOLE-VALUE credential: read back as the bare mask and sent
+            // straight in again. That is the blessed GET-then-PUT flow, not an operator error, so the
+            // held value is left alone SILENTLY. A config-as-code tool that GETs, edits one unrelated
+            // property and PUTs the whole blob would otherwise emit a security-flavoured warning per
+            // credential on every apply, and anyone alerting on WARN would read it as a credential
+            // having been lost. The embedded shapes are already silent here by construction —
+            // restoreHeaderList returns the held value verbatim when the incoming list is exactly its
+            // masked form — so this makes one operator action log one way whatever the credential shape.
+            // Only a value the operator EDITED around the mask falls through to the warning below.
+            //
+            // Narrowed to credential NAMES deliberately: for a property that is never masked, the bare
+            // mask can only have been typed by hand, which is anomalous and still worth the warning.
+            return null;
         } else {
             restored = incomingValue;
         }
@@ -6096,8 +6125,19 @@ public class ConfigurationProperties {
             // that must tell the operator, or the enclosing PUT answers 200 OK having written nothing.
             // Cannot double-log: every restore* path that already logged returned null, and
             // containsRedactionMask(null) is false.
+            //
+            // It is ALSO the only check a WHOLE-VALUE credential gets once the untouched round trip has
+            // been taken above: masked whole on the way out, it has no unmasked part to merge against on
+            // the way back, so an EDITED value carrying the mask is not a real credential and the held
+            // one is left alone. (A value carrying no mask is applied, including the empty value that
+            // CLEARS it.) That path resolves nothing from the held value — both restore* methods are
+            // skipped — so it gets its own reason rather than one claiming a merge that never ran.
+            // dropUnmergeableValue adds the recovery step to both, because this warning is the only
+            // thing the operator gets back from a PUT that otherwise answers 200 OK.
             return EmbeddedCredentialRedaction.dropUnmergeableValue(propertyName,
-                "it still carries the mask once every masked part has been resolved");
+                isSensitivePropertyName(propertyName)
+                    ? "the whole value is the credential, so a value carrying the mask is not one"
+                    : "it still carries the mask once everything that could be resolved from the held value has been");
         }
         return restored;
     }

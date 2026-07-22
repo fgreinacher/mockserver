@@ -596,6 +596,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   predated the move into the `mockserver/` sub-directory, so the ignore rules matched nothing at all and
   the clean filesets missed the newer `tomcat_control_plane_smoke` and `tomcat_root_default_servlet`
   directories. Both now cover the whole `tomcat*` family under both servlet modules.
+- **Editing a masked credential in a configuration read back from MockServer can no longer destroy it.**
+  `GET /mockserver/configuration` returns `***REDACTED***` in place of `llmApiKey`,
+  `prometheusRemoteWriteBearerToken` and `prometheusRemoteWriteBasicAuthPassword`, and sending that
+  mask straight back was already ignored so the real credential survived. But a value that merely
+  *contained* the mask — an operator typing around it, as in `sk-***REDACTED***` or
+  `Bearer ***REDACTED***` — was read as a brand-new secret and saved verbatim: the working credential
+  was gone and the literal text `***REDACTED***` became the credential MockServer sent upstream, while
+  the `PUT` still answered `200 OK`. Any value carrying the mask is now refused, leaving the credential
+  already in force untouched. (The credentials masked *inside* `prometheusRemoteWriteHeaders` and
+  `llmBackendsConfig` are unaffected and keep their own rule: a mask you leave exactly as it came back
+  is resolved to the real secret and the rest of your edit is applied — only a mask with text welded
+  onto it is refused.) A value the operator *edited* around the mask
+  is refused with a warning naming the property and how to recover; sending the mask back untouched is
+  the normal round trip and stays silent, so a config-as-code tool applying the whole blob does not
+  emit a warning per credential on every apply. Setting a real new credential, and clearing one with an
+  empty value, work exactly as before. To replace a credential, type the new value on its own in place
+  of the whole mask.
 - **The strict forward-validate reject paths are now covered by behavioural tests.** `forwardValidate`
   in `STRICT` mode rejects a request that does not conform to its OpenAPI spec with a `400` (and never
   forwards it upstream) and rejects a non-conformant upstream response with a `502`. Both reject
