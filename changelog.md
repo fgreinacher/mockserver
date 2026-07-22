@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Enabling `tlsMutualAuthenticationRequired` at runtime is now proven to be enforced over a real TLS
+  socket.** A new integration test starts a live MockServer with mutual TLS OFF, confirms a
+  certificateless client completes the handshake, then requires mutual authentication at runtime on the
+  already-listening instance and asserts that a new certificateless connection is refused at the
+  handshake (fatal alert), while a client presenting a certificate trusted by MockServer's CA still
+  connects — proving the runtime change applies `ClientAuth.REQUIRE` selectively rather than being
+  silently ignored or breaking TLS altogether. Previously the runtime-reconfiguration path was covered
+  only by a unit test asserting the cached `SslContext` instance was replaced (which cannot assert the
+  resulting `ClientAuth`), while the wire-level client-authentication tests all enabled mutual TLS at
+  startup, so the enforcement outcome of a runtime enable was never asserted over the wire.
 - **The OpenAPI validation-proxy enforce path is now proven end-to-end over a real socket.** A new
   integration test stands up a validation proxy (`validateProxyOpenAPISpec` + `validateProxyEnforce`)
   that forwards unmatched traffic to a second (upstream) MockServer, then drives real requests through
