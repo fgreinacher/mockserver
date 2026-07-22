@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **VCR cassette replay is now covered end-to-end at the data plane.** A new integration test loads a
+  cassette (recorded `request -> response` pairs) through the `load_expectations_from_file` tool into
+  a running server, then drives real requests over a socket and asserts on the bytes the client
+  receives: a matching request is served the recorded response body, a request matching no recorded
+  entry falls through to `404` rather than borrowing another entry's response, and when a volatile
+  request-body field (e.g. `request_id`) is normalised away a live request carrying a different
+  volatile value still matches and is served the recorded body. Previously the cassette tests loaded a
+  fixture and asserted only the control-plane `ACTIVE_EXPECTATIONS` echo, never proving a recorded
+  response was actually served.
 - **gRPC client-streaming and bidirectional-streaming are now covered by a real grpc-java client
   end-to-end.** A new integration test drives an actual `io.grpc` channel over h2c and asserts on the
   bytes the client deframes — a single collected response for client-streaming, and two interleaved
