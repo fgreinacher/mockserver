@@ -326,6 +326,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_BLOB_STORE_CONTAINER = "mockserver.blobStoreContainer";
     private static final String MOCKSERVER_BLOB_STORE_CONNECTION_STRING = "mockserver.blobStoreConnectionString";
     private static final String MOCKSERVER_BLOB_STORE_PROJECT_ID = "mockserver.blobStoreProjectId";
+    private static final String MOCKSERVER_BLOB_STORE_RESTORE_TIMEOUT_SECONDS = "mockserver.blobStoreRestoreTimeoutSeconds";
 
     // clustering (G10 phase 2c)
     private static final String MOCKSERVER_CLUSTER_ENABLED = "mockserver.clusterEnabled";
@@ -4369,6 +4370,38 @@ public class ConfigurationProperties {
 
     public static void blobStoreProjectId(String blobStoreProjectId) {
         setProperty(MOCKSERVER_BLOB_STORE_PROJECT_ID, blobStoreProjectId);
+    }
+
+    /**
+     * Returns the maximum number of seconds MockServer will wait, during startup, for the
+     * persisted-expectations document to be read back from a cloud blob store (S3, GCS or
+     * Azure) before giving up and continuing to start.
+     * <p>
+     * This read happens before any listening port is bound, so an unreachable or
+     * packet-dropping blob-store endpoint would otherwise delay startup for the cloud SDK's
+     * full retry budget (for AWS SDK v2 that is 4 attempts x a 30 second socket timeout,
+     * measured at roughly 120 seconds), long enough to fail readiness probes and container
+     * wait strategies. The deadline bounds that: when it expires MockServer logs a WARN and
+     * starts with no restored expectations.
+     * <p>
+     * The default is 10 seconds. Set to 0 (or a negative value) to skip the startup restore
+     * entirely.
+     */
+    public static Integer blobStoreRestoreTimeoutSeconds() {
+        return readIntegerProperty(MOCKSERVER_BLOB_STORE_RESTORE_TIMEOUT_SECONDS, "MOCKSERVER_BLOB_STORE_RESTORE_TIMEOUT_SECONDS", 10);
+    }
+
+    /**
+     * Sets the maximum number of seconds MockServer will wait, during startup, for the
+     * persisted-expectations document to be read back from a cloud blob store.
+     * <p>
+     * The default is 10 seconds. Set to 0 (or a negative value) to skip the startup restore
+     * entirely.
+     *
+     * @param blobStoreRestoreTimeoutSeconds startup blob-store restore deadline, in seconds
+     */
+    public static void blobStoreRestoreTimeoutSeconds(int blobStoreRestoreTimeoutSeconds) {
+        setProperty(MOCKSERVER_BLOB_STORE_RESTORE_TIMEOUT_SECONDS, "" + blobStoreRestoreTimeoutSeconds);
     }
 
     // --- clustering (G10 phase 2c) ---

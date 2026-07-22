@@ -359,6 +359,7 @@ mockserver.enableCORSForAllResponses=false</code></pre>
         <tr><td><a href="#button_configuration_blob_store_access_key_id">Blob Store Access Key ID (S3)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
         <tr><td><a href="#button_configuration_blob_store_secret_access_key">Blob Store Secret Access Key (S3)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
         <tr><td><a href="#button_configuration_blob_store_project_id">Blob Store Project ID (GCS)</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
+        <tr><td><a href="#button_configuration_blob_store_restore_timeout_seconds">Blob Store Restore Timeout</a></td><td><a href="#cloud_blob_store_configuration">Cloud Blob Store</a></td></tr>
         <tr><td><a href="#button_configuration_control_plane_mtls_authentication_required">Enabled Control Plane mTLS Authentication</a></td><td><a href="#control_plane_authentication_configuration">Control Plane Authentication</a></td></tr>
         <tr><td><a href="#button_configuration_control_plane_mtls_authentication_ca_chain">Control Plane mTLS Authentication CA Chain</a></td><td><a href="#control_plane_authentication_configuration">Control Plane Authentication</a></td></tr>
         <tr><td><a href="#button_configuration_control_plane_mtls_authentication_private_key_path">Control Plane mTLS Authentication Client Private Key</a></td><td><a href="#control_plane_authentication_configuration">Control Plane Authentication</a></td></tr>
@@ -3352,6 +3353,21 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.blobStoreProjectId="my-gcp-project"</code></pre>
     <p>Environment Variable:</p>
     <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_BLOB_STORE_PROJECT_ID="my-gcp-project"</code></pre>
+</div>
+
+<button id="button_configuration_blob_store_restore_timeout_seconds" class="accordion title"><strong>Blob Store Restore Timeout</strong></button>
+<div class="panel title">
+    <p>How many seconds MockServer waits, while starting up, for previously persisted expectations to be read back from a cloud blob store before giving up and starting anyway.</p>
+    <p>This read happens before MockServer starts listening, so an unreachable or misconfigured blob-store endpoint would otherwise delay startup for the cloud SDK's own retry budget — around two minutes for AWS — long enough to fail a Kubernetes readiness probe or a test-container wait. When the wait expires MockServer logs a warning and starts with no restored expectations.</p>
+    <p>Set to <span class="inline_code">0</span> to skip the startup restore entirely. Only relevant when <span class="inline_code">persistExpectations</span> is enabled and <span class="inline_code">blobStoreType</span> is a cloud backend (<span class="inline_code">s3</span>, <span class="inline_code">gcs</span> or <span class="inline_code">azure</span>) — the <span class="inline_code">filesystem</span> backend reloads via <span class="inline_code">initializationJsonPath</span> instead.</p>
+    <p>This value is read <strong>once, while MockServer starts</strong>, so it must be set before startup. Like the other <span class="inline_code">blobStore</span> settings it is reported by <span class="inline_code">GET /mockserver/configuration</span>, but changing it with <span class="inline_code">PUT /mockserver/configuration</span> on a running instance has no effect — the restore it governs has already happened.</p>
+    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">10</span></p>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.blobStoreRestoreTimeoutSeconds="10"</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_BLOB_STORE_RESTORE_TIMEOUT_SECONDS="10"</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.blobStoreRestoreTimeoutSeconds=10</code></pre>
 </div>
 
 {% include_subpage _includes/control_plane_authentication_configuration.html %}

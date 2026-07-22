@@ -281,6 +281,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private String blobStoreContainer;
     private String blobStoreConnectionString;
     private String blobStoreProjectId;
+    private Integer blobStoreRestoreTimeoutSeconds;
     private Boolean clusterEnabled;
     private String clusterName;
     private String clusterTransportConfig;
@@ -629,6 +630,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.blobStoreContainer = configuration.blobStoreContainer();
             this.blobStoreConnectionString = configuration.blobStoreConnectionString();
             this.blobStoreProjectId = configuration.blobStoreProjectId();
+            this.blobStoreRestoreTimeoutSeconds = configuration.blobStoreRestoreTimeoutSeconds();
             this.clusterEnabled = configuration.clusterEnabled();
             this.clusterName = configuration.clusterName();
             this.clusterTransportConfig = configuration.clusterTransportConfig();
@@ -1024,6 +1026,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.blobStoreContainer(blobStoreContainer);
         configuration.blobStoreConnectionString(blobStoreConnectionString);
         configuration.blobStoreProjectId(blobStoreProjectId);
+        configuration.blobStoreRestoreTimeoutSeconds(blobStoreRestoreTimeoutSeconds);
         if (clusterEnabled != null) {
             configuration.clusterEnabled(clusterEnabled);
         }
@@ -1852,6 +1855,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (blobStoreProjectId != null) {
             target.blobStoreProjectId(blobStoreProjectId);
+        }
+        if (blobStoreRestoreTimeoutSeconds != null) {
+            target.blobStoreRestoreTimeoutSeconds(blobStoreRestoreTimeoutSeconds);
         }
         if (clusterEnabled != null) {
             target.clusterEnabled(clusterEnabled);
@@ -4246,6 +4252,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setBlobStoreProjectId(String blobStoreProjectId) {
         this.blobStoreProjectId = blobStoreProjectId;
+        return this;
+    }
+
+    public Integer getBlobStoreRestoreTimeoutSeconds() {
+        return blobStoreRestoreTimeoutSeconds;
+    }
+
+    public ConfigurationDTO setBlobStoreRestoreTimeoutSeconds(Integer blobStoreRestoreTimeoutSeconds) {
+        this.blobStoreRestoreTimeoutSeconds = blobStoreRestoreTimeoutSeconds;
         return this;
     }
 

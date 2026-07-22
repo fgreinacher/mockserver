@@ -629,7 +629,7 @@ The launcher `mockserver-ui/scripts/launch-with-llm-capture.sh` uses exactly thi
 
 ### File Persistence for Expectations
 
-When `configuration.persistExpectations()` is true, `ExpectationFileSystemPersistence` implements `MockServerMatcherListener` and writes all active expectations to a JSON file whenever they change.
+When `configuration.persistExpectations()` is true, `ExpectationFileSystemPersistence` implements `MockServerMatcherListener` and writes all active expectations to a JSON file whenever they change. It also **reads that document back once, on startup**, when the configured blob store is a cloud one — so cloud persistence is symmetric rather than write-only.
 
 ```mermaid
 sequenceDiagram
@@ -645,6 +645,15 @@ sequenceDiagram
     FP->>FS: Write JSON array of active expectations
     FP->>FP: Release locks
 ```
+
+#### Startup restore (cloud blob stores only)
+
+The constructor calls `reloadPersistedExpectations()` **before** `registerListener(this)`, so the restore cannot trigger a redundant write-back of what it just read.
+
+- **Skipped for `FilesystemBlobStore`.** The filesystem case already reloads through the `initializationJsonPath` mechanism (users point `initializationJsonPath` at `persistedExpectationsPath`); restoring here too would load the same local file twice. Every other `BlobStore` — S3, GCS, Azure — has no local-file reload path, so without this read the persisted document is write-only.
+- **Bounded by `blobStoreRestoreTimeoutSeconds` (default 10s).** This constructor runs inside `HttpState`, which the netty `LifeCycle` constructor builds **before any listening port is bound**. An unbounded read against an endpoint that drops packets delays startup for the cloud SDK's entire retry budget — measured at ~120s for AWS SDK v2 defaults (4 attempts x a 30s socket timeout) — long enough to fail readiness probes and Testcontainers wait strategies. The read runs on a daemon thread with a `Future.get(timeout)`; on expiry MockServer logs a WARN and starts with no restored expectations. Setting the property to `0` skips the restore entirely.
+- **The restore's `Cause` source is prefixed `blobstore:`.** `Cause` has value equality on `(source, type)` and `RequestMatchers.update(expectations, cause)` *removes* every matcher whose source equals the cause but which is absent from the incoming array. `ExpectationInitializerLoader` runs after the persistence (`HttpState` constructs it later) and calls `update(..., new Cause(initializationJsonPath, FILE_INITIALISER))` unconditionally — including with an empty array when the file is blank. Without the prefix, a user who points `initializationJsonPath` at the same absolute path as `persistedExpectationsPath` would have every restored expectation silently deleted. That combination also logs a WARN under a non-filesystem store, since the initializer reads a local file the bucket never populates.
+- **The blob key embeds the absolute `persistedExpectationsPath`.** Restore therefore requires the same bucket, the same `blobStoreKeyPrefix` *and* the same absolutely-resolved `persistedExpectationsPath` — the default path is the relative `persistedExpectations.json`, so a different working directory yields a different key. A key miss logs at INFO with the key and that requirement, rather than passing silently.
 
 ### File Watcher
 

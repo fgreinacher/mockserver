@@ -47,7 +47,7 @@ import static org.mockserver.stop.Stop.stopQuietly;
  * {@code ExpectationFileSystemPersistence}: without that read path the second
  * server starts empty and returns 404, failing this test.
  */
-public class S3ExpectationPersistenceReloadIT {
+public class S3ExpectationPersistenceReloadTest {
 
     private static final String MINIO_IMAGE = "minio/minio:RELEASE.2024-11-07T00-52-20Z";
     private static final String ACCESS_KEY = "minioadmin";
@@ -123,7 +123,12 @@ public class S3ExpectationPersistenceReloadIT {
             .blobStoreEndpoint(endpoint)
             .blobStoreKeyPrefix(keyPrefix)
             .blobStoreAccessKeyId(ACCESS_KEY)
-            .blobStoreSecretAccessKey(SECRET_KEY);
+            .blobStoreSecretAccessKey(SECRET_KEY)
+            // Generous on purpose: the production DEFAULT is 10s, but on a contended CI agent
+            // running Docker-in-Docker the cold SDK bootstrap plus the first GetObject can exceed
+            // it, and a blown deadline surfaces here as a silent "restored nothing" 404 mismatch
+            // rather than as a timeout. The deadline must not be the thing under test.
+            .blobStoreRestoreTimeoutSeconds(60);
     }
 
     @Test
@@ -163,6 +168,45 @@ public class S3ExpectationPersistenceReloadIT {
 
         // THEN the expectation is restored and served by the fresh instance
         assertThat(get(server.getLocalPort(), "/persisted"), is("restored-from-s3"));
+    }
+
+    @Test
+    public void shouldRestoreCloudPersistedExpectationsWhenInitializationJsonPathMatchesPersistedExpectationsPath() throws Exception {
+        // The migration case: a user moving from filesystem persistence to blobStoreType=s3
+        // keeps initializationJsonPath pointing at persistedExpectationsPath, which is exactly
+        // what the long-standing filesystem guidance tells them to do. The local file stays
+        // empty (S3 holds the state), and ExpectationInitializerLoader calls
+        // update(EMPTY, new Cause(initializationJsonPath, FILE_INITIALISER)) unconditionally.
+        // Cause has value equality, and RequestMatchers.update removes every matcher whose
+        // source equals the cause, so a colliding cause source silently deletes everything the
+        // restore just loaded.
+        String keyPrefix = "reload-init-" + UUID.randomUUID();
+        File persistedExpectations = File.createTempFile("persistedExpectationsWithInitializer", ".json");
+        persistedExpectations.deleteOnExit();
+        String persistedExpectationsPath = persistedExpectations.getAbsolutePath();
+
+        server = ClientAndServer.startClientAndServer(
+            s3PersistenceConfiguration(persistedExpectationsPath, keyPrefix), PortFactory.findFreePort());
+        server
+            .when(request().withPath("/persisted-with-initializer"))
+            .respond(response().withBody("survives-the-initializer"));
+
+        assertThat(get(server.getLocalPort(), "/persisted-with-initializer"), is("survives-the-initializer"));
+        awaitS3BlobContains(keyPrefix, "/persisted-with-initializer");
+
+        stopQuietly(server);
+        server = null;
+
+        // the local file the initializer will read is empty -- only S3 holds the state
+        assertThat("the local persisted file must be empty for this test to mean anything",
+            persistedExpectations.length(), is(0L));
+
+        server = ClientAndServer.startClientAndServer(
+            s3PersistenceConfiguration(persistedExpectationsPath, keyPrefix)
+                .initializationJsonPath(persistedExpectationsPath),
+            PortFactory.findFreePort());
+
+        assertThat(get(server.getLocalPort(), "/persisted-with-initializer"), is("survives-the-initializer"));
     }
 
     private String get(int port, String path) throws Exception {

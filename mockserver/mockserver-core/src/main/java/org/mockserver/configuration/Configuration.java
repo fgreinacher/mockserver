@@ -257,6 +257,7 @@ public class Configuration {
     private String blobStoreContainer;
     private String blobStoreConnectionString;
     private String blobStoreProjectId;
+    private Integer blobStoreRestoreTimeoutSeconds;
 
     // clustering (G10 phase 2c) — opt-in, default OFF
     private Boolean clusterEnabled;
@@ -3831,6 +3832,31 @@ public class Configuration {
 
     public Configuration blobStoreProjectId(String blobStoreProjectId) {
         this.blobStoreProjectId = blobStoreProjectId;
+        return this;
+    }
+
+    /**
+     * Returns the maximum number of seconds MockServer waits, during startup, for the
+     * persisted-expectations document to be read back from a cloud blob store before
+     * giving up and continuing to start. The default is 10 seconds; 0 or less skips the
+     * startup restore entirely.
+     */
+    public Integer blobStoreRestoreTimeoutSeconds() {
+        if (blobStoreRestoreTimeoutSeconds == null) {
+            return ConfigurationProperties.blobStoreRestoreTimeoutSeconds();
+        }
+        return blobStoreRestoreTimeoutSeconds;
+    }
+
+    /**
+     * Sets the startup blob-store restore deadline. The startup read happens before any
+     * listening port is bound, so this bounds how long an unreachable blob-store endpoint
+     * can delay startup.
+     *
+     * @param blobStoreRestoreTimeoutSeconds startup blob-store restore deadline, in seconds
+     */
+    public Configuration blobStoreRestoreTimeoutSeconds(Integer blobStoreRestoreTimeoutSeconds) {
+        this.blobStoreRestoreTimeoutSeconds = blobStoreRestoreTimeoutSeconds;
         return this;
     }
 

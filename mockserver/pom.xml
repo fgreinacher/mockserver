@@ -736,6 +736,17 @@
                 <version>${slf4j.version}</version>
                 <optional>true</optional> <!-- do not impose on project importing mock-server -->
             </dependency>
+            <!-- TEST-scope SLF4J provider. slf4j-jdk14 above is <optional>, so it is NOT transitive:
+                 a module whose tests run a full in-process MockServer resolves slf4j-api with no
+                 provider and SLF4J falls back to the NOP logger, silently discarding every server log
+                 line (including the diagnostics a failing CI run needs). Managed here so the version
+                 can never drift from ${slf4j.version}; declare it version-less where it is needed. -->
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-simple</artifactId>
+                <version>${slf4j.version}</version>
+                <scope>test</scope>
+            </dependency>
 
             <!-- prometheus -->
             <dependency>

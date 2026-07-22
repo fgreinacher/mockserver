@@ -519,6 +519,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **Startup no longer stalls for two minutes when a cloud blob store is unreachable.** The restore of
+  cloud-persisted expectations runs from the `HttpState` constructor, which the netty `LifeCycle`
+  constructor builds *before* any listening port is bound, and the blob-store read had no timeout. An
+  endpoint that accepts connections but drops requests — a typo, a VPC egress rule, a DNS black hole —
+  delayed the port bind for the cloud SDK's entire retry budget: measured at 121 seconds against the
+  AWS SDK v2 defaults (4 attempts x a 30 second socket timeout), long enough to fail readiness probes,
+  Testcontainers wait strategies and CI harnesses. The read is now bounded by a new
+  `blobStoreRestoreTimeoutSeconds` property (default 10 seconds), after which MockServer logs a WARN
+  and starts with no restored expectations; set it to `0` to skip the startup restore entirely. Like
+  the rest of the `blobStore*` family the property is reported by `GET /mockserver/configuration`; it
+  is read once during startup, so a runtime `PUT` cannot change the restore it governs. When the
+  deadline expires the abandoned read is left to finish on its daemon thread so that the real
+  underlying cause (credentials denied, DNS failure, endpoint typo) is still logged at DEBUG, rather
+  than leaving an operator with nothing but "timed out".
+- **Expectations restored from a cloud blob store are no longer silently deleted when
+  `initializationJsonPath` points at `persistedExpectationsPath`.** That combination is exactly what
+  the long-standing *filesystem* persistence guidance recommends, so a user migrating to
+  `blobStoreType=s3` naturally keeps it. The restore tagged expectations with a `Cause` whose source
+  was the persisted path; `Cause` has value equality, `RequestMatchers.update` removes every matcher
+  whose source equals the incoming cause but is absent from the incoming array, and the expectation
+  initializer — constructed *after* the persistence — called `update` unconditionally with an empty
+  array after reading the (empty) local file. Every restored expectation was dropped, with no warning.
+  The restore's cause source is now prefixed so it can never collide with an initialization path, and
+  the combination logs a WARN under a non-filesystem blob store, where the initializer reads a local
+  file the bucket never populates.
+- **A blob-store key miss during the startup restore is now reported instead of passing silently.** The
+  blob key embeds the *absolute* `persistedExpectationsPath`, and the default for that property is the
+  relative `persistedExpectations.json`, so the object name silently varies with the working directory
+  a MockServer instance was started from. A miss now logs at INFO with the key it looked for and the
+  fact that restore requires the same bucket, the same `blobStoreKeyPrefix` and the same
+  absolutely-resolved `persistedExpectationsPath`. The consumer documentation now states that
+  requirement rather than promising that pointing a fresh instance at the same bucket is sufficient.
+- **A failing blob-store restore no longer risks crashing startup when no logger was supplied.** The
+  restore's failure branch logged unconditionally while the surrounding code null-checked the logger,
+  so the four-argument `ExpectationFileSystemPersistence` constructor could turn a logged, recoverable
+  restore failure into a `NullPointerException` during startup.
 - **Expectations persisted to a cloud blob store (S3, GCS or Azure) are now restored on restart.**
   With `persistExpectations` enabled and `blobStoreType` set to a cloud backend, MockServer wrote the
   persisted expectations document to the bucket on every change but never read it back, so a restart

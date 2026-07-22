@@ -572,6 +572,40 @@ public class ConfigurationTest {
     }
 
     @Test
+    public void shouldSetAndGetBlobStoreRestoreTimeoutSeconds() {
+        try {
+            // default
+            clearPropertyAndCache("mockserver.blobStoreRestoreTimeoutSeconds");
+            assertThat(ConfigurationProperties.blobStoreRestoreTimeoutSeconds(), equalTo(10));
+            assertThat(new Configuration().blobStoreRestoreTimeoutSeconds(), equalTo(10));
+
+            // system property -> property
+            ConfigurationProperties.blobStoreRestoreTimeoutSeconds(45);
+            assertThat(ConfigurationProperties.blobStoreRestoreTimeoutSeconds(), equalTo(45));
+            assertThat(System.getProperty("mockserver.blobStoreRestoreTimeoutSeconds"), equalTo("45"));
+            assertThat(new Configuration().blobStoreRestoreTimeoutSeconds(), equalTo(45));
+
+            // fluent setter -> property (instance value overrides the static one)
+            assertThat(configuration.blobStoreRestoreTimeoutSeconds(0).blobStoreRestoreTimeoutSeconds(), equalTo(0));
+        } finally {
+            clearPropertyAndCache("mockserver.blobStoreRestoreTimeoutSeconds");
+        }
+    }
+
+    @Test
+    public void shouldRecogniseBlobStoreRestoreTimeoutSecondsEnvironmentVariableForm() {
+        // The env-var form is what containerised deployments use, and it is advertised on the
+        // consumer configuration page as MOCKSERVER_BLOB_STORE_RESTORE_TIMEOUT_SECONDS. It is
+        // derived from the CONSTANT'S FIELD NAME (see ConfigurationProperties.enumerateRecognisedKeys),
+        // so a constant renamed without renaming the documented variable silently stops resolving and
+        // starts warning as an unknown key.
+        assertThat(ConfigurationProperties.recognisedEnvironmentVariableKeys(),
+            org.hamcrest.Matchers.hasItem("MOCKSERVER_BLOB_STORE_RESTORE_TIMEOUT_SECONDS"));
+        assertThat(ConfigurationProperties.recognisedSystemPropertyKeys(),
+            org.hamcrest.Matchers.hasItem("mockserver.blobStoreRestoreTimeoutSeconds"));
+    }
+
+    @Test
     public void shouldSetAndGetPersistedRecordedRequestsPath() {
         try {
             // default

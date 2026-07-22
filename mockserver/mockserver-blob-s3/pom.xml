@@ -18,6 +18,14 @@
         <module.name>org.mockserver.blob.s3</module.name>
         <!-- AWS SDK v2: 2.31.x targets Java 8+, fully Java-17-compatible -->
         <aws.sdk.version>2.31.9</aws.sdk.version>
+        <!-- The repo-wide default is ERROR, which filters MockServer's own log lines inside
+             MockServerLogger before SLF4J ever sees them. S3ExpectationPersistenceReloadTest runs a
+             full in-process MockServer, and the blob-store restore diagnostics it exercises are a
+             WARN ("timed out after N second(s)") and an INFO ("no persisted expectations found ...
+             under key"). At ERROR this Docker-gated suite would go red in CI carrying a bare
+             assertion failure and no explanation of WHY the restore produced nothing. One
+             in-process server across the module makes INFO cheap. -->
+        <mockserver.testLogLevel>INFO</mockserver.testLogLevel>
     </properties>
 
     <dependencies>
@@ -73,10 +81,14 @@
             <version>1.21.4</version>
             <scope>test</scope>
         </dependency>
+        <!-- SLF4J provider for the tests only. S3ExpectationPersistenceReloadTest runs a full
+             in-process MockServer, and MockServerLogger routes every log line through SLF4J; without
+             a provider SLF4J falls back to NOP and the whole server log — including the restore
+             WARN/INFO diagnostics this suite exists to exercise — is silently discarded, leaving a
+             red CI run with nothing but a bare assertion failure. Version managed in the parent. -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
-            <version>2.0.17</version>
             <scope>test</scope>
         </dependency>
         <!-- mockserver-core test-jar for BlobStoreContract (if available), else inline -->

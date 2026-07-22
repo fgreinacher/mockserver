@@ -96,6 +96,7 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
     # the false positive this step exists to remove.
     /build/.buildkite/scripts/steps/assert-suite-ran.sh \
       'mockserver-blob-s3/target/surefire-reports/TEST-*BlobStoreContractTest.xml' \
+      'mockserver-blob-s3/target/surefire-reports/TEST-*S3ExpectationPersistenceReloadTest.xml' \
       'mockserver-blob-gcs/target/surefire-reports/TEST-*BlobStoreContractTest.xml' \
       'mockserver-blob-azure/target/surefire-reports/TEST-*BlobStoreContractTest.xml'
   "
