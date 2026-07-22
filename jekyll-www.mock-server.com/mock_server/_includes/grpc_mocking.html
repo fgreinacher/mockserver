@@ -927,7 +927,26 @@ curl_close($ch);</code></pre>{% endraw %}
     <li><strong>Header matching</strong> — match on <span class="inline_code">x-grpc-service</span> and <span class="inline_code">x-grpc-method</span> headers</li>
     <li><strong>JSON body matching</strong> — match on the JSON-converted protobuf body using exact match, JSON Schema, JsonPath, etc.</li>
     <li><strong>Regex</strong> — use regex matchers on any field</li>
+    <li><strong>Custom metadata</strong> — any metadata your client sends (for example <span class="inline_code">x-tenant-id</span>) is an ordinary header on the converted request, so match on it the same way</li>
 </ul>
+
+<a id="grpc_binary_metadata" class="anchor" href="#grpc_binary_metadata">&nbsp;</a>
+
+<h2>Binary Metadata (<span class="inline_code">-bin</span> keys)</h2>
+
+<p>gRPC treats any metadata key whose name ends in <span class="inline_code">-bin</span> as binary: the value travels over the wire base64-encoded. MockServer never encodes or decodes these values — it passes them through exactly as written. <strong>So write the value already base64-encoded</strong>, both when matching a request and when setting a response header.</p>
+
+<p>For example, to match metadata that your client sets as the four raw bytes <span class="inline_code">0x01 0x02 0x03 0x04</span>, base64-encode them first and match on the result:</p>
+
+<pre class="prettyprint code"><code class="code">metadata key:    x-trace-bin
+raw bytes:       0x01 0x02 0x03 0x04
+value to use:    AQIDBA==   (or AQIDBA — see below)</code></pre>
+
+<p><strong>Padding does not matter.</strong> Most base64 encoders (including Java's <span class="inline_code">Base64.getEncoder()</span>) add <span class="inline_code">=</span> padding, producing <span class="inline_code">AQIDBA==</span>. The gRPC wire format omits that padding, so what actually arrives from a real gRPC client is <span class="inline_code">AQIDBA</span>. MockServer compares <span class="inline_code">-bin</span> values with the padding ignored, so both spellings match the same request and you do not have to know which one your client library produces.</p>
+
+<p>This padding-insensitive comparison applies <em>only</em> to header names ending in <span class="inline_code">-bin</span> — the padding of any other header value is significant, as before.</p>
+
+<p>Apart from the padding, a <span class="inline_code">-bin</span> value is compared exactly like any other header value. In particular header matching is case-insensitive, so two base64 values differing only in letter case are treated as equal even though they decode to different bytes. This is long-standing behaviour for every header, not something specific to <span class="inline_code">-bin</span>, but it is worth knowing when your metadata is binary.</p>
 
 <a id="grpc_status_codes" class="anchor" href="#grpc_status_codes">&nbsp;</a>
 

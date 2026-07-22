@@ -45,10 +45,12 @@ import java.util.List;
  */
 public class GrpcForwardTranslator {
 
-    public static final String SERVICE_HEADER = "x-grpc-service";
-    public static final String METHOD_HEADER = "x-grpc-method";
-    public static final String ORIGINAL_CONTENT_TYPE_HEADER = "x-grpc-original-content-type";
-    public static final String CLIENT_STREAMING_HEADER = "x-grpc-client-streaming";
+    // Defined once in GrpcDerivedHeaders and aliased here, so the set of names this class strips
+    // from a forwarded request can never drift from the set the request handlers write and strip.
+    public static final String SERVICE_HEADER = GrpcDerivedHeaders.SERVICE;
+    public static final String METHOD_HEADER = GrpcDerivedHeaders.METHOD;
+    public static final String ORIGINAL_CONTENT_TYPE_HEADER = GrpcDerivedHeaders.ORIGINAL_CONTENT_TYPE;
+    public static final String CLIENT_STREAMING_HEADER = GrpcDerivedHeaders.CLIENT_STREAMING;
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 

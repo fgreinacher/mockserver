@@ -4,6 +4,7 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import org.mockserver.configuration.Configuration;
+import org.mockserver.grpc.GrpcDerivedHeaders;
 import org.mockserver.grpc.GrpcException;
 import org.mockserver.grpc.GrpcFrameCodec;
 import org.mockserver.grpc.GrpcHealthCheckHandler;
@@ -368,7 +369,14 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
         byte[] bodyBytes = request.getBodyAsRawBytes();
         if (bodyBytes == null || bodyBytes.length == 0) {
             recordGrpcServiceMethod(ctx, request, serviceName, methodName);
-            return request;
+            // An empty-bodied gRPC request gets the same derived headers as any other, matching
+            // GrpcHttp3Adapter. This branch previously returned the request untouched, which both
+            // left a client-supplied x-grpc-service in place to be matched on and diverged from
+            // HTTP/3, where the same request did get the path-derived tags.
+            return GrpcDerivedHeaders.strip(request.clone())
+                .withHeader(GrpcDerivedHeaders.SERVICE, serviceName)
+                .withHeader(GrpcDerivedHeaders.METHOD, methodName)
+                .withHeader(GrpcDerivedHeaders.ORIGINAL_CONTENT_TYPE, request.getFirstHeader("content-type"));
         }
 
         List<byte[]> messages = GrpcFrameCodec.decode(bodyBytes, request.getFirstHeader(GrpcStatusMapper.GRPC_ENCODING_HEADER), configuration);
@@ -380,13 +388,12 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
         if (messages.size() == 1) {
             String json = converter.toJson(messages.get(0), methodDescriptor.getInputType());
             recordGrpcServiceMethod(ctx, request, serviceName, methodName);
-            return request
-                .clone()
+            return GrpcDerivedHeaders.strip(request.clone())
                 .withBody(json)
-                .withHeader("x-grpc-service", serviceName)
-                .withHeader("x-grpc-method", methodName)
-                .withHeader("x-grpc-original-content-type", request.getFirstHeader("content-type"));
-        } else if (messages.size() > 1) {
+                .withHeader(GrpcDerivedHeaders.SERVICE, serviceName)
+                .withHeader(GrpcDerivedHeaders.METHOD, methodName)
+                .withHeader(GrpcDerivedHeaders.ORIGINAL_CONTENT_TYPE, request.getFirstHeader("content-type"));
+        } else {
             StringBuilder jsonArray = new StringBuilder("[");
             for (int i = 0; i < messages.size(); i++) {
                 if (i > 0) {
@@ -396,16 +403,13 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
             }
             jsonArray.append("]");
             recordGrpcServiceMethod(ctx, request, serviceName, methodName);
-            return request
-                .clone()
+            return GrpcDerivedHeaders.strip(request.clone())
                 .withBody(jsonArray.toString())
-                .withHeader("x-grpc-service", serviceName)
-                .withHeader("x-grpc-method", methodName)
-                .withHeader("x-grpc-original-content-type", request.getFirstHeader("content-type"))
-                .withHeader("x-grpc-client-streaming", "true");
+                .withHeader(GrpcDerivedHeaders.SERVICE, serviceName)
+                .withHeader(GrpcDerivedHeaders.METHOD, methodName)
+                .withHeader(GrpcDerivedHeaders.ORIGINAL_CONTENT_TYPE, request.getFirstHeader("content-type"))
+                .withHeader(GrpcDerivedHeaders.CLIENT_STREAMING, "true");
         }
-
-        return request;
     }
 
     /**

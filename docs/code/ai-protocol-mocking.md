@@ -599,6 +599,64 @@ That last row is a **security** issue, not just conformance: depending on whethe
 
 Note grpc-java decodes leniently, so a `%` **not** followed by two hex digits happens to survive unencoded — which is why the round-trip test uses the `%41` form that genuinely corrupts, rather than a bare `%`.
 
+#### Binary metadata (`-bin` keys)
+
+**The contract is WIRE BASE64: the user supplies the already-base64-encoded value, and MockServer passes it through unchanged. There is no encode/decode anywhere, and there must not be.**
+
+The gRPC spec requires the value of any metadata key ending `-bin` to be base64 on the wire. Because base64 is pure ASCII, the value survives every transport site untouched — US-ASCII gRPC-Web trailer frames, `NettyResponseWriter.sanitizeHeaderValue` (which only strips CR/LF), HPACK/QPACK, and JSON serialisation. Pass-through is therefore already correct in both directions, and adding encoding would silently double-encode every existing user. **The header pass-through sites are not bugs and must not be "fixed".**
+
+**The one place pass-through was not enough is matching.** grpc-java encodes outbound binary metadata with `BASE64_ENCODING_OMIT_PADDING` (`io.grpc.internal.TransportFrameUtil.toHttp2Headers`), so the wire value is **unpadded** — `AQIDBA`, never the `AQIDBA==` that `Base64.getEncoder()` produces and that a user naturally writes into an expectation. A padded expectation therefore never matched a real gRPC client, silently: no error, just a 404-shaped `UNIMPLEMENTED`.
+
+`BinaryHeaderValueNormalizer` (mockserver-core, `org.mockserver.matchers`) makes the two spellings compare equal. It is deliberately narrow:
+
+| Scope | Behaviour |
+|---|---|
+| Header name ends `-bin` (case-insensitive), including exactly `-bin` | padding ignored on both sides |
+| Any other header (`x-cabin`, `x-trace`) | unchanged from before this change |
+| Query-string / path parameters | unchanged — the flag is set only when the `KeysToMultiValues` is a `Headers` |
+| `NottableSchemaString` on either side | skipped entirely; a JSON schema is evaluated against the raw string |
+| Value that is not structurally valid padded base64 | returned untouched |
+
+"Structurally valid" means all three of: standard base64 alphabet, one or two trailing `=`, **and a total length that is a multiple of 4**. The length invariant is load-bearing rather than defensive: `+` is both a base64 alphabet character and a regex metacharacter, so alphabet-plus-padding-count alone accepts `A+=` and rewrites it to the regex `A+`, silently broadening an expectation from one literal value to "one or more A". Since matching decides which expectation fires, that is a correctness defect, not a cosmetic one — `shouldNotBroadenARegexMatcherByStrippingItsTrailingPadding` pins it. Note the consequence: a regex is left as written only when it fails this structural test, so the guarantee is "structurally-invalid values are never rewritten", not "regexes are never rewritten".
+
+Wiring: `MultiValueMapMatcher` and `NottableStringMultiMap.multiMap` set a `binaryHeaderNormalization` flag from `instanceof Headers`; it is threaded into `SubSetMatcher.matchesIndexes` (SUB_SET) and `NottableStringMultiMap.matchesValue` (MATCHING_KEY). MATCHING_KEY resolves values through `getAll(matcherKey)`, which flattens across every actual key the matcher key matches, so it collects the **owning actual key** alongside each value — without that the "either key" trigger degenerates to matcher-key-only and the two key-match styles disagree for a regex matcher key.
+
+Design points worth keeping:
+
+- **Both sides are normalised, at the comparison site, triggered by either key.** Deciding from the matcher key alone would not make the comparison asymmetric (the gate governs both normalisations, so both sides would stay raw) — it would just miss the regex-matcher-key case. Asymmetry *would* arise from normalising at map-construction time, where each map sees only its own keys and the request side would lose its padding while the expectation kept it, **breaking** a padded-vs-padded match that works today. That is why the decision lives at the comparison site.
+- **The standard alphabet only.** `-` and `_` are excluded because grpc-java decodes with `BaseEncoding.base64()`, which rejects them; keeping the test tight also keeps ordinary hyphenated text (`some-value=`) out of the stripping path.
+- **A mismatch is reported against the values as written.** The normalised comparison runs with a `null` `MatchDifference`, and on failure `BinaryHeaderValueNormalizer.matchesIgnoringPadding` adds one difference built from the *originals*, noting that padding was ignored. Otherwise a user who wrote `AQIDBA==` and mistyped the payload would be told the expected value was `AQIDBA` and go hunting for a padding bug that does not exist.
+- **Comparison remains case-insensitive**, because `RegexStringMatcher.matchesByStrings` falls back to `equalsIgnoreCase` for all key/value map matching. So `AQIDBA` matches `aqidba` even though they decode to different bytes. This is pre-existing behaviour for every header and is *not* changed here — but it means `-bin` matching is "padding-insensitive **and** case-insensitive", not byte-exact modulo padding. Making it case-sensitive would be a behaviour change to the shared matcher and is deliberately out of scope.
+
+**The return leg is safe and is now asserted rather than inferred.** grpc-java decodes inbound `-bin` values with `BaseEncoding.base64().decode(..)` (`toRawSerializedHeaders`), and Guava's strict decoder accepts *missing* padding as well as present padding. That single property is what makes pass-through work in the response direction, so `BinaryMetadataHeaderMatcherTest` executes it across every length remainder rather than assuming it — if a Guava upgrade ever tightened this, that test goes red before real clients start failing.
+
+Verified end to end against a real grpc-java client in `GrpcUnaryClientIntegrationTest`, driven by an actual `Metadata.Key.of("x-trace-bin", Metadata.BINARY_BYTE_MARSHALLER)`. That test also asserts the recorded request header is literally `AQIDBA`, so the "grpc-java omits padding" premise is demonstrated in the suite rather than trusted.
+
+#### Inbound metadata on HTTP/2 bidi streams
+
+`GrpcBidiRouterHandler.synthesiseBidiRequest` takes the full `Http2Headers` from the opening HEADERS frame and maps every **non-pseudo** header onto the `HttpRequest` it matches with. It previously took only the `:path` and fabricated `content-type`, `x-grpc-service` and `x-grpc-method`, discarding all real inbound metadata — so no metadata matching happened at all on h2 bidi, while HTTP/3 mapped the same headers correctly via `Http3RequestBridge`. `withHeader("x-tenant-id", …)` on a bidi expectation matched over h3 and silently did not over h2.
+
+- Pseudo-headers (`:method`, `:path`, `:scheme`, `:authority`) are skipped — they are already the request's method and path.
+- Names and values are built with `string(value, false)`, the convention `FullHttpRequestToMockServerHttpRequest` uses for a *received* message, so a value beginning `!` stays literal instead of being read as a negation.
+- The synthesised `content-type` is only added when the inbound frame carried none, so an expectation written against `application/grpc` keeps matching without the header being duplicated.
+- The same request is used for the `INBOUND_STREAM` breakpoint lookup, so a breakpoint matcher can match on metadata too.
+- Any client-supplied `x-grpc-service` / `x-grpc-method` / `x-grpc-original-content-type` / `x-grpc-client-streaming` is removed by `GrpcDerivedHeaders.strip` (mockserver-core) before the path-derived value is set. `withHeader` **appends**, so without this a client sending `x-grpc-service: evil` left the request carrying `[evil, com.example.GreetingService]`, and SUB_SET header matching would let an expectation qualified by the forged name match a stream for a different service. Routing itself uses the real `:path`, so this is matching integrity rather than a dispatch bypass.
+
+The strip has to sit on **every** exit that sets the derived headers, because a path that forgets it is silently vulnerable while its siblings are fine. `convertGrpcRequest` and `transformGrpcRequest` each have three exits — empty body, one message, many messages — so the set of sites is wider than the two conversion methods suggests:
+
+| Transport | Site |
+|---|---|
+| HTTP/1.1, HTTP/2 | `GrpcToHttpRequestHandler.convertGrpcRequest` ×3 |
+| HTTP/2 bidi | `GrpcBidiRouterHandler.synthesiseBidiRequest` |
+| HTTP/3 unary/streaming | `GrpcHttp3Adapter.transformGrpcRequest` ×3 |
+| HTTP/3 bidi | `Http3MockServerHandler.tryBeginGrpcBidi` |
+
+`GrpcDerivedHeaderSpoofingTest` asserts each conversion exit on both transports, **on the value list rather than `getFirstHeader`** — the defect leaves `[evil, com.example.GreetingService]`, so a first-value assertion passes while the forged value is still present and still matchable.
+
+The empty-body exit on h1/h2 additionally used to return the request *untouched* — no strip and no derived headers — which also diverged from HTTP/3, where the same request was tagged. It now behaves identically on both, pinned by `shouldTagAnEmptyBodiedRequestIdenticallyOnHttp2AndHttp3`.
+
+The four header names are defined once, in `GrpcDerivedHeaders`; `GrpcForwardTranslator`'s long-standing public constants alias them, and every set site uses the constants. Strip list and set list are therefore provably the same key set rather than two lists of literals that can drift.
+
 #### Deadlines (`grpc-timeout`)
 
 A client's deadline arrives as `grpc-timeout: <1-8 digits><unit>`, parsed by `GrpcTimeout` (units are case-sensitive: `H`ours, `M`inutes, `S`econds, `m`illis, `u`micros, `n`anos — `M` and `m` differ by a factor of 60,000). The header is still passed through as an ordinary request header, so it remains matchable; enforcement is additive.

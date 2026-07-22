@@ -7,18 +7,25 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockserver.configuration.Configuration;
+import org.mockserver.grpc.GrpcDerivedHeaders;
+import org.mockserver.grpc.GrpcProtoDescriptorStore;
+import org.mockserver.grpc.GrpcStatusMapper;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.metrics.Metrics;
 import org.mockserver.mock.HttpState;
 import org.mockserver.mock.action.http.HttpActionHandler;
+import org.mockserver.model.HttpRequest;
 
 import io.netty.channel.ChannelFuture;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Paths;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.is;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -36,6 +43,10 @@ public class Http3MockServerHandlerTest {
 
     private static final Configuration CONFIGURATION = configuration();
     private static final MockServerLogger LOGGER = new MockServerLogger(Http3MockServerHandlerTest.class);
+
+    private static final String BIDI_SERVICE = "com.example.grpc.GreetingService";
+    private static final String BIDI_METHOD = "Chat";
+    private static final String BIDI_PATH = "/" + BIDI_SERVICE + "/" + BIDI_METHOD;
 
     @Test
     public void shouldReleaseBodyAccumulatorOnHandlerRemoved() throws Exception {
@@ -317,6 +328,69 @@ public class Http3MockServerHandlerTest {
 
         // cleanup
         handler.channelInputClosed(ctx);
+        handler.handlerRemoved(ctx);
+    }
+
+    /**
+     * {@code x-grpc-service} and {@code x-grpc-method} are <strong>server-derived</strong> from the
+     * {@code :path}, so a client must not be able to contribute a value. Because
+     * {@code HttpRequest.withHeader} appends rather than replaces, the defence is the
+     * {@link org.mockserver.grpc.GrpcDerivedHeaders#strip} call in {@code tryBeginGrpcBidi}, and
+     * header matching being SUB_SET means a surviving forged value would let an expectation
+     * qualified by {@code x-grpc-service: com.example.evil.OtherService} match a stream that
+     * actually belongs to {@code com.example.grpc.GreetingService}.
+     * <p>
+     * This is the HTTP/3 bidi counterpart of the cases in
+     * {@code org.mockserver.netty.grpc.GrpcDerivedHeaderSpoofingTest} and
+     * {@code GrpcBidiMetadataMatchingTest#shouldNotLetAClientSpoofTheDerivedServiceHeader} — the one
+     * strip site those did not reach.
+     * <p>
+     * <strong>The assertion is on the value list, never {@code getFirstHeader}.</strong> Without the
+     * strip the request carries {@code [com.example.evil.OtherService, com.example.grpc.GreetingService]};
+     * a {@code getFirstHeader} assertion could read either value and pass while the spoof is still
+     * present and still matchable.
+     * <p>
+     * The request is observed where {@code tryBeginGrpcBidi} first hands it to the matcher — the
+     * peek — because that is precisely the request an expectation is matched against. The peek
+     * returning no expectation is irrelevant to this test: the strip has already happened by then.
+     */
+    @Test
+    public void shouldNotLetAClientSpoofTheDerivedGrpcHeadersOnAnHttp3BidiStream() throws Exception {
+        // given: bidi streaming enabled and the greeting descriptors loaded (Chat is bidi)
+        Configuration config = configuration().grpcBidiStreamingEnabled(true);
+        GrpcProtoDescriptorStore descriptorStore = new GrpcProtoDescriptorStore(LOGGER);
+        descriptorStore.loadDescriptorSetFromPath(
+            Paths.get("../mockserver-core/src/test/resources/grpc/greeting.dsc"));
+
+        HttpState httpState = mock(HttpState.class);
+        when(httpState.getGrpcDescriptorStore()).thenReturn(descriptorStore);
+
+        Http3MockServerHandler handler = new Http3MockServerHandler(
+            config, LOGGER, httpState, mock(HttpActionHandler.class), new Metrics(config)
+        );
+        ChannelHandlerContext ctx = mockChannelHandlerContext();
+
+        // when: the opening HEADERS frame carries forged copies of the derived headers
+        DefaultHttp3HeadersFrame headersFrame = new DefaultHttp3HeadersFrame();
+        headersFrame.headers().method("POST");
+        headersFrame.headers().path(BIDI_PATH);
+        headersFrame.headers().scheme("https");
+        headersFrame.headers().add("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE);
+        headersFrame.headers().add(GrpcDerivedHeaders.SERVICE, "com.example.evil.OtherService");
+        headersFrame.headers().add(GrpcDerivedHeaders.METHOD, "Evil");
+
+        handler.channelRead(ctx, headersFrame);
+
+        // then: the request offered for matching carries ONLY the path-derived values
+        ArgumentCaptor<HttpRequest> captor = ArgumentCaptor.forClass(HttpRequest.class);
+        verify(httpState).peekFirstMatchingExpectation(captor.capture());
+        HttpRequest matched = captor.getValue();
+
+        assertThat("x-grpc-service must carry ONLY the path-derived service",
+            matched.getHeader(GrpcDerivedHeaders.SERVICE), contains(BIDI_SERVICE));
+        assertThat("x-grpc-method must carry ONLY the path-derived method",
+            matched.getHeader(GrpcDerivedHeaders.METHOD), contains(BIDI_METHOD));
+
         handler.handlerRemoved(ctx);
     }
 

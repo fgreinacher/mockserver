@@ -17,6 +17,7 @@ import org.mockserver.authentication.AuthenticationException;
 import org.mockserver.authentication.AuthenticationHandler;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.cors.CORSHeaders;
+import org.mockserver.grpc.GrpcDerivedHeaders;
 import org.mockserver.grpc.GrpcException;
 import org.mockserver.grpc.GrpcProtoDescriptorStore;
 import org.mockserver.grpc.GrpcStatusMapper;
@@ -334,8 +335,12 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
         }
 
         // Tag with service/method (header-based matching parity) and capture client certs so
-        // cert-based expectation matching works for bidi too.
-        request.withHeader("x-grpc-service", parts[0]).withHeader("x-grpc-method", parts[1]);
+        // cert-based expectation matching works for bidi too. Any client-supplied copy is dropped
+        // first — withHeader appends, so a spoofed x-grpc-service would otherwise survive alongside
+        // the path-derived one and, header matching being SUB_SET, let an expectation qualified by
+        // the forged name match a stream for a different service.
+        GrpcDerivedHeaders.strip(request);
+        request.withHeader(GrpcDerivedHeaders.SERVICE, parts[0]).withHeader(GrpcDerivedHeaders.METHOD, parts[1]);
         if (request.getLogCorrelationId() == null) {
             request.withLogCorrelationId(UUIDService.getUUID());
         }

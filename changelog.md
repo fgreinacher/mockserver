@@ -455,6 +455,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of bug cannot recur silently — it also documents, and asserts, the one property deliberately left
   readable (`dashboardAnalyticsKey`, an ingest-only analytics project key the browser dashboard must
   read back to start up, so masking it would break analytics while protecting nothing).
+- **gRPC binary metadata (`-bin`) expectations now match regardless of base64 padding.** The gRPC wire
+  format requires a metadata value whose key ends `-bin` to be base64, and MockServer passes that value
+  through exactly as written — it never encodes or decodes it. But grpc-java strips the `=` padding when
+  it writes the value, so what arrives is `AQIDBA`, never the `AQIDBA==` that `Base64.getEncoder()`
+  produces and that a user naturally writes into an expectation. The padded form therefore never matched
+  a real gRPC client, with no error and no diagnostic — just an unmatched request. Both spellings are now
+  treated as the same value. This applies only to header names ending `-bin`; every other header is
+  matched as before, and padding is only ignored for a structurally valid base64 value, so a regular
+  expression or a JSON Schema matcher is unaffected.
+- **gRPC expectations can now match inbound metadata on an HTTP/2 bidirectional-streaming request.** The
+  bidi router built the request it matched against from the request path alone and discarded every
+  header the client sent, so `withHeader("x-tenant-id", ...)` on a bidi expectation silently never
+  matched over HTTP/2 — while the same expectation did match over HTTP/3. Inbound metadata is now mapped
+  onto the request on both transports. Interactive breakpoints registered for the inbound-stream phase
+  can likewise be qualified by metadata.
+- **A client can no longer spoof the `x-grpc-service` / `x-grpc-method` headers MockServer derives.**
+  These headers are set by MockServer from the gRPC request path so expectations can match on service
+  and method. A client sending its own copy had it kept alongside the derived value rather than
+  replaced, and because header matching is a subset match, an expectation qualified by the forged
+  service name could match a request belonging to a different service. Any client-supplied
+  `x-grpc-service`, `x-grpc-method`, `x-grpc-original-content-type` or `x-grpc-client-streaming` is now
+  removed before the derived value is set, on every transport. As part of this, an empty-bodied gRPC
+  request over HTTP/1.1 or HTTP/2 now receives the derived service/method headers it was previously
+  missing, matching the HTTP/3 behaviour.
 - **Percent-encoded request paths are now matched under the WAR / servlet deployment.** When MockServer
   runs as a WAR (e.g. in Tomcat), a request for a path such as `/ab%40c.de` was not decoded back to
   `/ab@c.de` whenever the container reports a `null` path-info — which a servlet container does for a

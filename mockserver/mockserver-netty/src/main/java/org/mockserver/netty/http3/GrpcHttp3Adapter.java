@@ -3,6 +3,7 @@ package org.mockserver.netty.http3;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
+import org.mockserver.grpc.GrpcDerivedHeaders;
 import org.mockserver.grpc.GrpcException;
 import org.mockserver.grpc.GrpcFrameCodec;
 import org.mockserver.grpc.GrpcJsonMessageConverter;
@@ -77,11 +78,10 @@ public final class GrpcHttp3Adapter {
 
         byte[] bodyBytes = request.getBodyAsRawBytes();
         if (bodyBytes == null || bodyBytes.length == 0) {
-            return request
-                .clone()
-                .withHeader("x-grpc-service", serviceName)
-                .withHeader("x-grpc-method", methodName)
-                .withHeader("x-grpc-original-content-type", request.getFirstHeader("content-type"));
+            return GrpcDerivedHeaders.strip(request.clone())
+                .withHeader(GrpcDerivedHeaders.SERVICE, serviceName)
+                .withHeader(GrpcDerivedHeaders.METHOD, methodName)
+                .withHeader(GrpcDerivedHeaders.ORIGINAL_CONTENT_TYPE, request.getFirstHeader("content-type"));
         }
 
         List<byte[]> messages = GrpcFrameCodec.decode(bodyBytes);
@@ -93,12 +93,11 @@ public final class GrpcHttp3Adapter {
 
         if (messages.size() == 1) {
             String json = converter.toJson(messages.get(0), methodDescriptor.getInputType());
-            return request
-                .clone()
+            return GrpcDerivedHeaders.strip(request.clone())
                 .withBody(json)
-                .withHeader("x-grpc-service", serviceName)
-                .withHeader("x-grpc-method", methodName)
-                .withHeader("x-grpc-original-content-type", request.getFirstHeader("content-type"));
+                .withHeader(GrpcDerivedHeaders.SERVICE, serviceName)
+                .withHeader(GrpcDerivedHeaders.METHOD, methodName)
+                .withHeader(GrpcDerivedHeaders.ORIGINAL_CONTENT_TYPE, request.getFirstHeader("content-type"));
         } else {
             StringBuilder jsonArray = new StringBuilder("[");
             for (int i = 0; i < messages.size(); i++) {
@@ -108,13 +107,12 @@ public final class GrpcHttp3Adapter {
                 jsonArray.append(converter.toJson(messages.get(i), methodDescriptor.getInputType()));
             }
             jsonArray.append("]");
-            return request
-                .clone()
+            return GrpcDerivedHeaders.strip(request.clone())
                 .withBody(jsonArray.toString())
-                .withHeader("x-grpc-service", serviceName)
-                .withHeader("x-grpc-method", methodName)
-                .withHeader("x-grpc-original-content-type", request.getFirstHeader("content-type"))
-                .withHeader("x-grpc-client-streaming", "true");
+                .withHeader(GrpcDerivedHeaders.SERVICE, serviceName)
+                .withHeader(GrpcDerivedHeaders.METHOD, methodName)
+                .withHeader(GrpcDerivedHeaders.ORIGINAL_CONTENT_TYPE, request.getFirstHeader("content-type"))
+                .withHeader(GrpcDerivedHeaders.CLIENT_STREAMING, "true");
         }
     }
 

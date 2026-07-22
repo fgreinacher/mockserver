@@ -4,13 +4,17 @@ import com.google.protobuf.DescriptorProtos;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.protobuf.ProtoUtils;
 import io.grpc.stub.ClientCalls;
+import io.grpc.stub.MetadataUtils;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -21,6 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -33,11 +38,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.hamcrest.Matchers.notNullValue;
 import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
 import static org.mockserver.stop.Stop.stopQuietly;
@@ -72,6 +79,14 @@ public class GrpcUnaryClientIntegrationTest {
     private static final String GET_BOOK = "GetBook";
     private static final String GET_AUTHOR = "GetAuthor";
     private static final String CATALOG_DESCRIPTOR = "../mockserver-core/src/test/resources/grpc/catalog.dsc";
+
+    /**
+     * A real gRPC binary metadata key. {@code BINARY_BYTE_MARSHALLER} is what makes grpc-java apply
+     * the {@code -bin} base64 rules on the wire, in both directions.
+     */
+    private static final String TRACE_BIN_HEADER = "x-trace-bin";
+    private static final Metadata.Key<byte[]> TRACE_BIN =
+        Metadata.Key.of(TRACE_BIN_HEADER, Metadata.BINARY_BYTE_MARSHALLER);
 
     /**
      * Response delay used by the concurrency tests. Every call is dispatched before any response is
@@ -385,6 +400,156 @@ public class GrpcUnaryClientIntegrationTest {
                 services.put(serviceDescriptor.getFullName(), serviceDescriptor);
             }
         }
+    }
+
+    // ---- binary metadata (-bin), driven by a real io.grpc.Metadata binary key ----
+
+    /**
+     * The contract for a {@code -bin} metadata key: the user writes the value <strong>already
+     * base64-encoded</strong> and MockServer passes it through untouched, in both directions. It
+     * never encodes and never decodes.
+     * <p>
+     * <strong>What breaks without a fix, and only against a real client.</strong> grpc-java encodes
+     * outbound binary metadata with {@code BASE64_ENCODING_OMIT_PADDING}
+     * ({@code io.grpc.internal.TransportFrameUtil#toHttp2Headers}), so the value on the wire is
+     * {@code AQIDBA} — never the {@code AQIDBA==} that {@code Base64.getEncoder()} produces and that
+     * a user naturally writes into an expectation. Before the fix that expectation silently never
+     * matched: no error, no warning, just a 404-shaped UNIMPLEMENTED. No handler-level test could
+     * catch it, because the padding is applied by the client library, not by MockServer.
+     * <p>
+     * This asserts the whole loop with a real {@code Metadata.BINARY_BYTE_MARSHALLER} key:
+     * <ol>
+     *   <li>the padded expectation matches;</li>
+     *   <li>the value MockServer actually recorded is the unpadded wire form, so the premise above is
+     *       demonstrated rather than assumed;</li>
+     *   <li>the padded response value passes through and grpc-java decodes it back to the original
+     *       bytes — the return leg, which relies on Guava's base64 decoder, exercised rather than
+     *       inferred.</li>
+     * </ol>
+     */
+    @Test
+    public void shouldMatchPaddedBinaryMetadataExpectationAgainstUnpaddedWireValueFromRealClient() {
+        byte[] traceBytes = {1, 2, 3, 4};
+        String padded = Base64.getEncoder().encodeToString(traceBytes);
+        assertThat("this test is only meaningful if the padded form really is padded", padded, is("AQIDBA=="));
+
+        mockServerClient
+            .when(
+                request()
+                    .withPath("/" + SERVICE + "/" + METHOD)
+                    // the natural, padded spelling — what a user writes
+                    .withHeader(TRACE_BIN_HEADER, padded)
+            )
+            .respond(
+                response()
+                    .withStatusCode(200)
+                    .withHeader("grpc-status", "0")
+                    // passed through verbatim, still padded
+                    .withHeader(TRACE_BIN_HEADER, padded)
+                    .withBody("{\"greeting\":\"Hello World\"}")
+            );
+
+        AtomicReference<Metadata> headers = new AtomicReference<>();
+        AtomicReference<Metadata> trailers = new AtomicReference<>();
+        DynamicMessage reply = callWithBinaryMetadata(traceBytes, headers, trailers);
+
+        assertThat((String) reply.getField(responseType.findFieldByName("greeting")), is("Hello World"));
+
+        // (2) the wire really carried the unpadded form
+        org.mockserver.model.HttpRequest[] recorded =
+            mockServerClient.retrieveRecordedRequests(request().withPath("/" + SERVICE + "/" + METHOD));
+        assertThat("the request must have been recorded", recorded.length, is(1));
+        assertThat(
+            "grpc-java must put the UNPADDED base64 on the wire — if this ever becomes 'AQIDBA=='"
+                + " the padding-insensitive matching below is no longer what makes the test pass",
+            recorded[0].getFirstHeader(TRACE_BIN_HEADER), is("AQIDBA"));
+
+        // (3) the return leg: grpc-java decodes MockServer's padded pass-through back to the bytes
+        byte[] returned = binaryMetadataValue(headers.get(), trailers.get());
+        assertThat("the -bin response value must reach the client's binary marshaller", returned, notNullValue());
+        assertThat("a padded value passed straight through must decode to the original bytes",
+            returned, is(traceBytes));
+    }
+
+    /**
+     * The mirror of the case above: an expectation written in the unpadded form matches too, and an
+     * unpadded response value also decodes cleanly on the client. Together the two tests prove the
+     * user may write either spelling and MockServer behaves identically — which is the whole point
+     * of the padding-insensitive comparison.
+     */
+    @Test
+    public void shouldMatchUnpaddedBinaryMetadataExpectationAndReturnUnpaddedValueToRealClient() {
+        byte[] traceBytes = {1, 2, 3, 4};
+        String unpadded = "AQIDBA";
+
+        mockServerClient
+            .when(
+                request()
+                    .withPath("/" + SERVICE + "/" + METHOD)
+                    .withHeader(TRACE_BIN_HEADER, unpadded)
+            )
+            .respond(
+                response()
+                    .withStatusCode(200)
+                    .withHeader("grpc-status", "0")
+                    .withHeader(TRACE_BIN_HEADER, unpadded)
+                    .withBody("{\"greeting\":\"Hello World\"}")
+            );
+
+        AtomicReference<Metadata> headers = new AtomicReference<>();
+        AtomicReference<Metadata> trailers = new AtomicReference<>();
+        DynamicMessage reply = callWithBinaryMetadata(traceBytes, headers, trailers);
+
+        assertThat((String) reply.getField(responseType.findFieldByName("greeting")), is("Hello World"));
+        assertThat("an unpadded pass-through must also decode to the original bytes",
+            binaryMetadataValue(headers.get(), trailers.get()), is(traceBytes));
+    }
+
+    /**
+     * Padding-insensitivity must not degrade into value-insensitivity: different bytes still fail to
+     * match, and the client sees a real gRPC error rather than a fabricated success.
+     */
+    @Test
+    public void shouldNotMatchBinaryMetadataExpectationWithDifferentBytes() {
+        mockServerClient
+            .when(
+                request()
+                    .withPath("/" + SERVICE + "/" + METHOD)
+                    .withHeader(TRACE_BIN_HEADER, Base64.getEncoder().encodeToString(new byte[]{9, 9, 9, 9}))
+            )
+            .respond(response().withStatusCode(200).withHeader("grpc-status", "0").withBody("{\"greeting\":\"nope\"}"));
+
+        try {
+            callWithBinaryMetadata(new byte[]{1, 2, 3, 4}, new AtomicReference<>(), new AtomicReference<>());
+            throw new AssertionError("a -bin expectation for different bytes must not match");
+        } catch (StatusRuntimeException e) {
+            assertThat(e.getStatus().getCode(), is(Status.Code.UNIMPLEMENTED));
+        }
+    }
+
+    /**
+     * Makes a unary call carrying {@code x-trace-bin} as a real binary metadata key, capturing the
+     * response headers and trailers so the return leg can be asserted.
+     */
+    private DynamicMessage callWithBinaryMetadata(byte[] value, AtomicReference<Metadata> headers, AtomicReference<Metadata> trailers) {
+        Metadata metadata = new Metadata();
+        metadata.put(TRACE_BIN, value);
+        Channel intercepted = ClientInterceptors.intercept(
+            channel,
+            MetadataUtils.newAttachHeadersInterceptor(metadata),
+            MetadataUtils.newCaptureMetadataInterceptor(headers, trailers));
+        return ClientCalls.blockingUnaryCall(intercepted, grpcMethod, CallOptions.DEFAULT, helloRequest("World"));
+    }
+
+    /**
+     * Reads {@code x-trace-bin} through grpc-java's binary marshaller from whichever of the response
+     * headers or trailers carried it — a unary response may collapse to Trailers-Only.
+     */
+    private byte[] binaryMetadataValue(Metadata headers, Metadata trailers) {
+        if (headers != null && headers.get(TRACE_BIN) != null) {
+            return headers.get(TRACE_BIN);
+        }
+        return trailers != null ? trailers.get(TRACE_BIN) : null;
     }
 
     // ---- grpc-message percent-encoding, verified through a real client's decoder ----

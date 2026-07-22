@@ -4,9 +4,11 @@ import com.google.protobuf.Descriptors;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
+import io.netty.handler.codec.http2.Http2Headers;
 import io.netty.handler.codec.http2.Http2HeadersFrame;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.dashboard.DashboardWebSocketHandler;
+import org.mockserver.grpc.GrpcDerivedHeaders;
 import org.mockserver.grpc.GrpcJsonMessageConverter;
 import org.mockserver.grpc.GrpcProtoDescriptorStore;
 import org.mockserver.grpc.GrpcServerReflectionHandler;
@@ -26,9 +28,11 @@ import org.mockserver.uuid.UUIDService;
 import org.slf4j.event.Level;
 
 import java.security.cert.Certificate;
+import java.util.Map;
 
 import static org.mockserver.log.model.LogEntry.LogMessageType.RECEIVED_REQUEST;
 import static org.mockserver.log.model.LogEntryMessages.RECEIVED_REQUEST_MESSAGE_FORMAT;
+import static org.mockserver.model.NottableString.string;
 
 /**
  * Per-stream router that inspects the first {@link Http2HeadersFrame} to determine whether
@@ -48,6 +52,8 @@ import static org.mockserver.log.model.LogEntryMessages.RECEIVED_REQUEST_MESSAGE
  * </ul>
  */
 public class GrpcBidiRouterHandler extends ChannelInboundHandlerAdapter {
+
+    private static final String CONTENT_TYPE_HEADER = "content-type";
 
     private final Configuration configuration;
     private final GrpcProtoDescriptorStore descriptorStore;
@@ -155,7 +161,7 @@ public class GrpcBidiRouterHandler extends ChannelInboundHandlerAdapter {
             // True bidi method -- check for a matching GrpcBidiResponse expectation
             // Two-phase match: peek (side-effect-free) to check the action type, then
             // consume (with Times/scenario/responseInProgress) only on the committed path.
-            BidiMatchResult matchResult = findAndConsumeMatchingBidiResponse(path);
+            BidiMatchResult matchResult = findAndConsumeMatchingBidiResponse(path, headersFrame.headers());
 
             if (matchResult != null) {
                 // Install rule-driven GrpcBidiStreamHandler
@@ -176,7 +182,9 @@ public class GrpcBidiRouterHandler extends ChannelInboundHandlerAdapter {
                 final String inboundStreamId;
                 final String inboundBreakpointClientId;
                 final String inboundBreakpointId;
-                HttpRequest syntheticRequest = HttpRequest.request().withMethod("POST").withPath(path);
+                // built with the inbound metadata so an INBOUND_STREAM breakpoint matcher can match
+                // on a gRPC metadata header, exactly as an expectation can
+                HttpRequest syntheticRequest = synthesiseBidiRequest(path, headersFrame.headers());
                 org.mockserver.mock.breakpoint.BreakpointMatcher inboundMatcher =
                     org.mockserver.mock.breakpoint.BreakpointMatcherRegistry.getInstance()
                         .findMatch(syntheticRequest, org.mockserver.mock.breakpoint.BreakpointPhase.INBOUND_STREAM);
@@ -271,13 +279,13 @@ public class GrpcBidiRouterHandler extends ChannelInboundHandlerAdapter {
      * @return a {@link BidiMatchResult} containing the consumed expectation and the
      *         GrpcBidiResponse action, or {@code null} if no matching GrpcBidiResponse exists
      */
-    private BidiMatchResult findAndConsumeMatchingBidiResponse(String path) {
+    private BidiMatchResult findAndConsumeMatchingBidiResponse(String path, Http2Headers headers) {
         if (httpState == null) {
             return null;
         }
 
         // Synthesise the matching request
-        HttpRequest request = synthesiseBidiRequest(path);
+        HttpRequest request = synthesiseBidiRequest(path, headers);
 
         // Phase 1: side-effect-free peek to check action type
         Expectation peeked = httpState.peekFirstMatchingExpectation(request);
@@ -321,22 +329,58 @@ public class GrpcBidiRouterHandler extends ChannelInboundHandlerAdapter {
 
     /**
      * Synthesise a MockServer {@link HttpRequest} representing the bidi gRPC request
-     * (POST /service/method with gRPC headers, empty body). Used for both peek and
+     * (POST /service/method with the inbound gRPC metadata, empty body). Used for both peek and
      * consume matching.
+     * <p>
+     * <strong>Inbound metadata.</strong> Every non-pseudo header on the opening HEADERS frame is
+     * mapped onto the request, so an expectation may match on gRPC metadata
+     * ({@code withHeader("x-tenant-id", ...)}) for a bidi stream. HTTP/3 already does this via
+     * {@link org.mockserver.netty.http3.Http3RequestBridge}; without it here the same expectation
+     * matched over h3 but not over h2. Pseudo-headers ({@code :method}, {@code :path},
+     * {@code :scheme}, {@code :authority}) are skipped because they are already represented by the
+     * request's method and path.
+     * <p>
+     * Names and values are built as literal {@code NottableString}s (not parsed for a leading
+     * {@code !} or {@code ?}) because this is an actual received request, never a matcher — the same
+     * convention the HTTP/1.1 and HTTP/2 mappers use.
      */
-    private HttpRequest synthesiseBidiRequest(String path) {
+    private HttpRequest synthesiseBidiRequest(String path, Http2Headers headers) {
         HttpRequest request = HttpRequest.request()
             .withMethod("POST")
-            .withPath(path)
-            .withHeader("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE);
+            .withPath(path);
         request.withLogCorrelationId(UUIDService.getUUID());
 
+        boolean hasContentType = false;
+        if (headers != null) {
+            for (Map.Entry<CharSequence, CharSequence> header : headers) {
+                CharSequence name = header.getKey();
+                if (name == null || name.length() == 0 || name.charAt(0) == ':') {
+                    continue;
+                }
+                String headerName = name.toString();
+                CharSequence value = header.getValue();
+                request.withHeader(string(headerName, false), string(value != null ? value.toString() : "", false));
+                if (CONTENT_TYPE_HEADER.equalsIgnoreCase(headerName)) {
+                    hasContentType = true;
+                }
+            }
+        }
+        // preserve the pre-existing synthesized content-type when the inbound frame carried none,
+        // so an expectation written against "application/grpc" keeps matching
+        if (!hasContentType) {
+            request.withHeader(CONTENT_TYPE_HEADER, GrpcStatusMapper.GRPC_CONTENT_TYPE);
+        }
+
+        // drop any client-supplied copy first: withHeader appends, so otherwise a spoofed
+        // x-grpc-service survives alongside the path-derived one and an expectation qualified by the
+        // spoofed name could match this stream
+        GrpcDerivedHeaders.strip(request);
         String[] parts = GrpcToHttpRequestHandler.parseGrpcPath(path);
         if (parts[0] != null && !parts[0].isEmpty()) {
-            request.withHeader("x-grpc-service", parts[0]);
+            request.withHeader(GrpcDerivedHeaders.SERVICE, parts[0]);
         }
         if (parts[1] != null && !parts[1].isEmpty()) {
-            request.withHeader("x-grpc-method", parts[1]);
+            request.withHeader(GrpcDerivedHeaders.METHOD, parts[1]);
         }
         return request;
     }

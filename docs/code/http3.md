@@ -354,6 +354,27 @@ declarations are needed -- they resolve automatically.
   frames the client sends while one is held (bounded by `maxRequestBodySize`). Held frames are
   evicted on stream close. (Outbound bidi response frames are not breakpointed, matching the
   HTTP/2 bidi handler.)
+- **Inbound metadata matching is at parity with HTTP/2.** `Http3RequestBridge.toHttpRequest`
+  has always mapped every real inbound header onto the matched `HttpRequest`, so an
+  expectation could be qualified by gRPC metadata (`withHeader("x-tenant-id", …)`) on an
+  HTTP/3 bidi stream. The HTTP/2 `GrpcBidiRouterHandler` used to synthesise its request from
+  the `:path` alone and discard all inbound metadata, so the same expectation matched over h3
+  and silently did not over h2; it now maps the non-pseudo headers the same way. Binary
+  (`-bin`) metadata values are passed through verbatim on both transports and compared
+  ignoring base64 padding — see
+  [ai-protocol-mocking.md](ai-protocol-mocking.md#binary-metadata--bin-keys).
+- **Received header names and values are built as literal `NottableString`s** on both
+  transports (`string(value, false)`), the convention `FullHttpRequestToMockServerHttpRequest`
+  uses for an actual received message. `Http3RequestBridge` previously used the `String`
+  overload, which parses a leading `!` as a negation and a leading `?` as "optional" — so a
+  received `x-flag: !literal` became a *negated* matcher and silently inverted its own
+  matching. A `-bin` value can never begin with `!`, but an ordinary metadata value can.
+- **`x-grpc-service` / `x-grpc-method` are server-derived, not client-supplied.** Both the
+  h3 adapter and the h3 bidi path strip any client-sent copy via `GrpcDerivedHeaders.strip`
+  before setting the value parsed from the `:path`, because `withHeader` appends rather than
+  replaces. Without it a forged header survived alongside the real one and, header matching
+  being SUB_SET, an expectation qualified by the forged service name could match a stream
+  belonging to a different service.
 - **Stream-level error injection (HttpError streamError)**: an `httpError` action carrying a
   `streamError` resets the matched QUIC request stream with the given HTTP/3 error code (RFC 9114
   §8.1, e.g. `H3_REQUEST_CANCELLED`=0x10c) instead of returning a response. Reached via the

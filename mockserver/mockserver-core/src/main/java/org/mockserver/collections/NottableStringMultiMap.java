@@ -2,6 +2,7 @@ package org.mockserver.collections;
 
 import com.google.common.annotations.VisibleForTesting;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.matchers.BinaryHeaderValueNormalizer;
 import org.mockserver.matchers.MatchDifference;
 import org.mockserver.matchers.RegexStringMatcher;
 import org.mockserver.model.*;
@@ -20,9 +21,21 @@ public class NottableStringMultiMap extends ObjectWithReflectiveEqualsHashCodeTo
     private final Map<NottableString, List<NottableString>> backingMap = new LinkedHashMap<>();
     private final RegexStringMatcher regexStringMatcher;
     private final KeyMatchStyle keyMatchStyle;
+    /**
+     * True when this map holds HTTP headers, which is the only place gRPC metadata lands. It enables
+     * base64-padding-insensitive comparison for {@code -bin} keys (see
+     * {@link org.mockserver.matchers.BinaryHeaderValueNormalizer}) without touching query-string or
+     * path parameter matching.
+     */
+    private final boolean binaryHeaderNormalization;
 
     public NottableStringMultiMap(MockServerLogger mockServerLogger, boolean controlPlaneMatcher, KeyMatchStyle keyMatchStyle, List<? extends KeyToMultiValue> entries) {
+        this(mockServerLogger, controlPlaneMatcher, keyMatchStyle, entries, false);
+    }
+
+    public NottableStringMultiMap(MockServerLogger mockServerLogger, boolean controlPlaneMatcher, KeyMatchStyle keyMatchStyle, List<? extends KeyToMultiValue> entries, boolean binaryHeaderNormalization) {
         this.keyMatchStyle = keyMatchStyle;
+        this.binaryHeaderNormalization = binaryHeaderNormalization;
         regexStringMatcher = new RegexStringMatcher(mockServerLogger, controlPlaneMatcher);
         for (KeyToMultiValue keyToMultiValue : entries) {
             backingMap.put(keyToMultiValue.getName(), keyToMultiValue.getValues());
@@ -46,7 +59,7 @@ public class NottableStringMultiMap extends ObjectWithReflectiveEqualsHashCodeTo
         if (cached instanceof NottableStringMultiMap) {
             return (NottableStringMultiMap) cached;
         }
-        NottableStringMultiMap converted = new NottableStringMultiMap(mockServerLogger, controlPlaneMatcher, matched.getKeyMatchStyle(), matched.getEntries());
+        NottableStringMultiMap converted = new NottableStringMultiMap(mockServerLogger, controlPlaneMatcher, matched.getKeyMatchStyle(), matched.getEntries(), matched instanceof Headers);
         matched.setConvertedMatcher(controlPlaneMatcher, converted);
         return converted;
     }
@@ -54,6 +67,7 @@ public class NottableStringMultiMap extends ObjectWithReflectiveEqualsHashCodeTo
     @VisibleForTesting
     public NottableStringMultiMap(MockServerLogger mockServerLogger, boolean controlPlaneMatcher, KeyMatchStyle keyMatchStyle, NottableString[]... keyAndValues) {
         this.keyMatchStyle = keyMatchStyle;
+        this.binaryHeaderNormalization = false;
         regexStringMatcher = new RegexStringMatcher(mockServerLogger, controlPlaneMatcher);
         for (NottableString[] keyAndValue : keyAndValues) {
             if (keyAndValue.length > 0) {
@@ -67,9 +81,12 @@ public class NottableStringMultiMap extends ObjectWithReflectiveEqualsHashCodeTo
     }
 
     public boolean containsAll(MockServerLogger mockServerLogger, MatchDifference context, NottableStringMultiMap subset) {
+        // either side identifying itself as a header map is enough — the request side is always a
+        // Headers instance for header matching, and the expectation side is built from one too
+        boolean normalizeBinaryHeaders = this.binaryHeaderNormalization || subset.binaryHeaderNormalization;
         switch (subset.keyMatchStyle) {
             case SUB_SET: {
-                boolean isSubset = containsSubset(mockServerLogger, context, regexStringMatcher, subset.entryList(), entryList());
+                boolean isSubset = containsSubset(mockServerLogger, context, regexStringMatcher, subset.entryList(), entryList(), normalizeBinaryHeaders);
                 if (!isSubset && context != null) {
                     context.addDifference(mockServerLogger, "multimap subset match failed subset:{}was not a subset of:{}", subset.entryList(), entryList());
                 }
@@ -94,7 +111,11 @@ public class NottableStringMultiMap extends ObjectWithReflectiveEqualsHashCodeTo
                         continue;
                     }
 
-                    List<NottableString> matchedValuesForKey = getAll(matcherKey);
+                    // the owning actual key is collected alongside each value, because the matcher key
+                    // may be a regex spanning several actual keys and the binary-metadata decision
+                    // needs the real key this value came from — see #matchesValue
+                    List<NottableString> matchedKeysForKey = new ArrayList<>();
+                    List<NottableString> matchedValuesForKey = getAll(matcherKey, matchedKeysForKey);
                     if (matchedValuesForKey.isEmpty() && !matcherKey.isOptional()) {
                         if (context != null) {
                             context.addDifference(mockServerLogger, "multimap subset match failed subset:{}did not have expected key:{}", subset, matcherKey);
@@ -103,7 +124,9 @@ public class NottableStringMultiMap extends ObjectWithReflectiveEqualsHashCodeTo
                     }
 
                     List<NottableString> matcherValuesForKey = subset.getAll(matcherKey);
-                    for (NottableString matchedValue : matchedValuesForKey) {
+                    for (int valueIndex = 0; valueIndex < matchedValuesForKey.size(); valueIndex++) {
+                        NottableString matchedValue = matchedValuesForKey.get(valueIndex);
+                        NottableString matchedKey = matchedKeysForKey.get(valueIndex);
                         boolean matchesValue = false;
                         for (NottableString matcherValue : matcherValuesForKey) {
                             // match first as list
@@ -111,7 +134,7 @@ public class NottableStringMultiMap extends ObjectWithReflectiveEqualsHashCodeTo
                                 matchesValue = true;
                                 break;
                                 // otherwise match item by item
-                            } else if (regexStringMatcher.matches(mockServerLogger, context, matcherValue, matchedValue)) {
+                            } else if (matchesValue(mockServerLogger, context, normalizeBinaryHeaders, matcherKey, matchedKey, matcherValue, matchedValue)) {
                                 matchesValue = true;
                                 break;
                             } else {
@@ -129,6 +152,21 @@ public class NottableStringMultiMap extends ObjectWithReflectiveEqualsHashCodeTo
             }
         }
         return false;
+    }
+
+    /**
+     * Compares one matcher value against one matched value, first removing base64 padding from both
+     * when this is a header map and <em>either</em> key is a gRPC binary metadata key ({@code -bin}).
+     * Both keys are passed — not the matcher key twice — so a regex matcher key such as {@code x-.*}
+     * against an actual {@code x-trace-bin} is normalised here exactly as it is on the SUB_SET path
+     * in {@link SubSetMatcher}; the two key-match styles must not disagree about the same metadata.
+     */
+    private boolean matchesValue(MockServerLogger mockServerLogger, MatchDifference context, boolean normalizeBinaryHeaders, NottableString matcherKey, NottableString matchedKey, NottableString matcherValue, NottableString matchedValue) {
+        if (normalizeBinaryHeaders && BinaryHeaderValueNormalizer.shouldNormalize(matcherKey, matchedKey, matcherValue, matchedValue)) {
+            return BinaryHeaderValueNormalizer.matchesIgnoringPadding(
+                regexStringMatcher, mockServerLogger, context, matcherValue, matchedValue);
+        }
+        return regexStringMatcher.matches(mockServerLogger, context, matcherValue, matchedValue);
     }
 
     public boolean allKeysNotted() {
@@ -176,11 +214,28 @@ public class NottableStringMultiMap extends ObjectWithReflectiveEqualsHashCodeTo
     }
 
     private List<NottableString> getAll(NottableString key) {
+        return getAll(key, null);
+    }
+
+    /**
+     * Collects every value whose key matches {@code key}, flattened across keys.
+     *
+     * @param owningKeys when non-null, receives the actual key each returned value came from, at the
+     *                   same index — the matcher key may be a regex spanning several actual keys, and
+     *                   a per-key matching decision (binary {@code -bin} metadata) needs the real key
+     *                   rather than the pattern that selected it
+     */
+    private List<NottableString> getAll(NottableString key, List<NottableString> owningKeys) {
         if (!isEmpty()) {
             List<NottableString> values = new ArrayList<>();
             for (Map.Entry<NottableString, List<NottableString>> entry : backingMap.entrySet()) {
                 if (regexStringMatcher.matches(key, entry.getKey())) {
                     values.addAll(entry.getValue());
+                    if (owningKeys != null) {
+                        for (int i = 0; i < entry.getValue().size(); i++) {
+                            owningKeys.add(entry.getKey());
+                        }
+                    }
                 }
             }
             return values;

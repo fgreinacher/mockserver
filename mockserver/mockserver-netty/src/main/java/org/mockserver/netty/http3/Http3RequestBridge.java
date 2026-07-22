@@ -18,6 +18,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 
+import static org.mockserver.model.NottableString.string;
+
 /**
  * Converts between HTTP/3 frames and MockServer's {@link HttpRequest}/{@link HttpResponse} model.
  * <p>
@@ -77,15 +79,21 @@ public final class Http3RequestBridge {
             request.withQueryStringParameters(parseQueryString(queryString));
         }
 
+        // Names and values are built as literal NottableStrings (not parsed for a leading "!" or
+        // "?") because this is an actual received request, never a matcher — the same convention as
+        // FullHttpRequestToMockServerHttpRequest. Without it a received header value such as
+        // "!literal" would be read as a negation and silently invert its own matching.
         // set authority as Host header if present
         if (authority != null && !authority.isEmpty()) {
-            request.withHeader("host", authority);
+            request.withHeader(string("host", false), string(authority, false));
         }
 
         // add regular headers
         if (headers != null) {
             for (Map.Entry<String, String> header : headers) {
-                request.withHeader(header.getKey(), header.getValue());
+                request.withHeader(
+                    string(header.getKey(), false),
+                    string(header.getValue() != null ? header.getValue() : "", false));
             }
         }
 

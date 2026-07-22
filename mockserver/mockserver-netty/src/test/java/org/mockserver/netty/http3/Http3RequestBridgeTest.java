@@ -45,6 +45,41 @@ public class Http3RequestBridgeTest {
         assertThat(request.getProtocol(), is(org.mockserver.model.Protocol.HTTP_3));
     }
 
+    /**
+     * A <em>received</em> header value must stay literal. {@code NottableString.string(String)}
+     * parses a leading {@code !} as a negation and a leading {@code ?} as "optional" — correct for a
+     * matcher written by a user, catastrophic for an actual inbound value, which would silently
+     * invert its own matching. The mappers for received messages therefore use
+     * {@code string(value, false)}; this pins that HTTP/3 does the same as HTTP/1.1 and HTTP/2 (see
+     * {@code FullHttpRequestToMockServerHttpRequest}), which it previously did not.
+     */
+    @Test
+    public void shouldKeepReceivedHeaderValuesLiteralRatherThanParsingThemAsMatchers() {
+        List<Map.Entry<String, String>> headers = new ArrayList<>();
+        headers.add(new AbstractMap.SimpleEntry<>("x-flag", "!literal"));
+        headers.add(new AbstractMap.SimpleEntry<>("x-opt", "?literal"));
+
+        HttpRequest request = Http3RequestBridge.toHttpRequest(
+            "GET", "/hello", "https", "localhost:8443", headers, new byte[0]
+        );
+
+        org.mockserver.model.NottableString flag =
+            request.getHeaders().getEntries().stream()
+                .filter(header -> "x-flag".equals(header.getName().getValue()))
+                .flatMap(header -> header.getValues().stream())
+                .findFirst().orElseThrow(AssertionError::new);
+        assertThat("a received '!literal' must not become a negation", flag.isNot(), is(false));
+        assertThat(flag.getValue(), is("!literal"));
+
+        org.mockserver.model.NottableString opt =
+            request.getHeaders().getEntries().stream()
+                .filter(header -> "x-opt".equals(header.getName().getValue()))
+                .flatMap(header -> header.getValues().stream())
+                .findFirst().orElseThrow(AssertionError::new);
+        assertThat("a received '?literal' must not become optional", opt.isOptional(), is(false));
+        assertThat(opt.getValue(), is("?literal"));
+    }
+
     @Test
     public void shouldTagProtocolAsHttp3() {
         HttpRequest request = Http3RequestBridge.toHttpRequest(

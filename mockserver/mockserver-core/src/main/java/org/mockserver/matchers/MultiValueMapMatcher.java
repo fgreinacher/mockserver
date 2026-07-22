@@ -3,6 +3,7 @@ package org.mockserver.matchers;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.mockserver.collections.NottableStringMultiMap;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.model.Headers;
 import org.mockserver.model.KeyMatchStyle;
 import org.mockserver.model.KeyToMultiValue;
 import org.mockserver.model.KeysToMultiValues;
@@ -26,7 +27,9 @@ public class MultiValueMapMatcher extends NotMatcher<KeysToMultiValues<? extends
         this.keysToMultiValues = keysToMultiValues;
         this.controlPlaneMatcher = controlPlaneMatcher;
         if (keysToMultiValues != null) {
-            this.matcher = new NottableStringMultiMap(this.mockServerLogger, this.controlPlaneMatcher, keysToMultiValues.getKeyMatchStyle(), keysToMultiValues.getEntries());
+            // only a header map enables base64-padding-insensitive matching for gRPC binary metadata
+            // ({@code -bin}) keys; query-string and path parameter matching is unaffected
+            this.matcher = new NottableStringMultiMap(this.mockServerLogger, this.controlPlaneMatcher, keysToMultiValues.getKeyMatchStyle(), keysToMultiValues.getEntries(), keysToMultiValues instanceof Headers);
         } else {
             this.matcher = null;
         }
