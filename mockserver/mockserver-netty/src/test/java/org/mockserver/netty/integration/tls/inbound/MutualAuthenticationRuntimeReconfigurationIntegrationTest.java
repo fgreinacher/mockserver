@@ -17,6 +17,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.SocketException;
 import java.security.cert.X509Certificate;
 import java.util.Collections;
 
@@ -107,8 +108,13 @@ public class MutualAuthenticationRuntimeReconfigurationIntegrationTest {
             socket.startHandshake();
             fail("certificateless client should be refused once mutual authentication is required at runtime, "
                 + "but the handshake completed with session valid=" + socket.getSession().isValid());
-        } catch (SSLException expected) {
-            // the server aborts the handshake because the client presented no certificate under ClientAuth.REQUIRE
+        } catch (SSLException | SocketException expected) {
+            // The server aborts the handshake because the client presented no certificate under
+            // ClientAuth.REQUIRE. Depending on timing this surfaces either as a fatal TLS alert the client
+            // reads (SSLException) or as the server closing the socket before the client finishes writing its
+            // handshake records (SocketException: "Broken pipe" / "Connection reset" — seen on CI). Both mean
+            // the handshake was refused; only a COMPLETED handshake (the fail() above) means mTLS did not
+            // take effect at runtime, which is the enforcement bug this test guards.
         }
     }
 
