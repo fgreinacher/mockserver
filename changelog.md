@@ -27,6 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming / stream-id sibling of gRPC issue #2419). The shared integration harness cannot cover this
   because its client has no h2c prior-knowledge path — an insecure request tagged HTTP/2 silently falls
   back to HTTP/1.1.
+- **Interactive breakpoints are now proven end-to-end over a live transport.** A new integration test
+  starts a running server, opens the real breakpoint callback WebSocket via `MockServerClient.addBreakpoint`,
+  and drives a real JDK HTTP client through the full pause -> dispatch -> resolve loop: a RESPONSE-phase
+  breakpoint whose client handler rewrites the matched mock response has the originating caller receive the
+  modified status and body (not the original), and a REQUEST-phase breakpoint whose client handler returns a
+  response ABORTs before the mock is generated so the caller receives the abort response instead. Assertions
+  are made only on what the originating HTTP client reads back from the running server, so a pass proves the
+  pause/resume/modify actually happened server-side. Previously breakpoints were exercised only by client
+  unit tests (mocked HTTP client) and registry/handler tests over `EmbeddedChannel`; no test connected the
+  real callback WebSocket client to a running server and drove a live request through a pause-resolve cycle.
 - **VCR cassette replay is now covered end-to-end at the data plane.** A new integration test loads a
   cassette (recorded `request -> response` pairs) through the `load_expectations_from_file` tool into
   a running server, then drives real requests over a socket and asserts on the bytes the client
