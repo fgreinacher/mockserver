@@ -55,18 +55,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only by a unit test asserting the cached `SslContext` instance was replaced (which cannot assert the
   resulting `ClientAuth`), while the wire-level client-authentication tests all enabled mutual TLS at
   startup, so the enforcement outcome of a runtime enable was never asserted over the wire.
-- **The dashboard WebSocket contract is now pinned across the Java/UI boundary by a shared golden
-  frame.** The dashboard's WebSocket consumption was previously tested with a hand-written
-  `MockWebSocket` whose payloads were authored by the UI test itself, independently of what the Java
-  `DashboardWebSocketHandler` actually emits — so the two sides could drift apart while both stayed
-  green. A golden frame captured from the real handler (covering all four panels: log messages,
-  active expectations, recorded and proxied requests) is now checked in at
-  `mockserver-ui/src/__tests__/fixtures/dashboard-ws-frame.golden.json`. A new Java test
-  (`DashboardWebSocketFrameContractTest`) fails if the handler's output drifts from that golden
-  (dynamic ids/timestamps normalised to stable placeholders), and a new UI test
-  (`dashboardWsContract.test.ts`) parses the SAME golden and asserts every panel field the store and
-  panels read is present and correctly applied by `applyMessage`. A field rename on either side now
-  breaks the build on both.
 - **The OpenAPI validation-proxy enforce path is now proven end-to-end over a real socket.** A new
   integration test stands up a validation proxy (`validateProxyOpenAPISpec` + `validateProxyEnforce`)
   that forwards unmatched traffic to a second (upstream) MockServer, then drives real requests through
