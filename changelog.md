@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   volatile value still matches and is served the recorded body. Previously the cassette tests loaded a
   fixture and asserted only the control-plane `ACTIVE_EXPECTATIONS` echo, never proving a recorded
   response was actually served.
+- **SNI-driven per-host server-certificate selection is now proven end-to-end over a real TLS
+  handshake.** A new integration test opens an actual TLS connection presenting a chosen, non-default
+  `SNIHostName`, then reads the served peer certificate and asserts its Subject Alternative Names
+  contain that host — and repeats with a second distinct SNI host on the same running server to prove
+  the certificate is regenerated per host. Previously this path was exercised only through
+  `SniHandlerTest` (an `EmbeddedChannel` asserting the hostname was added to the SAN configuration
+  set); no handshake test connected with a chosen SNI host and inspected the certificate the server
+  actually served.
 - **gRPC client-streaming and bidirectional-streaming are now covered by a real grpc-java client
   end-to-end.** A new integration test drives an actual `io.grpc` channel over h2c and asserts on the
   bytes the client deframes — a single collected response for client-streaming, and two interleaved
