@@ -1,7 +1,7 @@
 # UI competitor-inspired feature ideas — residue after the 2026-07 build
 
-All six items from the original backlog shipped in 2026-07 (`e590d3d8d..`), each as its own
-commit with an adversarial review. What remains here is the **residue**: one deferred
+All six items from the original backlog shipped in 2026-07 (`0f6565a90..50fae90e8`), each as
+its own commit with an adversarial review. What remains here is the **residue**: one deferred
 sub-feature, one instruction that turned out to be wrong and must not be retried, and a set
 of small follow-ups the reviews surfaced.
 
