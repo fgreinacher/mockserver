@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming / stream-id sibling of gRPC issue #2419). The shared integration harness cannot cover this
   because its client has no h2c prior-knowledge path — an insecure request tagged HTTP/2 silently falls
   back to HTTP/1.1.
+- **The core mocking-action matrix is now proven over HTTP/3 (QUIC) with a real client.** A new
+  integration test drives a live Netty HTTP/3 client over QUIC against an HTTP/3-enabled MockServer and
+  asserts on the bytes the client receives on its own request stream for each action: a `respond` action
+  delivers its status and body, a class `callback` delivers its produced body, a `forward` action relays
+  the upstream body back, a `forwardOverride` (overridden-forwarded-request) action rewrites the request
+  and relays the overridden body back, and an `error` action resets the QUIC request stream (RFC 9114
+  `RESET_STREAM`) instead of returning a response. Previously the HTTP/3 tests covered trace-context,
+  mTLS capture, gRPC, streaming, MCP and lifecycle but none drove the forward / forwardOverride /
+  callback / error matrix over QUIC or proved the forwarded/callback body reached the client over
+  HTTP/3. The shared integration harness cannot cover this because its client has no HTTP/3 request path.
+  Skips cleanly where the native QUIC transport (BoringSSL) is unavailable.
 - **Interactive breakpoints are now proven end-to-end over a live transport.** A new integration test
   starts a running server, opens the real breakpoint callback WebSocket via `MockServerClient.addBreakpoint`,
   and drives a real JDK HTTP client through the full pause -> dispatch -> resolve loop: a RESPONSE-phase
