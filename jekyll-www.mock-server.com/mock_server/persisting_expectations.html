@@ -120,6 +120,8 @@ MOCKSERVER_BLOB_STORE_KEY_PREFIX=ci-shared/ \
 MOCKSERVER_PERSIST_EXPECTATIONS=true \
 java -jar mockserver-netty-jar-with-dependencies.jar -serverPort 1080 -logLevel INFO</code></pre>
 
+<p>When a cloud blob store is configured, persisted expectations are <strong>restored automatically the next time MockServer starts</strong> against the same bucket (and <span class="inline_code">blobStoreKeyPrefix</span>). Unlike the local filesystem, you do <strong>not</strong> need to also set <a href="/mock_server/configuration_properties.html#button_configuration_initialization_json_path">initializationJsonPath</a> to match <a href="/mock_server/configuration_properties.html#button_configuration_persisted_expectations_file_path">persistedExpectationsPath</a> &mdash; that mechanism reads the local disk, which a cloud bucket does not populate, so MockServer reads the persisted document straight from the blob store instead. Point a fresh instance at the same bucket and its expectations are served again.</p>
+
 <p>See <a href="/mock_server/configuration_properties.html">Configuration Properties</a> for the full property list with defaults, and <a href="/mock_server/centralized_deployment.html#cloud-blob">Centralised Deployment &rarr; Cloud Blob Storage</a> for using a blob store across a shared or clustered deployment.</p>
 
 {% include_subpage _includes/clustering.html %}

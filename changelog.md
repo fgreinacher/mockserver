@@ -405,6 +405,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were advertised but rejected by `/authorize`, so a conformant client that selected one from the list failed.
 
 ### Fixed
+- **Expectations persisted to a cloud blob store (S3, GCS or Azure) are now restored on restart.**
+  With `persistExpectations` enabled and `blobStoreType` set to a cloud backend, MockServer wrote the
+  persisted expectations document to the bucket on every change but never read it back, so a restart
+  came up empty — cloud persistence was effectively write-only. The filesystem blob store already
+  reloaded via the `initializationJsonPath` mechanism (pointing it at `persistedExpectationsPath`),
+  but that path reads the local disk, which a cloud bucket never populates. On startup MockServer now
+  reads the persisted document straight from the configured blob store and loads it through the same
+  code path a JSON initialization file uses, making cloud persistence symmetric: what is written on
+  change is restored on restart. The filesystem store is unchanged — it keeps reloading through
+  `initializationJsonPath` exactly as before, with no double loading.
 - **The editors no longer mark a valid expectation file as invalid when a header or cookie name uses
   the object form.** MockServer writes a header, query-parameter or cookie name as
   `{"name": {"not": false, "value": "!foo"}}` when the name itself begins with `!` or `?`, so that a

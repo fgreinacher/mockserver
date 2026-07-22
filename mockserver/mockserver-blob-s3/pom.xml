@@ -46,6 +46,17 @@
             <artifactId>mockserver-testing</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- netty server + java client for the end-to-end persistence reload IT -->
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>mockserver-netty</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>mockserver-client-java</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
@@ -60,6 +71,12 @@
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
             <version>1.21.4</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.17</version>
             <scope>test</scope>
         </dependency>
         <!-- mockserver-core test-jar for BlobStoreContract (if available), else inline -->

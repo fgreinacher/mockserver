@@ -9,9 +9,13 @@ import org.mockserver.mock.Expectation;
 import org.mockserver.mock.RequestMatchers;
 import org.mockserver.mock.listeners.MockServerMatcherListener;
 import org.mockserver.mock.listeners.MockServerMatcherNotifier;
+import org.mockserver.mock.listeners.MockServerMatcherNotifier.Cause;
+import org.mockserver.serialization.ExpectationSerializer;
 import org.mockserver.serialization.model.ExpectationDTO;
 import org.mockserver.serialization.serializers.response.TimeToLiveDTOPersistenceSerializer;
+import org.mockserver.state.Blob;
 import org.mockserver.state.BlobStore;
+import org.mockserver.state.FilesystemBlobStore;
 import org.slf4j.event.Level;
 
 import java.nio.file.FileAlreadyExistsException;
@@ -21,8 +25,10 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.mockserver.serialization.ObjectMapperFactory.createObjectMapper;
 import static org.slf4j.event.Level.*;
 
@@ -70,6 +76,12 @@ public class ExpectationFileSystemPersistence implements MockServerMatcherListen
                 );
             }
             this.initializationPathMatchesPersistencePath = FilePath.expandFilePathGlobs(configuration.initializationJsonPath()).contains(configuration.persistedExpectationsPath());
+            // Restore previously persisted expectations from the blob store before
+            // registering the write-back listener, so a cloud-persisted document
+            // (S3/GCS/Azure) is reloaded on restart. This happens BEFORE
+            // registerListener so the restore itself does not trigger a redundant
+            // write-back of the data we just read.
+            reloadPersistedExpectations();
             requestMatchers.registerListener(this);
             if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(INFO)) {
                 mockServerLogger.logEvent(
@@ -141,6 +153,53 @@ public class ExpectationFileSystemPersistence implements MockServerMatcherListen
             } finally {
                 writeOrderLock.unlock();
             }
+        }
+    }
+
+    /**
+     * Loads any previously persisted expectations from the blob store and adds
+     * them to the request matchers on startup, making persistence symmetric:
+     * what is written on change is read back on restart.
+     * <p>
+     * This is a no-op for the {@link FilesystemBlobStore} because filesystem
+     * persistence is already reloaded via the {@code initializationJsonPath}
+     * mechanism (users point {@code initializationJsonPath} at
+     * {@code persistedExpectationsPath}); reloading here as well would load the
+     * same local file twice. Cloud blob stores (S3, GCS, Azure) have no such
+     * local-file reload path, so the persisted document would otherwise be
+     * write-only — persisted on change but never restored on restart. This
+     * method closes that gap by reading the persisted blob directly.
+     */
+    private void reloadPersistedExpectations() {
+        if (blobStore instanceof FilesystemBlobStore) {
+            return;
+        }
+        try {
+            Optional<Blob> blob = blobStore.get(blobKey);
+            if (blob.isPresent()) {
+                String json = new String(blob.get().getData(), UTF_8);
+                if (isNotBlank(json)) {
+                    Expectation[] expectations = new ExpectationSerializer(mockServerLogger).deserializeArray(json, true);
+                    if (expectations != null && expectations.length > 0) {
+                        requestMatchers.update(expectations, new Cause(blobKey, Cause.Type.FILE_INITIALISER));
+                        if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(INFO)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setLogLevel(INFO)
+                                    .setMessageFormat("restored " + expectations.length + " persisted expectation(s) from blob store for{}")
+                                    .setArguments(configuration.persistedExpectationsPath())
+                            );
+                        }
+                    }
+                }
+            }
+        } catch (Throwable throwable) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.ERROR)
+                    .setMessageFormat("exception while restoring persisted expectations from blob store for " + configuration.persistedExpectationsPath())
+                    .setThrowable(throwable)
+            );
         }
     }
 
