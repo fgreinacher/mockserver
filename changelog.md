@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel count, zero publishers/subscribers), the status response (`200`, channels, counts, and the
   empty/unloaded case), and the broker-less verify verdict (`406` with the "at least 1 … found 0"
   failure detail) plus the blank-body `400`.
+- **A `StreamingBody` response delivered to a real HTTP/2 inbound client is now covered end-to-end.**
+  `NettyResponseWriter.writeStreamingResponse` re-stamps the request's HTTP/2 stream id onto the
+  streaming response head (the field is not part of the copied header multimap) and flushes each chunk
+  as it arrives, but no test drove that path with a real HTTP/2 client — `Http2SseStreamingIntegrationTest`
+  covered only the SSE sibling and explicitly noted the `StreamingBody` case was untested, while the
+  existing streaming-relay tests drive an HTTP/1.1 inbound socket. A new `Http2StreamingBodyIntegrationTest`
+  drives a real prior-knowledge h2c multiplex client through a `streamingResponsesEnabled` forward
+  MockServer to an SSE upstream and asserts on the frames the client receives on its OWN request stream:
+  both events arrive (proving the stream-id stamp — the #2419 class), and the early event's DATA frame
+  arrives promptly as one of at least two separate, in-order DATA frames rather than being buffered into
+  one. Degrading the write path to buffer chunks until stream completion was verified to make the
+  incremental-delivery assertion go red.
 - **The drift `responseTimeThresholdMs` performance-flag gate is now covered by behavioural tests.**
   `DriftAnalyzer.checkPerformanceDrift` raises a `PERFORMANCE` drift record only when an expectation's
   observed p95 latency exceeds the instance-set `responseTimeThresholdMs`, but no test drove responses
