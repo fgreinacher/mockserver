@@ -23,6 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lack the `docker` CLI and reject `--privileged` containers.
 
 ### Added
+- **The dashboard WebSocket frame now has a cross-boundary STRUCTURAL contract test, closing the gap
+  where the server and the UI were tested against separately-authored payloads and could silently
+  drift apart.** A single checked-in contract file (`mockserver-ui/src/__fixtures__/dashboardFrameContract.json`)
+  lists, for every one of the four dashboard panels (log messages, active expectations, received and
+  proxied requests), the fields the UI store/panels actually read and their JSON types. The server side
+  (`DashboardWebSocketFrameContractTest`) drives the REAL `DashboardWebSocketHandler` across all four
+  panels, captures the frame it emits, and asserts every required field is present with the correct type
+  and that the server-assigned key correlations hold (a received-request row and its originating log
+  entry share the same server log id). The UI side (`dashboardFrameContract.test.ts`) feeds the same
+  file's representative frame through the real store `applyMessage` and asserts the resulting items
+  expose those same fields. Because both read the one file, renaming or removing a field name reddens
+  both tests; a server-side field rename reddens the Java test. Unlike the previous byte-equal captured
+  golden (which passed locally but drifted in CI), the check is a per-field SUBSET assertion — immune to
+  non-deterministic emission ordering, to timestamp/UUID/port/hostname values, and to
+  environment-dependent extra fields — and a companion assertion captures the frame twice and proves a
+  value-blind, order-independent structural fingerprint is identical across the two captures.
 - **The REAL built dashboard bundle is now proven to be packaged and served, not just synthetic
   fixtures.** A new integration test starts a live MockServer, GETs `/mockserver/dashboard`, and
   asserts the response is the genuine React application shell (the `id="root"` mount point and the

@@ -1,0 +1,195 @@
+{
+  "_comment": [
+    "SHARED cross-boundary contract for the dashboard WebSocket frame that the server",
+    "DashboardWebSocketHandler emits and the dashboard UI (store + panels) consumes.",
+    "This is the SINGLE source of truth pinning both sides to the same field names/types.",
+    "",
+    "It is validated STRUCTURALLY, never by byte-equality of a captured golden:",
+    "  - Java: DashboardWebSocketFrameContractTest drives the REAL handler, captures the",
+    "    emitted frame, and asserts every field listed here is PRESENT with the right TYPE",
+    "    (a SUBSET check - extra/optional/environment-dependent fields are ignored) and that",
+    "    the server-assigned key correlations hold. It never asserts dynamic values,",
+    "    timestamps, UUIDs or array ordering.",
+    "  - UI: dashboardFrameContract.test.ts feeds `representativeFrame` through the real",
+    "    store `applyMessage` and asserts the resulting store items expose exactly the fields",
+    "    listed here (the same field names/types the panels read).",
+    "",
+    "Because BOTH sides read `panels.*.requiredFields` from this one file, renaming or",
+    "removing a required field name here reddens BOTH tests - that is the cross-boundary",
+    "drift bite. A server-side field rename (without editing this file) reddens the Java",
+    "test alone (its required field is then missing from the real frame).",
+    "",
+    "Determinism: because the Java check is a per-field SUBSET assertion rather than a",
+    "whole-frame equality, it is immune to non-deterministic emission ordering, UUID/",
+    "timestamp/port/hostname values, and environment-dependent extra fields - the exact",
+    "fragility that sank the previous byte-equal-golden attempt."
+  ],
+  "panels": {
+    "logMessages": {
+      "_comment": "Log / Sessions panel. An item is a GROUP when it carries a `group` field (correlation-id roll-up), otherwise a plain entry. LogPanel discriminates with isLogGroup().",
+      "discriminator": "group",
+      "variants": {
+        "entry": {
+          "_comment": "LogPanel renders `message.value` (LogEntryValue) keyed by `message.key`.",
+          "requiredFields": {
+            "key": "string",
+            "value": "object"
+          }
+        },
+        "group": {
+          "_comment": "LogGroup reads group.key, group.group (a nested entry) and group.value (the entry array).",
+          "requiredFields": {
+            "key": "string",
+            "group": "object",
+            "value": "array"
+          }
+        }
+      }
+    },
+    "activeExpectations": {
+      "_comment": "Active Expectations panel. JsonListItem reads item.key and item.value (item.description optional).",
+      "requiredFields": {
+        "key": "string",
+        "value": "object"
+      }
+    },
+    "recordedRequests": {
+      "_comment": "Received Requests panel. JsonListItem reads item.key and item.value.",
+      "requiredFields": {
+        "key": "string",
+        "value": "object"
+      }
+    },
+    "proxiedRequests": {
+      "_comment": "Proxied Requests panel. JsonListItem reads item.key and item.value.",
+      "requiredFields": {
+        "key": "string",
+        "value": "object"
+      }
+    }
+  },
+  "correlations": [
+    {
+      "_comment": "A Received-Requests row's key is '<serverLogId>_request'; the same RECEIVED_REQUEST log entry appears in logMessages with key '<serverLogId>_log'. The shared server log id must tie the request row to its log entry - this proves the server key-assignment stays consistent across panels.",
+      "producerPanel": "recordedRequests",
+      "producerKeySuffix": "_request",
+      "correlatedPanel": "logMessages",
+      "correlatedKeySuffix": "_log"
+    }
+  ],
+  "representativeFrame": {
+    "_comment": "A representative, canonicalised frame with all four panels populated, mirroring the real DashboardWebSocketHandler output shape. Dynamic values are placeholders - only field names/types are contractual. The RECEIVED_REQUEST log entry (key 'srv-req-0001_log') and its recorded request (key 'srv-req-0001_request') share the server log id 'srv-req-0001' to satisfy the correlation above.",
+    "logMessages": [
+      {
+        "key": "srv-req-0001_log",
+        "value": {
+          "timestamp": "2026-07-23 00:00:00.000",
+          "description": "00:00:00.000 RECEIVED_REQUEST   ",
+          "style": {
+            "paddingBottom": "4px",
+            "whiteSpace": "nowrap",
+            "overflow": "auto",
+            "color": "rgb(114,160,193)",
+            "paddingTop": "4px"
+          },
+          "messageParts": [
+            {
+              "key": "srv-req-0001_0msg",
+              "value": "received request"
+            }
+          ]
+        }
+      },
+      {
+        "key": "srv-log-0002_log_group",
+        "group": {
+          "key": "srv-log-0002_log",
+          "value": {
+            "timestamp": "2026-07-23 00:00:00.001",
+            "description": "00:00:00.001 INFO   ",
+            "style": {
+              "style.whiteSpace": "pre-wrap",
+              "paddingBottom": "4px",
+              "whiteSpace": "nowrap",
+              "overflow": "auto",
+              "color": "rgb(59,122,87)",
+              "paddingTop": "4px"
+            }
+          }
+        },
+        "value": [
+          {
+            "key": "srv-log-0002_log",
+            "value": {
+              "timestamp": "2026-07-23 00:00:00.001",
+              "description": "00:00:00.001 INFO   ",
+              "style": {
+                "style.whiteSpace": "pre-wrap",
+                "paddingBottom": "4px",
+                "whiteSpace": "nowrap",
+                "overflow": "auto",
+                "color": "rgb(59,122,87)",
+                "paddingTop": "4px"
+              },
+              "messageParts": [
+                {
+                  "key": "srv-log-0002_0msg",
+                  "value": "correlated message"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "activeExpectations": [
+      {
+        "key": "exp-0003",
+        "description": "exp-0003:   /some/path",
+        "value": {
+          "httpRequest": {
+            "path": "/some/path"
+          },
+          "httpResponse": {
+            "statusCode": 200,
+            "reasonPhrase": "OK",
+            "body": "hello"
+          },
+          "id": "exp-0003",
+          "priority": 0,
+          "timeToLive": {
+            "unlimited": true
+          },
+          "times": {
+            "unlimited": true
+          }
+        }
+      }
+    ],
+    "recordedRequests": [
+      {
+        "description": "  /some/path",
+        "value": {
+          "httpRequest": {
+            "path": "/some/path"
+          }
+        },
+        "key": "srv-req-0001_request"
+      }
+    ],
+    "proxiedRequests": [
+      {
+        "value": {
+          "httpRequest": {
+            "path": "/proxied/path"
+          },
+          "httpResponse": {
+            "statusCode": 200,
+            "reasonPhrase": "OK"
+          }
+        },
+        "key": "srv-fwd-0004_proxied"
+      }
+    ]
+  }
+}
