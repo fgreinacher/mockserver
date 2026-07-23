@@ -815,6 +815,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emit a warning per credential on every apply. Setting a real new credential, and clearing one with an
   empty value, work exactly as before. To replace a credential, type the new value on its own in place
   of the whole mask.
+- **`mockserver-node` no longer deletes the MockServer jar another call is about to launch.** Because
+  `mockServerVersion` can be set per call, starting a server for one version deleted the downloaded jar
+  for every other version from the package directory. Two starts for different versions therefore raced:
+  the second deleted the first's jar, and the first died with `Unable to access jarfile`, or was handed
+  no jar at all and spent its whole startup timeout connecting to a server that was never launched.
+  Alternating between two versions in sequence was no better — each start re-downloaded a ~100MB jar
+  the previous one had just removed. No jar is deleted now, for any version: a re-fetched `SNAPSHOT` is
+  renamed over the old one in one step, so there is no moment at which a concurrent start can find the
+  jar missing.
+- **`mockserver-node` finds its jar in a fixed location instead of searching the working directory.**
+  The jar was located with a recursive wildcard rooted at the working directory, so it could match a
+  copy belonging to something else entirely, could match a path that no longer existed by the time
+  `java` opened it, and found nothing at all when the working directory was not the package's own —
+  in which case `java` was invoked with an undefined jar argument and the failure only surfaced as a
+  connection timeout. The jar is now resolved against known directories, checked for existence, and a
+  missing jar is reported immediately by name. Downloads are written to the package directory (which is
+  where they were already looked for) via a uniquely-named temporary file that is renamed into place only
+  once complete, so a concurrent start can never see a half-written jar. Where the package directory is
+  not writable — a root-owned global installation used by another user, or a read-only container layer —
+  the working directory is used instead, which is one of the locations the jar is looked for anyway.
+- **A failed `mockserver-node` jar download no longer poisons every later start.** A download is now
+  rejected unless it is actually a jar, so a proxy or captive portal answering `200` with an error page
+  fails the start it belongs to instead of being cached as the server jar forever. A connection that
+  goes silent — established, then neither sending nor closing — is failed after a minute rather than
+  leaving the caller waiting on it indefinitely; the timeout is re-armed on every chunk received, so a
+  slow but progressing download is never interrupted, and `MOCKSERVER_DOWNLOAD_IDLE_TIMEOUT_MILLIS` adjusts
+  the limit for a proxy that legitimately pauses for longer than that before it starts sending. A download
+  that fails now stops transferring rather than only reporting the failure, so the rest of a ~100MB body is
+  no longer pulled down and discarded while holding the process open. The temporary file a download is
+  written to is named with random bytes and opened exclusively, so parallel containers sharing one
+  installation cannot write over each other (process ids are not unique between them) and a file or symlink
+  already at that path is left untouched rather than truncated, followed or deleted. Partial files left
+  behind by a download that was killed outright are swept on the next attempt once they are too old to
+  belong to a running one.
+- **The `mockserver-node` jar downloader is now covered by unit tests.** Its behaviour was previously
+  exercised only indirectly, by the tests that start a real server, which cannot tell a jar that was left
+  alone from one that happened to be re-downloaded. The download path now has hermetic tests — no network,
+  each using its own throwaway version — pinning that fetching one version leaves another version's jar
+  untouched, that a response which is not a jar is rejected and never cached, that a failed `SNAPSHOT`
+  re-fetch leaves the previous jar intact, that a file already at the temporary path is neither written
+  through nor removed, that a stalled or failed download stops transferring instead of running on, and
+  that a download which is merely slow — arriving in pieces spread over several times the idle limit —
+  runs to completion rather than being cut off.
+- **The Node client's forward-method-callback test now actually exercises a forward.** It returned the
+  incoming request unchanged, which sends it straight back to MockServer — where the only expectation
+  that could serve it was the single-use forward expectation just consumed, so the response could only
+  ever be a `404`, which the test's own request helper turns into a rejection before its "any status
+  code" assertion is reached. The callback now targets a real upstream started by the test and rewrites
+  the path, so the assertions prove the callback saw the real request, that the request it returned is
+  the one forwarded, and that the upstream's response is relayed back.
 - **The strict forward-validate reject paths are now covered by behavioural tests.** `forwardValidate`
   in `STRICT` mode rejects a request that does not conform to its OpenAPI spec with a `400` (and never
   forwards it upstream) and rejects a non-conformant upstream response with a `502`. Both reject

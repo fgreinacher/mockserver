@@ -9,13 +9,60 @@
 module.exports = (function () {
 
     var mockServer;
+    // KNOWN LIMITATION: logLevel, artifactoryHost, artifactoryPath and
+    // mockServerVersion below are all module-level, and start_mockserver
+    // overwrites each of them permanently from its options rather than treating
+    // them as per-call values. Two concurrent starts in one process therefore
+    // share one version, one repository and one log level - the second can
+    // launch the first's jar - and any later call that omits an option silently
+    // inherits the last explicit one. This is the in-process form of the
+    // cross-process race that resolveJarPath and downloadJar fix; fixing it
+    // means threading all four through as locals, which changes behaviour
+    // callers may be relying on today.
     var logLevel;
     var artifactoryHost = 'repo1.maven.org';
     var artifactoryPath = '/maven2/org/mock-server/mockserver-netty/';
     var mockServerVersion = require('./package.json').version;
     var Q = require('q');
     var http = require('http');
-  
+    var fs = require('fs');
+    var path = require('path');
+
+    /**
+     * Resolve the MockServer jar for a specific version to an absolute path.
+     *
+     * The jar is looked for in a fixed set of known directories rather than with
+     * a recursive wildcard. A recursive glob matches any copy anywhere beneath
+     * the working directory, so it can pick a copy belonging to something else
+     * entirely, and the path it returns is not guaranteed to still exist by the
+     * time java is asked to open it. Every candidate below is checked for
+     * existence, and a missing jar is reported rather than handed to java as an
+     * undefined argument.
+     *
+     * Candidates, in priority order:
+     *   1. this package's own directory - where downloadJar stores the jar
+     *   2. node_modules/mockserver-node below the working directory - an install
+     *      that this module was not itself loaded from
+     *   3. the working directory - where releases before 7.4.1 wrote the jar
+     *
+     * @param {string} jarName file name of the jar for the version being launched
+     * @returns {string} absolute path to an existing jar
+     * @throws {Error} if no candidate directory holds the jar
+     */
+    function resolveJarPath(jarName) {
+      var candidates = [
+        path.join(__dirname, jarName),
+        path.join(process.cwd(), 'node_modules', 'mockserver-node', jarName),
+        path.join(process.cwd(), jarName)
+      ];
+      for (var i = 0; i < candidates.length; i++) {
+        if (fs.existsSync(candidates[i])) {
+          return candidates[i];
+        }
+      }
+      throw new Error('Unable to find ' + jarName + ', looked in: ' + candidates.join(', '));
+    }
+
     function defer() {
       var promise = (global.protractor && protractor.promise.USE_PROMISE_MANAGER !== false)
         ? protractor.promise
@@ -230,7 +277,6 @@ module.exports = (function () {
       require('./downloadJar').downloadJar(mockServerVersion, artifactoryHost, artifactoryPath, logLevel).then(function () {
   
         var spawn = require('child_process').spawn;
-        var glob = require('glob');
         var commandLineOptions = ['-Dfile.encoding=UTF-8'];
         if (options.initializationJsonPath) {
           commandLineOptions.push('-Dmockserver.initializationJsonPath=' + options.initializationJsonPath);
@@ -247,16 +293,10 @@ module.exports = (function () {
           }
         }
         commandLineOptions.push('-jar');
-        // Resolve the jar for the specific version being launched. Globbing with a
-        // wildcard version would match every downloaded version (e.g. when test
-        // fixtures pull a different version into the same directory) and push an
-        // array, which spawn joins with a comma into an invalid "a.jar,b.jar" path.
-        var jarName = 'mockserver-netty-' + mockServerVersion + '-jar-with-dependencies.jar';
-        let items = glob.sync('node_modules/mockserver-node/' + jarName);
-        if (items.length === 0) {
-          items = glob.sync('**/' + jarName);
-        }
-        commandLineOptions.push(items[0]);
+        // Resolve the jar for the specific version being launched - a wildcard
+        // version would match every downloaded version and push an array, which
+        // spawn joins with a comma into an invalid "a.jar,b.jar" path.
+        commandLineOptions.push(resolveJarPath('mockserver-netty-' + mockServerVersion + '-jar-with-dependencies.jar'));
         if (options.serverPort) {
           commandLineOptions.push("-serverPort");
           commandLineOptions.push(options.serverPort);

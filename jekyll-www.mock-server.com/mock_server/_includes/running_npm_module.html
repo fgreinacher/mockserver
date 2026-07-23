@@ -116,6 +116,10 @@ The request log will only be captured in MockServer if the log level is <span cl
 
 <p><strong>Note:</strong> It is also possible to specify a SNAPSHOT version to get the latest unreleased changes.</p>
 
+<p><strong>Note:</strong> The jar is downloaded once and kept inside the installed <span class="inline_code">mockserver-node</span> module itself (i.e. <span class="inline_code">node_modules/mockserver-node</span>), not in the directory you run from, so it is re-used no matter where you start MockServer from and is removed when the module is uninstalled. Jars for different versions are kept side by side, so switching between versions does not re-download them; a SNAPSHOT version is always re-fetched, since its contents change without its version changing. If that directory is not writable — for example a global install owned by root but used by another user, or a read-only container layer — the jar is downloaded into the directory you run from instead.</p>
+
+<p><strong>Note:</strong> A download that receives nothing at all for 60 seconds is abandoned with an error rather than waiting indefinitely. A slow download is never interrupted, only a silent one, but if you are behind a proxy that pauses for longer than this before it starts sending, set the <span class="inline_code">MOCKSERVER_DOWNLOAD_IDLE_TIMEOUT_MILLIS</span> environment variable to a larger number of milliseconds.</p>
+
 <p><span class="inline_code"><strong>options.verbose</strong></span></p>
 
 <p><strong>Type:</strong> Boolean <strong>Default:</strong> false</p>

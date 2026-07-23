@@ -663,19 +663,46 @@ describe('mock server node client (no proxy)', { concurrency: 1 }, function () {
     });
 
     it('should create expectation with forward method callback', { skip: isExternalMode ? 'forward callbacks cannot reach the host from a Docker container' : false }, async function () {
-        await client.mockWithForwardCallback({
-            'method': 'GET', 'path': '/somePath'
-        }, function (request) {
-            return { 'method': request.method, 'path': request.path, 'headers': request.headers };
-        }, 1, 10, { timeUnit: "HOURS", timeToLive: 1 }, "some_id");
+        // The forwarded request needs a real destination. Returning the incoming
+        // request unchanged sends it straight back to MockServer, where the only
+        // expectation that could serve it is this single-use forward expectation
+        // that has just been consumed - so it can only ever produce a 404, which
+        // proves nothing about the callback.
+        var upstream = http.createServer(function (req, res) {
+            res.writeHead(299, { 'x-upstream': 'true' });
+            res.end('upstream received ' + req.method + ' ' + req.url);
+        });
+        await new Promise(function (resolve) { upstream.listen(0, '127.0.0.1', resolve); });
+        var upstreamPort = upstream.address().port;
 
-        var r = await sendRequest("GET", mockServerHost, mockServerPort, "/somePath", "", {'Vary': uuid});
-        assert.ok(r.statusCode);
+        try {
+            await client.mockWithForwardCallback({
+                'method': 'GET', 'path': '/somePath'
+            }, function (request) {
+                // Point the forwarded request at the upstream, and derive its path
+                // from the request handed to the callback, so the assertions below
+                // prove both that the callback saw the real request and that the
+                // request it returned is the one that gets forwarded.
+                var headers = Object.assign({}, request.headers);
+                delete headers.host;
+                delete headers.Host;
+                headers.Host = ['127.0.0.1:' + upstreamPort];
+                return { 'method': request.method, 'path': request.path + '/forwarded', 'headers': headers };
+            }, 1, 10, { timeUnit: "HOURS", timeToLive: 1 }, "some_id");
 
-        await assert.rejects(
-            sendRequest("GET", mockServerHost, mockServerPort, "/somePath", "", {'Vary': uuid}),
-            function (err) { return err === "404 Not Found"; }
-        );
+            var r = await sendRequest("GET", mockServerHost, mockServerPort, "/somePath", "", {'Vary': uuid});
+            assert.equal(r.statusCode, 299);
+            assert.equal(r.headers['x-upstream'], 'true');
+            assert.equal(r.body, 'upstream received GET /somePath/forwarded');
+
+            // then - matching request, but no times remaining
+            await assert.rejects(
+                sendRequest("GET", mockServerHost, mockServerPort, "/somePath", "", {'Vary': uuid}),
+                function (err) { return err === "404 Not Found"; }
+            );
+        } finally {
+            await new Promise(function (resolve) { upstream.close(resolve); });
+        }
     });
 
     it('should create expectation with forward and response method callback', { skip: isExternalMode ? 'forward-and-response callbacks cannot reach the host from a Docker container' : false }, async function () {

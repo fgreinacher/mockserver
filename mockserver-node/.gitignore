@@ -30,6 +30,8 @@ test.csv
 # Runtime artifacts #
 #####################
 keystore.jks
+# partially downloaded jars - "*.jar" does not match "....jar.<hex>.part"
+*.part
 
 # OS generated files #
 ######################
