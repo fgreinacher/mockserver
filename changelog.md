@@ -170,6 +170,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lack the `docker` CLI and reject `--privileged` containers.
 
 ### Added
+- **The mock-drift detection pipeline now has an end-to-end assembly test spanning the live forward
+  through to the `GET /mockserver/drift` retrieval endpoint.** The individual pieces (`DriftAnalyzer`,
+  `DriftStore`, and the `driftDetectionEnabled` gate in `HttpActionHandler`) were unit-tested, but no
+  test drove the assembled path the Drift dashboard actually depends on: a live forward whose upstream
+  response differs from a co-registered response stub → asynchronous drift analysis → the process-wide
+  `DriftStore` → the real control-plane `GET /mockserver/drift` handler that reads it back. A new
+  `DriftEndToEndAssemblyTest` forwards a request through the real `HttpActionHandler` (upstream 500 vs a
+  stub's 200, drift analysis forced to run synchronously), then serves `GET /mockserver/drift` through a
+  real `HttpState` and asserts the returned JSON contains the recorded `STATUS` drift (both unfiltered
+  and via the `expectationId` query filter the dashboard uses); a companion case proves a non-drifting
+  forward leaves the endpoint empty. Registered in the sequential Surefire phase because it mutates the
+  singleton `DriftStore` and `PercentileTracker`.
 - **The WAR servlet decoder's RFC 6265 cookie surrounding-quote stripping now has direct coverage.**
   `HttpServletRequestToMockServerHttpRequestDecoderTest` gains a test that feeds a
   `jakarta.servlet.http.Cookie` whose value carries surrounding double quotes (`"quotedValue"`, as

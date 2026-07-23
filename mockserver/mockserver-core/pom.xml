@@ -815,6 +815,8 @@
                         <exclude>**/DriftPerformanceThresholdTest.java</exclude>
                         <!-- Mutates the process-wide DriftStore singleton -->
                         <exclude>**/HttpActionHandlerDriftDetectionTest.java</exclude>
+                        <!-- Mutates the process-wide DriftStore + PercentileTracker singletons -->
+                        <exclude>**/DriftEndToEndAssemblyTest.java</exclude>
                         <!-- Mutate global ConfigurationProperties / singleton registries / Metrics (detected by GlobalStateMutationGuardTest) -->
                         <exclude>**/MaxLlmConversationBodySizeTest.java</exclude>
                         <exclude>**/SlowRequestConfigurationTest.java</exclude>
@@ -976,6 +978,7 @@
                                 <include>**/DriftAlertNotifierTest.java</include>
                                 <include>**/DriftPerformanceThresholdTest.java</include>
                                 <include>**/HttpActionHandlerDriftDetectionTest.java</include>
+                                <include>**/DriftEndToEndAssemblyTest.java</include>
                                 <include>**/MaxLlmConversationBodySizeTest.java</include>
                                 <include>**/SlowRequestConfigurationTest.java</include>
                                 <include>**/HttpActionHandlerLlmCostBudgetTest.java</include>
