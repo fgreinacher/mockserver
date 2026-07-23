@@ -753,7 +753,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.metricsEnabled(metricsEnabled);
         configuration.dashboardAnalyticsEnabled(dashboardAnalyticsEnabled);
         configuration.dashboardAnalyticsEndpoint(dashboardAnalyticsEndpoint);
-        configuration.dashboardAnalyticsKey(dashboardAnalyticsKey);
+        configuration.dashboardAnalyticsKey(maskFreeOrUnset(dashboardAnalyticsKey));
         configuration.dashboardAnalyticsDistribution(dashboardAnalyticsDistribution);
         configuration.chaosAutoHaltEnabled(chaosAutoHaltEnabled);
         configuration.chaosAutoHaltErrorThreshold(chaosAutoHaltErrorThreshold);
@@ -858,17 +858,17 @@ public class ConfigurationDTO implements DTO<Configuration> {
             configuration.forwardSocksProxy(parseInetSocketAddress(forwardSocksProxy));
         }
         configuration.forwardProxyAuthenticationUsername(forwardProxyAuthenticationUsername);
-        configuration.forwardProxyAuthenticationPassword(forwardProxyAuthenticationPassword);
+        configuration.forwardProxyAuthenticationPassword(maskFreeOrUnset(forwardProxyAuthenticationPassword));
         configuration.proxyAuthenticationRealm(proxyAuthenticationRealm);
         configuration.proxyAuthenticationUsername(proxyAuthenticationUsername);
-        configuration.proxyAuthenticationPassword(proxyAuthenticationPassword);
+        configuration.proxyAuthenticationPassword(maskFreeOrUnset(proxyAuthenticationPassword));
         configuration.dataPlaneAuthenticationRequired(dataPlaneAuthenticationRequired);
         configuration.dataPlaneBasicAuthenticationUsername(dataPlaneBasicAuthenticationUsername);
-        configuration.dataPlaneBasicAuthenticationPassword(dataPlaneBasicAuthenticationPassword);
+        configuration.dataPlaneBasicAuthenticationPassword(maskFreeOrUnset(dataPlaneBasicAuthenticationPassword));
         configuration.dataPlaneBasicAuthenticationRealm(dataPlaneBasicAuthenticationRealm);
-        configuration.dataPlaneBearerAuthenticationToken(dataPlaneBearerAuthenticationToken);
-        configuration.dataPlaneApiKeyAuthenticationHeader(dataPlaneApiKeyAuthenticationHeader);
-        configuration.dataPlaneApiKeyAuthenticationValue(dataPlaneApiKeyAuthenticationValue);
+        configuration.dataPlaneBearerAuthenticationToken(maskFreeOrUnset(dataPlaneBearerAuthenticationToken));
+        configuration.dataPlaneApiKeyAuthenticationHeader(maskFreeOrUnset(dataPlaneApiKeyAuthenticationHeader));
+        configuration.dataPlaneApiKeyAuthenticationValue(maskFreeOrUnset(dataPlaneApiKeyAuthenticationValue));
         configuration.noProxyHosts(noProxyHosts);
         configuration.proxyRemoteHost(proxyRemoteHost);
         configuration.proxyRemotePort(proxyRemotePort);
@@ -882,7 +882,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
         configuration.controlPlaneTLSMutualAuthenticationRequired(controlPlaneTLSMutualAuthenticationRequired);
         configuration.controlPlaneTLSMutualAuthenticationCAChain(controlPlaneTLSMutualAuthenticationCAChain);
-        configuration.controlPlanePrivateKeyPath(controlPlanePrivateKeyPath);
+        configuration.controlPlanePrivateKeyPath(maskFreeOrUnset(controlPlanePrivateKeyPath));
         configuration.controlPlaneX509CertificatePath(controlPlaneX509CertificatePath);
         configuration.controlPlaneJWTAuthenticationRequired(controlPlaneJWTAuthenticationRequired);
         configuration.controlPlaneJWTAuthenticationJWKSource(controlPlaneJWTAuthenticationJWKSource);
@@ -904,9 +904,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (sslSubjectAlternativeNameIps != null) {
             configuration.sslSubjectAlternativeNameIps(sslSubjectAlternativeNameIps);
         }
-        configuration.certificateAuthorityPrivateKey(certificateAuthorityPrivateKey);
+        configuration.certificateAuthorityPrivateKey(maskFreeOrUnset(certificateAuthorityPrivateKey));
         configuration.certificateAuthorityCertificate(certificateAuthorityCertificate);
-        configuration.privateKeyPath(privateKeyPath);
+        configuration.privateKeyPath(maskFreeOrUnset(privateKeyPath));
         configuration.x509CertificatePath(x509CertificatePath);
         configuration.tlsMutualAuthenticationRequired(tlsMutualAuthenticationRequired);
         configuration.tlsMutualAuthenticationCertificateChain(tlsMutualAuthenticationCertificateChain);
@@ -915,7 +915,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             configuration.forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager.valueOf(forwardProxyTLSX509CertificatesTrustManagerType));
         }
         configuration.forwardProxyTLSCustomTrustX509Certificates(forwardProxyTLSCustomTrustX509Certificates);
-        configuration.forwardProxyPrivateKey(forwardProxyPrivateKey);
+        configuration.forwardProxyPrivateKey(maskFreeOrUnset(forwardProxyPrivateKey));
         configuration.forwardProxyCertificateChain(forwardProxyCertificateChain);
         configuration.forwardProxyClientCertificatesByHost(forwardProxyClientCertificatesByHost);
 
@@ -1021,10 +1021,10 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.blobStoreRegion(blobStoreRegion);
         configuration.blobStoreEndpoint(blobStoreEndpoint);
         configuration.blobStoreKeyPrefix(blobStoreKeyPrefix);
-        configuration.blobStoreAccessKeyId(blobStoreAccessKeyId);
-        configuration.blobStoreSecretAccessKey(blobStoreSecretAccessKey);
+        configuration.blobStoreAccessKeyId(maskFreeOrUnset(blobStoreAccessKeyId));
+        configuration.blobStoreSecretAccessKey(maskFreeOrUnset(blobStoreSecretAccessKey));
         configuration.blobStoreContainer(blobStoreContainer);
-        configuration.blobStoreConnectionString(blobStoreConnectionString);
+        configuration.blobStoreConnectionString(maskFreeOrUnset(blobStoreConnectionString));
         configuration.blobStoreProjectId(blobStoreProjectId);
         configuration.blobStoreRestoreTimeoutSeconds(blobStoreRestoreTimeoutSeconds);
         if (clusterEnabled != null) {
@@ -1039,7 +1039,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             configuration.clusterVerifyFanIn(clusterVerifyFanIn);
         }
         configuration.clusterVerifyFanInPeers(clusterVerifyFanInPeers);
-        configuration.clusterFanInPeerAuthToken(clusterFanInPeerAuthToken);
+        configuration.clusterFanInPeerAuthToken(maskFreeOrUnset(clusterFanInPeerAuthToken));
         configuration.controlPlaneOidcAuthenticationRequired(controlPlaneOidcAuthenticationRequired);
         configuration.controlPlaneOidcIssuer(controlPlaneOidcIssuer);
         configuration.controlPlaneOidcJwksUri(controlPlaneOidcJwksUri);
@@ -1107,6 +1107,68 @@ public class ConfigurationDTO implements DTO<Configuration> {
         return configuration;
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // THE WRITE-PATH MASK GUARD — every credential-SHAPED property, whatever it does on read
+    //
+    // What a property does on READ has three shapes, and it turns out to be irrelevant to the write
+    // path — which is exactly the assumption that produced this bug twice:
+    //
+    //   masked   - the getter returns the mask (llmApiKey and the two prometheus credentials, above)
+    //   omitted  - the getter is @JsonIgnore-d, so GET /mockserver/configuration never names it
+    //              (proxyAuthenticationPassword, dataPlaneBearerAuthenticationToken, the blob-store
+    //              credentials, clusterFanInPeerAuthToken, the private keys, ...)
+    //   readable - deliberately returned in clear because the VALUE is not a secret even though the
+    //              NAME is credential-shaped (privateKeyPath and controlPlanePrivateKeyPath are file
+    //              paths, dataPlaneApiKeyAuthenticationHeader is a header NAME, dashboardAnalyticsKey
+    //              is an ingest-only key the browser dashboard must receive)
+    //
+    // Omission and readability were both read as "the mask can never arrive here", so those write
+    // paths carried no check. Neither holds. ConfigurationProperties.redactSensitiveValue masks every
+    // credential-SHAPED NAME, so GET /mockserver/config, --print-config and the dashboard's Server
+    // Info tab render ALL of them as "***REDACTED***" regardless of what /mockserver/configuration
+    // does. An operator who reads "mockserver.dataPlaneBearerAuthenticationToken=***REDACTED***" from
+    // one of those surfaces, edits the settings around it and PUTs the result supplies the literal
+    // mask. Written verbatim it destroys the working credential, breaks every call authenticated with
+    // it, logs nothing, and the PUT answers 200 OK.
+    //
+    // So the write paths refuse a value carrying the mask for the whole credential-shaped surface:
+    //   applyTo     - routed through ConfigurationProperties.restoreRedactedValue(...), which refuses
+    //                 the value and LOGS why (EmbeddedCredentialRedaction.dropUnmergeableValue), so the
+    //                 credential in force is left untouched and the operator is told.
+    //   buildObject - maskFreeOrUnset(...) leaves the field UNSET, so the static store / property file
+    //                 / environment variable still resolves it; there is nothing held to restore from.
+    //                 It does not log — see its javadoc.
+    //
+    // Containment, not equality: "***REDACTED***-my-new-key" reads as an operator typing a new value
+    // over the mask, and welding the two together persists neither credential.
+    //
+    // Refusing BEFORE the setter also matters for the properties whose setter validates (the two
+    // private-key paths call fileExists): they used to reject the mask by THROWING from deep inside
+    // applyTo, abandoning it half-applied over a live Configuration and turning the PUT into a 400
+    // after some neighbouring edits had already been committed.
+    //
+    // ConfigurationDTOCredentialMaskingTest section 4 enumerates this surface reflectively and holds
+    // the invariant for all of it.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * The value to store on a FRESH configuration for a credential-shaped property: {@code null}
+     * whenever the incoming value carries the redaction mask anywhere inside it, leaving the field unset.
+     *
+     * <p>{@code buildObject()} has no previously-held configuration to restore a redacted value from, so
+     * unset is the only safe outcome: storing the mask poisons the credential, and storing {@code ""}
+     * pins an empty value on the instance whose getter then prefers it over
+     * {@link ConfigurationProperties} — silently shadowing a property-file or environment value.
+     *
+     * <p>Unlike the {@code applyTo} path this does <strong>not</strong> log, matching the rule the
+     * value-embedded credentials already apply in {@code buildObject()}. There is no held value being
+     * discarded here and no live configuration being left inconsistent — the caller is constructing a
+     * fresh object — so there is no "your PUT wrote nothing" to warn about.
+     */
+    private static String maskFreeOrUnset(String value) {
+        return ConfigurationProperties.containsRedactionMask(value) ? null : value;
+    }
+
     /**
      * True when an incoming credential value CARRIES the redaction mask emitted by a previous
      * {@code GET /mockserver/configuration}, so it is not wholly a real secret.
@@ -1162,7 +1224,10 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.dashboardAnalyticsEndpoint(dashboardAnalyticsEndpoint);
         }
         if (dashboardAnalyticsKey != null) {
-            target.dashboardAnalyticsKey(dashboardAnalyticsKey);
+            String restored = ConfigurationProperties.restoreRedactedValue("dashboardAnalyticsKey", dashboardAnalyticsKey, target.dashboardAnalyticsKey());
+            if (restored != null) {
+                target.dashboardAnalyticsKey(restored);
+            }
         }
         if (dashboardAnalyticsDistribution != null) {
             target.dashboardAnalyticsDistribution(dashboardAnalyticsDistribution);
@@ -1404,8 +1469,16 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (forwardProxyAuthenticationUsername != null) {
             target.forwardProxyAuthenticationUsername(forwardProxyAuthenticationUsername);
         }
+        // credential-shaped property: refuse a value carrying the redaction mask — see THE WRITE-PATH
+        // MASK GUARD above maskFreeOrUnset(...). The held value passed here is inert for every one of
+        // these (none is in restoreRedactedValue's header-list or JSON-document sets, so it is never
+        // read); it is passed anyway so every credential goes through the one shared entry point, and
+        // so a property that later gains an embedded shape merges instead of silently refusing.
         if (forwardProxyAuthenticationPassword != null) {
-            target.forwardProxyAuthenticationPassword(forwardProxyAuthenticationPassword);
+            String restored = ConfigurationProperties.restoreRedactedValue("forwardProxyAuthenticationPassword", forwardProxyAuthenticationPassword, target.forwardProxyAuthenticationPassword());
+            if (restored != null) {
+                target.forwardProxyAuthenticationPassword(restored);
+            }
         }
         if (proxyAuthenticationRealm != null) {
             target.proxyAuthenticationRealm(proxyAuthenticationRealm);
@@ -1414,7 +1487,10 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.proxyAuthenticationUsername(proxyAuthenticationUsername);
         }
         if (proxyAuthenticationPassword != null) {
-            target.proxyAuthenticationPassword(proxyAuthenticationPassword);
+            String restored = ConfigurationProperties.restoreRedactedValue("proxyAuthenticationPassword", proxyAuthenticationPassword, target.proxyAuthenticationPassword());
+            if (restored != null) {
+                target.proxyAuthenticationPassword(restored);
+            }
         }
         if (dataPlaneAuthenticationRequired != null) {
             target.dataPlaneAuthenticationRequired(dataPlaneAuthenticationRequired);
@@ -1423,19 +1499,31 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.dataPlaneBasicAuthenticationUsername(dataPlaneBasicAuthenticationUsername);
         }
         if (dataPlaneBasicAuthenticationPassword != null) {
-            target.dataPlaneBasicAuthenticationPassword(dataPlaneBasicAuthenticationPassword);
+            String restored = ConfigurationProperties.restoreRedactedValue("dataPlaneBasicAuthenticationPassword", dataPlaneBasicAuthenticationPassword, target.dataPlaneBasicAuthenticationPassword());
+            if (restored != null) {
+                target.dataPlaneBasicAuthenticationPassword(restored);
+            }
         }
         if (dataPlaneBasicAuthenticationRealm != null) {
             target.dataPlaneBasicAuthenticationRealm(dataPlaneBasicAuthenticationRealm);
         }
         if (dataPlaneBearerAuthenticationToken != null) {
-            target.dataPlaneBearerAuthenticationToken(dataPlaneBearerAuthenticationToken);
+            String restored = ConfigurationProperties.restoreRedactedValue("dataPlaneBearerAuthenticationToken", dataPlaneBearerAuthenticationToken, target.dataPlaneBearerAuthenticationToken());
+            if (restored != null) {
+                target.dataPlaneBearerAuthenticationToken(restored);
+            }
         }
         if (dataPlaneApiKeyAuthenticationHeader != null) {
-            target.dataPlaneApiKeyAuthenticationHeader(dataPlaneApiKeyAuthenticationHeader);
+            String restored = ConfigurationProperties.restoreRedactedValue("dataPlaneApiKeyAuthenticationHeader", dataPlaneApiKeyAuthenticationHeader, target.dataPlaneApiKeyAuthenticationHeader());
+            if (restored != null) {
+                target.dataPlaneApiKeyAuthenticationHeader(restored);
+            }
         }
         if (dataPlaneApiKeyAuthenticationValue != null) {
-            target.dataPlaneApiKeyAuthenticationValue(dataPlaneApiKeyAuthenticationValue);
+            String restored = ConfigurationProperties.restoreRedactedValue("dataPlaneApiKeyAuthenticationValue", dataPlaneApiKeyAuthenticationValue, target.dataPlaneApiKeyAuthenticationValue());
+            if (restored != null) {
+                target.dataPlaneApiKeyAuthenticationValue(restored);
+            }
         }
         if (noProxyHosts != null) {
             target.noProxyHosts(noProxyHosts);
@@ -1462,7 +1550,10 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.controlPlaneTLSMutualAuthenticationCAChain(controlPlaneTLSMutualAuthenticationCAChain);
         }
         if (controlPlanePrivateKeyPath != null) {
-            target.controlPlanePrivateKeyPath(controlPlanePrivateKeyPath);
+            String restored = ConfigurationProperties.restoreRedactedValue("controlPlanePrivateKeyPath", controlPlanePrivateKeyPath, target.controlPlanePrivateKeyPath());
+            if (restored != null) {
+                target.controlPlanePrivateKeyPath(restored);
+            }
         }
         if (controlPlaneX509CertificatePath != null) {
             target.controlPlaneX509CertificatePath(controlPlaneX509CertificatePath);
@@ -1513,13 +1604,19 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.sslSubjectAlternativeNameIps(sslSubjectAlternativeNameIps);
         }
         if (certificateAuthorityPrivateKey != null) {
-            target.certificateAuthorityPrivateKey(certificateAuthorityPrivateKey);
+            String restored = ConfigurationProperties.restoreRedactedValue("certificateAuthorityPrivateKey", certificateAuthorityPrivateKey, target.certificateAuthorityPrivateKey());
+            if (restored != null) {
+                target.certificateAuthorityPrivateKey(restored);
+            }
         }
         if (certificateAuthorityCertificate != null) {
             target.certificateAuthorityCertificate(certificateAuthorityCertificate);
         }
         if (privateKeyPath != null) {
-            target.privateKeyPath(privateKeyPath);
+            String restored = ConfigurationProperties.restoreRedactedValue("privateKeyPath", privateKeyPath, target.privateKeyPath());
+            if (restored != null) {
+                target.privateKeyPath(restored);
+            }
         }
         if (x509CertificatePath != null) {
             target.x509CertificatePath(x509CertificatePath);
@@ -1537,7 +1634,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.forwardProxyTLSCustomTrustX509Certificates(forwardProxyTLSCustomTrustX509Certificates);
         }
         if (forwardProxyPrivateKey != null) {
-            target.forwardProxyPrivateKey(forwardProxyPrivateKey);
+            // the setter also rejects a non-existent file, so the mask was already refused here — but by
+            // THROWING, which abandons applyTo half-applied. Refuse it first, and consistently.
+            String restored = ConfigurationProperties.restoreRedactedValue("forwardProxyPrivateKey", forwardProxyPrivateKey, target.forwardProxyPrivateKey());
+            if (restored != null) {
+                target.forwardProxyPrivateKey(restored);
+            }
         }
         if (forwardProxyCertificateChain != null) {
             target.forwardProxyCertificateChain(forwardProxyCertificateChain);
@@ -1852,16 +1954,25 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.blobStoreKeyPrefix(blobStoreKeyPrefix);
         }
         if (blobStoreAccessKeyId != null) {
-            target.blobStoreAccessKeyId(blobStoreAccessKeyId);
+            String restored = ConfigurationProperties.restoreRedactedValue("blobStoreAccessKeyId", blobStoreAccessKeyId, target.blobStoreAccessKeyId());
+            if (restored != null) {
+                target.blobStoreAccessKeyId(restored);
+            }
         }
         if (blobStoreSecretAccessKey != null) {
-            target.blobStoreSecretAccessKey(blobStoreSecretAccessKey);
+            String restored = ConfigurationProperties.restoreRedactedValue("blobStoreSecretAccessKey", blobStoreSecretAccessKey, target.blobStoreSecretAccessKey());
+            if (restored != null) {
+                target.blobStoreSecretAccessKey(restored);
+            }
         }
         if (blobStoreContainer != null) {
             target.blobStoreContainer(blobStoreContainer);
         }
         if (blobStoreConnectionString != null) {
-            target.blobStoreConnectionString(blobStoreConnectionString);
+            String restored = ConfigurationProperties.restoreRedactedValue("blobStoreConnectionString", blobStoreConnectionString, target.blobStoreConnectionString());
+            if (restored != null) {
+                target.blobStoreConnectionString(restored);
+            }
         }
         if (blobStoreProjectId != null) {
             target.blobStoreProjectId(blobStoreProjectId);
@@ -1888,7 +1999,10 @@ public class ConfigurationDTO implements DTO<Configuration> {
             target.clusterVerifyFanInPeers(clusterVerifyFanInPeers);
         }
         if (clusterFanInPeerAuthToken != null) {
-            target.clusterFanInPeerAuthToken(clusterFanInPeerAuthToken);
+            String restored = ConfigurationProperties.restoreRedactedValue("clusterFanInPeerAuthToken", clusterFanInPeerAuthToken, target.clusterFanInPeerAuthToken());
+            if (restored != null) {
+                target.clusterFanInPeerAuthToken(restored);
+            }
         }
         if (controlPlaneOidcAuthenticationRequired != null) {
             target.controlPlaneOidcAuthenticationRequired(controlPlaneOidcAuthenticationRequired);

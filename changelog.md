@@ -832,6 +832,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code path a JSON initialization file uses, making cloud persistence symmetric: what is written on
   change is restored on restart. The filesystem store is unchanged — it keeps reloading through
   `initializationJsonPath` exactly as before, with no double loading.
+- **Pasting a redacted credential back into `PUT /mockserver/configuration` no longer destroys the
+  credential it stands for.** `GET /mockserver/configuration` leaves credentials such as
+  `proxyAuthenticationPassword`, `dataPlaneBearerAuthenticationToken`, `blobStoreSecretAccessKey` and
+  `clusterFanInPeerAuthToken` out of its response entirely, and returns others (such as
+  `privateKeyPath`) in clear, so a round trip of *that* endpoint was already safe. The diagnostic views
+  are different: `GET /mockserver/config`, `--print-config` and the dashboard's Server Info tab
+  show every credential-named property as `***REDACTED***`. An operator who read one of those, edited a
+  neighbouring setting and sent the result back stored the literal `***REDACTED***` as the credential —
+  the working secret was gone, every call authenticated with it started failing, nothing was logged,
+  and the `PUT` answered `200 OK`. A value carrying the mask is now refused on both write paths, and on
+  the one that merges into a running server the refusal is logged with the property named — so a `PUT`
+  that wrote nothing no longer answers `200 OK` in silence. The credential in force is left untouched,
+  and a freshly built configuration leaves the property unset so a property file or environment
+  variable can still supply it. Only a value carrying the mask is affected — supplying a real new
+  credential, and clearing one with an empty value, behave exactly as before. Applies to fifteen
+  properties: the proxy and data-plane credentials, the certificate-authority and forward-proxy private
+  keys, the server and control-plane TLS private-key paths, the blob-store access key, secret key and
+  connection string, the cluster fan-in token, the API-key header name and the dashboard analytics key.
+- **A credential-named property that is never masked by `GET /mockserver/configuration` now warns when
+  a mask is sent for it.** Refusing the pasted mask silently is indistinguishable, from the operator's
+  side, from having applied it: the `PUT` answers `200 OK` either way. Silence is kept only for the
+  three properties that endpoint really does return as `***REDACTED***`, where sending the mask back
+  unchanged is the normal round trip and warning on it would log once per credential on every
+  config-as-code apply. For every other credential-named property the mask can only have been copied
+  out of a diagnostic view or typed by hand, so it is reported.
+- **A rejected credential no longer leaves `PUT /mockserver/configuration` half-applied.**
+  `forwardProxyPrivateKey` and `controlPlanePrivateKeyPath` are validated as readable files when set,
+  so a value they rejected threw from the middle of applying the configuration — after earlier settings
+  in the same body had already been written to the running server. The `PUT` then failed with a `400`
+  over a partly-changed configuration. Such a value is now refused before it reaches the setter, so the
+  rest of the body still applies and the response no longer contradicts what was stored.
 - **The editors no longer mark a valid expectation file as invalid when a header or cookie name uses
   the object form.** MockServer writes a header, query-parameter or cookie name as
   `{"name": {"not": false, "value": "!foo"}}` when the name itself begins with `!` or `?`, so that a

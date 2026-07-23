@@ -174,6 +174,35 @@ Both shapes go through the same door. A **whole-value** credential matches neith
 
 Masking lives in `ConfigurationDTO`: the JSON getters return the mask while `buildObject()`/`applyTo()` read the private fields, so the wire is clean without breaking the write path. `@JsonIgnore`-d `get…RawValue()` accessors expose the real value in-process only. `ConfigurationDTOCredentialMaskingTest` asserts non-leakage, the round-trip guard, and that the write path still works.
 
+### The write-path mask guard
+
+Whether a property is readable, masked or omitted on the way **out** says nothing about what may arrive on the way **in**. Assuming otherwise produced the same defect twice, so the write-path rule is now applied to the whole credential-shaped surface: **every** `ConfigurationDTO` property whose name is credential-shaped under `isSensitivePropertyName(...)` refuses a value carrying the redaction mask.
+
+Three read shapes, one write rule:
+
+| Read shape | Properties | Why the mask still reaches the write path |
+|---|---|---|
+| **masked** — getter returns the mask | `llmApiKey`, `prometheusRemoteWriteBearerToken`, `prometheusRemoteWriteBasicAuthPassword` | the mask is exactly what `GET /mockserver/configuration` hands back |
+| **omitted** — `@JsonIgnore`-d getter | `proxyAuthenticationPassword`, `forwardProxyAuthenticationPassword`, `dataPlaneBasicAuthenticationPassword`, `dataPlaneBearerAuthenticationToken`, `dataPlaneApiKeyAuthenticationValue`, `certificateAuthorityPrivateKey`, `forwardProxyPrivateKey`, `blobStoreAccessKeyId`, `blobStoreSecretAccessKey`, `blobStoreConnectionString`, `clusterFanInPeerAuthToken` | absent from a `/mockserver/configuration` round trip, but the diagnostic views still print the mask |
+| **readable** — returned in clear, because the value is not a secret | `privateKeyPath`, `controlPlanePrivateKeyPath`, `dataPlaneApiKeyAuthenticationHeader`, `dashboardAnalyticsKey` (see `READABLE_DESPITE_CREDENTIAL_SHAPED_NAME`) | same — being readable on one endpoint does not stop the mask arriving from another |
+
+The reachable path is not `/mockserver/configuration` at all. `ConfigurationProperties.redactSensitiveValue(...)` masks every credential-*shaped* **name**, so `GET /mockserver/config`, `--print-config` and the dashboard's Server Info tab render all of the above as `***REDACTED***`. An operator who reads one of those, edits a neighbouring setting and `PUT`s the result supplies the literal mask; storing it destroyed the working credential, broke every call authenticated with it, logged nothing, and answered `200 OK`.
+
+| Path | Rule |
+|---|---|
+| `applyTo` | routed through `restoreRedactedValue(...)`, which refuses a value containing the mask and **logs** why (`dropUnmergeableValue`), leaving the credential in force untouched. The bare mask warns too for these properties — see *When the refusal is silent* below |
+| `buildObject` | `maskFreeOrUnset(...)` leaves the field **unset** — there is nothing held to restore from, and storing `""` would pin an empty value that shadows the property file / environment variable behind it. It does **not** log: no held value is being discarded and no live configuration left inconsistent, matching the rule the value-embedded credentials already apply here |
+
+Refusal is by *containment*, not equality: `***REDACTED***-my-new-key` reads as a new credential typed over the mask, and welding the two together persists neither. Every other value is untouched — a real credential is applied, and `""` still clears, over the JSON wire path as well as in process (`""` binds as `""`, reaches `applyTo` and clears; there is no empty-string-to-null coercion on `String` fields).
+
+Refusing **before** the setter also matters for the properties that validate on write. `forwardProxyPrivateKey` and `controlPlanePrivateKeyPath` call `fileExists(...)`, so the mask used to be rejected by *throwing* from the middle of `applyTo` — after neighbouring edits in the same body had already been committed to the live `Configuration`, which `HttpRequestHandler` then turns into a `400` over half-mutated state. The whole body is all-or-nothing again.
+
+**When the refusal is silent.** Refusing the mask is only half the contract; the other half is whether the operator is told. `restoreRedactedValue` stays silent for the **untouched round trip** — the bare mask sent straight back — because a config-as-code tool that `GET`s, edits one unrelated property and `PUT`s the whole blob would otherwise log a security-flavoured warning per credential on every apply, and anyone alerting on `WARN` would read it as a credential having been lost.
+
+That silence is keyed on `WHOLE_VALUE_MASKED_CREDENTIAL_PROPERTIES` — the three properties `GET /mockserver/configuration` actually returns as the bare mask — and **not** on `isSensitivePropertyName`. The wider predicate matches every credential-shaped name, including all fifteen above, none of which has a round trip that can produce the bare mask: the only surfaces that print it for them are the diagnostic views, which are not `PUT` bodies. Silencing those silenced the exact operator mistake this section exists for — credential destroyed, nothing logged, `200 OK`. `ConfigurationDTOCredentialMaskingTest` keeps the set in step with the DTO by deriving it from the getters that really do return the mask, and asserts the warning end to end over `applyTo`.
+
+`ConfigurationDTOCredentialMaskingTest` section 4 enumerates this surface **reflectively** — every credential-shaped `String` property, with no exclusions — rather than from a list, so a credential-shaped property added later is covered the day it is added. It also asserts, through `effectiveConfiguration()` rather than by re-applying its own filter, that the diagnostic surfaces really do render each one as the mask, so the round trip it guards is one that can actually occur; a property whose system-property key diverged from its DTO property name would fail there rather than silently drop out of the guard. Both non-vacuity floors in that class are **ratchets** — raise them when a property is added, never lower them.
+
 **Reachability ≠ enforcement.** Wiring a property onto `Configuration` makes it *settable*; the enforcement sites for these 27 still read the static store, so they are recorded in `ConfigurationCallSiteGuardTest.KNOWN_INSTANCE_UNREACHABLE_DEFECTS` until each site is changed to consult the instance. That map is a ratchet: fixing a site makes its entry stale and fails the build until the line is deleted.
 
 ### `redactSecretsInRecordedExpectations`

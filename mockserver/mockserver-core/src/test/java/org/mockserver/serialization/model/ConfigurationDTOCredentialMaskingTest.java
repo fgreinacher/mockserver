@@ -1,10 +1,12 @@
 package org.mockserver.serialization.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.Test;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
+import org.mockserver.configuration.ConfigurationProperties.ResolvedProperty;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.serialization.ConfigurationSerializer;
 import org.mockserver.serialization.ObjectMapperFactory;
@@ -24,7 +26,7 @@ import java.util.TreeSet;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
-import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
@@ -33,6 +35,9 @@ import static org.mockserver.configuration.Configuration.configuration;
 // text, which GlobalStateMutationGuardTest reads as a global-state MUTATION — this predicate
 // is a pure read. Same import style, for the same reason, as ConfigurationPropertiesRedactionTest.
 import static org.mockserver.configuration.ConfigurationProperties.isSensitivePropertyName;
+import static org.mockserver.configuration.ConfigurationProperties.effectiveConfiguration;
+import static org.mockserver.configuration.ConfigurationProperties.isWholeValueMaskedOnRead;
+import static org.mockserver.configuration.ConfigurationProperties.redactSensitiveValue;
 
 /**
  * Security guard for WRITE-ONLY credential configuration properties.
@@ -163,10 +168,14 @@ public class ConfigurationDTOCredentialMaskingTest {
     public void shouldNotDiscloseAnyCredentialNamedPropertyOverTheConfigurationControlPlane() throws Exception {
         List<String> properties = credentialShapedStringProperties();
 
-        // sanity: the guard must actually be enumerating the credential surface, so a regression that
-        // stops discovering getters (a rename, a return-type change) cannot make it pass vacuously
-        assertThat("reflection should discover ConfigurationDTO's credential-shaped property surface",
-            properties.size(), greaterThan(10));
+        // A RATCHET, not a smoke test: a regression that stops discovering getters (a rename, a
+        // return-type change) must not make this pass vacuously, and the realistic regression drops a
+        // FEW properties rather than all of them. Raise this when a credential-shaped property is
+        // added; NEVER lower it to make a failure go away.
+        assertThat("reflection discovered fewer credential-shaped ConfigurationDTO properties than it "
+                + "did when this guard was written — a getter was renamed, retyped or removed, and its "
+                + "disclosure is now unguarded",
+            properties.size(), greaterThanOrEqualTo(14));
 
         Configuration configuration = configuration();
         List<String> unsettable = new ArrayList<>();
@@ -345,7 +354,17 @@ public class ConfigurationDTOCredentialMaskingTest {
             || getter.getName().length() <= 3) {
             return null;
         }
-        String property = Introspector.decapitalize(getter.getName().substring(3));
+        // @JsonProperty("someOtherName") renames the wire property, and BOTH guards key off the name:
+        // the credential-shape rule that decides whether it is covered, and the system-property key the
+        // diagnostic surfaces mask by. Deriving the name from the METHOD alone lets a rename defeat the
+        // guard in either direction — a credential renamed to an innocuous wire name silently drops out,
+        // and an innocuous property renamed to a credential-shaped one silently joins. Every
+        // @JsonProperty in ConfigurationDTO is bare today; this makes that a property of the code rather
+        // than an assumption.
+        JsonProperty annotation = getter.getAnnotation(JsonProperty.class);
+        String property = annotation != null && !annotation.value().isEmpty()
+            ? annotation.value()
+            : Introspector.decapitalize(getter.getName().substring(3));
         return property.endsWith("RawValue") ? null : property;
     }
 
@@ -401,14 +420,27 @@ public class ConfigurationDTOCredentialMaskingTest {
      * by attempting the plain value first rather than by naming the properties, so a property that
      * gains or loses validation needs no change here.
      */
-    private static void setCredentialOn(Configuration configuration, String property) throws Exception {
+    private static String setCredentialOn(Configuration configuration, String property) throws Exception {
+        String value = valueTheSetterAccepts(property, reflectiveSecretFor(property));
+        Configuration.class.getMethod(property, String.class).invoke(configuration, value);
+        return value;
+    }
+
+    /**
+     * A value carrying {@code marker} that this property's setter will actually accept — the marker
+     * itself, or, for a property validated as a readable file, the path of a real temporary file whose
+     * NAME carries the marker. Probed rather than named per property, so a property that gains or loses
+     * validation needs no change here.
+     */
+    private static String valueTheSetterAccepts(String property, String marker) throws Exception {
         Method setter = Configuration.class.getMethod(property, String.class);
         try {
-            setter.invoke(configuration, reflectiveSecretFor(property));
+            setter.invoke(configuration(), marker);
+            return marker;
         } catch (java.lang.reflect.InvocationTargetException rejected) {
-            java.io.File file = java.io.File.createTempFile(reflectiveSecretFor(property) + "-", ".pem");
+            java.io.File file = java.io.File.createTempFile(marker + "-", ".pem");
             file.deleteOnExit();
-            setter.invoke(configuration, file.getAbsolutePath());
+            return file.getAbsolutePath();
         }
     }
 
@@ -1143,6 +1175,523 @@ public class ConfigurationDTOCredentialMaskingTest {
             assertThat("the raw accessor must be @JsonIgnore-d so it cannot leak through serialization",
                 raw.getAnnotation(com.fasterxml.jackson.annotation.JsonIgnore.class), is(not(nullValue())));
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 4. the WRITE-PATH mask guard — over the whole credential-shaped surface, not one category of it.
+    //
+    //    Section 2 above guards the credentials that are MASKED on read. What a property does on READ
+    //    turns out to be irrelevant to the write path, and assuming otherwise produced this same bug
+    //    twice over:
+    //      - OMITTED properties (@JsonIgnore-d getter) were assumed safe because the property is absent
+    //        from the body a GET-then-PUT client echoes back;
+    //      - READABLE-but-credential-named properties (file paths, a header name, an ingest-only key —
+    //        see READABLE_DESPITE_CREDENTIAL_SHAPED_NAME) were assumed safe because their GET returns
+    //        the real value, so the mask never comes back from THAT endpoint either.
+    //    Both wrote whatever arrived, verbatim.
+    //
+    //    Neither holds, because /mockserver/configuration is not the only surface an operator copies
+    //    from. GET /mockserver/config, --print-config and the dashboard's Server Info tab render
+    //    every credential-SHAPED name as "***REDACTED***" — asserted below rather than assumed. An
+    //    operator who reads one of those, edits the settings around a credential and PUTs the result
+    //    supplies the literal mask; before this guard it became the credential, breaking every call
+    //    authenticated with it while the PUT answered 200 OK and logged nothing. For the two
+    //    private-key paths, whose setters validate, it was worse: the PUT was abandoned HALF-APPLIED.
+    //
+    //    Enumeration is reflective and takes NO list, so a credential-shaped property added later is
+    //    covered the day it is added. See maskRefusingCredentialProperties().
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    public void shouldRenderEveryCredentialShapedPropertyAsTheMaskOnTheDiagnosticSurfacesAPutCanBeCopiedFrom() throws Exception {
+        // The premise of this whole section: the mask an operator pastes back is one MockServer itself
+        // printed. Asserted over effectiveConfiguration() — the actual output of GET /mockserver/config,
+        // --print-config and the dashboard's Server Info tab — rather than by calling
+        // redactSensitiveValue(<DTO property name>, ...) directly, which would be near-tautological:
+        // this set is FILTERED on isSensitivePropertyName and that predicate is redactSensitiveValue's
+        // own first branch, so it would assert little more than "the filter filtered".
+        //
+        // It also closes a real gap. That surface masks by SYSTEM-PROPERTY key (mockserver.<name>)
+        // while this guard enumerates DTO METHOD names. The two coincide today, but a property whose
+        // system-property key diverged from its DTO property name would be masked on the diagnostic
+        // surface and unguarded on the write path — reproducing this exact bug. Going through
+        // effectiveConfiguration() makes that divergence a failure rather than a silent hole.
+        Map<String, ResolvedProperty> byName = new LinkedHashMap<>();
+        for (ResolvedProperty resolved : effectiveConfiguration()) {
+            byName.put(resolved.getName(), resolved);
+        }
+
+        List<String> problems = new ArrayList<>();
+        for (String credential : maskRefusingCredentialProperties()) {
+            ResolvedProperty resolved = byName.get("mockserver." + credential);
+            if (resolved == null) {
+                problems.add(credential + " (absent from effectiveConfiguration() — its system-property "
+                    + "key does not match its DTO property name, so what the diagnostic surfaces mask "
+                    + "and what this guard covers have diverged)");
+                continue;
+            }
+            // The name comes from the diagnostic output itself, not from this guard's filter, so this
+            // is not the filter asserting on itself. Driven with a value rather than read off the
+            // resolved one because an unset property renders as "(default)" here, and giving it a value
+            // would mean writing a system property — global state this class must not touch.
+            if (!MASK.equals(redactSensitiveValue(resolved.getName(), "a-real-credential"))) {
+                problems.add(credential + " (the surface does not mask <" + resolved.getName() + ">)");
+            }
+            if (!"(default)".equals(resolved.getValue()) && !MASK.equals(resolved.getValue())) {
+                // an ambient property file / environment variable supplied a real value, so the actual
+                // rendered output is observable here — and it must be the mask
+                problems.add(credential + " (ambient value rendered as <" + resolved.getValue()
+                    + "> not the mask)");
+            }
+        }
+
+        assertThat("credential-shaped properties that GET /mockserver/config, --print-config and the "
+                + "dashboard's Server Info tab do NOT mask, so the round trip this section guards could "
+                + "not produce the mask: " + problems,
+            problems, is(empty()));
+    }
+
+    @Test
+    public void shouldKeepTheSilentRoundTripSetInStepWithTheGettersThatActuallyReturnTheMask() throws Exception {
+        // A PUT carrying the BARE mask is refused either way; the question is whether it is refused
+        // SILENTLY. Silence is right only where GET /mockserver/configuration really does hand the
+        // client the bare mask — that is the blessed round trip, and warning on it would train
+        // operators to ignore the warning. Everywhere else the bare mask can only have been copied out
+        // of a diagnostic view or typed by hand, and silence there is what makes a destroyed credential
+        // undiagnosable: refused, nothing logged, 200 OK.
+        //
+        // ConfigurationProperties cannot see the DTO, so it carries the set by name. This is the guard
+        // that keeps the two from drifting — derived from what the getters ACTUALLY return, not a list.
+        List<String> wrong = new ArrayList<>();
+        for (String credential : maskRefusingCredentialProperties()) {
+            Configuration configuration = configuration();
+            setCredentialOn(configuration, credential);
+            boolean maskedOnRead = MASK.equals(dtoGetter(credential).invoke(new ConfigurationDTO(configuration)));
+            boolean treatedAsSilent = isWholeValueMaskedOnRead(credential);
+
+            if (maskedOnRead && !treatedAsSilent) {
+                wrong.add(credential + " (GET returns the bare mask, so the untouched round trip would "
+                    + "now emit a warning on every config-as-code apply)");
+            } else if (!maskedOnRead && treatedAsSilent) {
+                wrong.add(credential + " (GET never returns the bare mask, so an incoming one is always "
+                    + "operator error and must NOT be refused silently)");
+            }
+        }
+
+        assertThat("ConfigurationProperties.WHOLE_VALUE_MASKED_CREDENTIAL_PROPERTIES has drifted from the "
+                + "ConfigurationDTO getters that actually return the bare mask: " + wrong,
+            wrong, is(empty()));
+    }
+
+    @Test
+    public void shouldWarnWhenTheBareMaskIsPutOverACredentialThatIsNeverMaskedOnRead() throws Exception {
+        // The end-to-end assertion for this unit's headline case, and the one thing the return value
+        // cannot show: applyTo refuses the pasted mask either way, so without this the suite stays green
+        // while the changelog, the consumer page and the source comments all claim a warning is emitted.
+        //
+        // Parallel-safe by the same discipline as ConfigurationValueRedactionTest: the filter matches a
+        // property name that only this class provokes a warning for, and Surefire runs parallel=classes
+        // so the methods of THIS class are serialized with each other.
+        String credential = "dataPlaneBearerAuthenticationToken";
+        assertThat("precondition: GET /mockserver/configuration must NOT return this property, so a bare "
+                + "mask arriving for it cannot be a blessed round trip",
+            serializer.serialize(configuration().dataPlaneBearerAuthenticationToken("t")),
+            not(containsString(credential)));
+
+        java.util.logging.Logger emittingLogger =
+            java.util.logging.Logger.getLogger("org.mockserver.configuration.EmbeddedCredentialRedaction");
+        List<String> captured = new ArrayList<>();
+        java.util.logging.Handler handler = new java.util.logging.Handler() {
+            @Override
+            public void publish(java.util.logging.LogRecord record) {
+                if (record.getLevel().intValue() >= java.util.logging.Level.WARNING.intValue()
+                    && String.valueOf(record.getMessage()).contains(credential)) {
+                    synchronized (captured) {
+                        captured.add(record.getMessage());
+                    }
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        java.util.logging.Level originalLevel = emittingLogger.getLevel();
+        emittingLogger.addHandler(handler);
+        emittingLogger.setLevel(java.util.logging.Level.ALL);
+        try {
+            Configuration live = configuration().dataPlaneBearerAuthenticationToken("eyJ-real-token");
+
+            applyJsonTo("{\"" + credential + "\":\"" + MASK + "\"}", live);
+
+            assertThat("the credential in force must survive", live.dataPlaneBearerAuthenticationToken(),
+                is("eyJ-real-token"));
+            assertThat("a PUT that answered 200 OK having written nothing must say so — exactly once",
+                captured.size(), is(1));
+            assertThat("the warning must name the property the operator has to fix",
+                captured.get(0), containsString(credential));
+            assertThat("the warning must never disclose the credential it is protecting",
+                captured.get(0), not(containsString("eyJ-real-token")));
+        } finally {
+            emittingLogger.removeHandler(handler);
+            emittingLogger.setLevel(originalLevel);
+        }
+    }
+
+    @Test
+    public void shouldNotAllowACredentialShapedSetterWithNoGetterToEscapeBothGuards() throws Exception {
+        // Both guards in this class enumerate GETTERS. A write-only credential declared as a
+        // @JsonProperty SETTER with no getter at all — the most natural shape for something that must
+        // never be disclosed — would be deserialized, applied by applyTo/buildObject, masked on
+        // --print-config, and enumerated by NEITHER guard. Every credential-shaped property has a
+        // getter today; nothing asserted it until now.
+        Set<String> guarded = new TreeSet<>(maskRefusingCredentialProperties());
+        List<String> unreachable = new ArrayList<>();
+        for (Method setter : ConfigurationDTO.class.getMethods()) {
+            if (setter.getParameterCount() != 1
+                || setter.isSynthetic()
+                || !setter.getName().startsWith("set")
+                || setter.getName().length() <= 3
+                || !setter.getParameterTypes()[0].equals(String.class)) {
+                continue;
+            }
+            String property = Introspector.decapitalize(setter.getName().substring(3));
+            if (isSensitivePropertyName(property) && !guarded.contains(property)) {
+                unreachable.add(property);
+            }
+        }
+
+        assertThat("credential-shaped ConfigurationDTO setters with no correspondingly-guarded getter — "
+                + "they are settable over PUT /mockserver/configuration and masked on --print-config, so "
+                + "a pasted mask reaches them, but no guard in this class enumerates them. Give the "
+                + "property a getter (@JsonIgnore-d if it must not be disclosed) so both guards see it: "
+                + unreachable,
+            unreachable, is(empty()));
+    }
+
+    @Test
+    public void shouldNotDestroyACredentialWhenTheMaskIsAppliedBackOverIt() throws Exception {
+        List<String> destroyed = new ArrayList<>();
+        for (String credential : maskRefusingCredentialProperties()) {
+            Configuration live = configuration();
+            String held = setCredentialOn(live, credential);
+
+            try {
+                applyToViaDto(live, credential, MASK);
+            } catch (Exception thrown) {
+                // a setter that VALIDATES rejects the mask by throwing, which abandons applyTo
+                // half-applied and fails the enclosing PUT rather than ignoring one bad value —
+                // refusing must happen before the setter, and consistently
+                destroyed.add(credential + " (applyTo threw " + rootCauseOf(thrown) + ")");
+                continue;
+            }
+
+            Object value = instanceField(live, credential);
+            if (!held.equals(value)) {
+                destroyed.add(credential + " (became <" + value + ">)");
+            }
+        }
+
+        assertThat("credential-shaped properties destroyed by a PUT carrying the mask an operator read "
+                + "from GET /mockserver/config or --print-config — the credential in force must be left "
+                + "untouched: " + destroyed,
+            destroyed, is(empty()));
+    }
+
+    @Test
+    public void shouldNotDestroyACredentialWithAValueThatMerelyContainsTheMask() throws Exception {
+        // "***REDACTED***-my-new-key" reads as an operator typing a new credential over the mask. Neither
+        // half is usable: welding them together persists a credential nobody holds, and it is not EQUAL
+        // to the mask, so an equality check would let it straight through.
+        List<String> destroyed = new ArrayList<>();
+        for (String credential : maskRefusingCredentialProperties()) {
+            Configuration live = configuration();
+            String held = setCredentialOn(live, credential);
+
+            try {
+                applyToViaDto(live, credential, MASK + "-my-new-key");
+            } catch (Exception thrown) {
+                destroyed.add(credential + " (applyTo threw " + rootCauseOf(thrown) + ")");
+                continue;
+            }
+
+            Object value = instanceField(live, credential);
+            if (!held.equals(value)) {
+                destroyed.add(credential + " (became <" + value + ">)");
+            }
+        }
+
+        assertThat("credential-shaped properties overwritten by a value that merely CONTAINS the mask: "
+                + destroyed, destroyed, is(empty()));
+    }
+
+    @Test
+    public void shouldLeaveACredentialUnsetWhenBuildingAFreshConfigurationFromAMaskedValue() throws Exception {
+        // buildObject() has no held configuration to refuse in favour of, so the field must be left
+        // UNSET — writing the mask poisons the credential, and writing "" pins an empty value on the
+        // instance whose getter then shadows the property file / environment variable behind it
+        List<String> pinned = new ArrayList<>();
+        for (String credential : maskRefusingCredentialProperties()) {
+            for (String masked : Arrays.asList(MASK, MASK + "-my-new-key", "Bearer " + MASK)) {
+                ConfigurationDTO dto = new ConfigurationDTO();
+                dtoSetter(credential).invoke(dto, masked);
+
+                Object value;
+                try {
+                    value = instanceField(dto.buildObject(), credential);
+                } catch (Exception thrown) {
+                    pinned.add(credential + " (<" + masked + "> made buildObject throw "
+                        + rootCauseOf(thrown) + ")");
+                    continue;
+                }
+                if (value != null) {
+                    pinned.add(credential + " (<" + masked + "> became <" + value + ">)");
+                }
+            }
+        }
+
+        assertThat("credential-shaped properties left carrying — or pinned by — a masked value on a "
+                + "freshly built Configuration, shadowing the static store that would have resolved the "
+                + "real one: " + pinned,
+            pinned, is(empty()));
+    }
+
+    @Test
+    public void shouldStillApplyARealNewValueToEveryCredentialShapedProperty() throws Exception {
+        // the failure direction of a refuse-the-mask guard is refusing everything — rotating a
+        // credential over the control plane must still work
+        List<String> notApplied = new ArrayList<>();
+        for (String credential : maskRefusingCredentialProperties()) {
+            Configuration live = configuration();
+            setCredentialOn(live, credential);
+            String rotated = valueTheSetterAccepts(credential, "rotated-credential-" + credential);
+
+            applyToViaDto(live, credential, rotated);
+
+            Object value = instanceField(live, credential);
+            if (!rotated.equals(value)) {
+                notApplied.add(credential + " (stayed <" + value + ">)");
+            }
+        }
+
+        assertThat("credential-shaped properties a control-plane body carrying a REAL new value failed "
+                + "to rotate — the mask guard has broken the write path: " + notApplied,
+            notApplied, is(empty()));
+    }
+
+    @Test
+    public void shouldStillBuildAFreshConfigurationCarryingARealCredential() throws Exception {
+        List<String> notBuilt = new ArrayList<>();
+        for (String credential : maskRefusingCredentialProperties()) {
+            String real = valueTheSetterAccepts(credential, "fresh-credential-" + credential);
+            ConfigurationDTO dto = new ConfigurationDTO();
+            dtoSetter(credential).invoke(dto, real);
+
+            Object value = instanceField(dto.buildObject(), credential);
+            if (!real.equals(value)) {
+                notBuilt.add(credential + " (became <" + value + ">)");
+            }
+        }
+
+        assertThat("credential-shaped properties a real value did NOT reach on a freshly built "
+                + "Configuration: " + notBuilt,
+            notBuilt, is(empty()));
+    }
+
+    @Test
+    public void shouldStillClearACredentialWithAnEmptyString() throws Exception {
+        // "" is a legitimate instruction — turn this credential off — and cannot be confused with the
+        // mask, so refusing the mask must not refuse it. Asserted on the JSON wire path an operator
+        // actually uses (HttpRequestHandler -> readValue -> applyTo) as well as the in-process setter:
+        // over JSON "" binds as "", reaches applyTo, passes the mask guard and clears the credential.
+        List<String> notCleared = new ArrayList<>();
+        for (String credential : maskRefusingCredentialProperties()) {
+            Configuration overJson = configuration();
+            setCredentialOn(overJson, credential);
+            applyJsonTo("{\"" + credential + "\":\"\"}", overJson);
+            Object cleared = instanceField(overJson, credential);
+            if (!"".equals(cleared)) {
+                notCleared.add(credential + " (PUT of \"\" left <" + cleared + ">)");
+            }
+
+            Configuration live = configuration();
+            setCredentialOn(live, credential);
+            applyToViaDto(live, credential, "");
+            Object applied = instanceField(live, credential);
+            if (!"".equals(applied)) {
+                notCleared.add(credential + " (applyTo left <" + applied + ">)");
+            }
+
+            ConfigurationDTO fresh = new ConfigurationDTO();
+            dtoSetter(credential).invoke(fresh, "");
+            Object built = instanceField(fresh.buildObject(), credential);
+            if (!"".equals(built)) {
+                notCleared.add(credential + " (buildObject left <" + built + ">)");
+            }
+        }
+
+        assertThat("credential-shaped properties that can no longer be CLEARED with an empty string: "
+                + notCleared, notCleared, is(empty()));
+    }
+
+    @Test
+    public void shouldNotDestroyTheDataPlaneBearerTokenReadBackFromTheEffectiveConfiguration() throws Exception {
+        // named regression, end to end over the exact operator sequence: read the effective
+        // configuration, edit a neighbouring setting, PUT the result
+        String token = "eyJ-data-plane-bearer-token";
+        Configuration live = configuration()
+            .dataPlaneBearerAuthenticationToken(token)
+            .dataPlaneBasicAuthenticationRealm("original-realm");
+
+        String asPrinted = redactSensitiveValue("dataPlaneBearerAuthenticationToken", token);
+        assertThat("--print-config shows the operator the mask, which is what they paste back",
+            asPrinted, is(MASK));
+
+        applyJsonTo("{\"dataPlaneBearerAuthenticationToken\":\"" + asPrinted + "\","
+            + "\"dataPlaneBasicAuthenticationRealm\":\"edited-realm\"}", live);
+
+        assertThat("the working data-plane token must survive the round trip",
+            live.dataPlaneBearerAuthenticationToken(), is(token));
+        assertThat("and the edit the operator actually made must be applied",
+            live.dataPlaneBasicAuthenticationRealm(), is("edited-realm"));
+    }
+
+    /**
+     * Properties applied AFTER both validating setters in {@code applyTo}'s source order, which is the
+     * only order that matters — {@code applyTo} walks its own fields and ignores the order of the JSON
+     * body entirely.
+     *
+     * <p>This is the load-bearing detail of the test below and it is easy to get wrong: a property that
+     * merely appears LATER IN THE BODY, or later in the DTO's field declarations, can still be applied
+     * BEFORE the throw and would prove nothing. Both entries here sit after
+     * {@code controlPlanePrivateKeyPath} and {@code forwardProxyPrivateKey} in {@code applyTo}, one
+     * immediately after and one near the very end, so a future change that moves the mask guard part of
+     * the way down the method is still caught by at least one of them.
+     */
+    private static final Map<String, String> APPLIED_AFTER_BOTH_VALIDATING_SETTERS = new LinkedHashMap<>();
+
+    static {
+        APPLIED_AFTER_BOTH_VALIDATING_SETTERS.put("blobStoreProjectId", "edited-project");
+        APPLIED_AFTER_BOTH_VALIDATING_SETTERS.put("customJsonUnitMatchersClass", "com.example.EditedMatchers");
+    }
+
+    @Test
+    public void shouldNotAbandonAPutHalfAppliedWhenAMaskedValueReachesAValidatingSetter() throws Exception {
+        // controlPlanePrivateKeyPath and forwardProxyPrivateKey validate on write (fileExists), so the
+        // mask used to be rejected by THROWING from the middle of applyTo — after neighbouring edits in
+        // the same body had already been committed to the LIVE Configuration. HttpRequestHandler turns
+        // that into a 400 over half-mutated state: the operator is told the PUT failed while part of it
+        // stands. Refusing before the setter is what makes the whole body all-or-nothing again.
+        //
+        // Every outcome is COLLECTED rather than asserted inline, so each arm fails on its own merits.
+        // Asserting inline would stop at the throw (or at the first arm), and the arm that actually
+        // pins this behaviour — an edit applied after the validating setter — would never be evaluated.
+        List<String> problems = new ArrayList<>();
+        for (String validating : Arrays.asList("controlPlanePrivateKeyPath", "forwardProxyPrivateKey")) {
+            Configuration live = configuration().proxyAuthenticationRealm("original-realm");
+            for (String after : APPLIED_AFTER_BOTH_VALIDATING_SETTERS.keySet()) {
+                Configuration.class.getMethod(after, String.class).invoke(live, "original-" + after);
+            }
+            String heldKeyPath = setCredentialOn(live, validating);
+
+            StringBuilder body = new StringBuilder("{\"proxyAuthenticationRealm\":\"edited-realm\",\"")
+                .append(validating).append("\":\"").append(MASK).append('"');
+            for (Map.Entry<String, String> edit : APPLIED_AFTER_BOTH_VALIDATING_SETTERS.entrySet()) {
+                body.append(",\"").append(edit.getKey()).append("\":\"").append(edit.getValue()).append('"');
+            }
+            body.append('}');
+
+            try {
+                applyJsonTo(body.toString(), live);
+            } catch (Exception thrown) {
+                problems.add(validating + " (applyTo threw " + rootCauseOf(thrown) + ")");
+            }
+
+            if (!heldKeyPath.equals(instanceField(live, validating))) {
+                problems.add(validating + " (the key path in force became <"
+                    + instanceField(live, validating) + ">)");
+            }
+            if (!"edited-realm".equals(live.proxyAuthenticationRealm())) {
+                problems.add(validating + " (an edit applied BEFORE it was lost: proxyAuthenticationRealm "
+                    + "is <" + live.proxyAuthenticationRealm() + ">)");
+            }
+            for (Map.Entry<String, String> edit : APPLIED_AFTER_BOTH_VALIDATING_SETTERS.entrySet()) {
+                Object actual = Configuration.class.getMethod(edit.getKey()).invoke(live);
+                if (!edit.getValue().equals(actual)) {
+                    problems.add(validating + " (an edit applied AFTER it was lost: " + edit.getKey()
+                        + " is <" + actual + "> not <" + edit.getValue() + ">)");
+                }
+            }
+        }
+
+        assertThat("a masked value reaching a validating setter must not abandon the PUT part-way — the "
+                + "credential must be refused before the setter, and every other edit in the same body, "
+                + "on BOTH sides of it, must still be applied: " + problems,
+            problems, is(empty()));
+    }
+
+    /**
+     * Every ConfigurationDTO property whose write path must refuse a value carrying the mask: its name is
+     * credential-shaped under the shared {@link ConfigurationProperties#isSensitivePropertyName(String)}
+     * rule, so {@code GET /mockserver/config}, {@code --print-config} and the dashboard's Server Info
+     * tab all render it as the mask and an operator can paste that back.
+     *
+     * <p>Deliberately does <strong>not</strong> filter on what the property does on READ. Both previous
+     * versions of this bug came from treating a read-side property as a write-side exemption: an
+     * {@code @JsonIgnore}-d getter does not stop the mask arriving, and neither does a getter that
+     * returns the real value — {@link #READABLE_DESPITE_CREDENTIAL_SHAPED_NAME} is a decision about
+     * DISCLOSURE only, and every entry in it is still masked on the diagnostic surfaces. Discovered by
+     * reflection, never from a list.
+     *
+     * <p>No exclusions at all. The credentials that are MASKED on read used to be excluded, because
+     * their write paths refused a value equal to the mask but not one merely containing it; both now
+     * refuse by containment, so the whole credential-shaped surface is held to one rule here.
+     */
+    private static List<String> maskRefusingCredentialProperties() {
+        Set<String> properties = new TreeSet<>();
+        for (Method getter : ConfigurationDTO.class.getMethods()) {
+            String property = serializedPropertyNameOf(getter);
+            if (property == null
+                || !getter.getReturnType().equals(String.class)
+                || !isSensitivePropertyName(property)) {
+                continue;
+            }
+            properties.add(property);
+        }
+        // A RATCHET, not a smoke test. "greaterThan(some round number)" tolerates a rename silently
+        // dropping several properties, which is the realistic regression — not "discovers zero". Raise
+        // this when a credential-shaped property is added; NEVER lower it to make a failure go away,
+        // because the failure is telling you coverage was lost.
+        assertThat("reflection discovered fewer credential-shaped properties than it did when this "
+                + "guard was written — a getter was renamed, retyped or removed, and its write path is "
+                + "now unguarded",
+            properties.size(), greaterThanOrEqualTo(18));
+        return new ArrayList<>(properties);
+    }
+
+    /** The message a reflective invocation buried the real cause in, so a failure names it. */
+    private static String rootCauseOf(Throwable thrown) {
+        Throwable cause = thrown;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause.getClass().getSimpleName() + ": " + cause.getMessage();
+    }
+
+    /** Set one property on a fresh DTO and apply it, exactly as a single-property PUT body would. */
+    private static void applyToViaDto(Configuration target, String property, String value) throws Exception {
+        ConfigurationDTO dto = new ConfigurationDTO();
+        dtoSetter(property).invoke(dto, value);
+        dto.applyTo(target);
+    }
+
+    private static Method dtoSetter(String property) throws Exception {
+        return ConfigurationDTO.class.getMethod("set"
+            + Character.toUpperCase(property.charAt(0)) + property.substring(1), String.class);
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -550,6 +550,43 @@ public class ConfigurationProperties {
         "llmbackendsconfig"
     ).collect(Collectors.toCollection(LinkedHashSet::new));
 
+    /**
+     * The properties {@code GET /mockserver/configuration} returns as the bare mask — and ONLY those.
+     * For these, and only these, a {@code PUT} carrying the bare mask is the blessed GET-then-PUT round
+     * trip rather than an operator error, so it is refused SILENTLY (see
+     * {@link #restoreRedactedValue(String, String, String)}).
+     *
+     * <p>Deliberately NOT {@link #isSensitivePropertyName(String)}. That predicate is far wider: it
+     * matches every credential-shaped name, including the ones {@code GET /mockserver/configuration}
+     * <em>omits</em> ({@code proxyAuthenticationPassword}, {@code dataPlaneBearerAuthenticationToken},
+     * {@code clusterFanInPeerAuthToken}, the blob-store credentials, the private-key paths, …) and the
+     * ones it returns in clear ({@code privateKeyPath}, {@code dashboardAnalyticsKey}, …). None of those
+     * has a round trip that can produce the bare mask: the only surfaces that print it for them are
+     * {@code GET /mockserver/config}, {@code --print-config} and the dashboard's Server Info tab, none
+     * of which is a {@code PUT} body. So for them the bare mask is ALWAYS operator error — the very
+     * case whose silence made a destroyed credential undiagnosable — and it must warn.
+     *
+     * <p>Keyed on the normalised (lower-cased, {@code mockserver.}-stripped) name, and declared here
+     * for the same {@code <clinit>} ordering reason as the two sets above.
+     * {@code ConfigurationDTOCredentialMaskingTest} asserts this set is exactly the set of DTO
+     * properties whose getter really does return the bare mask, so the two cannot drift.
+     */
+    private static final Set<String> WHOLE_VALUE_MASKED_CREDENTIAL_PROPERTIES = Stream.of(
+        "llmapikey",
+        "prometheusremotewritebearertoken",
+        "prometheusremotewritebasicauthpassword"
+    ).collect(Collectors.toCollection(LinkedHashSet::new));
+
+    /**
+     * True when {@code GET /mockserver/configuration} returns this property as the bare redaction mask,
+     * so an incoming bare mask is the untouched round trip rather than a hand-typed value. Exposed for
+     * the guard that keeps {@link #WHOLE_VALUE_MASKED_CREDENTIAL_PROPERTIES} in step with the DTO.
+     */
+    public static boolean isWholeValueMaskedOnRead(String propertyName) {
+        return propertyName != null
+            && WHOLE_VALUE_MASKED_CREDENTIAL_PROPERTIES.contains(normalisePropertyName(propertyName));
+    }
+
     public static final Properties PROPERTIES = readPropertyFile();
 
     // --- Unknown-configuration-key detection state (see the section near the end of this class) ---
@@ -6102,7 +6139,7 @@ public class ConfigurationProperties {
             restored = EmbeddedCredentialRedaction.restoreHeaderList(propertyName, incomingValue, heldValue);
         } else if (JSON_DOCUMENT_CREDENTIAL_PROPERTIES.contains(normalised)) {
             restored = EmbeddedCredentialRedaction.restoreJsonDocument(propertyName, incomingValue, heldValue);
-        } else if (isSensitivePropertyName(propertyName) && REDACTED_VALUE.equals(incomingValue)) {
+        } else if (isWholeValueMaskedOnRead(propertyName) && REDACTED_VALUE.equals(incomingValue)) {
             // the UNTOUCHED round trip for a WHOLE-VALUE credential: read back as the bare mask and sent
             // straight in again. That is the blessed GET-then-PUT flow, not an operator error, so the
             // held value is left alone SILENTLY. A config-as-code tool that GETs, edits one unrelated
@@ -6113,8 +6150,13 @@ public class ConfigurationProperties {
             // masked form — so this makes one operator action log one way whatever the credential shape.
             // Only a value the operator EDITED around the mask falls through to the warning below.
             //
-            // Narrowed to credential NAMES deliberately: for a property that is never masked, the bare
-            // mask can only have been typed by hand, which is anomalous and still worth the warning.
+            // Keyed on the properties GET /mockserver/configuration ACTUALLY returns masked, not on
+            // isSensitivePropertyName. That predicate matches every credential-SHAPED name, which is a
+            // far larger set: the credentials that endpoint OMITS, and the ones it returns in clear,
+            // have no round trip that can produce the bare mask, so for them it is always hand-typed —
+            // copied out of GET /mockserver/config, --print-config or the Server Info tab, which are
+            // diagnostic views and not PUT bodies. Silencing those was silencing the exact operator
+            // mistake that destroys a working credential while the PUT answers 200 OK.
             return null;
         } else {
             restored = incomingValue;

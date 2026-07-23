@@ -218,21 +218,28 @@ public class ConfigurationValueRedactionTest {
 
     /**
      * The refusal WARN is the only thing an operator gets back from a {@code PUT} that answered
-     * {@code 200 OK} having written nothing, and its ABSENCE on the untouched round trip is equally
-     * load-bearing — a warning per credential on every config-as-code apply trains operators to ignore
-     * the one that matters. Neither is visible in the return value (both cases return {@code null}), so
-     * both are asserted here over the log itself: {@code mockserver-core} binds {@code slf4j-jdk14}, so
-     * a {@code java.util.logging} handler on the emitting logger sees exactly what is emitted.
+     * {@code 200 OK} having written nothing, and it is visible in neither the return value (every
+     * refusal returns {@code null}), so it is asserted here over the log itself: {@code mockserver-core}
+     * binds {@code slf4j-jdk14}, so a {@code java.util.logging} handler on the emitting logger sees
+     * exactly what is emitted.
+     *
+     * <p>The property here is credential-SHAPED but NOT one of the three
+     * {@code GET /mockserver/configuration} returns as the bare mask, so BOTH a value edited around the
+     * mask AND the bare mask itself must warn: neither can be a blessed round trip of that endpoint,
+     * because it never emits the mask for this property. The silent case — a bare mask on a property
+     * that IS masked on read — is asserted separately in
+     * {@link #staysSilentOnAnUntouchedRoundTripOfAPropertyThatIsMaskedOnRead()}.
      *
      * <p>The EDITED case is asserted FIRST on purpose: it proves the handler is capturing, so the
-     * "no warning" assertion after it cannot pass because capture silently broke.
+     * bare-mask assertion after it cannot pass because capture silently broke.
      */
     @Test
-    public void warnsWhenTheMaskWasEditedAroundAndStaysSilentOnAnUntouchedRoundTrip() {
+    public void warnsForBothAnEditedMaskAndABareMaskOnAPropertyNotMaskedOnRead() {
         // a property name used by NO other test, so a class running concurrently in the parallel
         // Surefire phase cannot contribute a record this test counts — several provoke this very
-        // warning for llmApiKey and prometheusRemoteWriteHeaders. Credential-shaped (…apikey) and in
-        // neither structured-value set, so it takes exactly the whole-value path.
+        // warning for llmApiKey and prometheusRemoteWriteHeaders. Credential-shaped (…apikey), in
+        // neither structured-value set, and NOT in WHOLE_VALUE_MASKED_CREDENTIAL_PROPERTIES, so a bare
+        // mask for it is operator error rather than a round trip and must warn.
         String property = "mockserver.logAssertionOnlyApiKey";
 
         java.util.logging.Logger emittingLogger =
@@ -274,12 +281,84 @@ public class ConfigurationValueRedactionTest {
 
             captured.clear();
 
+            // The BARE mask on this property must ALSO warn. It is credential-SHAPED, but it is not a
+            // property GET /mockserver/configuration returns masked, so no round trip of that endpoint
+            // can have produced this value — it was copied out of GET /mockserver/config,
+            // --print-config or the Server Info tab, none of which is a PUT body, or typed by hand.
+            // Silence here is what let a pasted mask destroy a working credential undiagnosably: the
+            // credential is refused (correctly) and the PUT answers 200 OK with nothing to show for it.
             assertThat(restoreRedactedValue(property, REDACTED_VALUE, "sk-real"), is((String) null));
 
-            assertThat("an UNTOUCHED round trip is the blessed GET-then-PUT flow, not an operator error: "
-                    + "warning on it means a config-as-code tool logs one per credential on every apply, "
-                    + "and anyone alerting on WARN reads it as a credential having been lost",
-                captured, is(empty()));
+            assertThat("the bare mask on a property that is never masked by GET /mockserver/configuration "
+                    + "is always operator error, and refusing it silently is indistinguishable from "
+                    + "applying it", captured.size(), is(1));
+            assertThat(captured.get(0), containsString(property));
+            assertThat("the warning must never disclose the credential it is protecting",
+                captured.get(0), not(containsString("sk-real")));
+
+            captured.clear();
+        } finally {
+            emittingLogger.removeHandler(handler);
+            emittingLogger.setLevel(originalLevel);
+        }
+    }
+
+    /**
+     * The other half of the rule: for the three properties {@code GET /mockserver/configuration} really
+     * does return as the bare mask, sending that mask straight back IS the blessed round trip and must
+     * stay silent — a config-as-code tool that GETs, edits one unrelated property and PUTs the whole
+     * blob would otherwise log a security-flavoured warning per credential on every apply, and anyone
+     * alerting on WARN would read it as a credential having been lost.
+     *
+     * <p>Asserted on a REAL whole-value credential rather than the fictional name above, because the
+     * silence is a property of set membership and a fictional name cannot be in the set. Parallel-safe
+     * for a narrower reason than its sibling, which must be preserved by any later edit: the filter
+     * matches the {@code mockserver.}-PREFIXED name, and every other caller in the repository passes
+     * these properties unprefixed (the DTO passes {@code "llmApiKey"}), so no concurrently-running
+     * class can contribute a record this test counts. Surefire runs {@code parallel=classes}, so the
+     * prefixed-name assertions inside THIS class are serialized with each other.
+     */
+    @Test
+    public void staysSilentOnAnUntouchedRoundTripOfAPropertyThatIsMaskedOnRead() {
+        String property = "mockserver.llmApiKey";
+
+        java.util.logging.Logger emittingLogger =
+            java.util.logging.Logger.getLogger("org.mockserver.configuration.EmbeddedCredentialRedaction");
+        List<String> captured = new ArrayList<>();
+        java.util.logging.Handler handler = new java.util.logging.Handler() {
+            @Override
+            public void publish(java.util.logging.LogRecord record) {
+                if (record.getLevel().intValue() >= java.util.logging.Level.WARNING.intValue()
+                    && String.valueOf(record.getMessage()).contains(property)) {
+                    synchronized (captured) {
+                        captured.add(record.getMessage());
+                    }
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        java.util.logging.Level originalLevel = emittingLogger.getLevel();
+        emittingLogger.addHandler(handler);
+        emittingLogger.setLevel(java.util.logging.Level.ALL);
+        try {
+            // asserted FIRST so the silence assertion after it cannot pass because capture broke
+            assertThat(restoreRedactedValue(property, "sk-" + REDACTED_VALUE, "sk-real"), is((String) null));
+            assertThat("an EDITED value must warn even for a property that is masked on read",
+                captured.size(), is(1));
+
+            captured.clear();
+
+            assertThat(restoreRedactedValue(property, REDACTED_VALUE, "sk-real"), is((String) null));
+
+            assertThat("the untouched round trip of a property GET /mockserver/configuration returns "
+                    + "masked is the blessed flow, not an operator error", captured, is(empty()));
         } finally {
             emittingLogger.removeHandler(handler);
             emittingLogger.setLevel(originalLevel);
