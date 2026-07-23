@@ -56,6 +56,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positive control: reverting the wiring to ignore the configured `maxHeaderSize` (using the default)
   lets the whole header block through, the marker survives, and the over-limit request matches and
   returns `200` — turning the test red (confirmed).
+- **OpenAI Responses API `previous_response_id` chaining and `GET /v1/responses/{id}` retrieval are now
+  covered end-to-end over a real socket.** These stateful behaviours were previously exercised only at the
+  handler+store level (`OpenAiResponsesStateTest`), so a regression in the wire path — the automatic
+  storing of an issued response, the codec's reconstruction of a prior turn from `previous_response_id`,
+  or the `GET`-based retrieval — would not have been caught. A new `OpenAiResponsesStateEndToEndTest` boots
+  a real MockServer, POSTs a first `/v1/responses` turn (default `store:true`) and captures its response
+  id, POSTs a second turn carrying only the new input plus `previous_response_id`, and asserts over the
+  wire that the chained turn matches (proved via a `whenTurnIndex(1)` predicate that can only match once
+  the prior assistant turn has been reconstructed) and that `GET /v1/responses/{id}` returns the stored
+  response body.
 - **The `outputMemoryUsageCsv` memory-usage CSV export is now covered by tests.** `MemoryMonitoring`
   builds a CSV header from the `buildStatistics()` keys on construction and appends a data row on each
   `logMemoryMetrics()` call, but this export path had no test anywhere. A new `MemoryMonitoringTest`
