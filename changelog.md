@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compare via `InetAddress` so they are independent of the JDK's canonical string form for IPv6 (e.g.
   `::1` -> `0:0:0:0:0:0:0:1`). This pins the `IPAddress.isValidIPv6`/`isValidIPv6WithNetmask` branch of the
   SAN-IP handling, previously reachable only through IPv4 literals.
+- **`Times` exhaustion now has a direct passive-removal assertion, mirroring the existing time-to-live
+  test.** `AbstractControlPlaneIntegrationTest` gains `shouldRemoveExhaustedTimesFromActiveExpectations`
+  next to `shouldRemoveExpiredTimeToLiveFromActiveExpectations`: it registers an expectation with
+  `Times.exactly(1)`, asserts `retrieveActiveExpectations(null)` reports one active expectation, makes the
+  single matching request that exhausts the `Times`, then asserts the active list is now empty — WITHOUT a
+  second request. Previously exhausted-`Times` removal from the active list was only observed indirectly
+  via the wire 404 (a second request no longer matching); this pins that an exhausted `Times` expectation
+  is dropped from the active list itself.
 - **The OpenAPI forward-validate action's `LOG_ONLY` mode now has behavioural passthrough coverage,
   closing the gap where only the getter was asserted.** `HttpForwardValidateActionHandlerTest` gains two
   tests that drive `handle(...)` with `validationMode = LOG_ONLY`: one sends a schema-violating request

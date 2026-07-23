@@ -882,6 +882,38 @@ public abstract class AbstractControlPlaneIntegrationTest extends AbstractMockin
         );
     }
 
+    @Test
+    public void shouldRemoveExhaustedTimesFromActiveExpectations() {
+        // when
+        mockServerClient
+            .when(
+                request().withPath(calculatePath("some_path")),
+                exactly(1)
+            )
+            .respond(
+                response().withBody("some_body")
+            );
+
+        // then - expectation should be active before it is matched
+        assertThat(
+            mockServerClient.retrieveActiveExpectations(null).length,
+            equalTo(1)
+        );
+
+        // when - the single matching request exhausts the Times
+        makeRequest(
+            request()
+                .withPath(calculatePath("some_path")),
+            getHeadersToRemove()
+        );
+
+        // then - exhausted expectation should be removed from active list without requiring a second request
+        assertThat(
+            mockServerClient.retrieveActiveExpectations(null).length,
+            equalTo(0)
+        );
+    }
+
     // ========================================================================
     // Additional verify semantics (from AbstractExtendedMockingIntegrationTest)
     // ========================================================================
