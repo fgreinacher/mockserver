@@ -23,6 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HttpActionHandler`, asserting the algorithm-specific behaviour: the burst of one is allowed (normal
   response), the second request exhausts the bucket and returns a `429` carrying
   `X-RateLimit-Limit: 1` (the bucket burst), `X-RateLimit-Remaining: 0`, and the `Retry-After`/reset headers.
+- **WASM custom-rule host-isolation is now pinned by a test.** A WASM rule module can only reach the
+  filesystem or any host/WASI capability through functions the host explicitly imports into the instance,
+  and `WasmRuntime` deliberately wires NONE — it instantiates every module with a bare
+  `Instance.builder(module).build()`, never `withImportValues(...)`. No test asserted this, so a
+  regression that started wiring host imports would have gone unnoticed. A new
+  `WasmRuntimeHostIsolationTest` hand-assembles a minimal-but-valid module whose import section declares
+  `wasi_snapshot_preview1.fd_write` and whose exported `match` actually calls it, then asserts chicory
+  refuses to instantiate it (`UnlinkableException`, mirroring the runtime's own build call), that
+  `WasmRuntime.callMatch` therefore fails closed to `false`, and — as a positive control — that supplying
+  a stub `fd_write` host import (the wiring MockServer omits) makes the identical module instantiate. The
+  refusal assertion was confirmed to go RED when the host import is wired and GREEN when it is not.
 - **The `driftDetectionEnabled` master switch is now covered by a behavioural enforcement test.** The
   existing `DriftDetectionConfigTest` only re-implemented the gate boolean inline and never exercised
   the production code path, so a regression that ignored the flag would not have been caught. A new
