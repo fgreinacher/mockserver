@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **gRPC-Web now re-frames matched-expectation responses correctly over a real HTTP/1.1 socket, and
+  is covered by an over-the-wire integration test.** Every previous gRPC-Web test drove the handler
+  through an `EmbeddedChannel` and set `x-grpc-web-content-type` directly on the response, so none
+  exercised the actual mock-matching path: there the marker lives on the request only and was lost,
+  and a matched expectation went back to a browser client as `application/grpc` with `grpc-status` in
+  HTTP trailers a gRPC-Web client cannot read. The original request content-type is now retained in
+  the per-stream `GrpcPendingRequests` record alongside the resolved service/method, so
+  `GrpcToHttpResponseHandler` re-frames the response as gRPC-Web (length-prefixed message frame + a
+  `0x80` trailer frame carrying `grpc-status` in the body, base64-encoded for the `-text` variant).
+  A new `GrpcWebOverTheWireIntegrationTest` posts a real `application/grpc-web` and
+  `application/grpc-web-text` framed request to a running server over a raw socket and asserts on the
+  exact bytes a browser client would receive.
 - **The drift `responseTimeThresholdMs` performance-flag gate is now covered by behavioural tests.**
   `DriftAnalyzer.checkPerformanceDrift` raises a `PERFORMANCE` drift record only when an expectation's
   observed p95 latency exceeds the instance-set `responseTimeThresholdMs`, but no test drove responses

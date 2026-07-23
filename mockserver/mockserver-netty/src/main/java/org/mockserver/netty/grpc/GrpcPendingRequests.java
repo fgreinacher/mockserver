@@ -100,14 +100,27 @@ final class GrpcPendingRequests {
      */
     static final class PendingRequest {
         private final String[] serviceMethod;
+        /**
+         * The original gRPC-Web request content-type ({@code application/grpc-web[-text][+proto]}),
+         * or {@code null} for a standard gRPC request. Carried here because a browser gRPC-Web
+         * client cannot read HTTP trailers -- {@code grpc-status} must be re-framed into the body --
+         * and the matched-expectation response does not otherwise retain the request's
+         * {@code x-grpc-web-content-type} marker. See {@link GrpcToHttpResponseHandler#encode}.
+         */
+        private final String grpcWebContentType;
         private ScheduledFuture<?> deadlineFuture;
 
-        PendingRequest(String serviceName, String methodName) {
+        PendingRequest(String serviceName, String methodName, String grpcWebContentType) {
             this.serviceMethod = new String[]{serviceName, methodName};
+            this.grpcWebContentType = grpcWebContentType;
         }
 
         String[] serviceMethod() {
             return serviceMethod;
+        }
+
+        String grpcWebContentType() {
+            return grpcWebContentType;
         }
 
         void deadlineFuture(ScheduledFuture<?> deadlineFuture) {
@@ -206,7 +219,17 @@ final class GrpcPendingRequests {
      * if a future pipeline change writes a response from another thread.
      */
     synchronized PendingRequest record(Integer streamId, String serviceName, String methodName) {
-        PendingRequest serviceMethod = new PendingRequest(serviceName, methodName);
+        return record(streamId, serviceName, methodName, null);
+    }
+
+    /**
+     * As {@link #record(Integer, String, String)}, additionally retaining the original gRPC-Web
+     * request content-type so {@link GrpcToHttpResponseHandler#encode} can re-frame the matched
+     * response as gRPC-Web (in-body trailer frame) rather than leaving {@code grpc-status} in HTTP
+     * trailers that no browser gRPC-Web client can read.
+     */
+    synchronized PendingRequest record(Integer streamId, String serviceName, String methodName, String grpcWebContentType) {
+        PendingRequest serviceMethod = new PendingRequest(serviceName, methodName, grpcWebContentType);
         if (streamId == null) {
             if (withoutStreamId != null) {
                 withoutStreamIdAmbiguous = true;
@@ -231,6 +254,10 @@ final class GrpcPendingRequests {
 
     /**
      * Removes and returns the record for this stream, or {@code null} if there is none.
+     * <p>
+     * The returned array is {@code {service, method, grpcWebContentType}}: element 2 is the original
+     * gRPC-Web request content-type (or {@code null} for standard gRPC), so the response handler can
+     * re-frame a matched-expectation response as gRPC-Web.
      */
     synchronized String[] consume(Integer streamId) {
         PendingRequest pendingRequest;
@@ -255,7 +282,8 @@ final class GrpcPendingRequests {
         // the exchange is answered -- the deadline can no longer fire, so the timer must not
         // outlive it
         pendingRequest.cancelDeadline();
-        return pendingRequest.serviceMethod();
+        String[] serviceMethod = pendingRequest.serviceMethod();
+        return new String[]{serviceMethod[0], serviceMethod[1], pendingRequest.grpcWebContentType()};
     }
 
     /**

@@ -165,6 +165,13 @@ public class GrpcToHttpResponseHandler extends MessageToMessageEncoder<HttpRespo
                 grpcMethod = pending[1];
             }
         }
+        // The gRPC-Web request content-type marker lives on the request only, so a matched-expectation
+        // response does not carry it. Recover it from the per-stream record (element 2) so the response
+        // is re-framed as gRPC-Web -- grpc-status in an in-body trailer frame the browser client can read
+        // -- rather than going out as application/grpc with unreadable HTTP trailers.
+        if (isEmpty(grpcWebContentType) && pending != null && pending.length > 2 && !isEmpty(pending[2])) {
+            grpcWebContentType = pending[2];
+        }
 
         if (!isEmpty(grpcService) && !isEmpty(grpcMethod)) {
             try {

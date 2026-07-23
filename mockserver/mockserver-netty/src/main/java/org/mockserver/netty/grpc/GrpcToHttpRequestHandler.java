@@ -428,8 +428,14 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
             && methodName != null && !methodName.isEmpty()) {
             GrpcPendingRequests pendingRequests = GrpcPendingRequests.forChannel(ctx.channel());
             Integer streamId = request != null ? request.getStreamId() : null;
+            // Retain the original gRPC-Web request content-type (set by translateGrpcWebRequest)
+            // so the matched-expectation response is re-framed as gRPC-Web. Without this the marker
+            // -- present on the request only -- is lost, and a browser gRPC-Web client receives
+            // application/grpc with grpc-status in HTTP trailers it cannot read.
+            String grpcWebContentType = request != null ? request.getFirstHeader("x-grpc-web-content-type") : null;
             GrpcPendingRequests.PendingRequest pendingRequest =
-                pendingRequests.record(streamId, serviceName, methodName);
+                pendingRequests.record(streamId, serviceName, methodName,
+                    isNotBlank(grpcWebContentType) ? grpcWebContentType : null);
             scheduleDeadline(ctx, request, pendingRequests, pendingRequest, streamId);
         }
     }
