@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The drift `responseTimeThresholdMs` performance-flag gate is now covered by behavioural tests.**
+  `DriftAnalyzer.checkPerformanceDrift` raises a `PERFORMANCE` drift record only when an expectation's
+  observed p95 latency exceeds the instance-set `responseTimeThresholdMs`, but no test drove responses
+  straddling that threshold, so a regression that flagged everything (or nothing) would not have been
+  caught. A new `DriftPerformanceThresholdTest` feeds the real `PercentileTracker` latencies under and
+  over the threshold and asserts on the production `DriftStore` outcome: the over-threshold case flags
+  exactly one `PERFORMANCE` record (with `expectedValue=<=threshold` and the actual p95), the
+  under-threshold and disabled (`0`) cases flag nothing, a slow-tail distribution whose p95 crosses the
+  threshold flips, and the `DriftAlertNotifier` webhook fires only when the flag is raised and its
+  severity meets the notifier threshold.
 - **The `outputMemoryUsageCsv` memory-usage CSV export is now covered by tests.** `MemoryMonitoring`
   builds a CSV header from the `buildStatistics()` keys on construction and appends a data row on each
   `logMemoryMetrics()` call, but this export path had no test anywhere. A new `MemoryMonitoringTest`
