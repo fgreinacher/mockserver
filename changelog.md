@@ -51,6 +51,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (reaching `Runtime.exec`), then flips `velocityDisallowClassLoading(true)` on the SAME configuration
   and re-renders through the SAME engine, asserting the class-loading line is now BLOCKED (inert, empty
   body, no exception) — proving the live rebuild applies the new restriction.
+- **The metrics endpoint's ENABLED path is now proven end-to-end over the handler, not just its
+  disabled 404 and CORS behaviour.** Previously the only enabled-path coverage was a mock-`ctx` unit
+  test (`MetricsHandlerTest`) that asserted the content-type header was non-null but never that
+  `GET /mockserver/metrics` returns 200 with a real Prometheus exposition body. Two new tests in
+  `HttpRequestHandlerTest` drive the request through the real `HttpRequestHandler` routing and
+  `MetricsHandler`, with metrics enabled and the `mock_server_requests_received` counter incremented:
+  they assert the response is 200 (mapping it through the same wire encoder the server uses, since the
+  handler writes a status-less response the encoder resolves to 200 OK) and that the body carries the
+  `mock_server_requests_received_total` series. A second case sends an OpenMetrics `Accept` header and
+  asserts the negotiated OpenMetrics content-type, complementing the existing
+  `shouldReserveMetricsPathWithCORSWhenMetricsDisabled` negative (disabled -> 404) so the enabled path
+  is provably the difference.
 - **The dashboard WebSocket frame now has a cross-boundary STRUCTURAL contract test, closing the gap
   where the server and the UI were tested against separately-authored payloads and could silently
   drift apart.** A single checked-in contract file (`mockserver-ui/src/__fixtures__/dashboardFrameContract.json`)

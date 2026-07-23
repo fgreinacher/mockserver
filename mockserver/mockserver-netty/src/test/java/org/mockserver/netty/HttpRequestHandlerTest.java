@@ -3,6 +3,8 @@ package org.mockserver.netty;
 import com.google.common.collect.ImmutableSet;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.util.CharsetUtil;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Rule;
@@ -19,6 +21,8 @@ import org.mockserver.matchers.Times;
 import org.mockserver.mock.Expectation;
 import org.mockserver.mock.HttpState;
 import org.mockserver.mock.action.http.HttpActionHandler;
+import org.mockserver.mappers.MockServerHttpResponseToFullHttpResponse;
+import org.mockserver.metrics.Metrics;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.model.MediaType;
@@ -206,6 +210,95 @@ public class HttpRequestHandlerTest {
         HttpResponse httpResponse = embeddedChannel.readOutbound();
         assertThat(httpResponse.getStatusCode(), is(404));
         assertThat(httpResponse.getFirstHeader("access-control-allow-origin"), is("http://localhost:3000"));
+    }
+
+    @Test
+    public void shouldServeMetricsWithPrometheusBodyWhenMetricsEnabled() {
+        // given - a server with metrics ENABLED and one request-received increment recorded, so the
+        // Prometheus scrape carries the mock_server_requests_received_total counter with a value > 0.
+        // This is the counterpart to shouldReserveMetricsPathWithCORSWhenMetricsDisabled above: it
+        // drives GET /mockserver/metrics through the real HttpRequestHandler routing + MetricsHandler
+        // and proves the enabled path serves 200 with the exposition body (previously only the
+        // disabled 404 path and a mock-ctx unit test asserting content-type!=null existed).
+        rebuildWithMetricsEnabled();
+        try {
+            Metrics.resetAdditionalMetricsForTesting();
+            Metrics metrics = new Metrics(configuration().metricsEnabled(true));
+            metrics.increment(Metrics.Name.REQUESTS_RECEIVED_COUNT);
+
+            HttpRequest metricsRequest = request("/mockserver/metrics")
+                .withMethod("GET")
+                .withKeepAlive(true);
+
+            // when
+            embeddedChannel.writeInbound(metricsRequest);
+
+            // then - the MetricsHandler writes the response object directly to the channel with no
+            // explicit status code (null), which the wire encoder maps to 200 OK. Assert against that
+            // same encoder so the assertion reflects what actually reaches a scraper, and confirm the
+            // incremented counter is present in the Prometheus text body.
+            HttpResponse httpResponse = embeddedChannel.readOutbound();
+            FullHttpResponse wireResponse = mapToWireResponse(httpResponse);
+            assertThat(wireResponse.status().code(), is(200));
+            assertThat(wireResponse.content().toString(CharsetUtil.UTF_8),
+                containsString("mock_server_requests_received_total"));
+        } finally {
+            Metrics.resetAdditionalMetricsForTesting();
+        }
+    }
+
+    @Test
+    public void shouldServeOpenMetricsBodyWhenMetricsEnabledAndOpenMetricsAccept() {
+        // given - metrics enabled; the handler selects the exposition writer from the Accept header
+        // (MetricsHandler.renderMetrics -> ExpositionFormats.findWriter(Accept)), so an OpenMetrics
+        // Accept must yield an OpenMetrics content-type while still serving 200 and the counter.
+        rebuildWithMetricsEnabled();
+        try {
+            Metrics.resetAdditionalMetricsForTesting();
+            Metrics metrics = new Metrics(configuration().metricsEnabled(true));
+            metrics.increment(Metrics.Name.REQUESTS_RECEIVED_COUNT);
+
+            HttpRequest metricsRequest = request("/mockserver/metrics")
+                .withMethod("GET")
+                .withKeepAlive(true)
+                .withHeader("Accept", "application/openmetrics-text; version=1.0.0; charset=utf-8");
+
+            // when
+            embeddedChannel.writeInbound(metricsRequest);
+
+            // then - 200 with the OpenMetrics exposition format negotiated from Accept
+            HttpResponse httpResponse = embeddedChannel.readOutbound();
+            FullHttpResponse wireResponse = mapToWireResponse(httpResponse);
+            assertThat(wireResponse.status().code(), is(200));
+            assertThat(httpResponse.getFirstHeader("content-type"), containsString("openmetrics-text"));
+            assertThat(wireResponse.content().toString(CharsetUtil.UTF_8),
+                containsString("mock_server_requests_received_total"));
+        } finally {
+            Metrics.resetAdditionalMetricsForTesting();
+        }
+    }
+
+    /**
+     * Rebuilds {@link #httpStateHandler} and the embedded channel handler with metrics ENABLED, so
+     * GET /mockserver/metrics is served by {@link org.mockserver.metrics.MetricsHandler} rather than
+     * the disabled-state 404. Mirrors {@link #rebuildWithSharedConfiguration()}.
+     */
+    private void rebuildWithMetricsEnabled() {
+        org.mockserver.configuration.Configuration configuration = configuration().metricsEnabled(true);
+        httpStateHandler = new HttpState(configuration, new MockServerLogger(), synchronousScheduler());
+        mockServerHandler = new HttpRequestHandler(configuration, server, httpStateHandler, null);
+        embeddedChannel = new EmbeddedChannel(mockServerHandler);
+    }
+
+    /**
+     * Maps a model {@link HttpResponse} through the same encoder the Netty server uses, so a
+     * response with no explicit status code (as the metrics handler writes) is observed as the
+     * 200 OK it becomes on the wire, and the exposition body can be read as bytes.
+     */
+    private FullHttpResponse mapToWireResponse(HttpResponse httpResponse) {
+        return (FullHttpResponse) new MockServerHttpResponseToFullHttpResponse(new MockServerLogger())
+            .mapMockServerResponseToNettyResponse(httpResponse)
+            .get(0);
     }
 
     @Test
