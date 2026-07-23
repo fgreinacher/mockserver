@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A new `GrpcWebOverTheWireIntegrationTest` posts a real `application/grpc-web` and
   `application/grpc-web-text` framed request to a running server over a raw socket and asserts on the
   exact bytes a browser client would receive.
+- **The AsyncAPI control-plane HTTP endpoints now have an over-the-wire integration test.**
+  `PUT /mockserver/asyncapi`, `GET /mockserver/asyncapi` and `PUT /mockserver/asyncapi/verify` were
+  only exercised at the orchestrator/control-plane level, so a regression in the Netty →
+  `HttpState` → `AsyncApiControlPlaneRegistry` routing or response wiring would not have been caught.
+  A new `AsyncApiControlPlaneIntegrationTest` boots a real MockServer and drives all three endpoints
+  over a raw socket without any live broker: it asserts the load response (`201`, `loaded:true`,
+  channel count, zero publishers/subscribers), the status response (`200`, channels, counts, and the
+  empty/unloaded case), and the broker-less verify verdict (`406` with the "at least 1 … found 0"
+  failure detail) plus the blank-body `400`.
 - **The drift `responseTimeThresholdMs` performance-flag gate is now covered by behavioural tests.**
   `DriftAnalyzer.checkPerformanceDrift` raises a `PERFORMANCE` drift record only when an expectation's
   observed p95 latency exceeds the instance-set `responseTimeThresholdMs`, but no test drove responses
