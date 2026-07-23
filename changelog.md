@@ -40,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arrives promptly as one of at least two separate, in-order DATA frames rather than being buffered into
   one. Degrading the write path to buffer chunks until stream completion was verified to make the
   incremental-delivery assertion go red.
+- **PROXY-protocol destination resolution is now proven to drive transparent-proxy forwarding over a real
+  socket.** `ProxyProtocolOriginalDestinationHandler` was only exercised via `EmbeddedChannel`, which asserts
+  the handler sets the `REMOTE_SOCKET` channel attribute but never that this attribute actually chooses the
+  forward target end-to-end. A new non-privileged loopback `ProxyProtocolForwardingIntegrationTest` runs
+  MockServer with `transparentProxyEnabled=true` and no fixed remote, opens a raw socket, writes a valid
+  PROXY v1 `TCP4` header naming a loopback `EchoServer` as the destination followed by a plain GET whose
+  `Host` header points at an unrelated (closed) decoy port, and asserts the EchoServer reflects the request
+  back — proving the PROXY-protocol `REMOTE_SOCKET`, and not the `Host` header, drives forwarding. The test
+  needs no `NET_ADMIN`/privileged capability because the PROXY-protocol header is an application-level byte
+  prefix. Verified as a genuine regression guard by a positive control: ignoring the PROXY-header
+  destination turns the forwarding assertions RED, restoring it returns them GREEN.
 - **The drift `responseTimeThresholdMs` performance-flag gate is now covered by behavioural tests.**
   `DriftAnalyzer.checkPerformanceDrift` raises a `PERFORMANCE` drift record only when an expectation's
   observed p95 latency exceeds the instance-set `responseTimeThresholdMs`, but no test drove responses
