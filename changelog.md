@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The `outputMemoryUsageCsv` memory-usage CSV export is now covered by tests.** `MemoryMonitoring`
+  builds a CSV header from the `buildStatistics()` keys on construction and appends a data row on each
+  `logMemoryMetrics()` call, but this export path had no test anywhere. A new `MemoryMonitoringTest`
+  enables CSV output to a JUnit `TemporaryFolder` and asserts the file is created, its header row
+  exactly matches the `buildStatistics()` column keys, a triggered data row has a matching column count
+  with a positive numeric `heapUsed` value, and that NO file is written when `outputMemoryUsageCsv` is
+  disabled.
 - **The `driftDetectionEnabled` master switch is now covered by a behavioural enforcement test.** The
   existing `DriftDetectionConfigTest` only re-implemented the gate boolean inline and never exercised
   the production code path, so a regression that ignored the flag would not have been caught. A new
