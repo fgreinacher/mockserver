@@ -150,6 +150,44 @@ public class HttpActionHandlerRateLimitTest {
     }
 
     @Test
+    public void tokenBucketBurstOfOneAllowsBurstThenReturns429() {
+        // given - a TOKEN_BUCKET limit with capacity 1 and a negligible refill (0.001 tokens/s):
+        // the bucket holds a single token, and over the few milliseconds between two immediate
+        // requests fewer than one milli-token is refilled, so the second request is over-limit.
+        // This exercises the algorithm-specific token-bucket enforcement over the handler/wire path
+        // (X-RateLimit-Limit is the bucket burst, not a fixed-window limit).
+        HttpRequest request = request("some_path");
+        HttpResponse normalResponse = response("normal body").withDelay(milliseconds(0));
+        RateLimit rl = rateLimit().withName("bkt-acct")
+            .withAlgorithm(RateLimit.Algorithm.TOKEN_BUCKET)
+            .withBurst(1L)
+            .withRefillPerSecond(0.001);
+        Expectation expectation = new Expectation(request).thenRespond(normalResponse).withRateLimit(rl);
+
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+        when(mockHttpResponseActionHandler.handle(any(HttpResponse.class), any(HttpRequest.class), any(RequestDefinition.class))).thenReturn(normalResponse);
+
+        // when - two immediate requests: the burst of one is allowed, the second exhausts the bucket
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - the first is the normal response, the second is a 429 with the bucket burst as the limit
+        ArgumentCaptor<HttpResponse> responseCaptor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(mockResponseWriter, times(2)).writeResponse(eq(request), responseCaptor.capture(), eq(false));
+        HttpResponse first = responseCaptor.getAllValues().get(0);
+        HttpResponse second = responseCaptor.getAllValues().get(1);
+
+        assertThat(first.getBodyAsString(), is("normal body"));
+
+        assertThat(second.getStatusCode(), is(429));
+        assertThat(second.getFirstHeader("X-RateLimit-Limit"), is("1"));
+        assertThat(second.getFirstHeader("X-RateLimit-Remaining"), is("0"));
+        assertThat(second.getFirstHeader("X-RateLimit-Reset").isEmpty(), is(false));
+        assertThat(second.getFirstHeader("Retry-After").isEmpty(), is(false));
+        assertThat(second.getBodyAsString(), is("{\"error\":{\"type\":\"rate_limit_exceeded\",\"message\":\"request rate limit exceeded\"}}"));
+    }
+
+    @Test
     public void errorStatusOverrideIsHonoured() {
         // given - limit of 1, custom over-limit status 529, literal retryAfter
         HttpRequest request = request("some_path");

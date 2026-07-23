@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly matches the `buildStatistics()` column keys, a triggered data row has a matching column count
   with a positive numeric `heapUsed` value, and that NO file is written when `outputMemoryUsageCsv` is
   disabled.
+- **`TOKEN_BUCKET` rate-limit enforcement is now covered end-to-end through the handler/wire path.**
+  Every 429-rendering test (`HttpActionHandlerRateLimitTest`, `RateLimitIntegrationTest`) previously used
+  only `FIXED_WINDOW`; `TOKEN_BUCKET` was exercised solely at the registry level, so a regression that
+  failed to render the synthetic 429 for a token-bucket limit would not have been caught. A new
+  `HttpActionHandlerRateLimitTest.tokenBucketBurstOfOneAllowsBurstThenReturns429` drives two immediate
+  requests against a `TOKEN_BUCKET` limit with `burst=1` and a negligible refill through the real
+  `HttpActionHandler`, asserting the algorithm-specific behaviour: the burst of one is allowed (normal
+  response), the second request exhausts the bucket and returns a `429` carrying
+  `X-RateLimit-Limit: 1` (the bucket burst), `X-RateLimit-Remaining: 0`, and the `Retry-After`/reset headers.
 - **The `driftDetectionEnabled` master switch is now covered by a behavioural enforcement test.** The
   existing `DriftDetectionConfigTest` only re-implemented the gate boolean inline and never exercised
   the production code path, so a regression that ignored the flag would not have been caught. A new
