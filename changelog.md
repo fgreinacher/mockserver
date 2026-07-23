@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `totalTokenCount`, Ollama's top-level `prompt_eval_count`/`eval_count`) — equal the hand-authored
   canonical `Usage` values (input 12 / output 8 for text, 25 / 15 for tool-call), using `asInt(-1)` so a
   dropped or missing field fails the equality rather than silently defaulting to `0`.
+- **GenAI span emission on the LLM SERVE path is now covered end-to-end.** When MockServer serves a
+  locally-mocked `httpLlmResponse` completion, `HttpLlmResponseActionHandler` emits an OpenTelemetry
+  GenAI (`gen_ai.*`) span via `GenAiSpans.recordCompletion(...)` — a distinct code path from the
+  forward/proxy-path emission already guarded by `ForwardPathGenAiSpanEmissionTest`, and previously
+  untested end-to-end. A new `ServePathGenAiSpanEmissionTest` installs an `InMemorySpanExporter`
+  through the `GenAiSpanExporter.startWithProcessor(...)` seam, drives a real `MockServer` serving an
+  OpenAI-shaped completion, and asserts exactly one GenAI span carrying `gen_ai.request.model`,
+  `gen_ai.system`, and the input/output usage-token attributes is produced by the production serve
+  path (read back from the exporter, not reconstructed).
 - **The `outputMemoryUsageCsv` memory-usage CSV export is now covered by tests.** `MemoryMonitoring`
   builds a CSV header from the `buildStatistics()` keys on construction and appends a data row on each
   `logMemoryMetrics()` call, but this export path had no test anywhere. A new `MemoryMonitoringTest`
