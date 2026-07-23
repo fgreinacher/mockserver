@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under-threshold and disabled (`0`) cases flag nothing, a slow-tail distribution whose p95 crosses the
   threshold flips, and the `DriftAlertNotifier` webhook fires only when the flag is raised and its
   severity meets the notifier threshold.
+- **LLM provider codecs now have their emitted token-usage counts asserted, not normalized away.** The
+  `LlmCodecGoldenFileTest` golden drift harness deliberately zeroes usage blocks before comparing (usage
+  counts are structural, not stable values), which meant the golden files alone could not prove a codec
+  emits the *correct* token counts — a codec that silently regressed usage to `0`, or swapped
+  input/output, would still have matched its golden. A new
+  `LlmCodecGoldenFileTest.shouldEncodeCanonicalTokenUsageCounts` closes that blind spot: for all seven
+  chat/completion providers (OpenAI, OpenAI-Responses, Anthropic, Gemini, Bedrock, Azure-OpenAI, Ollama)
+  it encodes the canonical text and tool-call completions and asserts the actual encoded token-count
+  fields — named per each provider's published usage schema (`prompt_tokens`/`completion_tokens`/
+  `total_tokens`, `input_tokens`/`output_tokens`, `usageMetadata.promptTokenCount`/`candidatesTokenCount`/
+  `totalTokenCount`, Ollama's top-level `prompt_eval_count`/`eval_count`) — equal the hand-authored
+  canonical `Usage` values (input 12 / output 8 for text, 25 / 15 for tool-call), using `asInt(-1)` so a
+  dropped or missing field fails the equality rather than silently defaulting to `0`.
 - **The `outputMemoryUsageCsv` memory-usage CSV export is now covered by tests.** `MemoryMonitoring`
   builds a CSV header from the `buildStatistics()` keys on construction and appends a data row on each
   `logMemoryMetrics()` call, but this export path had no test anywhere. A new `MemoryMonitoringTest`

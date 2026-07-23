@@ -273,6 +273,124 @@ public class LlmCodecGoldenFileTest {
     }
 
     // -----------------------------------------------------------------------
+    // Token-count wire-correctness — usage counts ASSERTED, never zeroed
+    // -----------------------------------------------------------------------
+
+    /**
+     * Pins the actual encoded token counts against hand-authored canonical
+     * {@link Usage} values, for every chat/completion provider, on both the text
+     * and tool-call paths.
+     * <p>
+     * The golden drift test above deliberately normalizes usage blocks to zero
+     * (they are structural, not stable values, so zeroing keeps ID/timestamp-
+     * independent drift easy to read). That normalization means the golden files
+     * <em>alone cannot prove a codec emits the correct token counts</em>: a codec
+     * that silently regressed usage to {@code 0}, or swapped input/output, would
+     * still match its golden. This test closes that blind spot — it encodes the
+     * same canonical completions ({@link #TEXT_COMPLETION} = input 12 / output 8,
+     * {@link #TOOL_CALL_COMPLETION} = input 25 / output 15) and asserts the actual
+     * encoded token-count fields, named per each provider's published usage schema,
+     * equal those canonical values.
+     */
+    @Test
+    public void shouldEncodeCanonicalTokenUsageCounts() {
+        ProviderCodecRegistry registry = ProviderCodecRegistry.getInstance();
+        List<String> asserted = new ArrayList<>();
+
+        for (Provider provider : Provider.values()) {
+            if (RERANK_ONLY_PROVIDERS.contains(provider)
+                || OPENAI_COMPATIBLE_ALIAS_PROVIDERS.contains(provider)) {
+                // No chat/completion usage block on these paths (rerank-only), or
+                // byte-identical to the OpenAI codec (aliases) — covered elsewhere.
+                continue;
+            }
+            Optional<ProviderCodec> optCodec = registry.lookup(provider);
+            if (optCodec.isEmpty()) {
+                continue;
+            }
+            ProviderCodec codec = optCodec.get();
+            String model = CANONICAL_MODELS.getOrDefault(provider, "unknown");
+            if (!supportsEncode(codec, provider, model)) {
+                continue;
+            }
+
+            // TEXT_COMPLETION carries usage(input=12, output=8)
+            assertEncodedUsage(provider, encodeToTree(codec, TEXT_COMPLETION, model), 12, 8);
+            // TOOL_CALL_COMPLETION carries usage(input=25, output=15)
+            assertEncodedUsage(provider, encodeToTree(codec, TOOL_CALL_COMPLETION, model), 25, 15);
+            asserted.add(provider.name());
+        }
+
+        assertThat("Expected canonical token-usage assertions to cover all 7 chat/completion providers "
+                + "(OpenAI, OpenAI-Responses, Anthropic, Gemini, Bedrock, Azure-OpenAI, Ollama): " + asserted,
+            asserted.size(), greaterThanOrEqualTo(7));
+    }
+
+    private JsonNode encodeToTree(ProviderCodec codec, Completion completion, String model) {
+        try {
+            // Parse the raw encoded body WITHOUT the golden normalization, so the
+            // real token counts survive to be asserted rather than being zeroed.
+            return OBJECT_MAPPER.readTree(codec.encode(completion, model).getBodyAsString());
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to parse encoded response for usage assertion", e);
+        }
+    }
+
+    /**
+     * Assert the encoded token-count fields equal the canonical values, using the
+     * usage field names each provider actually emits on the wire (from its public
+     * API docs). {@code asInt(-1)} makes a dropped or missing field fail the
+     * equality (it becomes {@code -1}) instead of silently defaulting to {@code 0}.
+     */
+    private void assertEncodedUsage(Provider provider, JsonNode root, int expectedInput, int expectedOutput) {
+        String ctx = provider.name() + " usage";
+        switch (provider) {
+            case OPENAI:
+            case AZURE_OPENAI: {
+                // OpenAI Chat Completions: usage.{prompt_tokens,completion_tokens,total_tokens}
+                JsonNode u = root.path("usage");
+                assertThat(ctx + " prompt_tokens", u.path("prompt_tokens").asInt(-1), is(expectedInput));
+                assertThat(ctx + " completion_tokens", u.path("completion_tokens").asInt(-1), is(expectedOutput));
+                assertThat(ctx + " total_tokens", u.path("total_tokens").asInt(-1), is(expectedInput + expectedOutput));
+                break;
+            }
+            case OPENAI_RESPONSES: {
+                // OpenAI Responses API: usage.{input_tokens,output_tokens,total_tokens}
+                JsonNode u = root.path("usage");
+                assertThat(ctx + " input_tokens", u.path("input_tokens").asInt(-1), is(expectedInput));
+                assertThat(ctx + " output_tokens", u.path("output_tokens").asInt(-1), is(expectedOutput));
+                assertThat(ctx + " total_tokens", u.path("total_tokens").asInt(-1), is(expectedInput + expectedOutput));
+                break;
+            }
+            case ANTHROPIC:
+            case BEDROCK: {
+                // Anthropic Messages (and Bedrock's Anthropic shape): usage.{input_tokens,output_tokens}
+                JsonNode u = root.path("usage");
+                assertThat(ctx + " input_tokens", u.path("input_tokens").asInt(-1), is(expectedInput));
+                assertThat(ctx + " output_tokens", u.path("output_tokens").asInt(-1), is(expectedOutput));
+                break;
+            }
+            case GEMINI: {
+                // Gemini generateContent: usageMetadata.{promptTokenCount,candidatesTokenCount,totalTokenCount}
+                JsonNode u = root.path("usageMetadata");
+                assertThat(ctx + " promptTokenCount", u.path("promptTokenCount").asInt(-1), is(expectedInput));
+                assertThat(ctx + " candidatesTokenCount", u.path("candidatesTokenCount").asInt(-1), is(expectedOutput));
+                assertThat(ctx + " totalTokenCount", u.path("totalTokenCount").asInt(-1), is(expectedInput + expectedOutput));
+                break;
+            }
+            case OLLAMA: {
+                // Ollama chat: top-level prompt_eval_count / eval_count
+                assertThat(ctx + " prompt_eval_count", root.path("prompt_eval_count").asInt(-1), is(expectedInput));
+                assertThat(ctx + " eval_count", root.path("eval_count").asInt(-1), is(expectedOutput));
+                break;
+            }
+            default:
+                fail("No usage-field mapping defined for provider " + provider +
+                    " — add its published token-count field names to assertEncodedUsage().");
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Encode + normalize helpers
     // -----------------------------------------------------------------------
 
