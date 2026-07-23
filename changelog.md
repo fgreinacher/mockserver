@@ -38,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   encoder. A new test serves a synthetic `unmapped-fixture.webp` (an extension deliberately absent from
   both `MIME_MAP` and the string-content list) and asserts the served response is found (not the 404
   not-found response) and carries `Content-Type: application/octet-stream`.
+- **The `BCKeyAndCertificateFactory` IPv6 Subject-Alternative-Name branch is now covered, closing the gap
+  where only IPv4 SAN IPs were exercised.** `BCKeyAndCertificateFactoryBehaviourTest` gains
+  `shouldIncludeIPv6AddressesInSAN`, which configures `sslSubjectAlternativeNameIps("127.0.0.1", "::1",
+  "2001:db8::1")`, generates the leaf certificate, and asserts the generated cert's iPAddress SAN entries
+  (GeneralName type 7) contain both IPv6 addresses AND the IPv4 address in the same certificate. Assertions
+  compare via `InetAddress` so they are independent of the JDK's canonical string form for IPv6 (e.g.
+  `::1` -> `0:0:0:0:0:0:0:1`). This pins the `IPAddress.isValidIPv6`/`isValidIPv6WithNetmask` branch of the
+  SAN-IP handling, previously reachable only through IPv4 literals.
 - **The OpenAPI forward-validate action's `LOG_ONLY` mode now has behavioural passthrough coverage,
   closing the gap where only the getter was asserted.** `HttpForwardValidateActionHandlerTest` gains two
   tests that drive `handle(...)` with `validationMode = LOG_ONLY`: one sends a schema-violating request

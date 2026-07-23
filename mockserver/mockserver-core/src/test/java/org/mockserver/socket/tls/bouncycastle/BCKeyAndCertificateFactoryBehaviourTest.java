@@ -151,6 +151,39 @@ public class BCKeyAndCertificateFactoryBehaviourTest {
     }
 
     @Test
+    public void shouldIncludeIPv6AddressesInSAN() throws Exception {
+        // given - exercise the IPv6 branch of the SAN-IP handling alongside an IPv4 literal,
+        // so this proves the IPv6 branch works AND that IPv4 still works in the same certificate
+        configuration.sslCertificateDomainName("localhost");
+        configuration.sslSubjectAlternativeNameIps("127.0.0.1", "::1", "2001:db8::1");
+
+        // when
+        factory.buildAndSavePrivateKeyAndX509Certificate();
+
+        // then
+        X509Certificate cert = factory.x509Certificate();
+        Collection<List<?>> sans = getSANs(cert);
+        assertThat(sans, notNullValue());
+
+        // compare via InetAddress so the assertion is independent of the JDK's canonical
+        // string form for IPv6 (e.g. "::1" -> "0:0:0:0:0:0:0:1") - equality is on address bytes
+        Set<java.net.InetAddress> ipAddresses = extractIPAddresses(sans).stream()
+            .map(ip -> {
+                try {
+                    return java.net.InetAddress.getByName(ip);
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to parse SAN IP address: " + ip, e);
+                }
+            })
+            .collect(Collectors.toSet());
+
+        assertThat(ipAddresses, hasItem(java.net.InetAddress.getByName("::1")));
+        assertThat(ipAddresses, hasItem(java.net.InetAddress.getByName("2001:db8::1")));
+        // IPv4 still included in the same certificate
+        assertThat(ipAddresses, hasItem(java.net.InetAddress.getByName("127.0.0.1")));
+    }
+
+    @Test
     public void shouldIncludeBothDomainsAndIPsInSAN() {
         // given
         configuration.sslCertificateDomainName("myhost.local");
