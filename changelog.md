@@ -39,6 +39,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OpenAI-shaped completion, and asserts exactly one GenAI span carrying `gen_ai.request.model`,
   `gen_ai.system`, and the input/output usage-token attributes is produced by the production serve
   path (read back from the exporter, not reconstructed).
+- **The HTTP parser limit `maxHeaderSize` is now covered by a behavioural test.** The three parser
+  limits (`maxInitialLineLength`, `maxHeaderSize`, `maxChunkSize`) are wired into the Netty
+  `HttpServerCodec` in the HTTP/1.1 request pipeline (`PortUnificationHandler.switchToHttp`), but no
+  test drove an over-limit request, so a regression that dropped the configured value and fell back to
+  Netty's 8192-byte default — or removed the wiring entirely — would have gone unnoticed. A new
+  `HttpParserLimitsIntegrationTest` starts a server configured with `maxHeaderSize=1024` and drives raw
+  HTTP/1.1 requests over a plain `Socket` against a header-conditional expectation. The
+  client-observable effect of the limit is header truncation: Netty's decoder stops parsing at the
+  byte that crosses the limit and drops every header after it (MockServer logs the decode failure but
+  still serves the request from the headers it did parse). A control request whose marker header sits
+  within the 1024-byte limit is parsed, matches, and returns the mocked `200`; an otherwise-identical
+  request with a ~2KB filler header inserted ahead of the marker pushes the marker past the boundary,
+  so it is dropped, the request no longer matches, and MockServer returns `404`. The filler size sits
+  strictly between the configured limit and Netty's 8192-byte default, so the test is a genuine
+  positive control: reverting the wiring to ignore the configured `maxHeaderSize` (using the default)
+  lets the whole header block through, the marker survives, and the over-limit request matches and
+  returns `200` — turning the test red (confirmed).
 - **The `outputMemoryUsageCsv` memory-usage CSV export is now covered by tests.** `MemoryMonitoring`
   builds a CSV header from the `buildStatistics()` keys on construction and appends a data row on each
   `logMemoryMetrics()` call, but this export path had no test anywhere. A new `MemoryMonitoringTest`
