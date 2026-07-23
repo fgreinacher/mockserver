@@ -557,6 +557,51 @@ public class VelocityTemplateEngineTest {
     }
 
     @Test
+    public void shouldApplyDisallowClassLoadingWhenToggledOnLiveEngine() {
+        // GAP #47: the sandbox setting must take effect when flipped on an ALREADY-CONSTRUCTED engine
+        // (system property / Configuration setter / PUT /mockserver/configuration at runtime), not only
+        // when a brand-new engine is built. VelocityTemplateEngine.currentEngineHolder() rebuilds the
+        // underlying VelocityEngine (installing the SecureUberspector) when the live
+        // velocityDisallowClassLoading differs from the flag the current engine was built with, so the
+        // SAME engine instance must start blocking class loading after the toggle. The existing
+        // shouldHandleHttpRequestsWithVelocityTemplateWithDisallowClassLoading test instead builds a
+        // fresh engine after the flip, so this live rebuild-on-same-engine path was never covered.
+
+        // given - a dedicated configuration with class loading allowed, and ONE engine built from it
+        Configuration liveConfiguration = configuration().velocityDisallowClassLoading(false);
+        VelocityTemplateEngine engine = new VelocityTemplateEngine(mockServerLogger, liveConfiguration);
+
+        String template = "{" + NEW_LINE +
+            "    'statusCode': 200," + NEW_LINE +
+            "    'body': \"$!request.class.classLoader.loadClass('java.lang.Runtime').getRuntime().exec(\"does_not_exist.sh\")\"" + NEW_LINE +
+            "}";
+        HttpRequest request = request()
+            .withPath("/somePath")
+            .withMethod("POST")
+            .withHeader(HOST.toString(), "mock-server.com")
+            .withBody("some_body".getBytes(StandardCharsets.UTF_8));
+
+        // then - with class loading allowed the SAME engine EXECUTES the class-loading line (it reaches
+        // Runtime.exec, which fails only because the script does not exist) — proving class loading is
+        // genuinely live before the toggle
+        Exception executed = assertThrows(RuntimeException.class, () -> engine.executeTemplate(template, request, HttpResponseDTO.class));
+        assertThat(executed.getMessage(), containsString("Cannot run program \"does_not_exist.sh\""));
+
+        // when - the sandbox is toggled ON on the SAME configuration the SAME engine holds
+        liveConfiguration.velocityDisallowClassLoading(true);
+
+        // then - the SAME engine now BLOCKS the class-loading line: currentEngineHolder() rebuilds the
+        // VelocityEngine with the SecureUberspector, so the loadClass reference is inert and the body
+        // renders empty rather than executing (and no exception is thrown)
+        HttpResponse blocked = engine.executeTemplate(template, request, HttpResponseDTO.class);
+        assertThat(blocked, is(
+            response()
+                .withStatusCode(200)
+                .withBody("")
+        ));
+    }
+
+    @Test
     public void shouldHandleHttpRequestsWithVelocityTemplateWithDisallowedText() {
         String originalVelocityDisallowedText = configuration.velocityDisallowedText();
 

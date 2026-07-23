@@ -40,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unstamped head on the same connection does NOT warn again (the per-connection dedup that stops a
   genuinely-broken write site from flooding the log). Suppressing the warn reddens the first and third
   assertions.
+- **The Velocity `velocityDisallowClassLoading` sandbox now has coverage for taking effect when toggled
+  on an ALREADY-CONSTRUCTED engine, not just when a fresh engine is built.** The existing test flipped
+  the setting and then built a brand-new `VelocityTemplateEngine`, so the runtime rebuild-on-live-engine
+  path (`currentEngineHolder()` rebuilding the underlying `VelocityEngine` with the `SecureUberspector`
+  when the configured flag differs from the flag the current engine was built with) was never exercised
+  — meaning a regression that made the setter/system-property/`PUT /mockserver/configuration` toggle
+  inert on a cached engine would have reddened nothing. A new test builds ONE engine with class loading
+  allowed, renders a class-loading template and asserts it genuinely EXECUTES the class-loading line
+  (reaching `Runtime.exec`), then flips `velocityDisallowClassLoading(true)` on the SAME configuration
+  and re-renders through the SAME engine, asserting the class-loading line is now BLOCKED (inert, empty
+  body, no exception) — proving the live rebuild applies the new restriction.
 - **The dashboard WebSocket frame now has a cross-boundary STRUCTURAL contract test, closing the gap
   where the server and the UI were tested against separately-authored payloads and could silently
   drift apart.** A single checked-in contract file (`mockserver-ui/src/__fixtures__/dashboardFrameContract.json`)
