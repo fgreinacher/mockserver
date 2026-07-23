@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The `driftDetectionEnabled` master switch is now covered by a behavioural enforcement test.** The
+  existing `DriftDetectionConfigTest` only re-implemented the gate boolean inline and never exercised
+  the production code path, so a regression that ignored the flag would not have been caught. A new
+  `HttpActionHandlerDriftDetectionTest` drives the real forward request path through `HttpActionHandler`
+  — forwarding a request whose upstream response drifts (500) from a matching response-type stub (200) —
+  and asserts that a STATUS `DriftRecord` IS recorded into the shared `DriftStore` when
+  `driftDetectionEnabled(true)`, and that NONE is recorded when `driftDetectionEnabled(false)` or the
+  sample rate is zero. This asserts on the real drift-recording outcome rather than a hand-mirrored
+  copy of the gate.
 - **The transparent-proxy original-destination end-to-end suites are now collectable by CI.** The three
   privileged interception suites — `SoOriginalDstEndToEndIntegrationTest` (iptables REDIRECT +
   SO_ORIGINAL_DST), `TproxyEndToEndIntegrationTest` (iptables TPROXY / IP_TRANSPARENT) and
