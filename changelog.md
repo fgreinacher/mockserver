@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Over-the-wire test coverage for an LLM refusal preset served with a rate-limit quota.** The LLM
+  refusal presets, provider-specific rate-limit headers, and stateful request-count quota were only
+  asserted at the body-builder / handler-unit level; nothing drove them through a running server. A
+  new `LlmRefusalQuotaRateLimitIntegrationTest` serves an `httpLlmResponse` configured with an
+  Anthropic refusal preset and a 2-request quota, then asserts on the raw socket response that the
+  first two requests return a `200` refusal envelope (`stop_reason:"refusal"`) carrying the
+  `anthropic-ratelimit-requests-*` headers, and that the third (over-quota) request flips to a `429`
+  `rate_limit_error` envelope with the exhausted rate-limit headers and `Retry-After`.
+
 ### Fixed
 - **gRPC-Web now re-frames matched-expectation responses correctly over a real HTTP/1.1 socket, and
   is covered by an over-the-wire integration test.** Every previous gRPC-Web test drove the handler
