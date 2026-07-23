@@ -109,6 +109,30 @@ public class TrafficValidateIntegrationTest {
     }
 
     @Test
+    public void shouldReportFailureWhenRecordedRequestViolatesSpec() {
+        // given - an expectation for POST /pets whose response conforms to the 201 "Null response"
+        // (no body schema), so the ONLY spec violation is on the REQUEST side
+        mockServerClient
+            .when(request().withMethod("POST").withPath("/pets"))
+            .respond(response().withStatusCode(201));
+
+        // and - a matching data-plane POST whose body VIOLATES the createPets request schema:
+        // the Pet schema requires "id" (integer) and "name" (string); this body omits both
+        sendRawPost("/pets", "{\"tag\": \"stray\"}");
+
+        // when
+        ContractReport report = mockServerClient.trafficValidate(PETSTORE_SPEC);
+
+        // then
+        assertThat(report.total(), is(greaterThanOrEqualTo(1)));
+        assertThat("request-violating traffic should not all pass", report.allPassed(), is(false));
+        assertThat(report.failed(), is(greaterThanOrEqualTo(1)));
+        boolean sawRequestError = report.results().stream()
+            .anyMatch(result -> !result.passed() && !result.requestErrors().isEmpty());
+        assertThat("a failing result should carry REQUEST validation errors", sawRequestError, is(true));
+    }
+
+    @Test
     public void shouldRejectBlankSpecAtClientLayer() {
         try {
             mockServerClient.trafficValidate(" ");
@@ -135,6 +159,31 @@ public class TrafficValidateIntegrationTest {
             org.apache.commons.io.IOUtils.toString(socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8);
         } catch (Exception e) {
             throw new RuntimeException("failed to send data-plane request to " + path, e);
+        }
+    }
+
+    /**
+     * Issue a matching data-plane POST with a JSON body against the mock server over a raw socket so the
+     * matched expectation's request/response is recorded as an EXPECTATION_RESPONSE pair in the event log,
+     * carrying the request body for request-schema validation.
+     */
+    private void sendRawPost(String path, String jsonBody) {
+        try (java.net.Socket socket = new java.net.Socket("localhost", mockServer.getLocalPort())) {
+            socket.setSoTimeout(5000);
+            byte[] bodyBytes = jsonBody.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            String httpRequest = "POST " + path + " HTTP/1.1\r\n" +
+                "Host: localhost:" + mockServer.getLocalPort() + "\r\n" +
+                "Content-Type: application/json\r\n" +
+                "Content-Length: " + bodyBytes.length + "\r\n" +
+                "Connection: close\r\n" +
+                "\r\n" +
+                jsonBody;
+            socket.getOutputStream().write(httpRequest.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            socket.getOutputStream().flush();
+            // drain the response so the exchange completes and is logged
+            org.apache.commons.io.IOUtils.toString(socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new RuntimeException("failed to send data-plane POST to " + path, e);
         }
     }
 }

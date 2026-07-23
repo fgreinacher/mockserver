@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WasmRuntime.callMatch` therefore fails closed to `false`, and — as a positive control — that supplying
   a stub `fd_write` host import (the wiring MockServer omits) makes the identical module instantiate. The
   refusal assertion was confirmed to go RED when the host import is wired and GREEN when it is not.
+- **Request-side OpenAPI violations in `trafficValidate` are now covered by an integration test.** Both
+  existing `TrafficValidateIntegrationTest` cases only exercised response-schema violations, leaving the
+  request-validation half of the traffic-validation path (`OpenApiTrafficValidator` →
+  `OpenAPIRequestValidator`) unverified end-to-end. A new
+  `shouldReportFailureWhenRecordedRequestViolatesSpec` records a `POST /pets` whose body omits the
+  required `id`/`name` fields (with a 201 response that conforms to the spec, isolating the failure to
+  the request side) and asserts the resulting `ContractReport` surfaces a failing result carrying
+  REQUEST validation errors.
 - **The `driftDetectionEnabled` master switch is now covered by a behavioural enforcement test.** The
   existing `DriftDetectionConfigTest` only re-implemented the gate boolean inline and never exercised
   the production code path, so a regression that ignored the flag would not have been caught. A new
