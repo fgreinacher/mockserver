@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the upstream 200 flows back unchanged (not a 400); the other stubs a schema-violating upstream response
   and proves it is returned unmodified (not a 502). These pin the "validate and log, but forward
   unmodified" behaviour that distinguishes `LOG_ONLY` from the already-covered `STRICT` reject branches.
+- **The `Http2StreamIdAuditHandler` safety-net is now covered by a unit test, so the guard against the
+  "HTTP/2 response head written without an `x-http2-stream-id`" defect class (GitHub issue #2419 and its
+  SSE / streaming-body / metrics / MCP siblings) can no longer silently stop warning.** The handler is
+  the only thing that turns a mis-routed, silently-dropped HTTP/2 response into a loud WARN, yet it had
+  no test anywhere. A new `Http2StreamIdAuditHandlerTest` drives the handler on an `EmbeddedChannel` with
+  a capturing logger and asserts the observable behaviour across three cases: an unstamped response head
+  logs exactly one WARN naming the missing header, a correctly-stamped head logs nothing, and a second
+  unstamped head on the same connection does NOT warn again (the per-connection dedup that stops a
+  genuinely-broken write site from flooding the log). Suppressing the warn reddens the first and third
+  assertions.
 - **The dashboard WebSocket frame now has a cross-boundary STRUCTURAL contract test, closing the gap
   where the server and the UI were tested against separately-authored payloads and could silently
   drift apart.** A single checked-in contract file (`mockserver-ui/src/__fixtures__/dashboardFrameContract.json`)
