@@ -63,6 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asserts the negotiated OpenMetrics content-type, complementing the existing
   `shouldReserveMetricsPathWithCORSWhenMetricsDisabled` negative (disabled -> 404) so the enabled path
   is provably the difference.
+- **The reflective cloud-blob-store auto-discovery path in `StateBackendFactory` now has direct test
+  coverage.** Previously `StateBackendFactoryTest` only `instanceof`-checked the filesystem/memory blob
+  stores, so `discoverBlobStoreBackend(...)` and the `BLOB_STORE_REGISTRARS` map — the reflective
+  `blobStoreType=s3` → `Class.forName(...S3BlobStoreRegistrar)` → `register()` → factory `create()`
+  chain — were exercised by no test, and a broken registrar-class name or map wiring would have redded
+  nothing. Two layers now cover it: a new `S3BlobStoreDiscoveryTest` (in `mockserver-blob-s3`, which has
+  the S3 module on its classpath) configures `blobStoreType=s3` and calls `StateBackendFactory.create(...)`
+  with NO manual `register()`, asserting the resulting backend's `blobs()` is an `S3BlobStore` — provable
+  only if discovery loaded the module reflectively (no network/Docker; the S3 client is built lazily); and
+  `StateBackendFactoryTest` gains a core-only assertion that `blobStoreType=s3` with the module ABSENT
+  fails hard with the documented `IllegalStateException` ("add the mockserver-blob-s3 dependency") plus a
+  case proving an unrecognised type is rejected with the supported-types guidance.
 - **The dashboard WebSocket frame now has a cross-boundary STRUCTURAL contract test, closing the gap
   where the server and the UI were tested against separately-authored payloads and could silently
   drift apart.** A single checked-in contract file (`mockserver-ui/src/__fixtures__/dashboardFrameContract.json`)

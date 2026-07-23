@@ -126,4 +126,44 @@ public class StateBackendFactoryTest {
         assertThat(backend.blobs(), instanceOf(FilesystemBlobStore.class));
         backend.close();
     }
+
+    @Test
+    public void shouldThrowWhenCloudBlobStoreConfiguredButModuleAbsent() {
+        // In mockserver-core's test classpath the S3 registrar class
+        // (org.mockserver.blob.s3.S3BlobStoreRegistrar) is NOT present, so
+        // reflective discovery hits ClassNotFoundException and must fail hard
+        // with guidance to add the module dependency -- rather than silently
+        // falling back to the filesystem blob store.
+        Configuration config = Configuration.configuration()
+            .maxExpectations(50)
+            .blobStoreType("s3");
+
+        try {
+            StateBackendFactory.create(config);
+            fail("expected IllegalStateException");
+        } catch (IllegalStateException e) {
+            assertThat(e.getMessage(), containsString("blobStoreType=s3 configured but"));
+            assertThat(e.getMessage(), containsString("is not on the classpath"));
+            assertThat(e.getMessage(), containsString("mockserver-blob-s3"));
+            assertThat(e.getCause(), instanceOf(ClassNotFoundException.class));
+        }
+    }
+
+    @Test
+    public void shouldThrowWhenBlobStoreTypeIsUnrecognised() {
+        // A blobStoreType that is neither a built-in (memory/filesystem) nor a
+        // known cloud registrar key must fail with the "not a recognised" guidance,
+        // exercising the BLOB_STORE_REGISTRARS lookup-miss branch.
+        Configuration config = Configuration.configuration()
+            .maxExpectations(50)
+            .blobStoreType("not-a-real-backend");
+
+        try {
+            StateBackendFactory.create(config);
+            fail("expected IllegalStateException");
+        } catch (IllegalStateException e) {
+            assertThat(e.getMessage(), containsString("is not a recognised blob store type"));
+            assertThat(e.getMessage(), containsString("supported types: memory, filesystem, s3, gcs, azure"));
+        }
+    }
 }
