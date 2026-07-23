@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lack the `docker` CLI and reject `--privileged` containers.
 
 ### Added
+- **The WAR servlet decoder's RFC 6265 cookie surrounding-quote stripping now has direct coverage.**
+  `HttpServletRequestToMockServerHttpRequestDecoderTest` gains a test that feeds a
+  `jakarta.servlet.http.Cookie` whose value carries surrounding double quotes (`"quotedValue"`, as
+  Servlet 6 / Tomcat 11+ preserves) alongside an already-unquoted value, and asserts the mapped
+  `HttpRequest` cookies are `quotedValue` (quotes stripped) and `plainValue` (unchanged) — pinning the
+  `stripSurroundingQuotes(...)` behaviour that every prior fixture left unexercised because it only used
+  plain ASCII values a container never quotes.
 - **The OpenAPI forward-validate action's `LOG_ONLY` mode now has behavioural passthrough coverage,
   closing the gap where only the getter was asserted.** `HttpForwardValidateActionHandlerTest` gains two
   tests that drive `handle(...)` with `validationMode = LOG_ONLY`: one sends a schema-violating request

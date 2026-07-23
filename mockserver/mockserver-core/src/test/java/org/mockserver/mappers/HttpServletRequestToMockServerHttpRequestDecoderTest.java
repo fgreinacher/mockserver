@@ -73,6 +73,29 @@ public class HttpServletRequestToMockServerHttpRequestDecoderTest {
     }
 
     @Test
+    public void shouldStripSurroundingQuotesFromCookieValueButLeaveUnquotedValueUnchanged() {
+        // given - Servlet 6 (Tomcat 11+) preserves RFC 6265 surrounding double quotes on cookie
+        // values (e.g. "quotedValue" instead of quotedValue); the decoder must strip them while
+        // leaving an already-unquoted value untouched
+        MockHttpServletRequest httpServletRequest = new MockHttpServletRequest("GET", "/requestURI");
+        httpServletRequest.setContextPath(null);
+        httpServletRequest.setContent("".getBytes(UTF_8));
+        httpServletRequest.setCookies(
+            new jakarta.servlet.http.Cookie("quotedCookie", "\"quotedValue\""),
+            new jakarta.servlet.http.Cookie("plainCookie", "plainValue")
+        );
+
+        // when
+        HttpRequest httpRequest = new HttpServletRequestToMockServerHttpRequestDecoder(configuration(), new MockServerLogger()).mapHttpServletRequestToMockServerRequest(httpServletRequest);
+
+        // then
+        assertThat(httpRequest.getCookieList(), is(Lists.newArrayList(
+            new Cookie("quotedCookie", "quotedValue"),
+            new Cookie("plainCookie", "plainValue")
+        )));
+    }
+
+    @Test
     public void shouldMapPathForRequestsWithAContextPath() {
         // given
         MockHttpServletRequest httpServletRequest = new MockHttpServletRequest("GET", "/requestURI");
