@@ -42,8 +42,11 @@ echo "--- :maven: Building the runnable MockServer JAR (bundles current dashboar
   -w /build/mockserver \
   -- ./mvnw -q clean install -DskipTests -pl mockserver-netty-no-dependencies -am
 
-JAR=$(ls -t "$REPO_ROOT"/mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar \
-  | grep -Ev '(-sources|-javadoc|/original-)' | head -1)
+# newest runnable jar (exclude -sources/-javadoc/original- variants); find+sort avoids `ls | grep` (SC2010)
+JAR=$(find "$REPO_ROOT/mockserver/mockserver-netty-no-dependencies/target" -maxdepth 1 -type f \
+  -name 'mockserver-netty-no-dependencies-*.jar' \
+  ! -name '*-sources*' ! -name '*-javadoc*' ! -name 'original-*' \
+  -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-)
 if [ -z "$JAR" ]; then
   echo "ERROR: runnable JAR not found after build"
   exit 1
