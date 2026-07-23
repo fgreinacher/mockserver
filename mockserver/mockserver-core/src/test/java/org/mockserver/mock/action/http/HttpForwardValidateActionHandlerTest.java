@@ -149,6 +149,65 @@ public class HttpForwardValidateActionHandlerTest {
     }
 
     @Test
+    public void shouldForwardNonConformantRequestUnchangedInLogOnlyMode() throws Exception {
+        // given - LOG_ONLY validation and the same request that violates the Pet schema as the STRICT
+        // rejection test (id is a string, not an integer). In LOG_ONLY the violation is logged only, so
+        // the request must still be forwarded and the upstream response returned unmodified.
+        CompletableFuture<HttpResponse> upstreamFuture = new CompletableFuture<>();
+        upstreamFuture.complete(response().withStatusCode(200).withBody("forwarded"));
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), any())).thenReturn(upstreamFuture);
+
+        // when
+        HttpForwardActionResult result = handler.handle(
+            forwardValidate()
+                .withSpecUrlOrPayload("org/mockserver/openapi/openapi_petstore_example.json")
+                .withValidateRequest(true)
+                .withValidateResponse(false)
+                .withValidationMode(HttpForwardValidateAction.ValidationMode.LOG_ONLY),
+            request("/pets")
+                .withMethod("POST")
+                .withHeader("content-type", "application/json")
+                .withBody("{\"id\": \"not_a_number\", \"name\": \"Fido\"}")
+        );
+
+        // then - the bad request is still forwarded upstream and the 200 flows back unchanged (not a 400)
+        HttpResponse actualResponse = result.getHttpResponse().get();
+        assertThat(actualResponse.getStatusCode(), is(200));
+        assertThat(actualResponse.getBodyAsString(), is("forwarded"));
+        verify(mockHttpClient).sendRequest(any(HttpRequest.class), any());
+    }
+
+    @Test
+    public void shouldReturnNonConformantUpstreamResponseUnchangedInLogOnlyMode() throws Exception {
+        // given - LOG_ONLY validation and a stubbed upstream response that violates the listPets schema
+        // (an object where an array of Pet is required) - the same fixture the STRICT 502 test uses.
+        CompletableFuture<HttpResponse> upstreamFuture = new CompletableFuture<>();
+        upstreamFuture.complete(
+            response()
+                .withStatusCode(200)
+                .withHeader("content-type", "application/json")
+                .withBody("{\"not\": \"an array\"}")
+        );
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), any())).thenReturn(upstreamFuture);
+
+        // when
+        HttpForwardActionResult result = handler.handle(
+            forwardValidate()
+                .withSpecUrlOrPayload("org/mockserver/openapi/openapi_petstore_example.json")
+                .withValidateRequest(false)
+                .withValidateResponse(true)
+                .withValidationMode(HttpForwardValidateAction.ValidationMode.LOG_ONLY),
+            request("/pets").withMethod("GET")
+        );
+
+        // then - the non-conformant upstream response is logged only and returned unmodified (not a 502)
+        HttpResponse actualResponse = result.getHttpResponse().get();
+        assertThat(actualResponse.getStatusCode(), is(200));
+        assertThat(actualResponse.getBodyAsString(), is("{\"not\": \"an array\"}"));
+        verify(mockHttpClient).sendRequest(any(HttpRequest.class), any());
+    }
+
+    @Test
     public void shouldReturnActionType() {
         assertThat(forwardValidate().getType().name(), is("FORWARD_VALIDATE"));
     }

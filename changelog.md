@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lack the `docker` CLI and reject `--privileged` containers.
 
 ### Added
+- **The OpenAPI forward-validate action's `LOG_ONLY` mode now has behavioural passthrough coverage,
+  closing the gap where only the getter was asserted.** `HttpForwardValidateActionHandlerTest` gains two
+  tests that drive `handle(...)` with `validationMode = LOG_ONLY`: one sends a schema-violating request
+  and proves the bad request is still forwarded upstream (`verify(mockHttpClient).sendRequest(...)`) and
+  the upstream 200 flows back unchanged (not a 400); the other stubs a schema-violating upstream response
+  and proves it is returned unmodified (not a 502). These pin the "validate and log, but forward
+  unmodified" behaviour that distinguishes `LOG_ONLY` from the already-covered `STRICT` reject branches.
 - **The dashboard WebSocket frame now has a cross-boundary STRUCTURAL contract test, closing the gap
   where the server and the UI were tested against separately-authored payloads and could silently
   drift apart.** A single checked-in contract file (`mockserver-ui/src/__fixtures__/dashboardFrameContract.json`)
