@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HttpRequest` cookies are `quotedValue` (quotes stripped) and `plainValue` (unchanged) — pinning the
   `stripSurroundingQuotes(...)` behaviour that every prior fixture left unexercised because it only used
   plain ASCII values a container never quotes.
+- **The dashboard static-asset handler's default MIME-type fallback is now covered, extending the
+  #2358 null-`Content-Type` NPE guard to unmapped file extensions.** Every existing `DashboardHandlerTest`
+  serves a mapped extension (`.js`, `.svg`), so `MIME_MAP.getOrDefault(extension, DEFAULT_MIME_TYPE)`
+  never exercised its fallback arm — the exact branch that turns an unmapped extension into a valid,
+  non-null `application/octet-stream` header instead of the null value that crashes Netty's header
+  encoder. A new test serves a synthetic `unmapped-fixture.webp` (an extension deliberately absent from
+  both `MIME_MAP` and the string-content list) and asserts the served response is found (not the 404
+  not-found response) and carries `Content-Type: application/octet-stream`.
 - **The OpenAPI forward-validate action's `LOG_ONLY` mode now has behavioural passthrough coverage,
   closing the gap where only the getter was asserted.** `HttpForwardValidateActionHandlerTest` gains two
   tests that drive `handle(...)` with `validationMode = LOG_ONLY`: one sends a schema-violating request

@@ -106,6 +106,33 @@ public class DashboardHandlerTest {
         assertThat(contentType, equalTo("image/svg+xml"));
     }
 
+    /**
+     * Regression guard for the #2358 null-Content-Type NPE class extended to the DEFAULT_MIME_TYPE
+     * fallback: an asset whose extension has no entry in the MIME map must still be served with a
+     * valid, non-null {@code Content-Type}. {@code MIME_MAP.getOrDefault(extension, DEFAULT_MIME_TYPE)}
+     * returns {@code application/octet-stream} for any unmapped extension; a regression that dropped
+     * the fallback (returning null, as the pre-#2358 {@code MIME_MAP.get(...)} did) would crash
+     * Netty's header encoder when the response was written. Every mapped extension (js, svg, ...) is
+     * exercised elsewhere, so this is the only test that drives the fallback branch. {@code .webp} is
+     * deliberately absent from MIME_MAP and from IS_STRING_CONTENT, so it takes the binary path too.
+     */
+    @Test
+    public void servesUnmappedExtensionAssetWithDefaultOctetStreamContentType() throws Exception {
+        // given - a dashboard asset whose extension (.webp) is not in the MIME map
+        HttpResponse response = renderDashboardResource("/unmapped-fixture.webp");
+
+        // then - the asset was found and served (not the 404 notFoundResponse). The handler builds
+        // the success response with response(), leaving statusCode null, which Netty writes to the
+        // wire as the default 200; the not-found path would carry an explicit 404.
+        assertThat(response.getBodyAsString(), is(notNullValue()));
+        assertThat(response.getStatusCode(), is(not(404)));
+
+        // and - the Content-Type falls back to the non-null DEFAULT_MIME_TYPE (application/octet-stream)
+        String contentType = response.getFirstHeader(CONTENT_TYPE.toString());
+        assertThat(contentType, is(notNullValue()));
+        assertThat(contentType, equalTo("application/octet-stream"));
+    }
+
     private HttpResponse renderDashboardResource(String resourceSuffix) throws Exception {
         ChannelHandlerContext ctx = mock(ChannelHandlerContext.class);
         ChannelFuture channelFuture = mock(ChannelFuture.class);
