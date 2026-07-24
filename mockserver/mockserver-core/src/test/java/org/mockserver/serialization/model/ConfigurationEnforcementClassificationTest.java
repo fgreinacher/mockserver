@@ -2,17 +2,27 @@ package org.mockserver.serialization.model;
 
 import org.junit.Test;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
 
 /**
@@ -358,38 +368,200 @@ public class ConfigurationEnforcementClassificationTest {
             stale, is(empty()));
     }
 
+    /**
+     * Properties whose evidence test lives OUTSIDE {@code mockserver-core}, and so can only be validated
+     * by the source scan in {@link #shouldReferenceEnforcementTestsThatActuallyExist()} — the referenced
+     * class is not on this module's test classpath.
+     *
+     * <p>This is an anti-vacuity ratchet, in the spirit of {@code ConfigurationCallSiteGuardTest}, and it
+     * is asserted in BOTH directions:
+     * <ul>
+     *   <li>a cross-module pointer that the scan did NOT resolve means the scan has stopped working (or
+     *       has silently narrowed to a subset of modules) — which would otherwise let dangling evidence
+     *       pass green, the exact fail-open this set exists to prevent;</li>
+     *   <li>a resolved-by-scan property missing from this set means a NEW cross-module pointer was added
+     *       without being declared here, so the ratchet cannot quietly drift.</li>
+     * </ul>
+     * Move an entry out of this set only when its evidence test genuinely moves into {@code mockserver-core}.
+     */
+    private static final Set<String> CROSS_MODULE_EVIDENCE = new TreeSet<>(java.util.Arrays.asList(
+        "clusterEnabled",
+        "dnsEnabled",
+        "grpcBidiStreamingEnabled",
+        "http3ConnectUdpEnabled",
+        "maxRequestBodySize",
+        "maxResponseBodySize",
+        "redactSecretsInLog",
+        "transparentProxyEnabled",
+        "wasmEnabled"
+    ));
+
+    /**
+     * Every {@code Class#method} pointer in {@link #ENFORCEMENT_VERIFIED} must resolve to a test method
+     * that actually exists — otherwise the "evidence" for a risky property is a dangling reference and the
+     * classification above is a claim nobody can check.
+     *
+     * <h2>Why this does not just use the classloader</h2>
+     * <p>This test runs in {@code mockserver-core}, but several pointers name tests in SIBLING modules
+     * ({@code mockserver-netty}, {@code mockserver-state-infinispan}) which are not on this module's test
+     * classpath. Skipping those on {@link ClassNotFoundException} — as this guard previously did — meant
+     * the most valuable pointers, the Layer C end-to-end ones, were NEVER validated: renaming, moving or
+     * deleting them left a dangling pointer and the guard still passed green. A control that certifies
+     * evidence it cannot see is worse than no control.
+     *
+     * <p>So an unloadable class falls back to locating its {@code .java} source under any module's
+     * {@code src/test/java} and asserting that the file declares both the class and the referenced method.
+     * Source is always present in the working tree, so this works in a full reactor build and when only
+     * some modules are built. <strong>It fails closed:</strong> a pointer resolvable by NEITHER route is a
+     * failure, never a silent skip.
+     */
     @Test
-    public void shouldReferenceEnforcementTestsThatActuallyExist() {
+    public void shouldReferenceEnforcementTestsThatActuallyExist() throws IOException {
+        List<Path> moduleTestSourceRoots = moduleTestSourceRoots();
+
+        // sanity: the source fallback must actually be able to see sibling modules, or every cross-module
+        // pointer would "fail to resolve" for an environmental reason rather than a real one
+        assertThat("guard must be able to see sibling modules' test sources under the mockserver reactor "
+                + "root — resolved roots: " + moduleTestSourceRoots,
+            moduleTestSourceRoots.size(), greaterThan(1));
+
         List<String> broken = new ArrayList<>();
+        Set<String> resolvedOnClasspath = new TreeSet<>();
+        Set<String> resolvedFromSource = new TreeSet<>();
+        Set<String> modulesProvidingEvidence = new TreeSet<>();
+
         for (Map.Entry<String, String> entry : ENFORCEMENT_VERIFIED.entrySet()) {
+            String property = entry.getKey();
             String reference = entry.getValue();
             int separator = reference.indexOf('#');
             assertThat("ENFORCEMENT_VERIFIED values must be Class#method references, got: " + reference,
                 separator > 0, is(true));
             String className = reference.substring(0, separator);
             String methodName = reference.substring(separator + 1);
+
             Class<?> testClass;
             try {
                 testClass = Class.forName(className);
-            } catch (ClassNotFoundException e) {
-                // the referenced test lives in a module not on this module's test classpath (e.g. the
-                // Layer C integration test in mockserver-netty); it cannot be validated from here
+            } catch (ClassNotFoundException | LinkageError e) {
+                testClass = null;
+            }
+
+            if (testClass != null) {
+                if (declaresMethod(testClass, methodName)) {
+                    resolvedOnClasspath.add(property);
+                } else {
+                    broken.add(property + " -> " + reference + " (class is on this module's test classpath "
+                        + "but declares no method named " + methodName + ")");
+                }
                 continue;
             }
-            boolean found = false;
-            for (Method method : testClass.getDeclaredMethods()) {
-                if (method.getName().equals(methodName)) {
-                    found = true;
-                    break;
-                }
+
+            Path source = findTestSource(moduleTestSourceRoots, className);
+            if (source == null) {
+                broken.add(property + " -> " + reference + " (class is neither loadable from this module's "
+                    + "test classpath nor present as " + className.replace('.', '/') + ".java under any "
+                    + "module's src/test/java)");
+                continue;
             }
-            if (!found) {
-                broken.add(entry.getKey() + " -> " + reference);
+            String simpleName = className.substring(className.lastIndexOf('.') + 1);
+            String body = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+            if (!declaresType(body, simpleName)) {
+                broken.add(property + " -> " + reference + " (" + source + " does not declare type " + simpleName + ")");
+            } else if (!declaresVoidMethod(body, methodName)) {
+                broken.add(property + " -> " + reference + " (" + source + " declares no method "
+                    + methodName + " — the evidence has been renamed or deleted)");
+            } else {
+                resolvedFromSource.add(property);
+                modulesProvidingEvidence.add(moduleNameOf(source));
             }
         }
 
-        assertThat("ENFORCEMENT_VERIFIED points at test methods that no longer exist — the evidence for these "
-                + "properties has been renamed or deleted, so they are no longer actually verified: " + broken,
+        assertThat("ENFORCEMENT_VERIFIED points at test methods that do not exist — the evidence for these "
+                + "properties has been renamed, moved or deleted, so they are no longer actually verified:\n  "
+                + String.join("\n  ", broken) + "\n",
             broken, is(empty()));
+
+        // anti-vacuity: both resolution routes must have done real work, or an empty scan would pass
+        assertThat("classpath resolution should validate the bulk of the pointers, which name mockserver-core "
+                + "tests — resolving almost none means reflection has silently stopped working",
+            resolvedOnClasspath.size(), greaterThan(20));
+        assertThat("the cross-module source scan resolved a different set of pointers than the declared "
+                + "ratchet. If it resolved FEWER, the scan has stopped seeing sibling modules and dangling "
+                + "evidence would pass green; if it resolved MORE, a new cross-module pointer was added "
+                + "without declaring it in CROSS_MODULE_EVIDENCE",
+            resolvedFromSource, is(CROSS_MODULE_EVIDENCE));
+        assertThat("mockserver-netty evidence must be validated by the source scan",
+            modulesProvidingEvidence, hasItem("mockserver-netty"));
+        assertThat("mockserver-state-infinispan evidence must be validated by the source scan",
+            modulesProvidingEvidence, hasItem("mockserver-state-infinispan"));
+    }
+
+    private static boolean declaresMethod(Class<?> testClass, String methodName) {
+        for (Method method : testClass.getDeclaredMethods()) {
+            if (method.getName().equals(methodName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean declaresType(String source, String simpleName) {
+        return Pattern.compile("\\b(class|interface|enum)\\s+" + Pattern.quote(simpleName) + "\\b")
+            .matcher(source).find();
+    }
+
+    private static boolean declaresVoidMethod(String source, String methodName) {
+        return Pattern.compile("\\bvoid\\s+" + Pattern.quote(methodName) + "\\s*\\(")
+            .matcher(source).find();
+    }
+
+    /**
+     * Resolve {@code a.b.C} to {@code <module>/src/test/java/a/b/C.java}, checking each module in turn.
+     * Targeted rather than a walk of the repository, so the fallback stays cheap.
+     */
+    private static Path findTestSource(List<Path> moduleTestSourceRoots, String className) {
+        String relative = className.replace('.', '/') + ".java";
+        for (Path root : moduleTestSourceRoots) {
+            Path candidate = root.resolve(relative);
+            if (Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** {@code <mockserver>/<module>/src/test/java/...} -&gt; {@code <module>}. */
+    private static String moduleNameOf(Path testSource) {
+        return mockserverRoot().relativize(testSource).getName(0).toString();
+    }
+
+    /** Every {@code <module>/src/test/java} directory present under the {@code mockserver/} reactor root. */
+    private static List<Path> moduleTestSourceRoots() throws IOException {
+        try (Stream<Path> modules = Files.list(mockserverRoot())) {
+            return modules
+                .map(module -> module.resolve("src/test/java"))
+                .filter(Files::isDirectory)
+                .sorted()
+                .collect(Collectors.toList());
+        }
+    }
+
+    /**
+     * Locate the {@code mockserver/} reactor root from THIS test class's own output directory, so the guard
+     * works regardless of the working directory the build runs from. Anchored on the test classes — which
+     * are always exploded and always inside the working tree — rather than on a main class, which resolves
+     * into {@code ~/.m2} when a sibling module is built alone.
+     */
+    private static Path mockserverRoot() {
+        URL location = ConfigurationEnforcementClassificationTest.class
+            .getProtectionDomain().getCodeSource().getLocation();
+        Path testClasses = Paths.get(location.getPath());
+        // <mockserver>/mockserver-core/target/test-classes -> <mockserver>
+        Path root = testClasses.getParent().getParent().getParent();
+        if (!Files.isDirectory(root.resolve("mockserver-core/src/main/java"))) {
+            throw new IllegalStateException("could not locate the mockserver reactor root from " + testClasses
+                + " (resolved " + root + ")");
+        }
+        return root;
     }
 }

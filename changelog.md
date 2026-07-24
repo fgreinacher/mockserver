@@ -286,6 +286,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trailing-slash `blobStoreKeyPrefix` (the exact configuration that returned HTTP 400 before), a MinIO
   put/get/list/delete round trip across all four prefix shapes, and Docker-free unit coverage of the key
   composition and of the key the persistence layer derives.
+- **The configuration enforcement-evidence guard no longer certifies evidence it cannot see.**
+  `ConfigurationEnforcementClassificationTest` records, for every risky configuration property, the
+  `Class#method` test that proves an instance-set value changes observable behaviour. It validated those
+  pointers by loading the class — but it runs in `mockserver-core`, so any pointer naming a test in a
+  sibling module was silently skipped on `ClassNotFoundException`. That exempted precisely the most
+  valuable evidence, the end-to-end Layer C pointers: renaming, moving or deleting the referenced test
+  left a dangling pointer and the guard still passed green, for `maxRequestBodySize`,
+  `maxResponseBodySize`, `wasmEnabled`, `redactSecretsInLog`, `clusterEnabled`, `dnsEnabled`,
+  `grpcBidiStreamingEnabled`, `http3ConnectUdpEnabled` and `transparentProxyEnabled`. A class that
+  cannot be loaded is now resolved
+  by locating its `.java` source under any module's `src/test/java` and asserting the file declares both
+  the class and the referenced method, so cross-module pointers are checked in a full reactor build and
+  when only some modules are built. The guard fails closed: a pointer resolvable by neither route is now
+  a failure naming the dangling pointer, never a silent skip. Anti-vacuity assertions in the spirit of
+  the sibling `ConfigurationCallSiteGuardTest` keep the scan honest — the set of pointers resolved by
+  source scan must match the declared cross-module ratchet exactly, `mockserver-netty` and
+  `mockserver-state-infinispan` must both have contributed, and classpath resolution must still cover
+  the bulk of the pointers — so a scan that resolves nothing cannot pass. Verified by degrading a real
+  `mockserver-netty` test method name: the guard now fails with a message naming the dangling pointer,
+  where the previous version passed green with the identical defect in place.
 - **A gRPC error response carrying custom trailing metadata no longer loses its status.** On HTTP/2 a
   body-less gRPC response is collapsed into the gRPC Trailers-Only form, which moves `grpc-status`
   into the initial HEADERS frame and relies on that frame being end-of-stream. When the expectation
