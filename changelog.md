@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **SOCKS4 CONNECT tunnelling is now proven end-to-end over a real socket.** A new socket-level
+  integration test (`NettyHttpProxySOCKS4IntegrationTest`) performs a raw SOCKS4 CONNECT handshake
+  against a bound MockServer targeting a loopback `EchoServer`, then sends an HTTP GET through the
+  granted tunnel and asserts the EchoServer received the request and returned 200 (bytes relayed by
+  `Socks4ConnectHandler`). Previously SOCKS4 was only exercised by an `EmbeddedChannel` unit test
+  (`Socks4ProxyHandlerTest`, which asserts handler removal) while every real-socket proxy integration
+  test used SOCKS5, so nothing drove the SOCKS4 relay path over the wire.
 - **The Go client's FORWARD and ERROR response actions are now proven over the wire.** New integration
   tests (`response_action_integration_test.go`) register a `httpForward` and a `httpError`
   (`dropConnection`) action via the Go client and drive real requests that assert the SERVER actually
