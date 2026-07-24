@@ -31,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_error_action_actually_returns_raw_bytes` registers an ERROR action and asserts the server
   writes the configured raw bytes back. Run in CI by the existing `rust-integration-test` step.
 
+- **Wire-level .NET client test coverage for NottableString header negation and for
+  forward/error response actions.** The .NET integration suite asserted expectation *creation* but
+  never proved the server honours what the client sends: there was no test that a `!foo` header
+  matcher (`MatcherValue.NotLiteral`) is transmitted and enforced over the wire, nor that a
+  registered forward or error action is actually performed. A new `WireBehaviorTests` drives real
+  requests through a running MockServer (reached via the existing `MOCKSERVER_URL` harness) to prove:
+  a "not foo" header matcher matches a non-`foo` request (200) and rejects a `foo` request (404); the
+  escaped literal `MatcherValue.Literal("!foo")` matches only a header whose value really is `!foo`;
+  a forward action is genuinely forwarded (the path is received twice — original plus the re-entered
+  forward — not merely served directly); and an error action actually drops the connection (a
+  transport failure, not an HTTP status). Each assertion was confirmed to redden when the
+  corresponding client behaviour is degraded.
 - **Live-broker test coverage proving Kafka SASL credentials reach and are enforced by a real
   broker.** Kafka SASL/SSL security was only asserted at the property-map level
   (`KafkaMessagePublisherSecurityTest`) and every live-broker Kafka integration test used a plaintext
