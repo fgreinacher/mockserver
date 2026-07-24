@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publisher publishes successfully and the message is read back by a matching credentialed consumer,
   while a wrong-password publisher is rejected with an authentication exception (proving enforcement,
   not merely that plaintext works). Docker-gated so it SKIPS cleanly when Docker is unavailable.
+- **Credential-enforcement test coverage for MQTT security against a secured live broker.** MQTT
+  `MqttSecurity` credentials were only asserted at the options-carrier unit level
+  (`MqttSecurityOptionsTest`), while the sole live Mosquitto integration test ran an
+  `allow_anonymous` plaintext broker — so nothing proved credentials are actually applied and
+  enforced on the wire. A new `MqttTlsLiveBrokerIntegrationTest` drives MockServer's MQTT publisher
+  against a Testcontainers Mosquitto broker configured with a `password_file` and
+  `allow_anonymous false`: it asserts that a publisher wired with the correct `MqttSecurity`
+  username/password authenticates and delivers a message to an authenticated subscriber, and that a
+  publisher with the wrong password (and one with no credentials) is rejected by the broker at
+  CONNECT. Docker-gated so it skips cleanly when Docker is unavailable.
 - **Over-the-wire test coverage for an LLM refusal preset served with a rate-limit quota.** The LLM
   refusal presets, provider-specific rate-limit headers, and stateful request-count quota were only
   asserted at the body-builder / handler-unit level; nothing drove them through a running server. A
