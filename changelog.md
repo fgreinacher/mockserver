@@ -36,6 +36,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `message.content`, and Bedrock's base64-wrapped Anthropic `text_delta` fragments decoded from the
   CRC32-validated binary event-stream messages — equals the completion text exactly. The Bedrock case
   de-chunks the HTTP/1.1 chunked body and decodes the binary framing end to end.
+- **The PHP client's fidelity harness now gates the TYPED model, not just raw replay.** The existing
+  `RoundTripFidelityTest` deserialises each shared fixture with `Expectation::fromArray()`, which stores
+  the decoded array verbatim in `rawData` and replays it unchanged -- so it records zero gaps for every
+  fixture BY CONSTRUCTION and can never detect a field the typed builders (`HttpResponse`, `HttpForward`,
+  `HttpError`, `HttpRequest`) fail to model. A new `TypedRoundTripFidelityTest` closes that tautology:
+  for every shared fixture it reconstructs each action/matcher block THROUGH the typed model (reflection
+  copies across only the properties each class declares, recursing into declared nested typed objects,
+  then serialises via the class's own `toArray()`) and diffs the rebuilt structure back against the
+  fixture -- the server-schema side of the contract -- so any server field the typed model drops surfaces
+  as a concrete diff path derived from the corpus, never from the client's own key list. This immediately
+  documented five real request-matcher gaps the raw harness hid (`dnsClass`/`dnsName`/`dnsType`,
+  `pathParameters`, `protocol`, plus NottableString `method`/`path`), each pinned in a per-field gap
+  ledger with a stale-entry ratchet, while the `httpResponse`/`httpForward`/`httpError` models are proven
+  to cover their entire fixture surface. A positive-control test proves the gate fires when a typed
+  builder drops a field it is supposed to carry (removing `statusCode` from `HttpResponse::toArray()`
+  turns the suite red for every fixture carrying it, and green again on restore) -- the exact regression
+  the raw-replay harness cannot catch. Shared comparator logic is extracted to `FidelityComparator`.
 - **The Go client's FORWARD and ERROR response actions are now proven over the wire.** New integration
   tests (`response_action_integration_test.go`) register a `httpForward` and a `httpError`
   (`dropConnection`) action via the Go client and drive real requests that assert the SERVER actually
