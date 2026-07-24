@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   username/password authenticates and delivers a message to an authenticated subscriber, and that a
   publisher with the wrong password (and one with no credentials) is rejected by the broker at
   CONNECT. Docker-gated so it skips cleanly when Docker is unavailable.
+- **Live-broker test coverage for the AsyncAPI control-plane `load()` → publish-on-load path.** The
+  control-plane's broker-connecting path (`createBrokerConnections` / `publishOnLoad`) was untested
+  against a real broker — `AsyncApiControlPlaneImplTest` loads without a reachable broker (asserting
+  `publishers=0`), and the endpoint IT covers only the broker-less endpoints. A new Docker-gated
+  `AsyncApiControlPlaneLiveBrokerIntegrationTest` (Testcontainers Kafka) drives `load()` with a real
+  `brokerConfig`, `publishOnLoad:true` and `consume:true`, then proves the control-plane genuinely
+  connected and published by consuming the on-load message with a plain third-party Kafka client and
+  asserting `status()` reports `publishers>0`, a subscriber, and the recorded round-tripped message.
 - **Over-the-wire test coverage for an LLM refusal preset served with a rate-limit quota.** The LLM
   refusal presets, provider-specific rate-limit headers, and stateful request-count quota were only
   asserted at the body-builder / handler-unit level; nothing drove them through a running server. A
