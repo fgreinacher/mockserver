@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The Go client's FORWARD and ERROR response actions are now proven over the wire.** New integration
+  tests (`response_action_integration_test.go`) register a `httpForward` and a `httpError`
+  (`dropConnection`) action via the Go client and drive real requests that assert the SERVER actually
+  performs them: the forwarded request loops back through a match-once, higher-priority self-forward to
+  a distinct upstream response body (needing no externally-reachable upstream, so it runs identically in
+  the CI sibling-container harness and against a locally port-mapped server), and the error endpoint
+  drops the connection at the transport level (no HTTP response) while a control endpoint on the same
+  server still answers cleanly. Previously the Go client's response-action coverage was builder/JSON
+  only -- no test drove a forward or error action to completion over a socket.
 - **Live-broker test coverage proving Kafka SASL credentials reach and are enforced by a real
   broker.** Kafka SASL/SSL security was only asserted at the property-map level
   (`KafkaMessagePublisherSecurityTest`) and every live-broker Kafka integration test used a plaintext
