@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The Ruby client now proves live SSE stream consumption over the wire.** New integration examples
+  (`spec/integration_spec.rb` → `SSE streaming`) register an `httpSseResponse` expectation via the Ruby
+  client against a running MockServer, then open a real streaming HTTP consumer and assert every `data:`
+  frame arrives in order, that the reconstructed multi-delta message matches, and that a multi-line
+  `data:` payload survives the framing intact (`Content-Type: text/event-stream`). Previously the Ruby
+  suite only asserted the JSON keys of a built streaming expectation (`a2a_spec`) and never consumed a
+  live SSE stream, so a silent server-emission or client-parsing drop would have gone uncaught. Verified
+  by a positive control (dropping events from the emitted stream turns the received-frames assertion red).
 - **SOCKS4 CONNECT tunnelling is now proven end-to-end over a real socket.** A new socket-level
   integration test (`NettyHttpProxySOCKS4IntegrationTest`) performs a raw SOCKS4 CONNECT handshake
   against a bound MockServer targeting a loopback `EchoServer`, then sends an HTTP GET through the

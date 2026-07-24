@@ -361,4 +361,109 @@ RSpec.describe 'Integration', :integration do
       expect(resp.body).to eq('high-priority')
     end
   end
+
+  # Live Server-Sent Events (SSE) streaming: register an `httpSseResponse`
+  # expectation via the Ruby client, then open a real streaming HTTP consumer
+  # over the socket and assert that every `data:` frame arrives and that the
+  # reconstructed message matches. This exercises the wire path end-to-end
+  # (the build-time a2a_spec only asserts the JSON keys of the built
+  # expectation and never consumes a live stream).
+  describe 'SSE streaming' do
+    # Open a streaming HTTP GET and buffer the raw response body until the
+    # server closes the connection (the expectation sets closeConnection:true).
+    # Returns [content_type, raw_body]. Guarded by a timeout so a hung stream
+    # fails loudly rather than blocking the suite forever.
+    def consume_sse(host, port, path, timeout: 20)
+      uri = URI("http://#{host}:#{port}#{path}")
+      buffer = +''
+      content_type = nil
+      Timeout.timeout(timeout) do
+        Net::HTTP.start(uri.hostname, uri.port) do |http|
+          req = Net::HTTP::Get.new(uri)
+          req['Accept'] = 'text/event-stream'
+          http.request(req) do |response|
+            content_type = response['Content-Type']
+            response.read_body { |chunk| buffer << chunk }
+          end
+        end
+      end
+      [content_type, buffer]
+    end
+
+    # Parse a raw SSE body into an array of { event:, data: } frames. Frames are
+    # separated by a blank line; a frame's `data:` value is the (possibly
+    # multi-line) payload rejoined with "\n" per the WHATWG EventSource spec.
+    def parse_sse(raw)
+      raw.split(/\r?\n\r?\n/).reject(&:empty?).map do |frame|
+        event = nil
+        data_lines = []
+        frame.each_line do |line|
+          line = line.chomp
+          if line.start_with?('event:')
+            event = line.delete_prefix('event:').strip
+          elsif line.start_with?('data:')
+            data_lines << line.delete_prefix('data:').sub(/\A /, '')
+          end
+        end
+        { event: event, data: data_lines.join("\n") }
+      end
+    end
+
+    it 'streams SSE events that a live consumer receives frame by frame' do
+      # The three deltas reconstruct into a single message; a terminal [DONE]
+      # frame marks the end of the stream (the OpenAI/LLM streaming convention).
+      client.upsert(
+        'httpRequest' => { 'method' => 'GET', 'path' => '/live-sse' },
+        'httpSseResponse' => {
+          'statusCode' => 200,
+          'closeConnection' => true,
+          'events' => [
+            { 'event' => 'message', 'data' => '{"delta": "Hello, "}' },
+            { 'event' => 'message', 'data' => '{"delta": "streaming "}' },
+            { 'event' => 'message', 'data' => '{"delta": "world!"}' },
+            { 'event' => 'done', 'data' => '[DONE]' }
+          ]
+        }
+      )
+
+      content_type, raw = consume_sse(host, port, '/live-sse')
+
+      expect(content_type).to include('text/event-stream')
+
+      frames = parse_sse(raw)
+      # Every data: frame must arrive: three message deltas plus the terminal.
+      expect(frames.length).to eq(4)
+      expect(frames.map { |f| f[:event] }).to eq(%w[message message message done])
+      expect(frames.last[:data]).to eq('[DONE]')
+
+      reconstructed = frames
+                      .select { |f| f[:event] == 'message' }
+                      .map { |f| JSON.parse(f[:data])['delta'] }
+                      .join
+      expect(reconstructed).to eq('Hello, streaming world!')
+    end
+
+    it 'preserves multi-line SSE data payloads across the wire' do
+      # A single event whose data spans multiple lines must be emitted as
+      # multiple `data:` lines by the server and rejoined with "\n" by the
+      # consumer — proving the framing is not flattened or truncated.
+      client.upsert(
+        'httpRequest' => { 'method' => 'GET', 'path' => '/live-sse-multiline' },
+        'httpSseResponse' => {
+          'statusCode' => 200,
+          'closeConnection' => true,
+          'events' => [
+            { 'event' => 'chunk', 'data' => "line-one\nline-two\nline-three" }
+          ]
+        }
+      )
+
+      _content_type, raw = consume_sse(host, port, '/live-sse-multiline')
+      frames = parse_sse(raw)
+
+      expect(frames.length).to eq(1)
+      expect(frames.first[:event]).to eq('chunk')
+      expect(frames.first[:data]).to eq("line-one\nline-two\nline-three")
+    end
+  end
 end
