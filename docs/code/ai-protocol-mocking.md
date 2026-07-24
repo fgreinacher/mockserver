@@ -705,6 +705,19 @@ Per gRPC-over-HTTP/2 (and HTTP/3), a unary response must deliver `grpc-status` (
 
 Trailers are set with `HttpResponse.withTrailer(...)` and written by `MockServerHttpResponseToFullHttpResponse.mapResponseWithTrailers`, which forces chunked transfer-encoding on HTTP/1.1 and rides the trailing HEADERS frame on HTTP/2 / HTTP/3. The chaos `omitGrpcStatus` fault is only a genuine fault simulation because the non-faulted case emits a trailer.
 
+#### User-authored trailing metadata on HTTP/3
+
+The HTTP/3 gRPC writer does not go through that mapper — it builds its frames by hand — and until recently carried only `grpc-status`/`grpc-message`, so **every user-authored trailer was silently dropped over HTTP/3**: `withTrailer(...)` and the chaos profile's `customTrailers` reached an HTTP/1.1 or HTTP/2 client but never an HTTP/3 one. `GrpcHttp3Adapter` now copies them onto the terminal frame in both branches, via the shared `GrpcResponseStatusResolver.passThroughTrailers` (the trailer twin of `passThroughHeaders`):
+
+| Response shape | Frames written | Where the trailing metadata goes |
+|---|---|---|
+| With a body | initial HEADERS + DATA + trailing HEADERS | the trailing HEADERS frame, alongside `grpc-status` |
+| Body-less (Trailers-Only) | one terminal HEADERS frame | that frame, alongside `:status`, `content-type` and `grpc-status` |
+
+Folding the metadata into the Trailers-Only frame is the form gRPC defines (`HTTP-Status Content-Type Trailers`, where `Trailers` includes custom metadata), not a compromise. It is also why HTTP/3 never had the HTTP/2 defect above: the frame is written once with `SHUTDOWN_OUTPUT` and stays terminal, so an added trailer cannot strand `grpc-status` in a non-end-of-stream frame.
+
+`passThroughTrailers` excludes `grpc-status`/`grpc-message`/`grpc-status-name`, so a user-authored trailer cannot override or spoof the status the transport resolved — the same exclusion the HTTP/2 path makes with `remainingTrailers`. It also excludes connection-specific fields, `content-length`/`content-type` and pseudo-header names, which RFC 9114 forbids in a trailer section. Field names are lower-cased with `Locale.ROOT` and CR/LF stripped from values before they reach the frame: HTTP/3 field names must be lower-case and `DefaultHttp3Headers` throws on an upper-case one, so an authored `withTrailer("X-Request-Cost", …)` would otherwise abort the whole response rather than drop one field.
+
 Status resolution lives in **`GrpcResponseStatusResolver` (mockserver-core)** and is shared by every gRPC response path — `GrpcToHttpResponseHandler` (HTTP/1.1, HTTP/2), `GrpcHttp3Adapter` and `Http3GrpcResponseWriter` (HTTP/3). The order is: `grpc-status-name` header → explicit numeric `grpc-status` **header or trailer** → HTTP-status mapping for a non-2xx response (see above) → `OK`.
 
 It is shared rather than reimplemented per transport because the rules are a property of the gRPC contract, not the wire protocol — and duplicating them is exactly how HTTP/3 drifted. Before extraction, HTTP/3 read the status from headers only and defaulted to `"0"`, so an expectation authored with `withTrailer("grpc-status", "5")` (the form the consumer docs recommend) returned `NOT_FOUND` over HTTP/2 but `OK` over HTTP/3, and an unmatched request over HTTP/3 fabricated a success with the 404 body as its payload.

@@ -18,6 +18,7 @@ import org.mockserver.model.HttpResponse;
 import org.mockserver.model.NottableString;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Adapter that bridges gRPC request/response framing for the HTTP/3 path.
@@ -34,8 +35,9 @@ import java.util.List;
  *   <li><strong>Outbound:</strong> converting the matched response's JSON body
  *       back to gRPC-framed protobuf, building the initial HTTP/3 HEADERS
  *       frame (without grpc-status), the DATA frame (gRPC framed body), and a
- *       separate trailing HEADERS frame with grpc-status/grpc-message -- the
- *       correct wire framing that gRPC clients expect over HTTP/3.</li>
+ *       separate trailing HEADERS frame with grpc-status/grpc-message and any
+ *       user-authored trailing metadata -- the correct wire framing that gRPC
+ *       clients expect over HTTP/3.</li>
  * </ul>
  * <p>
  * This class is stateless and thread-safe; all state is passed via method
@@ -210,13 +212,51 @@ public final class GrpcHttp3Adapter {
         if (response == null) {
             return;
         }
-        Headers passThrough = GrpcResponseStatusResolver.passThroughHeaders(response);
-        for (Header header : passThrough.getEntries()) {
-            String name = header.getName().getValue();
+        addEntries(headersFrame, GrpcResponseStatusResolver.passThroughHeaders(response));
+    }
+
+    /**
+     * Copy the matched response's user-authored <strong>trailers</strong> onto an HTTP/3 HEADERS
+     * frame as gRPC trailing metadata.
+     * <p>
+     * {@link GrpcResponseStatusResolver#passThroughTrailers} excludes
+     * {@code grpc-status}/{@code grpc-message}/{@code grpc-status-name}, so a user-authored trailer
+     * cannot override or spoof the status the transport resolved and emits itself.
+     */
+    private static void addPassThroughTrailers(DefaultHttp3HeadersFrame frame, HttpResponse response) {
+        if (response == null) {
+            return;
+        }
+        addEntries(frame, GrpcResponseStatusResolver.passThroughTrailers(response));
+    }
+
+    /**
+     * Add model entries to an HTTP/3 HEADERS frame, normalised for the wire.
+     * <p>
+     * Field names are lower-cased with {@link Locale#ROOT} because HTTP/3 field names must be
+     * lower-case: {@code DefaultHttp3Headers} validates this and throws
+     * {@code Http3HeadersValidationException} for an upper-case character, which would abort the
+     * whole response rather than merely drop one field -- so an expectation authoring
+     * {@code withTrailer("X-Request-Cost", ...)} would otherwise take the client's entire response
+     * down. {@code Locale.ROOT} because a locale-sensitive fold (Turkish {@code I}) produces a
+     * non-ASCII name that is rejected in turn. CR and LF are stripped from values, mirroring
+     * {@code NettyResponseWriter.sanitizeHeaderValue} on the HTTP/1.1 path, so an authored value can
+     * never inject additional fields.
+     */
+    private static void addEntries(DefaultHttp3HeadersFrame frame, Headers entries) {
+        for (Header header : entries.getEntries()) {
+            String name = header.getName().getValue().toLowerCase(Locale.ROOT);
             for (NottableString value : header.getValues()) {
-                headersFrame.headers().add(name, value.getValue());
+                frame.headers().add(name, sanitizeValue(value.getValue()));
             }
         }
+    }
+
+    private static String sanitizeValue(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replace("\r", "").replace("\n", "");
     }
 
     /**
@@ -225,7 +265,32 @@ public final class GrpcHttp3Adapter {
      * (no :status) because this is a trailing HEADERS frame.
      */
     public static DefaultHttp3HeadersFrame buildTrailingHeadersFrame(String grpcStatus, String grpcMessage) {
+        return buildTrailingHeadersFrame(grpcStatus, grpcMessage, null);
+    }
+
+    /**
+     * As {@link #buildTrailingHeadersFrame(String, String)}, additionally emitting the matched
+     * response's user-authored trailers as gRPC trailing metadata.
+     * <p>
+     * Without this, HTTP/3 silently dropped every trailer an expectation set:
+     * {@code response().withTrailer("x-request-cost", "42")} and the gRPC chaos profile's
+     * {@code customTrailers} simply never reached the client, on both the body and the body-less
+     * branch. HTTP/1.1 and HTTP/2 emit them from the response model via
+     * {@code MockServerHttpResponseToFullHttpResponse.mapResponseWithTrailers}; the HTTP/3 gRPC
+     * writer builds its frames by hand and carried only {@code grpc-status}/{@code grpc-message}.
+     * <p>
+     * The custom metadata rides the <strong>same terminal frame</strong> as the status, so the
+     * framing is unchanged -- there is still exactly one trailing HEADERS frame, written with
+     * {@code SHUTDOWN_OUTPUT}. This is why HTTP/3 never had the HTTP/2 Trailers-Only defect that
+     * {@code GrpcToHttpResponseHandler.asTrailersOnlyIfHttp2} guards against.
+     *
+     * @param response the matched response, may be {@code null} for a transport-synthesized status
+     *                 (a {@code grpc-timeout} deadline, an encoding failure) that has no
+     *                 user-authored trailers
+     */
+    public static DefaultHttp3HeadersFrame buildTrailingHeadersFrame(String grpcStatus, String grpcMessage, HttpResponse response) {
         DefaultHttp3HeadersFrame trailersFrame = new DefaultHttp3HeadersFrame();
+        addPassThroughTrailers(trailersFrame, response);
         trailersFrame.headers().add(GrpcStatusMapper.GRPC_STATUS_HEADER, grpcStatus);
         if (grpcMessage != null && !grpcMessage.isEmpty()) {
             trailersFrame.headers().add(GrpcStatusMapper.GRPC_MESSAGE_HEADER,
@@ -256,8 +321,16 @@ public final class GrpcHttp3Adapter {
 
     /**
      * As {@link #buildTrailersOnlyFrame(String, String)}, additionally copying the matched
-     * response's own headers through -- a trailers-only response is the client's only frame, so
-     * dropping them here loses them entirely.
+     * response's own headers <em>and trailers</em> through -- a trailers-only response is the
+     * client's only frame, so dropping either loses it entirely.
+     * <p>
+     * Folding the user-authored trailers into this frame is the correct gRPC shape rather than a
+     * compromise: the Trailers-Only form is defined as {@code HTTP-Status Content-Type Trailers},
+     * and {@code Trailers} includes custom metadata. A gRPC client reads this single end-of-stream
+     * frame as the call's trailing metadata. Emitting a second frame after it instead would be
+     * wrong twice over -- the frame is already written with {@code SHUTDOWN_OUTPUT}, and a
+     * non-terminal initial frame carrying {@code grpc-status} is exactly the HTTP/2 defect fixed in
+     * {@code GrpcToHttpResponseHandler.asTrailersOnlyIfHttp2}.
      */
     public static DefaultHttp3HeadersFrame buildTrailersOnlyFrame(String grpcStatus, String grpcMessage, HttpResponse response) {
         DefaultHttp3HeadersFrame frame = new DefaultHttp3HeadersFrame();
@@ -265,6 +338,7 @@ public final class GrpcHttp3Adapter {
         frame.headers().add("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE);
         frame.headers().add("server", "mockserver-http3");
         addPassThroughHeaders(frame, response);
+        addPassThroughTrailers(frame, response);
         frame.headers().add(GrpcStatusMapper.GRPC_STATUS_HEADER, grpcStatus);
         if (grpcMessage != null && !grpcMessage.isEmpty()) {
             frame.headers().add(GrpcStatusMapper.GRPC_MESSAGE_HEADER,

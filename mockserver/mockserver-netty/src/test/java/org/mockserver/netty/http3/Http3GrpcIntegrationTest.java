@@ -168,6 +168,133 @@ public class Http3GrpcIntegrationTest {
     }
 
     /**
+     * A response WITH a body must deliver the expectation's trailing metadata to a real HTTP/3
+     * client, on the trailing HEADERS frame, alongside {@code grpc-status}.
+     * <p>
+     * HTTP/3 silently dropped it: the gRPC trailing HEADERS frame carried only
+     * {@code grpc-status}/{@code grpc-message}, so {@code response().withTrailer(...)} and the gRPC
+     * chaos profile's {@code customTrailers} never reached the client at all, while HTTP/1.1 and
+     * HTTP/2 delivered them -- the same expectation gave different metadata per transport.
+     * <p>
+     * The assertions discriminate which side each value arrived on: the trailer must be in the
+     * second (trailing) HEADERS frame and NOT folded into the initial one, and the response header
+     * must be in the initial frame and NOT repeated as a trailer. The value carries {@code =},
+     * {@code ;}, {@code ,} and spaces so an exact round-trip is required.
+     */
+    @Test
+    public void shouldDeliverUserAuthoredTrailingMetadataWithBodyOverHttp3() throws Exception {
+        // given
+        int http3Port = startMockServerWithGrpc();
+
+        mockServerClient.when(
+            request()
+                .withMethod("POST")
+                .withPath("/com.example.grpc.GreetingService/Greeting")
+                .withBody(json("{\"name\":\"World\"}"))
+        ).respond(
+            response()
+                .withStatusCode(200)
+                .withHeader("x-tenant-id", "acme")
+                .withTrailer("x-request-cost", "unit=1; tier=gold, region=eu-west-2")
+                .withBody("{\"greeting\":\"Hello World\"}")
+        );
+
+        byte[] protobufRequest = converter.toProtobuf(
+            "{\"name\":\"World\"}",
+            descriptorStore.getMethod("com.example.grpc.GreetingService", "Greeting").getInputType()
+        );
+
+        // when
+        GrpcH3Response result = sendGrpcOverHttp3(
+            http3Port,
+            "/com.example.grpc.GreetingService/Greeting",
+            GrpcFrameCodec.encode(protobufRequest)
+        );
+
+        // then -- initial HEADERS + DATA + trailing HEADERS, exactly two HEADERS frames
+        assertThat("a response with a body must use initial + trailing HEADERS frames",
+            result.headersFrameCount, is(2));
+        assertThat("initial headers should have :status=200", result.initialStatus, is("200"));
+
+        assertThat("the authored trailer must arrive AS a trailer",
+            result.trailingHeaders.get("x-request-cost"), is("unit=1; tier=gold, region=eu-west-2"));
+        assertThat("the trailer must NOT be folded into the initial headers",
+            result.initialHeaders.containsKey("x-request-cost"), is(false));
+
+        assertThat("the authored response header must arrive as a header",
+            result.initialHeaders.get("x-tenant-id"), is("acme"));
+        assertThat("the response header must NOT be repeated as a trailer",
+            result.trailingHeaders.containsKey("x-tenant-id"), is(false));
+
+        assertThat("grpc-status must still be delivered in the trailers",
+            result.trailingHeaders.get(GrpcStatusMapper.GRPC_STATUS_HEADER), is("0"));
+        assertThat("grpc-status must not appear in the initial headers",
+            result.initialHeaders.containsKey(GrpcStatusMapper.GRPC_STATUS_HEADER), is(false));
+
+        List<byte[]> decodedMessages = GrpcFrameCodec.decode(result.bodyBytes);
+        assertThat("should have exactly one gRPC message", decodedMessages.size(), is(1));
+        assertThat("the message must still round-trip",
+            converter.toJson(
+                decodedMessages.get(0),
+                descriptorStore.getMethod("com.example.grpc.GreetingService", "Greeting").getOutputType()
+            ),
+            containsString("Hello World"));
+    }
+
+    /**
+     * A body-less error response must deliver its trailing metadata too -- this is the branch that
+     * matters most, because a gRPC error response (and a chaos fault with {@code customTrailers})
+     * carries no body and so takes the Trailers-Only form.
+     * <p>
+     * Folding the custom metadata into that single frame is the Trailers-Only shape gRPC defines
+     * ({@code HTTP-Status Content-Type Trailers}), and keeps the frame terminal. Asserting exactly
+     * one HEADERS frame is what proves the trailer did not cost the response its terminality -- the
+     * failure mode the HTTP/2 path had to be fixed for.
+     */
+    @Test
+    public void shouldDeliverUserAuthoredTrailingMetadataOnBodylessErrorOverHttp3() throws Exception {
+        // given
+        int http3Port = startMockServerWithGrpc();
+
+        mockServerClient.when(
+            request()
+                .withMethod("POST")
+                .withPath("/com.example.grpc.GreetingService/Greeting")
+                .withBody(json("{\"name\":\"World\"}"))
+        ).respond(
+            response()
+                .withStatusCode(200)
+                .withHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER, "RESOURCE_EXHAUSTED")
+                .withTrailer("x-retry-after-seconds", "30")
+        );
+
+        byte[] protobufRequest = converter.toProtobuf(
+            "{\"name\":\"World\"}",
+            descriptorStore.getMethod("com.example.grpc.GreetingService", "Greeting").getInputType()
+        );
+
+        // when
+        GrpcH3Response result = sendGrpcOverHttp3(
+            http3Port,
+            "/com.example.grpc.GreetingService/Greeting",
+            GrpcFrameCodec.encode(protobufRequest)
+        );
+
+        // then -- Trailers-Only: one terminal HEADERS frame carrying status AND the metadata
+        assertThat("a body-less gRPC response is the Trailers-Only form: a single HEADERS frame",
+            result.headersFrameCount, is(1));
+        assertThat("should have :status=200", result.initialStatus, is("200"));
+        assertThat("no DATA frame accompanies a Trailers-Only response",
+            result.bodyBytes.length, is(0));
+
+        assertThat("the authored trailer must arrive as trailing metadata",
+            result.initialHeaders.get("x-retry-after-seconds"), is("30"));
+        assertThat("grpc-status must still be RESOURCE_EXHAUSTED (8)",
+            result.initialHeaders.get(GrpcStatusMapper.GRPC_STATUS_HEADER),
+            is(String.valueOf(GrpcStatusMapper.GrpcStatusCode.RESOURCE_EXHAUSTED.getCode())));
+    }
+
+    /**
      * gRPC error over HTTP/3: when the gRPC method is unknown, grpc-status
      * should be UNIMPLEMENTED (12) in trailing HEADERS.
      */
@@ -328,17 +455,25 @@ public class Http3GrpcIntegrationTest {
         final Map<String, String> initialHeaders;
         final Map<String, String> trailingHeaders;
         final byte[] bodyBytes;
+        /**
+         * How many HEADERS frames the client actually received. Two means initial + trailing;
+         * one means the Trailers-Only form, where that single frame is terminal. Asserting on it
+         * is what distinguishes correct framing from a trailer smuggled into the wrong frame.
+         */
+        final int headersFrameCount;
 
         GrpcH3Response(
             String initialStatus,
             Map<String, String> initialHeaders,
             Map<String, String> trailingHeaders,
-            byte[] bodyBytes
+            byte[] bodyBytes,
+            int headersFrameCount
         ) {
             this.initialStatus = initialStatus;
             this.initialHeaders = initialHeaders;
             this.trailingHeaders = trailingHeaders;
             this.bodyBytes = bodyBytes;
+            this.headersFrameCount = headersFrameCount;
         }
     }
 
@@ -420,8 +555,10 @@ public class Http3GrpcIntegrationTest {
         Map<String, String> initialHeaders = new ConcurrentHashMap<>();
         Map<String, String> trailingHeaders = new ConcurrentHashMap<>();
         String initialStatus = "null";
+        int headersFrameCount;
 
         synchronized (headerFrames) {
+            headersFrameCount = headerFrames.size();
             if (!headerFrames.isEmpty()) {
                 // first HEADERS frame is the initial response
                 Http3HeadersFrame first = headerFrames.get(0);
@@ -446,7 +583,7 @@ public class Http3GrpcIntegrationTest {
             }
         }
 
-        return new GrpcH3Response(initialStatus, initialHeaders, trailingHeaders, responseBody);
+        return new GrpcH3Response(initialStatus, initialHeaders, trailingHeaders, responseBody, headersFrameCount);
     }
 
     /**

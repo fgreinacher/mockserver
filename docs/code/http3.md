@@ -308,6 +308,18 @@ declarations are needed -- they resolve automatically.
   response now carries the expectation's own headers instead of dropping them
   (`buildInitialHeadersFrame(response)` / `buildTrailersOnlyFrame(..., response)`,
   excluding gRPC protocol metadata the frame builder emits itself).
+- **User-authored gRPC trailing metadata is emitted over HTTP/3.** A fourth
+  HTTP/3-only divergence: the frames were built by hand and carried only
+  `grpc-status`/`grpc-message`, so `response().withTrailer(...)` and the chaos
+  profile's `customTrailers` never reached an HTTP/3 client at all, in either branch.
+  They now ride the terminal frame — the trailing HEADERS frame when the response has
+  a body, and the Trailers-Only frame when it does not, which is the shape gRPC
+  defines for that form and keeps the frame terminal. The shared
+  `GrpcResponseStatusResolver.passThroughTrailers` excludes
+  `grpc-status`/`grpc-message`/`grpc-status-name` so a trailer cannot spoof the
+  resolved status, and excludes the connection-specific and pseudo-header names RFC
+  9114 forbids in a trailer section. See
+  [ai-protocol-mocking.md](ai-protocol-mocking.md#user-authored-trailing-metadata-on-http3).
 - `grpc-message` is percent-encoded on the HTTP/3 path too, from the same shared
   `GrpcStatusMapper.percentEncodeMessage` helper — see
   [ai-protocol-mocking.md](ai-protocol-mocking.md#grpc-message-percent-encoding).
@@ -319,7 +331,9 @@ declarations are needed -- they resolve automatically.
   second response onto a stream that already ended with DEADLINE_EXCEEDED.
 - Integration-tested gRPC-over-HTTP/3 (in-JVM Netty QUIC client with manual gRPC
   framing, verifies unary call round-trip, trailing HEADERS framing, error status,
-  and non-gRPC regression)
+  user-authored trailing metadata on both the body and body-less branches — asserting
+  the HEADERS-frame count so the trailer cannot arrive at the cost of the frame's
+  terminality — and non-gRPC regression)
 - **gRPC server-streaming over HTTP/3**: a `grpcStreamResponse` expectation streams
   each configured message as its own HTTP/3 DATA frame (honouring per-message delays),
   then a trailing HEADERS frame with `grpc-status`. The unary request is matched

@@ -208,12 +208,34 @@ public class GrpcResponseStatusResolver {
      * gRPC protocol metadata the transport emits itself.
      */
     public static Headers passThroughHeaders(HttpResponse response) {
-        Headers headers = response.getHeaders();
+        return passThrough(response.getHeaders());
+    }
+
+    /**
+     * Returns the response's <strong>trailers</strong> that should be passed through to a gRPC
+     * client as trailing metadata, excluding gRPC protocol metadata the transport emits itself.
+     * <p>
+     * This is the trailer twin of {@link #passThroughHeaders(HttpResponse)} and exists for the same
+     * reason: the exclusion rule is a property of the gRPC contract rather than of a wire protocol,
+     * so it must not be re-derived per transport. Filtering out
+     * {@code grpc-status}/{@code grpc-message}/{@code grpc-status-name} is what stops a
+     * user-authored trailer overriding or spoofing the status the transport itself resolved and
+     * emits -- the same exclusion the HTTP/2 path applies through
+     * {@code GrpcToHttpResponseHandler.remainingTrailers}. Connection-specific fields, pseudo-header
+     * names and {@code content-length}/{@code content-type} are excluded too because RFC 9114
+     * forbids all of them in a trailer section, and a conforming client "MUST treat" a message
+     * carrying one as malformed.
+     */
+    public static Headers passThroughTrailers(HttpResponse response) {
+        return passThrough(response.getTrailers());
+    }
+
+    private static Headers passThrough(Headers source) {
         Headers passThrough = new Headers();
-        if (headers == null) {
+        if (source == null) {
             return passThrough;
         }
-        for (Header header : headers.getEntries()) {
+        for (Header header : source.getEntries()) {
             String name = header.getName().getValue();
             if (isGrpcProtocolMetadata(name)) {
                 continue;

@@ -306,6 +306,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bulk of the pointers — so a scan that resolves nothing cannot pass. Verified by degrading a real
   `mockserver-netty` test method name: the guard now fails with a message naming the dangling pointer,
   where the previous version passed green with the identical defect in place.
+- **gRPC trailing metadata is no longer silently dropped over HTTP/3.** Every trailer an expectation
+  authored — `response().withTrailer("x-request-cost", "42")`, and the gRPC chaos profile's
+  `customTrailers` — reached an HTTP/1.1 or HTTP/2 client but **never reached an HTTP/3 client at
+  all**, in every branch of the HTTP/3 gRPC response path (with a body and body-less, and both with
+  and without proto descriptors loaded). The same expectation therefore produced different trailing
+  metadata depending only on which transport the client happened to use, and there was no error or
+  warning anywhere to indicate the loss — a test asserting on trailing metadata over HTTP/3 simply
+  saw nothing. The cause was that `Http3GrpcResponseWriter` builds its HTTP/3 frames by hand rather
+  than through `MockServerHttpResponseToFullHttpResponse.mapResponseWithTrailers` (which is what
+  carries trailers on the other transports), and `GrpcHttp3Adapter.buildTrailingHeadersFrame` /
+  `buildTrailersOnlyFrame` populated only `grpc-status` and `grpc-message`; the response's own
+  trailers were never read. They are now emitted on the terminal frame: on the trailing HEADERS
+  frame when the response has a body, and folded into the Trailers-Only frame when it does not,
+  which is the shape gRPC defines for that form (`HTTP-Status Content-Type Trailers`, where
+  `Trailers` includes custom metadata) and leaves the framing unchanged — there is still exactly one
+  terminal frame, written with `SHUTDOWN_OUTPUT`, so an added trailer cannot cost the response its
+  end-of-stream marker the way it did on HTTP/2 before the fix above. A user-authored trailer cannot
+  override or spoof the transport's own status: the new shared
+  `GrpcResponseStatusResolver.passThroughTrailers` (the trailer twin of `passThroughHeaders`)
+  excludes `grpc-status`, `grpc-message` and `grpc-status-name`, mirroring the exclusion the HTTP/2
+  path makes in `remainingTrailers`, and also excludes the connection-specific fields,
+  `content-length`/`content-type` and pseudo-header names that RFC 9114 forbids in a trailer section.
+  Trailer field names are lower-cased and CR/LF stripped from values before reaching the frame,
+  because HTTP/3 field names must be lower-case and Netty's `DefaultHttp3Headers` rejects an
+  upper-case one by throwing — so an expectation authoring `withTrailer("X-Request-Cost", …)` would
+  otherwise have taken the client's entire response down rather than dropping a single field.
+  Verified over the wire by two new tests in `Http3GrpcIntegrationTest` that drive a live in-JVM
+  Netty QUIC client and read the metadata off the HEADERS frames it actually received, asserting
+  which side each value arrived on (a trailer must not be folded into the initial headers, a
+  response header must not be repeated as a trailer) and asserting the HEADERS-frame count so the
+  metadata cannot arrive at the cost of correct framing, plus adapter-level coverage in
+  `GrpcHttp3AdapterTest`. Positive control: neutering the trailer pass-through in production turns
+  all seven new assertions red with the trailer absent.
 - **A gRPC error response carrying custom trailing metadata no longer loses its status.** On HTTP/2 a
   body-less gRPC response is collapsed into the gRPC Trailers-Only form, which moves `grpc-status`
   into the initial HEADERS frame and relies on that frame being end-of-stream. When the expectation

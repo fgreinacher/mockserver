@@ -423,4 +423,148 @@ public class GrpcHttp3AdapterTest {
         assertThat("grpc-status-name is internal and must not reach the client",
             frame.headers().get(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER), is(nullValue()));
     }
+
+    // ---- user-authored gRPC trailing metadata over HTTP/3 ----
+
+    /**
+     * A response WITH a body must carry the expectation's trailers on the trailing HEADERS frame,
+     * alongside {@code grpc-status}.
+     * <p>
+     * They were silently dropped: {@code buildTrailingHeadersFrame} carried only
+     * {@code grpc-status}/{@code grpc-message}, so {@code response().withTrailer(...)} and the gRPC
+     * chaos profile's {@code customTrailers} never reached an HTTP/3 client at all, while HTTP/1.1
+     * and HTTP/2 delivered them.
+     */
+    @Test
+    public void shouldEmitUserAuthoredTrailersOnTheTrailingHeadersFrame() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withBody("{\"greeting\":\"Hello\"}")
+            .withTrailer("x-request-cost", "unit=1; tier=gold, region=eu-west-2");
+
+        DefaultHttp3HeadersFrame frame = GrpcHttp3Adapter.buildTrailingHeadersFrame("0", null, response);
+
+        assertThat("the authored trailer must arrive as trailing metadata",
+            frame.headers().get("x-request-cost"), is("unit=1; tier=gold, region=eu-west-2"));
+        assertThat("grpc-status must still be delivered on the same terminal frame",
+            frame.headers().get(GrpcStatusMapper.GRPC_STATUS_HEADER).toString(), is("0"));
+        assertThat("a trailing HEADERS frame carries no pseudo-headers",
+            frame.headers().status(), is(nullValue()));
+    }
+
+    /**
+     * A trailer must be emitted as a trailer, not folded into the initial HEADERS frame, and a
+     * header must not leak into the trailing frame -- otherwise a client reading
+     * {@code Metadata} from the two sides cannot tell them apart.
+     */
+    @Test
+    public void shouldKeepTrailersOffTheInitialHeadersFrameAndHeadersOffTheTrailingFrame() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader("x-tenant-id", "acme")
+            .withBody("{\"greeting\":\"Hello\"}")
+            .withTrailer("x-request-cost", "42");
+
+        DefaultHttp3HeadersFrame initial = GrpcHttp3Adapter.buildInitialHeadersFrame(response);
+        DefaultHttp3HeadersFrame trailing = GrpcHttp3Adapter.buildTrailingHeadersFrame("0", null, response);
+
+        assertThat("the header belongs on the initial frame",
+            initial.headers().get("x-tenant-id"), is("acme"));
+        assertThat("the trailer must NOT be folded into the initial headers",
+            initial.headers().get("x-request-cost"), is(nullValue()));
+        assertThat("the trailer belongs on the trailing frame",
+            trailing.headers().get("x-request-cost"), is("42"));
+        assertThat("the header must NOT be repeated as a trailer",
+            trailing.headers().get("x-tenant-id"), is(nullValue()));
+    }
+
+    /**
+     * A body-less response takes the Trailers-Only branch, where the single terminal frame is
+     * everything the client gets -- so the authored trailers must ride it, together with
+     * {@code grpc-status}. This is the branch that matters most: a gRPC error response carrying
+     * {@code customTrailers} has no body.
+     */
+    @Test
+    public void shouldEmitUserAuthoredTrailersOnTheTrailersOnlyFrame() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withTrailer("x-retry-after-seconds", "30");
+
+        DefaultHttp3HeadersFrame frame = GrpcHttp3Adapter.buildTrailersOnlyFrame("8", "quota exhausted", response);
+
+        assertThat("the authored trailer must arrive on the body-less response too",
+            frame.headers().get("x-retry-after-seconds"), is("30"));
+        assertThat("grpc-status must still be delivered",
+            frame.headers().get(GrpcStatusMapper.GRPC_STATUS_HEADER).toString(), is("8"));
+        assertThat("grpc-message must still be delivered",
+            frame.headers().get(GrpcStatusMapper.GRPC_MESSAGE_HEADER).toString(), is("quota exhausted"));
+        assertThat("Trailers-Only remains a single terminal frame carrying :status",
+            frame.headers().status().toString(), is("200"));
+    }
+
+    /**
+     * A user-authored trailer must never override or spoof the transport's own status -- mirroring
+     * the HTTP/2 path, whose {@code remainingTrailers} deliberately excludes those keys.
+     */
+    @Test
+    public void shouldNotLetUserAuthoredTrailersOverrideGrpcStatusOrMessage() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withTrailer(GrpcStatusMapper.GRPC_STATUS_HEADER, "0")
+            .withTrailer(GrpcStatusMapper.GRPC_MESSAGE_HEADER, "all fine")
+            .withTrailer(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER, "OK")
+            .withTrailer("x-request-cost", "42");
+
+        for (DefaultHttp3HeadersFrame frame : new DefaultHttp3HeadersFrame[]{
+            GrpcHttp3Adapter.buildTrailingHeadersFrame("5", "no such greeting", response),
+            GrpcHttp3Adapter.buildTrailersOnlyFrame("5", "no such greeting", response)
+        }) {
+            assertThat("exactly one grpc-status, the resolved one",
+                frame.headers().getAll(GrpcStatusMapper.GRPC_STATUS_HEADER), contains("5"));
+            assertThat("exactly one grpc-message, the resolved one",
+                frame.headers().getAll(GrpcStatusMapper.GRPC_MESSAGE_HEADER), contains("no such greeting"));
+            assertThat("grpc-status-name is internal and must not reach the client",
+                frame.headers().get(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER), is(nullValue()));
+            assertThat("ordinary trailing metadata is still carried",
+                frame.headers().get("x-request-cost"), is("42"));
+        }
+    }
+
+    /**
+     * Trailer field names must be lower-cased and values stripped of CR/LF.
+     * <p>
+     * HTTP/3 field names must be lower-case and {@code DefaultHttp3Headers} enforces it by
+     * throwing, so an authored {@code withTrailer("X-Request-Cost", ...)} would abort the entire
+     * response rather than drop one field. Connection-specific fields are illegal in a trailer
+     * section on HTTP/3 and must be filtered out for the same reason.
+     */
+    @Test
+    public void shouldNormaliseTrailerNamesAndValuesForTheWire() {
+        HttpResponse response = HttpResponse.response()
+            .withStatusCode(200)
+            .withTrailer("X-Request-Cost", "42\r\nx-injected: evil")
+            .withTrailer("Connection", "keep-alive")
+            .withTrailer("transfer-encoding", "chunked");
+
+        DefaultHttp3HeadersFrame frame = GrpcHttp3Adapter.buildTrailingHeadersFrame("0", null, response);
+
+        assertThat("field name must be lower-cased for HTTP/3",
+            frame.headers().get("x-request-cost"), is("42x-injected: evil"));
+        assertThat("connection-specific fields are illegal in an HTTP/3 trailer section",
+            frame.headers().get("connection"), is(nullValue()));
+        assertThat("transfer-encoding is illegal in an HTTP/3 trailer section",
+            frame.headers().get("transfer-encoding"), is(nullValue()));
+    }
+
+    /**
+     * A transport-synthesized status (a {@code grpc-timeout} deadline, an encode failure) has no
+     * matched response, so the two-argument builders must keep working unchanged.
+     */
+    @Test
+    public void shouldBuildTrailerFramesWithoutAResponse() {
+        assertThat(GrpcHttp3Adapter.buildTrailingHeadersFrame("4", "deadline exceeded")
+            .headers().get(GrpcStatusMapper.GRPC_STATUS_HEADER).toString(), is("4"));
+        assertThat(GrpcHttp3Adapter.buildTrailingHeadersFrame("4", "deadline exceeded", null)
+            .headers().get(GrpcStatusMapper.GRPC_STATUS_HEADER).toString(), is("4"));
+    }
 }

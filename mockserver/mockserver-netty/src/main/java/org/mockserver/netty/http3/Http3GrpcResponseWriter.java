@@ -38,7 +38,8 @@ import java.util.Locale;
  * A {@link ResponseWriter} that writes gRPC responses over HTTP/3 with correct
  * gRPC wire framing: initial HEADERS ({@code :status=200},
  * {@code content-type=application/grpc}), DATA (gRPC length-prefixed message),
- * and trailing HEADERS ({@code grpc-status}, {@code grpc-message}).
+ * and trailing HEADERS ({@code grpc-status}, {@code grpc-message}, plus any trailing metadata the
+ * expectation authored with {@code withTrailer(...)}).
  * <p>
  * This follows the gRPC-over-HTTP/3 convention (same as HTTP/2): the
  * {@code grpc-status} is conveyed in a <strong>trailing HEADERS frame</strong>
@@ -47,7 +48,9 @@ import java.util.Locale;
  * <p>
  * For error responses without a body, the "trailers-only" pattern is used:
  * a single HEADERS frame containing both {@code :status=200} and
- * {@code grpc-status} (no DATA frame).
+ * {@code grpc-status} (no DATA frame). Any user-authored trailers ride that same frame, which is
+ * the Trailers-Only form's defined shape ({@code HTTP-Status Content-Type Trailers}) and keeps the
+ * frame terminal.
  * <p>
  * The gRPC service and method names are captured from the original request
  * (where {@link GrpcHttp3Adapter} places them as {@code x-grpc-service} and
@@ -226,7 +229,7 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
                 DefaultHttp3HeadersFrame initialHeaders = GrpcHttp3Adapter.buildInitialHeadersFrame(response);
                 DefaultHttp3DataFrame dataFrame = GrpcHttp3Adapter.buildDataFrame(parts.grpcFrameBytes());
                 DefaultHttp3HeadersFrame trailers = GrpcHttp3Adapter.buildTrailingHeadersFrame(
-                    parts.grpcStatus(), parts.grpcMessage()
+                    parts.grpcStatus(), parts.grpcMessage(), response
                 );
 
                 ctx.write(initialHeaders);
@@ -282,7 +285,7 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
             DefaultHttp3HeadersFrame initialHeaders = GrpcHttp3Adapter.buildInitialHeadersFrame(response);
             DefaultHttp3DataFrame dataFrame = GrpcHttp3Adapter.buildDataFrame(bodyBytes);
             DefaultHttp3HeadersFrame trailers = GrpcHttp3Adapter.buildTrailingHeadersFrame(
-                grpcStatus, grpcMessage
+                grpcStatus, grpcMessage, response
             );
 
             ctx.write(initialHeaders);
