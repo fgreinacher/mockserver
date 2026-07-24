@@ -33,6 +33,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the value from either side because a body-less unary response may legitimately collapse to
   Trailers-Only. Verified by positive controls: dropping the user-authored trailers turns both tests
   red, and dropping the user-authored response headers turns the header assertion red.
+- **The `maxResponseBodySize` limit is now proven behaviourally against a real upstream.** A new
+  integration test (`MaxResponseBodySizeIntegrationTest`) boots a forwarding MockServer configured with a
+  4KB `maxResponseBodySize`, points it at a raw upstream socket that returns a 64KB body, and drives it
+  over a plain client socket: the oversized body fails the forward and the client receives **502 Bad
+  Gateway** with none of the payload relayed, while a control request whose body sits under the limit is
+  forwarded intact. A third case repeats the oversized body with `Transfer-Encoding: chunked` and no
+  `Content-Length`, proving the cap is enforced against the bytes actually accumulated by the forward
+  client's aggregator rather than merely against a declared header. Previously this documented,
+  memory-protecting bound — read whenever a forward-client pipeline is built — had no behavioural
+  coverage at all, so a regression that dropped the wiring (or passed an unbounded value) would have
+  removed the limit silently; only the inbound analogue `maxRequestBodySize` was verified. The new test
+  covers the HTTP/1.1 forward aggregator; the HTTP/2 forward path reads the same property (for the
+  per-stream aggregator and to derive the client's `maxFrameSize`) and remains uncovered.
+  `maxResponseBodySize` accordingly moves from `ENFORCEMENT_EXEMPT` to `ENFORCEMENT_VERIFIED` in
+  `ConfigurationEnforcementClassificationTest`. Verified by a positive control (restoring an unbounded
+  aggregator lets the oversized body through with a 200 and turns both over-limit assertions red).
 - **The Ruby client now proves live SSE stream consumption over the wire.** New integration examples
   (`spec/integration_spec.rb` → `SSE streaming`) register an `httpSseResponse` expectation via the Ruby
   client against a running MockServer, then open a real streaming HTTP consumer and assert every `data:`

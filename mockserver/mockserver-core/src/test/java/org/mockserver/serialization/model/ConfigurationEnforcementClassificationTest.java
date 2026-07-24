@@ -109,6 +109,11 @@ public class ConfigurationEnforcementClassificationTest {
             "org.mockserver.log.MockServerEventLogRequestLogEntryVerificationTest#shouldFailVerificationWithLimitedReturnedRequestsViaConfiguration");
         ENFORCEMENT_VERIFIED.put("maxSocketTimeoutInMillis",
             "org.mockserver.httpclient.netty.NettyHttpClientConnectionPoolTest#shouldTimeOutAStalledReusedPooledConnectionInsteadOfHanging");
+        // consumed when the forward client's HTTP/1.1 pipeline is built (it sizes the aggregator), so it
+        // cannot be re-read per request — but an instance-set value still changes observable behaviour:
+        // an upstream body over the limit fails the forward with a 502 instead of being relayed.
+        ENFORCEMENT_VERIFIED.put("maxResponseBodySize",
+            "org.mockserver.netty.integration.proxy.MaxResponseBodySizeIntegrationTest#shouldRejectUpstreamResponseBodyOverTheConfiguredMaxResponseBodySize");
         ENFORCEMENT_VERIFIED.put("forwardProxyCircuitBreakerFailureThreshold",
             "org.mockserver.mock.action.http.HttpForwardActionResilienceTest#shouldOpenCircuitAfterConsecutiveFailuresAndFailFast");
 
@@ -180,9 +185,6 @@ public class ConfigurationEnforcementClassificationTest {
         ENFORCEMENT_EXEMPT.put("maxInitialLineLength",
             "consumed when the HTTP codec is installed during pipeline construction; there is no per-request "
                 + "read site to observe a runtime change at");
-        ENFORCEMENT_EXEMPT.put("maxResponseBodySize",
-            "consumed when the relay/forward pipeline is constructed; the inbound analogue "
-                + "maxRequestBodySize is the one reachable over the control plane and IS verified end-to-end");
         ENFORCEMENT_EXEMPT.put("grpcEnabled",
             "bind-time protocol selection: decides which handlers are installed as the server binds, so it "
                 + "cannot take effect on an already-bound server");
