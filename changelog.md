@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Socks4ConnectHandler`). Previously SOCKS4 was only exercised by an `EmbeddedChannel` unit test
   (`Socks4ProxyHandlerTest`, which asserts handler removal) while every real-socket proxy integration
   test used SOCKS5, so nothing drove the SOCKS4 relay path over the wire.
+- **Per-host forward-proxy client-certificate selection is now proven at a real TLS handshake.** A new
+  integration test (`ForwardWithCustomClientCertificateByHostIntegrationTest`) configures
+  `forwardProxyClientCertificatesByHost` to present two independent client certificates (each backed by
+  its own CA) keyed by host, then forwards through MockServer to two secure upstream `EchoServer`s that
+  each `REQUIRE` client auth and trust only ONE of the two client CAs. Because the host string is the
+  cert-mapping key while the connection target is fixed independently by the forward port, the same
+  upstream is reached under both host keys: the mapped cert is accepted (200) and the mismatched cert is
+  rejected at the handshake (502). This makes the presented client certificate a load-bearing assertion,
+  verified by a positive control (degrading the mapping to always present cert A flips host B's accepted
+  case to 502). Previously `NettySslContextFactoryTest` asserted only `SslContext` identity/distinctness
+  and the pure resolver -- nothing drove the per-host cert to an actual mTLS handshake.
 - **The Go client's FORWARD and ERROR response actions are now proven over the wire.** New integration
   tests (`response_action_integration_test.go`) register a `httpForward` and a `httpError`
   (`dropConnection`) action via the Go client and drive real requests that assert the SERVER actually
