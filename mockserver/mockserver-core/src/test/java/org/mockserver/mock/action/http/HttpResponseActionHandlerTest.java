@@ -9,13 +9,17 @@ import org.mockserver.model.FileBody;
 import org.mockserver.model.GraphQLBody;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.model.HttpTemplate;
+import org.mockserver.model.BinaryBody;
 import org.mockserver.model.MediaType;
+import org.mockserver.model.StringBody;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.*;
 import static org.mockserver.model.HttpRequest.request;
@@ -57,17 +61,70 @@ public class HttpResponseActionHandlerTest {
     }
 
     @Test
-    public void shouldReturnFileBodyVerbatimWhenNoTemplateType() {
-        // given - a plain FileBody (no templateType) must be returned untouched
+    public void shouldServeFileContentsVerbatimWhenNoTemplateType() {
+        // given - a FILE body with a filePath but NO templateType (issue #2450): the file must be READ
+        // and its CONTENTS served, not the filePath string. The file deliberately contains a Mustache
+        // placeholder that must survive UNPROCESSED because no template engine is configured.
         HttpResponse httpResponse = response().withBody(
-            new FileBody("org/mockserver/templates/sample_mustache_body.json", MediaType.APPLICATION_JSON)
+            new FileBody("org/mockserver/mock/action/verbatim_file_body.xml", MediaType.parse("application/xml"))
         );
 
         // when
         HttpResponse actual = httpResponseActionHandler.handle(httpResponse, request().withMethod("PUT").withPath("/somePath"));
 
-        // then - body remains a FileBody, no rendering performed
-        assertThat(actual.getBody(), is(instanceOf(FileBody.class)));
+        // then - the body value is the exact file contents (not the path, not template-processed)
+        assertThat(actual.getBody(), is(instanceOf(StringBody.class)));
+        assertThat(actual.getBody().getValue(), is("<tag>hello{{ request.path }}</tag>"));
+        assertThat(actual.getBody().getContentType(), containsString("application/xml"));
+    }
+
+    @Test
+    public void shouldServeBinaryFileContentsIntactWhenNoTemplateType() {
+        // given - a FILE body referencing a BINARY file with a binary content type and no templateType;
+        // the raw bytes must be served intact (charset-decoding them would corrupt the file)
+        HttpResponse httpResponse = response().withBody(
+            new FileBody("org/mockserver/mock/action/verbatim_binary_body.png", MediaType.parse("image/png"))
+        );
+
+        // when
+        HttpResponse actual = httpResponseActionHandler.handle(httpResponse, request().withMethod("GET").withPath("/image"));
+
+        // then - served as raw bytes (BinaryBody), byte-for-byte identical to the file on disk
+        assertThat(actual.getBody(), is(instanceOf(BinaryBody.class)));
+        assertArrayEquals(
+            new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, (byte) 0xFF, (byte) 0xFE, 0x01, (byte) 0x80, 0x7F, (byte) 0xC3, 0x28},
+            actual.getBody().getRawBytes()
+        );
+        assertThat(actual.getBody().getContentType(), containsString("image/png"));
+    }
+
+    @Test
+    public void shouldServeFileContentsVerbatimWhenTemplateTypeUnsupported() {
+        // given - a FILE body with an UNSUPPORTED templateType for file templating (JavaScript); it must
+        // serve the raw file CONTENTS rather than emitting the filePath string (the latent default-branch gap)
+        HttpResponse httpResponse = response().withBody(
+            new FileBody("org/mockserver/mock/action/verbatim_file_body.xml", MediaType.parse("application/xml"), HttpTemplate.TemplateType.JAVASCRIPT)
+        );
+
+        // when
+        HttpResponse actual = httpResponseActionHandler.handle(httpResponse, request().withMethod("PUT").withPath("/somePath"));
+
+        // then - contents served verbatim, not the path
+        assertThat(actual.getBody(), is(instanceOf(StringBody.class)));
+        assertThat(actual.getBody().getValue(), is("<tag>hello{{ request.path }}</tag>"));
+    }
+
+    @Test
+    public void shouldFailConsistentlyWhenVerbatimFileMissing() {
+        // given - a FILE body with no templateType pointing at a missing file; behaviour must match the
+        // templated path, which surfaces a RuntimeException from FileReader for a missing file
+        HttpResponse httpResponse = response().withBody(
+            new FileBody("org/mockserver/mock/action/does_not_exist_" + System.nanoTime() + ".xml", MediaType.parse("application/xml"))
+        );
+
+        // when / then
+        assertThrows(RuntimeException.class, () ->
+            httpResponseActionHandler.handle(httpResponse, request().withMethod("GET").withPath("/missing")));
     }
 
     @Test

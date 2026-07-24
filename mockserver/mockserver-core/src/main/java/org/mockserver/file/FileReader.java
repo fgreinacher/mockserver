@@ -20,6 +20,14 @@ public class FileReader {
         }
     }
 
+    public static byte[] readBytesFromClassPathOrPath(String filePath) {
+        try (InputStream inputStream = openStreamToFileFromClassPathOrPath(filePath)) {
+            return ByteStreams.toByteArray(inputStream);
+        } catch (IOException ioe) {
+            throw new RuntimeException("Exception while loading \"" + filePath + "\"", ioe);
+        }
+    }
+
     public static InputStream openStreamToFileFromClassPathOrPath(String filename) throws FileNotFoundException {
         InputStream inputStream = FileReader.class.getClassLoader().getResourceAsStream(filename);
         if (inputStream == null) {

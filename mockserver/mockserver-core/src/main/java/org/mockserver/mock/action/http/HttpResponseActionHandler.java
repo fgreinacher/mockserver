@@ -7,9 +7,11 @@ import org.mockserver.graphql.GraphQLResponseSynthesizer;
 import org.mockserver.graphql.GraphQLSchemaException;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.model.BinaryBody;
 import org.mockserver.model.Body;
 import org.mockserver.model.BodyWithContentType;
 import org.mockserver.model.FileBody;
+import org.mockserver.model.HttpTemplate;
 import org.mockserver.model.GraphQLBody;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
@@ -66,8 +68,13 @@ public class HttpResponseActionHandler {
             return null;
         }
         BodyWithContentType body = response.getBody();
-        if (httpRequest != null && body instanceof FileBody && ((FileBody) body).getTemplateType() != null) {
+        if (httpRequest != null && body instanceof FileBody && isFileTemplatingSupported(((FileBody) body).getTemplateType())) {
             response.withBody(renderTemplatedFileBody((FileBody) body, httpRequest));
+        } else if (body instanceof FileBody && (((FileBody) body).getTemplateType() == null || !isFileTemplatingSupported(((FileBody) body).getTemplateType()))) {
+            // a FileBody that is not going to be template-rendered (no templateType, or an unsupported
+            // templateType such as JavaScript) is served verbatim: the file is READ and its CONTENTS
+            // become the body, rather than the filePath string being emitted downstream (issue #2450).
+            response.withBody(materialiseFileBodyVerbatim((FileBody) body));
         } else if (body == null) {
             // an explicit body always wins; schema/GraphQL synthesis only fills an unset body.
             // schema-valid generation from an inline JSON schema does not depend on the request, so it
@@ -187,9 +194,10 @@ public class HttpResponseActionHandler {
                 templateEngine = getMustacheTemplateEngine();
                 break;
             default:
-                // JavaScript is not supported for file body templating (see TemplateEngine.renderTemplate);
-                // fall back to the raw file contents rather than failing the response.
-                return fileBody;
+                // JavaScript (and any future type) is not supported for file body templating (see
+                // TemplateEngine.renderTemplate); serve the raw file contents rather than the filePath.
+                // This branch is defensive - handle() only routes supported template types here.
+                return materialiseFileBodyVerbatim(fileBody);
         }
         String fileTemplate = FileReader.readFileFromClassPathOrPath(fileBody.getFilePath());
         String rendered = templateEngine.renderTemplate(fileTemplate, httpRequest);
@@ -197,6 +205,37 @@ public class HttpResponseActionHandler {
         return isNotBlank(contentType)
             ? new StringBody(rendered, MediaType.parse(contentType))
             : new StringBody(rendered);
+    }
+
+    /**
+     * Only Velocity and Mustache are supported for templating a {@link FileBody}; any other type (e.g.
+     * JavaScript) or {@code null} means the file is not template-rendered and is served verbatim.
+     */
+    private static boolean isFileTemplatingSupported(HttpTemplate.TemplateType templateType) {
+        return templateType == HttpTemplate.TemplateType.VELOCITY
+            || templateType == HttpTemplate.TemplateType.MUSTACHE;
+    }
+
+    /**
+     * Reads the file referenced by a {@link FileBody} that is served verbatim (no template engine) and
+     * returns its CONTENTS as the response body, preserving the declared content type. A text /
+     * known-charset content type is served as a {@link StringBody}; a binary content type - or an
+     * absent/unknown content type - is served as a {@link BinaryBody} of the raw file bytes so binary
+     * files (images, PDFs, archives) are not corrupted by charset decoding. A missing file surfaces the
+     * same {@link RuntimeException} as the templated path (both go through {@link FileReader}), so
+     * behaviour is consistent between the two.
+     */
+    private BodyWithContentType materialiseFileBodyVerbatim(FileBody fileBody) {
+        String contentType = fileBody.getContentType();
+        MediaType mediaType = isNotBlank(contentType) ? MediaType.parse(contentType) : null;
+        if (mediaType != null && mediaType.isString()) {
+            String fileContents = FileReader.readFileFromClassPathOrPath(fileBody.getFilePath());
+            return new StringBody(fileContents, mediaType);
+        }
+        byte[] fileBytes = FileReader.readBytesFromClassPathOrPath(fileBody.getFilePath());
+        return mediaType != null
+            ? new BinaryBody(fileBytes, mediaType)
+            : new BinaryBody(fileBytes);
     }
 
     private VelocityTemplateEngine getVelocityTemplateEngine() {

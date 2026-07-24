@@ -61,6 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs no `NET_ADMIN`/privileged capability because the PROXY-protocol header is an application-level byte
   prefix. Verified as a genuine regression guard by a positive control: ignoring the PROXY-header
   destination turns the forwarding assertions RED, restoring it returns them GREEN.
+- **A FILE response body with no template engine now serves the file contents, not the file path (#2450).**
+  A static response with a body of type `FILE` and a `filePath` but no `templateType` previously returned
+  the literal file-path string as the response body instead of the file's contents; only adding a
+  `templateType` (e.g. `MUSTACHE`) caused the file to actually be read. `HttpResponseActionHandler` now
+  reads any FILE body that is not template-rendered — no `templateType`, or an unsupported one such as
+  JavaScript — and serves its contents verbatim, preserving the declared content type. (A FILE body
+  returned from an object/class callback, from a response template, or as a forward `responseOverride`
+  bypasses this handler and is addressed separately.) Binary files (images, PDFs,
+  archives, identified via the content type) are served as raw bytes so they are not corrupted by
+  charset decoding; text files are served as-is with no template processing. A missing file fails the
+  same way as the templated path.
 - **The drift `responseTimeThresholdMs` performance-flag gate is now covered by behavioural tests.**
   `DriftAnalyzer.checkPerformanceDrift` raises a `PERFORMANCE` drift record only when an expectation's
   observed p95 latency exceeds the instance-set `responseTimeThresholdMs`, but no test drove responses
