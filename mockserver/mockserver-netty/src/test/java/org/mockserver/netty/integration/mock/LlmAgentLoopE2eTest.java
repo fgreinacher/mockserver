@@ -7,12 +7,14 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.mockserver.client.MockServerClient;
+import org.mockserver.llm.codec.BedrockEventStreamEncoder;
 import org.mockserver.netty.MockServer;
 
 import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -581,7 +583,204 @@ public class LlmAgentLoopE2eTest {
         assertThat(rawResponse, containsString("[DONE]"));
     }
 
+    @Test
+    public void shouldStreamGeminiResponseThroughNettyPipeline() throws Exception {
+        // Gap 56: Gemini streaming physics over the wire — SSE framing with the
+        // native candidates/parts delta shape (not just codec unit + golden JSONL).
+        String completionText = "Hello from streaming Gemini";
+        llmMock("/v1beta/models/gemini-1.5-pro:streamGenerateContent")
+            .withProvider(GEMINI)
+            .withModel("gemini-1.5-pro")
+            .respondingWith(completion()
+                .withText(completionText)
+                .withStreaming(true))
+            .applyTo(mockServerClient);
+
+        String body = "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Hi\"}]}]}";
+        String rawResponse = sendPost("/v1beta/models/gemini-1.5-pro:streamGenerateContent", body);
+
+        // (a) Gemini streams as Server-Sent Events (text/event-stream).
+        assertThat(rawResponse, containsString("200"));
+        assertThat(rawResponse, containsString("text/event-stream"));
+        assertThat(rawResponse, containsString("\"candidates\""));
+
+        // (b) The completion text arrives split across candidates[].content.parts[].text
+        // deltas (subword-sized by default). Concatenating them must reconstruct the
+        // completion text exactly.
+        assertThat(reconstructFromJsonStringField(rawResponse, "text"), is(completionText));
+    }
+
+    @Test
+    public void shouldStreamOllamaResponseThroughNettyPipeline() throws Exception {
+        // Gap 56: Ollama streaming physics over the wire — NDJSON framing
+        // (application/x-ndjson), one JSON object per line, message.content deltas.
+        String completionText = "Hello from streaming Ollama";
+        llmMock("/api/chat/stream")
+            .withProvider(OLLAMA)
+            .withModel("llama3.1")
+            .respondingWith(completion()
+                .withText(completionText)
+                .withStreaming(true))
+            .applyTo(mockServerClient);
+
+        String body = "{\"model\":\"llama3.1\",\"stream\":true,"
+            + "\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}";
+        String rawResponse = sendPost("/api/chat/stream", body);
+
+        // (a) Ollama streams as newline-delimited JSON, not SSE.
+        assertThat(rawResponse, containsString("200"));
+        assertThat(rawResponse, containsString("application/x-ndjson"));
+        assertThat(rawResponse, containsString("\"done\":true"));
+
+        // (b) Each line carries a message.content delta; concatenating them reconstructs
+        // the completion text exactly (the final done:true chunk contributes an empty content).
+        assertThat(reconstructFromJsonStringField(rawResponse, "content"), is(completionText));
+    }
+
+    @Test
+    public void shouldStreamBedrockResponseThroughNettyPipeline() throws Exception {
+        // Gap 56: Bedrock streaming physics over the wire — AWS event-stream binary
+        // framing (application/vnd.amazon.eventstream). Each chunk is a binary message
+        // whose payload is {"bytes":"<base64(anthropicChunkJson)>"}.
+        String completionText = "Hello from streaming Bedrock";
+        llmMock("/model/anthropic.claude-sonnet-4-20250514-v1:0/invoke-with-response-stream")
+            .withProvider(BEDROCK)
+            .withModel("anthropic.claude-sonnet-4-20250514-v1:0")
+            .respondingWith(completion()
+                .withText(completionText)
+                .withStreaming(true))
+            .applyTo(mockServerClient);
+
+        String body = "{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}";
+        byte[] rawBytes = sendPostRaw("/model/anthropic.claude-sonnet-4-20250514-v1:0/invoke-with-response-stream", body);
+
+        int headerEnd = indexOfSequence(rawBytes, "\r\n\r\n".getBytes(StandardCharsets.US_ASCII), 0);
+        assertThat("response must have a header/body boundary", headerEnd, greaterThanOrEqualTo(0));
+        String headerText = new String(rawBytes, 0, headerEnd, StandardCharsets.US_ASCII);
+
+        // (a) Bedrock streams as AWS event-stream binary framing.
+        assertThat(headerText, containsString("200"));
+        assertThat(headerText.toLowerCase(), containsString("application/vnd.amazon.eventstream"));
+
+        // The body is HTTP/1.1 chunked; de-chunk it, then decode the AWS event-stream
+        // binary messages (CRC32-validated by the decoder).
+        byte[] body2 = new byte[rawBytes.length - (headerEnd + 4)];
+        System.arraycopy(rawBytes, headerEnd + 4, body2, 0, body2.length);
+        byte[] eventStream = deChunkHttpBody(body2);
+
+        // (b) Each event-stream message wraps a base64 Anthropic chunk; the
+        // content_block_delta text_delta fragments reconstruct the completion text exactly.
+        StringBuilder reconstructed = new StringBuilder();
+        for (BedrockEventStreamEncoder.DecodedMessage message : BedrockEventStreamEncoder.decode(eventStream)) {
+            JsonNode wrapper = OBJECT_MAPPER.readTree(message.getPayloadAsString());
+            JsonNode bytesNode = wrapper.get("bytes");
+            if (bytesNode == null) {
+                continue;
+            }
+            String chunkJson = new String(Base64.getDecoder().decode(bytesNode.asText()), StandardCharsets.UTF_8);
+            JsonNode chunk = OBJECT_MAPPER.readTree(chunkJson);
+            JsonNode delta = chunk.path("delta");
+            if ("text_delta".equals(delta.path("type").asText())) {
+                reconstructed.append(delta.path("text").asText());
+            }
+        }
+        assertThat(reconstructed.toString(), is(completionText));
+    }
+
     // ---- Helpers ----
+
+    /**
+     * Reconstructs streamed text by concatenating every {@code "<field>":"<value>"}
+     * occurrence in a raw SSE / NDJSON response. Used for text-based streaming formats
+     * whose per-token deltas carry the text under a single JSON string field
+     * ({@code text} for Gemini parts, {@code content} for Ollama messages).
+     */
+    private String reconstructFromJsonStringField(String rawResponse, String field) {
+        StringBuilder reconstructed = new StringBuilder();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+            .compile("\"" + field + "\":\"([^\"]*)\"")
+            .matcher(rawResponse);
+        while (matcher.find()) {
+            reconstructed.append(matcher.group(1));
+        }
+        return reconstructed.toString();
+    }
+
+    /**
+     * De-frames an HTTP/1.1 chunked message body into its raw payload bytes.
+     * Each chunk is {@code <hex-length>CRLF<data>CRLF}, terminated by a zero-length chunk.
+     */
+    private static byte[] deChunkHttpBody(byte[] body) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int pos = 0;
+        while (pos < body.length) {
+            int lineEnd = indexOfSequence(body, "\r\n".getBytes(StandardCharsets.US_ASCII), pos);
+            if (lineEnd < 0) {
+                break;
+            }
+            String sizeLine = new String(body, pos, lineEnd - pos, StandardCharsets.US_ASCII).trim();
+            int semi = sizeLine.indexOf(';');
+            if (semi >= 0) {
+                sizeLine = sizeLine.substring(0, semi).trim();
+            }
+            if (sizeLine.isEmpty()) {
+                break;
+            }
+            int chunkSize = Integer.parseInt(sizeLine, 16);
+            pos = lineEnd + 2;
+            if (chunkSize == 0) {
+                break;
+            }
+            if (pos + chunkSize > body.length) {
+                out.write(body, pos, body.length - pos);
+                break;
+            }
+            out.write(body, pos, chunkSize);
+            pos += chunkSize + 2; // skip data and its trailing CRLF
+        }
+        return out.toByteArray();
+    }
+
+    /** Returns the index of the first occurrence of {@code needle} in {@code haystack} at or after {@code from}, or -1. */
+    private static int indexOfSequence(byte[] haystack, byte[] needle, int from) {
+        outer:
+        for (int i = Math.max(from, 0); i <= haystack.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) {
+                    continue outer;
+                }
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    private byte[] sendPostRaw(String path, String body) throws Exception {
+        try (Socket socket = new Socket("localhost", mockServerPort)) {
+            socket.setSoTimeout(5000);
+            OutputStream output = socket.getOutputStream();
+            byte[] bodyBytes = body != null ? body.getBytes(StandardCharsets.UTF_8) : new byte[0];
+            StringBuilder request = new StringBuilder();
+            request.append("POST ").append(path).append(" HTTP/1.1\r\n");
+            request.append("Host: localhost:").append(mockServerPort).append("\r\n");
+            request.append("Content-Type: application/json\r\n");
+            request.append("Connection: close\r\n");
+            request.append("Content-Length: ").append(bodyBytes.length).append("\r\n\r\n");
+            output.write(request.toString().getBytes(StandardCharsets.UTF_8));
+            if (bodyBytes.length > 0) {
+                output.write(bodyBytes);
+            }
+            output.flush();
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = socket.getInputStream().read(buf)) != -1) {
+                baos.write(buf, 0, n);
+            }
+            return baos.toByteArray();
+        }
+    }
 
     private void assertToolUsePresent(JsonNode anthropicResponse, String toolName) {
         boolean found = false;

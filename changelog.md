@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verified by a positive control (degrading the mapping to always present cert A flips host B's accepted
   case to 502). Previously `NettySslContextFactoryTest` asserted only `SslContext` identity/distinctness
   and the pure resolver -- nothing drove the per-host cert to an actual mTLS handshake.
+- **LLM streaming physics for Gemini, Ollama, and Bedrock are now proven over a real socket.** Streaming
+  physics over the wire was previously e2e-tested only for Anthropic and OpenAI (both SSE); Gemini, Ollama,
+  and Bedrock rested on self-derived golden JSONL plus codec unit tests, with no socket streaming e2e. Three
+  new tests in `LlmAgentLoopE2eTest` serve a streaming `httpLlmResponse` for each provider, connect a real
+  socket client, and assert both that the wire `Content-Type` is the provider's streaming media type
+  (`text/event-stream` for Gemini SSE, `application/x-ndjson` for Ollama NDJSON,
+  `application/vnd.amazon.eventstream` for Bedrock AWS event-stream binary framing) and that the text
+  reconstructed by concatenating the streamed deltas — Gemini `candidates[].content.parts[].text`, Ollama
+  `message.content`, and Bedrock's base64-wrapped Anthropic `text_delta` fragments decoded from the
+  CRC32-validated binary event-stream messages — equals the completion text exactly. The Bedrock case
+  de-chunks the HTTP/1.1 chunked body and decodes the binary framing end to end.
 - **The Go client's FORWARD and ERROR response actions are now proven over the wire.** New integration
   tests (`response_action_integration_test.go`) register a `httpForward` and a `httpError`
   (`dropConnection`) action via the Go client and drive real requests that assert the SERVER actually
