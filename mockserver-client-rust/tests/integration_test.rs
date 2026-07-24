@@ -116,10 +116,8 @@ fn http_get(path: &str, extra_headers: &[(&str, &str)]) -> (u16, String) {
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or_else(|| panic!("could not parse status line from response: {text:?}"));
     let body = text
-        .splitn(2, "\r\n\r\n")
-        .nth(1)
-        .unwrap_or("")
-        .to_string();
+        .split_once("\r\n\r\n")
+        .map_or(String::new(), |(_, b)| b.to_string());
     (status, body)
 }
 
@@ -128,11 +126,10 @@ fn http_get(path: &str, extra_headers: &[(&str, &str)]) -> (u16, String) {
 /// received. Without a `Content-Length` we cannot tell, so we defer to EOF.
 fn response_complete(raw: &[u8]) -> bool {
     let text = String::from_utf8_lossy(raw);
-    let Some(idx) = text.find("\r\n\r\n") else {
+    let Some((headers, _)) = text.split_once("\r\n\r\n") else {
         return false;
     };
-    let body_start = idx + 4; // ASCII headers, so char index == byte index
-    let headers = &text[..idx];
+    let body_start = headers.len() + 4; // ASCII headers; the "\r\n\r\n" separator is 4 bytes
     for line in headers.split("\r\n") {
         let lower = line.to_ascii_lowercase();
         if let Some(rest) = lower.strip_prefix("content-length:") {
