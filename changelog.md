@@ -36,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exercised the real pipeline over QUIC but only with non-streaming actions, so incremental delivery of a
   streamed body through the full pipeline was untested. QUIC-gated like the sibling HTTP/3 tests so it
   skips cleanly where the native transport is unavailable.
+- **The dashboard's Monaco code editor is now proven in a real browser end-to-end.** A new Playwright
+  e2e test (`mockserver-ui/e2e/dashboard.spec.ts`) drives the actual bundled Monaco editor in the
+  served dashboard's composer against a live MockServer: it asserts Monaco's own DOM
+  (`.monaco-editor` / `.view-lines`) renders, authors a JSON response body via real editor input,
+  raises and clears a live validation marker from Monaco's JSON language web worker, then registers
+  the mock and confirms the Monaco-authored body round-trips to the server (present in
+  `PUT /mockserver/retrieve` and served verbatim on the matching request). Previously the 178
+  jsdom/vitest specs globally replaced Monaco with a bare `<textarea>`, so nothing exercised the real
+  editor's tokenisation, web-worker validation, or DOM.
 - **SOCKS4 CONNECT tunnelling is now proven end-to-end over a real socket.** A new socket-level
   integration test (`NettyHttpProxySOCKS4IntegrationTest`) performs a raw SOCKS4 CONNECT handshake
   against a bound MockServer targeting a loopback `EchoServer`, then sends an HTTP GET through the
