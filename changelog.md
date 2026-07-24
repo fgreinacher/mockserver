@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   difference. Previously the fallback branch was exercised only by a live-socket integration test and
   the config getter's own unit test, so the `EmbeddedChannel` protocol-detection path for the flag was
   unexercised.
+- **HTTP/3 streaming response bodies are now proven end-to-end through the action pipeline with a real
+  QUIC client.** A new integration test (`Http3StreamingForwardIntegrationTest`) registers a `forward`
+  expectation on the HTTP/3 port (with `streamingResponsesEnabled`) pointing at an upstream Server-Sent
+  Events stream that serves an early event immediately and withholds the late event for 1.5s, then drives
+  it with a live Netty QUIC client and asserts both events arrive as SEPARATE DATA frames spread across
+  that delay — proving the streaming relay funnels through `HttpActionHandler` ->
+  `ResponseWriter.writeResponse` -> `Http3ResponseWriter.writeStreamingResponse` and emits chunks
+  incrementally. Previously `Http3StreamingIntegrationTest` drove `Http3ResponseWriter` directly from a
+  hand-built QUIC server (bypassing expectation matching), and `Http3MockingMatrixIntegrationTest`
+  exercised the real pipeline over QUIC but only with non-streaming actions, so incremental delivery of a
+  streamed body through the full pipeline was untested. QUIC-gated like the sibling HTTP/3 tests so it
+  skips cleanly where the native transport is unavailable.
 - **SOCKS4 CONNECT tunnelling is now proven end-to-end over a real socket.** A new socket-level
   integration test (`NettyHttpProxySOCKS4IntegrationTest`) performs a raw SOCKS4 CONNECT handshake
   against a bound MockServer targeting a loopback `EchoServer`, then sends an HTTP GET through the
