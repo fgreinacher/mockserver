@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drops the connection at the transport level (no HTTP response) while a control endpoint on the same
   server still answers cleanly. Previously the Go client's response-action coverage was builder/JSON
   only -- no test drove a forward or error action to completion over a socket.
+- **Rust client wire tests proving the server actually enforces negation matchers and performs
+  response actions.** The Rust integration suite previously only asserted control-plane serialization
+  (`matcher_value_tests.rs`) and registered a forward expectation it never drove (`test_forward_expectation`
+  "won't actually forward"), so nothing proved a running MockServer acted on either. Three new
+  `#[ignore]`d integration tests drive a live server over the data plane via a dependency-free raw
+  socket: `test_negation_matcher_enforced_over_wire` registers a `NottableString` negation (bare
+  `"!foo"`, explicit `MatcherValue::not_literal`, and an escaped literal `"!foo"`) and asserts the
+  server matches a non-`foo` value (200) while excluding `foo` (404) — and that an escaped `"!foo"`
+  matches literally rather than as a negation; `test_forward_action_actually_forwards` registers a
+  higher-priority run-once FORWARD that loops back to the server's own port plus a lower-priority
+  fall-through RESPOND, and asserts the distinctive fall-through body is returned only if the forward
+  genuinely executed (topology-independent — no external upstream); and
+  `test_error_action_actually_returns_raw_bytes` registers an ERROR action and asserts the server
+  writes the configured raw bytes back. Run in CI by the existing `rust-integration-test` step.
+
 - **Live-broker test coverage proving Kafka SASL credentials reach and are enforced by a real
   broker.** Kafka SASL/SSL security was only asserted at the property-map level
   (`KafkaMessagePublisherSecurityTest`) and every live-broker Kafka integration test used a plaintext

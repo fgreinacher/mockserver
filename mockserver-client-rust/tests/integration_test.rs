@@ -10,6 +10,9 @@
 //! If `MOCKSERVER_URL` is not set, the tests will panic with a clear message.
 
 use mockserver_client::*;
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::time::Duration;
 
 fn get_client() -> MockServerClient {
     let url = std::env::var("MOCKSERVER_URL")
@@ -32,6 +35,113 @@ fn get_client() -> MockServerClient {
         .secure(secure)
         .build()
         .expect("Failed to build client")
+}
+
+/// The MockServer host and port for **data-plane** requests, parsed from
+/// `MOCKSERVER_URL` (the same address the control-plane client targets).
+fn data_host_port() -> (String, u16) {
+    let url = std::env::var("MOCKSERVER_URL")
+        .expect("MOCKSERVER_URL must be set (e.g., http://localhost:1080)");
+    let url = url.trim_end_matches('/');
+    let without_scheme = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url);
+    let (host, port_str) = without_scheme
+        .rsplit_once(':')
+        .expect("MOCKSERVER_URL must include port (e.g., http://localhost:1080)");
+    (host.to_string(), port_str.parse().expect("Port must be a valid u16"))
+}
+
+/// A minimal, dependency-free blocking HTTP/1.1 `GET` over a raw socket that
+/// returns `(status_code, body)`.
+///
+/// The control-plane [`MockServerClient`] deliberately does not send data-plane
+/// requests, so these wire tests drive the server directly. The response is read
+/// until it is complete (see [`response_complete`]) rather than to EOF, so it
+/// works whether the server closes the socket or keeps it alive after replying.
+/// `extra_headers` are `(name, value)` pairs sent verbatim.
+fn http_get(path: &str, extra_headers: &[(&str, &str)]) -> (u16, String) {
+    let (host, port) = data_host_port();
+    let mut stream =
+        TcpStream::connect((host.as_str(), port)).expect("connect to MockServer data plane");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .expect("set read timeout");
+    stream
+        .set_write_timeout(Some(Duration::from_secs(20)))
+        .expect("set write timeout");
+
+    let mut req = format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n");
+    for (name, value) in extra_headers {
+        req.push_str(name);
+        req.push_str(": ");
+        req.push_str(value);
+        req.push_str("\r\n");
+    }
+    req.push_str("\r\n");
+
+    stream.write_all(req.as_bytes()).expect("write request");
+    stream.flush().ok();
+
+    // Read until the response is complete rather than to EOF: some actions (e.g.
+    // the error action's raw bytes) advertise a Content-Length but leave the
+    // socket open, so a blind read-to-EOF would block until the timeout.
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break, // EOF — server closed
+            Ok(n) => {
+                raw.extend_from_slice(&chunk[..n]);
+                if response_complete(&raw) {
+                    break;
+                }
+            }
+            // A read timeout is a fallback terminator: use whatever we have.
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break
+            }
+            Err(e) => panic!("read response failed: {e}"),
+        }
+    }
+    let text = String::from_utf8_lossy(&raw);
+
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("could not parse status line from response: {text:?}"));
+    let body = text
+        .splitn(2, "\r\n\r\n")
+        .nth(1)
+        .unwrap_or("")
+        .to_string();
+    (status, body)
+}
+
+/// Whether `raw` holds a complete HTTP/1.1 response: headers terminated by a
+/// blank line and, when a `Content-Length` is present, that many body bytes
+/// received. Without a `Content-Length` we cannot tell, so we defer to EOF.
+fn response_complete(raw: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(raw);
+    let Some(idx) = text.find("\r\n\r\n") else {
+        return false;
+    };
+    let body_start = idx + 4; // ASCII headers, so char index == byte index
+    let headers = &text[..idx];
+    for line in headers.split("\r\n") {
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("content-length:") {
+            if let Ok(len) = rest.trim().parse::<usize>() {
+                return raw.len() >= body_start + len;
+            }
+        }
+    }
+    false
 }
 
 #[test]
@@ -195,5 +305,183 @@ fn test_verify_sequence() {
     ]);
 
     assert!(result.is_err());
+    client.reset().expect("reset failed");
+}
+
+/// Gap #43 — prove a `NottableString` **negation** is sent over the wire as a
+/// negation and that the SERVER enforces it (match / no-match discrimination),
+/// covering all three client forms: a bare `"!foo"`, an explicit
+/// [`MatcherValue::not_literal`], and an ESCAPED literal `"!foo"` that must NOT
+/// be read as a negation. Prior coverage (`matcher_value_tests.rs`) only asserted
+/// JSON serialization; nothing proved the running server acts on it.
+#[test]
+#[ignore]
+fn test_negation_matcher_enforced_over_wire() {
+    let client = get_client();
+    client.reset().expect("reset failed");
+
+    // (a) Bare "!foo" header value — the client sends it as a NottableString
+    // negation ("anything but foo"); the server must EXCLUDE exactly "foo".
+    client
+        .when(
+            HttpRequest::new()
+                .method("GET")
+                .path("/neg-header")
+                .header("X-Neg", "!foo"),
+        )
+        .respond(HttpResponse::new().status_code(200).body("NEG_MATCH"))
+        .expect("creating bare-negation expectation failed");
+
+    let (status_bar, body_bar) = http_get("/neg-header", &[("X-Neg", "bar")]);
+    assert_eq!(
+        status_bar, 200,
+        "a value that is NOT 'foo' must satisfy the negation and match"
+    );
+    assert_eq!(body_bar, "NEG_MATCH");
+
+    let (status_foo, _) = http_get("/neg-header", &[("X-Neg", "foo")]);
+    assert_eq!(
+        status_foo, 404,
+        "the excluded value 'foo' must NOT match — negation enforced server-side"
+    );
+
+    client.reset().expect("reset failed");
+
+    // (b) Explicit MatcherValue::not_literal — the same negation via the typed
+    // matcher API (serialised as the bare "!foo" marker).
+    client
+        .when(
+            HttpRequest::new()
+                .method("GET")
+                .path("/neg-typed")
+                .header_matcher("X-Tag", MatcherValue::not_literal("foo")),
+        )
+        .respond(HttpResponse::new().status_code(200).body("NOT_LITERAL"))
+        .expect("creating not_literal expectation failed");
+
+    assert_eq!(
+        http_get("/neg-typed", &[("X-Tag", "other")]).0,
+        200,
+        "not_literal('foo') must match any value other than 'foo'"
+    );
+    assert_eq!(
+        http_get("/neg-typed", &[("X-Tag", "foo")]).0,
+        404,
+        "not_literal('foo') must reject 'foo'"
+    );
+
+    client.reset().expect("reset failed");
+
+    // (c) ESCAPED literal "!foo" via MatcherValue::literal — the leading '!' is
+    // sent in object form ({"not":false,"value":"!foo"}) so the server matches a
+    // header whose value LITERALLY starts with '!' rather than treating it as a
+    // negation. So "!foo" matches and "foo" does NOT.
+    client
+        .when(
+            HttpRequest::new()
+                .method("GET")
+                .path("/neg-escaped")
+                .header_matcher("X-Lit", MatcherValue::literal("!foo")),
+        )
+        .respond(HttpResponse::new().status_code(200).body("LITERAL_BANG"))
+        .expect("creating literal-'!foo' expectation failed");
+
+    assert_eq!(
+        http_get("/neg-escaped", &[("X-Lit", "!foo")]).0,
+        200,
+        "an escaped literal '!foo' matcher must match the value '!foo' itself"
+    );
+    assert_eq!(
+        http_get("/neg-escaped", &[("X-Lit", "foo")]).0,
+        404,
+        "'foo' must NOT match a literal '!foo' matcher — the '!' is not a negation"
+    );
+
+    client.reset().expect("reset failed");
+}
+
+/// Gap #46 — prove a FORWARD action registered via the Rust client is ACTUALLY
+/// performed by the server, with no external upstream so it is topology-independent
+/// (works whether the test runs on the host or in a sibling container). The prior
+/// `test_forward_expectation` only registered the expectation ("won't actually forward").
+///
+/// The upstream is the server's OWN loopback. Two expectations are registered on
+/// the same path:
+///   * a higher-priority, run-once FORWARD to `127.0.0.1:<server-internal-port>`, and
+///   * a lower-priority RESPOND returning a distinctive body.
+///
+/// The first request matches the forward, which loops the request back to the
+/// same server; by then the run-once forward is consumed, so the looped-back
+/// request falls through to the RESPOND and returns the distinctive body. The
+/// caller therefore sees that body only if the forward genuinely executed —
+/// confirmed by the positive control (a dead forward port yields 502, not the body).
+#[test]
+#[ignore]
+fn test_forward_action_actually_forwards() {
+    let client = get_client();
+    client.reset().expect("reset failed");
+
+    // The server-internal port to loop back to. Taken from the server's own
+    // status so it is the port MockServer is bound to inside its network
+    // namespace, independent of any host port mapping.
+    let internal_port = *client
+        .status()
+        .expect("status failed")
+        .ports
+        .first()
+        .expect("server should report at least one bound port");
+
+    // Higher-priority, run-once forward that loops back to this same server.
+    client
+        .when(HttpRequest::new().method("GET").path("/forward-loop"))
+        .priority(10)
+        .times(Times::once())
+        .forward(HttpForward::new("127.0.0.1", internal_port).scheme("HTTP"))
+        .expect("creating loopback forward expectation failed");
+
+    // Lower-priority fall-through the looped-back request lands on.
+    client
+        .when(HttpRequest::new().method("GET").path("/forward-loop"))
+        .priority(0)
+        .respond(HttpResponse::new().status_code(200).body("UPSTREAM_REACHED"))
+        .expect("creating fall-through respond expectation failed");
+
+    let (status, body) = http_get("/forward-loop", &[]);
+    assert_eq!(status, 200, "looped-back forward response status");
+    assert_eq!(
+        body, "UPSTREAM_REACHED",
+        "body must come from the fall-through reached VIA the loopback forward, \
+         proving the server actually forwarded the request"
+    );
+
+    client.reset().expect("reset failed");
+}
+
+/// Gap #46 — a fully self-contained proof (no upstream) that an ERROR action
+/// registered via the Rust client is ACTUALLY performed: the server writes the
+/// configured raw bytes back to the client. Portable to any topology.
+#[test]
+#[ignore]
+fn test_error_action_actually_returns_raw_bytes() {
+    let client = get_client();
+    client.reset().expect("reset failed");
+
+    // base64 of the raw HTTP/1.1 response bytes:
+    //   "HTTP/1.1 418 Teapot\r\nContent-Length: 8\r\nConnection: close\r\n\r\nTEAPOT!!"
+    const TEAPOT_RESPONSE_B64: &str =
+        "SFRUUC8xLjEgNDE4IFRlYXBvdA0KQ29udGVudC1MZW5ndGg6IDgNCkNvbm5lY3Rpb246IGNsb3NlDQoNClRFQVBPVCEh";
+
+    client
+        .when(HttpRequest::new().method("GET").path("/error-drive"))
+        .error(HttpError::new().response_bytes(TEAPOT_RESPONSE_B64))
+        .expect("creating error expectation failed");
+
+    let (status, body) = http_get("/error-drive", &[]);
+    assert_eq!(
+        status, 418,
+        "server must actually perform the error action and write the raw bytes back"
+    );
+    assert_eq!(body, "TEAPOT!!");
+
     client.reset().expect("reset failed");
 }
