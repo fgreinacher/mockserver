@@ -160,6 +160,70 @@ public class DirectProxyUnificationHandlerTest {
     }
 
     @Test
+    public void shouldSwitchToHttpForNonStandardMethodWhenAssumeAllRequestsAreHttp() {
+        // given - assumeAllRequestsAreHttp enabled so unrecognised methods fall through to HTTP
+        EmbeddedChannel embeddedChannel = new EmbeddedChannel();
+        embeddedChannel.pipeline().addLast(new MockServerUnificationInitializer(configuration().assumeAllRequestsAreHttp(true), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
+
+        // and - no HTTP handlers
+        assertThat(embeddedChannel.pipeline().get(HttpServerCodec.class), is(nullValue()));
+        assertThat(embeddedChannel.pipeline().get(HttpContentDecompressor.class), is(nullValue()));
+        assertThat(embeddedChannel.pipeline().get(HttpObjectAggregator.class), is(nullValue()));
+
+        // when - HTTP request with a non-standard method (not GET/POST/PUT/HEAD/OPTIONS/PATCH/DELETE/TRACE/CONNECT)
+        embeddedChannel.writeInbound(Unpooled.wrappedBuffer("PURGE /somePath HTTP/1.1\r\nHost: some.random.host\r\n\r\n".getBytes(UTF_8)));
+
+        // then - should still add the HTTP pipeline (rather than falling to binary request proxying)
+        if (MockServerLogger.isEnabled(TRACE)) {
+            assertThat(String.valueOf(embeddedChannel.pipeline().names()), embeddedChannel.pipeline().names(), contains(
+                "LoggingHandler#0",
+                "HttpServerCodec#0",
+                "HttpContentDecompressor#0",
+                "HttpContentLengthRemover#0",
+                "HttpObjectAggregator#0",
+                "CallbackWebSocketServerHandler#0",
+                "DashboardWebSocketHandler#0",
+                "McpStreamableHttpHandler#0",
+                "MockServerHttpServerCodec#0",
+                "TraceContextHandler#0",
+                "HttpRequestHandler#0",
+                "DefaultChannelPipeline$TailContext#0"
+            ));
+        } else {
+            assertThat(String.valueOf(embeddedChannel.pipeline().names()), embeddedChannel.pipeline().names(), contains(
+                "HttpServerCodec#0",
+                "PreserveHeadersNettyRemoves#0",
+                "HttpContentDecompressor#0",
+                "HttpContentLengthRemover#0",
+                "HttpObjectAggregator#0",
+                "CallbackWebSocketServerHandler#0",
+                "DashboardWebSocketHandler#0",
+                "McpStreamableHttpHandler#0",
+                "MockServerHttpServerCodec#0",
+                "TraceContextHandler#0",
+                "HttpRequestHandler#0",
+                "DefaultChannelPipeline$TailContext#0"
+            ));
+        }
+    }
+
+    @Test
+    public void shouldNotSwitchToHttpForNonStandardMethodWhenAssumeAllRequestsAreHttpDisabled() {
+        // given - assumeAllRequestsAreHttp disabled (the default) so unrecognised methods are treated as binary
+        EmbeddedChannel embeddedChannel = new EmbeddedChannel();
+        embeddedChannel.pipeline().addLast(new MockServerUnificationInitializer(configuration().assumeAllRequestsAreHttp(false), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
+
+        // and - no HTTP handlers
+        assertThat(embeddedChannel.pipeline().get(HttpServerCodec.class), is(nullValue()));
+
+        // when - identical non-standard-method HTTP request as the assumeAllRequestsAreHttp=true case
+        embeddedChannel.writeInbound(Unpooled.wrappedBuffer("PURGE /somePath HTTP/1.1\r\nHost: some.random.host\r\n\r\n".getBytes(UTF_8)));
+
+        // then - the HTTP codec must NOT be added; the flag is provably the only difference from the enabled case
+        assertThat(String.valueOf(embeddedChannel.pipeline().names()), embeddedChannel.pipeline().get(HttpServerCodec.class), is(nullValue()));
+    }
+
+    @Test
     public void shouldSupportUnknownProtocol() {
         // given
         EmbeddedChannel embeddedChannel = new EmbeddedChannel(new MockServerUnificationInitializer(configuration(), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));

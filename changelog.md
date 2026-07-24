@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suite only asserted the JSON keys of a built streaming expectation (`a2a_spec`) and never consumed a
   live SSE stream, so a silent server-emission or client-parsing drop would have gone uncaught. Verified
   by a positive control (dropping events from the emitted stream turns the received-frames assertion red).
+- **The `assumeAllRequestsAreHttp` protocol-detection fallback now has direct unit coverage.** Two
+  paired `EmbeddedChannel` tests in `DirectProxyUnificationHandlerTest` drive
+  `PortUnificationHandler.decode()` with an HTTP request using a non-standard method (`PURGE`, which is
+  not one of GET/POST/PUT/HEAD/OPTIONS/PATCH/DELETE/TRACE/CONNECT): with
+  `assumeAllRequestsAreHttp=true` the full HTTP pipeline is added (rather than falling to binary request
+  proxying), and with the flag disabled the HTTP codec is not added — proving the flag is the only
+  difference. Previously the fallback branch was exercised only by a live-socket integration test and
+  the config getter's own unit test, so the `EmbeddedChannel` protocol-detection path for the flag was
+  unexercised.
 - **SOCKS4 CONNECT tunnelling is now proven end-to-end over a real socket.** A new socket-level
   integration test (`NettyHttpProxySOCKS4IntegrationTest`) performs a raw SOCKS4 CONNECT handshake
   against a bound MockServer targeting a loopback `EchoServer`, then sends an HTTP GET through the
