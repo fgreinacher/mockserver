@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The eviction false-green guard is now proven end-to-end over HTTP.** A new Netty integration test
+  (`EvictedLogVerificationIntegrationTest`) boots a real server with `maxLogEntries=2` and
+  `failVerificationOnEvictedLog=true`, records a `GET /was-called` request, then floods the bounded
+  request-log ring with further traffic so the `/was-called` entry is evicted. A subsequent
+  `verify(request("/was-called"), never())` through the Java client must throw an `AssertionError` whose
+  message says the log "could not be verified" because entries were discarded after reaching
+  `maxLogEntries` — proving the guard refuses to certify absence it can no longer see, rather than
+  silently passing. Previously the guard was only covered by an engine-level test against an in-process
+  `MockServerEventLog` and no `*IntegrationTest` exercised it across the wire. Verified by a positive
+  control (disabling the guard in production makes `verify(never())` pass silently and turns the test
+  red).
 - **The Ruby client now proves live SSE stream consumption over the wire.** New integration examples
   (`spec/integration_spec.rb` → `SSE streaming`) register an `httpSseResponse` expectation via the Ruby
   client against a running MockServer, then open a real streaming HTTP consumer and assert every `data:`
