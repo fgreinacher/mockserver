@@ -136,6 +136,38 @@ sequenceDiagram
 2. **Add** — for new backend entries, build a local `HttpRequestMatcher` via `MatcherBuilder`
 3. **Update** — for existing entries whose backend version is strictly newer than the last reconciled version, update the local matcher (preserving runtime state such as `Times` counters) and re-insert its priority key if sort fields changed
 
+### Expectation Reload When a Node Starts
+
+**A node that starts after the fleet already holds expectations restores them from the clustered blob cache, not from the expectations KV cache.** `RequestMatchers.setStateBackend()` does not reconcile, and the Infinispan clustered listener is registered only on the `expectations`, `scenarioStates` and `crud-*` caches for *remote writes* — JGroups state transfer into a joining node fires no such event. So the joining node's node-local matcher cache starts empty even though its replica of the expectations cache is fully populated.
+
+What actually repopulates it is `ExpectationFileSystemPersistence`, when `persistExpectations=true`. Its constructor (invoked from `HttpState`, before any port is bound) calls `reloadPersistedExpectations()`, which reads the persisted expectation document back from `stateBackend.blobs()` and replays it through `RequestMatchers.update(...)`. That read path runs for **every non-`FilesystemBlobStore` blob store**, and `InfinispanStateBackend.blobs()` always returns an `InfinispanBlobStore`, so the clustered case is covered by the same code as S3/GCS/Azure.
+
+```mermaid
+sequenceDiagram
+    participant NA as Node A (running)
+    participant INF as Infinispan blobs cache (REPL_SYNC)
+    participant NB as Node B (starting)
+    participant RM as RequestMatchers (B)
+
+    NA->>INF: blobs().put(persistedExpectationsPath, JSON)
+    Note over NB: HttpState constructor
+    NB->>INF: blobs().get(persistedExpectationsPath)
+    INF-->>NB: persisted expectation document
+    NB->>RM: update(expectations, Cause("blobstore:{key}", FILE_INITIALISER))
+    Note over RM: node now MATCHES requests with the fleet's expectations
+```
+
+Operational consequences:
+
+| Requirement | Why |
+|-------------|-----|
+| `persistExpectations=true` on every node | the reload lives in `ExpectationFileSystemPersistence`, which `HttpState` only creates when persistence is enabled |
+| Identical absolutely-resolved `persistedExpectationsPath` on every node | the blob key IS that absolute path; a different path silently reads a different (absent) key |
+| `blobStoreRestoreTimeoutSeconds > 0` | `0` skips the restore entirely (documented escape hatch); on expiry the node logs a WARN and starts with nothing restored |
+| At least one surviving member | the caches are in-process; if the whole fleet stops, the blob goes with it (use a cloud `BlobStore` for durability across a full outage) |
+
+Coverage: `ClusteredExpectationPersistenceReloadTest` (`mockserver-state-infinispan`) forms an in-JVM cluster of a bare "fleet keeper" backend plus a full MockServer node, creates an expectation over the wire, stops that node completely, starts a fresh one against the same cluster and asserts it serves the expectation. Its sibling test sets `blobStoreRestoreTimeoutSeconds=0` and asserts the fresh node does **not** serve it, pinning the fact that no other route (state transfer, stray invalidation, the local file) restores expectations on start.
+
 ### Eviction
 
 The expectations cache uses Infinispan's approximate `maxCount` eviction with `EvictionStrategy.REMOVE`, capped at `maxExpectations` (default 1000). When the cache is full, Infinispan evicts the least-recently-used entry. The evicted entry is removed from all cluster nodes (eviction is coordinated by Infinispan), and the `InvalidationListener` fires on each node to reconcile the local matcher cache.

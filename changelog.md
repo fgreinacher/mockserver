@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Clustered (Infinispan) expectation reload-on-startup is now proven end-to-end.** A new test
+  (`ClusteredExpectationPersistenceReloadTest` in `mockserver-state-infinispan`) forms an in-JVM
+  JGroups cluster consisting of a bare "fleet keeper" `InfinispanStateBackend` that stays up for the
+  whole test plus a full MockServer node started with `stateBackend=infinispan`,
+  `clusterEnabled=true` and `persistExpectations=true`. An expectation is created on that node over
+  the wire, the persisted document is polled for through the *keeper's* backend (proving it really
+  replicated across the REPL_SYNC blob cache), the node is then stopped completely, and a fresh node
+  is started against the same cluster and the same `persistedExpectationsPath` — which must restore
+  the expectation and MATCH a real HTTP request with it. The local persisted file is asserted to be
+  empty first, so the restore cannot be coming from the filesystem-initializer route. The reload path
+  in `ExpectationFileSystemPersistence` was already covered at unit level in `mockserver-core`
+  (`ExpectationBlobStoreRestoreTest`, against an `InMemoryBlobStore`, with no server and no cluster)
+  and end-to-end only against S3/MinIO behind a Docker gate; what no test proved is that a clustered
+  node's `InfinispanBlobStore` is the store `HttpState` wires into that restore, nor that a real
+  restarted member of a live cluster recovers the fleet's shared expectations. A second test sets
+  `blobStoreRestoreTimeoutSeconds=0` (the documented way to skip the restore) and asserts the fresh
+  node does NOT serve the expectation, which permanently pins the fact that no other mechanism —
+  JGroups state transfer of the expectations cache, a stray invalidation event, or the local file —
+  restores expectations when a node starts. Verified by a positive control: disabling the reload
+  path in production makes the restarted node answer with an empty body and turns the test red.
 - **The eviction false-green guard is now proven end-to-end over HTTP.** A new Netty integration test
   (`EvictedLogVerificationIntegrationTest`) boots a real server with `maxLogEntries=2` and
   `failVerificationOnEvictedLog=true`, records a `GET /was-called` request, then floods the bounded
