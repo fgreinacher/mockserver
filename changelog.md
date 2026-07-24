@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JGroups state transfer of the expectations cache, a stray invalidation event, or the local file —
   restores expectations when a node starts. Verified by a positive control: disabling the reload
   path in production makes the restarted node answer with an empty body and turns the test red.
+- **The response-aware arm of the eviction false-green guard is now proven end-to-end over HTTP.** A new
+  Netty integration test (`EvictedResponseVerificationIntegrationTest`) boots a real server with
+  `maxLogEntries=2` and `failVerificationOnEvictedLog=true`, registers an expectation so a `GET
+  /was-responded` exchange is recorded as a real `EXPECTATION_RESPONSE` request-response pair, then floods
+  the bounded event log with further unmatched traffic so that pair is evicted. A subsequent
+  `verify(request("/was-responded"), response().withStatusCode(418), never())` through the Java client must
+  throw an `AssertionError` saying the **response** "could not be verified" because entries were discarded
+  after reaching `maxLogEntries`. `MockServerEventLog` implements this guard twice — once in `verifyRequest`
+  and once, through a completely separate counting path over recorded pairs, in `verifyResponse` — and only
+  the request arm had an `*IntegrationTest`; the response arm was covered solely by an engine-level test
+  against an in-process event log. The test uses `never()` because it is the simplest shape that reaches
+  the guard: the guard sits on the PASS branch behind any asserted upper bound (`getAtMost() != -1` — so
+  `atMost(n)`, `between(0,n)` and `exactly(0)` reach it too), whereas an `atLeast(1)`/`once()` verification
+  of an evicted pair fails earlier with an ordinary "Response not found" message and proves nothing.
+  `never()` is exactly the case a guard-less server would answer with a silent false green. The assertion pins the message to `Response could not be verified` so it cannot be
+  satisfied by the request-side arm. Verified by a positive control (disabling only the response-side guard
+  in production makes the verification pass silently and turns the test red).
 - **The eviction false-green guard is now proven end-to-end over HTTP.** A new Netty integration test
   (`EvictedLogVerificationIntegrationTest`) boots a real server with `maxLogEntries=2` and
   `failVerificationOnEvictedLog=true`, records a `GET /was-called` request, then floods the bounded
