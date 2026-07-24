@@ -422,6 +422,43 @@ public class GrpcToHttpResponseHandlerTest {
         assertThat(firstTrailer(result, GrpcStatusMapper.GRPC_STATUS_HEADER), is(nullValue()));
     }
 
+    // ---- HTTP/2 Trailers-Only must be skipped when a user-authored trailer remains ----
+
+    /**
+     * A body-less HTTP/2 response carrying a user-authored trailer must NOT be collapsed into the
+     * Trailers-Only form.
+     * <p>
+     * The collapse hoists {@code grpc-status} into the initial HEADERS frame on the assumption that
+     * frame is end-of-stream. A {@code withTrailer(...)} (or the chaos profile's
+     * {@code customTrailers}) keeps a separate trailing HEADERS frame alive, so the initial frame is
+     * NOT end-of-stream: a real client reads it as ordinary headers, where {@code grpc-status} is
+     * ignored, and then finds no status in the terminal frame — the call fails with
+     * {@code UNKNOWN: missing GRPC status}. Adding one trailer to an error response destroyed the
+     * error.
+     * <p>
+     * The positive rule is pinned by {@code assertDeadlineReachesTheWire}; this pins its negative.
+     */
+    @Test
+    public void shouldNotCollapseToTrailersOnlyWhenAUserAuthoredTrailerRemains() {
+        EmbeddedChannel channel = responseOnlyChannel();
+        recordServiceMethod(channel, 3, SERVICE, METHOD);
+
+        channel.writeOutbound(HttpResponse.response()
+            .withStatusCode(200)
+            .withStreamId(3)
+            .withHeader(GrpcStatusMapper.GRPC_STATUS_NAME_HEADER, "NOT_FOUND")
+            .withTrailer("x-mock-checksum", "a1b2c3"));
+
+        HttpResponse result = channel.readOutbound();
+        assertThat("grpc-status must NOT be hoisted into the initial headers while a trailer remains",
+            result.getFirstHeader(GrpcStatusMapper.GRPC_STATUS_HEADER), is(""));
+        assertThat("the status must stay in the terminal trailing HEADERS frame",
+            firstTrailer(result, GrpcStatusMapper.GRPC_STATUS_HEADER),
+            is(String.valueOf(GrpcStatusMapper.GrpcStatusCode.NOT_FOUND.getCode())));
+        assertThat("the user-authored trailer must still reach the client",
+            firstTrailer(result, "x-mock-checksum"), is("a1b2c3"));
+    }
+
     // ---- unmatched requests must not be fabricated into a success ----
 
     /**

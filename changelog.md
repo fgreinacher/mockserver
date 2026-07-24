@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MockServerEventLog` and no `*IntegrationTest` exercised it across the wire. Verified by a positive
   control (disabling the guard in production makes `verify(never())` pass silently and turns the test
   red).
+- **Custom gRPC response metadata and trailing metadata are now proven against a real `grpc-java`
+  client.** Two new tests in `GrpcUnaryClientIntegrationTest` register an expectation whose gRPC
+  response carries both custom response metadata authored with `withHeader(...)` and custom trailing
+  metadata authored with `withTrailer(...)`, drive it with a live `grpc-java` client, and read the
+  values back off the real `io.grpc.Metadata` objects the client receives (via a capturing
+  `ClientInterceptor`, and via `StatusRuntimeException.getTrailers()` on the error path). The
+  assertions are deliberately discriminating: the response metadata must arrive in the *initial
+  headers* and not in the trailers, the trailing metadata must arrive in the *trailers* and not be
+  folded into the initial headers, and both values must round-trip byte-for-byte including a value
+  carrying `=`, `;`, `,` and spaces. Previously this behaviour was exercised only structurally
+  (`EmbeddedChannel` / model-level assertions, which cannot tell a trailer emitted as a trailer from
+  one folded into the headers) and by the existing `-bin` metadata tests, which deliberately accept
+  the value from either side because a body-less unary response may legitimately collapse to
+  Trailers-Only. Verified by positive controls: dropping the user-authored trailers turns both tests
+  red, and dropping the user-authored response headers turns the header assertion red.
 - **The Ruby client now proves live SSE stream consumption over the wire.** New integration examples
   (`spec/integration_spec.rb` → `SSE streaming`) register an `httpSseResponse` expectation via the Ruby
   client against a running MockServer, then open a real streaming HTTP consumer and assert every `data:`
@@ -176,6 +191,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rate_limit_error` envelope with the exhausted rate-limit headers and `Retry-After`.
 
 ### Fixed
+- **A gRPC error response carrying custom trailing metadata no longer loses its status.** On HTTP/2 a
+  body-less gRPC response is collapsed into the gRPC Trailers-Only form, which moves `grpc-status`
+  into the initial HEADERS frame and relies on that frame being end-of-stream. When the expectation
+  also authored a custom trailer with `withTrailer(...)`, that trailer kept a separate trailing
+  HEADERS frame alive, so the initial frame was no longer end-of-stream: a real client read it as
+  ordinary headers (where `grpc-status` is ignored) and then found no status at all in the terminal
+  frame, failing the call with `UNKNOWN: missing GRPC status`. In other words, adding a single
+  trailer to an error response destroyed the error — the caller lost both the status code and the
+  message. `GrpcToHttpResponseHandler.asTrailersOnlyIfHttp2` now skips the Trailers-Only collapse
+  whenever any user-authored trailer remains, keeping `grpc-status`/`grpc-message` in the trailing
+  HEADERS frame alongside the custom metadata, which is the correct shape in that case. The same fix
+  covers the gRPC chaos fault path, which produced the byte-identical broken shape: a fault response
+  configured with `customTrailers` emits them as real trailers alongside `grpc-status`/`grpc-message`
+  on a body-less response, so a chaos-injected error over HTTP/2 also reached the client as
+  `UNKNOWN: missing GRPC status` instead of the configured status. Found by the new real-client
+  trailing-metadata coverage described under Added.
 - **gRPC-Web now re-frames matched-expectation responses correctly over a real HTTP/1.1 socket, and
   is covered by an over-the-wire integration test.** Every previous gRPC-Web test drove the handler
   through an `EmbeddedChannel` and set `x-grpc-web-content-type` directly on the response, so none

@@ -45,6 +45,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
 import static org.mockserver.stop.Stop.stopQuietly;
@@ -87,6 +88,22 @@ public class GrpcUnaryClientIntegrationTest {
     private static final String TRACE_BIN_HEADER = "x-trace-bin";
     private static final Metadata.Key<byte[]> TRACE_BIN =
         Metadata.Key.of(TRACE_BIN_HEADER, Metadata.BINARY_BYTE_MARSHALLER);
+
+    /**
+     * Custom <em>response</em> metadata (initial headers) and custom <em>trailing</em> metadata,
+     * as a user authors them with {@code withHeader} / {@code withTrailer}. The checksum value
+     * deliberately carries {@code =}, {@code ;}, {@code ,} and spaces so an exact round-trip means
+     * something: every one of those is legal in an ASCII metadata value and every one of them is a
+     * character a careless split or re-serialization mangles.
+     */
+    private static final String RESPONSE_ID_HEADER = "x-mock-response-id";
+    private static final String RESPONSE_ID_VALUE = "resp-42";
+    private static final Metadata.Key<String> RESPONSE_ID =
+        Metadata.Key.of(RESPONSE_ID_HEADER, Metadata.ASCII_STRING_MARSHALLER);
+    private static final String CHECKSUM_TRAILER = "x-mock-checksum";
+    private static final String CHECKSUM_VALUE = "sha256=9f86d081884c7d65; v=2, weight=0.75";
+    private static final Metadata.Key<String> CHECKSUM =
+        Metadata.Key.of(CHECKSUM_TRAILER, Metadata.ASCII_STRING_MARSHALLER);
 
     /**
      * Response delay used by the concurrency tests. Every call is dispatched before any response is
@@ -550,6 +567,122 @@ public class GrpcUnaryClientIntegrationTest {
             return headers.get(TRACE_BIN);
         }
         return trailers != null ? trailers.get(TRACE_BIN) : null;
+    }
+
+    // ---- custom response metadata and trailing metadata, read off a real client's Metadata ----
+
+    /**
+     * A mocked gRPC response may carry <strong>both</strong> custom response metadata (initial
+     * headers) and custom trailing metadata (the terminal trailing HEADERS frame), and a real
+     * client must be able to read each from the side it was authored on.
+     * <p>
+     * <strong>Why only a real client can prove this.</strong> The two sides are authored
+     * differently — {@code withHeader(...)} versus {@code withTrailer(...)} — but by the time the
+     * response leaves {@code GrpcToHttpResponseHandler} both are just entries on one model object.
+     * A handler-level or {@code EmbeddedChannel} assertion inspects that model (or at best the
+     * Netty objects MockServer chose to emit) and therefore cannot distinguish "the trailer was
+     * emitted as a trailer" from "the trailer was folded into the initial headers", nor catch a
+     * custom trailer being dropped by {@code setGrpcTrailers}/{@code removeGrpcTrailers} while
+     * {@code grpc-status} still arrives and the call still completes green. Both mistakes are
+     * invisible to every existing gRPC test: the {@code -bin} metadata tests above deliberately
+     * accept the value from <em>either</em> headers or trailers, because a body-less unary response
+     * may legitimately collapse to Trailers-Only.
+     * <p>
+     * This test pins the discriminating shape. The response has a body, so no Trailers-Only
+     * collapse applies and the two sides are genuinely distinct on the wire:
+     * <ol>
+     *   <li>the custom response metadata must arrive in the initial headers and <strong>not</strong>
+     *       in the trailers;</li>
+     *   <li>the custom trailing metadata must arrive in the trailers and <strong>not</strong> in the
+     *       initial headers;</li>
+     *   <li>both values must round-trip byte-for-byte, including a value carrying {@code =},
+     *       {@code ;}, {@code ,} and spaces — the punctuation a checksum/quota style header really
+     *       uses, and exactly what a naive value split or re-serialization corrupts.</li>
+     * </ol>
+     */
+    @Test
+    public void shouldDeliverCustomResponseAndTrailingMetadataToRealGrpcClient() {
+        mockServerClient
+            .when(
+                request()
+                    .withPath("/" + SERVICE + "/" + METHOD)
+            )
+            .respond(
+                response()
+                    .withStatusCode(200)
+                    .withHeader("grpc-status", "0")
+                    .withHeader(RESPONSE_ID_HEADER, RESPONSE_ID_VALUE)
+                    .withTrailer(CHECKSUM_TRAILER, CHECKSUM_VALUE)
+                    .withBody("{\"greeting\":\"Hello World\"}")
+            );
+
+        AtomicReference<Metadata> headers = new AtomicReference<>();
+        AtomicReference<Metadata> trailers = new AtomicReference<>();
+        DynamicMessage reply = callCapturingMetadata(headers, trailers);
+
+        assertThat((String) reply.getField(responseType.findFieldByName("greeting")), is("Hello World"));
+
+        assertThat("the client must have received initial response headers", headers.get(), notNullValue());
+        assertThat("the client must have received trailing metadata", trailers.get(), notNullValue());
+
+        assertThat("custom response metadata must reach the client's initial headers, exactly as authored",
+            headers.get().get(RESPONSE_ID), is(RESPONSE_ID_VALUE));
+        assertThat("custom trailing metadata must reach the client's trailers, exactly as authored",
+            trailers.get().get(CHECKSUM), is(CHECKSUM_VALUE));
+
+        assertThat("a header authored with withHeader must NOT be emitted as a trailer",
+            trailers.get().get(RESPONSE_ID), nullValue());
+        assertThat("a trailer authored with withTrailer must NOT be folded into the initial headers",
+            headers.get().get(CHECKSUM), nullValue());
+    }
+
+    /**
+     * Trailing metadata on a <em>failed</em> call must reach the client too — that is the channel
+     * gRPC error details ride on, so a dropped trailer here is silent loss of the only diagnostic
+     * the caller gets.
+     * <p>
+     * The status is authored as a header while the custom metadata is authored as a trailer, which
+     * also proves the two are handled independently: {@code setGrpcTrailers} rewrites the
+     * {@code grpc-status}/{@code grpc-message} trailers on every response, and must leave any
+     * user-authored trailer alongside them untouched.
+     * <p>
+     * Read through {@link StatusRuntimeException#getTrailers()} rather than a capturing
+     * interceptor: a body-less error response is free to collapse to Trailers-Only, and grpc-java
+     * surfaces the terminal metadata on the exception in both shapes.
+     */
+    @Test
+    public void shouldDeliverCustomTrailingMetadataAlongsideAFailedGrpcStatus() {
+        mockServerClient
+            .when(
+                request()
+                    .withPath("/" + SERVICE + "/" + METHOD)
+            )
+            .respond(
+                response()
+                    .withStatusCode(200)
+                    .withHeader("grpc-status-name", "RESOURCE_EXHAUSTED")
+                    .withHeader("grpc-message", "monthly quota reached")
+                    .withTrailer(CHECKSUM_TRAILER, CHECKSUM_VALUE)
+            );
+
+        StatusRuntimeException e = callExpectingFailure();
+
+        assertThat(e.getStatus().getCode(), is(Status.Code.RESOURCE_EXHAUSTED));
+        assertThat(e.getStatus().getDescription(), is("monthly quota reached"));
+        assertThat("a failed call must still carry its trailing metadata", e.getTrailers(), notNullValue());
+        assertThat("custom trailing metadata must survive alongside a non-OK grpc-status, exactly as authored",
+            e.getTrailers().get(CHECKSUM), is(CHECKSUM_VALUE));
+    }
+
+    /**
+     * Makes a unary call with no request metadata, capturing the response headers and trailers the
+     * client receives so each side can be asserted separately.
+     */
+    private DynamicMessage callCapturingMetadata(AtomicReference<Metadata> headers, AtomicReference<Metadata> trailers) {
+        Channel intercepted = ClientInterceptors.intercept(
+            channel,
+            MetadataUtils.newCaptureMetadataInterceptor(headers, trailers));
+        return ClientCalls.blockingUnaryCall(intercepted, grpcMethod, CallOptions.DEFAULT, helloRequest("World"));
     }
 
     // ---- grpc-message percent-encoding, verified through a real client's decoder ----

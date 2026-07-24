@@ -428,6 +428,15 @@ public class GrpcToHttpResponseHandler extends MessageToMessageEncoder<HttpRespo
      * on HTTP/1.1 putting {@code grpc-status} in the headers is precisely the defect from issue
      * #2419, so HTTP/1.1 keeps real trailers. HTTP/3 already emits Trailers-Only via
      * {@code GrpcHttp3Adapter.buildTrailersOnlyFrame}; this makes HTTP/2 agree with it.
+     * <p>
+     * <strong>Skipped when the response carries user-authored trailing metadata.</strong>
+     * Trailers-Only is only legal when there is nothing else to trail. With a custom trailer
+     * present, collapsing moved {@code grpc-status} into the initial HEADERS while the custom
+     * trailer kept a separate trailing HEADERS frame alive -- so the initial frame was not
+     * end-of-stream, a real client read it as ordinary headers (where {@code grpc-status} is
+     * ignored), and the terminal frame then carried no status at all. The call failed with
+     * {@code UNKNOWN: missing GRPC status}: adding one trailer to an error response destroyed the
+     * error. Keeping the status in the trailers is the correct shape whenever any trailer remains.
      */
     private static HttpResponse asTrailersOnlyIfHttp2(HttpResponse response) {
         if (response.getStreamId() == null) {
@@ -439,6 +448,9 @@ public class GrpcToHttpResponseHandler extends MessageToMessageEncoder<HttpRespo
         }
         String grpcStatus = firstTrailer(response, GrpcStatusMapper.GRPC_STATUS_HEADER);
         if (grpcStatus == null) {
+            return response;
+        }
+        if (remainingTrailers(response) != null) {
             return response;
         }
         String grpcMessage = firstTrailer(response, GrpcStatusMapper.GRPC_MESSAGE_HEADER);
