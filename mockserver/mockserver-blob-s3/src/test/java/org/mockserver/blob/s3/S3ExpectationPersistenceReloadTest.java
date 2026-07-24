@@ -133,13 +133,11 @@ public class S3ExpectationPersistenceReloadTest {
 
     @Test
     public void shouldRestoreCloudPersistedExpectationsAfterRestart() throws Exception {
-        // A per-run key prefix (deliberately WITHOUT a trailing slash) plus a
-        // shared persisted path both servers agree on. The persisted-path is an
-        // absolute filesystem path (that is how ExpectationFileSystemPersistence
-        // derives the blob key), which already begins with '/', so a prefix
-        // without a trailing slash yields a single-slash object key that MinIO
-        // accepts. A trailing-slash prefix would produce a '//' key that MinIO
-        // rejects with "Object name contains unsupported characters".
+        // A per-run key prefix (without a trailing slash) plus a shared persisted path both
+        // servers agree on. The blob key is the FILE NAME of persistedExpectationsPath, and
+        // the prefix is joined to it with exactly one separator whichever shape it has -- see
+        // shouldRestoreCloudPersistedExpectationsWithATrailingSlashKeyPrefix for the shape
+        // that used to compose an invalid '//' object name.
         String keyPrefix = "reload-" + UUID.randomUUID();
         File persistedExpectations = File.createTempFile("persistedExpectations", ".json");
         persistedExpectations.deleteOnExit();
@@ -168,6 +166,48 @@ public class S3ExpectationPersistenceReloadTest {
 
         // THEN the expectation is restored and served by the fresh instance
         assertThat(get(server.getLocalPort(), "/persisted"), is("restored-from-s3"));
+    }
+
+    @Test
+    public void shouldRestoreCloudPersistedExpectationsWithATrailingSlashKeyPrefix() throws Exception {
+        // THE REGRESSION: blobStoreKeyPrefix is documented as a folder-style prefix
+        // (-Dmockserver.blobStoreKeyPrefix="mockserver/"), and the blob key used to be the
+        // ABSOLUTE local persistedExpectationsPath, which begins with '/'. Concatenating the two
+        // produced "mockserver//var/folders/.../persistedExpectations.json", which MinIO rejects
+        // with HTTP 400 "Object name contains unsupported characters" -- so with the documented
+        // prefix shape NOTHING was ever written and nothing could be restored. The key is now the
+        // file name, joined to the prefix with exactly one separator.
+        String keyPrefix = "reload-trailing-" + UUID.randomUUID() + "/";
+        File persistedExpectations = File.createTempFile("persistedExpectationsTrailingSlash", ".json");
+        persistedExpectations.deleteOnExit();
+        String persistedExpectationsPath = persistedExpectations.getAbsolutePath();
+
+        server = ClientAndServer.startClientAndServer(
+            s3PersistenceConfiguration(persistedExpectationsPath, keyPrefix), PortFactory.findFreePort());
+        server
+            .when(request().withPath("/persisted-trailing-slash"))
+            .respond(response().withBody("survives-a-trailing-slash-prefix"));
+
+        assertThat(get(server.getLocalPort(), "/persisted-trailing-slash"), is("survives-a-trailing-slash-prefix"));
+
+        // the write must actually reach S3 -- this is what failed with HTTP 400 before the fix
+        awaitS3BlobContains(keyPrefix, "/persisted-trailing-slash");
+
+        // and the object it wrote must be a VALID key: no doubled separator, no embedded local path
+        String writtenKey = onlyKeyUnder(keyPrefix);
+        assertThat("the object key must carry exactly one separator after the prefix",
+            writtenKey, is(keyPrefix + persistedExpectations.getName()));
+        assertThat("an object key must never contain a doubled separator, MinIO rejects it: " + writtenKey,
+            writtenKey.contains("//"), is(false));
+
+        stopQuietly(server);
+        server = null;
+
+        // AND the round trip completes: a fresh instance READS the same key back
+        server = ClientAndServer.startClientAndServer(
+            s3PersistenceConfiguration(persistedExpectationsPath, keyPrefix), PortFactory.findFreePort());
+
+        assertThat(get(server.getLocalPort(), "/persisted-trailing-slash"), is("survives-a-trailing-slash-prefix"));
     }
 
     @Test
@@ -218,6 +258,13 @@ public class S3ExpectationPersistenceReloadTest {
                 .build(),
             HttpResponse.BodyHandlers.ofString());
         return response.body();
+    }
+
+    private String onlyKeyUnder(String keyPrefix) {
+        ListObjectsV2Response listing = s3Client.listObjectsV2(b -> b.bucket(TEST_BUCKET).prefix(keyPrefix));
+        assertThat("exactly one object expected under " + keyPrefix + " but found " + listing.contents(),
+            listing.contents().size(), is(1));
+        return listing.contents().get(0).key();
     }
 
     private void awaitS3BlobContains(String keyPrefix, String marker) throws Exception {

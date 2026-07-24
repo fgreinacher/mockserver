@@ -3,6 +3,7 @@ package org.mockserver.blob.gcs;
 import com.google.api.gax.paging.Page;
 import com.google.cloud.storage.*;
 import org.mockserver.state.Blob;
+import org.mockserver.state.BlobKeys;
 import org.mockserver.state.BlobStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,15 +44,18 @@ public class GcsBlobStore implements BlobStore {
         this.keyPrefix = keyPrefix != null ? keyPrefix : "";
     }
 
+    /**
+     * Composes the GCS object name from the configured prefix and the blob key,
+     * via {@link BlobKeys#join(String, String)} so the result carries exactly
+     * one separator between prefix and key and never a leading or doubled
+     * {@code /}.
+     */
     private String toGcsName(String key) {
-        return keyPrefix + key;
+        return BlobKeys.join(keyPrefix, key);
     }
 
     private String fromGcsName(String gcsName) {
-        if (gcsName.startsWith(keyPrefix)) {
-            return gcsName.substring(keyPrefix.length());
-        }
-        return gcsName;
+        return BlobKeys.stripPrefix(keyPrefix, gcsName);
     }
 
     @Override

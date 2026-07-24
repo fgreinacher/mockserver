@@ -14,6 +14,7 @@ import org.mockserver.serialization.ExpectationSerializer;
 import org.mockserver.serialization.model.ExpectationDTO;
 import org.mockserver.serialization.serializers.response.TimeToLiveDTOPersistenceSerializer;
 import org.mockserver.state.Blob;
+import org.mockserver.state.BlobKeys;
 import org.mockserver.state.BlobStore;
 import org.mockserver.state.FilesystemBlobStore;
 import org.slf4j.event.Level;
@@ -69,10 +70,12 @@ public class ExpectationFileSystemPersistence implements MockServerMatcherListen
     private final java.util.concurrent.locks.ReentrantLock writeOrderLock = new java.util.concurrent.locks.ReentrantLock();
 
     /**
-     * Creates persistence backed by the given {@link BlobStore}. The blob key
-     * is the absolute path of {@code configuration.persistedExpectationsPath()}
-     * so that the {@link org.mockserver.state.FilesystemBlobStore} writes to
-     * the exact same file as the previous direct-I/O implementation.
+     * Creates persistence backed by the given {@link BlobStore}. The blob key is
+     * derived by {@link org.mockserver.state.BlobKeys#forPersistedFile(BlobStore, Path)}:
+     * the absolute path of {@code configuration.persistedExpectationsPath()} for the
+     * {@link org.mockserver.state.FilesystemBlobStore}, so it writes the exact same file
+     * as the previous direct-I/O implementation, and the FILE NAME alone for every other
+     * store, because an absolute local path is not a valid object-store key.
      *
      * @param configuration    the MockServer configuration
      * @param mockServerLogger logger for diagnostics
@@ -86,7 +89,7 @@ public class ExpectationFileSystemPersistence implements MockServerMatcherListen
             this.requestMatchers = requestMatchers;
             this.objectWriter = createObjectMapper(true, false, new TimeToLiveDTOPersistenceSerializer());
             this.filePath = Paths.get(configuration.persistedExpectationsPath());
-            this.blobKey = filePath.toAbsolutePath().toString();
+            this.blobKey = BlobKeys.forPersistedFile(blobStore, filePath);
             this.blobStore = blobStore;
             try {
                 Files.createFile(filePath);
@@ -258,11 +261,11 @@ public class ExpectationFileSystemPersistence implements MockServerMatcherListen
                 throw executionException.getCause() != null ? executionException.getCause() : executionException;
             }
             if (!blob.isPresent()) {
-                // MAJOR: the blob key embeds the ABSOLUTE persistedExpectationsPath, so a
-                // different working directory or a different persistedExpectationsPath
-                // silently yields a different key and restores nothing. Say so.
+                // MAJOR: the blob key is the FILE NAME of persistedExpectationsPath, so a
+                // differently-named persistedExpectationsPath silently yields a different key
+                // and restores nothing. Say so, naming the key that was looked for.
                 logEvent(INFO, "no persisted expectations found in blob store under key " + blobKey
-                    + " - restore requires the same bucket, the same blobStoreKeyPrefix and the same absolutely-resolved persistedExpectationsPath", null);
+                    + " - restore requires the same bucket, the same blobStoreKeyPrefix and the same persistedExpectationsPath file name", null);
                 return;
             }
             String json = new String(blob.get().getData(), UTF_8);
@@ -304,7 +307,11 @@ public class ExpectationFileSystemPersistence implements MockServerMatcherListen
         if (expandedInitializationJsonPaths.isEmpty()) {
             return;
         }
-        if (expandedInitializationJsonPaths.contains(configuration.persistedExpectationsPath()) || expandedInitializationJsonPaths.contains(blobKey)) {
+        // compare against the ABSOLUTE local path rather than the blob key: for a cloud store the
+        // blob key is now the bare file name, which would both miss an absolute initializationJsonPath
+        // and (for a relative persistedExpectationsPath) match one that points somewhere else entirely
+        if (expandedInitializationJsonPaths.contains(configuration.persistedExpectationsPath())
+            || expandedInitializationJsonPaths.contains(filePath.toAbsolutePath().toString())) {
             logEvent(WARN, "initializationJsonPath resolves to persistedExpectationsPath (" + configuration.persistedExpectationsPath()
                 + ") while a non-filesystem blob store is configured - the initializer reads the LOCAL file, which the blob store never populates, "
                 + "so it adds nothing; persisted expectations are restored from the blob store instead and initializationJsonPath can be removed", null);

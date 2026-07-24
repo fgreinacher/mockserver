@@ -3,6 +3,8 @@ package org.mockserver.blob.s3;
 import org.junit.AfterClass;
 import org.junit.Assume;
 import org.junit.BeforeClass;
+import org.junit.Test;
+import org.mockserver.state.Blob;
 import org.mockserver.state.BlobStore;
 import org.mockserver.state.contract.BlobStoreContract;
 import org.mockserver.test.DockerAvailability;
@@ -17,12 +19,18 @@ import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Collections;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Runs the shared {@link BlobStoreContract} against a real MinIO
@@ -85,6 +93,43 @@ public class S3BlobStoreContractTest extends BlobStoreContract {
         }
         if (minioContainer != null) {
             minioContainer.stop();
+        }
+    }
+
+    /**
+     * Every {@code blobStoreKeyPrefix} shape a user can configure must compose a VALID S3
+     * object name and round-trip through put/get/list/delete.
+     * <p>
+     * Before the key normalisation this was not true: a prefix ending in {@code /} (the shape
+     * the documentation recommends, {@code blobStoreKeyPrefix="mockserver/"}) concatenated with
+     * a key beginning with {@code /} (the persistence layer passed an absolute local path)
+     * produced a {@code //} object name that MinIO rejects with HTTP 400, "Object name contains
+     * unsupported characters".
+     */
+    @Test
+    public void shouldRoundTripThroughS3ForEveryKeyPrefixShape() {
+        String namespace = "prefix-shapes-" + UUID.randomUUID();
+        String[] prefixes = {
+            "",                          // unset
+            namespace,                   // no trailing slash
+            namespace + "/",             // trailing slash -- the documented shape
+            "/" + namespace + "/",       // leading AND trailing slash
+        };
+
+        for (String prefix : prefixes) {
+            String key = "persistedExpectations-" + UUID.randomUUID() + ".json";
+            BlobStore prefixedStore = new S3BlobStore(s3Client, TEST_BUCKET, prefix);
+
+            prefixedStore.put(key, "payload".getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
+
+            Optional<Blob> read = prefixedStore.get(key);
+            assertTrue("prefix '" + prefix + "': blob must be readable back", read.isPresent());
+            assertThat("prefix '" + prefix + "'",
+                new String(read.get().getData(), StandardCharsets.UTF_8), is("payload"));
+            assertThat("prefix '" + prefix + "': list must report the key without the prefix",
+                prefixedStore.list(key), hasItem(key));
+            assertTrue("prefix '" + prefix + "': delete must find the same object", prefixedStore.delete(key));
+            assertFalse("prefix '" + prefix + "': blob must be gone after delete", prefixedStore.get(key).isPresent());
         }
     }
 

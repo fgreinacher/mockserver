@@ -3306,6 +3306,7 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
 <button id="button_configuration_blob_store_key_prefix" class="accordion title"><strong>Blob Store Key Prefix</strong></button>
 <div class="panel title">
     <p>An optional prefix prepended to all blob keys in the cloud store. Useful for namespacing MockServer objects within a shared bucket or container (e.g. <span class="inline_code">mockserver/</span>).</p>
+    <p>The trailing <span class="inline_code">/</span> is optional: MockServer always joins the prefix and the key with exactly one <span class="inline_code">/</span>, so <span class="inline_code">mockserver</span>, <span class="inline_code">mockserver/</span> and <span class="inline_code">/mockserver/</span> all produce the same object name (for example <span class="inline_code">mockserver/persistedExpectations.json</span>). A leading <span class="inline_code">/</span> and any repeated <span class="inline_code">//</span> are removed: S3-compatible stores such as MinIO reject a <span class="inline_code">//</span> outright, and a leading <span class="inline_code">/</span> produces an awkward object name that most tools cannot browse to.</p>
     <p>Type: <span class="keyword">string</span> Default: <span class="this_value">"" (no prefix)</span></p>
     <p>System Property:</p>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.blobStoreKeyPrefix="mockserver/"</code></pre>

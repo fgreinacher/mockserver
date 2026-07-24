@@ -127,10 +127,21 @@ java -jar mockserver-netty-jar-with-dependencies.jar -serverPort 1080 -logLevel 
 <ul>
     <li>the same bucket or container;</li>
     <li>the same <span class="inline_code">blobStoreKeyPrefix</span>; and</li>
-    <li>the same <a href="/mock_server/configuration_properties.html#button_configuration_persisted_expectations_file_path">persistedExpectationsPath</a>, <strong>resolved to an absolute path</strong>.</li>
+    <li>the same <strong>file name</strong> in <a href="/mock_server/configuration_properties.html#button_configuration_persisted_expectations_file_path">persistedExpectationsPath</a>.</li>
 </ul>
 
-<p>That last one is easy to miss: the default <span class="inline_code">persistedExpectationsPath</span> is the relative <span class="inline_code">persistedExpectations.json</span>, so the saved object's name includes whichever directory MockServer happened to be started from. If you start the second instance from a different directory the name will not match and nothing is restored. <strong>Set <span class="inline_code">persistedExpectationsPath</span> to an absolute path</strong> (for example <span class="inline_code">/mockserver/persistedExpectations.json</span>) on every instance that should share the same saved expectations. If nothing is found, MockServer logs the name it looked for at <span class="inline_code">INFO</span> so you can compare it against what is in the bucket.</p>
+<p>Only the file name is used as the object name &mdash; the directory part of <span class="inline_code">persistedExpectationsPath</span> is a local detail and is not included, so two instances can use different local directories (or different containers) and still share the same saved expectations. With the default <span class="inline_code">persistedExpectations.json</span> and a <span class="inline_code">blobStoreKeyPrefix</span> of <span class="inline_code">ci-shared/</span>, the object is stored as <span class="inline_code">ci-shared/persistedExpectations.json</span>. If you point two deployments that must NOT share state at the same bucket, give each its own <span class="inline_code">blobStoreKeyPrefix</span> (or its own file name). If nothing is found, MockServer logs the name it looked for at <span class="inline_code">INFO</span> so you can compare it against what is in the bucket.</p>
+
+<p><strong>Upgrading from an earlier version:</strong> the object name has changed. Earlier versions named the object after the <strong>full local path</strong> of <span class="inline_code">persistedExpectationsPath</span> (something like <span class="inline_code">ci-shared/var/folders/T/persistedExpectations.json</span>); only the file name is used now (<span class="inline_code">ci-shared/persistedExpectations.json</span>). This affects every cloud deployment, whatever your <span class="inline_code">blobStoreKeyPrefix</span> is, so <strong>expectations saved by an earlier version are not restored after you upgrade</strong> &mdash; MockServer starts with no expectations, logs the name it looked for at <span class="inline_code">INFO</span>, and the next change to your expectations saves a new object under the new name, leaving the old one behind in the bucket.</p>
+
+<p>If you need to keep what you already have, list the bucket to find the old name and rename the object once, before starting the new version:</p>
+
+<pre class="prettyprint lang-bash code"><code class="code">aws s3 ls --recursive s3://my-mockserver-fixtures/ci-shared/
+
+aws s3 mv s3://my-mockserver-fixtures/&lt;old name from the listing&gt; \
+          s3://my-mockserver-fixtures/ci-shared/persistedExpectations.json</code></pre>
+
+<p>Otherwise no action is needed &mdash; let MockServer start empty and re-create the object the next time your expectations change. The equivalent rename works for Google Cloud Storage (<span class="inline_code">gsutil mv</span>) and Azure Blob Storage (<span class="inline_code">az storage blob copy</span>, then delete the old blob).</p>
 
 <p>The startup read is time-limited by <span class="inline_code">blobStoreRestoreTimeoutSeconds</span> (default <span class="inline_code">10</span> seconds), because it happens before MockServer starts listening. If the blob store is unreachable, MockServer logs a warning at that point and starts anyway with no restored expectations, rather than hanging for the cloud SDK's own much longer retry budget and failing your readiness probe. Set it to <span class="inline_code">0</span> to skip the restore altogether.</p>
 

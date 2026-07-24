@@ -227,6 +227,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rate_limit_error` envelope with the exhausted rate-limit headers and `Retry-After`.
 
 ### Fixed
+- **BREAKING BEHAVIOUR: expectations persisted to a non-filesystem blob store are now saved under
+  `<blobStoreKeyPrefix>/<file name>` instead of under the writing machine's absolute local path, and a
+  `blobStoreKeyPrefix` that does not end in a separator is now treated as a folder-style prefix instead
+  of being glued straight onto the key (`mockserver` + `x.json` was `mockserverx.json` and is now
+  `mockserver/x.json`). Anything persisted by an earlier version is stored under the OLD name and will
+  NOT be restored after upgrading — the one-line migration is below.** The blob key was the ABSOLUTE
+  local `persistedExpectationsPath` (for example `/var/folders/.../persistedExpectations.json`) and the
+  configured `blobStoreKeyPrefix` was concatenated onto it with plain string addition. With the prefix
+  shape the documentation recommends — `blobStoreKeyPrefix="mockserver/"`, with a trailing separator —
+  that composed `mockserver//var/folders/.../persistedExpectations.json`, and MinIO rejects the doubled
+  `//` outright with HTTP 400, "Object name contains unsupported characters", so under that one
+  configuration nothing was ever persisted and consequently nothing could be restored on restart. Under
+  every other prefix shape the write SUCCEEDED and restore worked — a leading `/` is a legal byte in an
+  S3 object name, and the read composed exactly the same name back — but the object was then named after
+  the writing container's local filesystem layout, so a second instance that resolved
+  `persistedExpectationsPath` to a different absolute path (started from a different working directory,
+  or in a different container) looked under a different name and silently restored nothing. The key is
+  now derived by the new shared `org.mockserver.state.BlobKeys` helper in `mockserver-core`: for every
+  store other than `FilesystemBlobStore` the key is the FILE NAME of `persistedExpectationsPath` alone,
+  and prefix and key are joined with exactly one separator, with any leading separator dropped and any
+  repeated separators collapsed, so every prefix shape a user can configure — unset, `mockserver`,
+  `mockserver/`, `/mockserver/` — now produces the same valid object name
+  (`mockserver/persistedExpectations.json`). That normalisation is applied for all
+  `put`/`get`/`list`/`delete` operations wherever `blobStoreKeyPrefix` is applied, so it renames EVERY
+  blob key, not only the persisted-expectations document. `FilesystemBlobStore` is unaffected: it
+  interprets the key as a file path, so it keeps the absolute path and writes exactly the file it always
+  did. **Upgrading:** because the old key always embedded the absolute local path and the new key is the
+  bare file name, the object name changes for every non-filesystem persistence user, under every prefix
+  shape and on every platform — there is no configuration in which the old name is preserved. On the
+  first start after upgrading, the restore looks under the new name, misses (logged at `INFO` with the
+  name it looked for), and the instance starts with no restored expectations; the next expectation change
+  then writes a fresh object under the new name and leaves the old one behind. To carry existing state
+  across the upgrade, copy or rename the object once before starting the new version, for example
+  `aws s3 mv s3://<bucket>/<prefix>/<old absolute path> s3://<bucket>/<prefix>/<file name>` — otherwise
+  accept the miss and let the first expectation change re-create it. One long-standing footgun goes away
+  with the change: restoring after a restart no longer requires the two instances to resolve
+  `persistedExpectationsPath` to the same absolute path, only to the same file name. Deployments that
+  must NOT share state within one bucket should give each its own `blobStoreKeyPrefix` (or its own file
+  name). Proven by a Docker-gated MinIO round trip that writes and then reads back an expectation with a
+  trailing-slash `blobStoreKeyPrefix` (the exact configuration that returned HTTP 400 before), a MinIO
+  put/get/list/delete round trip across all four prefix shapes, and Docker-free unit coverage of the key
+  composition and of the key the persistence layer derives.
 - **A gRPC error response carrying custom trailing metadata no longer loses its status.** On HTTP/2 a
   body-less gRPC response is collapsed into the gRPC Trailers-Only form, which moves `grpc-status`
   into the initial HEADERS frame and relies on that frame being end-of-stream. When the expectation

@@ -7,6 +7,7 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mock.Expectation;
 import org.mockserver.mock.RequestMatchers;
+import org.mockserver.mock.listeners.MockServerMatcherNotifier.Cause;
 import org.mockserver.scheduler.Scheduler;
 import org.mockserver.server.initialize.ExpectationInitializerLoader;
 import org.mockserver.state.Blob;
@@ -75,6 +76,15 @@ public class ExpectationBlobStoreRestoreTest {
         return persistedExpectations.getAbsolutePath();
     }
 
+    /**
+     * The key the persistence layer uses for a NON-filesystem blob store: the file NAME of
+     * persistedExpectationsPath, never the absolute local path (which is not a valid
+     * object-store key -- see {@link org.mockserver.state.BlobKeys}).
+     */
+    private String blobKeyFor(String persistedExpectationsPath) {
+        return new File(persistedExpectationsPath).getName();
+    }
+
     private List<String> activeExpectationIds() {
         return requestMatchers.retrieveActiveExpectations(null).stream().map(Expectation::getId).collect(java.util.stream.Collectors.toList());
     }
@@ -85,7 +95,7 @@ public class ExpectationBlobStoreRestoreTest {
     public void shouldRestorePersistedExpectationsFromACloudBlobStoreOnStartup() throws Exception {
         String persistedExpectationsPath = temporaryPersistedExpectationsPath("restoreHappy");
         InMemoryBlobStore blobStore = new InMemoryBlobStore();
-        blobStore.put(persistedExpectationsPath, ONE_EXPECTATION_JSON.getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
+        blobStore.put(blobKeyFor(persistedExpectationsPath), ONE_EXPECTATION_JSON.getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
 
         ExpectationFileSystemPersistence persistence = null;
         try {
@@ -126,7 +136,7 @@ public class ExpectationBlobStoreRestoreTest {
     public void shouldStartCleanlyWhenThePersistedBlobIsBlank() throws Exception {
         String persistedExpectationsPath = temporaryPersistedExpectationsPath("restoreBlank");
         InMemoryBlobStore blobStore = new InMemoryBlobStore();
-        blobStore.put(persistedExpectationsPath, "   ".getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
+        blobStore.put(blobKeyFor(persistedExpectationsPath), "   ".getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
 
         ExpectationFileSystemPersistence persistence = null;
         try {
@@ -146,7 +156,7 @@ public class ExpectationBlobStoreRestoreTest {
     public void shouldStartWhenThePersistedBlobIsMalformedRatherThanFailingStartup() throws Exception {
         String persistedExpectationsPath = temporaryPersistedExpectationsPath("restoreMalformed");
         InMemoryBlobStore blobStore = new InMemoryBlobStore();
-        blobStore.put(persistedExpectationsPath, "{ this is not valid expectation json".getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
+        blobStore.put(blobKeyFor(persistedExpectationsPath), "{ this is not valid expectation json".getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
 
         ExpectationFileSystemPersistence persistence = null;
         try {
@@ -188,7 +198,7 @@ public class ExpectationBlobStoreRestoreTest {
         InMemoryBlobStore blobStore = new InMemoryBlobStore();
         // deliberately stored under a DIFFERENT key, as happens when the working directory or
         // persistedExpectationsPath differs between runs
-        blobStore.put(persistedExpectationsPath + ".other", ONE_EXPECTATION_JSON.getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
+        blobStore.put(blobKeyFor(persistedExpectationsPath) + ".other", ONE_EXPECTATION_JSON.getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
 
         CapturingMockServerLogger capturingLogger = new CapturingMockServerLogger();
         ExpectationFileSystemPersistence persistence = null;
@@ -196,11 +206,10 @@ public class ExpectationBlobStoreRestoreTest {
             persistence = new ExpectationFileSystemPersistence(persistenceConfiguration(persistedExpectationsPath), capturingLogger, requestMatchers, blobStore);
 
             assertThat(activeExpectationIds(), is(empty()));
-            // a key miss must not pass silently: the key embeds the ABSOLUTE
-            // persistedExpectationsPath, and the default for that property is relative, so the
-            // object name silently varies with the working directory
+            // a key miss must not pass silently: the key is the FILE NAME of
+            // persistedExpectationsPath, so a differently-named path silently misses
             assertThat("a key miss must be reported, with the key it looked for",
-                capturingLogger.messagesContaining("no persisted expectations found in blob store under key " + persistedExpectationsPath), is(not(empty())));
+                capturingLogger.messagesContaining("no persisted expectations found in blob store under key " + blobKeyFor(persistedExpectationsPath)), is(not(empty())));
         } finally {
             if (persistence != null) {
                 persistence.stop();
@@ -221,7 +230,7 @@ public class ExpectationBlobStoreRestoreTest {
         // everything just restored.
         String persistedExpectationsPath = temporaryPersistedExpectationsPath("restoreInitCollision");
         InMemoryBlobStore blobStore = new InMemoryBlobStore();
-        blobStore.put(persistedExpectationsPath, ONE_EXPECTATION_JSON.getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
+        blobStore.put(blobKeyFor(persistedExpectationsPath), ONE_EXPECTATION_JSON.getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
 
         Configuration configuration = persistenceConfiguration(persistedExpectationsPath)
             .initializationJsonPath(persistedExpectationsPath);
@@ -346,7 +355,7 @@ public class ExpectationBlobStoreRestoreTest {
     public void shouldSkipTheRestoreEntirelyWhenTheDeadlineIsZero() throws Exception {
         String persistedExpectationsPath = temporaryPersistedExpectationsPath("restoreDisabled");
         InMemoryBlobStore blobStore = new InMemoryBlobStore();
-        blobStore.put(persistedExpectationsPath, ONE_EXPECTATION_JSON.getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
+        blobStore.put(blobKeyFor(persistedExpectationsPath), ONE_EXPECTATION_JSON.getBytes(StandardCharsets.UTF_8), Collections.emptyMap());
 
         Configuration configuration = persistenceConfiguration(persistedExpectationsPath)
             .blobStoreRestoreTimeoutSeconds(0);
@@ -363,7 +372,92 @@ public class ExpectationBlobStoreRestoreTest {
         }
     }
 
+    // ---------------------------------------------------------------- object-store key shape
+
+    @Test
+    public void shouldUseAValidObjectStoreKeyRatherThanTheAbsoluteLocalPathForACloudStore() throws Exception {
+        // An absolute local path is not a valid object-store key: it starts with '/', which S3
+        // treats as a distinct name and MinIO rejects outright ("Object name contains unsupported
+        // characters", HTTP 400), and combined with a blobStoreKeyPrefix ending in '/' it produced
+        // a '//'. The key must be the FILE NAME alone.
+        String persistedExpectationsPath = temporaryPersistedExpectationsPath("keyShape");
+        KeyCapturingBlobStore blobStore = new KeyCapturingBlobStore();
+
+        ExpectationFileSystemPersistence persistence = null;
+        try {
+            persistence = new ExpectationFileSystemPersistence(persistenceConfiguration(persistedExpectationsPath), mockServerLogger, requestMatchers, blobStore);
+
+            assertThat("the restore must read the file-name key", blobStore.requestedKeys, contains(blobKeyFor(persistedExpectationsPath)));
+            for (String key : blobStore.requestedKeys) {
+                assertThat("an object-store key must not start with a separator", key.startsWith("/"), is(false));
+                assertThat("an object-store key must not contain a doubled separator", key.contains("//"), is(false));
+                assertThat("an object-store key must not embed the local filesystem layout",
+                    key.contains(File.separator), is(false));
+            }
+        } finally {
+            if (persistence != null) {
+                persistence.stop();
+            }
+        }
+    }
+
+    @Test
+    public void shouldKeepTheAbsolutePathAsTheKeyForTheFilesystemBlobStore() throws Exception {
+        // the filesystem store INTERPRETS the key as a file path, so shortening it to the file
+        // name would silently relocate on-disk persistence to the working directory
+        String persistedExpectationsPath = temporaryPersistedExpectationsPath("keyShapeFilesystem");
+        Configuration configuration = persistenceConfiguration(persistedExpectationsPath);
+
+        ExpectationFileSystemPersistence persistence = null;
+        try {
+            persistence = new ExpectationFileSystemPersistence(configuration, mockServerLogger, requestMatchers, new FilesystemBlobStore(mockServerLogger));
+            requestMatchers.add(new Expectation(org.mockserver.model.HttpRequest.request().withPath("/written"))
+                .thenRespond(org.mockserver.model.HttpResponse.response().withBody("written-body")), Cause.API);
+
+            long deadline = System.currentTimeMillis() + 10_000L;
+            while (System.currentTimeMillis() < deadline && new File(persistedExpectationsPath).length() == 0) {
+                TimeUnit.MILLISECONDS.sleep(50);
+            }
+            assertThat("the filesystem store must still write the configured absolute path",
+                new String(Files.readAllBytes(new File(persistedExpectationsPath).toPath()), StandardCharsets.UTF_8).contains("/written"), is(true));
+        } finally {
+            if (persistence != null) {
+                persistence.stop();
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- test doubles
+
+    /**
+     * Records every key the persistence layer asks for, so the SHAPE of the object-store key
+     * can be asserted rather than only its round-trip behaviour.
+     */
+    private static class KeyCapturingBlobStore implements BlobStore {
+
+        private final List<String> requestedKeys = Collections.synchronizedList(new java.util.ArrayList<>());
+
+        @Override
+        public void put(String key, byte[] data, Map<String, String> metadata) {
+            requestedKeys.add(key);
+        }
+
+        @Override
+        public Optional<Blob> get(String key) {
+            requestedKeys.add(key);
+            return Optional.empty();
+        }
+
+        @Override
+        public List<String> list(String prefix) {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public boolean delete(String key) {
+            return false;
+        }
+    }
 
     /**
      * Captures log messages per INSTANCE, so log assertions need no mutation of the static

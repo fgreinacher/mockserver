@@ -1,6 +1,7 @@
 package org.mockserver.blob.s3;
 
 import org.mockserver.state.Blob;
+import org.mockserver.state.BlobKeys;
 import org.mockserver.state.BlobStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,15 +48,20 @@ public class S3BlobStore implements BlobStore {
         this.keyPrefix = keyPrefix != null ? keyPrefix : "";
     }
 
+    /**
+     * Composes the S3 object key from the configured prefix and the blob key.
+     * Delegates to {@link BlobKeys#join(String, String)} so that the result
+     * carries exactly one separator between prefix and key, never a leading
+     * {@code /} and never a doubled {@code //} — both of which S3-compatible
+     * stores reject (MinIO answers HTTP 400 "Object name contains unsupported
+     * characters").
+     */
     private String toS3Key(String key) {
-        return keyPrefix + key;
+        return BlobKeys.join(keyPrefix, key);
     }
 
     private String fromS3Key(String s3Key) {
-        if (s3Key.startsWith(keyPrefix)) {
-            return s3Key.substring(keyPrefix.length());
-        }
-        return s3Key;
+        return BlobKeys.stripPrefix(keyPrefix, s3Key);
     }
 
     @Override

@@ -9,6 +9,7 @@ import org.mockserver.mock.Expectation;
 import org.mockserver.mock.listeners.MockServerLogListener;
 import org.mockserver.serialization.model.ExpectationDTO;
 import org.mockserver.serialization.serializers.response.TimeToLiveDTOPersistenceSerializer;
+import org.mockserver.state.BlobKeys;
 import org.mockserver.state.BlobStore;
 import org.slf4j.event.Level;
 
@@ -38,10 +39,12 @@ public class RecordedExpectationFileSystemPersistence implements MockServerLogLi
     private final java.util.concurrent.locks.ReentrantLock writeOrderLock = new java.util.concurrent.locks.ReentrantLock();
 
     /**
-     * Creates persistence backed by the given {@link BlobStore}. The blob key
-     * is the absolute path of {@code configuration.persistedRecordedExpectationsPath()}
-     * so that the {@link org.mockserver.state.FilesystemBlobStore} writes to
-     * the exact same file as the previous direct-I/O implementation.
+     * Creates persistence backed by the given {@link BlobStore}. The blob key is
+     * derived by {@link org.mockserver.state.BlobKeys#forPersistedFile(BlobStore, Path)}:
+     * the absolute path of {@code configuration.persistedRecordedExpectationsPath()} for the
+     * {@link org.mockserver.state.FilesystemBlobStore}, so it writes the exact same file as
+     * the previous direct-I/O implementation, and the FILE NAME alone for every other store,
+     * because an absolute local path is not a valid object-store key.
      *
      * @param configuration    the MockServer configuration
      * @param mockServerLogger logger for diagnostics
@@ -55,7 +58,7 @@ public class RecordedExpectationFileSystemPersistence implements MockServerLogLi
             this.mockServerEventLog = mockServerEventLog;
             this.objectWriter = createObjectMapper(true, false, new TimeToLiveDTOPersistenceSerializer());
             this.filePath = Paths.get(configuration.persistedRecordedExpectationsPath());
-            this.blobKey = filePath.toAbsolutePath().toString();
+            this.blobKey = BlobKeys.forPersistedFile(blobStore, filePath);
             this.blobStore = blobStore;
             try {
                 Files.createFile(filePath);
