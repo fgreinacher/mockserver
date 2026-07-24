@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Live-broker test coverage proving Kafka SASL credentials reach and are enforced by a real
+  broker.** Kafka SASL/SSL security was only asserted at the property-map level
+  (`KafkaMessagePublisherSecurityTest`) and every live-broker Kafka integration test used a plaintext
+  bootstrap, so nothing proved the configured credentials actually authenticate against a broker. A
+  new `KafkaSecurityLiveBrokerIntegrationTest` starts a Testcontainers Kafka whose external listener
+  is `SASL_PLAINTEXT`/`PLAIN` with a broker-side JAAS config that knows a single credential, then
+  drives MockServer's `KafkaMessagePublisher` with a `KafkaSecurity`: a correctly-credentialed
+  publisher publishes successfully and the message is read back by a matching credentialed consumer,
+  while a wrong-password publisher is rejected with an authentication exception (proving enforcement,
+  not merely that plaintext works). Docker-gated so it SKIPS cleanly when Docker is unavailable.
 - **Over-the-wire test coverage for an LLM refusal preset served with a rate-limit quota.** The LLM
   refusal presets, provider-specific rate-limit headers, and stateful request-count quota were only
   asserted at the body-builder / handler-unit level; nothing drove them through a running server. A
