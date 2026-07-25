@@ -8,6 +8,7 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.integration.ClientAndServer;
 import org.mockserver.socket.PortFactory;
 import org.mockserver.state.Blob;
+import org.mockserver.state.BlobKeys;
 
 import java.io.File;
 import java.net.URI;
@@ -102,8 +103,10 @@ class ClusteredExpectationPersistenceReloadTest {
 
         persistedExpectations = File.createTempFile("clusteredPersistedExpectations", ".json");
         persistedExpectations.deleteOnExit();
-        // ExpectationFileSystemPersistence derives the blob key from the ABSOLUTE
-        // persistedExpectationsPath, so both nodes must be given the identical path.
+        // Both nodes must be given the identical persistedExpectationsPath (an absolute local
+        // path). The blob-store KEY under which the document lands is a separate thing: for a
+        // non-filesystem store ExpectationFileSystemPersistence keys by the file NAME alone
+        // (see BlobKeys.forPersistedFile), not the absolute path.
         blobKey = persistedExpectations.getAbsolutePath();
 
         // The rest of the fleet: holds the REPL_SYNC caches while the MockServer node restarts.
@@ -246,11 +249,16 @@ class ClusteredExpectationPersistenceReloadTest {
             sleep();
         }
         fail("persisted document containing '" + marker + "' never appeared in the clustered blob"
-            + " store under key " + blobKey + "; current content: '" + blobBody() + "'");
+            + " store under key " + storeKey() + "; current content: '" + blobBody() + "'");
+    }
+
+    private String storeKey() {
+        // The key production actually writes under: file name for a non-filesystem store.
+        return BlobKeys.forPersistedFile(fleetKeeper.blobs(), persistedExpectations.toPath());
     }
 
     private String blobBody() {
-        Optional<Blob> blob = fleetKeeper.blobs().get(blobKey);
+        Optional<Blob> blob = fleetKeeper.blobs().get(storeKey());
         return blob.map(value -> new String(value.getData(), StandardCharsets.UTF_8)).orElse("");
     }
 
