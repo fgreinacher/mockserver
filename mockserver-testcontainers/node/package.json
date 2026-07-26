@@ -31,13 +31,14 @@
   },
   "homepage": "https://www.mock-server.com",
   "engines": {
-    "node": ">=18.0.0"
+    "node": "20 || >=22"
   },
   "dependencies": {
     "mockserver-client": ">=5.15.0",
     "testcontainers": "^12.0.1"
   },
   "overrides": {
+    "brace-expansion": "^5.0.8",
     "js-yaml": "^4.2.0",
     "protobufjs": "^7.6.3"
   },
