@@ -64,6 +64,45 @@
 #   REJECTED — running Ryuk in the host namespace (what the error message
 #   suggests): Testcontainers-Java exposes no setting for Ryuk's userns mode, so
 #   this is not reachable without patching Testcontainers.
+#
+# WHY -m 7g AND NOT 4g:
+#
+#   At 4g this step intermittently died with exit 137 (OOM-Killed) — and it died
+#   in the FIRST command, the `-am` dependency build, so the cloud contract
+#   suites never ran at all (build #1755). A step whose whole purpose is to fail
+#   CLOSED on missing coverage was instead losing that coverage before a single
+#   test started.
+#
+#   `mockserver/.mvn/jvm.config` pins the Maven JVM to `-Xms2048m -Xmx6144m`, and
+#   mvnw PREPENDS jvm.config to MAVEN_OPTS, so it overrides container ergonomics.
+#   Verified inside mockserver/mockserver:maven under `--memory=4g`: ergonomics
+#   alone would have picked MaxHeapSize=1073741824 (MaxRAMPercentage=25.0), but
+#   with jvm.config applied MaxHeapSize=6442450944 — the JVM is told it may grow
+#   to 6g, but inside a 4g cgroup the kernel kills it. `-T 1C`
+#   (mockserver/.mvn/maven.config) builds the upstream reactor modules
+#   concurrently in that one JVM, so live heap really does climb toward the
+#   ceiling, which is why the kill was intermittent rather than constant.
+#
+#   7g is the limit every other step that runs ./mvnw from mockserver/ already
+#   uses (java-build.sh, java-deploy-snapshot.sh, maven-plugin-build.sh,
+#   ui-java-codegen-compile.sh, helm-integration-test.sh). It clears the declared
+#   6g Xmx plus metaspace/code-cache/native overhead, and the default-queue
+#   agents are c5.2xlarge (16 GiB), so it still leaves ample headroom for the
+#   sibling Testcontainers containers — those run on the HOST daemon through the
+#   mounted socket, outside this container's cgroup.
+#
+#   REJECTED — capping the heap instead (MAVEN_OPTS=-Xmx3g or
+#   -XX:MaxRAMPercentage) so it fits inside 4g: it would work mechanically (env
+#   MAVEN_OPTS is appended AFTER jvm.config, and the last -Xmx wins), but it
+#   gives this step less heap than the repo declares the reactor needs, trading
+#   an OOM-kill for GC thrash or a java.lang.OutOfMemoryError, and it makes this
+#   one step diverge from every other Maven step. Raise the container limit to
+#   match the declared heap, rather than quietly under-provisioning the build.
+#
+#   REJECTED — dropping `-T 1C` for this step: parallelism raises the peak but
+#   the 6g-Xmx-in-a-4g-cgroup ceiling is a defect at any parallelism, so this
+#   would only make the OOM rarer. `-T 1C` is also a repo-wide default, not this
+#   step's to override.
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -74,7 +113,7 @@ MODULES="mockserver-blob-s3,mockserver-blob-gcs,mockserver-blob-azure"
 exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i mockserver/mockserver:maven \
   -w /build/mockserver \
-  -m 4g \
+  -m 7g \
   --cache maven \
   --docker-socket \
   -e TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false \

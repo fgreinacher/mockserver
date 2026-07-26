@@ -46,6 +46,18 @@
 #   dedicated privileged queue), and set RUN_TRANSPARENT_PROXY_E2E=true. Then the
 #   assert-suite-ran guard below fails closed if any suite skipped instead of
 #   running.
+#
+# WHY -m 7g AND NOT 4g:
+#
+#   Same defect, same fix as java-cloud-store-test.sh (see its header for the
+#   measurements). `mockserver/.mvn/jvm.config` pins the Maven JVM to
+#   `-Xms2048m -Xmx6144m` and mvnw prepends jvm.config to MAVEN_OPTS, so the JVM
+#   running the `-am` dependency build below is permitted a 6g heap; under a 4g
+#   cgroup the kernel OOM-kills it (exit 137) before any test runs. This step is
+#   opt-in today, so it has not been observed failing that way — the limit is
+#   corrected here so it does not bite the first time someone sets
+#   RUN_TRANSPARENT_PROXY_E2E=true. 7g matches every other step that runs
+#   ./mvnw from mockserver/.
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -81,7 +93,7 @@ fi
 exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i mockserver/mockserver:maven \
   -w /build/mockserver \
-  -m 4g \
+  -m 7g \
   --cache maven \
   --docker-socket \
   -- bash -ec "

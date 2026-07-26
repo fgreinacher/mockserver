@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The cloud blob-store, async-broker and transparent-proxy CI steps no longer OOM-kill their own build
+  before any test runs.** Each ran its Docker container with `--memory=4g`, but `mockserver/.mvn/jvm.config`
+  pins the Maven JVM to `-Xmx6144m` and the wrapper prepends it to `MAVEN_OPTS`, so the `-am` dependency
+  build was permitted a 6 GB heap inside a 4 GB cgroup and the kernel intermittently killed it with exit 137
+  — losing the very coverage those fail-closed steps exist to guarantee. Raised each to `--memory=7g`, the
+  value every other `./mvnw` step already uses and which fits the single-agent `c5.2xlarge`/`m5.2xlarge`
+  default-queue instances with margin.
+
 ### Added
 - **Clustered (Infinispan) expectation reload-on-startup is now proven end-to-end.** A new test
   (`ClusteredExpectationPersistenceReloadTest` in `mockserver-state-infinispan`) forms an in-JVM
