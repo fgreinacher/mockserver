@@ -15,6 +15,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.collection.IsEmptyCollection.empty;
 import static org.hamcrest.core.Is.is;
 import static org.mockito.Mockito.mock;
@@ -109,6 +110,22 @@ public class MockServerMatcherManageExpectationsTest {
         assertThat(requestMatchers.postProcess(requestMatchers.firstMatchingExpectation(new HttpRequest().withPath("somePath"))), is(expectation));
         assertThat(requestMatchers.firstMatchingExpectation(new HttpRequest().withPath("somePath")), nullValue());
         assertThat(requestMatchers.httpRequestMatchers.toSortedList(), empty());
+    }
+
+    @Test
+    public void shouldRemoveExhaustedTimesFromActiveExpectationsWithoutFurtherRequest() {
+        // given - an expectation that may be matched exactly once
+        Expectation expectation = new Expectation(request().withPath("somePath"), Times.exactly(1), TimeToLive.unlimited(), 0).thenRespond(response().withBody("someBody"));
+        requestMatchers.add(expectation, API);
+
+        // then - it is initially surfaced as an active expectation
+        assertThat(requestMatchers.retrieveActiveExpectations(null), hasSize(1));
+
+        // when - the single permitted use is consumed
+        assertThat(requestMatchers.postProcess(requestMatchers.firstMatchingExpectation(new HttpRequest().withPath("somePath"))), is(expectation));
+
+        // then - the exhausted expectation is no longer active, WITHOUT issuing a further triggering request
+        assertThat(requestMatchers.retrieveActiveExpectations(null), empty());
     }
 
     @Test
