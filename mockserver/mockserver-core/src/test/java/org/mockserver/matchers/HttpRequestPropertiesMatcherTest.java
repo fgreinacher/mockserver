@@ -2568,6 +2568,46 @@ public class HttpRequestPropertiesMatcherTest {
 
     // BODY
 
+    // - FileBody (issue #2450): a FILE request body must match the request body against the EXACT file
+    //   contents. Previously there was no FILE case, so the body constraint was SILENTLY IGNORED.
+
+    @Test
+    public void shouldMatchFileBodyAgainstExactTextFileContents() {
+        assertThat(update(new HttpRequest().withBody(
+            new FileBody("org/mockserver/mock/action/verbatim_file_body.xml", MediaType.parse("application/xml"))
+        )).matches(null, new HttpRequest().withBody(
+            "<tag>hello{{ request.path }}</tag>"
+        )), is(true));
+    }
+
+    @Test
+    public void shouldNotMatchFileBodyAgainstDifferentTextBody() {
+        // proves the body constraint is no longer silently ignored - a non-matching body is rejected
+        assertThat(update(new HttpRequest().withBody(
+            new FileBody("org/mockserver/mock/action/verbatim_file_body.xml", MediaType.parse("application/xml"))
+        )).matches(null, new HttpRequest().withBody(
+            "<tag>some other body</tag>"
+        )), is(false));
+    }
+
+    @Test
+    public void shouldMatchFileBodyAgainstExactBinaryFileContents() {
+        assertThat(update(new HttpRequest().withBody(
+            new FileBody("org/mockserver/mock/action/verbatim_binary_body.png", MediaType.parse("image/png"))
+        )).matches(null, new HttpRequest().withBody(
+            new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, (byte) 0xFF, (byte) 0xFE, 0x01, (byte) 0x80, 0x7F, (byte) 0xC3, 0x28}
+        )), is(true));
+    }
+
+    @Test
+    public void shouldNotMatchFileBodyAgainstDifferentBinaryBody() {
+        assertThat(update(new HttpRequest().withBody(
+            new FileBody("org/mockserver/mock/action/verbatim_binary_body.png", MediaType.parse("image/png"))
+        )).matches(null, new HttpRequest().withBody(
+            new byte[]{0x01, 0x02, 0x03, 0x04}
+        )), is(false));
+    }
+
     // - BinaryBody
 
     @Test

@@ -2,6 +2,7 @@ package org.mockserver.matchers;
 
 import org.mockserver.configuration.Configuration;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.mock.action.http.FileBodyMaterialiser;
 import org.mockserver.model.*;
 
 import static org.mockserver.matchers.NotMatcher.notMatcher;
@@ -83,6 +84,22 @@ public class BodyMatcherBuilder {
                 case BINARY:
                     BinaryBody binaryBody = (BinaryBody) body;
                     bodyMatcher = new BinaryMatcher(mockServerLogger, binaryBody.getValue());
+                    break;
+                case FILE:
+                    // A FILE request-body matcher matches the request body against the EXACT contents of the
+                    // referenced file (previously this was silently ignored - no case here left bodyMatcher
+                    // null, so the body constraint matched anything). The file is read verbatim (never
+                    // template-rendered - matching against a rendered template is not meaningful) via the
+                    // shared FileBodyMaterialiser, then matched with the same semantics as an equivalent
+                    // StringBody (exact, case-sensitive) or BinaryBody request body: a text content type
+                    // yields an exact-string match; a binary or absent content type yields an exact-bytes match.
+                    FileBody fileBody = (FileBody) body;
+                    BodyWithContentType materialisedFileBody = new FileBodyMaterialiser(mockServerLogger, configuration).materialise(fileBody, null);
+                    if (materialisedFileBody instanceof BinaryBody) {
+                        bodyMatcher = new BinaryMatcher(mockServerLogger, ((BinaryBody) materialisedFileBody).getValue());
+                    } else {
+                        bodyMatcher = new ExactStringMatcher(mockServerLogger, NottableString.string(((StringBody) materialisedFileBody).getValue()));
+                    }
                     break;
                 case WASM:
                     WasmBody wasmBody = (WasmBody) body;

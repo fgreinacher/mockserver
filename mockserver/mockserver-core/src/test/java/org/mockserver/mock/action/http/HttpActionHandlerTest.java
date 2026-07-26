@@ -4,6 +4,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.util.Attribute;
 import org.junit.*;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -30,6 +31,12 @@ import java.util.HashSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
+import static org.junit.Assert.assertArrayEquals;
 import static org.mockito.Mockito.*;
 import static org.mockito.MockitoAnnotations.openMocks;
 import static org.mockserver.character.Character.NEW_LINE;
@@ -887,5 +894,177 @@ public class HttpActionHandlerTest {
                 && resp.getBodyAsString().contains("gRPC bidi streaming requires the multiplex pipeline")),
             eq(false)
         );
+    }
+
+    // ----------------------------------------------------------------------------------------------------
+    // FILE response body (issue #2450): a FileBody produced by a callback / template / forward-override must
+    // be MATERIALISED (the file READ, its CONTENTS placed on the wire) by the write-path funnels, not emitted
+    // as the filePath string. These tests exercise the real funnels (writeResponseActionResponse /
+    // writeForwardActionResponse) with the produced response carrying a FileBody.
+    // ----------------------------------------------------------------------------------------------------
+
+    private static final String VERBATIM_XML = "org/mockserver/mock/action/verbatim_file_body.xml";
+    private static final String VERBATIM_PNG = "org/mockserver/mock/action/verbatim_binary_body.png";
+    private static final String MUSTACHE_JSON = "org/mockserver/templates/sample_mustache_body.json";
+    private static final byte[] PNG_BYTES = new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, (byte) 0xFF, (byte) 0xFE, 0x01, (byte) 0x80, 0x7F, (byte) 0xC3, 0x28};
+
+    private HttpResponse captureWrittenResponse() {
+        ArgumentCaptor<HttpResponse> captor = ArgumentCaptor.forClass(HttpResponse.class);
+        verify(mockResponseWriter).writeResponse(eq(request), captor.capture(), eq(false));
+        return captor.getValue();
+    }
+
+    @Test
+    public void shouldMaterialiseVerbatimFileBodyFromResponseTemplateAction() {
+        // given - a RESPONSE_TEMPLATE action whose handler returns a response with a no-templateType FileBody
+        HttpResponse fileBodyResponse = response().withBody(new FileBody(VERBATIM_XML, MediaType.parse("application/xml"))).withDelay(milliseconds(0));
+        when(mockHttpResponseTemplateActionHandler.handle(any(HttpTemplate.class), any(HttpRequest.class))).thenReturn(fileBodyResponse);
+        HttpTemplate template = template(HttpTemplate.TemplateType.JAVASCRIPT, "some_template").withDelay(milliseconds(0));
+        expectation = new Expectation(request).thenRespond(template);
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+
+        // when
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - the FILE CONTENTS are served (as a StringBody), not the path string, and untemplated
+        HttpResponse written = captureWrittenResponse();
+        assertThat(written.getBody(), is(instanceOf(StringBody.class)));
+        assertThat(written.getBodyAsString(), is("<tag>hello{{ request.path }}</tag>"));
+        assertThat(written.getBodyAsString(), not(containsString(VERBATIM_XML)));
+    }
+
+    @Test
+    public void shouldMaterialiseBinaryFileBodyFromResponseClassCallbackAction() {
+        // given - a RESPONSE_CLASS_CALLBACK action whose handler returns a response with a binary FileBody
+        HttpResponse fileBodyResponse = response().withBody(new FileBody(VERBATIM_PNG, MediaType.parse("image/png"))).withDelay(milliseconds(0));
+        when(mockHttpResponseClassCallbackActionHandler.handle(any(HttpClassCallback.class), any(HttpRequest.class))).thenReturn(fileBodyResponse);
+        HttpClassCallback callback = callback("some_class").withDelay(milliseconds(0));
+        expectation = new Expectation(request).thenRespond(callback);
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+
+        // when
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - the raw file bytes are served intact (BinaryBody), byte-for-byte identical
+        HttpResponse written = captureWrittenResponse();
+        assertThat(written.getBody(), is(instanceOf(BinaryBody.class)));
+        assertArrayEquals(PNG_BYTES, written.getBody().getRawBytes());
+    }
+
+    @Test
+    public void shouldRenderMustacheTemplatedFileBodyFromResponseClassCallbackAction() {
+        // given - a RESPONSE_CLASS_CALLBACK action whose handler returns a MUSTACHE-templated FileBody; the
+        // file must be rendered against the incoming request, not served literally
+        HttpResponse fileBodyResponse = response().withBody(new FileBody(MUSTACHE_JSON, MediaType.APPLICATION_JSON, HttpTemplate.TemplateType.MUSTACHE)).withDelay(milliseconds(0));
+        when(mockHttpResponseClassCallbackActionHandler.handle(any(HttpClassCallback.class), any(HttpRequest.class))).thenReturn(fileBodyResponse);
+        HttpClassCallback callback = callback("some_class").withDelay(milliseconds(0));
+        expectation = new Expectation(request).thenRespond(callback);
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+
+        // when
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - placeholders resolved from the request; no raw Mustache placeholder survives
+        HttpResponse written = captureWrittenResponse();
+        assertThat(written.getBody(), is(instanceOf(StringBody.class)));
+        assertThat(written.getBodyAsString(), containsString("\"path\": \"some_path\""));
+        assertThat(written.getBodyAsString(), not(containsString("{{")));
+    }
+
+    @Test
+    public void shouldMaterialiseVerbatimFileBodyFromForwardOverride() {
+        // given - a FORWARD_REPLACE (responseOverride) whose forwarded result resolves to a FileBody response
+        HttpResponse fileBodyResponse = response().withBody(new FileBody(VERBATIM_XML, MediaType.parse("application/xml")));
+        CompletableFuture<HttpResponse> future = new CompletableFuture<>();
+        future.complete(fileBodyResponse);
+        HttpForwardActionResult fileForwardResult = new HttpForwardActionResult(forwardedHttpRequest, future, null, new InetSocketAddress(1234));
+        when(mockHttpOverrideForwardedRequestActionHandler.handle(any(HttpOverrideForwardedRequest.class), any(HttpRequest.class))).thenReturn(fileForwardResult);
+        HttpOverrideForwardedRequest override = new HttpOverrideForwardedRequest().withResponseOverride(fileBodyResponse);
+        expectation = new Expectation(request).thenForward(override);
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+
+        // when
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - the FILE CONTENTS reach the wire, not the path string
+        HttpResponse written = captureWrittenResponse();
+        assertThat(written.getBody(), is(instanceOf(StringBody.class)));
+        assertThat(written.getBodyAsString(), is("<tag>hello{{ request.path }}</tag>"));
+    }
+
+    @Test
+    public void shouldMaterialiseVerbatimFileBodyOnObjectCallbackFunnel() {
+        // given - the object-callback handler funnels its callback response through writeResponseActionResponse
+        // (see HttpResponseObjectCallbackActionHandler); invoke that funnel directly with a FileBody response
+        HttpResponse fileBodyResponse = response().withBody(new FileBody(VERBATIM_XML, MediaType.parse("application/xml")));
+        HttpObjectCallback objectCallback = new HttpObjectCallback().withClientId("some_request_client_id");
+
+        // when
+        actionHandler.writeResponseActionResponse(fileBodyResponse, mockResponseWriter, request, objectCallback, true, null, null);
+
+        // then - the FILE CONTENTS are served, not the path string
+        HttpResponse written = captureWrittenResponse();
+        assertThat(written.getBody(), is(instanceOf(StringBody.class)));
+        assertThat(written.getBodyAsString(), is("<tag>hello{{ request.path }}</tag>"));
+    }
+
+    @Test
+    public void shouldNotDoubleProcessAnAlreadyMaterialisedResponseBody() {
+        // given - a plain (non-FileBody) response, as produced by the static path after HttpResponseActionHandler
+        // has already materialised any FileBody; the funnel must leave it byte-for-byte untouched (no re-read)
+        StringBody alreadyMaterialised = new StringBody("<tag>hello/somePath</tag>", MediaType.parse("application/xml"));
+        HttpResponse response = response().withBody(alreadyMaterialised);
+        HttpObjectCallback action = new HttpObjectCallback().withClientId("client");
+
+        // when
+        actionHandler.writeResponseActionResponse(response, mockResponseWriter, request, action, true, null, null);
+
+        // then - identical body instance, unchanged
+        HttpResponse written = captureWrittenResponse();
+        assertThat(written.getBody(), is(instanceOf(StringBody.class)));
+        assertThat(written.getBodyAsString(), is("<tag>hello/somePath</tag>"));
+    }
+
+    @Test
+    public void shouldReturnCleanLoggedFiveHundredWhenResponseFileMissing() {
+        // given - a callback returns a FileBody pointing at a nonexistent file
+        String missingPath = "org/mockserver/mock/action/does_not_exist_" + System.nanoTime() + ".xml";
+        HttpResponse fileBodyResponse = response().withBody(new FileBody(missingPath, MediaType.parse("application/xml"))).withDelay(milliseconds(0));
+        when(mockHttpResponseClassCallbackActionHandler.handle(any(HttpClassCallback.class), any(HttpRequest.class))).thenReturn(fileBodyResponse);
+        HttpClassCallback callback = callback("some_class").withDelay(milliseconds(0));
+        expectation = new Expectation(request).thenRespond(callback);
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+
+        // when
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - a single clean 500 is written (connection not left half-written), with a SAFE body that does
+        // NOT leak the file path, and is not a FileBody
+        HttpResponse written = captureWrittenResponse();
+        assertThat(written.getStatusCode(), is(500));
+        assertThat(written.getBody(), is(not(instanceOf(FileBody.class))));
+        assertThat(written.getBodyAsString(), not(containsString(missingPath)));
+        assertThat(written.getBodyAsString(), not(containsString("does_not_exist")));
+    }
+
+    @Test
+    public void shouldReturnCleanLoggedFiveHundredWhenStaticResponseFileMissing() {
+        // given - the static RESPONSE path materialises inside HttpResponseActionHandler.handle, which throws
+        // FileBodyException for a missing file (before the write funnel); handleAnyException must turn that
+        // into the same clean, logged 500 the funnel paths produce, not a misleading 404
+        String missingPath = "org/mockserver/mock/action/does_not_exist_" + System.nanoTime() + ".xml";
+        when(mockHttpResponseActionHandler.handle(any(HttpResponse.class), any(HttpRequest.class), any(RequestDefinition.class)))
+            .thenThrow(new org.mockserver.file.FileBodyException(missingPath, new RuntimeException("boom")));
+        HttpResponse responseAction = response().withBody(new FileBody(missingPath, MediaType.parse("application/xml"))).withDelay(milliseconds(0));
+        expectation = new Expectation(request).thenRespond(responseAction);
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(expectation);
+
+        // when
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - a single clean 500, safe body, no path leak (not a 404)
+        HttpResponse written = captureWrittenResponse();
+        assertThat(written.getStatusCode(), is(500));
+        assertThat(written.getBodyAsString(), not(containsString(missingPath)));
     }
 }

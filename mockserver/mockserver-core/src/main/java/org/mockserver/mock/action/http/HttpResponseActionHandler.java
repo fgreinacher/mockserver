@@ -2,16 +2,13 @@ package org.mockserver.mock.action.http;
 
 import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
-import org.mockserver.file.FileReader;
 import org.mockserver.graphql.GraphQLResponseSynthesizer;
 import org.mockserver.graphql.GraphQLSchemaException;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
-import org.mockserver.model.BinaryBody;
 import org.mockserver.model.Body;
 import org.mockserver.model.BodyWithContentType;
 import org.mockserver.model.FileBody;
-import org.mockserver.model.HttpTemplate;
 import org.mockserver.model.GraphQLBody;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
@@ -20,9 +17,6 @@ import org.mockserver.model.RequestDefinition;
 import org.mockserver.model.StringBody;
 import org.mockserver.openapi.JsonSchemaResponseSynthesisException;
 import org.mockserver.openapi.JsonSchemaResponseSynthesizer;
-import org.mockserver.templates.engine.TemplateEngine;
-import org.mockserver.templates.engine.mustache.MustacheTemplateEngine;
-import org.mockserver.templates.engine.velocity.VelocityTemplateEngine;
 import org.mockserver.model.WasmBody;
 import org.mockserver.wasm.WasmResponseShaper;
 import org.mockserver.wasm.WasmStore;
@@ -37,12 +31,12 @@ public class HttpResponseActionHandler {
 
     private final MockServerLogger mockServerLogger;
     private final Configuration configuration;
-    private VelocityTemplateEngine velocityTemplateEngine;
-    private MustacheTemplateEngine mustacheTemplateEngine;
+    private final FileBodyMaterialiser fileBodyMaterialiser;
 
     public HttpResponseActionHandler(MockServerLogger mockServerLogger, Configuration configuration) {
         this.mockServerLogger = mockServerLogger;
         this.configuration = configuration;
+        this.fileBodyMaterialiser = new FileBodyMaterialiser(mockServerLogger, configuration);
     }
 
     public HttpResponse handle(HttpResponse httpResponse) {
@@ -68,13 +62,16 @@ public class HttpResponseActionHandler {
             return null;
         }
         BodyWithContentType body = response.getBody();
-        if (httpRequest != null && body instanceof FileBody && isFileTemplatingSupported(((FileBody) body).getTemplateType())) {
-            response.withBody(renderTemplatedFileBody((FileBody) body, httpRequest));
-        } else if (body instanceof FileBody && (((FileBody) body).getTemplateType() == null || !isFileTemplatingSupported(((FileBody) body).getTemplateType()))) {
+        if (httpRequest != null && body instanceof FileBody && FileBodyMaterialiser.isFileTemplatingSupported(((FileBody) body).getTemplateType())) {
+            // a supported templateType with the request available: the file is rendered against the request
+            response.withBody(fileBodyMaterialiser.materialise((FileBody) body, httpRequest));
+        } else if (body instanceof FileBody && (((FileBody) body).getTemplateType() == null || !FileBodyMaterialiser.isFileTemplatingSupported(((FileBody) body).getTemplateType()))) {
             // a FileBody that is not going to be template-rendered (no templateType, or an unsupported
             // templateType such as JavaScript) is served verbatim: the file is READ and its CONTENTS
-            // become the body, rather than the filePath string being emitted downstream (issue #2450).
-            response.withBody(materialiseFileBodyVerbatim((FileBody) body));
+            // become the body, rather than the filePath string being emitted downstream (issue #2450). A
+            // supported templateType with NO request available is intentionally left untouched here (the
+            // no-request overload must not template) — it falls through both branches.
+            response.withBody(fileBodyMaterialiser.materialise((FileBody) body, null));
         } else if (body == null) {
             // an explicit body always wins; schema/GraphQL synthesis only fills an unset body.
             // schema-valid generation from an inline JSON schema does not depend on the request, so it
@@ -179,76 +176,4 @@ public class HttpResponseActionHandler {
         }
     }
 
-    /**
-     * Reads the file referenced by a {@link FileBody} and renders its contents through the configured
-     * template engine against the request, so an externally stored response body can contain template
-     * placeholders. The content type declared on the FileBody (when any) is preserved on the result.
-     */
-    private BodyWithContentType renderTemplatedFileBody(FileBody fileBody, HttpRequest httpRequest) {
-        TemplateEngine templateEngine;
-        switch (fileBody.getTemplateType()) {
-            case VELOCITY:
-                templateEngine = getVelocityTemplateEngine();
-                break;
-            case MUSTACHE:
-                templateEngine = getMustacheTemplateEngine();
-                break;
-            default:
-                // JavaScript (and any future type) is not supported for file body templating (see
-                // TemplateEngine.renderTemplate); serve the raw file contents rather than the filePath.
-                // This branch is defensive - handle() only routes supported template types here.
-                return materialiseFileBodyVerbatim(fileBody);
-        }
-        String fileTemplate = FileReader.readFileFromClassPathOrPath(fileBody.getFilePath());
-        String rendered = templateEngine.renderTemplate(fileTemplate, httpRequest);
-        String contentType = fileBody.getContentType();
-        return isNotBlank(contentType)
-            ? new StringBody(rendered, MediaType.parse(contentType))
-            : new StringBody(rendered);
-    }
-
-    /**
-     * Only Velocity and Mustache are supported for templating a {@link FileBody}; any other type (e.g.
-     * JavaScript) or {@code null} means the file is not template-rendered and is served verbatim.
-     */
-    private static boolean isFileTemplatingSupported(HttpTemplate.TemplateType templateType) {
-        return templateType == HttpTemplate.TemplateType.VELOCITY
-            || templateType == HttpTemplate.TemplateType.MUSTACHE;
-    }
-
-    /**
-     * Reads the file referenced by a {@link FileBody} that is served verbatim (no template engine) and
-     * returns its CONTENTS as the response body, preserving the declared content type. A text /
-     * known-charset content type is served as a {@link StringBody}; a binary content type - or an
-     * absent/unknown content type - is served as a {@link BinaryBody} of the raw file bytes so binary
-     * files (images, PDFs, archives) are not corrupted by charset decoding. A missing file surfaces the
-     * same {@link RuntimeException} as the templated path (both go through {@link FileReader}), so
-     * behaviour is consistent between the two.
-     */
-    private BodyWithContentType materialiseFileBodyVerbatim(FileBody fileBody) {
-        String contentType = fileBody.getContentType();
-        MediaType mediaType = isNotBlank(contentType) ? MediaType.parse(contentType) : null;
-        if (mediaType != null && mediaType.isString()) {
-            String fileContents = FileReader.readFileFromClassPathOrPath(fileBody.getFilePath());
-            return new StringBody(fileContents, mediaType);
-        }
-        byte[] fileBytes = FileReader.readBytesFromClassPathOrPath(fileBody.getFilePath());
-        return mediaType != null
-            ? new BinaryBody(fileBytes, mediaType)
-            : new BinaryBody(fileBytes);
-    }
-
-    private VelocityTemplateEngine getVelocityTemplateEngine() {
-        if (velocityTemplateEngine == null) {
-            velocityTemplateEngine = new VelocityTemplateEngine(mockServerLogger, configuration);
-        }
-        return velocityTemplateEngine;
-    }
-
-    private MustacheTemplateEngine getMustacheTemplateEngine() {
-        if (mustacheTemplateEngine == null) {
-            mustacheTemplateEngine = new MustacheTemplateEngine(mockServerLogger, configuration);
-        }
-        return mustacheTemplateEngine;
-    }
 }

@@ -339,6 +339,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metadata cannot arrive at the cost of correct framing, plus adapter-level coverage in
   `GrpcHttp3AdapterTest`. Positive control: neutering the trailer pass-through in production turns
   all seven new assertions red with the trailer absent.
+- **A FILE response body is now served verbatim (and templated) on every response path, and a FILE
+  request body is now actually matched (#2450).** A response whose body is a `FILE` (a `filePath` with
+  no template engine) was previously read on the static response action only; the same FILE body
+  returned from an object callback, a class callback, a response template, or a forward
+  `responseOverride` reached the wire unread, emitting the file *path* string instead of the file
+  *contents*. Materialisation now lives in a single shared `FileBodyMaterialiser` invoked from the two
+  response-write funnels (`writeResponseActionResponse`, covering the static, object-callback,
+  class-callback, response-template and SSE paths, and `writeForwardActionResponse`, covering the
+  forward `responseOverride`), so all five producers — and the shared WAR/servlet path — serve the file
+  contents. Templated FILE bodies (a `FileBody` carrying a Velocity/Mustache `templateType`) are rendered
+  against the request on these paths too, not only verbatim ones; a text content type yields the decoded
+  string and a binary or absent content type yields the raw bytes intact. A missing or unreadable file
+  now produces a clean, logged `500` whose body does not leak the path, instead of a broken connection or
+  the path string. Separately, a `FILE` body used for **request matching** had no case in
+  `BodyMatcherBuilder`, so the body constraint was silently ignored (it matched any body); it now matches
+  the request body against the exact file contents (string or binary). This resolves the earlier
+  "static response only" caveat.
 - **A gRPC error response carrying custom trailing metadata no longer loses its status.** On HTTP/2 a
   body-less gRPC response is collapsed into the gRPC Trailers-Only form, which moves `grpc-status`
   into the initial HEADERS frame and relies on that frame being end-of-stream. When the expectation

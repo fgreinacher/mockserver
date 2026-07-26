@@ -8,6 +8,7 @@ import org.apache.commons.text.StringEscapeUtils;
 import org.mockserver.closurecallback.websocketregistry.LocalCallbackRegistry;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.cors.CORSHeaders;
+import org.mockserver.file.FileBodyException;
 import org.mockserver.filters.HopByHopHeaderFilter;
 import org.mockserver.grpc.GrpcForwardTranslator;
 import org.mockserver.grpc.GrpcProtoDescriptorStore;
@@ -83,6 +84,7 @@ public class HttpActionHandler {
     private final Scheduler scheduler;
     private MockServerLogger mockServerLogger;
     private HttpResponseActionHandler httpResponseActionHandler;
+    private FileBodyMaterialiser fileBodyMaterialiser;
     private HttpResponseTemplateActionHandler httpResponseTemplateActionHandler;
     private HttpResponseClassCallbackActionHandler httpResponseClassCallbackActionHandler;
     private HttpResponseObjectCallbackActionHandler httpResponseObjectCallbackActionHandler;
@@ -1614,6 +1616,13 @@ public class HttpActionHandler {
     private void handleAnyException(HttpRequest request, ResponseWriter responseWriter, boolean synchronous, Action action, Runnable processAction, Runnable postProcessor) {
         try {
             processAction.run();
+        } catch (FileBodyException fileBodyException) {
+            // A FileBody whose file cannot be read on the static RESPONSE path (materialised inside
+            // HttpResponseActionHandler.handle, which throws before the write funnel) becomes the same clean,
+            // logged 500 the funnel paths produce — a body that does NOT leak the path, not a misleading 404
+            // (issue #2450).
+            logFileBodyError(request, fileBodyException);
+            writeResponseActionResponse(fileBodyErrorResponse(), responseWriter, request, action, synchronous, null, postProcessor);
         } catch (Throwable throwable) {
             writeResponseActionResponse(notFoundResponse(), responseWriter, request, action, synchronous, null, postProcessor);
             if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
@@ -2376,6 +2385,12 @@ public class HttpActionHandler {
             return;
         }
 
+        // FILE response body: read the referenced file so its CONTENTS (not the filePath string) reach the
+        // wire. No-op unless the body is a FileBody — for the static RESPONSE path HttpResponseActionHandler
+        // has already materialised it, so this covers the object/class-callback, response-template and (via
+        // writeForwardActionResponse) forward-override funnels. A missing file becomes a clean logged 500.
+        final HttpResponse materialisedResponse = materialiseFileBodyResponse(response, request);
+
         // Rate limit (declarative, protocol-agnostic) takes precedence over the chaos quota and the
         // probabilistic chaos error. tryAcquire mutates registry state, so it is invoked exactly once
         // here in the single write path.
@@ -2383,7 +2398,7 @@ public class HttpActionHandler {
         // Chaos: the deterministic quota (rate limit) takes priority over the probabilistic error
         HttpResponse quotaError = rateLimitError != null ? null : quotaErrorResponseOrNull(chaos, matchCount);
         HttpResponse chaosError = rateLimitError != null ? rateLimitError : (quotaError != null ? quotaError : chaosErrorResponseOrNull(chaos, matchCount));
-        final HttpResponse effectiveResponse = chaosError != null ? chaosError : applyResponseChaos(response, chaos, matchCount);
+        final HttpResponse effectiveResponse = chaosError != null ? chaosError : applyResponseChaos(materialisedResponse, chaos, matchCount);
         // Gate latency by the same count window as error injection
         final Delay chaosLatency = chaos != null && chaos.countWindowEligible(matchCount) ? chaos.getLatency() : null;
 
@@ -2671,6 +2686,12 @@ public class HttpActionHandler {
                     }
                     return;
                 }
+
+                // FILE response body from a forward responseOverride: read the referenced file so its
+                // CONTENTS (not the filePath string) reach the wire (issue #2450). No-op unless the
+                // overridden response body is a FileBody; a missing file becomes a clean logged 500. A
+                // body-affecting override already disables streaming, so the response here is fully buffered.
+                response = materialiseFileBodyResponse(response, request);
 
                 // Rate limit (declarative, protocol-agnostic) takes precedence over the chaos quota and the
                 // probabilistic chaos error. tryAcquire mutates registry state, so it is invoked exactly once here.
@@ -3547,6 +3568,60 @@ public class HttpActionHandler {
             httpResponseActionHandler = new HttpResponseActionHandler(mockServerLogger, configuration);
         }
         return httpResponseActionHandler;
+    }
+
+    private FileBodyMaterialiser getFileBodyMaterialiser() {
+        if (fileBodyMaterialiser == null) {
+            fileBodyMaterialiser = new FileBodyMaterialiser(mockServerLogger, configuration);
+        }
+        return fileBodyMaterialiser;
+    }
+
+    /**
+     * Materialises a {@link FileBody} response body — reading the referenced file so its CONTENTS (not the
+     * filePath string) reach the wire — for every response-producing funnel that does NOT already pass
+     * through {@link HttpResponseActionHandler} (object/class callbacks, response templates, forward
+     * responseOverride). Idempotent for the static response path: {@code HttpResponseActionHandler.handle}
+     * has already replaced its FileBody with a String/Binary body, so by the funnel it is no longer a
+     * FileBody and this is a no-op — no double read. A templated FileBody is rendered against {@code request}
+     * (which may be {@code null}). A missing/unreadable file yields a clean, logged 500 whose body does NOT
+     * leak the path, rather than a broken connection or a leaked path string.
+     */
+    private HttpResponse materialiseFileBodyResponse(final HttpResponse response, final HttpRequest request) {
+        if (response == null || !(response.getBody() instanceof FileBody)) {
+            return response;
+        }
+        FileBody fileBody = (FileBody) response.getBody();
+        try {
+            return response.withBody(getFileBodyMaterialiser().materialise(fileBody, request));
+        } catch (FileBodyException fileBodyException) {
+            logFileBodyError(request, fileBodyException);
+            return fileBodyErrorResponse();
+        }
+    }
+
+    private void logFileBodyError(final HttpRequest request, final FileBodyException fileBodyException) {
+        if (mockServerLogger.isEnabledForInstance(Level.ERROR)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.ERROR)
+                    .setHttpRequest(request)
+                    .setMessageFormat("unable to read file \"{}\" for response body, returning 500 because:{}")
+                    .setArguments(fileBodyException.getFilePath(), fileBodyException.getCause() != null ? fileBodyException.getCause().getMessage() : fileBodyException.getMessage())
+                    .setThrowable(fileBodyException)
+            );
+        }
+    }
+
+    /**
+     * A clean 500 for an unreadable response-body file. The body is deliberately generic and does NOT
+     * contain the file path (the path is logged server-side only via {@link #logFileBodyError}).
+     */
+    private static HttpResponse fileBodyErrorResponse() {
+        return response()
+            .withStatusCode(500)
+            .withReasonPhrase("Internal Server Error")
+            .withBody("Error reading file for response body");
     }
 
     private HttpResponseTemplateActionHandler getHttpResponseTemplateActionHandler() {

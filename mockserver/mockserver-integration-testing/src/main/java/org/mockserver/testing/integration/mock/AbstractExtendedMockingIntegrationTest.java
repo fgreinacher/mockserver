@@ -34,6 +34,7 @@ import static org.mockserver.log.model.LogEntry.LogMessageType.RECEIVED_REQUEST;
 import static org.mockserver.log.model.LogEntryMessages.RECEIVED_REQUEST_MESSAGE_FORMAT;
 import static org.mockserver.matchers.Times.exactly;
 import static org.mockserver.model.BinaryBody.binary;
+import static org.mockserver.model.FileBody.file;
 import static org.mockserver.model.Cookie.cookie;
 import static org.mockserver.model.Header.header;
 import static org.mockserver.model.Header.schemaHeader;
@@ -1899,6 +1900,49 @@ public abstract class AbstractExtendedMockingIntegrationTest extends AbstractBas
             makeRequest(
                 request()
                     .withPath(calculatePath("ws/rest/user/1/icon/1.png"))
+                    .withMethod("GET"),
+                getHeadersToRemove()
+            )
+        );
+    }
+
+    @Test
+    @SuppressWarnings("ConstantConditions")
+    public void shouldReturnVerbatimBinaryFileBodyResponse() throws IOException {
+        // when - the response body is a FILE (a classpath filePath) with NO template engine: MockServer must
+        // read the file and serve its raw bytes verbatim over the wire, not emit the filePath string (#2450).
+        // Runs over a real socket for every transport, and over a deployed servlet for the WAR suite (which
+        // inherits this abstract test), covering the WAR/servlet path.
+        byte[] pngBytes = IOUtils.toByteArray(getClass().getClassLoader().getResourceAsStream("test.png"));
+        mockServerClient
+            .when(
+                request()
+                    .withPath(calculatePath("ws/rest/user/[0-9]+/verbatim/[0-9]+\\.png"))
+            )
+            .respond(
+                response()
+                    .withStatusCode(OK_200.code())
+                    .withReasonPhrase(OK_200.reasonPhrase())
+                    .withHeaders(
+                        header(CONTENT_TYPE.toString(), MediaType.PNG.toString()),
+                        header(CONTENT_DISPOSITION.toString(), "form-data; name=\"test.png\"; filename=\"test.png\"")
+                    )
+                    .withBody(file("test.png", MediaType.PNG))
+            );
+
+        // then - the client receives the exact file bytes, not the "test.png" path string
+        assertEquals(
+            response()
+                .withStatusCode(OK_200.code())
+                .withReasonPhrase(OK_200.reasonPhrase())
+                .withHeaders(
+                    header(CONTENT_DISPOSITION.toString(), "form-data; name=\"test.png\"; filename=\"test.png\""),
+                    header(CONTENT_TYPE.toString(), MediaType.PNG.toString())
+                )
+                .withBody(binary(pngBytes, MediaType.PNG)),
+            makeRequest(
+                request()
+                    .withPath(calculatePath("ws/rest/user/1/verbatim/1.png"))
                     .withMethod("GET"),
                 getHeadersToRemove()
             )
