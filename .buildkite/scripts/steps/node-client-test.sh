@@ -9,6 +9,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NETWORK_NAME="mockserver-node-client-$$"
 MOCKSERVER_NAME="mockserver-node-client-server-$$"
 
+# Build a local MockServer image from the current checkout so the client's
+# wire assertions run against HEAD, not the stale :snapshot image on Docker Hub.
+# shellcheck source=../build-local-mockserver-image.sh
+source "$SCRIPT_DIR/../build-local-mockserver-image.sh"
+
 cleanup() {
   docker rm -f "$MOCKSERVER_NAME" 2>/dev/null || true
   docker network rm "$NETWORK_NAME" 2>/dev/null || true
@@ -26,7 +31,7 @@ docker run -d \
   -e "MOCKSERVER_CORS_ALLOW_CREDENTIALS=true" \
   -e "MOCKSERVER_CORS_MAX_AGE_IN_SECONDS=300" \
   -e "MOCKSERVER_ATTEMPT_TO_PROXY_IF_NO_MATCHING_EXPECTATION=false" \
-  mockserver/mockserver:snapshot
+  "$MOCKSERVER_IMAGE"
 
 # Wait for MockServer to be healthy via Docker HEALTHCHECK (the image is
 # distroless — no shell, no curl — so `docker exec ... curl` cannot work).
