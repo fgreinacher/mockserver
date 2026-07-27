@@ -811,6 +811,7 @@
                         <exclude>**/HttpStateLoadScenarioEndpointTest.java</exclude>
                         <!-- Mutates the DriftAlertNotifier singleton (configure/setSender/reset/setClock) -->
                         <exclude>**/DriftAlertNotifierTest.java</exclude>
+                        <exclude>**/DriftAlertSeverityThresholdTest.java</exclude>
                         <!-- Mutates the process-wide PercentileTracker + DriftAlertNotifier singletons -->
                         <exclude>**/DriftPerformanceThresholdTest.java</exclude>
                         <!-- Mutates the process-wide DriftStore singleton -->
@@ -976,6 +977,7 @@
                                 <include>**/LoadMetricsTest.java</include>
                                 <include>**/HttpStateLoadScenarioEndpointTest.java</include>
                                 <include>**/DriftAlertNotifierTest.java</include>
+                                <include>**/DriftAlertSeverityThresholdTest.java</include>
                                 <include>**/DriftPerformanceThresholdTest.java</include>
                                 <include>**/HttpActionHandlerDriftDetectionTest.java</include>
                                 <include>**/DriftEndToEndAssemblyTest.java</include>
