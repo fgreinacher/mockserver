@@ -262,3 +262,69 @@ test('authors the response body in the REAL Monaco editor, validates malformed J
   expect(served.status(), 'the Monaco-authored mock should match (201, not 404)').toBe(201);
   expect(await served.text()).toContain(marker);
 });
+
+// ---------------------------------------------------------------------------
+// #64(crud) — registering a CRUD resource through the dashboard dialog creates
+//             a live, seeded REST resource on the real server
+// ---------------------------------------------------------------------------
+// `src/lib/crud.ts` and `CrudDialog` are otherwise covered ONLY by jsdom specs
+// that stub global `fetch` and assert a UI-AUTHORED request/response — nothing
+// exercises the real `PUT /mockserver/crud` endpoint or the real server DTO, so
+// a server-side CRUD contract change the UI does not match would sail past those
+// specs (indeed the mocked spec claims `itemCount: 2` for id-less seed items,
+// which the real server DROPS). This drives the REAL Register-CRUD-Resource
+// dialog against the live server:
+//   • the success alert is rendered straight from the SERVER's JSON response
+//     (result.basePath / result.idStrategy / result.itemCount), so a renamed or
+//     re-typed DTO field surfaces here — not in a fixture the UI invented;
+//   • the registered base path then actually serves the seeded items over real
+//     REST (GET /basePath) and auto-increment continues past the seeded ids on
+//     POST — proving the dispatcher was wired up, not merely acknowledged.
+test('registers a CRUD resource through the dashboard dialog and serves the seeded items over real REST', async ({
+  page,
+  request,
+}) => {
+  const stamp = Date.now();
+  const basePath = `/e2e/crud-${stamp}`;
+
+  await page.goto('./#/dashboard');
+  await expect(page.getByText('connected', { exact: true })).toBeVisible();
+
+  // Open Tools ▸ Register CRUD Resource… — the real menu path users take.
+  await page.getByRole('button', { name: 'Import / export tools' }).click();
+  await page.getByRole('menuitem', { name: /Register CRUD Resource/ }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Register CRUD Resource' });
+  await expect(dialog).toBeVisible();
+
+  // Author the resource: base path + two id-bearing seed items. Seed items are
+  // stored only when they carry the id field (the server drops id-less ones), a
+  // contract detail the fetch-stubbing specs cannot observe.
+  await dialog.getByLabel('Resource path').fill(basePath);
+  await dialog.getByLabel('Seed data (JSON array)').fill('[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]');
+  await dialog.getByRole('button', { name: 'Register', exact: true }).click();
+
+  // The success alert echoes the SERVER's JSON verbatim (basePath / idStrategy /
+  // itemCount). A DTO whose itemCount was renamed or re-typed would not produce
+  // this exact text — this is the assertion the mocked spec structurally cannot make.
+  await expect(dialog.getByRole('alert')).toContainText(
+    `Registered CRUD resource at ${basePath} (AUTO_INCREMENT, 2 items).`,
+  );
+
+  // The base path genuinely serves the seeded items over the data plane.
+  const listRes = await request.get(`${ORIGIN}${basePath}`);
+  expect(listRes.status(), 'the seeded CRUD base path should be served (200, not 404)').toBe(200);
+  const seeded = (await listRes.json()) as Array<Record<string, unknown>>;
+  expect(seeded.map((i) => i['name'])).toEqual(['Alice', 'Bob']);
+  expect(seeded.map((i) => i['id'])).toEqual([1, 2]);
+
+  // POST a new item: it is created (201) and auto-increment continues past the
+  // highest seeded id — proof of a live backing store, not an echo of the
+  // registration call.
+  const created = await request.post(`${ORIGIN}${basePath}`, { data: { name: 'Carol' } });
+  expect(created.status(), 'POST to the registered CRUD path should create an item (201)').toBe(201);
+  expect((await created.json())['id']).toBe(3);
+
+  const afterList = (await (await request.get(`${ORIGIN}${basePath}`)).json()) as Array<Record<string, unknown>>;
+  expect(afterList.map((i) => i['name'])).toEqual(['Alice', 'Bob', 'Carol']);
+});
