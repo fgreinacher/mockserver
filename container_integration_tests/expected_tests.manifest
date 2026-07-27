@@ -1,0 +1,87 @@
+# Expected-test manifest — the SINGLE SOURCE OF TRUTH for the container
+# integration test cases this harness must run.
+#
+# WHY THIS EXISTS
+# ---------------
+# The per-test fail-closed check in test()/logTestResult only fires for a test
+# that was actually INVOKED (it records a FAILURE when an invoked test crashes
+# without logging a result). A test case that is silently DELETED from
+# run_all_tests() is never invoked at all: it records no result, nothing
+# complains, and the suite stays green having quietly run one test fewer — an
+# undetected coverage loss. This manifest closes that blind spot.
+#
+# assert_manifest_complete() (in integration_tests.sh) enforces the manifest
+# BIDIRECTIONALLY, which is the strictest choice and makes this file the single
+# source of truth in BOTH directions:
+#
+#   1. DELETION / SKIP-DRIFT (primary): every manifest entry whose group is
+#      active for this run MUST have produced a result of some kind
+#      (pass / fail / skip / warn). A manifest entry with no result FAILS THE
+#      BUILD CLOSED, naming the missing case — so removing a `test "..."` call
+#      from the harness without also removing its manifest line is caught.
+#
+#   2. UNDECLARED ADDITION: every recorded result MUST be declared here. A
+#      result whose test-case name is absent from this manifest FAILS THE
+#      BUILD — so adding a new test case to the harness without declaring it
+#      here is caught too.
+#
+# KEEPING IT IN SYNC: when you add or remove a `test "<name>"` call, a
+# smoke_test_variant/test_* helper, or change a TEST_CASE name in
+# integration_tests.sh, update the matching line here in the same change.
+#
+# FORMAT
+# ------
+# One entry per line: "<group> <test_case_name>". Blank lines and lines whose
+# first non-space character is '#' are ignored. The <test_case_name> MUST equal
+# the TEST_CASE value the harness records for that test.
+#
+# GROUPS map to the SAME skip flags run_all_tests() branches on. An entry is
+# only required to have produced a result when its group is "active":
+#
+#   docker          active when SKIP_DOCKER_TESTS != true
+#   docker_variant  active when docker active AND SKIP_VARIANT_TESTS != true
+#   helm            active when SKIP_HELM_TESTS   != true
+#   helm_clustered  active when helm active AND SKIP_CLUSTERED_TEST != true
+#
+# (every group additionally requires SKIP_ALL_TESTS != true).
+
+# ---- docker: docker-compose + default-image assertions (SKIP_DOCKER_TESTS) ----
+docker docker_compose_forward_with_override
+docker docker_compose_remote_host_and_port_by_environment_variable
+docker docker_compose_server_port_by_command
+docker docker_compose_server_port_by_environment_variable_long_name
+docker docker_compose_server_port_by_environment_variable_short_name
+docker docker_compose_without_server_port
+docker docker_compose_with_expectation_initialiser
+docker docker_compose_with_persisted_expectations
+docker docker_compose_with_server_port_from_default_properties_file
+docker docker_compose_with_server_port_from_custom_properties_file
+docker docker_compose_with_mtls
+docker docker_compose_jvm_options
+docker docker_compose_libs_classpath
+docker docker_compose_graceful_shutdown
+docker docker_compose_metrics
+docker docker_healthcheck
+docker docker_nonroot_user
+docker docker_variant_smoke_clustered
+docker docker_arm64_build_gate
+docker docker_compose_war_tomcat
+
+# ---- docker_variant: per-variant Dockerfile smoke tests (SKIP_VARIANT_TESTS) ----
+docker_variant docker_variant_smoke_root
+docker_variant docker_variant_smoke_snapshot
+docker_variant docker_variant_smoke_local
+docker_variant docker_variant_smoke_graaljs
+docker_variant docker_variant_smoke_root-snapshot
+
+# ---- helm: Helm chart deployment tests (SKIP_HELM_TESTS) ----
+helm helm_default_config
+helm helm_local_docker_container
+helm helm_custom_server_port
+helm helm_remote_host_and_port
+helm helm_inline_config
+helm helm_configmap_injection
+helm helm_mockserver_config_chart
+
+# ---- helm_clustered: clustered-state convergence e2e (SKIP_CLUSTERED_TEST) ----
+helm_clustered helm_clustered_convergence

@@ -513,6 +513,92 @@ function smoke_test_clustered() {
   return 0
 }
 
+# Verify every test case declared in expected_tests.manifest that was expected
+# to run for THIS invocation actually produced a result, and that every recorded
+# result was declared. The manifest is the single source of truth (see the file
+# header for the full rationale). This closes a coverage-loss blind spot that
+# the per-test result-presence check in test()/logTestResult cannot: that check
+# only fires for a test that was INVOKED, so a test case silently DELETED from
+# run_all_tests() records nothing and the suite stays green having run one test
+# fewer. Called from run_all_tests() in the summary phase while all four result
+# logs still exist. Sets EXIT_CODE=1 (fail closed) on any violation.
+function assert_manifest_complete() {
+  local manifest="${SCRIPT_DIR}/expected_tests.manifest"
+  if [[ ! -f "${manifest}" ]]; then
+    printFailureMessage "Expected-test manifest not found: ${manifest} — cannot verify test coverage. Failing closed."
+    EXIT_CODE=1
+    return 0
+  fi
+
+  # Which manifest groups were expected to run, derived from the SAME skip flags
+  # run_all_tests() branches on, so the guard tracks the harness exactly.
+  local docker_active=false docker_variant_active=false
+  local helm_active=false helm_clustered_active=false
+  if [[ "${SKIP_ALL_TESTS:-}" != "true" ]]; then
+    [[ "${SKIP_DOCKER_TESTS:-}" != "true" ]] && docker_active=true
+    [[ "${docker_active}" == "true" && "${SKIP_VARIANT_TESTS:-}" != "true" ]] && docker_variant_active=true
+    [[ "${SKIP_HELM_TESTS:-}" != "true" ]] && helm_active=true
+    [[ "${helm_active}" == "true" && "${SKIP_CLUSTERED_TEST:-}" != "true" ]] && helm_clustered_active=true
+  fi
+
+  # All recorded result lines with ANSI colour codes stripped (the logs are
+  # written through printf "${COLOUR}...", so raw lines are ESC-wrapped). Used
+  # for both the presence checks and the recorded-name extraction below.
+  local all_results
+  all_results=$(cat "${PASS_LOG_FILE}" "${FAIL_LOG_FILE}" "${SKIP_LOG_FILE}" "${WARN_LOG_FILE}" 2>/dev/null \
+    | sed $'s/\x1b\\[[0-9;]*m//g')
+
+  local violations=0
+  local declared_names=" "
+  local group name group_active
+
+  # ---- Direction 1: every ACTIVE manifest entry produced a result ----
+  # Also accumulate the full declared-name set (all groups) for direction 2.
+  while read -r group name; do
+    [[ -z "${group}" || "${group}" == \#* ]] && continue
+    declared_names="${declared_names}${name} "
+    case "${group}" in
+      docker)          group_active="${docker_active}" ;;
+      docker_variant)  group_active="${docker_variant_active}" ;;
+      helm)            group_active="${helm_active}" ;;
+      helm_clustered)  group_active="${helm_clustered_active}" ;;
+      *)
+        printFailureMessage "Manifest entry '${name}' has unknown group '${group}' — fix the manifest. Failing closed."
+        violations=$((violations + 1))
+        continue
+        ;;
+    esac
+    [[ "${group_active}" != "true" ]] && continue
+    # Same trailing-delimiter presence test as test(): a name cannot match a
+    # longer name that merely starts with it (root vs root-snapshot).
+    if ! printf '%s\n' "${all_results}" | grep -qE -- "- ${name}(:|\$|[^[:alnum:]_-])"; then
+      printFailureMessage "Manifest-declared test case produced NO result: \"${name}\" (group: ${group}) — a test case was deleted or a skip flag drifted without updating the manifest. Failing closed."
+      violations=$((violations + 1))
+    fi
+  done < "${manifest}"
+
+  # ---- Direction 2: every RECORDED result is declared in the manifest ----
+  # A recorded result means the test ran, so it must be declared somewhere in
+  # the manifest (regardless of group activeness). Catches a test case added to
+  # the harness without a matching manifest line.
+  local recorded
+  while read -r recorded; do
+    [[ -z "${recorded}" ]] && continue
+    if [[ "${declared_names}" != *" ${recorded} "* ]]; then
+      printFailureMessage "Recorded test result \"${recorded}\" is not declared in the manifest (${manifest}) — add it. Failing closed."
+      violations=$((violations + 1))
+    fi
+  done < <(printf '%s\n' "${all_results}" | sed -n 's/^[[:space:]]*- \([A-Za-z0-9_-]*\).*/\1/p' | sort -u)
+
+  if [[ ${violations} -gt 0 ]]; then
+    printFailureMessage "Expected-test manifest check FAILED with ${violations} violation(s)."
+    EXIT_CODE=1
+  else
+    printMessage "Expected-test manifest check passed."
+  fi
+  return 0
+}
+
 function run_all_tests() {
   export PASS_LOG_FILE=$(mktemp)
   export FAIL_LOG_FILE=$(mktemp)
@@ -606,6 +692,11 @@ function run_all_tests() {
     printFailureMessage "NO TESTS RECORDED A RESULT — the harness ran nothing. Failing closed."
     EXIT_CODE=1
   fi
+
+  # Manifest coverage gate: assert every test case the manifest declares for
+  # this run produced a result (and every result was declared). Runs here while
+  # all four result logs still exist, before they are consumed and removed.
+  assert_manifest_complete
 
   if [[ -s "${PASS_LOG_FILE}" ]]; then
     NUMBER_OF_PASSED_TESTS=$(cat "${PASS_LOG_FILE}" | wc -l | sed -r 's/( )+//g')
