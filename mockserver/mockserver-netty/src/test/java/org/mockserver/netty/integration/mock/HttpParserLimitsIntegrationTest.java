@@ -61,6 +61,22 @@ import static org.mockserver.model.HttpResponse.response;
  * <p>
  * {@code Connection: close} is placed ahead of the filler so it is always parsed regardless of the
  * limit, ensuring the server closes each connection promptly and the raw read terminates.
+ * <p>
+ * The same wiring ({@code PortUnificationHandler.switchToHttp}) also passes the configured
+ * {@code maxInitialLineLength} into the {@code HttpServerCodec}. That limit is proven the same way:
+ * an over-limit <em>request line</em> (method + URI + version) makes Netty's decoder raise a
+ * {@code TooLongHttpLineException}, enter the bad-message state and synthesise an invalid request with
+ * URI {@code /bad-request} — so the configured path is never seen, the expectation does not match and
+ * MockServer returns a 404. A filler query string sized strictly between the configured limit and
+ * Netty's 4096-byte default makes it a genuine positive control: reverting the wiring to the default
+ * lets the whole line parse, the path survives, the request matches and returns 200.
+ * <p>
+ * The third parser limit, {@code maxChunkSize}, is deliberately <strong>not</strong> covered here: in
+ * Netty's {@code HttpObjectDecoder} it is only ever applied as {@code Math.min(bytesAvailable,
+ * maxChunkSize)} to bound how many body bytes are emitted per {@code HttpContent} — an oversized wire
+ * chunk is <em>split</em> into several {@code HttpContent} messages, never rejected, and the downstream
+ * {@code HttpObjectAggregator} reassembles the full body regardless. There is therefore no
+ * client-observable effect to assert, so a {@code maxChunkSize} case would be vacuous.
  *
  * @author jamesdbloom
  */
@@ -70,6 +86,10 @@ public class HttpParserLimitsIntegrationTest {
     // strictly between the configured limit (1024) and Netty's default header limit (8192): large
     // enough to push the marker header past the configured cap, small enough to fit under the default
     private static final int FILLER_LENGTH = 2048;
+    private static final int MAX_INITIAL_LINE_LENGTH = 250;
+    // query-string filler for the request line: pushes the initial line past the configured 250-byte
+    // cap while staying under Netty's 4096-byte default so the default (positive control) still parses it
+    private static final int INITIAL_LINE_FILLER_LENGTH = 1024;
     private static final long READ_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(10);
 
     private MockServer mockServer;
@@ -79,7 +99,8 @@ public class HttpParserLimitsIntegrationTest {
     public void startServer() {
         Configuration configuration = configuration()
             .useNativeTransport(false)
-            .maxHeaderSize(MAX_HEADER_SIZE);
+            .maxHeaderSize(MAX_HEADER_SIZE)
+            .maxInitialLineLength(MAX_INITIAL_LINE_LENGTH);
         mockServer = new MockServer(configuration, PortFactory.findFreePort());
         mockServerClient = new MockServerClient("localhost", mockServer.getLocalPort());
         // only matches when the marker header survives parsing
@@ -139,6 +160,51 @@ public class HttpParserLimitsIntegrationTest {
             response, not(containsString("marker-seen")));
         assertThat("an unmatched request (marker dropped by the header limit) must return 404, "
                 + "actual response:\n" + response,
+            response, containsString("404"));
+    }
+
+    @Test
+    public void shouldMatchRequestWhoseInitialLineIsUnderTheConfiguredMaxInitialLineLength() throws Exception {
+        // request line (with a short query string) well within the 250-byte limit -> parsed -> matches
+        String rawRequest = "GET /limits?ok=1 HTTP/1.1\r\n"
+            + "Host: localhost:" + mockServer.getLocalPort() + "\r\n"
+            + "Connection: close\r\n"
+            + "X-Marker: present\r\n"
+            + "\r\n";
+
+        String response = sendRawRequestAndReadResponse(rawRequest);
+
+        assertThat("a request line under maxInitialLineLength must be parsed and match the expectation, "
+                + "actual response:\n" + response,
+            response, containsString("200"));
+        assertThat(response, containsString("marker-seen"));
+    }
+
+    @Test
+    public void shouldRejectRequestWhoseInitialLineExceedsTheConfiguredMaxInitialLineLength() throws Exception {
+        // a ~1KB filler query string pushes the request line past the 250-byte cap. Netty raises
+        // TooLongHttpLineException, enters the bad-message state and synthesises an invalid request with
+        // uri "/bad-request" (the configured "/limits" path is never parsed), so the expectation does
+        // not match. The filler stays under Netty's 4096-byte default, so the positive control (reverting
+        // the wiring to the default) parses the whole line, the path survives and the request matches.
+        String rawRequest = "GET /limits?filler=" + repeat('a', INITIAL_LINE_FILLER_LENGTH) + " HTTP/1.1\r\n"
+            + "Host: localhost:" + mockServer.getLocalPort() + "\r\n"
+            + "Connection: close\r\n"
+            + "X-Marker: present\r\n"
+            + "\r\n";
+
+        String response = sendRawRequestAndReadResponse(rawRequest);
+
+        // the request line is rejected by the enforced limit, so the path-conditional expectation does
+        // not match and MockServer returns a 404 rather than the mocked 200 body. If the configured
+        // maxInitialLineLength were NOT enforced (the positive control reverts the wiring to Netty's
+        // 4096 default), the whole line would parse, the path would survive and this request would be
+        // answered with "marker-seen".
+        assertThat("an over-limit request line must be rejected so the expectation does not match — "
+                + "the configured maxInitialLineLength was not enforced, actual response:\n" + response,
+            response, not(containsString("marker-seen")));
+        assertThat("a request with an over-limit initial line (rejected by maxInitialLineLength) must "
+                + "return 404, actual response:\n" + response,
             response, containsString("404"));
     }
 
