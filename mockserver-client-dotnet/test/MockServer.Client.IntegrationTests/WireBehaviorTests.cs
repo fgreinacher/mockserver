@@ -296,4 +296,60 @@ public class WireBehaviorTests : IDisposable
 
         _client.Reset();
     }
+
+    // ── #47 advanced response actions actually rendered/served over the wire ───────────────────
+
+    [SkippableFact]
+    public void ResponseTemplate_IsRendered_OverWire()
+    {
+        SkipIfNoServer();
+        _client!.Reset();
+
+        // A VELOCITY response template that renders a JSON object describing the response and echoes
+        // $!{request.path} into the body. The server maps the rendered JSON to an HttpResponse, so the
+        // served body is a function of the matched request — something a create+retrieve (schema-only)
+        // test can never prove.
+        _client.When(
+            HttpRequest.Request().WithMethod("GET").WithPath("/tmpl-wire")
+        ).RespondWithTemplate(
+            HttpTemplate.OfType(TemplateType.VELOCITY)
+                .WithTemplate("{\"statusCode\": 200, \"body\": \"TEMPLATED path=$!{request.path}\"}")
+        );
+
+        var response = Get($"{_baseUrl}/tmpl-wire");
+        response.StatusCode.Should().Be(HttpStatusCode.OK,
+            "the response template must be executed and produce a 200");
+        response.Content.ReadAsStringAsync().Result.Should().Be("TEMPLATED path=/tmpl-wire",
+            "the served body must be the VELOCITY-rendered template with the request path substituted — "
+            + "proving the server ran the template engine over the live request, not merely accepted the schema");
+
+        _client.Reset();
+    }
+
+    [SkippableFact]
+    public void BinaryResponseBody_IsServed_OverWire()
+    {
+        SkipIfNoServer();
+        _client!.Reset();
+
+        // A BINARY response body carrying bytes that are NOT valid UTF-8 (a NUL 0x00 and 0xFF). Only a
+        // server that decoded the base64 and served the raw octets verbatim yields the exact bytes; a
+        // path that mangled them as text would fail the byte-exact comparison.
+        var payload = new byte[] { 0x4D, 0x53, 0x00, 0x01, 0xFF, 0x7A };
+        var response = HttpResponse.Response().WithStatusCode(200).Build();
+        response.Body = Body.OfBinary(Convert.ToBase64String(payload), "application/octet-stream");
+
+        _client.When(
+            HttpRequest.Request().WithMethod("GET").WithPath("/bin-wire")
+        ).Respond(response);
+
+        var served = Get($"{_baseUrl}/bin-wire");
+        served.StatusCode.Should().Be(HttpStatusCode.OK, "the binary-body response must serve a 200");
+        served.Content.ReadAsByteArrayAsync().Result.Should().Equal(payload,
+            "the server must serve the EXACT bytes of the registered BINARY body");
+        served.Content.Headers.ContentType?.MediaType.Should().Be("application/octet-stream",
+            "the registered content type must be served on the wire");
+
+        _client.Reset();
+    }
 }

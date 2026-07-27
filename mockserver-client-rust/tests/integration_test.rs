@@ -589,3 +589,78 @@ fn test_error_action_actually_returns_raw_bytes() {
 
     client.reset().expect("reset failed");
 }
+
+/// Gap #47 — DRIVE a request against a registered `httpResponseTemplate` and
+/// assert the RENDERED body served over the wire, not merely that the template
+/// expectation was accepted (which `test_respond_with_advanced_response_builders`
+/// already covers by create+retrieve). A VELOCITY template that echoes
+/// `$!{request.path}` into the body proves two things a schema round-trip cannot:
+/// the server actually ran the template engine, and the template had live access
+/// to the matched request. A client that mis-encoded the template action, or a
+/// server that ignored it, would serve a 404 or an unrendered body — reddening
+/// the exact-string assertion below.
+#[test]
+#[ignore]
+fn test_response_template_rendered_over_wire() {
+    let client = get_client();
+    client.reset().expect("reset failed");
+
+    // The template renders a JSON object describing the response; the server
+    // maps it to an HttpResponse. `$!{request.path}` is substituted from the
+    // matched request, so the served body is a function of the wire request.
+    let template =
+        r#"{"statusCode": 200, "body": "TEMPLATED path=$!{request.path}"}"#;
+    let expectation = Expectation::new(HttpRequest::new().method("GET").path("/tmpl-wire"))
+        .respond_template(HttpTemplate::new("VELOCITY", template));
+    client
+        .upsert(&[expectation])
+        .expect("registering response-template expectation failed");
+
+    let (status, body) = http_get("/tmpl-wire", &[]);
+    assert_eq!(
+        status, 200,
+        "the response template must be executed and produce a 200"
+    );
+    assert_eq!(
+        body, "TEMPLATED path=/tmpl-wire",
+        "the served body must be the VELOCITY-rendered template with the request path \
+         substituted — proving the server ran the template engine over the live request"
+    );
+
+    client.reset().expect("reset failed");
+}
+
+/// Gap #47 — DRIVE a request against a registered `httpResponseTemplate` using a
+/// second, distinct engine (MUSTACHE) and assert the RENDERED body over the
+/// wire. Pairing this with the VELOCITY test above proves the client encodes the
+/// template action for BOTH engines the server exposes and that each engine
+/// actually runs against the live request — `{{request.method}}` is substituted
+/// from the matched request, so a client that mis-set the `templateType`, or a
+/// server that skipped the engine, would serve a 404 or unrendered body.
+#[test]
+#[ignore]
+fn test_mustache_response_template_rendered_over_wire() {
+    let client = get_client();
+    client.reset().expect("reset failed");
+
+    let template =
+        r#"{ "statusCode": 200, "body": "MUSTACHE method={{request.method}}" }"#;
+    let expectation = Expectation::new(HttpRequest::new().method("GET").path("/mustache-wire"))
+        .respond_template(HttpTemplate::new("MUSTACHE", template));
+    client
+        .upsert(&[expectation])
+        .expect("registering mustache response-template expectation failed");
+
+    let (status, body) = http_get("/mustache-wire", &[]);
+    assert_eq!(
+        status, 200,
+        "the MUSTACHE response template must be executed and produce a 200"
+    );
+    assert_eq!(
+        body, "MUSTACHE method=GET",
+        "the served body must be the MUSTACHE-rendered template with the request method \
+         substituted — proving the server ran the MUSTACHE engine over the live request"
+    );
+
+    client.reset().expect("reset failed");
+}
