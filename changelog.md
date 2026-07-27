@@ -66,6 +66,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default-queue instances with margin.
 
 ### Added
+- **A cassette is now auto-registered when a fixture is loaded or recorded via the MCP tools, so it
+  appears under `GET /mockserver/cassettes` without a separate `PUT /mockserver/cassettes` call.**
+  Previously the server-side cassette registry was populated only by an explicit
+  `PUT /mockserver/cassettes`, so a fixture loaded with the `load_expectations_from_file` MCP tool, or
+  written with `record_llm_fixtures`, never showed up in the dashboard's Cassettes tab unless the
+  caller also registered it by hand. Both MCP tool handlers now register the fixture in
+  `CassetteRegistry` at the point the file is loaded/written — the file path as the key, the loaded/
+  written expectation count, and an `origin` of `loaded` or `recorded` respectively — so
+  `GET /mockserver/cassettes` (which serialises that registry) lists it automatically. Re-loading or
+  re-recording the same path updates the existing entry in place rather than duplicating it.
 - **Clustered (Infinispan) expectation reload-on-startup is now proven end-to-end.** A new test
   (`ClusteredExpectationPersistenceReloadTest` in `mockserver-state-infinispan`) forms an in-JVM
   JGroups cluster consisting of a bare "fleet keeper" `InfinispanStateBackend` that stays up for the

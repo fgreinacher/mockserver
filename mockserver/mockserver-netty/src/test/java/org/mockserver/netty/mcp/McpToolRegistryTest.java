@@ -43,11 +43,14 @@ public class McpToolRegistryTest {
         httpState = new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class));
         toolRegistry = new McpToolRegistry(httpState, server);
         objectMapper = ObjectMapperFactory.buildObjectMapperWithoutRemovingEmptyValues();
+        // CassetteRegistry is a process-wide singleton — start each test from empty
+        org.mockserver.mock.CassetteRegistry.getInstance().reset();
     }
 
     @After
     public void resetServiceChaos() {
         org.mockserver.mock.action.http.ServiceChaosRegistry.getInstance().reset();
+        org.mockserver.mock.CassetteRegistry.getInstance().reset();
     }
 
     @Test
@@ -1370,6 +1373,78 @@ public class McpToolRegistryTest {
         // then - should only return /api/users expectations
         assertThat(result.path("status").asText(), is("preview"));
         assertThat(result.path("count").asInt(), is(1));
+    }
+
+    // --- cassette auto-registration (gap #73) ---
+
+    @Test
+    public void shouldAutoRegisterCassetteWhenExpectationsLoadedFromFile() throws Exception {
+        // given - a fixture file of two expectations inside the allowed temp directory
+        java.nio.file.Path fixture = java.nio.file.Files.createTempFile("mcp-load-cassette-", ".json");
+        java.nio.file.Files.write(fixture, ("["
+            + "{\"httpRequest\":{\"path\":\"/replay/one\"},\"httpResponse\":{\"statusCode\":200,\"body\":\"one\"}},"
+            + "{\"httpRequest\":{\"path\":\"/replay/two\"},\"httpResponse\":{\"statusCode\":200,\"body\":\"two\"}}"
+            + "]").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        try {
+            ObjectNode params = objectMapper.createObjectNode();
+            params.put("path", fixture.toString());
+
+            // when - the file is loaded via the MCP tool the codebase uses to trigger a file load
+            JsonNode result = toolRegistry.callTool("load_expectations_from_file", params);
+            assertThat(result.path("status").asText(), is("loaded"));
+            assertThat(result.path("count").asInt(), is(2));
+
+            // then - the loaded fixture is now discoverable as a cassette (GET /mockserver/cassettes
+            // serialises exactly this registry) with the correct count and a "loaded" origin
+            java.util.List<org.mockserver.mock.CassetteRegistry.Entry> cassettes =
+                org.mockserver.mock.CassetteRegistry.getInstance().list();
+            assertThat(cassettes.size(), is(1));
+            org.mockserver.mock.CassetteRegistry.Entry entry = cassettes.get(0);
+            assertThat(entry.path, is(fixture.toAbsolutePath().normalize().toString()));
+            assertThat(entry.expectationCount, is(2));
+            assertThat(entry.origin, is("loaded"));
+        } finally {
+            java.nio.file.Files.deleteIfExists(fixture);
+        }
+    }
+
+    @Test
+    public void shouldAutoRegisterCassetteWhenFixturesRecordedToFile() throws Exception {
+        // given - recorded/forwarded traffic that record_llm_fixtures can persist
+        httpState.log(new LogEntry()
+            .setType(FORWARDED_REQUEST)
+            .setLogLevel(org.slf4j.event.Level.INFO)
+            .setHttpRequest(request().withMethod("GET").withPath("/api/thing"))
+            .setHttpResponse(response().withStatusCode(200).withBody("[]"))
+            .setExpectation(request().withMethod("GET").withPath("/api/thing"),
+                response().withStatusCode(200).withBody("[]"))
+            .setMessageFormat("returning response:{}for forwarded request")
+            .setArguments(response().withStatusCode(200).withBody("[]"))
+        );
+        Thread.sleep(500);
+
+        java.nio.file.Path fixture = java.nio.file.Files.createTempFile("mcp-record-cassette-", ".json");
+        try {
+            ObjectNode params = objectMapper.createObjectNode();
+            params.put("path", fixture.toString());
+
+            // when - the recording is persisted via the MCP tool
+            JsonNode result = toolRegistry.callTool("record_llm_fixtures", params);
+            assertThat(result.path("status").asText(), is("written"));
+            int written = result.path("count").asInt();
+            assertThat(written > 0, is(true));
+
+            // then - the written fixture is discoverable as a cassette with a "recorded" origin
+            java.util.List<org.mockserver.mock.CassetteRegistry.Entry> cassettes =
+                org.mockserver.mock.CassetteRegistry.getInstance().list();
+            assertThat(cassettes.size(), is(1));
+            org.mockserver.mock.CassetteRegistry.Entry entry = cassettes.get(0);
+            assertThat(entry.path, is(fixture.toAbsolutePath().normalize().toString()));
+            assertThat(entry.expectationCount, is(written));
+            assertThat(entry.origin, is("recorded"));
+        } finally {
+            java.nio.file.Files.deleteIfExists(fixture);
+        }
     }
 
     // --- path traversal rejection tests ---

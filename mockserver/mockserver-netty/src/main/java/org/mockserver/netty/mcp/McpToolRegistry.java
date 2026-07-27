@@ -31,6 +31,7 @@ import org.mockserver.matchers.MismatchRemediation;
 import org.mockserver.matchers.MatchDifference;
 import org.mockserver.matchers.TimeToLive;
 import org.mockserver.matchers.Times;
+import org.mockserver.mock.CassetteRegistry;
 import org.mockserver.mock.Expectation;
 import org.mockserver.mock.HttpState;
 import org.mockserver.mock.MockMode;
@@ -2678,6 +2679,10 @@ public class McpToolRegistry {
             String json = getExpectationSerializer().serialize(redactedExpectations);
             Files.write(outputPath, json.getBytes(StandardCharsets.UTF_8));
 
+            // Auto-register the written fixture as a cassette so it is discoverable via
+            // GET /mockserver/cassettes without a separate PUT /mockserver/cassettes call.
+            CassetteRegistry.getInstance().register(outputPath.toString(), null, redactedExpectations.length, "recorded");
+
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("status", "written");
             resultNode.put("count", redactedExpectations.length);
@@ -2815,6 +2820,10 @@ public class McpToolRegistry {
                     strictGuards++;
                 }
             }
+
+            // Auto-register the loaded fixture as a cassette so it is discoverable via
+            // GET /mockserver/cassettes without a separate PUT /mockserver/cassettes call.
+            CassetteRegistry.getInstance().register(inputPath.toString(), null, addedExpectations.size(), "loaded");
 
             ObjectNode resultNode = objectMapper.createObjectNode();
             resultNode.put("status", "loaded");
