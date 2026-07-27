@@ -397,6 +397,113 @@ fn test_negation_matcher_enforced_over_wire() {
     client.reset().expect("reset failed");
 }
 
+/// Find the single decoded header matcher for `key` on the retrieved expectation
+/// whose request path is `path`, as a [`MatcherValue`] so the caller can assert
+/// on the decoded negation/escape. It looks in BOTH decoded homes: a value that
+/// round-trips through the plain string form lands in the plain `headers` map (a
+/// bare `"!foo"`), while a value that needs the object form to stay unambiguous
+/// (an escaped `"!foo"`) lands in `header_matchers`.
+fn decoded_header(expectations: &[Expectation], path: &str, key: &str) -> MatcherValue {
+    let request = expectations
+        .iter()
+        .filter_map(|e| e.http_request.as_ref())
+        .find(|r| r.path.as_deref() == Some(path))
+        .unwrap_or_else(|| panic!("no expectation retrieved for path {path}"));
+
+    // Object (nottable) form is decoded straight into `header_matchers`.
+    if let Some(matcher) = request
+        .header_matchers
+        .as_ref()
+        .and_then(|m| m.get(key))
+        .and_then(|vs| vs.first())
+    {
+        return matcher.clone();
+    }
+    // Plain-string form: decode it the way the server reads a NottableString.
+    let raw = request
+        .headers
+        .as_ref()
+        .and_then(|m| m.get(key))
+        .and_then(|vs| vs.first())
+        .unwrap_or_else(|| panic!("header {key} not present on expectation for {path}"));
+    MatcherValue::from(raw.clone())
+}
+
+/// Gap #46 — prove the Rust client correctly DECODES a server-echoed
+/// `NottableString` negation/escape when an expectation is read back via
+/// [`MockServerClient::retrieve_active_expectations`]. The enforcement test
+/// above proves the server ACTS on the negation the client sends; this proves
+/// the reverse direction — the `!` (and its escape) survives the server echo →
+/// client decode intact, so a round-tripped matcher keeps its meaning. Without
+/// this, a decode that dropped the negation flag or mis-read the escape would go
+/// unnoticed because nothing asserted on the value read back from the server.
+#[test]
+#[ignore]
+fn test_negation_matcher_decoded_from_server() {
+    let client = get_client();
+    client.reset().expect("reset failed");
+
+    // (a) A negation: not_literal("foo") is sent as the bare "!foo" marker and
+    // the server echoes it back as the plain string "!foo".
+    client
+        .when(
+            HttpRequest::new()
+                .method("GET")
+                .path("/neg-decode")
+                .header_matcher("X-Tag", MatcherValue::not_literal("foo")),
+        )
+        .respond(HttpResponse::new().status_code(200))
+        .expect("creating not_literal expectation failed");
+
+    // (c) An ESCAPED literal "!foo": the leading '!' is DATA, not a negation, so
+    // the client sends the object form and the server echoes the object back.
+    client
+        .when(
+            HttpRequest::new()
+                .method("GET")
+                .path("/esc-decode")
+                .header_matcher("X-Lit", MatcherValue::literal("!foo")),
+        )
+        .respond(HttpResponse::new().status_code(200))
+        .expect("creating escaped-literal expectation failed");
+
+    let expectations = client
+        .retrieve_active_expectations(None)
+        .expect("retrieve failed");
+
+    // The negation must decode back to not=true / value="foo": the '!' survived
+    // the server echo and the client read it as a negation, not as literal data.
+    let neg = decoded_header(&expectations, "/neg-decode", "X-Tag");
+    assert!(
+        neg.not,
+        "the '!' negation flag must survive the server echo → client decode (got {neg:?})"
+    );
+    assert_eq!(
+        neg,
+        MatcherValue::not_literal("foo"),
+        "server-echoed negation must decode to not=true, value=foo (got {neg:?})"
+    );
+
+    // The escaped literal must decode back to not=false / value="!foo": the '!'
+    // is preserved as data and was NOT misread as a negation.
+    let esc = decoded_header(&expectations, "/esc-decode", "X-Lit");
+    assert!(
+        !esc.not,
+        "an escaped '!foo' must NOT be decoded as a negation (got {esc:?})"
+    );
+    assert_eq!(
+        esc.value, "!foo",
+        "the escaped '!' must survive the round-trip as literal data (got {esc:?})"
+    );
+    assert_eq!(
+        esc,
+        MatcherValue::literal("!foo"),
+        "server-echoed escaped literal must decode to not=false, value=!foo (got {esc:?})"
+    );
+
+    client.reset().expect("reset failed");
+}
+
 /// Gap #46 — prove a FORWARD action registered via the Rust client is ACTUALLY
 /// performed by the server, with no external upstream so it is topology-independent
 /// (works whether the test runs on the host or in a sibling container). The prior

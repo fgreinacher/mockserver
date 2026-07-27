@@ -146,6 +146,92 @@ public class WireBehaviorTests : IDisposable
         _client.Reset();
     }
 
+    // ── #46 server-echoed NottableString negation/escape is DECODED by the client ──────────────
+
+    [SkippableFact]
+    public void NegationAndEscapeMatchers_AreDecoded_WhenRetrieved()
+    {
+        SkipIfNoServer();
+        _client!.Reset();
+
+        // The tests above prove the SERVER acts on the negation the client sends. This proves the
+        // reverse direction: that the client correctly DECODES a server-echoed NottableString when the
+        // expectation is read back with RetrieveActiveExpectations — the "!" (and its escape) survives
+        // the server echo → client decode intact. Without this, a decode that dropped the negation flag
+        // or mis-read the escape would go unnoticed because nothing asserted on the value read back.
+
+        // (a) A negation: NotLiteral("foo") is sent as the bare "!foo" marker and the server echoes it
+        // back as the plain string "!foo".
+        _client.When(
+            HttpRequest.Request().WithMethod("GET").WithPath("/neg-decode")
+                .WithHeaderMatcher("X-Tag", MatcherValue.NotLiteral("foo"))
+        ).Respond(
+            HttpResponse.Response().WithStatusCode(200)
+        );
+
+        // (c) An ESCAPED literal "!foo": the leading "!" is DATA, not a negation, so the client sends
+        // the object form and the server echoes the object back.
+        _client.When(
+            HttpRequest.Request().WithMethod("GET").WithPath("/esc-decode")
+                .WithHeaderMatcher("X-Lit", MatcherValue.Literal("!foo"))
+        ).Respond(
+            HttpResponse.Response().WithStatusCode(200)
+        );
+
+        var expectations = _client.RetrieveActiveExpectations();
+
+        // The negation must decode back to Not=true / Value="foo": the "!" survived the server echo and
+        // the client read it as a negation, not as literal data.
+        var neg = DecodedHeader(expectations, "/neg-decode", "X-Tag");
+        neg.Not.Should().BeTrue("the '!' negation flag must survive the server echo → client decode");
+        neg.Should().Be(MatcherValue.NotLiteral("foo"),
+            "server-echoed negation must decode to Not=true, Value=foo");
+
+        // The escaped literal must decode back to Not=false / Value="!foo": the "!" is preserved as data
+        // and was NOT misread as a negation.
+        var esc = DecodedHeader(expectations, "/esc-decode", "X-Lit");
+        esc.Not.Should().BeFalse("an escaped '!foo' must NOT be decoded as a negation");
+        esc.Value.Should().Be("!foo", "the escaped '!' must survive the round-trip as literal data");
+        esc.Should().Be(MatcherValue.Literal("!foo"),
+            "server-echoed escaped literal must decode to Not=false, Value=!foo");
+
+        _client.Reset();
+    }
+
+    /// <summary>
+    /// Finds the single decoded header matcher for <paramref name="key"/> on the retrieved expectation
+    /// whose request path is <paramref name="path"/>, as a <see cref="MatcherValue"/> so the caller can
+    /// assert on the decoded negation/escape. It looks in BOTH decoded homes: a value that round-trips
+    /// through the plain string form lands in the plain <c>Headers</c> map (a bare <c>"!foo"</c>), while
+    /// a value that needs the object form to stay unambiguous (an escaped <c>"!foo"</c>) lands in
+    /// <c>HeaderMatchers</c>.
+    /// </summary>
+    private static MatcherValue DecodedHeader(IEnumerable<Expectation> expectations, string path, string key)
+    {
+        var request = expectations
+            .Select(e => e.HttpRequest)
+            .FirstOrDefault(r => r?.Path == path)
+            ?? throw new InvalidOperationException($"no expectation retrieved for path {path}");
+
+        // Object (nottable) form is decoded straight into HeaderMatchers.
+        if (request.HeaderMatchers != null
+            && request.HeaderMatchers.TryGetValue(key, out var matchers)
+            && matchers.Count > 0)
+        {
+            return matchers[0];
+        }
+
+        // Plain-string form: decode it the way the server reads a NottableString.
+        if (request.Headers != null
+            && request.Headers.TryGetValue(key, out var values)
+            && values.Count > 0)
+        {
+            return MatcherValue.ParsePlain(values[0]);
+        }
+
+        throw new InvalidOperationException($"header {key} not present on expectation for {path}");
+    }
+
     // ── #46 response actions actually performed over the wire ──────────────────────────────────
 
     [SkippableFact]
