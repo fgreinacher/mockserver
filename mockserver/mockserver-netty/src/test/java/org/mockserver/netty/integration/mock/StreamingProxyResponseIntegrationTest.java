@@ -21,6 +21,7 @@ import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.model.LogEventRequestAndResponse;
 import org.mockserver.netty.MockServer;
+import org.mockserver.verify.VerificationTimes;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -864,5 +865,67 @@ public class StreamingProxyResponseIntegrationTest {
             stopQuietly(streamingForwardClient);
             stopQuietly(streamingForwardServer);
         }
+    }
+
+    @Test
+    public void shouldPublishForwardedRequestBeforeClientObservesStreamEndOnStreamingForwardPath() throws Exception {
+        // Coverage for the STREAMING forward path (HttpActionHandler.writeStreamingForwardActionResponse):
+        // the response head + body chunks are written to the client FIRST, and the FORWARDED_REQUEST log
+        // entry is published only when the streaming body completes (it carries the captured body and the
+        // total stream duration, neither of which exists until the stream ends). The sibling ordering test
+        // HttpActionHandlerForwardLogOrderingTest only covers the direct-write and non-streaming forward
+        // paths (its "Path 1 / Path 3" scope), leaving this streaming path unproven.
+        //
+        // The window this guards: after a client reads a streamed forward to completion, an IMMEDIATE,
+        // retry-free retrieve/verify MUST already see the forwarded exchange. That holds because
+        // StreamingBody.complete() runs the relay's onComplete (which only SCHEDULES the terminating
+        // LastHttpContent write and defers the socket close to that write's completion listener — a later
+        // event-loop task) and THEN synchronously fireListeners() -> logEvent(FORWARDED_REQUEST). So the
+        // entry is published onto the disruptor before the client can observe stream end. Every other
+        // streaming retrieval test in this class polls via pollUntilTrue(...) before retrieving; this one
+        // deliberately does NOT, asserting the ordering guarantee rather than eventual visibility.
+        //
+        // A forward EXPECTATION (not proxy-pass) is used so the request is dispatched through the
+        // forward-action streaming path (writeStreamingForwardActionResponse) rather than the
+        // unmatched-proxy streaming path.
+        mockServerClient
+            .when(request().withPath("/sse"))
+            .forward(forward().withHost("localhost").withPort(upstreamPort));
+
+        // Read the streamed forward to completion on the client side (Connection: close, so readLine()
+        // returns null only once the server has written the terminating chunk and closed the socket).
+        List<String> receivedLines = new ArrayList<>();
+        try (Socket socket = new Socket("localhost", mockServerPort)) {
+            socket.setSoTimeout(10000);
+            OutputStream output = socket.getOutputStream();
+            output.write(("GET /sse HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Connection: close\r\n" +
+                "\r\n").getBytes(StandardCharsets.UTF_8));
+            output.flush();
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                receivedLines.add(line);
+            }
+        }
+
+        // Sanity: the client genuinely observed the stream to its end (all three events + close).
+        String fullResponse = String.join("\n", receivedLines);
+        assertThat("client should have read the full SSE stream", fullResponse, containsString("200"));
+        assertThat("client should have observed the final SSE event", fullResponse, containsString("data: event3"));
+
+        // RETRY-FREE assertion — no pollUntilTrue, no eventual-verify (Duration) overload. Immediately
+        // after the client sees stream end the forwarded exchange must already be retrievable, proving the
+        // stream-completion listener publishes FORWARDED_REQUEST before/consistently-with the client's
+        // observation of stream end.
+        LogEventRequestAndResponse[] recorded = mockServerClient.retrieveRecordedRequestsAndResponses(
+            request().withPath("/sse"));
+        assertThat("streaming forward must publish FORWARDED_REQUEST before the client observes stream end "
+                + "(retrieved retry-free)", recorded.length, greaterThanOrEqualTo(1));
+
+        // The same guarantee via the verification surface, asserted exactly once with no wait.
+        mockServerClient.verify(request().withPath("/sse"), VerificationTimes.once());
     }
 }
