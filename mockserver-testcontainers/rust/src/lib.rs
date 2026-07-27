@@ -352,7 +352,14 @@ mod tests {
             .await
             .expect("Failed to reach MockServer status endpoint");
 
-        assert_eq!(resp.status().as_u16(), 200);
+        let status = resp.status().as_u16();
+        // Emit a stable, intentional evidence marker. The CI step
+        // (rust-testcontainers-test.sh) greps for this line to fail closed:
+        // it proves a real container started and answered /mockserver/status,
+        // rather than trusting cargo's exit code (an #[ignore]d or filtered-out
+        // test would still let `cargo test` exit 0 having started nothing).
+        println!("RUST_TESTCONTAINERS_STATUS_OK url={url} status={status}");
+        assert_eq!(status, 200);
 
         // Verify we can create an expectation
         let expectation_json = r#"[{
