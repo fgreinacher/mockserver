@@ -60,12 +60,17 @@ import java.util.function.BooleanSupplier;
  * {@code .buildkite/scripts/steps/assert-suite-ran.sh}, which fails the build when a report shows
  * zero tests or all-skipped.
  * <p>
- * COVERAGE: eight of the nine Docker-gated suites are covered — the three cloud blob-store contract
- * suites by {@code java-cloud-store-test.sh}, and the five {@code *LiveBrokerIntegrationTest} suites
- * in {@code mockserver-async} by {@code java-async-broker-test.sh}. The only uncovered one is
- * {@code MockServerContainerIT}, which needs no assertion because it does not execute at all:
- * Surefire takes {@code **}{@code /*Test.java} and Failsafe {@code **}{@code /*IntegrationTest.java},
- * so a class ending {@code IT} matches neither (see {@code docs/code/client-and-integrations.md}).
+ * COVERAGE: all nine Docker-gated suites are covered — the three cloud blob-store contract suites by
+ * {@code java-cloud-store-test.sh}, the five {@code *LiveBrokerIntegrationTest} suites in
+ * {@code mockserver-async} by {@code java-async-broker-test.sh}, and
+ * {@code MockServerContainerIntegrationTest} in {@code mockserver-testcontainers} by
+ * {@code java-testcontainers-test.sh}. That last suite was previously named
+ * {@code MockServerContainerIT} — a class ending {@code IT} matched neither Surefire
+ * ({@code **}{@code /*Test.java}) nor Failsafe ({@code **}{@code /*IntegrationTest.java}), so it
+ * executed nowhere and needed no assertion. Renaming it to {@code *IntegrationTest} makes Failsafe
+ * collect it, so it now runs — and, like every other Docker-gated suite, would otherwise SKIP
+ * silently in the socket-free main build, so it gets its own socket-bearing step with an
+ * {@code assert-suite-ran.sh} guard (see {@code docs/code/client-and-integrations.md}).
  * <p>
  * WHY THE ASYNC STEP EXISTS — a diagnosis worth keeping, because the failure was invisible. Those
  * five suites WERE invoked in the main build (Failsafe's include matches them, and the main build

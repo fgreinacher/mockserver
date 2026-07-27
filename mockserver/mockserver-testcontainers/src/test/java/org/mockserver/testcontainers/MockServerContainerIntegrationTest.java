@@ -19,19 +19,16 @@ import static org.mockserver.model.HttpResponse.response;
 /**
  * Integration tests for {@link MockServerContainer} that require a running Docker daemon.
  * <p>
- * <strong>This class does not currently execute in the Maven build.</strong> Surefire is configured
- * for {@code **}{@code /*Test.java} and Failsafe for {@code **}{@code /*IntegrationTest.java}; a
- * class ending in {@code IT} matches neither, and this module declares no override — so contrary to
- * the previous note here, it runs neither locally nor in CI. Renaming it to
- * {@code MockServerContainerIntegrationTest} (or adding a Failsafe include for
- * {@code **}{@code /*IT.java}) would activate it. Until then treat its coverage as absent.
+ * The class is named {@code *IntegrationTest} so the inherited Failsafe plugin (configured for
+ * {@code **}{@code /*IntegrationTest.java}) actually collects and runs it. An earlier revision named
+ * it {@code *IT}, which matched neither Surefire ({@code **}{@code /*Test.java}) nor Failsafe, so it
+ * silently ran nowhere.
  * <p>
- * The Docker gate below is written the correct way regardless: it goes through
- * {@link org.mockserver.test.DockerAvailability} rather than calling
+ * The Docker gate goes through {@link org.mockserver.test.DockerAvailability} rather than calling
  * {@code DockerClientFactory.instance().isDockerAvailable()} directly, because the raw probe throws
  * rather than returning {@code false} for anything other than {@code IllegalStateException}.
  */
-class MockServerContainerIT {
+class MockServerContainerIntegrationTest {
 
     @Test
     void containerStartsAndAcceptsMockExpectation() throws Exception {

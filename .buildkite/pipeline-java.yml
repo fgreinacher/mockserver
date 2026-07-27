@@ -104,6 +104,24 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
+  # mockserver-testcontainers integration suite (MockServerContainerIntegrationTest),
+  # which starts a real MockServer container via Testcontainers. Same rationale as the
+  # cloud/async steps above: it is Docker-gated and the main build has no socket, so
+  # once renamed from *IT to *IntegrationTest (making Failsafe collect it) it would
+  # SKIP every test on every build while the job still went green (Tests run: 1,
+  # Skipped: 1). Being collected by an include is not the same as testing anything.
+  # This step gives it a socket and then asserts it really ran, so the skip can no
+  # longer pass as a pass.
+  - label: ":whale: testcontainers integration test"
+    command: ".buildkite/scripts/steps/java-testcontainers-test.sh"
+    timeout_in_minutes: 30
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
   # Transparent-proxy original-destination end-to-end suites (SO_ORIGINAL_DST,
   # TPROXY, eBPF). These were named *EndToEndIT, matching NEITHER Surefire
   # (**/*Test.java) NOR Failsafe (**/*IntegrationTest.java), so they never ran on
