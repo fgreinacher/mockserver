@@ -864,6 +864,17 @@ public class HttpResponse extends Action<HttpResponse> implements HttpMessage<Ht
             if (responseOverride.getGenerateFromSchema() != null) {
                 withGenerateFromSchema(responseOverride.getGenerateFromSchema());
             }
+            // Replacing the body invalidates any Content-Length inherited from the base response.
+            // On the forward responseOverride path (HttpOverrideForwardedRequestActionHandler) this
+            // base is the UPSTREAM response, whose Content-Length reflects the upstream body, so a
+            // longer override body is truncated - or a shorter one over-runs - on the wire unless the
+            // stale length is dropped. Skip the removal only when the override supplied its own
+            // explicit Content-Length (already applied above via replaceEntry), which the encoder must
+            // then honour verbatim. Otherwise drop it so the encoder recomputes it from the new body.
+            if ((responseOverride.getBody() != null || responseOverride.getGenerateFromSchema() != null)
+                && isBlank(responseOverride.getFirstHeader(CONTENT_LENGTH.toString()))) {
+                removeHeader(CONTENT_LENGTH.toString());
+            }
             if (responseOverride.getConnectionOptions() != null) {
                 withConnectionOptions(responseOverride.getConnectionOptions());
             }

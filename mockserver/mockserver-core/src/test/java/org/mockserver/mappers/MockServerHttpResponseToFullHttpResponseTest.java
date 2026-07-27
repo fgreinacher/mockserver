@@ -255,6 +255,34 @@ public class MockServerHttpResponseToFullHttpResponseTest {
     }
 
     @Test
+    public void shouldRecomputeContentLengthAfterForwardOverrideReplacesBody() {
+        // given - the exact forward responseOverride shape: an upstream response whose Content-Length
+        // reflects ITS (short) body, then a responseOverride that replaces the body with a LONGER one.
+        // HttpResponse.update() is what HttpOverrideForwardedRequestActionHandler applies on this path.
+        HttpResponse upstream = response()
+            .withStatusCode(200)
+            .withBody("short")
+            .withHeader("content-length", "5");
+        HttpResponse override = response()
+            .withBody("a_much_longer_overridden_response_body"); // 38 bytes, no explicit Content-Length
+        upstream.update(override, null);
+
+        // when
+        List<DefaultHttpObject> result = mapper.mapMockServerResponseToNettyResponse(upstream);
+
+        // then - the wire Content-Length is the NEW body length (38), not the stale upstream 5; otherwise
+        // the longer overridden body is truncated to 5 bytes on the wire (issue #2450 forward-override
+        // residual). The body buffer and the header must agree.
+        DefaultFullHttpResponse fullResponse = (DefaultFullHttpResponse) result.get(0);
+        try {
+            assertThat(fullResponse.headers().get(HttpHeaderNames.CONTENT_LENGTH), equalTo("38"));
+            assertThat(fullResponse.content().readableBytes(), equalTo(38));
+        } finally {
+            fullResponse.release();
+        }
+    }
+
+    @Test
     public void shouldOverrideContentLengthFromConnectionOptions() {
         // given
         HttpResponse httpResponse = response()

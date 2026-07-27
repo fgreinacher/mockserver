@@ -312,6 +312,77 @@ public class HttpResponseTest {
     }
 
     @Test
+    public void updateDropsInheritedContentLengthWhenBodyOverridden() {
+        // given - a base (e.g. upstream forwarded) response whose Content-Length reflects ITS body
+        HttpResponse base = response()
+            .withBody("upstream")
+            .withHeader("content-length", "8");
+        // and an override that replaces the body with a LONGER one but sets no Content-Length itself
+        HttpResponse override = response()
+            .withBody("a_much_longer_overridden_response_body");
+
+        // when
+        base.update(override, null);
+
+        // then - the stale inherited Content-Length is dropped so the encoder recomputes it from the
+        // new body (otherwise the longer body is truncated to 8 bytes on the wire - #2450 residual)
+        assertThat(base.getBodyAsString(), is("a_much_longer_overridden_response_body"));
+        assertThat(base.getFirstHeader("content-length"), is(""));
+    }
+
+    @Test
+    public void updateKeepsExplicitContentLengthSuppliedByOverride() {
+        // given - a base response with its own Content-Length
+        HttpResponse base = response()
+            .withBody("upstream")
+            .withHeader("content-length", "8");
+        // and an override that replaces the body AND explicitly sets a Content-Length
+        HttpResponse override = response()
+            .withBody("a_much_longer_overridden_response_body")
+            .withHeader("content-length", "5");
+
+        // when
+        base.update(override, null);
+
+        // then - an explicit override Content-Length is honoured verbatim (the encoder must not
+        // recompute it - a user may deliberately set a mismatched length)
+        assertThat(base.getFirstHeader("content-length"), is("5"));
+    }
+
+    @Test
+    public void updateDropsInheritedContentLengthWhenSchemaOverridden() {
+        // given - a base response with a Content-Length and an override that supplies a generateFromSchema
+        // body (whose length is unknowable at update() time) but no explicit Content-Length
+        HttpResponse base = response()
+            .withBody("upstream")
+            .withHeader("content-length", "8");
+        HttpResponse override = response()
+            .withGenerateFromSchema("{\"type\": \"string\"}");
+
+        // when
+        base.update(override, null);
+
+        // then - the inherited Content-Length is dropped so the encoder sizes the generated body itself
+        assertThat(base.getFirstHeader("content-length"), is(""));
+    }
+
+    @Test
+    public void updateLeavesContentLengthUntouchedWhenNoBodyOverride() {
+        // given - a base response with a Content-Length and an override that changes only a header
+        HttpResponse base = response()
+            .withBody("upstream")
+            .withHeader("content-length", "8");
+        HttpResponse override = response()
+            .withHeader("x-added", "value");
+
+        // when
+        base.update(override, null);
+
+        // then - no body override means the inherited Content-Length is left as-is
+        assertThat(base.getFirstHeader("content-length"), is("8"));
+    }
+
+    @Test
     public void returnsTrailers() {
         assertThat(new HttpResponse().withTrailers(new Header("name", "value")).getTrailerList().get(0), is(new Header("name", "value")));
         assertThat(new HttpResponse().withTrailers(Collections.singletonList(new Header("name", "value"))).getTrailerList().get(0), is(new Header("name", "value")));

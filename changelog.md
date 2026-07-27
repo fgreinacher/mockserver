@@ -426,6 +426,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BodyMatcherBuilder`, so the body constraint was silently ignored (it matched any body); it now matches
   the request body against the exact file contents (string or binary). This resolves the earlier
   "static response only" caveat.
+- **A forward `responseOverride` that replaces the body is no longer truncated to the upstream
+  `Content-Length`.** When a forwarded request's response is overridden with a new body,
+  `HttpResponse.update()` replaced the body but kept the `Content-Length` inherited from the upstream
+  response. A replacement body longer than the upstream body was therefore truncated on the wire (and a
+  shorter one could over-run) — visible only to a real client, since every layer above the encoder held
+  the full, correct response. `update()` now drops the inherited `Content-Length` whenever the override
+  supplies a new body (or a `generateFromSchema`), unless the override itself sets an explicit
+  `Content-Length` (which is still honoured verbatim), so the encoder recomputes the length from the
+  actual body. This closes the residual on the forward-override path left by the FILE-body fix above.
 - **A gRPC error response carrying custom trailing metadata no longer loses its status.** On HTTP/2 a
   body-less gRPC response is collapsed into the gRPC Trailers-Only form, which moves `grpc-status`
   into the initial HEADERS frame and relies on that frame being end-of-stream. When the expectation
