@@ -484,7 +484,7 @@ implementation; every other client mirrors the same contract.
 | Integrity | downloads to a `.part` temp, verifies the published `<file>.sha256` (**fail-closed** on missing/empty/mismatch), atomic rename, then `tar -xf` extract |
 | Versioned cache GC | after a successful install, prunes other version dirs keeping the current + **one** previous (`maxPrevious = 1`); semver-aware so a **release outranks its `-SNAPSHOT`** (a stable release is never pruned in favour of a pre-release) |
 | Env knobs | `MOCKSERVER_BINARY_BASE_URL` (mirror / air-gap), `MOCKSERVER_BINARY_CACHE`, `MOCKSERVER_SKIP_BINARY_DOWNLOAD` (fail instead of download — pre-seeded caches) |
-| Default version | the last released MockServer version (`7.4.0`) — see *Version pinning* below |
+| Default version | the last released MockServer version (`7.5.0`) — see *Version pinning* below |
 
 **Version pinning.** All clients must resolve to the same default version so they fetch the same
 bundle and share one cache, but there is no single shared constant: each client records the version
@@ -528,7 +528,7 @@ Windows `.bat` launcher is spawned with safe quoting; child process stdout/stder
 pipe-buffer deadlock; HTTP downloads use timeouts and stream to disk. Tests are hermetic (no live
 network) using `file://` fixtures and a stubbed downloader, plus one integration test that runs only
 when a real bundle is available. *(Known minor follow-up: the PHP pruner relies on `version_compare`,
-which can treat `7.4.0` and `7.4.0-SNAPSHOT` as equal — prune order between those two is not
+which can treat `7.5.0` and `7.5.0-SNAPSHOT` as equal — prune order between those two is not
 guaranteed; tracked as a follow-up.)*
 
 ### Test-Runner Fixtures & Helpers
