@@ -6,9 +6,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
 ### Changed
+- Renewed the TLS/mTLS test-certificate fixtures. The two mutual-TLS authentication CAs (which were 151 days from
+  expiry) and the three Netty TLS integration CAs were re-issued with a 10-year validity, and every leaf they sign
+  was re-issued with a shorter 5-year validity so that a leaf can no longer outlive its issuing CA. The existing CA
+  and leaf private keys were preserved (so key encodings, Subject/Authority Key Identifiers and existing signatures
+  are unchanged); only the certificates were re-minted.
+
+### Security
+- Hardened the dynamic TLS certificate cache so it can no longer serve stale, torn or over-broad material (Wave 1,
+  resilience only — certificate validity periods and extensions are unchanged). The cached server SSL context now
+  regenerates a fresh leaf once the current one passes a renewal threshold (80% of its validity elapsed) instead of
+  serving an expired certificate for the JVM lifetime; the cache-reuse decision is driven by a content signature over
+  the Subject-Alternative-Name set, certificate-authority identity, key/cert paths, mTLS and protocol inputs
+  (replacing a single consumable boolean that could return a certificate missing a just-added SAN under concurrency);
+  client SSL contexts and the memoised certificate authority now self-invalidate when their inputs are rotated at
+  runtime. Certificate generation now publishes the new private key and certificate atomically (a mid-flight failure
+  keeps the previous working pair instead of leaving a new key paired with the old certificate), and SNI-driven
+  provisioning runs off the Netty event loop with per-host coalescing. Only the leaf drives that renewal trigger: a
+  dynamically-generated certificate authority nearing its own expiry is warned about once (it is never rotated
+  automatically, which would invalidate every client trust store that imported it) rather than demanding a leaf
+  regeneration the certificate-authority guard can never satisfy — which would otherwise re-mint the leaf on every
+  handshake indefinitely.
+- Bounded the dynamically-grown Subject-Alternative-Name list with a new `maxSubjectAlternativeNames` property
+  (default 100; when the cap is reached the genuinely oldest dynamically-discovered entry is evicted first, in FIFO
+  order, with a warning, while configured and default SANs such as localhost are never evicted) and now
+  normalise/validate each SNI hostname and `Host` header (lowercase, length and label-charset checked) before it is
+  added, closing a denial-of-service vector where any client could force the leaf certificate to be re-minted with an
+  unbounded SAN list.
+- Dynamically-generated private key material (leaf key, certificate-authority key, and the JKS key store) is now
+  written owner-readable-only (`0600`) and atomically, and public certificates `0644`; a corrupt or unreadable
+  certificate-authority PEM now fails loudly instead of being silently treated as absent and overwritten (which would
+  invalidate every pinned client trust store), with cross-process locking around certificate-authority generation.
+- Deferred BouncyCastle registration in `PEMToFile` off the class-load path, restoring the lazy-BouncyCastle startup
+  optimisation.
+
+### Removed
+- Removed the unused `PKCS1CertificateAuthorityPrivateKey.pem` resource from the published `mockserver-core` jar. It
+  was the explicit PKCS#1 half of an encoding pair added in 2020 for the since-removed JDK key/certificate builder,
+  whose deletion in 2022 left it with no references for around four years. It was byte-identical to the original
+  `CertificateAuthorityPrivateKey.pem`, which is retained (it backs a published raw-URL link and remains the stable
+  PKCS#1 form); the code continues to load `PKCS8CertificateAuthorityPrivateKey.pem`.
 
 ### Fixed
 - Cloning an `X509Certificate` model that contains certificate metadata without an underlying Java certificate no
@@ -27,6 +65,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only `exception while perform json match failed` and the exception was recorded solely at `TRACE`, so at the
   default log level there was no way to tell a malformed body from a missing class from a runtime error. The cause
   is now included in the reported difference, as it already was for the XML schema, JSON path and JSON-RPC matchers.
+- Resolved the outstanding npm security advisories in the shipped and published Node packages: `dompurify`
+  `3.4.12`&nbsp;&rarr;&nbsp;`3.4.13` in the bundled dashboard (`mockserver-ui`), `brace-expansion`
+  `5.0.8`&nbsp;&rarr;&nbsp;`5.0.9` (ReDoS) in `mockserver-testcontainers/node`, and `js-yaml`
+  `4.3.0`&nbsp;&rarr;&nbsp;`4.3.1` in `mockserver-client-node`, `mockserver-node` and
+  `mockserver-testcontainers/node`. The `brace-expansion` fix bumps only the parent so the `minimatch`/`archiver`
+  glob split is preserved (a blanket override previously broke `archiver`); no `brace-expansion` override was added.
+- Documented and mitigated a clustered-deployment TLS trust defect: with the default dynamic Certificate Authority
+  generation, every MockServer node in a cluster mints its own distinct CA, so a client that trusts one node's
+  `mockserver-ca.pem` gets an intermittent TLS validation failure when a load balancer routes it to another node.
+  `StateBackendFactory.create()` now logs a WARN when it detects `clusterEnabled=true` together with
+  `dynamicallyCreateCertificateAuthorityCertificate=true`, and the limitation and its fix are now documented in
+  `docs/code/clustered-state.md`, `docs/code/tls-and-security.md`, the Helm chart README, and the Centralized
+  Deployment consumer page.
+- Added first-class Helm chart support for supplying **one shared TLS Certificate Authority to every replica** via a
+  Kubernetes Secret — the supported fix for the clustered CA defect above. New opt-in values `app.tls.*` create (or
+  reference an existing) Secret, mount it read-only, and set `certificateAuthorityCertificate` /
+  `certificateAuthorityPrivateKey` with `dynamicallyCreateCertificateAuthorityCertificate=false` on every pod. A CA
+  private key now lands in a Secret rather than a ConfigMap. Also added `app.dynamicCertificateDir.*` (a writable
+  `emptyDir` for the single-replica dynamic-CA case, so certificate writes no longer depend on a non-writable working
+  directory) and `app.extraEnv` (arbitrary container environment variables, enabling any `MOCKSERVER_*` property the
+  chart does not expose directly). All new values are opt-in and default to today's behaviour.
+- Fixed a latent dead condition in the Helm chart Deployment template: the `MOCKSERVER_PROPERTY_FILE` env var was
+  gated on an undeclared `app.mountConfigMap` value (always false). `app.mountConfigMap` is now a declared value
+  (default `false`, preserving prior behaviour) so external-ConfigMap users can opt into having MockServer pointed at
+  the mounted `mockserver.properties`.
 
 ## [7.5.0] - 2026-07-29
 
