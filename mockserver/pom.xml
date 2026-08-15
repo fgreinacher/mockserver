@@ -59,7 +59,7 @@
         <jackson.version>2.22.1</jackson.version>
         <jackson-annotations.version>2.22</jackson-annotations.version>
         <velocity.version>2.4.1</velocity.version>
-        <netty.version>4.2.16.Final</netty.version>
+        <netty.version>4.2.17.Final</netty.version>
         <httpcomponents.version>4.4.1</httpcomponents.version>
         <bouncycastle.version>1.85</bouncycastle.version>
         <spring.version>7.0.8</spring.version>
@@ -81,8 +81,10 @@
         <javadoc.additional.parameters/>
         <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
         <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
-        <!-- also update NETTY_TCNATIVE in docker/*/Dockerfile download stages -->
-        <netty-tcnative-boringssl-static.version>2.0.78.Final</netty-tcnative-boringssl-static.version>
+        <!-- also update NETTY_TCNATIVE in docker/*/Dockerfile download stages.
+             MUST match the tcnative version pinned by the netty-bom above (netty 4.2.17.Final -> 2.0.81.Final)
+             or the enforcer DependencyConvergence rule fails in mockserver-core. -->
+        <netty-tcnative-boringssl-static.version>2.0.81.Final</netty-tcnative-boringssl-static.version>
         <protobuf.version>4.35.1</protobuf.version>
         <!-- grpc-java: TEST SCOPE ONLY (mockserver-netty). Used to drive MockServer with a real
              gRPC client so the gRPC wire contract (protobuf framing + grpc-status trailer) is
@@ -408,6 +410,23 @@
                 <groupId>net.java.dev.jna</groupId>
                 <artifactId>jna</artifactId>
                 <version>${jna.version}</version>
+            </dependency>
+
+            <!-- log4j-api: pinned to resolve GHSA-qv9r-c865-cp47. Arrives transitively (compile
+                 scope) via spring-boot-starter-logging -> log4j-to-slf4j and lands in a shaded
+                 artifact. This manages log4j-api only (not log4j-core, which is not on the tree). -->
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-api</artifactId>
+                <version>2.25.5</version>
+            </dependency>
+
+            <!-- jsoup: pinned to resolve GHSA-pmhh-3w7g-xqp8. Test scope only (never shipped);
+                 the pin guards against a future transitive downgrade below the fixed version. -->
+            <dependency>
+                <groupId>org.jsoup</groupId>
+                <artifactId>jsoup</artifactId>
+                <version>1.23.1</version>
             </dependency>
 
             <!-- HTTP/3 (QUIC) — graduated from incubator into Netty 4.2; native

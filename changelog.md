@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Upgraded Netty from `4.2.16.Final` to `4.2.17.Final` and, in lockstep, `netty-tcnative-boringssl-static` from
+  `2.0.78.Final` to `2.0.81.Final` (the tcnative version the Netty 4.2.17 BOM aligns to). The two must move together:
+  the Netty BOM pins the transitively-resolved native-classifier tcnative jars to `2.0.81.Final`, so a mismatched
+  main-artifact pin fails the enforcer `DependencyConvergence` rule in `mockserver-core`. The `NETTY_TCNATIVE` build
+  args in every `docker/*/Dockerfile` were updated to match. This unblocks Dependabot PRs #2523 and #2532.
 - BREAKING: The default enabled TLS protocols are now `TLSv1.2,TLSv1.3` (previously `TLSv1,TLSv1.1,TLSv1.2`), and
   `tlsAllowInsecureProtocols` now defaults to `false` (previously `true`). TLSv1 and TLSv1.1 are deprecated by RFC 8996
   and vulnerable to BEAST/POODLE, and TLSv1.3 was previously never negotiated unless explicitly configured. This is a
@@ -22,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are unchanged); only the certificates were re-minted.
 
 ### Security
+- Pinned `org.apache.logging.log4j:log4j-api` to `2.25.5` to resolve GHSA-qv9r-c865-cp47. It is pulled in transitively
+  at compile scope (via `spring-boot-starter-logging` -> `log4j-to-slf4j`) and lands in a shaded artifact, so it is
+  shipped; the pin manages `log4j-api` only (`log4j-core` is not on the dependency tree).
+- Pinned `org.jsoup:jsoup` to `1.23.1` to resolve GHSA-pmhh-3w7g-xqp8. jsoup is used only at test scope (never shipped);
+  the pin guards against a future transitive downgrade below the fixed version.
 - Made outbound TLS host name verification consistent and controllable for the forward/proxy client (Wave 3). When
   `forwardProxyTLSX509CertificatesTrustManagerType` is `JVM` or `CUSTOM` — the modes that actually validate the
   upstream certificate chain — MockServer now verifies the upstream host name against the certificate (RFC 2818 / HTTPS

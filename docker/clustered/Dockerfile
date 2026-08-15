@@ -45,7 +45,7 @@ RUN if [ -s /tmp/local-ca.pem ]; then \
 # BusyBox wget ignores /etc/wgetrc, so this is a safe no-op there.
 RUN printf 'tries=5\ntimeout=60\nwaitretry=10\nretry_on_host_error=on\nretry_connrefused=on\n' >> /etc/wgetrc
 ARG TARGETARCH=amd64
-ARG NETTY_TCNATIVE=2.0.78.Final
+ARG NETTY_TCNATIVE=2.0.81.Final
 # Audit finding F-DKR-06: SHA256-verify tcnative download from Maven Central.
 RUN if [ "$TARGETARCH" = "amd64" ]; \
     then TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-x86_64.jar"; \
