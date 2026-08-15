@@ -566,6 +566,46 @@ Source: `org.mockserver.cluster.ClusterFanIn`, `org.mockserver.cluster.HttpClust
 | Rate-limit counters (`rateLimit` clause) | v1 of the declarative `rateLimit` expectation clause (`RateLimitRegistry`, `org.mockserver.ratelimit`) is **node-local** — like the chaos quota and gRPC match counters above. A `limit` of 100 on a two-node cluster allows up to 200 total requests. A future clustered mode would enforce the limit fleet-wide via a per-request shared-backend `compareAndSet` (the same mechanism as the clustered `Times` counters — see "Clustered Times Counters"), trading a synchronous replicated write on the request-worker thread for exactly-N across the fleet. Not implemented in v1. |
 | Shared-Times CAS on the worker thread | When `clusterSharedTimesEnabled=true` (default), limited-`Times` matching performs up to 10 synchronous replicated CAS writes on the Netty request-worker thread (worst case, under same-expectation cross-node contention). Disable via `clusterSharedTimesEnabled=false` to use node-local `Times` (no worker-thread round-trip, but exactly-N becomes approximate — up to N *per node*). See "Clustered Times Counters". |
 | Per-node event log (verify/retrieve) | Request/response log entries are NOT replicated by the `StateBackend`, so `verify`/`retrieve` are per-node by default. The opt-in `clusterVerifyFanIn` closes this for count-based request verification and `REQUESTS`/`REQUEST_RESPONSES` retrieve — including on **authenticated** clusters via `clusterFanInPeerAuthToken` (see "Clustered Verify/Retrieve Fan-In"). Still deferred (node-local): `verifySequence` cross-node ordering (no shared clock), response-aware/expectationId verify, the **live** dashboard log-view stream, and mTLS-client-cert peer auth. |
+| Per-node dynamic Certificate Authority (TLS trust) | The TLS Certificate Authority is **not** part of the `StateBackend` and is **not** replicated. With the default `dynamicallyCreateCertificateAuthorityCertificate=true`, **each node mints its own, different CA**, so a client that trusts one node's `mockserver-ca.pem` fails TLS validation when the load balancer routes it to another node (an intermittent trust error — that intermittency is the tell). **Do not** use dynamic CA generation in a clustered/multi-replica deployment: supply **one shared CA** to every node via `certificateAuthorityCertificate` + `certificateAuthorityPrivateKey` and set `dynamicallyCreateCertificateAuthorityCertificate=false`. See "Per-Node Dynamic CA (TLS Trust)" below. `StateBackendFactory.create()` logs a WARN when it detects `clusterEnabled=true` together with dynamic CA generation. |
+
+## Per-Node Dynamic CA (TLS Trust)
+
+**The TLS Certificate Authority is node-local and is NOT replicated by the `StateBackend`.** In a clustered/multi-replica deployment with the default `dynamicallyCreateCertificateAuthorityCertificate=true`, every node generates its own distinct CA. A TLS client that imported one node's CA is then rejected the moment the load balancer routes it to a different node. The fix is to give every node **one shared CA** and turn dynamic generation off.
+
+```mermaid
+flowchart TD
+    Client["TLS client\ntrusts node A's CA"]
+    LB["Load balancer"]
+    A["Node A\nCA-A (dynamic)"]
+    B["Node B\nCA-B (dynamic)"]
+    Client --> LB
+    LB -->|routed to A| A
+    LB -->|routed to B| B
+    A -->|leaf signed by CA-A| OK["TLS OK"]
+    B -->|leaf signed by CA-B| FAIL["TLS trust error\n(intermittent)"]
+```
+
+### Why it happens
+
+- Each node runs its own certificate factory against its own local `directoryToSaveDynamicSSLCertificate` (default `.`, the container's ephemeral filesystem), so no CA material is shared between nodes.
+- The `StateBackend` replicates expectations, scenario state, CRUD entities, and blobs — but the CA is a TLS-layer concern, outside the state backend entirely. `mockserver-state-infinispan` does not touch certificates.
+- The symptom is **intermittent**: requests succeed whenever the load balancer happens to pin the client to the node whose CA it trusts, and fail otherwise. That intermittency is the diagnostic tell.
+
+### The fix: one shared CA on every node
+
+Supply the same CA certificate and private key to every replica and disable dynamic generation:
+
+```
+-Dmockserver.dynamicallyCreateCertificateAuthorityCertificate=false
+-Dmockserver.certificateAuthorityCertificate=/tls/CertificateAuthorityCertificate.pem
+-Dmockserver.certificateAuthorityPrivateKey=/tls/CertificateAuthorityPrivateKey.pem
+```
+
+On Kubernetes, mount that CA material from a **Secret** (never a ConfigMap — it holds a private key). The MockServer Helm chart provides `app.tls.*` values that create/mount the Secret and set these properties on every replica; see [docs/infrastructure/helm.md](../infrastructure/helm.md) and the chart README.
+
+### Startup warning
+
+`StateBackendFactory.create()` — the single place every `HttpState` obtains its backend at start up, and the natural home for a cluster-configuration check — logs a WARN when it detects the broken combination (`clusterEnabled=true` **and** `dynamicallyCreateCertificateAuthorityCertificate=true`). Single-node dynamic CA (one node, one CA) and clustered-with-shared-CA both stay silent. See `StateBackendFactory.isClusteredWithDynamicCertificateAuthority`.
 
 ## Source Locations
 

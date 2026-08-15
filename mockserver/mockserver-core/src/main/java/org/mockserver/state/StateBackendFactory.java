@@ -131,11 +131,46 @@ public final class StateBackendFactory {
      * module from the classpath via reflection.
      */
     public static StateBackend create(Configuration configuration) {
+        warnIfClusteredWithDynamicCertificateAuthority(configuration);
         String backendName = configuration.stateBackend();
         if ("infinispan".equalsIgnoreCase(backendName) && !isCustomFactoryRegistered()) {
             discoverInfinispanBackend();
         }
         return factory.create(configuration);
+    }
+
+    /**
+     * Whether the configuration is in the broken combination of a clustered
+     * (multi-node) deployment AND per-node dynamic Certificate Authority
+     * generation. In that combination every node mints its OWN CA, so a TLS
+     * client that trusts one node's CA fails validation against the others —
+     * an intermittent trust error behind a load balancer that rotates nodes.
+     * <p>
+     * The cluster-configuration layer (this factory) is the architecturally
+     * correct home for the check: {@code clusterEnabled} is the state-backend
+     * concern, and this is the single place every {@code HttpState} obtains its
+     * backend at start up. The fix is to supply ONE shared CA to every node
+     * ({@code certificateAuthorityCertificate} + {@code certificateAuthorityPrivateKey})
+     * and set {@code dynamicallyCreateCertificateAuthorityCertificate=false}.
+     *
+     * @return {@code true} when {@code clusterEnabled} and
+     *         {@code dynamicallyCreateCertificateAuthorityCertificate} are both on
+     */
+    static boolean isClusteredWithDynamicCertificateAuthority(Configuration configuration) {
+        return configuration.clusterEnabled()
+            && Boolean.TRUE.equals(configuration.dynamicallyCreateCertificateAuthorityCertificate());
+    }
+
+    private static void warnIfClusteredWithDynamicCertificateAuthority(Configuration configuration) {
+        if (isClusteredWithDynamicCertificateAuthority(configuration)) {
+            LOG.warn("clusterEnabled=true together with dynamic Certificate Authority generation "
+                + "(dynamicallyCreateCertificateAuthorityCertificate=true): each node generates its OWN CA, "
+                + "so a TLS client that trusts one node's CA will fail certificate validation against the "
+                + "other nodes (an intermittent trust error behind a load balancer that rotates nodes). "
+                + "Supply one shared CA to every node via certificateAuthorityCertificate + "
+                + "certificateAuthorityPrivateKey and set dynamicallyCreateCertificateAuthorityCertificate=false. "
+                + "See docs/code/clustered-state.md (Per-Node Dynamic CA).");
+        }
     }
 
     /**

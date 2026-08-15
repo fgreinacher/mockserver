@@ -70,6 +70,8 @@ MockServer maintains an in-memory CA with default DN:
 
 Custom CA certificates can be loaded from PEM files via configuration.
 
+**Clustered / multi-replica deployments must NOT use dynamic CA generation.** The CA is node-local — it is generated per node and is not shared or replicated by the `StateBackend`. With `dynamicallyCreateCertificateAuthorityCertificate=true`, every node in a cluster mints its own distinct CA, so a client that trusts one node's `mockserver-ca.pem` gets a TLS validation failure when a load balancer routes it to a different node (an intermittent trust error — the intermittency is the tell). Instead, supply **one shared CA** to every node via `certificateAuthorityCertificate` + `certificateAuthorityPrivateKey` and set `dynamicallyCreateCertificateAuthorityCertificate=false`. `StateBackendFactory.create()` logs a WARN when it detects `clusterEnabled=true` together with dynamic CA generation. See [docs/code/clustered-state.md → Per-Node Dynamic CA (TLS Trust)](clustered-state.md#per-node-dynamic-ca-tls-trust).
+
 ### Proxy Setup — CA Materialisation and Copy-Paste Block
 
 The `proxySetupLogging` property (env `MOCKSERVER_PROXY_SETUP_LOGGING`, default `false`) gates both the startup CA file write and the "Proxy Setup" log block. The block contains ready-to-paste environment variable exports for both Unix and Windows PowerShell:

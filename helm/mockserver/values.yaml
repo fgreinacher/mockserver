@@ -32,6 +32,85 @@ app:
   jvmOptions: ""
   serviceAccountName: default
   runAsUser: 65534
+  # -- Set MOCKSERVER_PROPERTY_FILE to /config/<propertiesFileName> even when
+  # app.config.enabled is false. Enable this when you mount an EXTERNAL ConfigMap
+  # (Option 2 in the README) that already contains a mockserver.properties file,
+  # so MockServer is actually pointed at it. Default false keeps today's behaviour
+  # (the property-file env is set only for inline app.config).
+  mountConfigMap: false
+  # -- Extra environment variables, appended verbatim to the container's env list.
+  # Each entry is a standard Kubernetes EnvVar (name/value, or name/valueFrom).
+  # Empty by default. Use this to set any MOCKSERVER_* property the chart does not
+  # expose a dedicated value for (see https://www.mock-server.com/mock_server/configuration_properties.html).
+  # Example:
+  #   extraEnv:
+  #     - name: MOCKSERVER_MAX_EXPECTATIONS
+  #       value: "5000"
+  #     - name: MOCKSERVER_TLS_X509_CERTIFICATE_PATH
+  #       value: /tls/Certificate.pem
+  extraEnv: []
+  # TLS certificate material supplied via a Kubernetes Secret.
+  #
+  # ESSENTIAL FOR CLUSTERED / MULTI-REPLICA DEPLOYMENTS. By default each pod
+  # dynamically generates its OWN Certificate Authority (dynamicallyCreateCertificate
+  # AuthorityCertificate=true in the shipped mockserver.properties). Behind a load
+  # balancer that means every pod presents certificates signed by a DIFFERENT CA, so
+  # a client that imported one pod's mockserver-ca.pem gets a TLS trust error the
+  # moment it is routed to another pod — an error that appears INTERMITTENTLY as the
+  # load balancer rotates pods. Supplying ONE shared CA to every replica here (and
+  # leaving dynamic CA generation off) fixes it: all pods sign leaf certificates with
+  # the same CA, so a single imported CA is trusted fleet-wide.
+  #
+  # A Secret — never a ConfigMap — is the correct place for a private key. Enabling
+  # this mounts the Secret read-only at app.tls.mountPath and points MockServer at the
+  # mounted files (and sets dynamicallyCreateCertificateAuthorityCertificate=false).
+  #
+  # Example (create the Secret from PEM files kept OUT of version control):
+  #   app:
+  #     tls:
+  #       enabled: true
+  #   # helm install ... \
+  #   #   --set-file app.tls.certificateAuthorityCertificate=ca.pem \
+  #   #   --set-file app.tls.certificateAuthorityPrivateKey=ca-key.pem
+  #
+  # Example (reference a Secret you manage yourself, e.g. via SealedSecrets/ExternalSecrets):
+  #   app:
+  #     tls:
+  #       enabled: true
+  #       create: false
+  #       existingSecretName: my-mockserver-tls   # must contain CertificateAuthorityCertificate.pem + CertificateAuthorityPrivateKey.pem
+  tls:
+    # -- Mount shared TLS material from a Secret and disable per-pod dynamic CA generation.
+    enabled: false
+    # -- Create the Secret from the inline PEM below (true), or reference an existing
+    # Secret via existingSecretName (false).
+    create: true
+    # -- Name of an existing Secret to mount (required when create is false).
+    existingSecretName: ""
+    # -- Read-only mount path for the TLS material inside the container.
+    mountPath: /tls
+    # -- CA X.509 certificate PEM (the shared trust anchor). Only used when create is true.
+    # Keep it OUT of version control — prefer `--set-file` or an existing/sealed Secret.
+    certificateAuthorityCertificate: ""
+    # -- CA private key PEM (PKCS#8 or PKCS#1). Only used when create is true. SECRET —
+    # supply via `--set-file`, never commit it.
+    certificateAuthorityPrivateKey: ""
+    # -- Optional server X.509 certificate PEM. Only used when create is true. When
+    # omitted MockServer derives leaf certificates from the CA automatically.
+    certificate: ""
+    # -- Optional server private key PEM. Only used when create is true.
+    privateKey: ""
+  # Writable directory (emptyDir) for dynamically generated TLS certificates.
+  #
+  # The default directoryToSaveDynamicSSLCertificate is "." — but with cwd "/", a
+  # non-root uid (65534), and (optionally) a read-only root filesystem, MockServer has
+  # nowhere writable to persist a dynamically generated CA/leaf. Enable this to mount a
+  # writable emptyDir and point directoryToSaveDynamicSSLCertificate at it, so the
+  # single-replica dynamic-CA case does not depend on a non-writable working directory.
+  # Not needed when app.tls.enabled is true (dynamic generation is off then).
+  dynamicCertificateDir:
+    enabled: false
+    path: /dynamic-certificates
   config:
     enabled: false
     # properties: |

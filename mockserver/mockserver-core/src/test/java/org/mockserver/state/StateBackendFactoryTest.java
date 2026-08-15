@@ -150,6 +150,39 @@ public class StateBackendFactoryTest {
     }
 
     @Test
+    public void shouldWarnWhenClusteredAndDynamicCertificateAuthorityEnabled() {
+        // The broken combination: a clustered (multi-node) deployment where every
+        // node dynamically mints its OWN Certificate Authority. Clients that trust
+        // one node's CA fail TLS validation against the others.
+        Configuration config = Configuration.configuration()
+            .clusterEnabled(true)
+            .dynamicallyCreateCertificateAuthorityCertificate(true);
+
+        assertTrue(StateBackendFactory.isClusteredWithDynamicCertificateAuthority(config));
+    }
+
+    @Test
+    public void shouldNotWarnWhenClusteredWithSharedCertificateAuthority() {
+        // Clustered but NOT dynamically generating the CA (the supported fix:
+        // one shared CA supplied to every node) -> no warning.
+        Configuration config = Configuration.configuration()
+            .clusterEnabled(true)
+            .dynamicallyCreateCertificateAuthorityCertificate(false);
+
+        assertFalse(StateBackendFactory.isClusteredWithDynamicCertificateAuthority(config));
+    }
+
+    @Test
+    public void shouldNotWarnWhenSingleNodeWithDynamicCertificateAuthority() {
+        // Single-node dynamic CA is fine (one node, one CA) -> no warning.
+        Configuration config = Configuration.configuration()
+            .clusterEnabled(false)
+            .dynamicallyCreateCertificateAuthorityCertificate(true);
+
+        assertFalse(StateBackendFactory.isClusteredWithDynamicCertificateAuthority(config));
+    }
+
+    @Test
     public void shouldThrowWhenBlobStoreTypeIsUnrecognised() {
         // A blobStoreType that is neither a built-in (memory/filesystem) nor a
         // known cloud registrar key must fail with the "not a recognised" guidance,

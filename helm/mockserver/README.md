@@ -215,6 +215,67 @@ helm upgrade --install --namespace mockserver mockserver oci://ghcr.io/mock-serv
 
 See the [full persistence documentation](https://www.mock-server.com/where/kubernetes.html#helm_persistent_storage) for more examples including existing PVC usage and clustering with shared storage.
 
+### Shared TLS Certificate Authority (required for clustering / multiple replicas)
+
+By default MockServer **dynamically generates its own Certificate Authority (CA)** on each pod. With a single replica that is fine. But with **more than one replica** (for example `replicaCount: 3`, or any clustered deployment) **each pod generates a different CA**. A client that imported one pod's `mockserver-ca.pem` will then get a **TLS trust error the moment the load balancer routes it to a different pod** — and because it depends on which pod you land on, the failure looks **intermittent**. That intermittency is the tell that the pods do not share a CA.
+
+The fix is to give every pod **one shared CA** via a Kubernetes **Secret** (a Secret, not a ConfigMap — it holds a private key) and turn dynamic generation off. The chart does this for you with the `app.tls` values:
+
+```bash
+helm upgrade --install --namespace mockserver \
+  --set app.tls.enabled=true \
+  --set-file app.tls.certificateAuthorityCertificate=ca.pem \
+  --set-file app.tls.certificateAuthorityPrivateKey=ca-key.pem \
+  mockserver helm/mockserver
+```
+
+This creates a Secret containing the CA, mounts it read-only into every pod at `/tls`, and automatically sets `certificateAuthorityCertificate`, `certificateAuthorityPrivateKey`, and `dynamicallyCreateCertificateAuthorityCertificate=false`. Every pod now signs its leaf certificates with the **same** CA, so a single imported `ca.pem` is trusted across the whole fleet.
+
+> **Keep the CA private key out of source control.** Pass the PEM files with `--set-file` at install time, or manage the Secret yourself (for example with SealedSecrets or External Secrets) and reference it:
+>
+> ```yaml
+> app:
+>   tls:
+>     enabled: true
+>     create: false
+>     existingSecretName: my-mockserver-tls   # must contain CertificateAuthorityCertificate.pem and CertificateAuthorityPrivateKey.pem
+> ```
+
+The following TLS values are supported:
+- `app.tls.enabled` (default: false) — mount shared TLS material from a Secret and disable per-pod dynamic CA generation
+- `app.tls.create` (default: true) — create the Secret from the inline PEM values; set `false` to use `existingSecretName`
+- `app.tls.existingSecretName` (default: "") — name of an existing Secret to mount (required when `create` is false)
+- `app.tls.mountPath` (default: /tls) — read-only mount path for the TLS material
+- `app.tls.certificateAuthorityCertificate` / `app.tls.certificateAuthorityPrivateKey` (default: "") — CA PEM material (only used when `create` is true; supply via `--set-file`)
+- `app.tls.certificate` / `app.tls.privateKey` (default: "") — optional server certificate/key PEM (only used when `create` is true; MockServer derives leaf certificates from the CA when omitted)
+
+If you deliberately keep **dynamic** CA generation on a single replica, enable a writable directory for the generated certificates so MockServer is not forced to write to a non-writable working directory (`.`):
+
+```bash
+helm upgrade --install --namespace mockserver \
+  --set app.dynamicCertificateDir.enabled=true \
+  mockserver helm/mockserver
+```
+
+- `app.dynamicCertificateDir.enabled` (default: false) — mount a writable `emptyDir` for dynamically generated certificates
+- `app.dynamicCertificateDir.path` (default: /dynamic-certificates) — mount path, also used for `directoryToSaveDynamicSSLCertificate`
+
+### Extra environment variables
+
+Any MockServer property the chart does not expose a dedicated value for can be set through `app.extraEnv`, which is appended verbatim to the container's environment:
+
+```yaml
+app:
+  extraEnv:
+    - name: MOCKSERVER_MAX_EXPECTATIONS
+      value: "5000"
+    - name: MOCKSERVER_LOG_LEVEL
+      valueFrom:
+        configMapKeyRef:
+          name: my-config
+          key: logLevel
+```
+
 ### Chaos Proxy (fault injection)
 
 MockServer can be deployed as a **chaos proxy** in front of a real upstream Service to inject faults (errors, latency, dropped connections, slow/corrupted responses, rate limits) into the responses your services receive — without changing the calling code. Point a service at this MockServer Service instead of the real upstream (or use it as an egress/forward proxy), and attach an `HttpChaosProfile` (`chaos` block) to a forwarding expectation.

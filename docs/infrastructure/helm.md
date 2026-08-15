@@ -42,6 +42,7 @@ initializerJson.json"]
 | `servicemonitor.yaml` | Optional Prometheus Operator ServiceMonitor for the metrics endpoint (when `serviceMonitor.enabled`) |
 | `ingress.yaml` | Optional Ingress resource |
 | `configmap.yaml` | Optional ConfigMap for inline configuration (when `app.config.enabled`) |
+| `secret-tls.yaml` | Optional Secret holding shared TLS CA (and optional server cert/key) material (when `app.tls.enabled` and `app.tls.create`) |
 | `pvc.yaml` | Optional PersistentVolumeClaim (when `app.persistence.enabled` and no `existingClaimName`) |
 | `service-test.yaml` | Helm test pod (curl readiness check) |
 | `_helpers.tpl` | Template helper functions |
@@ -248,6 +249,36 @@ When `app.persistence.enabled=true`, the chart:
 | `podSecurityContext` | map | `{}` | Pod-level securityContext, rendered verbatim into `spec.template.spec.securityContext`. Accepts any pod-level field (`fsGroup`, `fsGroupChangePolicy`, `runAsGroup`, `seccompProfile`, …). Empty ⇒ nothing emitted. |
 
 **Backward compatibility:** Disabled by default. When disabled, no PVC, volumes, volumeMounts, or env vars are added — the chart behaves identically to before this feature was added. `podSecurityContext` likewise defaults to `{}`, so no pod-level `securityContext` is emitted unless set.
+
+### Shared TLS Certificate Authority (`app.tls`)
+
+**Clustered / multi-replica deployments must share one CA.** With the default `dynamicallyCreateCertificateAuthorityCertificate=true`, each pod mints its own distinct CA (the CA is not part of the replicated `StateBackend`), so a client trusting one pod's `mockserver-ca.pem` fails TLS validation — intermittently, as the load balancer rotates pods — against the others. See [docs/code/clustered-state.md → Per-Node Dynamic CA (TLS Trust)](../code/clustered-state.md#per-node-dynamic-ca-tls-trust). MockServer logs a WARN at start up when it detects `clusterEnabled=true` with dynamic CA generation.
+
+When `app.tls.enabled=true` the chart mounts shared TLS material from a **Secret** (the correct shape for a private key — a ConfigMap is not) read-only at `app.tls.mountPath` and sets, on every replica:
+
+- `MOCKSERVER_DYNAMICALLY_CREATE_CERTIFICATE_AUTHORITY_CERTIFICATE=false`
+- `MOCKSERVER_CERTIFICATE_AUTHORITY_X509_CERTIFICATE=<mountPath>/CertificateAuthorityCertificate.pem`
+- `MOCKSERVER_CERTIFICATE_AUTHORITY_PRIVATE_KEY=<mountPath>/CertificateAuthorityPrivateKey.pem`
+- (when `create=true` and inline server cert/key supplied) `MOCKSERVER_TLS_X509_CERTIFICATE_PATH` / `MOCKSERVER_TLS_PRIVATE_KEY_PATH`
+
+With `create=true` (default) the Secret is created from the inline PEM values (`secret-tls.yaml`); with `create=false` an operator-managed `existingSecretName` is mounted instead (the volume declares `required` on that name so a misconfiguration fails the render, not the pod).
+
+| Value | Type | Default | Description |
+|-------|------|---------|-------------|
+| `app.tls.enabled` | bool | `false` | Mount shared TLS material from a Secret and disable per-pod dynamic CA generation |
+| `app.tls.create` | bool | `true` | Create the Secret from inline PEM; `false` ⇒ use `existingSecretName` |
+| `app.tls.existingSecretName` | string | `""` | Existing Secret to mount (required when `create=false`) |
+| `app.tls.mountPath` | string | `/tls` | Read-only mount path for the TLS material |
+| `app.tls.certificateAuthorityCertificate` | string | `""` | CA X.509 PEM (only when `create=true`; supply via `--set-file`) |
+| `app.tls.certificateAuthorityPrivateKey` | string | `""` | CA private key PEM (only when `create=true`; SECRET) |
+| `app.tls.certificate` | string | `""` | Optional server X.509 PEM (only when `create=true`) |
+| `app.tls.privateKey` | string | `""` | Optional server private key PEM (only when `create=true`) |
+| `app.dynamicCertificateDir.enabled` | bool | `false` | Mount a writable `emptyDir` and point `directoryToSaveDynamicSSLCertificate` at it (for single-replica dynamic-CA use, so writes do not target the non-writable cwd) |
+| `app.dynamicCertificateDir.path` | string | `/dynamic-certificates` | Mount path / `directoryToSaveDynamicSSLCertificate` value |
+| `app.extraEnv` | list | `[]` | Extra container env vars (EnvVar list), appended verbatim — set any `MOCKSERVER_*` property without a dedicated value |
+| `app.mountConfigMap` | bool | `false` | Set `MOCKSERVER_PROPERTY_FILE` even when `app.config.enabled=false` (for external-ConfigMap mounts). Previously referenced an undeclared value — now a real key, default `false` preserves prior behaviour. |
+
+**Backward compatibility:** all of the above are disabled/empty by default; the rendered Deployment is byte-for-byte unchanged unless a value is set.
 
 ### JVM Heap Tuning (`app.jvmOptions`)
 

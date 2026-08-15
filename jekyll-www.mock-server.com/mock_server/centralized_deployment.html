@@ -309,6 +309,25 @@ clustering:
     This allows the cluster to form without additional RBAC or Kubernetes API access.
 </p>
 
+<div class="alert" style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 16px; margin: 16px 0;">
+    <p><strong>Shared TLS Certificate Authority &mdash; do this for any multi-replica deployment.</strong>
+    By default every pod generates its <em>own</em> Certificate Authority, so a client that imported one pod's
+    <code class="inline code">mockserver-ca.pem</code> gets a TLS trust error &mdash; showing up <strong>intermittently</strong> as
+    the load balancer rotates pods &mdash; the moment it is routed to a different pod.</p>
+    <p>Give every pod <strong>one shared CA</strong> from a Kubernetes Secret (a Secret, never a ConfigMap &mdash; it holds a
+    private key) using the chart's <code class="inline code">app.tls</code> values, which also turn off dynamic CA generation:</p>
+    <pre class="prettyprint lang-bash code"><code class="code">helm upgrade --install --namespace mockserver --create-namespace \
+  --version {{ site.mockserver_version }} \
+  -f cluster-values.yaml \
+  --set app.tls.enabled=true \
+  --set-file app.tls.certificateAuthorityCertificate=ca.pem \
+  --set-file app.tls.certificateAuthorityPrivateKey=ca-key.pem \
+  mockserver oci://ghcr.io/mock-server/charts/mockserver</code></pre>
+    <p>Keep the CA private key out of source control &mdash; pass it with <code class="inline code">--set-file</code>, or manage the
+    Secret yourself and reference it with <code class="inline code">app.tls.create=false</code> and
+    <code class="inline code">app.tls.existingSecretName</code>.</p>
+</div>
+
 <h4>Advanced: custom JGroups transport</h4>
 
 <p>
@@ -371,6 +390,10 @@ app:
         <tr>
             <td>Verification</td>
             <td><strong>The event log is node-local by default.</strong> <code class="inline code">verify()</code> checks only the node it is sent to. When a load balancer distributes requests, a request handled by Node A is not visible in Node B's log. Either enable cluster verify fan-in (<code class="inline code">clusterVerifyFanIn=true</code> with <code class="inline code">clusterVerifyFanInPeers</code>) to aggregate count-based verify/retrieve across the fleet, pin verification calls to specific nodes, run verification against all nodes, or use a single-node deployment when cross-node assertion is required.</td>
+        </tr>
+        <tr>
+            <td>TLS Certificate Authority</td>
+            <td><strong>Do not use dynamic CA generation in a cluster.</strong> By default each node generates its <em>own</em> Certificate Authority, which is <strong>not</strong> shared between nodes. A client that trusts one node's <code class="inline code">mockserver-ca.pem</code> gets a TLS trust error &mdash; appearing <strong>intermittently</strong> as the load balancer rotates pods &mdash; when routed to another node. Supply <strong>one shared CA</strong> to every node (<code class="inline code">certificateAuthorityCertificate</code> + <code class="inline code">certificateAuthorityPrivateKey</code>) and set <code class="inline code">dynamicallyCreateCertificateAuthorityCertificate=false</code>. On Kubernetes, mount the CA from a Secret via the chart's <code class="inline code">app.tls</code> values (see the Helm setup below). MockServer logs a warning at start up if it detects clustering with dynamic CA generation.</td>
         </tr>
         <tr>
             <td>Eviction</td>

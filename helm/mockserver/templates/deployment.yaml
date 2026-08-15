@@ -15,10 +15,13 @@ spec:
       release: {{ .Release.Name }}
   template:
     metadata:
-{{- if or .Values.app.config.enabled .Values.podAnnotations }}
+{{- if or .Values.app.config.enabled (and .Values.app.tls.enabled .Values.app.tls.create) .Values.podAnnotations }}
       annotations:
 {{- if .Values.app.config.enabled }}
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- end }}
+{{- if and .Values.app.tls.enabled .Values.app.tls.create }}
+        checksum/tls: {{ include (print $.Template.BasePath "/secret-tls.yaml") . | sha256sum }}
 {{- end }}
 {{- if .Values.podAnnotations }}
 {{ toYaml .Values.podAnnotations | indent 8 }}
@@ -171,9 +174,47 @@ spec:
             - name: JGROUPS_DNS_QUERY
               value: "{{ template "release.name" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
 {{- end }}
+{{- if .Values.app.tls.enabled }}
+            # Shared CA from a mounted Secret so every replica presents certificates
+            # chaining to ONE CA a client can trust (fixes intermittent TLS trust
+            # errors behind a load balancer). Dynamic per-pod CA generation is turned
+            # off; environment values override the same properties in a mounted file.
+            - name: MOCKSERVER_DYNAMICALLY_CREATE_CERTIFICATE_AUTHORITY_CERTIFICATE
+              value: "false"
+            - name: MOCKSERVER_CERTIFICATE_AUTHORITY_X509_CERTIFICATE
+              value: {{ .Values.app.tls.mountPath }}/CertificateAuthorityCertificate.pem
+            - name: MOCKSERVER_CERTIFICATE_AUTHORITY_PRIVATE_KEY
+              value: {{ .Values.app.tls.mountPath }}/CertificateAuthorityPrivateKey.pem
+{{- if and .Values.app.tls.create .Values.app.tls.certificate }}
+            - name: MOCKSERVER_TLS_X509_CERTIFICATE_PATH
+              value: {{ .Values.app.tls.mountPath }}/Certificate.pem
+{{- end }}
+{{- if and .Values.app.tls.create .Values.app.tls.privateKey }}
+            - name: MOCKSERVER_TLS_PRIVATE_KEY_PATH
+              value: {{ .Values.app.tls.mountPath }}/PrivateKey.pem
+{{- end }}
+{{- end }}
+{{- if .Values.app.dynamicCertificateDir.enabled }}
+            # Writable emptyDir so dynamically generated certificates have somewhere to
+            # be written (the default "." is not writable under a non-root uid / cwd "/").
+            - name: MOCKSERVER_CERTIFICATE_DIRECTORY_TO_SAVE_DYNAMIC_SSL_CERTIFICATE
+              value: {{ .Values.app.dynamicCertificateDir.path | quote }}
+{{- end }}
+{{- with .Values.app.extraEnv }}
+{{ toYaml . | indent 12 }}
+{{- end }}
           volumeMounts:
             - name: config-volume
               mountPath: /config
+{{- if .Values.app.tls.enabled }}
+            - name: tls-volume
+              mountPath: {{ .Values.app.tls.mountPath }}
+              readOnly: true
+{{- end }}
+{{- if .Values.app.dynamicCertificateDir.enabled }}
+            - name: dynamic-certificates
+              mountPath: {{ .Values.app.dynamicCertificateDir.path }}
+{{- end }}
 {{- if and .Values.app.mountedLibsConfigMapName (not .Values.clustering.enabled) }}
             - name: libs-volume
               mountPath: /libs
@@ -191,6 +232,15 @@ spec:
           configMap:
             name: {{ .Values.app.mountedConfigMapName }}
             optional: true
+{{- if .Values.app.tls.enabled }}
+        - name: tls-volume
+          secret:
+            secretName: {{ if .Values.app.tls.create }}{{ template "release.name" . }}-tls{{ else }}{{ required "app.tls.existingSecretName is required when app.tls.enabled=true and app.tls.create=false" .Values.app.tls.existingSecretName }}{{ end }}
+{{- end }}
+{{- if .Values.app.dynamicCertificateDir.enabled }}
+        - name: dynamic-certificates
+          emptyDir: {}
+{{- end }}
 {{- if and .Values.app.mountedLibsConfigMapName (not .Values.clustering.enabled) }}
         - name: libs-volume
           configMap:
