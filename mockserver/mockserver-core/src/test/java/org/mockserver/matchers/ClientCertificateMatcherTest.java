@@ -29,8 +29,12 @@ import static org.mockserver.model.NottableString.not;
  */
 public class ClientCertificateMatcherTest {
 
-    // fingerprint (SHA-256) of the test leaf certificate, lowercase hex with no separators
-    private static final String LEAF_FINGERPRINT = "b9027409ffe64682ff3d28a192fb2b154228ca34354332b3ab992b5d1ecacc84";
+    // fingerprint (SHA-256) of the test leaf certificate, lowercase hex with no separators.
+    // Deliberately a literal rather than derived from the fixture, so these tests pin an exact expected
+    // value instead of re-deriving whatever the production code happens to produce. It therefore goes
+    // stale whenever the fixture is renewed - shouldHaveFingerprintConstantMatchingCheckedInFixture()
+    // below turns that into an explicit instruction rather than a confusing "no match" failure.
+    private static final String LEAF_FINGERPRINT = "fee41885fa2af13087841e38553624aa376560160ff0bd6b4fa461fae8c69b83";
 
     private final Configuration configuration = configuration();
     private final MockServerLogger mockServerLogger = new MockServerLogger(ClientCertificateMatcherTest.class);
@@ -45,6 +49,29 @@ public class ClientCertificateMatcherTest {
      * Build a request carrying the real test leaf certificate chain (subject/issuer DN, SANs and DER
      * bytes populated), exactly as the Netty TLS handshake path does.
      */
+    /**
+     * Guard against a renewed certificate fixture silently invalidating {@link #LEAF_FINGERPRINT}.
+     * Renewing the mtls fixtures re-mints leaf-cert.pem, which changes its fingerprint and would
+     * otherwise make every fingerprint assertion below fail as an unexplained mismatch. This fails
+     * first and names the replacement value.
+     */
+    @Test
+    public void shouldHaveFingerprintConstantMatchingCheckedInFixture() throws Exception {
+        java.security.cert.X509Certificate leafCertificate =
+            PEMToFile.x509ChainFromPEMFile("org/mockserver/authentication/mtls/leaf-cert.pem").get(0);
+        StringBuilder actualFingerprint = new StringBuilder();
+        for (byte encodedByte : java.security.MessageDigest.getInstance("SHA-256").digest(leafCertificate.getEncoded())) {
+            actualFingerprint.append(String.format("%02x", encodedByte));
+        }
+
+        assertThat(
+            "org/mockserver/authentication/mtls/leaf-cert.pem has been renewed - update LEAF_FINGERPRINT to "
+                + actualFingerprint + " (see .opencode/skills/renew-test-certs)",
+            actualFingerprint.toString(),
+            is(LEAF_FINGERPRINT)
+        );
+    }
+
     private HttpRequest requestWithRealLeafCertificate() {
         return new JDKCertificateToMockServerX509Certificate(mockServerLogger).setClientCertificates(
             request(),
@@ -140,10 +167,23 @@ public class ClientCertificateMatcherTest {
             .matches(null, requestWithRealLeafCertificate()), is(true));
     }
 
+    /**
+     * The value under test here is the <em>formatting</em> (colon-separated, upper case), not the
+     * fingerprint itself - so it is derived from {@link #LEAF_FINGERPRINT} rather than written out a
+     * second time. A second literal would silently go stale on the next certificate renewal.
+     */
     @Test
     public void shouldMatchByFingerprintWithColonsAndUpperCase() {
+        StringBuilder colonSeparatedUpperCase = new StringBuilder();
+        for (int i = 0; i < LEAF_FINGERPRINT.length(); i += 2) {
+            if (i > 0) {
+                colonSeparatedUpperCase.append(':');
+            }
+            colonSeparatedUpperCase.append(LEAF_FINGERPRINT, i, i + 2);
+        }
+
         assertThat(matcher(request().withClientCertificate(clientCertificate().withFingerprintSha256(
-                "B9:02:74:09:FF:E6:46:82:FF:3D:28:A1:92:FB:2B:15:42:28:CA:34:35:43:32:B3:AB:99:2B:5D:1E:CA:CC:84")))
+                colonSeparatedUpperCase.toString().toUpperCase())))
             .matches(null, requestWithRealLeafCertificate()), is(true));
     }
 
