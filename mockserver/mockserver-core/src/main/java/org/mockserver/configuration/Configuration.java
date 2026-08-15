@@ -388,6 +388,7 @@ public class Configuration {
 
     // outbound - CA
     private ForwardProxyTLSX509CertificatesTrustManager forwardProxyTLSX509CertificatesTrustManagerType;
+    private Boolean forwardProxyTLSHostnameVerificationEnabled;
 
     // outbound - SSRF protection
     private Boolean forwardProxyBlockPrivateNetworks;
@@ -5045,7 +5046,8 @@ public class Configuration {
     }
 
     /**
-     * Comma seperated list of TLS protocols, by default TLSv1,TLSv1.1,TLSv1.2
+     * Comma seperated list of TLS protocols, by default TLSv1.2,TLSv1.3. TLSv1 and TLSv1.1 are no longer
+     * enabled by default (deprecated by RFC 8996); restore them via tlsProtocols + tlsAllowInsecureProtocols.
      *
      * @param tlsProtocols comma seperated list of TLS protocols
      */
@@ -5502,6 +5504,26 @@ public class Configuration {
      */
     public Configuration forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager forwardProxyTLSX509CertificatesTrustManagerType) {
         this.forwardProxyTLSX509CertificatesTrustManagerType = forwardProxyTLSX509CertificatesTrustManagerType;
+        return this;
+    }
+
+    public Boolean forwardProxyTLSHostnameVerificationEnabled() {
+        if (forwardProxyTLSHostnameVerificationEnabled == null) {
+            return ConfigurationProperties.forwardProxyTLSHostnameVerificationEnabled();
+        }
+        return forwardProxyTLSHostnameVerificationEnabled;
+    }
+
+    /**
+     * Whether to verify the upstream host name against its certificate when forwarding or proxying over
+     * TLS with a validating trust manager (JVM or CUSTOM). Defaults to true. Has no effect for the ANY
+     * trust manager type, which deliberately trusts everything and performs no host name verification.
+     * Set to false when you legitimately need a host name mismatch while still validating the chain.
+     *
+     * @param forwardProxyTLSHostnameVerificationEnabled if true (default), verify the upstream host name for JVM / CUSTOM trust managers
+     */
+    public Configuration forwardProxyTLSHostnameVerificationEnabled(Boolean forwardProxyTLSHostnameVerificationEnabled) {
+        this.forwardProxyTLSHostnameVerificationEnabled = forwardProxyTLSHostnameVerificationEnabled;
         return this;
     }
 

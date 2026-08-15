@@ -15,6 +15,7 @@ import org.slf4j.event.Level;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ClosedSelectorException;
 
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.mockserver.exception.ExceptionHandling.closeOnFlush;
 import static org.mockserver.exception.ExceptionHandling.connectionClosedException;
 import static org.mockserver.exception.ExceptionHandling.isSslOrDecoderFault;
@@ -29,11 +30,15 @@ public class UpstreamProxyRelayHandler extends SimpleChannelInboundHandler<FullH
     private final MockServerLogger mockServerLogger;
     private final Channel upstreamChannel;
     private final Channel downstreamChannel;
+    private final String host;
+    private final int port;
 
-    public UpstreamProxyRelayHandler(MockServerLogger mockServerLogger, Channel upstreamChannel, Channel downstreamChannel) {
+    public UpstreamProxyRelayHandler(MockServerLogger mockServerLogger, Channel upstreamChannel, Channel downstreamChannel, String host, int port) {
         super(false);
         this.upstreamChannel = upstreamChannel;
         this.downstreamChannel = downstreamChannel;
+        this.host = host;
+        this.port = port;
         this.mockServerLogger = mockServerLogger;
     }
 
@@ -46,7 +51,19 @@ public class UpstreamProxyRelayHandler extends SimpleChannelInboundHandler<FullH
     @Override
     public void channelRead0(final ChannelHandlerContext ctx, final FullHttpRequest request) {
         if (isSslEnabledDownstream(upstreamChannel) && downstreamChannel.pipeline().get(SslHandler.class) == null) {
-            downstreamChannel.pipeline().addFirst(nettySslContextFactory(ctx.channel()).createClientSslContext(true, HTTP_2.equals(getALPNProtocol(mockServerLogger, ctx))).newHandler(ctx.alloc()));
+            io.netty.handler.ssl.SslContext clientSslContext = nettySslContextFactory(ctx.channel())
+                .createClientSslContext(true, HTTP_2.equals(getALPNProtocol(mockServerLogger, ctx)));
+            // Give HTTPS endpoint identification (host name verification for JVM / CUSTOM trust managers) a
+            // reference identity: the CONNECT target host/port, mirroring the sibling loopback TLS in
+            // RelayConnectHandler#configurePipelines. The connected downstream SOCKET address is the wrong
+            // thing to verify against — its getHostString() is the MockServer loopback ("0.0.0.0") on the
+            // common forward-proxy path and only coincidentally the target on a reverse-proxy path — so the
+            // identity is keyed off the CONNECT host, never the socket. Falls back to the no-host handler
+            // (verification skipped, as before) only when the CONNECT host is unknown.
+            SslHandler sslHandler = isNotBlank(host)
+                ? clientSslContext.newHandler(ctx.alloc(), host, port)
+                : clientSslContext.newHandler(ctx.alloc());
+            downstreamChannel.pipeline().addFirst(sslHandler);
         }
         // Propagate the request's streaming intent onto the loopback channel so the relay-only
         // StreamingAwareHttpObjectAggregator streams the matching response incrementally even when the

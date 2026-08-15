@@ -4,14 +4,18 @@ import io.netty.handler.codec.http2.Http2SecurityUtil;
 import io.netty.handler.ssl.*;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import org.mockserver.configuration.Configuration;
+import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.file.FileReader;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.slf4j.event.Level;
 
+import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
+import java.io.File;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
@@ -19,10 +23,13 @@ import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.UnaryOperator;
 
+import static org.apache.commons.lang3.StringUtils.isBlank;
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.mockserver.configuration.Configuration.configuration;
 import static org.mockserver.socket.tls.KeyAndCertificateFactoryFactory.createKeyAndCertificateFactory;
@@ -61,6 +68,34 @@ public class NettySslContextFactory {
     private final boolean forServer;
 
     /**
+     * Logged at most once per JVM (see {@link #warnIfBundledCertificateAuthorityInUse()}): the publicly
+     * published bundled CA — whose private key ships in the jar — is signing served traffic.
+     * Package-private and resettable so the once-only latch can be exercised by tests.
+     */
+    static final AtomicBoolean BUNDLED_CA_WARNING_LOGGED = new AtomicBoolean(false);
+
+    // ---- Wave 3, item 4: cheap, time-bounded re-check of a user-supplied FIXED server certificate ----
+    // Self-generated leaves self-renew via KeyAndCertificateFactory#certificateNeedsRenewal(); fixed
+    // certificates are validated once at build and then pinned into the cached SslContext, so a
+    // long-running server would silently keep serving one that expired (or ignore a rotated replacement
+    // file) until a config change forced a rebuild. Re-validating on every handshake was rejected as a
+    // perf regression, so the check is throttled to at most once per interval and only stats the file
+    // (no parse) — a change in mtime/length forces a rebuild (which re-runs CertificateConfigurationValidator
+    // and picks up the replacement, failing loudly if it too is expired), while an unchanged-but-expired
+    // cert is surfaced with a single WARN.
+    private static final long FIXED_CERTIFICATE_RECHECK_INTERVAL_MS = 60_000L;
+    /**
+     * Time source consulted only by the fixed-certificate re-check; overridable so tests can advance past a
+     * fixed certificate's expiry without waiting wall-clock time. Never used for issuance.
+     */
+    static volatile LongSupplier fixedCertificateClock = System::currentTimeMillis;
+    private volatile long fixedServerCertificateLastModified = -1L;
+    private volatile long fixedServerCertificateLength = -1L;
+    private volatile long fixedServerCertificateNotAfterEpochMs = -1L;
+    private volatile long lastFixedServerCertificateCheckMs = 0L;
+    private volatile boolean fixedServerCertificateExpiryWarned;
+
+    /**
      * @deprecated use constructor that specifies configuration explicitly
      */
     @Deprecated
@@ -70,6 +105,7 @@ public class NettySslContextFactory {
         this.forServer = true;
         keyAndCertificateFactory = createKeyAndCertificateFactory(configuration, mockServerLogger);
         warnIfInsecureTlsProfileConfigured();
+        warnIfBundledCertificateAuthorityInUse();
         nettySslContextFactoryCustomizer.accept(this);
         if (configuration.proactivelyInitialiseTLS()) {
             createServerSslContext();
@@ -82,6 +118,7 @@ public class NettySslContextFactory {
         this.forServer = forServer;
         keyAndCertificateFactory = createKeyAndCertificateFactory(configuration, mockServerLogger, forServer);
         warnIfInsecureTlsProfileConfigured();
+        warnIfBundledCertificateAuthorityInUse();
         nettySslContextFactoryCustomizer.accept(this);
         if (configuration.proactivelyInitialiseTLS()) {
             createServerSslContext();
@@ -127,6 +164,52 @@ public class NettySslContextFactory {
                     .setLogLevel(Level.WARN)
                     .setMessageFormat("Forward proxy is configured to trust ALL X.509 certificates (mockserver.forwardProxyTLSX509CertificatesTrustManagerType=ANY). Certificate validation is disabled — this should be used only in development; prefer JVM or CUSTOM in production.")
             );
+        }
+    }
+
+    /**
+     * Emit a single startup WARN (once per JVM) when the publicly-known bundled CA is the trust anchor
+     * signing served traffic. MockServer ships that CA <em>and its private key</em> in the jar, so anyone
+     * can forge certificates the bundled CA trusts — fine for local testing, dangerous if mistaken for
+     * real interception security. Names the two supported fixes. This is not a bug and does not change the
+     * default; it just makes the trade-off visible.
+     */
+    private void warnIfBundledCertificateAuthorityInUse() {
+        if (mockServerLogger == null) {
+            return;
+        }
+        // The bundled CA only signs SERVED (inbound) traffic. A client-only factory (forServer=false)
+        // presents no server certificate, so "signing TLS traffic with the bundled default CA" would be
+        // inaccurate and misleading in a client-only JVM — emit the warning only for the server factory.
+        if (!forServer) {
+            return;
+        }
+        if (usingBundledDefaultCertificateAuthority() && BUNDLED_CA_WARNING_LOGGED.compareAndSet(false, true)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.WARN)
+                    .setMessageFormat("MockServer is signing TLS traffic with the bundled default Certificate Authority, whose private key is published in the MockServer jar — anyone can forge certificates it trusts, so this must not be relied on as real interception security. To use a unique private CA set mockserver.dynamicallyCreateCertificateAuthorityCertificate=true (or run with --proxy-setup).")
+            );
+        }
+    }
+
+    /**
+     * @return true when the active Certificate Authority is the publicly-published bundled default CA
+     * signing served traffic: dynamic CA generation is off, no user-supplied fixed leaf/key is in effect
+     * (which would mean the bundled CA signs nothing), and both CA paths are still the baked-in defaults.
+     */
+    boolean usingBundledDefaultCertificateAuthority() {
+        try {
+            if (configuration.dynamicallyCreateCertificateAuthorityCertificate()) {
+                return false;
+            }
+            if (isNotBlank(configuration.x509CertificatePath()) && isNotBlank(configuration.privateKeyPath())) {
+                return false;
+            }
+            return ConfigurationProperties.DEFAULT_CERTIFICATE_AUTHORITY_X509_CERTIFICATE.equals(configuration.certificateAuthorityCertificate())
+                && ConfigurationProperties.DEFAULT_CERTIFICATE_AUTHORITY_PRIVATE_KEY.equals(configuration.certificateAuthorityPrivateKey());
+        } catch (RuntimeException ignore) {
+            return false;
         }
     }
 
@@ -219,6 +302,19 @@ public class NettySslContextFactory {
                     sslContextBuilder.trustManager(jvmCAX509TrustCertificates(mockServerX509Certificates));
                 }
                 clientSslContext = instanceClientSslContextBuilderFunction.apply(sslClientContextBuilderCustomizer.apply(sslContextBuilder));
+                if (forwardProxyClient && forwardProxyUsesValidatingTrustManager()) {
+                    // Host name verification (RFC 2818 / HTTPS endpoint identification) for the JVM / CUSTOM
+                    // validating trust managers. Netty already enables it for client contexts created via
+                    // newHandler(host, port), but NOT for the no-host newHandler overloads (e.g. the
+                    // reverse-proxy relay), so verification was inconsistent across outbound paths and could
+                    // not be turned off. Force it uniformly at this single chokepoint every outbound path
+                    // (HTTP/1.1, HTTP/2, CONNECT relay, websocket relay, LLM forward) routes through: HTTPS
+                    // when enabled (covering the no-host paths too), or explicitly cleared when the operator
+                    // disables it (validate the chain but not the host name). ANY is never wrapped — its
+                    // insecure trust manager makes endpoint identification a no-op — so it is left as-is.
+                    String algorithm = Boolean.TRUE.equals(configuration.forwardProxyTLSHostnameVerificationEnabled()) ? "HTTPS" : null;
+                    clientSslContext = withEndpointIdentification(clientSslContext, algorithm);
+                }
                 clientSslContexts.put(key, clientSslContext);
                 configuration.rebuildTLSContext(false);
             } catch (Throwable throwable) {
@@ -325,6 +421,51 @@ public class NettySslContextFactory {
     }
 
     /**
+     * @return true when the forward-proxy trust manager actually validates the upstream chain (JVM or
+     * CUSTOM, not the trust-all ANY). Only these modes get host-name verification forced on/off; ANY is
+     * left untouched because its insecure trust manager makes endpoint identification a no-op anyway.
+     */
+    private boolean forwardProxyUsesValidatingTrustManager() {
+        ForwardProxyTLSX509CertificatesTrustManager type;
+        try {
+            type = configuration.forwardProxyTLSX509CertificatesTrustManagerType();
+        } catch (RuntimeException ignore) {
+            return false;
+        }
+        return type == ForwardProxyTLSX509CertificatesTrustManager.JVM
+            || type == ForwardProxyTLSX509CertificatesTrustManager.CUSTOM;
+    }
+
+    /**
+     * Wrap a built client {@link SslContext} so every {@link SSLEngine} / {@link SslHandler} it produces —
+     * regardless of which {@code newHandler(...)} overload an outbound path calls — has its endpoint
+     * identification algorithm forced to {@code algorithm}: {@code "HTTPS"} to verify the upstream host
+     * name (RFC 2818) on top of chain validation, or {@code null} to explicitly clear the verification
+     * Netty otherwise defaults on for host/port client handlers.
+     * <p>
+     * Every {@code newHandler(...)} and {@code newEngine(...)} overload on {@link DelegatingSslContext}
+     * funnels through {@code initEngine} — the handler overloads via its default {@code initHandler}, which
+     * calls {@code initEngine(handler.engine())} (verified against Netty 4.2.16) — so overriding only
+     * {@code initEngine} covers every outbound path (forward client, CONNECT relay, websocket relay,
+     * reverse-proxy relay, direct engine use).
+     */
+    private static SslContext withEndpointIdentification(SslContext delegate, String algorithm) {
+        return new DelegatingSslContext(delegate) {
+            @Override
+            protected void initEngine(SSLEngine engine) {
+                setEndpointIdentificationAlgorithm(engine, algorithm);
+            }
+        };
+    }
+
+    private static void setEndpointIdentificationAlgorithm(SSLEngine engine, String algorithm) {
+        SSLParameters sslParameters = engine.getSSLParameters();
+        // null clears the algorithm (disables host-name verification while keeping chain validation)
+        sslParameters.setEndpointIdentificationAlgorithm(algorithm);
+        engine.setSSLParameters(sslParameters);
+    }
+
+    /**
      * The complete set of inputs baked into the cached {@link #serverSslContext}, compared per cached
      * entry so the cache self-invalidates when ANY of them change — replacing the single consumable
      * {@code rebuildServerTLSContext} boolean, which suffered a lost-update race: one thread could add a
@@ -373,6 +514,9 @@ public class NettySslContextFactory {
             + "|fwdChain=" + configuration.forwardProxyCertificateChain()
             + "|fwdByHost=" + configuration.forwardProxyClientCertificatesByHost()
             + "|trustType=" + forwardProxyTrustManagerTypeSafe()
+            // fold the host-name-verification toggle into the key so flipping it at runtime self-invalidates
+            // the cached client context (defect C8), instead of a rotated value being silently ignored
+            + "|hostnameVerification=" + configuration.forwardProxyTLSHostnameVerificationEnabled()
             + "|customTrust=" + configuration.forwardProxyTLSCustomTrustX509Certificates()
             + "|mtlsChain=" + configuration.tlsMutualAuthenticationCertificateChain()
             + "|protocols=" + configuration.tlsProtocols()
@@ -397,9 +541,15 @@ public class NettySslContextFactory {
     }
 
     public SslContext createServerSslContext() {
+        // Evaluate the fixed-certificate re-check ONCE per call (it is internally throttled and has a
+        // warn-once side effect) and reuse the result across both the fast path and the double-checked
+        // path, so the inner throttled re-evaluation cannot return a stale "unchanged" and short-circuit
+        // a rebuild the outer check already decided on.
+        boolean fixedServerCertificateChanged = fixedServerCertificateChangedOnDisk();
         if (serverSslContext != null
             && !keyAndCertificateFactory.certificateNotYetCreated()
             && !keyAndCertificateFactory.certificateNeedsRenewal()
+            && !fixedServerCertificateChanged
             && serverContextSignature().equals(serverSslContextSignature)) {
             return serverSslContext;
         }
@@ -407,6 +557,7 @@ public class NettySslContextFactory {
             if (serverSslContext != null
                 && !keyAndCertificateFactory.certificateNotYetCreated()
                 && !keyAndCertificateFactory.certificateNeedsRenewal()
+                && !fixedServerCertificateChanged
                 && serverContextSignature().equals(serverSslContextSignature)) {
                 return serverSslContext;
             }
@@ -434,6 +585,7 @@ public class NettySslContextFactory {
                 // paths the factory derived during the build are captured), so a later change to any of
                 // them forces a rebuild without relying on a consumable flag
                 serverSslContextSignature = serverContextSignature();
+                recordFixedServerCertificateState();
                 configuration.rebuildServerTLSContext(false);
             } catch (Error error) {
                 throw error;
@@ -449,6 +601,89 @@ public class NettySslContextFactory {
             }
         }
         return serverSslContext;
+    }
+
+    /**
+     * True when a user-supplied FIXED server certificate has changed on disk (mtime or length) since the
+     * cached context was built, so the caller should rebuild — which re-runs
+     * {@link CertificateConfigurationValidator} and picks up the replacement (failing loudly if it too is
+     * expired). Never true for self-generated certificates (they self-renew via
+     * {@link KeyAndCertificateFactory#certificateNeedsRenewal()}). Has a warn-once side effect: when the
+     * fixed certificate is unchanged on disk but has passed its {@code notAfter}, a single WARN is emitted
+     * so a long-running server surfaces the expiry instead of silently serving it.
+     * <p>
+     * Throttled to at most one filesystem stat per {@link #FIXED_CERTIFICATE_RECHECK_INTERVAL_MS}, and only
+     * ever stats the file — it never re-parses the PEM — so it is not the per-handshake perf regression that
+     * re-validation was rejected for.
+     */
+    private boolean fixedServerCertificateChangedOnDisk() {
+        String x509CertificatePath = configuration.x509CertificatePath();
+        if (isBlank(x509CertificatePath) || isBlank(configuration.privateKeyPath())) {
+            return false;
+        }
+        long now = fixedCertificateClock.getAsLong();
+        if (now - lastFixedServerCertificateCheckMs < FIXED_CERTIFICATE_RECHECK_INTERVAL_MS) {
+            return false;
+        }
+        lastFixedServerCertificateCheckMs = now;
+        File certificateFile = new File(x509CertificatePath);
+        if (certificateFile.isFile()) {
+            long lastModified = certificateFile.lastModified();
+            long length = certificateFile.length();
+            if (fixedServerCertificateLastModified != -1L
+                && (lastModified != fixedServerCertificateLastModified || length != fixedServerCertificateLength)) {
+                // rotated in place on disk — force a rebuild to pick up (and re-validate) the replacement
+                return true;
+            }
+        }
+        // unchanged (or a classpath resource we cannot stat) — surface expiry of the served certificate
+        if (fixedServerCertificateNotAfterEpochMs != -1L
+            && now >= fixedServerCertificateNotAfterEpochMs
+            && !fixedServerCertificateExpiryWarned) {
+            fixedServerCertificateExpiryWarned = true;
+            if (mockServerLogger != null) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("the configured fixed server certificate at {} has expired (notAfter {}) but is still being served; MockServer does not renew user-supplied certificates — replace the file at x509CertificatePath (and privateKeyPath) with a valid certificate")
+                        .setArguments(x509CertificatePath, new Date(fixedServerCertificateNotAfterEpochMs))
+                );
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Snapshot the on-disk state (mtime, length) and the served leaf's {@code notAfter} of a user-supplied
+     * FIXED server certificate, right after a successful build, so {@link #fixedServerCertificateChangedOnDisk()}
+     * can later detect a rotation or surface an expiry. A no-op for self-generated certificates.
+     */
+    private void recordFixedServerCertificateState() {
+        String x509CertificatePath = configuration.x509CertificatePath();
+        if (isBlank(x509CertificatePath) || isBlank(configuration.privateKeyPath())) {
+            fixedServerCertificateLastModified = -1L;
+            fixedServerCertificateLength = -1L;
+            fixedServerCertificateNotAfterEpochMs = -1L;
+            return;
+        }
+        fixedServerCertificateExpiryWarned = false;
+        lastFixedServerCertificateCheckMs = fixedCertificateClock.getAsLong();
+        File certificateFile = new File(x509CertificatePath);
+        if (certificateFile.isFile()) {
+            fixedServerCertificateLastModified = certificateFile.lastModified();
+            fixedServerCertificateLength = certificateFile.length();
+        } else {
+            fixedServerCertificateLastModified = -1L;
+            fixedServerCertificateLength = -1L;
+        }
+        try {
+            X509Certificate leaf = keyAndCertificateFactory.x509Certificate();
+            fixedServerCertificateNotAfterEpochMs = leaf != null && leaf.getNotAfter() != null
+                ? leaf.getNotAfter().getTime()
+                : -1L;
+        } catch (RuntimeException ignore) {
+            fixedServerCertificateNotAfterEpochMs = -1L;
+        }
     }
 
     private void logUsedCertificateData() {

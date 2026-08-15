@@ -151,6 +151,10 @@ public class ConfigurationEnforcementClassificationTest {
             "org.mockserver.mock.action.http.ForwardCircuitBreakerTest#shouldAllowAllRequestsWhenDisabled");
         ENFORCEMENT_VERIFIED.put("forwardProxyHttp2Enabled",
             "org.mockserver.mock.action.http.HttpForwardActionHttp2Test#shouldPreserveHttp2WhenFlagEnabledAndInboundIsHttp2");
+        // Wave 3 item 1: an instance-set value flips HTTPS endpoint identification (host name verification)
+        // on the outbound client engine for the JVM/CUSTOM validating trust managers
+        ENFORCEMENT_VERIFIED.put("forwardProxyTLSHostnameVerificationEnabled",
+            "org.mockserver.socket.tls.NettySslContextFactoryTest#shouldEnableHttpsEndpointIdentificationForJvmTrustWhenHostnameVerificationEnabledOnConfigurationInstance");
         ENFORCEMENT_VERIFIED.put("grpcBidiStreamingEnabled",
             "org.mockserver.netty.http3.Http3GrpcStreamingIntegrationTest#shouldHandleBidiStreamingGrpcOverHttp3");
         ENFORCEMENT_VERIFIED.put("http2Enabled",

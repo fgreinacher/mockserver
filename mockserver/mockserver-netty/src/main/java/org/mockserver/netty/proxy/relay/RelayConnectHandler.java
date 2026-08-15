@@ -242,7 +242,7 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
             pipelineToProxyClient.addLast(new HttpObjectAggregator(configuration.maxRequestBodySize()));
         }
 
-        pipelineToProxyClient.addLast(new UpstreamProxyRelayHandler(mockServerLogger, proxyClientCtx.channel(), mockServerCtx.channel()));
+        pipelineToProxyClient.addLast(new UpstreamProxyRelayHandler(mockServerLogger, proxyClientCtx.channel(), mockServerCtx.channel(), host, port));
     }
 
     private void configureHttp1LoopbackPipeline(ChannelPipeline pipelineToMockServer, ChannelHandlerContext proxyClientCtx) {

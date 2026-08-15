@@ -281,6 +281,50 @@ public class HttpStateConfigurationUpdateTest {
     }
 
     @Test
+    public void shouldWarnWhenPutLowersTlsPosture() {
+        // given - a secure starting posture
+        configuration
+            .tlsMutualAuthenticationRequired(true)
+            .forwardProxyTLSX509CertificatesTrustManagerType(org.mockserver.socket.tls.ForwardProxyTLSX509CertificatesTrustManager.JVM)
+            .forwardProxyTLSHostnameVerificationEnabled(true);
+        logger.forgetCapturedEvents();
+
+        // when - a PUT downgrades trust to ANY, turns mTLS off and turns host name verification off
+        ConfigurationDTO supplied = new ConfigurationDTO()
+            .setForwardProxyTLSX509CertificatesTrustManagerType("ANY")
+            .setTlsMutualAuthenticationRequired(false)
+            .setForwardProxyTLSHostnameVerificationEnabled(false);
+        // audit runs against the pre-change configuration, exactly as the PUT handler orders it
+        httpState.warnIfLoweringTlsPosture(supplied);
+
+        // then - a single audit WARN names each downgrade
+        assertThat(logger.warnings(), hasSize(1));
+        String warning = logger.warnings().get(0);
+        assertThat(warning, containsString("lowers or alters security posture"));
+        assertThat(warning, containsString("-> ANY"));
+        assertThat(warning, containsString("tlsMutualAuthenticationRequired true -> false"));
+        assertThat(warning, containsString("forwardProxyTLSHostnameVerificationEnabled true -> false"));
+    }
+
+    @Test
+    public void shouldNotWarnWhenPutDoesNotLowerTlsPosture() {
+        // given - a secure starting posture
+        configuration
+            .tlsMutualAuthenticationRequired(true)
+            .forwardProxyTLSX509CertificatesTrustManagerType(org.mockserver.socket.tls.ForwardProxyTLSX509CertificatesTrustManager.JVM);
+        logger.forgetCapturedEvents();
+
+        // when - a PUT that keeps mTLS on and TIGHTENS nothing about TLS (raising trust is not a downgrade)
+        ConfigurationDTO supplied = new ConfigurationDTO()
+            .setTlsMutualAuthenticationRequired(true)
+            .setMaxLogEntries(50);
+        httpState.warnIfLoweringTlsPosture(supplied);
+
+        // then - no posture WARN
+        assertThat(logger.warnings(), is(empty()));
+    }
+
+    @Test
     public void shouldNotWarnAboutRingBufferSizeWhenOnlyMaxLogEntriesSupplied() {
         // given - ringBufferSize DERIVES from maxLogEntries when not set explicitly, so changing
         // maxLogEntries alone moves the resolved ringBufferSize. That must not be reported as an

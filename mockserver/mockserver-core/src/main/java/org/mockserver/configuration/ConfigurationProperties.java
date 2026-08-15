@@ -434,6 +434,7 @@ public class ConfigurationProperties {
 
     // outbound - CA
     private static final String MOCKSERVER_FORWARD_PROXY_TLS_X509_CERTIFICATES_TRUST_MANAGER_TYPE = "mockserver.forwardProxyTLSX509CertificatesTrustManagerType";
+    private static final String MOCKSERVER_FORWARD_PROXY_TLS_HOSTNAME_VERIFICATION_ENABLED = "mockserver.forwardProxyTLSHostnameVerificationEnabled";
 
     // outbound - SSRF protection
     private static final String MOCKSERVER_FORWARD_PROXY_BLOCK_PRIVATE_NETWORKS = "mockserver.forwardProxyBlockPrivateNetworks";
@@ -5581,11 +5582,16 @@ public class ConfigurationProperties {
     }
 
     public static String tlsProtocols() {
-        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_TLS_PROTOCOLS, "MOCKSERVER_TLS_PROTOCOLS", "TLSv1,TLSv1.1,TLSv1.2");
+        return readPropertyHierarchically(PROPERTIES, MOCKSERVER_TLS_PROTOCOLS, "MOCKSERVER_TLS_PROTOCOLS", "TLSv1.2,TLSv1.3");
     }
 
     /**
-     * Comma seperated list of TLS protocols, by default TLSv1,TLSv1.1,TLSv1.2
+     * Comma seperated list of TLS protocols, by default TLSv1.2,TLSv1.3.
+     * <p>
+     * TLSv1 and TLSv1.1 are deprecated by RFC 8996 (BEAST / POODLE) and are no longer in the default.
+     * TLSv1.3 is enabled by default. To restore the legacy protocols set this to
+     * {@code TLSv1,TLSv1.1,TLSv1.2} AND set {@link #tlsAllowInsecureProtocols} to true (the filter that
+     * strips the deprecated entries defaults to on).
      *
      * @param tlsProtocols comma seperated list of TLS protocols
      */
@@ -5594,19 +5600,18 @@ public class ConfigurationProperties {
     }
 
     public static boolean tlsAllowInsecureProtocols() {
-        return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_TLS_ALLOW_INSECURE_PROTOCOLS, "MOCKSERVER_TLS_ALLOW_INSECURE_PROTOCOLS", "" + true));
+        return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_TLS_ALLOW_INSECURE_PROTOCOLS, "MOCKSERVER_TLS_ALLOW_INSECURE_PROTOCOLS", "" + false));
     }
 
     /**
      * Whether to allow TLSv1 and TLSv1.1 in the effective TLS protocols list.
      * <p>
-     * Both protocols are deprecated by RFC 8996 and vulnerable to BEAST and POODLE.
-     * The default is true for backwards compatibility — MockServer's
-     * {@link #tlsProtocols} default still includes them. Set this to false to opt
-     * into a hardened profile: any "TLSv1" or "TLSv1.1" entries in
-     * {@link #tlsProtocols} are filtered out before the SSL context is built.
-     * <p>
-     * A future major release is expected to flip this default to false.
+     * Both protocols are deprecated by RFC 8996 and vulnerable to BEAST and POODLE. As of this major
+     * release the default is false and MockServer's {@link #tlsProtocols} default no longer includes
+     * them, so a hardened profile is the out-of-the-box behaviour. Set this to true (and add the
+     * protocols back to {@link #tlsProtocols}) only if a legacy client genuinely cannot negotiate
+     * TLSv1.2/TLSv1.3: any "TLSv1" or "TLSv1.1" entries in {@link #tlsProtocols} are otherwise filtered
+     * out before the SSL context is built.
      *
      * @param allow if true, TLSv1 and TLSv1.1 are honoured in {@link #tlsProtocols}; if false, they are stripped
      */
@@ -5920,14 +5925,39 @@ public class ConfigurationProperties {
      * MockServer will only be able to establish a TLS connection to endpoints that have a trusted X509 certificate according to the trust manager type, as follows:
      * <p>
      * <p>
-     * ANY - Insecure will trust all X509 certificates and not perform host name verification.
-     * JVM - Will trust all X509 certificates trust by the JVM.
-     * CUSTOM - Will trust all X509 certificates specified in forwardProxyTLSCustomTrustX509Certificates configuration value.
+     * ANY - Insecure, trusts all X509 certificates and does NOT perform host name verification (the deliberate mock-proxy default).
+     * JVM - Trusts all X509 certificates trusted by the JVM, AND verifies the upstream host name against the certificate (unless {@link #forwardProxyTLSHostnameVerificationEnabled} is set to false).
+     * CUSTOM - Trusts all X509 certificates specified in forwardProxyTLSCustomTrustX509Certificates configuration value, AND verifies the upstream host name against the certificate (unless {@link #forwardProxyTLSHostnameVerificationEnabled} is set to false).
      *
      * @param trustManagerType trusted set of certificates for forwarded or proxied requests, allowed values: ANY, JVM, CUSTOM.
      */
     public static void forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager trustManagerType) {
         setProperty(MOCKSERVER_FORWARD_PROXY_TLS_X509_CERTIFICATES_TRUST_MANAGER_TYPE, trustManagerType.name());
+    }
+
+    public static boolean forwardProxyTLSHostnameVerificationEnabled() {
+        return Boolean.parseBoolean(readPropertyHierarchically(PROPERTIES, MOCKSERVER_FORWARD_PROXY_TLS_HOSTNAME_VERIFICATION_ENABLED, "MOCKSERVER_FORWARD_PROXY_TLS_HOSTNAME_VERIFICATION_ENABLED", "" + true));
+    }
+
+    /**
+     * Whether to verify the upstream host name against its certificate when MockServer forwards or proxies
+     * over TLS with a validating trust manager ({@code forwardProxyTLSX509CertificatesTrustManagerType} of
+     * JVM or CUSTOM). Defaults to true.
+     * <p>
+     * With chain validation but no host name binding, any certificate signed by a trusted CA — for any
+     * host name — would be accepted, leaving MockServer open to a man-in-the-middle it believes it is
+     * protected from. So host name verification (RFC 2818 / HTTPS endpoint identification) is enabled by
+     * default for JVM and CUSTOM.
+     * <p>
+     * It has no effect for the ANY trust manager type (the default), which deliberately trusts everything
+     * and performs no host name verification. Set this to false when you legitimately need to connect to
+     * an upstream whose certificate host name does not match the address you connect to (a common testing
+     * scenario) while still validating the certificate chain.
+     *
+     * @param enable if true (default), verify the upstream host name for JVM / CUSTOM trust managers; if false, validate the chain only
+     */
+    public static void forwardProxyTLSHostnameVerificationEnabled(boolean enable) {
+        setProperty(MOCKSERVER_FORWARD_PROXY_TLS_HOSTNAME_VERIFICATION_ENABLED, "" + enable);
     }
 
     public static boolean forwardProxyBlockPrivateNetworks() {

@@ -2866,8 +2866,8 @@ public class ConfigurationTest {
     public void shouldSetAndGetTlsProtocols() {
         String original = ConfigurationProperties.tlsProtocols();
         try {
-            // then - default value
-            assertThat(configuration.tlsProtocols(), equalTo("TLSv1,TLSv1.1,TLSv1.2"));
+            // then - default value (TLSv1 / TLSv1.1 dropped, TLSv1.3 added as of the hardened default)
+            assertThat(configuration.tlsProtocols(), equalTo("TLSv1.2,TLSv1.3"));
 
             // when - system property setter
             String firstPath = tempFilePath();

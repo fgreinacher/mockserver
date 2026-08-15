@@ -1,7 +1,9 @@
 package org.mockserver.socket.tls;
 
+import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.handler.ssl.ApplicationProtocolNames;
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslHandler;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -188,6 +190,105 @@ public class NettySslContextFactoryTest {
 
         // and an unmapped host falls back to the valid global/default pair and builds successfully
         assertThat(factory.createClientSslContext(true, false, "unmapped.host"), is(notNullValue()));
+    }
+
+    // ---- outbound host name verification (HTTPS endpoint identification) ----
+
+    @Test
+    public void shouldEnableHttpsEndpointIdentificationForJvmTrustWhenHostnameVerificationEnabledOnConfigurationInstance() {
+        // enabled (default) on a Configuration instance -> the outbound engine performs HTTPS host name
+        // verification on top of chain validation
+        Configuration enabled = configuration()
+            .forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager.JVM)
+            .forwardProxyTLSHostnameVerificationEnabled(true);
+        SslContext enabledContext = new NettySslContextFactory(enabled, new MockServerLogger(), false)
+            .createClientSslContext(true, false, "example.com");
+        assertThat(endpointIdentificationAlgorithm(enabledContext), is("HTTPS"));
+
+        // disabling it on a Configuration instance is observable: the engine no longer verifies the host name
+        Configuration disabled = configuration()
+            .forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager.JVM)
+            .forwardProxyTLSHostnameVerificationEnabled(false);
+        SslContext disabledContext = new NettySslContextFactory(disabled, new MockServerLogger(), false)
+            .createClientSslContext(true, false, "example.com");
+        assertThat(endpointIdentificationAlgorithm(disabledContext), is(nullValue()));
+    }
+
+    @Test
+    public void shouldLeaveAnyTrustManagerUntouchedByHostnameVerification() {
+        // ANY uses the insecure trust-all manager, so MockServer must NOT wrap it with the verification
+        // control at all — Netty may default the engine's algorithm to HTTPS, but the insecure trust
+        // manager makes that a no-op. The ANY context is therefore the raw, unwrapped one, whereas a
+        // JVM/CUSTOM context is wrapped in a DelegatingSslContext.
+        Configuration any = configuration()
+            .forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager.ANY)
+            .forwardProxyTLSHostnameVerificationEnabled(true);
+        SslContext anyContext = new NettySslContextFactory(any, new MockServerLogger(), false)
+            .createClientSslContext(true, false, "example.com");
+        assertThat(anyContext, is(not(instanceOf(io.netty.handler.ssl.DelegatingSslContext.class))));
+
+        Configuration jvm = configuration()
+            .forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager.JVM);
+        SslContext jvmContext = new NettySslContextFactory(jvm, new MockServerLogger(), false)
+            .createClientSslContext(true, false, "example.com");
+        assertThat(jvmContext, is(instanceOf(io.netty.handler.ssl.DelegatingSslContext.class)));
+    }
+
+    @Test
+    public void shouldClearHostnameVerificationOnNoHostHandlerWhenDisabled() {
+        // Netty defaults HTTPS endpoint identification onto client engines (even the no-host reverse-proxy
+        // relay handler), so disabling verification must ACTIVELY clear it on every newHandler overload,
+        // not merely skip adding it
+        Configuration configuration = configuration()
+            .forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager.JVM)
+            .forwardProxyTLSHostnameVerificationEnabled(false);
+        SslContext clientContext = new NettySslContextFactory(configuration, new MockServerLogger(), false)
+            .createClientSslContext(true, false, "example.com");
+        SslHandler noHostHandler = clientContext.newHandler(UnpooledByteBufAllocator.DEFAULT);
+        assertThat(noHostHandler.engine().getSSLParameters().getEndpointIdentificationAlgorithm(), is(nullValue()));
+    }
+
+    @Test
+    public void shouldNotVerifyHostnameForServerContext() {
+        // host name verification is an OUTBOUND (forward-proxy client) concern only; the inbound server
+        // context must never have it applied
+        Configuration configuration = configuration()
+            .forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager.JVM)
+            .forwardProxyTLSHostnameVerificationEnabled(true);
+        SslContext serverContext = new NettySslContextFactory(configuration, new MockServerLogger(), true).createServerSslContext();
+        SslHandler serverHandler = serverContext.newHandler(UnpooledByteBufAllocator.DEFAULT, "example.com", 443);
+        assertThat(serverHandler.engine().getSSLParameters().getEndpointIdentificationAlgorithm(), is(nullValue()));
+    }
+
+    // ---- bundled default Certificate Authority detection (item 3 decision, no global latch involved) ----
+
+    @Test
+    public void shouldDetectBundledDefaultCertificateAuthorityInUseByDefault() {
+        NettySslContextFactory factory = new NettySslContextFactory(configuration(), new MockServerLogger(), true);
+        assertThat(factory.usingBundledDefaultCertificateAuthority(), is(true));
+    }
+
+    @Test
+    public void shouldNotDetectBundledCaWhenDynamicCaEnabled() {
+        Configuration configuration = configuration().dynamicallyCreateCertificateAuthorityCertificate(true);
+        NettySslContextFactory factory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
+        assertThat(factory.usingBundledDefaultCertificateAuthority(), is(false));
+    }
+
+    @Test
+    public void shouldNotDetectBundledCaWhenFixedLeafCertificateSupplied() throws IOException {
+        File keyFile = createTempPemFile("key.pem", "placeholder");
+        File certFile = createTempPemFile("cert.pem", "placeholder");
+        Configuration configuration = configuration()
+            .privateKeyPath(keyFile.getAbsolutePath())
+            .x509CertificatePath(certFile.getAbsolutePath());
+        NettySslContextFactory factory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
+        assertThat(factory.usingBundledDefaultCertificateAuthority(), is(false));
+    }
+
+    private static String endpointIdentificationAlgorithm(SslContext sslContext) {
+        SslHandler handler = sslContext.newHandler(UnpooledByteBufAllocator.DEFAULT, "example.com", 443);
+        return handler.engine().getSSLParameters().getEndpointIdentificationAlgorithm();
     }
 
     private File createTempPemFile(String name, String content) throws IOException {

@@ -168,9 +168,17 @@ When forwarding requests, MockServer's `NettyHttpClient` needs to trust upstream
 
 | Mode | Behaviour |
 |------|-----------|
-| `ANY` | Trust all certificates (insecure, useful for testing) |
-| `JVM` | Use the JVM's default truststore |
-| `CUSTOM` | Use a custom CA chain from configuration |
+| `ANY` | Trust all certificates and do **not** verify the host name (insecure, the default, useful for testing) |
+| `JVM` | Use the JVM's default truststore, **and** verify the upstream host name |
+| `CUSTOM` | Use a custom CA chain from configuration, **and** verify the upstream host name |
+
+**Outbound host name verification (Wave 3).** For the validating trust managers (`JVM` / `CUSTOM`), chain validation alone is not enough: a certificate signed by a trusted CA *for the wrong host* would still be accepted, leaving a user who opted into real upstream validation open to a man-in-the-middle. The Netty in use *already* enables RFC 2818 / HTTPS endpoint identification for a **client** context created via `newHandler(host, port)` — but **not** for the no-host `newHandler` overloads (e.g. the original reverse-proxy relay), so verification was inconsistent across outbound paths and, crucially, could not be turned off. MockServer now forces it uniformly at the single chokepoint every outbound path shares: `NettySslContextFactory.createClientSslContext(...)` wraps the built client `SslContext` (for JVM/CUSTOM only) in a `DelegatingSslContext` whose `initEngine` sets `SSLParameters.setEndpointIdentificationAlgorithm(...)` on every engine — to `"HTTPS"` when verification is enabled (covering the no-host paths too), or explicitly to `null` when disabled (so Netty's default cannot leave it on). Every `newHandler`/`newEngine` overload funnels through `initEngine` (the handler overloads via `DelegatingSslContext`'s default `initHandler`, which calls `initEngine(handler.engine())`), so overriding only `initEngine` is sufficient. HTTP/1.1, HTTP/2, the `CONNECT`-tunnelled relay (`RelayConnectHandler`), the reverse-proxy relay (`UpstreamProxyRelayHandler`, which verifies against the **CONNECT target host/port** — not the connected socket address, whose `getHostString()` is the MockServer loopback on the common forward-proxy path and only coincidentally the target on a reverse-proxy path), the websocket relay and the LLM forward paths are all covered uniformly. `ANY` is never wrapped (its insecure trust manager makes endpoint identification a no-op anyway), so it is left exactly as-is. `forwardProxyTLSHostnameVerificationEnabled` (default `true`) turns off just the host-name check while keeping chain validation, for the legitimate case of an upstream whose certificate host name does not match the address connected to; it is folded into the client `SslContext` cache key so a runtime change self-invalidates.
+
+**Bundled-CA warning (Wave 3).** MockServer ships a default CA *and its private key* in the jar. When that bundled CA is the trust anchor signing served traffic (dynamic CA generation off, no fixed leaf supplied, default CA paths), `NettySslContextFactory` logs a single startup WARN (once per JVM) naming the two fixes — `dynamicallyCreateCertificateAuthorityCertificate=true` or `--proxy-setup`. Shipping the key is intentional and the default is unchanged; the warning only makes the trade-off visible.
+
+**Fixed-certificate re-check (Wave 3).** Self-generated leaves self-renew (see *SSL Context Caching*), but a user-supplied fixed leaf was previously validated only at startup and then pinned into the cached context. `createServerSslContext` now re-checks it on a cheap, time-bounded schedule (at most once a minute, `stat` only — never a per-handshake re-parse): a certificate rotated in place on disk (changed mtime/length) forces a rebuild that re-runs `CertificateConfigurationValidator` and picks up the replacement, while an unchanged-but-expired certificate is surfaced with a single WARN rather than served silently.
+
+**Control-plane TLS-posture audit (Wave 3).** `HttpState.warnIfLoweringTlsPosture(...)` runs on `PUT /mockserver/configuration` (before the DTO is applied, while the old values are still readable) and logs a single audit WARN when the change downgrades the forward-proxy trust manager to `ANY`, turns off `tlsMutualAuthenticationRequired` or `forwardProxyTLSHostnameVerificationEnabled`, or repoints the TLS key/certificate/CA paths. It audits, it does not block (control-plane auth is off by default, so the downgrade would otherwise be silent).
 
 ### Per-Host Outbound mTLS
 
@@ -525,12 +533,15 @@ check handled earlier in `PortUnificationHandler` and is unaffected.
 
 | Property | Default | Purpose |
 |----------|---------|---------|
+| `tlsProtocols` | TLSv1.2,TLSv1.3 | Enabled TLS protocol versions. TLSv1/TLSv1.1 are no longer in the default (RFC 8996); TLSv1.3 is now included. Restore legacy protocols by adding them here **and** setting `tlsAllowInsecureProtocols=true` |
+| `tlsAllowInsecureProtocols` | false | Whether deprecated TLSv1/TLSv1.1 entries in `tlsProtocols` are honoured (otherwise stripped) |
 | `tlsMutualAuthenticationRequired` | false | Require client certificates |
 | `tlsMutualAuthenticationCertificateChain` | (none) | PEM file with trusted CA chain for client certs |
 | `dynamicallyCreateCertificateAuthorityCertificate` | false | Auto-generate CA cert |
 | `certificateAuthorityPrivateKey` | (auto) | PEM file for custom CA private key |
 | `certificateAuthorityCertificate` | (auto) | PEM file for custom CA certificate |
-| `forwardProxyTLSX509CertificatesTrustManagerType` | ANY | Trust mode for upstream connections |
+| `forwardProxyTLSX509CertificatesTrustManagerType` | ANY | Trust mode for upstream connections (ANY = trust-all + no host-name check; JVM/CUSTOM = validate chain + verify host name) |
+| `forwardProxyTLSHostnameVerificationEnabled` | true | Verify the upstream host name against its certificate for the JVM/CUSTOM trust managers; no effect for ANY |
 | `forwardProxyTLSCustomTrustX509Certificates` | (none) | PEM file for custom upstream trust |
 | `forwardProxyPrivateKey` | (none) | Global outbound mTLS client private key (PKCS#8/PKCS#1 PEM) |
 | `forwardProxyCertificateChain` | (none) | Global outbound mTLS client certificate chain (X.509 PEM) |

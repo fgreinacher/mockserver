@@ -271,6 +271,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Boolean forwardAdjustHostHeader;
     private String forwardDefaultHostHeader;
     private Boolean forwardProxyBlockPrivateNetworks;
+    private Boolean forwardProxyTLSHostnameVerificationEnabled;
     private Boolean tlsAllowInsecureProtocols;
     private String stateBackend;
     private String blobStoreType;
@@ -622,6 +623,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.forwardAdjustHostHeader = configuration.forwardAdjustHostHeader();
             this.forwardDefaultHostHeader = configuration.forwardDefaultHostHeader();
             this.forwardProxyBlockPrivateNetworks = configuration.forwardProxyBlockPrivateNetworks();
+            this.forwardProxyTLSHostnameVerificationEnabled = configuration.forwardProxyTLSHostnameVerificationEnabled();
             this.tlsAllowInsecureProtocols = configuration.tlsAllowInsecureProtocols();
             this.stateBackend = configuration.stateBackend();
             this.blobStoreType = configuration.blobStoreType();
@@ -1020,6 +1022,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.forwardAdjustHostHeader(forwardAdjustHostHeader);
         configuration.forwardDefaultHostHeader(forwardDefaultHostHeader);
         configuration.forwardProxyBlockPrivateNetworks(forwardProxyBlockPrivateNetworks);
+        configuration.forwardProxyTLSHostnameVerificationEnabled(forwardProxyTLSHostnameVerificationEnabled);
         configuration.tlsAllowInsecureProtocols(tlsAllowInsecureProtocols);
         configuration.stateBackend(stateBackend);
         configuration.blobStoreType(blobStoreType);
@@ -1943,6 +1946,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (forwardProxyBlockPrivateNetworks != null) {
             target.forwardProxyBlockPrivateNetworks(forwardProxyBlockPrivateNetworks);
+        }
+        if (forwardProxyTLSHostnameVerificationEnabled != null) {
+            target.forwardProxyTLSHostnameVerificationEnabled(forwardProxyTLSHostnameVerificationEnabled);
         }
         if (tlsAllowInsecureProtocols != null) {
             target.tlsAllowInsecureProtocols(tlsAllowInsecureProtocols);
@@ -4304,6 +4310,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setForwardProxyBlockPrivateNetworks(Boolean forwardProxyBlockPrivateNetworks) {
         this.forwardProxyBlockPrivateNetworks = forwardProxyBlockPrivateNetworks;
+        return this;
+    }
+
+    public Boolean getForwardProxyTLSHostnameVerificationEnabled() {
+        return forwardProxyTLSHostnameVerificationEnabled;
+    }
+
+    public ConfigurationDTO setForwardProxyTLSHostnameVerificationEnabled(Boolean forwardProxyTLSHostnameVerificationEnabled) {
+        this.forwardProxyTLSHostnameVerificationEnabled = forwardProxyTLSHostnameVerificationEnabled;
         return this;
     }
 

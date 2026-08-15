@@ -309,6 +309,9 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                         try {
                             ConfigurationDTO configurationDTO = ObjectMapperFactory.createObjectMapper().readValue(request.getBodyAsString(), ConfigurationDTO.class);
                             synchronized (configuration) {
+                                // audit (but do not block) a runtime TLS-posture downgrade BEFORE applying,
+                                // while the configuration still holds the pre-change values to compare against
+                                httpState.warnIfLoweringTlsPosture(configurationDTO);
                                 configurationDTO.applyTo(configuration);
                                 // Capacity-bounded subsystems (event log, expectation store, audit
                                 // ring) were sized from the configuration at construction, so a PUT

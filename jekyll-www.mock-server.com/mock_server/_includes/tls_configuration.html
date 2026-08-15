@@ -71,10 +71,9 @@
 <button id="button_configuration_tls_protocols" class="accordion title"><strong>TLS Protocol Versions</strong></button>
 <div class="panel title">
     <p>Comma separated list of TLS protocol versions to enable for both inbound and outbound TLS connections.</p>
-    <p>The default value is <span class="this_value">TLSv1,TLSv1.1,TLSv1.2</span> which includes TLSv1 and TLSv1.1 for backward compatibility. These older protocols are deprecated and considered insecure by most security standards.</p>
-    <p>To enable <strong>TLS 1.3</strong>, add <span class="inline_code">TLSv1.3</span> to the list. To use only modern protocols, set the value to <span class="inline_code">TLSv1.2,TLSv1.3</span>.</p>
-    <p><strong>Note:</strong> TLS 1.3 requires Java 11 or later. MockServer's default includes TLSv1 and TLSv1.1 for backward compatibility but you should restrict protocols to TLSv1.2 and TLSv1.3 in production-like environments.</p>
-    <p>Type: <span class="keyword">string</span> Default: <span class="this_value">TLSv1,TLSv1.1,TLSv1.2</span></p>
+    <p>The default value is <span class="this_value">TLSv1.2,TLSv1.3</span>. TLSv1 and TLSv1.1 are deprecated by RFC 8996 (they are vulnerable to the BEAST and POODLE attacks) and are <strong>no longer enabled by default</strong>, and TLSv1.3 is now enabled by default.</p>
+    <p><strong>Breaking change:</strong> a client that can only negotiate TLSv1 or TLSv1.1 will no longer be able to complete a handshake with MockServer. If you genuinely need the legacy protocols for an old client, set <span class="inline_code">tlsProtocols</span> back to <span class="inline_code">TLSv1,TLSv1.1,TLSv1.2</span> <strong>and</strong> set <a href="#button_configuration_tls_allow_insecure_protocols">tlsAllowInsecureProtocols</a> to <span class="inline_code">true</span> — both are required, because the insecure-protocol filter strips TLSv1/TLSv1.1 unless they are explicitly allowed.</p>
+    <p>Type: <span class="keyword">string</span> Default: <span class="this_value">TLSv1.2,TLSv1.3</span></p>
     <p>Java Code:</p>
     <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.tlsProtocols("TLSv1.2,TLSv1.3")</code></pre>
     <p>System Property:</p>
@@ -87,6 +86,23 @@
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.tlsProtocols="TLSv1.2,TLSv1.3"</code></pre>
     <p>Example (Docker environment variable):</p>
     <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_TLS_PROTOCOLS="TLSv1.2,TLSv1.3"</code></pre>
+</div>
+
+<button id="button_configuration_tls_allow_insecure_protocols" class="accordion title"><strong>Allow Insecure TLS Protocols</strong></button>
+<div class="panel title">
+    <p>Whether to honour deprecated <span class="inline_code">TLSv1</span> / <span class="inline_code">TLSv1.1</span> entries that appear in <a href="#button_configuration_tls_protocols">tlsProtocols</a>.</p>
+    <p>The default is <span class="this_value">false</span>, so even if TLSv1 or TLSv1.1 are present in <span class="inline_code">tlsProtocols</span> they are stripped before the SSL context is built. Set this to <span class="inline_code">true</span> only if a legacy client genuinely cannot negotiate TLSv1.2/TLSv1.3, together with adding the protocols back to <span class="inline_code">tlsProtocols</span>.</p>
+    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">false</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.tlsAllowInsecureProtocols(true)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.tlsAllowInsecureProtocols=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_TLS_ALLOW_INSECURE_PROTOCOLS=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.tlsAllowInsecureProtocols=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.tlsAllowInsecureProtocols="true"</code></pre>
 </div>
 
 <h4>Dynamic Inbound Private Key & X.509</h4>
@@ -317,9 +333,9 @@
     <p>Configure trusted set of certificates for forwarded or proxied requests (i.e. TLS connections out of MockServer).</p>
     <p>MockServer will only be able to establish a TLS connection to endpoints that have a trusted X.509 certificate according to the trust manager type, as follows:</p>
     <ul>
-        <li>ANY - Insecure will trust all X.509 certificates and not perform host name verification.</li>
-        <li>JVM - Will trust all X.509 certificates trust by the JVM.</li>
-        <li>CUSTOM - Will trust all X.509 certificates specified in <a href="#button_configuration_custom_trusted_tls_certs_for_proxied_reqs">forwardProxyTLSCustomTrustX509Certificates</a> configuration value.</li>
+        <li>ANY - Insecure, trusts all X.509 certificates and does not perform host name verification (the default).</li>
+        <li>JVM - Trusts all X.509 certificates trusted by the JVM, and verifies the upstream host name against the certificate (unless <a href="#button_configuration_forward_proxy_hostname_verification">forwardProxyTLSHostnameVerificationEnabled</a> is set to false).</li>
+        <li>CUSTOM - Trusts all X.509 certificates specified in <a href="#button_configuration_custom_trusted_tls_certs_for_proxied_reqs">forwardProxyTLSCustomTrustX509Certificates</a> configuration value, and verifies the upstream host name against the certificate (unless <a href="#button_configuration_forward_proxy_hostname_verification">forwardProxyTLSHostnameVerificationEnabled</a> is set to false).</li>
     </ul>
     <p>Type: <span class="keyword">string</span> Default: <span class="this_value">ANY</span></p>
     <p>Java Code:</p>
@@ -332,6 +348,24 @@
     <pre class="code" style="padding: 2px;"><code class="code">mockserver.forwardProxyTLSX509CertificatesTrustManagerType=...</code></pre>
     <p>Example:</p>
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.forwardProxyTLSX509CertificatesTrustManagerType="CUSTOM"</code></pre>
+</div>
+
+<button id="button_configuration_forward_proxy_hostname_verification" class="accordion title"><strong>Outbound Host Name Verification</strong></button>
+<div class="panel title">
+    <p>Whether to verify the upstream host name against its certificate when MockServer forwards or proxies over TLS with a validating trust manager (<a href="#button_configuration_trusted_tls_certs_group_for_proxied_reqs">forwardProxyTLSX509CertificatesTrustManagerType</a> of <strong>JVM</strong> or <strong>CUSTOM</strong>).</p>
+    <p>The default is <span class="this_value">true</span>. Without host name verification, any certificate signed by a trusted CA — for any host name — would be accepted, which would leave MockServer open to a man-in-the-middle it believes it is protected from. So when you opt into real upstream validation (JVM or CUSTOM) the upstream host name is verified against the certificate as well.</p>
+    <p>This has no effect for the <strong>ANY</strong> trust manager type (the default), which deliberately trusts everything and performs no host name verification. Set this to <span class="inline_code">false</span> when you legitimately need to connect to an upstream whose certificate host name does not match the address you connect to (a common testing scenario) while still validating the certificate chain.</p>
+    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">true</span></p>
+    <p>Java Code:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">ConfigurationProperties.forwardProxyTLSHostnameVerificationEnabled(false)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.forwardProxyTLSHostnameVerificationEnabled=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_FORWARD_PROXY_TLS_HOSTNAME_VERIFICATION_ENABLED=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.forwardProxyTLSHostnameVerificationEnabled=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.forwardProxyTLSHostnameVerificationEnabled="false"</code></pre>
 </div>
 
 <h4>Fixed (i.e. Custom) Outbound CA X.509, Private Key & X.509</h4>

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- BREAKING: The default enabled TLS protocols are now `TLSv1.2,TLSv1.3` (previously `TLSv1,TLSv1.1,TLSv1.2`), and
+  `tlsAllowInsecureProtocols` now defaults to `false` (previously `true`). TLSv1 and TLSv1.1 are deprecated by RFC 8996
+  and vulnerable to BEAST/POODLE, and TLSv1.3 was previously never negotiated unless explicitly configured. This is a
+  breaking change for a client that can only speak TLSv1 or TLSv1.1: its handshake to MockServer will now fail. To
+  restore the legacy protocols set `mockserver.tlsProtocols=TLSv1,TLSv1.1,TLSv1.2` AND
+  `mockserver.tlsAllowInsecureProtocols=true` (both are required — the insecure-protocol filter strips TLSv1/TLSv1.1
+  unless it is explicitly allowed). The inbound server always applies the strong `Http2SecurityUtil` cipher suites, so
+  no weak-cipher combination becomes reachable as a result of this change.
 - Renewed the TLS/mTLS test-certificate fixtures. The two mutual-TLS authentication CAs (which were 151 days from
   expiry) and the three Netty TLS integration CAs were re-issued with a 10-year validity, and every leaf they sign
   was re-issued with a shorter 5-year validity so that a leaf can no longer outlive its issuing CA. The existing CA
@@ -14,6 +22,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are unchanged); only the certificates were re-minted.
 
 ### Security
+- Made outbound TLS host name verification consistent and controllable for the forward/proxy client (Wave 3). When
+  `forwardProxyTLSX509CertificatesTrustManagerType` is `JVM` or `CUSTOM` — the modes that actually validate the
+  upstream certificate chain — MockServer now verifies the upstream host name against the certificate (RFC 2818 / HTTPS
+  endpoint identification) on every outbound path. Netty already enabled this for client connections opened with a
+  known host/port, but NOT for the no-host relay paths, so verification was silently skipped on some paths and there
+  was no way to turn it off; without the host-name binding a certificate signed by a trusted CA for any host name would
+  be accepted, leaving a user who had opted into real upstream validation open to a man-in-the-middle. It is now forced
+  uniformly at the single point every outbound path shares (HTTP/1.1, HTTP/2, CONNECT-tunnelled relay, websocket relay,
+  the reverse-proxy relay — which verifies against the CONNECT target host/port, not the connected socket address — and
+  the LLM forward paths). It has no effect on
+  the default `ANY` trust manager, which deliberately trusts everything and performs no host-name verification. A new
+  `forwardProxyTLSHostnameVerificationEnabled` property (default `true`) turns off just the host-name check while
+  keeping chain validation, for the legitimate testing case of an upstream whose certificate host name does not match
+  the address connected to (it actively clears the algorithm Netty would otherwise default on); it is carried by
+  `ConfigurationDTO` and folded into the client SSL-context cache key so a runtime change takes effect. The
+  trust-manager javadoc, which previously implied only `ANY` skipped host-name verification, has been corrected.
+- Added a single startup WARN when the publicly-published bundled Certificate Authority (whose private key ships in the
+  MockServer jar) is the trust anchor signing served traffic, naming the two supported fixes
+  (`dynamicallyCreateCertificateAuthorityCertificate=true`, or `--proxy-setup`). Shipping the CA key is intentional and
+  documented and the default is unchanged; the warning just makes the trade-off visible so an operator does not mistake
+  the bundled CA for real interception security. Logged once per JVM, never per handshake.
+- A user-supplied FIXED server certificate is now re-checked on a cheap, time-bounded schedule (at most once a minute,
+  stat only — never a per-handshake re-parse) so a long-running server surfaces a problem instead of silently serving
+  it: a certificate rotated in place on disk forces a rebuild (which re-runs validation and picks up the replacement,
+  failing loudly if it too is expired), and an unchanged-but-expired certificate is surfaced with a single WARN. Wave 1
+  had deliberately left this gap (self-generated leaves already self-renew; fixed certificates were validated only at
+  startup).
+- Added a control-plane audit WARN when a `PUT /mockserver/configuration` lowers or alters TLS security posture —
+  downgrading the forward-proxy trust manager to `ANY`, turning off `tlsMutualAuthenticationRequired`, turning off
+  `forwardProxyTLSHostnameVerificationEnabled`, or repointing the TLS key/certificate/CA paths. Control-plane
+  authentication is off by default, so such a runtime downgrade would otherwise be silent. The change is audited, not
+  blocked (blocking would be an init-only breaking change).
 - Hardened the dynamic TLS certificate cache so it can no longer serve stale, torn or over-broad material (Wave 1,
   resilience only — certificate validity periods and extensions are unchanged). The cached server SSL context now
   regenerates a fresh leaf once the current one passes a renewal threshold (80% of its validity elapsed) instead of

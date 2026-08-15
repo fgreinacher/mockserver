@@ -6481,6 +6481,65 @@ public class HttpState {
     }
 
     /**
+     * Emit a single control-plane audit WARN when an incoming {@code PUT /mockserver/configuration}
+     * would LOWER the server's TLS posture — the trust manager downgraded to trust-all ANY, mutual
+     * (client-certificate) authentication turned off, outbound host-name verification turned off, or the
+     * TLS key/certificate/CA material repointed. Control-plane authentication is off by default, so a
+     * runtime downgrade would otherwise be silent; this makes it visible in the log/audit trail. It does
+     * NOT block the change (that would be an init-only breaking change).
+     * <p>
+     * MUST be called BEFORE {@link ConfigurationDTO#applyTo(Configuration)} so {@code configuration} still
+     * holds the pre-change ("old") values to compare the supplied ("new") values against.
+     */
+    public void warnIfLoweringTlsPosture(ConfigurationDTO supplied) {
+        if (supplied == null) {
+            return;
+        }
+        List<String> lowered = new ArrayList<>();
+
+        String suppliedTrust = supplied.getForwardProxyTLSX509CertificatesTrustManagerType();
+        if ("ANY".equalsIgnoreCase(suppliedTrust)) {
+            org.mockserver.socket.tls.ForwardProxyTLSX509CertificatesTrustManager current;
+            try {
+                current = configuration.forwardProxyTLSX509CertificatesTrustManagerType();
+            } catch (RuntimeException ignore) {
+                current = null;
+            }
+            if (current != org.mockserver.socket.tls.ForwardProxyTLSX509CertificatesTrustManager.ANY) {
+                lowered.add("forwardProxyTLSX509CertificatesTrustManagerType " + current + " -> ANY (upstream certificate validation disabled)");
+            }
+        }
+        if (Boolean.FALSE.equals(supplied.getTlsMutualAuthenticationRequired())
+            && Boolean.TRUE.equals(configuration.tlsMutualAuthenticationRequired())) {
+            lowered.add("tlsMutualAuthenticationRequired true -> false (client certificate no longer required)");
+        }
+        if (Boolean.FALSE.equals(supplied.getForwardProxyTLSHostnameVerificationEnabled())
+            && Boolean.TRUE.equals(configuration.forwardProxyTLSHostnameVerificationEnabled())) {
+            lowered.add("forwardProxyTLSHostnameVerificationEnabled true -> false (upstream host name no longer verified)");
+        }
+        addIfRepointed(lowered, "privateKeyPath", configuration.privateKeyPath(), supplied.getPrivateKeyPath());
+        addIfRepointed(lowered, "x509CertificatePath", configuration.x509CertificatePath(), supplied.getX509CertificatePath());
+        addIfRepointed(lowered, "certificateAuthorityCertificate", configuration.certificateAuthorityCertificate(), supplied.getCertificateAuthorityCertificate());
+        addIfRepointed(lowered, "certificateAuthorityPrivateKey", configuration.certificateAuthorityPrivateKey(), supplied.getCertificateAuthorityPrivateKey());
+        addIfRepointed(lowered, "tlsMutualAuthenticationCertificateChain", configuration.tlsMutualAuthenticationCertificateChain(), supplied.getTlsMutualAuthenticationCertificateChain());
+
+        if (!lowered.isEmpty()) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.WARN)
+                    .setMessageFormat("control plane PUT /mockserver/configuration changed TLS-sensitive configuration that lowers or alters security posture: {} — verify this was intended, especially as control plane authentication is disabled by default")
+                    .setArguments(String.join("; ", lowered))
+            );
+        }
+    }
+
+    private static void addIfRepointed(List<String> lowered, String name, String oldValue, String suppliedValue) {
+        if (suppliedValue != null && !java.util.Objects.equals(suppliedValue, oldValue)) {
+            lowered.add(name + " repointed (\"" + oldValue + "\" -> \"" + suppliedValue + "\")");
+        }
+    }
+
+    /**
      * WARN that an init-only configuration property was supplied with a value that cannot take
      * effect on the running server, naming the value in force and how to actually apply the change.
      */

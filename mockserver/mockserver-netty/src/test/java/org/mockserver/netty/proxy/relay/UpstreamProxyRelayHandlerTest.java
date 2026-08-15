@@ -1,18 +1,28 @@
 package org.mockserver.netty.proxy.relay;
 
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.http.*;
+import io.netty.handler.ssl.SslHandler;
+import io.netty.util.AttributeKey;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.socket.tls.NettySslContextFactory;
 import org.slf4j.event.Level;
 
+import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -20,6 +30,8 @@ import static org.hamcrest.Matchers.*;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockserver.configuration.Configuration.configuration;
+import static org.mockserver.netty.unification.PortUnificationHandler.enableSslDownstream;
 
 /**
  * EmbeddedChannel tests for {@link UpstreamProxyRelayHandler} verifying:
@@ -42,7 +54,7 @@ public class UpstreamProxyRelayHandlerTest {
         upstreamChannel = new EmbeddedChannel();
         downstreamChannel = new EmbeddedChannel();
         EmbeddedChannel handlerChannel = new EmbeddedChannel(
-            new UpstreamProxyRelayHandler(mockServerLogger, upstreamChannel, downstreamChannel)
+            new UpstreamProxyRelayHandler(mockServerLogger, upstreamChannel, downstreamChannel, "backend.example.com", 443)
         );
         // Store the handler channel as upstreamChannel for test purposes - the handler is
         // added to the channel that receives decoded FullHttpRequest from the proxy client.
@@ -132,7 +144,7 @@ public class UpstreamProxyRelayHandlerTest {
         MockServerLogger logger = mock(MockServerLogger.class);
         EmbeddedChannel downstream = new EmbeddedChannel();
         EmbeddedChannel channel = new EmbeddedChannel(
-            new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream)
+            new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream, "backend.example.com", 443)
         );
 
         // when - a genuine decoder fault is caught
@@ -155,7 +167,7 @@ public class UpstreamProxyRelayHandlerTest {
         MockServerLogger logger = mock(MockServerLogger.class);
         EmbeddedChannel downstream = new EmbeddedChannel();
         EmbeddedChannel channel = new EmbeddedChannel(
-            new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream)
+            new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream, "backend.example.com", 443)
         );
 
         // when - a throwable whose cause is an SSLException is caught
@@ -178,7 +190,7 @@ public class UpstreamProxyRelayHandlerTest {
         MockServerLogger logger = mock(MockServerLogger.class);
         EmbeddedChannel downstream = new EmbeddedChannel();
         EmbeddedChannel channel = new EmbeddedChannel(
-            new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream)
+            new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream, "backend.example.com", 443)
         );
 
         // when - a benign connection reset is caught
@@ -199,7 +211,7 @@ public class UpstreamProxyRelayHandlerTest {
         MockServerLogger logger = mock(MockServerLogger.class);
         EmbeddedChannel downstream = new EmbeddedChannel();
         EmbeddedChannel channel = new EmbeddedChannel(
-            new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream)
+            new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream, "backend.example.com", 443)
         );
 
         // when - an unexpected exception is caught
@@ -214,6 +226,71 @@ public class UpstreamProxyRelayHandlerTest {
 
         downstream.finishAndReleaseAll();
         channel.finishAndReleaseAll();
+    }
+
+    @Test
+    public void shouldVerifyDownstreamTlsAgainstConnectHostnameNotConnectedSocketAddress() {
+        // COR-05: when this relay installs the downstream client TLS, the reference identity for HTTPS
+        // endpoint identification (host name verification) MUST be the CONNECT target host — the same
+        // identity RelayConnectHandler#configurePipelines uses for the sibling loopback TLS — NOT the
+        // connected socket's address. Empirically the downstream socket's getHostString() is the MockServer
+        // loopback ("0.0.0.0") on the common forward-proxy path and only coincidentally the target on a
+        // reverse-proxy path, so verifying against it is wrong. Pinned via degrade-and-confirm-red: reverting
+        // to the socket address makes getPeerHost() the injected IP below and fails this test.
+
+        // given - a relay whose downstream socket resolves to an IP that is deliberately NOT the CONNECT host
+        MockServerLogger logger = new MockServerLogger();
+        NettySslContextFactory clientFactory = new NettySslContextFactory(configuration(), logger, false);
+
+        EmbeddedChannel proxyClientChannel = new EmbeddedChannel();
+        enableSslDownstream(proxyClientChannel);
+
+        // Swallow the relayed request write so the follow-on FullHttpRequest (which the freshly-installed
+        // SslHandler at the head would reject as a non-ByteBuf, closing the channel and tearing down the
+        // pipeline before we can inspect it) never reaches the SslHandler. Installed toward the tail, so the
+        // SslHandler's own handshake output toward the transport is unaffected.
+        EmbeddedChannel downstream = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
+            @Override
+            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                ReferenceCountUtil.release(msg);
+                promise.setSuccess();
+            }
+        }) {
+            @Override
+            public SocketAddress remoteAddress() {
+                return new InetSocketAddress("10.9.8.7", 8443);
+            }
+        };
+
+        EmbeddedChannel handlerChannel = new EmbeddedChannel(
+            new UpstreamProxyRelayHandler(logger, proxyClientChannel, downstream, "backend.example.com", 443)
+        );
+        AttributeKey<NettySslContextFactory> factoryKey = AttributeKey.valueOf("NETTY_SSL_CONTEXT_FACTORY");
+        handlerChannel.attr(factoryKey).set(clientFactory);
+
+        // when - a request drives the lazy downstream-TLS installation
+        handlerChannel.writeInbound(new DefaultFullHttpRequest(
+            HttpVersion.HTTP_1_1, HttpMethod.GET, "/", Unpooled.EMPTY_BUFFER));
+
+        // then - the installed client SslHandler's engine is keyed to the CONNECT host, never the socket IP
+        SslHandler sslHandler = downstream.pipeline().get(SslHandler.class);
+        assertThat("downstream client TLS should have been installed", sslHandler, is(notNullValue()));
+        SSLEngine engine = sslHandler.engine();
+        assertThat(engine.getPeerHost(), is("backend.example.com"));
+        assertThat("must not verify against the connected socket IP", engine.getPeerHost(), is(not("10.9.8.7")));
+
+        try {
+            downstream.finishAndReleaseAll();
+        } catch (Exception ignored) {
+        }
+        try {
+            handlerChannel.finishAndReleaseAll();
+        } catch (Exception ignored) {
+        }
+        try {
+            proxyClientChannel.finishAndReleaseAll();
+        } catch (Exception ignored) {
+        }
     }
 
     @Test
