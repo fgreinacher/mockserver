@@ -820,6 +820,7 @@
                         <exclude>**/DriftEndToEndAssemblyTest.java</exclude>
                         <!-- Mutate global ConfigurationProperties / singleton registries / Metrics (detected by GlobalStateMutationGuardTest) -->
                         <exclude>**/MaxLlmConversationBodySizeTest.java</exclude>
+                        <exclude>**/SslCertificateLeafValidityInDaysTest.java</exclude>
                         <exclude>**/SlowRequestConfigurationTest.java</exclude>
                         <exclude>**/HttpActionHandlerLlmCostBudgetTest.java</exclude>
                         <exclude>**/GrpcChaosRegistryTest.java</exclude>
@@ -985,6 +986,7 @@
                                 <include>**/HttpActionHandlerDriftDetectionTest.java</include>
                                 <include>**/DriftEndToEndAssemblyTest.java</include>
                                 <include>**/MaxLlmConversationBodySizeTest.java</include>
+                                <include>**/SslCertificateLeafValidityInDaysTest.java</include>
                                 <include>**/SlowRequestConfigurationTest.java</include>
                                 <include>**/HttpActionHandlerLlmCostBudgetTest.java</include>
                                 <include>**/GrpcChaosRegistryTest.java</include>

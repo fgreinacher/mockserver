@@ -372,6 +372,7 @@ public class Configuration {
     private final Deque<String> dynamicSanDomainOrder = new ConcurrentLinkedDeque<>();
     private final Deque<String> dynamicSanIpOrder = new ConcurrentLinkedDeque<>();
     private Integer maxSubjectAlternativeNames;
+    private Integer sslCertificateLeafValidityInDays;
 
     // inbound - fixed CA
     private String certificateAuthorityPrivateKey;
@@ -5220,6 +5221,27 @@ public class Configuration {
      */
     public Configuration maxSubjectAlternativeNames(Integer maxSubjectAlternativeNames) {
         this.maxSubjectAlternativeNames = maxSubjectAlternativeNames;
+        return this;
+    }
+
+    public Integer sslCertificateLeafValidityInDays() {
+        if (sslCertificateLeafValidityInDays == null) {
+            return ConfigurationProperties.sslCertificateLeafValidityInDays();
+        }
+        return sslCertificateLeafValidityInDays;
+    }
+
+    /**
+     * Number of days the auto-generated leaf (server) TLS certificate remains valid. The default of 397
+     * days keeps the certificate inside Apple's 825-day server-certificate cap (iOS 13 / macOS 10.15),
+     * which the previous 10-year leaf exceeded. Raise it (e.g. to 3650) to restore the historical
+     * long-lived leaf. A non-positive value falls back to the default. Only the leaf is affected; the
+     * generated Certificate Authority keeps its long life.
+     *
+     * @param sslCertificateLeafValidityInDays validity of the auto-generated leaf certificate, in days
+     */
+    public Configuration sslCertificateLeafValidityInDays(Integer sslCertificateLeafValidityInDays) {
+        this.sslCertificateLeafValidityInDays = sslCertificateLeafValidityInDays;
         return this;
     }
 

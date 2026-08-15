@@ -415,6 +415,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_SSL_SUBJECT_ALTERNATIVE_NAME_DOMAINS = "mockserver.sslSubjectAlternativeNameDomains";
     private static final String MOCKSERVER_SSL_SUBJECT_ALTERNATIVE_NAME_IPS = "mockserver.sslSubjectAlternativeNameIps";
     private static final String MOCKSERVER_MAX_SUBJECT_ALTERNATIVE_NAMES = "mockserver.maxSubjectAlternativeNames";
+    private static final String MOCKSERVER_SSL_CERTIFICATE_LEAF_VALIDITY_IN_DAYS = "mockserver.sslCertificateLeafValidityInDays";
 
     // inbound - fixed CA
     // inbound - fixed CA
@@ -5755,6 +5756,28 @@ public class ConfigurationProperties {
      */
     public static void maxSubjectAlternativeNames(int maxSubjectAlternativeNames) {
         setProperty(MOCKSERVER_MAX_SUBJECT_ALTERNATIVE_NAMES, "" + maxSubjectAlternativeNames);
+    }
+
+    public static int sslCertificateLeafValidityInDays() {
+        int value = readIntegerProperty(MOCKSERVER_SSL_CERTIFICATE_LEAF_VALIDITY_IN_DAYS, "MOCKSERVER_SSL_CERTIFICATE_LEAF_VALIDITY_IN_DAYS", (int) KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_DEFAULT);
+        if (value < 1) {
+            return (int) KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_DEFAULT;
+        }
+        return value;
+    }
+
+    /**
+     * Number of days the auto-generated leaf (server) TLS certificate remains valid. The default of 397
+     * days keeps the certificate inside Apple's 825-day server-certificate cap (iOS 13 / macOS 10.15),
+     * which the previous 10-year leaf exceeded — see
+     * {@link KeyAndCertificateFactory#LEAF_CERTIFICATE_VALIDITY_DAYS_DEFAULT}. Raise it (e.g. to 3650) to
+     * restore the historical long-lived leaf. A non-positive value falls back to the default. Only the
+     * leaf is affected; the generated Certificate Authority keeps its long life.
+     *
+     * @param sslCertificateLeafValidityInDays validity of the auto-generated leaf certificate, in days
+     */
+    public static void sslCertificateLeafValidityInDays(int sslCertificateLeafValidityInDays) {
+        setProperty(MOCKSERVER_SSL_CERTIFICATE_LEAF_VALIDITY_IN_DAYS, "" + sslCertificateLeafValidityInDays);
     }
 
     /**

@@ -15,7 +15,6 @@ import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.PublicKey;
-import java.security.SecureRandom;
 import java.security.Security;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
@@ -93,7 +92,8 @@ public class SamlSigningCredential {
 
             String commonName = "MockServer SAML IdP";
             X500Name subject = new X500Name("CN=" + commonName + ", O=MockServer, OU=" + sanitise(idpEntityId));
-            BigInteger serial = new BigInteger(64, new SecureRandom());
+            // RFC 5280 §4.1.2.2 requires a positive serial; a plain new BigInteger(64, random) can be zero
+            BigInteger serial = org.mockserver.socket.tls.KeyAndCertificateFactory.positiveSerialNumber();
             Date notBefore = Date.from(Instant.now().minus(1, ChronoUnit.DAYS));
             Date notAfter = Date.from(Instant.now().plus(3650, ChronoUnit.DAYS));
 

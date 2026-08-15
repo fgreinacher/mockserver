@@ -16,6 +16,7 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
+import java.util.Date;
 import java.util.Set;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -26,6 +27,7 @@ import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.sameInstance;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockserver.configuration.Configuration.configuration;
@@ -162,6 +164,70 @@ public class CertificateHardeningResilienceTest {
         Set<String> domains = configuration.sslSubjectAlternativeNameDomains();
         assertThat(domains, hasItem("*.wildcard.example.com"));
         assertThat(domains, not(hasItem(tooLong.toString())));
+    }
+
+    // --- COR-05 / FEA-01: leaf-validity override is clamped to a usable range ---
+
+    @Test
+    public void shouldClampBrokenlySmallLeafValidityUpToASafeFloorRatherThanMintAnExpiredOrSelfRenewingLeaf() throws Exception {
+        // the previously-broken band: a positive override below the 30-day floor. Pre-fix only `< 1` was
+        // guarded, so 1..5 minted a leaf whose notAfter (notBefore is back-dated 5 days) was already in the
+        // past — checkValidity(now) threw and generation failed outright — and ~6 produced a leaf already
+        // past its 80%-elapsed renewal threshold, regenerated on every handshake (a non-progress loop).
+        for (int days : new int[]{1, 5, 6, 29}) {
+            Configuration cfg = configuration()
+                .dynamicallyCreateCertificateAuthorityCertificate(true)
+                .directoryToSaveDynamicSSLCertificate(tempFolder.getRoot().getAbsolutePath())
+                .sslCertificateLeafValidityInDays(days);
+            BCKeyAndCertificateFactory f = new BCKeyAndCertificateFactory(cfg, new MockServerLogger());
+
+            // must not throw: a broken-small value must never mint an already-expired leaf
+            f.buildAndSavePrivateKeyAndX509Certificate();
+            X509Certificate leaf = f.x509Certificate();
+            long now = System.currentTimeMillis();
+
+            // valid at "now" (not born expired)
+            leaf.checkValidity(new Date(now));
+            // and NOT already past its renewal threshold (so no per-handshake regeneration loop)
+            assertFalse("a freshly minted leaf (configured validity days=" + days + ") must not already be "
+                    + "past its renewal threshold",
+                KeyAndCertificateFactory.isPastRenewalThreshold(leaf,
+                    KeyAndCertificateFactory.RENEWAL_ELAPSED_FRACTION, now));
+            // the total validity window was clamped UP to the floor
+            long windowDays = Math.round((leaf.getNotAfter().getTime() - leaf.getNotBefore().getTime()) / 86400000.0);
+            assertThat("validity window for configured days=" + days, windowDays,
+                is(KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_MIN));
+        }
+    }
+
+    @Test
+    public void shouldClampExcessiveLeafValidityDownToTheCeilingToStayWithinTheX509DateRange() throws Exception {
+        // FEA-01: an unbounded override could push notAfter past the X.509 year-9999 ceiling
+        configuration.sslCertificateLeafValidityInDays(100_000_000);
+
+        factory.buildAndSavePrivateKeyAndX509Certificate();
+        X509Certificate leaf = factory.x509Certificate();
+
+        leaf.checkValidity(new Date());
+        long windowDays = Math.round((leaf.getNotAfter().getTime() - leaf.getNotBefore().getTime()) / 86400000.0);
+        assertThat("excessive validity must be clamped down to the ceiling", windowDays,
+            is(KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_MAX));
+        // notAfter must stay comfortably inside the X.509 maximum (9999-12-31 == 253402300799000L)
+        assertTrue("notAfter must stay within the X.509 date range",
+            leaf.getNotAfter().getTime() < 253402300799000L);
+    }
+
+    @Test
+    public void shouldHonourAnInRangeLeafValidityOverrideVerbatim() throws Exception {
+        // a value inside [30, 3650] is used exactly as configured (no clamping)
+        configuration.sslCertificateLeafValidityInDays(500);
+
+        factory.buildAndSavePrivateKeyAndX509Certificate();
+        X509Certificate leaf = factory.x509Certificate();
+
+        leaf.checkValidity(new Date());
+        long windowDays = Math.round((leaf.getNotAfter().getTime() - leaf.getNotBefore().getTime()) / 86400000.0);
+        assertThat("an in-range override must be honoured verbatim", windowDays, is(500L));
     }
 
     // --- C6: torn key/cert state on a mid-flight failure ---

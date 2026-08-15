@@ -199,10 +199,18 @@ private key and certificate chain used by the HTTPS server. This is obtained via
 the `privateKeyPath`, `x509CertificatePath`, and other TLS configuration properties.
 
 If no configuration is provided (legacy/echo mode), the server falls back to
-generating a self-signed EC certificate at startup using BouncyCastle. The
-self-signed certificate is valid for **10 years** from startup
-(`KeyAndCertificateFactory.CERTIFICATE_VALIDITY_YEARS`), consistent with the
-validity used for the main MockServer CA and leaf certificates.
+generating a self-signed EC certificate using BouncyCastle. This certificate is
+simultaneously trust anchor *and* server certificate and has no renewal loop
+behind it, so it deliberately keeps the long **10-year** CA-style validity
+(`KeyAndCertificateFactory.CERTIFICATE_VALIDITY_YEARS`) rather than the short
+397-day leaf validity used on the configured path — a short-lived self-signed
+anchor with nothing to renew it would simply expire the echo endpoint. It is
+otherwise brought up to standard: a 5-day back-dated `notBefore` (clock-skew
+tolerance), a positive serial (RFC 5280 §4.1.2.2), a SAN covering
+`localhost` / `127.0.0.1` / `::1`, a `serverAuth` (+ `clientAuth`)
+`extendedKeyUsage`, and a TLS-server `keyUsage`. The configured path
+(`configuration != null`) instead goes through the real
+`KeyAndCertificateFactory` and gets the hardened short-lived leaf.
 
 ### Metrics
 

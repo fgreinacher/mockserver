@@ -355,17 +355,46 @@ public class Http3Server {
         return keyPairGen.generateKeyPair();
     }
 
+    /**
+     * Generate the legacy echo-mode self-signed certificate. Reached only when {@code configuration == null}
+     * (transport-level echo testing); the configured HTTP/3 path goes through the real
+     * {@link KeyAndCertificateFactory} and gets the hardened short-lived leaf.
+     * <p>
+     * This certificate is simultaneously trust anchor AND server certificate and has no renewal loop
+     * behind it, so it deliberately keeps the long CA-style validity ({@link KeyAndCertificateFactory#CERTIFICATE_VALIDITY_YEARS})
+     * rather than the short 397-day leaf validity — a short-lived self-signed anchor with nothing to renew
+     * it would simply expire the echo endpoint. It is otherwise brought up to the same standard as the real
+     * leaf: 5-day back-dated notBefore (clock-skew tolerance), a positive serial (RFC 5280 §4.1.2.2), a SAN
+     * covering localhost / 127.0.0.1 / ::1, serverAuth (+ clientAuth) EKU (Apple requires serverAuth) and a
+     * TLS-server keyUsage.
+     */
     private static X509Certificate generateSelfSignedCert(java.security.KeyPair keyPair) throws Exception {
         org.bouncycastle.asn1.x500.X500Name issuer = new org.bouncycastle.asn1.x500.X500Name("CN=MockServer HTTP/3, O=MockServer");
-        java.math.BigInteger serial = new java.math.BigInteger(64, new java.security.SecureRandom());
-        java.util.Date notBefore = new java.util.Date();
-        java.util.Date notAfter = new java.util.Date(notBefore.getTime() + TimeUnit.DAYS.toMillis(365L * org.mockserver.socket.tls.KeyAndCertificateFactory.CERTIFICATE_VALIDITY_YEARS));
+        java.math.BigInteger serial = KeyAndCertificateFactory.positiveSerialNumber();
+        java.util.Date notBefore = KeyAndCertificateFactory.notBefore();
+        java.util.Date notAfter = KeyAndCertificateFactory.notAfter();
+
+        org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder builder = new org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
+            issuer, serial, notBefore, notAfter, issuer, keyPair.getPublic()
+        );
+
+        org.bouncycastle.asn1.x509.GeneralName[] sanEntries = new org.bouncycastle.asn1.x509.GeneralName[]{
+            new org.bouncycastle.asn1.x509.GeneralName(org.bouncycastle.asn1.x509.GeneralName.dNSName, "localhost"),
+            new org.bouncycastle.asn1.x509.GeneralName(org.bouncycastle.asn1.x509.GeneralName.iPAddress, "127.0.0.1"),
+            new org.bouncycastle.asn1.x509.GeneralName(org.bouncycastle.asn1.x509.GeneralName.iPAddress, "::1")
+        };
+        builder.addExtension(org.bouncycastle.asn1.x509.Extension.subjectAlternativeName, false, new org.bouncycastle.asn1.x509.GeneralNames(sanEntries));
+        builder.addExtension(org.bouncycastle.asn1.x509.Extension.extendedKeyUsage, false, new org.bouncycastle.asn1.x509.ExtendedKeyUsage(new org.bouncycastle.asn1.x509.KeyPurposeId[]{
+            org.bouncycastle.asn1.x509.KeyPurposeId.id_kp_serverAuth,
+            org.bouncycastle.asn1.x509.KeyPurposeId.id_kp_clientAuth
+        }));
+        builder.addExtension(org.bouncycastle.asn1.x509.Extension.keyUsage, true, new org.bouncycastle.asn1.x509.KeyUsage(
+            org.bouncycastle.asn1.x509.KeyUsage.digitalSignature | org.bouncycastle.asn1.x509.KeyUsage.keyEncipherment
+        ));
 
         org.bouncycastle.operator.ContentSigner signer = new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withECDSA")
             .build(keyPair.getPrivate());
-        org.bouncycastle.cert.X509CertificateHolder holder = new org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
-            issuer, serial, notBefore, notAfter, issuer, keyPair.getPublic()
-        ).build(signer);
+        org.bouncycastle.cert.X509CertificateHolder holder = builder.build(signer);
 
         return new org.bouncycastle.cert.jcajce.JcaX509CertificateConverter().getCertificate(holder);
     }

@@ -106,6 +106,11 @@ public class ConfigurationEnforcementClassificationTest {
             "org.mockserver.configuration.ConfigurationInstanceEnforcementTest#shouldEnforceRateLimitMaxNamedQuotasFromConfigurationInstance");
         ENFORCEMENT_VERIFIED.put("maxEventLogSizeInBytes",
             "org.mockserver.log.MockServerEventLogCaptureTest#shouldCapRetainedEntriesByByteBudget");
+        // certificate-hardening SAN cap (Wave 1): the enforcement site addSubjectAlternativeName(..) reads
+        // the instance value, so an instance-set cap bounds the SAN set and evicts oldest-dynamic-first —
+        // proven behaviourally rather than merely round-tripped through a getter.
+        ENFORCEMENT_VERIFIED.put("maxSubjectAlternativeNames",
+            "org.mockserver.socket.tls.CertificateHardeningResilienceTest#shouldEvictOldestDynamicSubjectAlternativeNameFirstAndNeverEvictConfigured");
         // both resized in place on the running server by HttpState#applyConfigurationUpdate (the event-log
         // deque and the expectation store respectively), so a PUT /mockserver/configuration that lowers them
         // evicts immediately — proven end-to-end here rather than merely round-tripped through a getter.

@@ -372,6 +372,7 @@ mockserver.enableCORSForAllResponses=false</code></pre>
         <tr><td><a href="#button_configuration_ssl_certificate_domain_name">Inbound X.509 Domain Name</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
         <tr><td><a href="#button_configuration_ssl_subject_alternative_name_domains">Inbound X.509 Subject Alternative Name Domains</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
         <tr><td><a href="#button_configuration_ssl_subject_alternative_name_ips">Inbound X.509 Subject Alternative Name IPs</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
+        <tr><td><a href="#button_configuration_ssl_certificate_leaf_validity_in_days">Inbound X.509 Certificate Validity (Days)</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
         <tr><td><a href="#button_configuration_tls_certificate_authority_private_key">Fixed Inbound Certificate Authority Private Key</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
         <tr><td><a href="#button_configuration_tls_certificate_authority_certificate">Fixed Inbound Certificate Authority X.509 Certificate Chain</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
         <tr><td><a href="#button_configuration_tls_private_key">Fixed Inbound Private Key</a></td><td><a href="#tls_configuration">TLS</a></td></tr>
@@ -476,6 +477,10 @@ mockserver.sslCertificateDomainName=localhost
 mockserver.sslSubjectAlternativeNameDomains=www.example.com,www.another.com
 # comma separated list of ip addresses for Subject Alternative Name ips (default empty list)
 mockserver.sslSubjectAlternativeNameIps=127.0.0.1
+# maximum number of dynamically-discovered SANs the auto-generated certificate will accumulate (default 100)
+mockserver.maxSubjectAlternativeNames=100
+# number of days the auto-generated leaf certificate is valid for (default 397)
+mockserver.sslCertificateLeafValidityInDays=397
 
 # CORS (both default to false; set to true to enable)
 
@@ -501,6 +506,8 @@ mockserver.enableCORSForAllResponses=true</code></pre>
   "sslCertificateDomainName": "localhost",
   "sslSubjectAlternativeNameDomains": ["www.example.com", "www.another.com"],
   "sslSubjectAlternativeNameIps": ["127.0.0.1"],
+  "maxSubjectAlternativeNames": 100,
+  "sslCertificateLeafValidityInDays": 397,
   "enableCORSForAPI": true,
   "enableCORSForAllResponses": true
 }</code></pre>

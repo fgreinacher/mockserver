@@ -66,7 +66,25 @@ MockServer maintains an in-memory CA with default DN:
 - **ST**: `England`
 - **C**: `UK`
 
-**Certificate validity period**: both the CA and dynamically-generated leaf certificates are valid for **10 years** from server startup (`KeyAndCertificateFactory.CERTIFICATE_VALIDITY_YEARS = 10`). The HTTP/3 self-signed fallback certificate uses the same constant. This long validity avoids certificate expiry during normal development and test usage.
+**Certificate validity periods** (CA and leaf are now split):
+
+| Certificate | Validity | Anchored to | Constant / property |
+|-------------|----------|-------------|---------------------|
+| Dynamically-generated **CA** | **10 years** (3655 days including the 5-day back-dated `notBefore`) | issuance of the CA | `KeyAndCertificateFactory.CERTIFICATE_VALIDITY_YEARS = 10` |
+| **Leaf** (server) certificate | **397 days** by default (total window `notAfter - notBefore`) | its own last (re)generation, *not* server startup | `sslCertificateLeafValidityInDays` (default `KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_DEFAULT = 397`) |
+| HTTP/3 legacy echo-mode self-signed fallback | **10 years** | issuance | `KeyAndCertificateFactory.CERTIFICATE_VALIDITY_YEARS` |
+
+The CA is the trust anchor users pin into their trust stores, so it keeps a long life. The **leaf was shortened to 397 days** so it stays inside Apple's **825-day** maximum for TLS server certificates (iOS 13 / macOS 10.15, [support.apple.com/en-us/103769](https://support.apple.com/en-us/103769)) — the old 10-year leaf blew straight through that cap and is the likely cause of TLS handshake failures on Apple platforms (issue #2531). Note the operative rule here is the 825-day server-certificate cap, **not** Apple's better-known 398-day ATS limit: ATS explicitly exempts certificates issued from user-added / administrator-added roots, which is exactly MockServer's dynamically generated CA, so ATS does not apply. 397 days also sits inside the CA/Browser Forum's tightening trend.
+
+The HTTP/3 legacy echo-mode self-signed fallback is simultaneously trust anchor *and* server certificate with no renewal loop behind it, so it deliberately keeps the long CA-style validity rather than the short leaf validity — a short-lived self-signed anchor with nothing to renew it would simply expire the echo endpoint.
+
+To restore the previous long-lived leaf, set `mockserver.sslCertificateLeafValidityInDays` (e.g. `3650`). A non-positive value falls back to the default.
+
+**Leaf certificate extensions.** The generated leaf carries a `serverAuth` + `clientAuth` `extendedKeyUsage` (Apple requires `serverAuth` on the leaf independently of validity — without it iOS/macOS reject the certificate even with a compliant validity period), a critical `keyUsage` of `digitalSignature | keyEncipherment`, an `authorityKeyIdentifier` derived from the CA (so chain builders that match a leaf's AKI to the issuer's `subjectKeyIdentifier` can find the CA), the subject alternative names, and a positive serial number (RFC 5280 §4.1.2.2). The root CA carries **no** `extendedKeyUsage` — EKU on a trust anchor is non-idiomatic and only newly-generated CAs are affected (an existing dynamic CA on disk is never regenerated).
+
+**Proactive leaf renewal (self-healing cache).** The dynamic TLS certificate cache is expiry-aware: the leaf is proactively regenerated once **80% of its validity window has elapsed** (`KeyAndCertificateFactory.RENEWAL_ELAPSED_FRACTION = 0.8`), which for the 397-day default is ~318 days after issuance. A renewed leaf is minted with a fresh full validity window anchored to its new `notBefore`, so renewal happens once per window rather than thrashing on every handshake. This is what makes the short leaf safe: a long-running server never keeps serving an expired leaf out of its cached `SslContext`. A dynamically-generated **CA** nearing its own expiry is *warned about once* rather than auto-rotated — silently rotating a CA would invalidate every client trust store that imported it, so rotation is left to the operator. User-supplied fixed certificates never self-renew; they are validated (and loudly rejected on expiry) by `CertificateConfigurationValidator`.
+
+**Bounded dynamic SAN list (`maxSubjectAlternativeNames`).** MockServer adds a Subject Alternative Name for every distinct SNI hostname and `Host` header it observes and re-mints the leaf. Without a cap a hostile client could grow the SAN list without bound (a memory/CPU denial-of-service, and eventually a certificate too large to fit a handshake). `maxSubjectAlternativeNames` (default `100`) caps the retained **dynamically-discovered** entries; eviction is FIFO and configured/default SANs (e.g. `localhost`, anything set via `sslSubjectAlternativeNameDomains` / `sslSubjectAlternativeNameIps`) are never evicted. Hostnames are normalised and validated before being added, and an eviction logs a WARN.
 
 Custom CA certificates can be loaded from PEM files via configuration.
 

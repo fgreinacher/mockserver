@@ -160,6 +160,41 @@
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.sslSubjectAlternativeNameIps="127.0.0.1,0.0.0.0"</code></pre>
 </div>
 
+<button id="button_configuration_max_subject_alternative_names" class="accordion title"><strong>Maximum Dynamic Subject Alternative Names</strong></button>
+<div class="panel title">
+    <p>The maximum number of dynamically-discovered Subject Alternative Names (SANs) the auto-generated server certificate will accumulate. MockServer adds a SAN for each new hostname it observes via SNI or the <span class="inline_code">Host</span> header and regenerates the leaf certificate each time. Without a cap, a client sending many distinct hostnames could grow the SAN list without bound, causing unbounded memory and CPU use and eventually producing a certificate too large to complete a TLS handshake.</p>
+    <p>When the cap is reached, the oldest dynamically-discovered entry is evicted and a warning is logged. Explicitly configured names — including the default <span class="this_value">localhost</span> and any names set via <a href="#button_configuration_ssl_subject_alternative_name_domains">sslSubjectAlternativeNameDomains</a> or <a href="#button_configuration_ssl_subject_alternative_name_ips">sslSubjectAlternativeNameIps</a> — are never evicted.</p>
+    <p>Raise this value if you are proxying more than 100 distinct hostnames in a single MockServer instance and are seeing eviction warnings or intermittent certificate name-mismatch errors for hosts used earlier in a long-running session.</p>
+    <p>Type: <span class="keyword">integer</span> Default: <span class="this_value">100</span></p>
+    <p>Java Code:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">ConfigurationProperties.maxSubjectAlternativeNames(int maxSubjectAlternativeNames)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxSubjectAlternativeNames=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_MAX_SUBJECT_ALTERNATIVE_NAMES=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.maxSubjectAlternativeNames=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxSubjectAlternativeNames=200</code></pre>
+</div>
+
+<button id="button_configuration_ssl_certificate_leaf_validity_in_days" class="accordion title"><strong>Inbound X.509 Certificate Validity (Days)</strong></button>
+<div class="panel title">
+    <p>Number of days the auto-generated server (leaf) TLS certificate is valid for. The default of <span class="this_value">397</span> keeps the certificate inside Apple's 825-day maximum for TLS server certificates (iOS 13 / macOS 10.15); the previous 10-year certificate exceeded this limit and can cause TLS handshakes to fail on Apple platforms. MockServer automatically regenerates the certificate well before it expires, so a long-running server never serves an expired certificate.</p>
+    <p>Raise this (for example to <span class="inline_code">3650</span>) only if you depend on the previous long-lived certificate. A non-positive value falls back to the default. The dynamically generated Certificate Authority is unaffected and keeps its long (10 year) life.</p>
+    <p>Type: <span class="keyword">integer</span> Default: <span class="this_value">397</span></p>
+    <p>Java Code:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">ConfigurationProperties.sslCertificateLeafValidityInDays(int sslCertificateLeafValidityInDays)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.sslCertificateLeafValidityInDays=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_SSL_CERTIFICATE_LEAF_VALIDITY_IN_DAYS=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.sslCertificateLeafValidityInDays=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.sslCertificateLeafValidityInDays=3650</code></pre>
+</div>
+
 <h4>Fixed (i.e. Custom) Inbound Certificate Authority X.509 & Private Key</h4>
 
 <button id="button_configuration_tls_certificate_authority_private_key" class="accordion title"><strong>Fixed Inbound Certificate Authority Private Key</strong></button>

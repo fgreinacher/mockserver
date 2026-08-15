@@ -33,13 +33,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   order, with a warning, while configured and default SANs such as localhost are never evicted) and now
   normalise/validate each SNI hostname and `Host` header (lowercase, length and label-charset checked) before it is
   added, closing a denial-of-service vector where any client could force the leaf certificate to be re-minted with an
-  unbounded SAN list.
+  unbounded SAN list. Both `maxSubjectAlternativeNames` and `sslCertificateLeafValidityInDays` are now carried by
+  `ConfigurationDTO`, so they round-trip through `GET`/`PUT /mockserver/configuration` and can be set per-instance
+  rather than only via the static store (a runtime change to `maxSubjectAlternativeNames` takes effect on the next SAN
+  added).
 - Dynamically-generated private key material (leaf key, certificate-authority key, and the JKS key store) is now
   written owner-readable-only (`0600`) and atomically, and public certificates `0644`; a corrupt or unreadable
   certificate-authority PEM now fails loudly instead of being silently treated as absent and overwritten (which would
   invalidate every pinned client trust store), with cross-process locking around certificate-authority generation.
 - Deferred BouncyCastle registration in `PEMToFile` off the class-load path, restoring the lazy-BouncyCastle startup
   optimisation.
+- Shortened the auto-generated TLS **leaf** (server) certificate to a 397-day validity by default (Wave 2), so it
+  stays inside Apple's 825-day maximum for TLS server certificates (iOS 13 / macOS 10.15) — the previous 10-year leaf
+  exceeded that cap and is the likely cause of TLS handshake failures on Apple platforms
+  ([#2531](https://github.com/mock-server/mockserver-monorepo/issues/2531)). The generated Certificate Authority keeps
+  its long (10-year) life, and the Wave 1 proactive renewal (regenerating the leaf once 80% of its validity has
+  elapsed) means a long-running server never serves an expired leaf; the previous long-lived behaviour can be restored
+  with the new `sslCertificateLeafValidityInDays` property (e.g. `3650`). That override is clamped to a usable range of
+  30–3650 days (a WARN is logged when a value is clamped): a value below 30 would mint a leaf that — because the
+  `notBefore` is back-dated 5 days — is either already expired at issuance or already past its renewal threshold (so it
+  would be re-minted on every handshake), and a value above 3650 could push the expiry past the X.509 date ceiling; a
+  non-positive value still falls back to the 397-day default. The generated leaf now also carries a
+  `serverAuth`+`clientAuth` extended-key-usage (Apple requires `serverAuth` on the leaf independently of validity), a
+  critical `digitalSignature`+`keyEncipherment` key-usage, and an authority-key-identifier derived from the CA; the
+  root CA no longer carries a (non-idiomatic) extended-key-usage. Certificate serial numbers are now forced positive
+  as required by RFC 5280, and the HTTP/3 legacy echo-mode self-signed fallback gained a back-dated `notBefore`,
+  subject-alternative-names, `serverAuth` extended-key-usage and a key-usage (it keeps the long validity because it is
+  both trust anchor and server certificate with no renewal loop).
 
 ### Removed
 - Removed the unused `PKCS1CertificateAuthorityPrivateKey.pem` resource from the published `mockserver-core` jar. It

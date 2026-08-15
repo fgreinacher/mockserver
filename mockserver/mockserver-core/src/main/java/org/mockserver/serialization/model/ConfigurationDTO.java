@@ -161,6 +161,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private String sslCertificateDomainName;
     private Set<String> sslSubjectAlternativeNameDomains;
     private Set<String> sslSubjectAlternativeNameIps;
+    private Integer maxSubjectAlternativeNames;
+    private Integer sslCertificateLeafValidityInDays;
     private String certificateAuthorityPrivateKey;
     private String certificateAuthorityCertificate;
     private String privateKeyPath;
@@ -507,6 +509,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.sslCertificateDomainName = configuration.sslCertificateDomainName();
             this.sslSubjectAlternativeNameDomains = configuration.sslSubjectAlternativeNameDomains();
             this.sslSubjectAlternativeNameIps = configuration.sslSubjectAlternativeNameIps();
+            this.maxSubjectAlternativeNames = configuration.maxSubjectAlternativeNames();
+            this.sslCertificateLeafValidityInDays = configuration.sslCertificateLeafValidityInDays();
             this.certificateAuthorityPrivateKey = configuration.certificateAuthorityPrivateKey();
             this.certificateAuthorityCertificate = configuration.certificateAuthorityCertificate();
             this.privateKeyPath = configuration.privateKeyPath();
@@ -904,6 +908,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (sslSubjectAlternativeNameIps != null) {
             configuration.sslSubjectAlternativeNameIps(sslSubjectAlternativeNameIps);
         }
+        configuration.maxSubjectAlternativeNames(maxSubjectAlternativeNames);
+        configuration.sslCertificateLeafValidityInDays(sslCertificateLeafValidityInDays);
         configuration.certificateAuthorityPrivateKey(maskFreeOrUnset(certificateAuthorityPrivateKey));
         configuration.certificateAuthorityCertificate(certificateAuthorityCertificate);
         configuration.privateKeyPath(maskFreeOrUnset(privateKeyPath));
@@ -1602,6 +1608,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (sslSubjectAlternativeNameIps != null) {
             target.sslSubjectAlternativeNameIps(sslSubjectAlternativeNameIps);
+        }
+        if (maxSubjectAlternativeNames != null) {
+            target.maxSubjectAlternativeNames(maxSubjectAlternativeNames);
+        }
+        if (sslCertificateLeafValidityInDays != null) {
+            target.sslCertificateLeafValidityInDays(sslCertificateLeafValidityInDays);
         }
         if (certificateAuthorityPrivateKey != null) {
             String restored = ConfigurationProperties.restoreRedactedValue("certificateAuthorityPrivateKey", certificateAuthorityPrivateKey, target.certificateAuthorityPrivateKey());
@@ -3316,6 +3328,24 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setSslSubjectAlternativeNameIps(Set<String> sslSubjectAlternativeNameIps) {
         this.sslSubjectAlternativeNameIps = sslSubjectAlternativeNameIps;
+        return this;
+    }
+
+    public Integer getMaxSubjectAlternativeNames() {
+        return maxSubjectAlternativeNames;
+    }
+
+    public ConfigurationDTO setMaxSubjectAlternativeNames(Integer maxSubjectAlternativeNames) {
+        this.maxSubjectAlternativeNames = maxSubjectAlternativeNames;
+        return this;
+    }
+
+    public Integer getSslCertificateLeafValidityInDays() {
+        return sslCertificateLeafValidityInDays;
+    }
+
+    public ConfigurationDTO setSslCertificateLeafValidityInDays(Integer sslCertificateLeafValidityInDays) {
+        this.sslCertificateLeafValidityInDays = sslCertificateLeafValidityInDays;
         return this;
     }
 

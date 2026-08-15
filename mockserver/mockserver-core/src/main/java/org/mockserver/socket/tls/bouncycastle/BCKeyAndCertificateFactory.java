@@ -287,8 +287,8 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
         // signers name
         X500Name issuerName = new X500Name("CN=" + ROOT_COMMON_NAME + ", O=" + ORGANISATION + ", L=" + LOCALITY + ", ST=" + STATE + ", C=" + COUNTRY);
 
-        // serial (RFC 5280 recommends unpredictable serials)
-        BigInteger serial = new BigInteger(64, new SecureRandom());
+        // serial (RFC 5280 §4.1.2.2 requires a POSITIVE serial; a plain new BigInteger(64, random) can be zero)
+        BigInteger serial = KeyAndCertificateFactory.positiveSerialNumber();
 
         // create the certificate - version 3 (with subjects name same as issues as self signed)
         X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(issuerName, serial, KeyAndCertificateFactory.notBefore(), KeyAndCertificateFactory.notAfter(), issuerName, publicKey);
@@ -298,11 +298,11 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
         KeyUsage usage = new KeyUsage(KeyUsage.keyCertSign | KeyUsage.digitalSignature | KeyUsage.keyEncipherment | KeyUsage.dataEncipherment | KeyUsage.cRLSign);
         builder.addExtension(Extension.keyUsage, false, usage);
 
-        ASN1EncodableVector purposes = new ASN1EncodableVector();
-        purposes.add(KeyPurposeId.id_kp_serverAuth);
-        purposes.add(KeyPurposeId.id_kp_clientAuth);
-        purposes.add(KeyPurposeId.anyExtendedKeyUsage);
-        builder.addExtension(Extension.extendedKeyUsage, false, new DERSequence(purposes));
+        // NB: no extendedKeyUsage on the root CA. EKU on a trust anchor is non-idiomatic (a root should be
+        // able to issue any purpose), and the old list carried both two specific EKUs AND
+        // anyExtendedKeyUsage, which is self-contradictory. Removing it is safe for existing users: a
+        // dynamically-generated CA already on disk is never regenerated, so only brand-new CAs are
+        // affected, and the leaf now carries serverAuth/clientAuth EKU itself (see generateLeafCert).
 
         X509Certificate cert = signCertificate(keyGenerationAndSigningAlgorithm, builder, privateKey);
         cert.checkValidity(new Date());
@@ -425,13 +425,60 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
         // subjects name - the same as we are self signed.
         X500Name subject = new X500Name("CN=" + domain + ", O=" + ORGANISATION + ", L=" + LOCALITY + ", ST=" + STATE + ", C=" + COUNTRY);
 
-        // serial (RFC 5280 recommends unpredictable serials)
-        BigInteger serial = new BigInteger(64, new SecureRandom());
+        // serial (RFC 5280 §4.1.2.2 requires a POSITIVE serial; a plain new BigInteger(64, random) can be zero)
+        BigInteger serial = KeyAndCertificateFactory.positiveSerialNumber();
+
+        // leaf validity: default 397 days (inside Apple's 825-day server-cert cap), overridable to restore
+        // the historical long-lived leaf. The window is anchored to notBefore (back-dated 5 days) so
+        // notAfter - notBefore == days. Three input bands are corrected rather than trusted verbatim:
+        //   - non-positive: unset/invalid -> fall back to the default (documented behaviour, not a clamp);
+        //   - positive but below LEAF_CERTIFICATE_VALIDITY_DAYS_MIN: a broken value that would mint an
+        //     already-expired leaf (1..5) or one born past its renewal threshold (~6, a per-handshake
+        //     regeneration loop) -> clamp UP to the floor with a WARN;
+        //   - above LEAF_CERTIFICATE_VALIDITY_DAYS_MAX: could push notAfter past the X.509/Apple ceiling
+        //     -> clamp DOWN to the cap with a WARN.
+        long configuredLeafValidityDays = configuration.sslCertificateLeafValidityInDays();
+        long leafValidityDays = configuredLeafValidityDays;
+        if (leafValidityDays < 1) {
+            leafValidityDays = KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_DEFAULT;
+        } else if (leafValidityDays < KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_MIN) {
+            leafValidityDays = KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_MIN;
+        } else if (leafValidityDays > KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_MAX) {
+            leafValidityDays = KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_MAX;
+        }
+        if (leafValidityDays != configuredLeafValidityDays && configuredLeafValidityDays >= 1
+            && mockServerLogger != null && mockServerLogger.isEnabledForInstance(WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(WARN)
+                    .setMessageFormat("configured mockserver.sslCertificateLeafValidityInDays of {} is outside the honoured range [{}, {}] and has been clamped to {} days to avoid minting an unusable leaf certificate")
+                    .setArguments(configuredLeafValidityDays, KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_MIN, KeyAndCertificateFactory.LEAF_CERTIFICATE_VALIDITY_DAYS_MAX, leafValidityDays)
+            );
+        }
+        Date notBefore = KeyAndCertificateFactory.notBefore();
+        Date notAfter = KeyAndCertificateFactory.notAfter(notBefore, leafValidityDays);
 
         // create the certificate - version 3
-        X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(issuer, serial, KeyAndCertificateFactory.notBefore(), KeyAndCertificateFactory.notAfter(), subject, publicKey);
+        X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(issuer, serial, notBefore, notAfter, subject, publicKey);
         builder.addExtension(Extension.subjectKeyIdentifier, false, createSubjectKeyIdentifier(publicKey));
         builder.addExtension(Extension.basicConstraints, false, new BasicConstraints(false));
+
+        // authorityKeyIdentifier derived from the CA so chain builders that match a leaf's AKI to the
+        // issuer's subjectKeyIdentifier (RFC 5280 §4.2.1.1) can find the CA. Computed from the CA public
+        // key with the same method used for the CA's own SKI, so the two identifiers are byte-identical.
+        builder.addExtension(Extension.authorityKeyIdentifier, false, createAuthorityKeyIdentifier(certificateAuthorityPublicKey));
+
+        // extendedKeyUsage: serverAuth is REQUIRED by Apple (iOS/macOS) on the leaf independently of
+        // validity — without it the handshake fails even with a compliant validity period (issue #2531).
+        // clientAuth is included so the same leaf can also satisfy mTLS client-auth uses.
+        builder.addExtension(Extension.extendedKeyUsage, false, new ExtendedKeyUsage(new KeyPurposeId[]{
+            KeyPurposeId.id_kp_serverAuth,
+            KeyPurposeId.id_kp_clientAuth
+        }));
+
+        // keyUsage for a TLS server leaf: digitalSignature (ECDHE/(EC)DSA) + keyEncipherment (RSA key
+        // transport), marked critical as required for keyUsage.
+        builder.addExtension(Extension.keyUsage, true, new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment));
 
         // subject alternative name
         List<ASN1Encodable> subjectAlternativeNames = new ArrayList<>();
@@ -477,6 +524,20 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
             ASN1Sequence seq = (ASN1Sequence) is.readObject();
             SubjectPublicKeyInfo info = SubjectPublicKeyInfo.getInstance(seq);
             return new BcX509ExtensionUtils().createSubjectKeyIdentifier(info);
+        }
+    }
+
+    /**
+     * Build an authorityKeyIdentifier from the CA public key. BouncyCastle derives it with the same
+     * (SHA-1 of the public key) method it uses for {@link #createSubjectKeyIdentifier(Key)}, so the
+     * resulting keyIdentifier is byte-identical to the CA certificate's subjectKeyIdentifier — which is
+     * exactly what an AKI→SKI chain builder matches on.
+     */
+    private AuthorityKeyIdentifier createAuthorityKeyIdentifier(Key certificateAuthorityPublicKey) throws IOException {
+        try (ASN1InputStream is = new ASN1InputStream(new ByteArrayInputStream(certificateAuthorityPublicKey.getEncoded()))) {
+            ASN1Sequence seq = (ASN1Sequence) is.readObject();
+            SubjectPublicKeyInfo info = SubjectPublicKeyInfo.getInstance(seq);
+            return new BcX509ExtensionUtils().createAuthorityKeyIdentifier(info);
         }
     }
 
