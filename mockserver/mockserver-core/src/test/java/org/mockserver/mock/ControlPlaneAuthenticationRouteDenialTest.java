@@ -13,6 +13,7 @@ import org.mockserver.serialization.model.ConfigurationDTO;
 
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -78,6 +79,26 @@ public class ControlPlaneAuthenticationRouteDenialTest {
         });
     }
 
+    /**
+     * Serialises every parameterisation's {@code setUp -> test body -> tearDown} against each other.
+     *
+     * <p>The system-property routes enable authentication through the process-global
+     * {@link ConfigurationProperties} static store, which cannot be thread-isolated. The class is
+     * therefore excluded from the parallel {@code default-test} phase and pinned to the sequential phase
+     * in {@code mockserver-core/pom.xml}. That pom routing is correct but is silently bypassed by a
+     * {@code -Dtest=ControlPlaneAuthenticationRouteDenialTest} filter, because {@code -Dtest} overrides
+     * the surefire {@code <excludes>} and runs the class under {@code parallel=classes} — where JUnit4
+     * {@link Parameterized} runs up to {@code threadCount} parameterisations CONCURRENTLY. Two such
+     * parameterisations then race on the shared static store (one enables it, another's reset clears it),
+     * producing intermittent false denials/allows. A filtered verification run is exactly what an agent
+     * or a developer does, so the flake must not depend on the pom routing alone.
+     *
+     * <p>Holding this lock across each parameterisation's whole lifecycle makes the concurrent case behave
+     * identically to the sequential case, deterministically. It is a no-op cost in the normal sequential
+     * phase (uncontended).</p>
+     */
+    private static final ReentrantLock GLOBAL_STATIC_STATE_LOCK = new ReentrantLock();
+
     @Parameterized.Parameter(0)
     public Mechanism mechanism;
 
@@ -93,6 +114,9 @@ public class ControlPlaneAuthenticationRouteDenialTest {
 
     @Before
     public void setUp() {
+        // acquire FIRST, before touching any global static, so a concurrently-scheduled parameterisation
+        // cannot interleave with this one's system-property mutations (see GLOBAL_STATIC_STATE_LOCK).
+        GLOBAL_STATIC_STATE_LOCK.lock();
         clearControlPlaneSystemProperties();
         configuration = Configuration.configuration();
         MockServerLogger mockServerLogger = new MockServerLogger();
@@ -102,9 +126,17 @@ public class ControlPlaneAuthenticationRouteDenialTest {
 
     @After
     public void tearDown() {
-        clearControlPlaneSystemProperties();
-        if (scheduler != null) {
-            scheduler.shutdown();
+        try {
+            clearControlPlaneSystemProperties();
+            if (scheduler != null) {
+                scheduler.shutdown();
+            }
+        } finally {
+            // release LAST, only if this thread holds it (defensive: @After runs even if setUp threw before
+            // the lock was taken).
+            if (GLOBAL_STATIC_STATE_LOCK.isHeldByCurrentThread()) {
+                GLOBAL_STATIC_STATE_LOCK.unlock();
+            }
         }
     }
 
