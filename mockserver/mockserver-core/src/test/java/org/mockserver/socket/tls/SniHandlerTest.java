@@ -104,7 +104,7 @@ public class SniHandlerTest {
     }
 
     @Test
-    public void lookupShouldReturnSucceededFutureWithSslContext() {
+    public void lookupShouldReturnSucceededFutureWithSslContext() throws Exception {
         // given
         Configuration configuration = configuration();
         NettySslContextFactory nettySslContextFactory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
@@ -112,10 +112,15 @@ public class SniHandlerTest {
         EmbeddedChannel channel = new EmbeddedChannel(sniHandler);
         ChannelHandlerContext ctx = channel.pipeline().context(sniHandler);
 
-        // when
+        // when — provisioning now runs off the event loop and completes the future asynchronously (C5).
+        // await() cannot be called on the EmbeddedChannel's own executor thread, so poll isDone().
         io.netty.util.concurrent.Future<SslContext> result = sniHandler.lookup(ctx, "example.com");
 
         // then
+        long deadline = System.currentTimeMillis() + java.util.concurrent.TimeUnit.SECONDS.toMillis(30);
+        while (!result.isDone() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
         assertThat(result.isSuccess(), is(true));
         assertThat(result.getNow(), is(notNullValue()));
         channel.close();

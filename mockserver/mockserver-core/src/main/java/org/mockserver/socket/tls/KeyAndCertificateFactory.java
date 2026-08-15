@@ -34,6 +34,42 @@ public interface KeyAndCertificateFactory {
      */
     long CERTIFICATE_VALIDITY_YEARS = 10;
     /**
+     * Fraction of a certificate's validity window that must elapse before it is proactively renewed.
+     * Renewing at 80% elapsed keeps a comfortable safety margin for both today's 10-year certificates
+     * and the short-lived certificates a later hardening wave will introduce, so a long-running server
+     * never keeps serving an expired leaf from its cached SSL context.
+     */
+    double RENEWAL_ELAPSED_FRACTION = 0.8;
+
+    /**
+     * @param certificate the certificate to test (may be null)
+     * @param fraction    the proportion of the validity window that must elapse before renewal
+     * @param now         the current time in epoch milliseconds
+     * @return true when {@code now} is at or past {@code notBefore + fraction * (notAfter - notBefore)};
+     * false when {@code certificate} is null (nothing to renew yet)
+     */
+    static boolean isPastRenewalThreshold(X509Certificate certificate, double fraction, long now) {
+        if (certificate == null) {
+            return false;
+        }
+        long notBefore = certificate.getNotBefore().getTime();
+        long notAfter = certificate.getNotAfter().getTime();
+        long renewAt = notBefore + (long) ((notAfter - notBefore) * fraction);
+        return now >= renewAt;
+    }
+
+    /**
+     * @return true when the in-memory self-generated leaf (or the dynamically generated CA) has passed
+     * its renewal threshold and must be regenerated before the cached TLS context is reused. Always
+     * false for user-supplied fixed certificates — those are validated (and loudly rejected on expiry)
+     * by {@link CertificateConfigurationValidator}. Defaults to false for factories that do not
+     * self-renew (so third-party/mock implementations keep working unchanged).
+     */
+    default boolean certificateNeedsRenewal() {
+        return false;
+    }
+
+    /**
      * The not-before validity bound for a freshly issued certificate: the current time minus 5 days,
      * just in case the software clock goes back due to time synchronization.
      * <p>

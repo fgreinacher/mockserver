@@ -27,9 +27,28 @@ import static org.mockserver.character.Character.NEW_LINE;
 
 public class PEMToFile {
 
-    static {
-        if (Security.getProvider("BC") == null) {
-            Security.addProvider(new BouncyCastleProvider());
+    private static volatile boolean providerRegistered;
+
+    /**
+     * Register the BouncyCastle JCE provider lazily on first use of a method that actually needs it
+     * (private-key PEM parsing), rather than in a static initialiser. A static block ran on class load —
+     * which happens early because {@code BCKeyAndCertificateFactory} and {@code NettySslContextFactory}
+     * reference this class — forcing the ~460-class BouncyCastle load onto the startup path and defeating
+     * the documented lazy-BC startup optimisation (defect C16). The X.509 parsing methods use the JDK
+     * {@code CertificateFactory} and do not need BouncyCastle, so they do not call this.
+     */
+    private static void ensureProviderRegistered() {
+        if (!providerRegistered) {
+            registerProvider();
+        }
+    }
+
+    private static synchronized void registerProvider() {
+        if (!providerRegistered) {
+            if (Security.getProvider("BC") == null) {
+                Security.addProvider(new BouncyCastleProvider());
+            }
+            providerRegistered = true;
         }
     }
 
@@ -113,6 +132,7 @@ public class PEMToFile {
 
     public static PrivateKey privateKeyFromPEM(String pem) {
         try {
+            ensureProviderRegistered();
             PEMParser pemParser = new PEMParser(new StringReader(pem));
             JcaPEMKeyConverter converter = new JcaPEMKeyConverter().setProvider("BC");
 

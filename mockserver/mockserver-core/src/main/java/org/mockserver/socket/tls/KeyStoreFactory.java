@@ -2,15 +2,16 @@ package org.mockserver.socket.tls;
 
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import org.mockserver.configuration.Configuration;
+import org.mockserver.file.FileCreator;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.uuid.UUIDService;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.security.*;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
@@ -208,17 +209,19 @@ public class KeyStoreFactory {
                 keyStore.setCertificateEntry(KEY_STORE_CA_ALIAS, caCert);
             }
 
-            // save as JKS file
+            // save as JKS file — this key store contains the PRIVATE KEY, so it must be written
+            // owner-only (0600) and atomically rather than via a default-permission FileOutputStream that
+            // would land it world-readable and truncate in place under a concurrent reader (defect C10).
             String keyStoreFileAbsolutePath = new File(keyStoreFileName).getAbsolutePath();
-            try (FileOutputStream fileOutputStream = new FileOutputStream(keyStoreFileAbsolutePath)) {
-                keyStore.store(fileOutputStream, keyStorePassword);
-                if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(TRACE)
-                            .setMessageFormat("saving key store to file [" + keyStoreFileAbsolutePath + "]")
-                    );
-                }
+            ByteArrayOutputStream keyStoreBytes = new ByteArrayOutputStream();
+            keyStore.store(keyStoreBytes, keyStorePassword);
+            FileCreator.writeToFileAtomically("KeyStore", new File(keyStoreFileAbsolutePath), keyStoreBytes.toByteArray(), true);
+            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(TRACE)
+                        .setMessageFormat("saving key store to file [" + keyStoreFileAbsolutePath + "]")
+                );
             }
             new File(keyStoreFileAbsolutePath).deleteOnExit();
             return keyStore;

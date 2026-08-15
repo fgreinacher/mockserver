@@ -9,6 +9,7 @@ import io.netty.handler.ssl.SslHandler;
 import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Future;
+import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.PlatformDependent;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.log.model.LogEntry;
@@ -20,6 +21,13 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 import java.security.cert.Certificate;
+import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.slf4j.event.Level.TRACE;
@@ -42,8 +50,33 @@ public class SniHandler extends AbstractSniHandler<SslContext> {
      */
     public static final AttributeKey<String> SNI_HOSTNAME = AttributeKey.valueOf("SNI_HOSTNAME");
 
+    /**
+     * Shared, bounded pool that runs the (potentially RSA-keygen-heavy) server SSL context provisioning
+     * OFF the Netty event loop (defect C5). Previously {@code createServerSslContext()} ran synchronously
+     * inside {@link #lookup}, so certificate generation blocked the event loop — and, under a global
+     * lock, stalled every other connection on that loop. The pool is CPU-bound work sized to the
+     * available processors; daemon threads so it never blocks JVM shutdown.
+     */
+    private static final ExecutorService SSL_CONTEXT_EXECUTOR = Executors.newFixedThreadPool(
+        Math.max(2, Runtime.getRuntime().availableProcessors()),
+        new java.util.concurrent.ThreadFactory() {
+            private final AtomicInteger counter = new AtomicInteger();
+
+            @Override
+            public Thread newThread(Runnable runnable) {
+                Thread thread = new Thread(runnable, "mockserver-ssl-context-" + counter.incrementAndGet());
+                thread.setDaemon(true);
+                return thread;
+            }
+        });
+
     private final Configuration configuration;
     private final NettySslContextFactory nettySslContextFactory;
+    /**
+     * Coalesces concurrent SNI lookups for the SAME host onto a single in-flight generation, so a burst
+     * of parallel handshakes to one host does not each trigger a separate provisioning (defect C5).
+     */
+    private final ConcurrentHashMap<String, CompletableFuture<SslContext>> inFlightByHost = new ConcurrentHashMap<>();
 
     public SniHandler(Configuration configuration, NettySslContextFactory nettySslContextFactory) {
         this.configuration = configuration;
@@ -53,10 +86,27 @@ public class SniHandler extends AbstractSniHandler<SslContext> {
     @Override
     protected Future<SslContext> lookup(ChannelHandlerContext ctx, String hostname) {
         if (isNotBlank(hostname)) {
+            // add the SAN on the event loop BEFORE the (offloaded) generation runs, so the generated
+            // certificate is guaranteed to contain this host's SAN
             configuration.addSubjectAlternativeName(hostname);
             ctx.channel().attr(SNI_HOSTNAME).set(hostname);
         }
-        return ctx.executor().newSucceededFuture(nettySslContextFactory.createServerSslContext());
+        String host = isNotBlank(hostname) ? hostname.toLowerCase(Locale.ROOT) : "";
+        CompletableFuture<SslContext> generation = inFlightByHost.computeIfAbsent(host, key -> {
+            CompletableFuture<SslContext> future =
+                CompletableFuture.supplyAsync(nettySslContextFactory::createServerSslContext, SSL_CONTEXT_EXECUTOR);
+            future.whenComplete((sslContext, throwable) -> inFlightByHost.remove(key, future));
+            return future;
+        });
+        Promise<SslContext> promise = ctx.executor().newPromise();
+        generation.whenComplete((sslContext, throwable) -> {
+            if (throwable != null) {
+                promise.setFailure(throwable instanceof CompletionException && throwable.getCause() != null ? throwable.getCause() : throwable);
+            } else {
+                promise.setSuccess(sslContext);
+            }
+        });
+        return promise;
     }
 
     @Override

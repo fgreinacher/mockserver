@@ -13,10 +13,12 @@ import org.slf4j.event.Level;
 
 import java.net.InetSocketAddress;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.function.Consumer;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
@@ -28,6 +30,8 @@ import static org.mockserver.configuration.ConfigurationProperties.fileExists;
  */
 @SuppressWarnings({"UnusedReturnValue", "unused"})
 public class Configuration {
+
+    private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(Configuration.class);
 
     public static Configuration configuration() {
         return new Configuration();
@@ -354,8 +358,20 @@ public class Configuration {
     // inbound - dynamic private key & x509
     private Boolean preventCertificateDynamicUpdate;
     private String sslCertificateDomainName;
-    private Set<String> sslSubjectAlternativeNameDomains;
-    private Set<String> sslSubjectAlternativeNameIps;
+    // volatile + mutated only through the synchronized add/clear methods below, so the null-then-assign
+    // read-modify-write race that could drop a concurrently-added SAN disappears (defect C7)
+    private volatile Set<String> sslSubjectAlternativeNameDomains;
+    private volatile Set<String> sslSubjectAlternativeNameIps;
+    // Insertion-order record of ONLY the dynamically-discovered (SNI / Host-derived) SAN entries, so
+    // boundedAdd can evict genuinely oldest-first (FIFO). The backing SAN sets above are ConcurrentHashSets
+    // (weakly-consistent, safe for the unsynchronized readers in serverContextSignature() / generateLeafCert)
+    // and therefore have NO insertion order, so eviction off the set alone removed an arbitrary entry —
+    // which could drop the default localhost SAN or a still-active host and break TLS for it. Configured
+    // and default SANs are never recorded here and so are exempt from eviction. Mutated only under the
+    // synchronized add / clear / setter methods below; never read by the unsynchronized cert readers.
+    private final Deque<String> dynamicSanDomainOrder = new ConcurrentLinkedDeque<>();
+    private final Deque<String> dynamicSanIpOrder = new ConcurrentLinkedDeque<>();
+    private Integer maxSubjectAlternativeNames;
 
     // inbound - fixed CA
     private String certificateAuthorityPrivateKey;
@@ -5115,6 +5131,14 @@ public class Configuration {
      * @param dynamicallyCreateCertificateAuthorityCertificate dynamic creation of Certificate Authority X509 certificate and private key.
      */
     public Configuration dynamicallyCreateCertificateAuthorityCertificate(Boolean dynamicallyCreateCertificateAuthorityCertificate) {
+        // Rotating the certificate authority (or the directory / paths it is loaded from) must invalidate
+        // the cached server AND client TLS contexts and the memoised CA, otherwise the rotation is
+        // silently ignored for the JVM lifetime (defect C9). Only raise on an actual change so the
+        // certificate factory re-deriving the same value on every build does not cause churn.
+        if (!java.util.Objects.equals(this.dynamicallyCreateCertificateAuthorityCertificate, dynamicallyCreateCertificateAuthorityCertificate)) {
+            rebuildServerTLSContext(true);
+            rebuildTLSContext(true);
+        }
         this.dynamicallyCreateCertificateAuthorityCertificate = dynamicallyCreateCertificateAuthorityCertificate;
         return this;
     }
@@ -5132,6 +5156,10 @@ public class Configuration {
      * @param directoryToSaveDynamicSSLCertificate directory to save Certificate Authority X.509 Certificate and Private Key
      */
     public Configuration directoryToSaveDynamicSSLCertificate(String directoryToSaveDynamicSSLCertificate) {
+        if (!java.util.Objects.equals(this.directoryToSaveDynamicSSLCertificate, directoryToSaveDynamicSSLCertificate)) {
+            rebuildServerTLSContext(true);
+            rebuildTLSContext(true);
+        }
         this.directoryToSaveDynamicSSLCertificate = directoryToSaveDynamicSSLCertificate;
         return this;
     }
@@ -5172,6 +5200,29 @@ public class Configuration {
         return this;
     }
 
+    public Integer maxSubjectAlternativeNames() {
+        if (maxSubjectAlternativeNames == null) {
+            return ConfigurationProperties.maxSubjectAlternativeNames();
+        }
+        return maxSubjectAlternativeNames;
+    }
+
+    /**
+     * Maximum number of dynamically-added Subject Alternative Name (SAN) entries retained for the
+     * auto-generated TLS certificate. MockServer adds a SAN for every distinct SNI hostname and
+     * {@code Host} header it sees; without a cap a hostile client can force the leaf certificate to be
+     * re-minted with an unbounded SAN list (a memory/CPU DoS, defect C3). When the cap is reached the
+     * oldest dynamically-discovered entry is evicted first (FIFO) with a WARN; configured and default
+     * SANs (e.g. localhost and anything set via {@link #sslSubjectAlternativeNameDomains(Set)} /
+     * {@link #sslSubjectAlternativeNameIps(Set)}) are never evicted. Default is 100.
+     *
+     * @param maxSubjectAlternativeNames maximum retained dynamic SAN entries (per of domains and IPs)
+     */
+    public Configuration maxSubjectAlternativeNames(Integer maxSubjectAlternativeNames) {
+        this.maxSubjectAlternativeNames = maxSubjectAlternativeNames;
+        return this;
+    }
+
     public Set<String> sslSubjectAlternativeNameDomains() {
         if (sslSubjectAlternativeNameDomains == null) {
             return ConfigurationProperties.sslSubjectAlternativeNameDomains();
@@ -5187,8 +5238,7 @@ public class Configuration {
      * @param sslSubjectAlternativeNameDomains Subject Alternative Name (SAN) domain names for auto-generate TLS certificates
      */
     public Configuration sslSubjectAlternativeNameDomains(String... sslSubjectAlternativeNameDomains) {
-        this.sslSubjectAlternativeNameDomains = Sets.newConcurrentHashSet(Arrays.asList(sslSubjectAlternativeNameDomains));
-        return this;
+        return sslSubjectAlternativeNameDomains(Sets.newConcurrentHashSet(Arrays.asList(sslSubjectAlternativeNameDomains)));
     }
 
     /**
@@ -5198,8 +5248,16 @@ public class Configuration {
      *
      * @param sslSubjectAlternativeNameDomains Subject Alternative Name (SAN) domain names for auto-generate TLS certificates
      */
-    public Configuration sslSubjectAlternativeNameDomains(Set<String> sslSubjectAlternativeNameDomains) {
-        this.sslSubjectAlternativeNameDomains = sslSubjectAlternativeNameDomains;
+    public synchronized Configuration sslSubjectAlternativeNameDomains(Set<String> sslSubjectAlternativeNameDomains) {
+        // Defensively copy a caller-supplied set into a concurrent structure: an unsynchronized reader
+        // (serverContextSignature / generateLeafCert) iterates this field directly, so a plain HashSet
+        // passed here would reintroduce ConcurrentModificationException risk against the synchronized add
+        // path. These are configured (not dynamically discovered) SANs, so they are exempt from eviction —
+        // discard any dynamic insertion-order tracking left over from earlier SNI / Host adds.
+        this.sslSubjectAlternativeNameDomains = sslSubjectAlternativeNameDomains == null
+            ? null
+            : Sets.newConcurrentHashSet(sslSubjectAlternativeNameDomains);
+        dynamicSanDomainOrder.clear();
         return this;
     }
 
@@ -5218,8 +5276,7 @@ public class Configuration {
      * @param sslSubjectAlternativeNameIps Subject Alternative Name (SAN) IP addresses for auto-generate TLS certificates
      */
     public Configuration sslSubjectAlternativeNameIps(String... sslSubjectAlternativeNameIps) {
-        sslSubjectAlternativeNameIps(Sets.newConcurrentHashSet(Arrays.asList(sslSubjectAlternativeNameIps)));
-        return this;
+        return sslSubjectAlternativeNameIps(Sets.newConcurrentHashSet(Arrays.asList(sslSubjectAlternativeNameIps)));
     }
 
     /**
@@ -5229,8 +5286,13 @@ public class Configuration {
      *
      * @param sslSubjectAlternativeNameIps Subject Alternative Name (SAN) IP addresses for auto-generate TLS certificates
      */
-    public Configuration sslSubjectAlternativeNameIps(Set<String> sslSubjectAlternativeNameIps) {
-        this.sslSubjectAlternativeNameIps = sslSubjectAlternativeNameIps;
+    public synchronized Configuration sslSubjectAlternativeNameIps(Set<String> sslSubjectAlternativeNameIps) {
+        // Defensively copy into a concurrent structure (see sslSubjectAlternativeNameDomains(Set)); these
+        // configured SANs are exempt from eviction, so discard any dynamic insertion-order tracking.
+        this.sslSubjectAlternativeNameIps = sslSubjectAlternativeNameIps == null
+            ? null
+            : Sets.newConcurrentHashSet(sslSubjectAlternativeNameIps);
+        dynamicSanIpOrder.clear();
         return this;
     }
 
@@ -5254,6 +5316,10 @@ public class Configuration {
      * @param certificateAuthorityPrivateKey location of the PEM file containing the certificate authority private key
      */
     public Configuration certificateAuthorityPrivateKey(String certificateAuthorityPrivateKey) {
+        if (!java.util.Objects.equals(this.certificateAuthorityPrivateKey, certificateAuthorityPrivateKey)) {
+            rebuildServerTLSContext(true);
+            rebuildTLSContext(true);
+        }
         this.certificateAuthorityPrivateKey = certificateAuthorityPrivateKey;
         return this;
     }
@@ -5277,6 +5343,10 @@ public class Configuration {
      * @param certificateAuthorityCertificate location of the PEM file containing the certificate authority X509 certificate
      */
     public Configuration certificateAuthorityCertificate(String certificateAuthorityCertificate) {
+        if (!java.util.Objects.equals(this.certificateAuthorityCertificate, certificateAuthorityCertificate)) {
+            rebuildServerTLSContext(true);
+            rebuildTLSContext(true);
+        }
         this.certificateAuthorityCertificate = certificateAuthorityCertificate;
         return this;
     }
@@ -5306,6 +5376,10 @@ public class Configuration {
      * @param privateKeyPath location of the PKCS#8 PEM file containing the private key
      */
     public Configuration privateKeyPath(String privateKeyPath) {
+        if (!java.util.Objects.equals(this.privateKeyPath, privateKeyPath)) {
+            rebuildServerTLSContext(true);
+            rebuildTLSContext(true);
+        }
         this.privateKeyPath = privateKeyPath;
         return this;
     }
@@ -5333,6 +5407,10 @@ public class Configuration {
      * @param x509CertificatePath location of the PEM file containing the X509 certificate
      */
     public Configuration x509CertificatePath(String x509CertificatePath) {
+        if (!java.util.Objects.equals(this.x509CertificatePath, x509CertificatePath)) {
+            rebuildServerTLSContext(true);
+            rebuildTLSContext(true);
+        }
         this.x509CertificatePath = x509CertificatePath;
         return this;
     }
@@ -6175,42 +6253,141 @@ public class Configuration {
         }
     }
 
-    public void addSslSubjectAlternativeNameIps(String... additionalSubjectAlternativeNameIps) {
+    public synchronized void addSslSubjectAlternativeNameIps(String... additionalSubjectAlternativeNameIps) {
+        // pin the instance set (seeded from the property defaults) so concurrent adds mutate one shared
+        // set rather than racing to read-modify-write separate copies (defect C7)
+        if (sslSubjectAlternativeNameIps == null) {
+            sslSubjectAlternativeNameIps = sslSubjectAlternativeNameIps();
+        }
+        int max = boundedMax();
         boolean subjectAlternativeIpsModified = false;
-        Set<String> sslSubjectAlternativeNameIps = sslSubjectAlternativeNameIps();
         for (String subjectAlternativeIp : additionalSubjectAlternativeNameIps) {
-            if (sslSubjectAlternativeNameIps.add(subjectAlternativeIp.trim())) {
+            if (subjectAlternativeIp == null) {
+                continue;
+            }
+            if (boundedAdd(sslSubjectAlternativeNameIps, dynamicSanIpOrder, subjectAlternativeIp.trim(), max, "IP")) {
                 subjectAlternativeIpsModified = true;
             }
         }
         if (subjectAlternativeIpsModified) {
             rebuildServerTLSContext(true);
-            sslSubjectAlternativeNameIps(sslSubjectAlternativeNameIps);
         }
     }
 
-    public void clearSslSubjectAlternativeNameIps() {
-        sslSubjectAlternativeNameIps.clear();
+    public synchronized void clearSslSubjectAlternativeNameIps() {
+        if (sslSubjectAlternativeNameIps != null) {
+            sslSubjectAlternativeNameIps.clear();
+        }
+        dynamicSanIpOrder.clear();
         rebuildServerTLSContext(true);
     }
 
-    public void addSslSubjectAlternativeNameDomains(String... additionalSubjectAlternativeNameDomains) {
+    public synchronized void addSslSubjectAlternativeNameDomains(String... additionalSubjectAlternativeNameDomains) {
+        if (sslSubjectAlternativeNameDomains == null) {
+            sslSubjectAlternativeNameDomains = sslSubjectAlternativeNameDomains();
+        }
+        int max = boundedMax();
         boolean subjectAlternativeDomainsModified = false;
-        Set<String> sslSubjectAlternativeNameDomains = sslSubjectAlternativeNameDomains();
         for (String subjectAlternativeDomain : additionalSubjectAlternativeNameDomains) {
-            if (sslSubjectAlternativeNameDomains.add(subjectAlternativeDomain.trim())) {
+            // normalise + validate before baking a client-supplied hostname into a certificate: lowercase,
+            // length <= 253, LDH charset only (defect C3). Reject/ignore anything else rather than minting
+            // a certificate with a bogus SAN.
+            String normalised = normaliseSubjectAlternativeNameDomain(subjectAlternativeDomain);
+            if (normalised == null) {
+                continue;
+            }
+            if (boundedAdd(sslSubjectAlternativeNameDomains, dynamicSanDomainOrder, normalised, max, "domain")) {
                 subjectAlternativeDomainsModified = true;
             }
         }
         if (subjectAlternativeDomainsModified) {
             rebuildServerTLSContext(true);
-            sslSubjectAlternativeNameDomains(sslSubjectAlternativeNameDomains);
         }
     }
 
-    public void clearSslSubjectAlternativeNameDomains() {
-        sslSubjectAlternativeNameDomains.clear();
+    public synchronized void clearSslSubjectAlternativeNameDomains() {
+        if (sslSubjectAlternativeNameDomains != null) {
+            sslSubjectAlternativeNameDomains.clear();
+        }
+        dynamicSanDomainOrder.clear();
         rebuildServerTLSContext(true);
+    }
+
+    private int boundedMax() {
+        Integer max = maxSubjectAlternativeNames();
+        return max == null || max <= 0 ? Integer.MAX_VALUE : max;
+    }
+
+    /**
+     * Add {@code value} to {@code set}, enforcing {@code max}: when the set is already at capacity the
+     * genuinely oldest DYNAMIC entry is evicted (with a WARN) before the new one is added. Eviction is
+     * FIFO — driven by {@code order}, which records only dynamically-discovered (SNI / Host-derived)
+     * additions in insertion order — because {@code set} is a {@link java.util.concurrent.ConcurrentHashMap}
+     * key set with no insertion order (iterating it to evict removed an arbitrary entry, which could drop
+     * the default localhost SAN or a still-active host). Configured / default SANs are never recorded in
+     * {@code order} and so are never evicted: if only such protected entries remain, the value is added
+     * even though the set momentarily exceeds {@code max} (the operator-configured entries are bounded, so
+     * this does not reopen the DoS vector). A no-op returning false when the value is already present.
+     * Always invoked under {@code synchronized(this)}, so the set + order mutations stay consistent; the
+     * unsynchronized certificate readers touch only the weakly-consistent {@code set}.
+     */
+    private boolean boundedAdd(Set<String> set, Deque<String> order, String value, int max, String kind) {
+        if (value.isEmpty() || set.contains(value)) {
+            return false;
+        }
+        while (set.size() >= max) {
+            String evicted = order.pollFirst();
+            if (evicted == null) {
+                // only configured / default (protected) entries remain — never evict one of those
+                break;
+            }
+            if (set.remove(evicted)) {
+                LOGGER.warn("subject alternative name {} limit ({}) reached, evicted \"{}\" to add \"{}\"; increase mockserver.maxSubjectAlternativeNames if this is expected", kind, max, evicted, value);
+            }
+        }
+        boolean added = set.add(value);
+        if (added) {
+            order.addLast(value);
+        }
+        return added;
+    }
+
+    /**
+     * Normalise and validate a Subject Alternative Name domain (defect C3): trims, lowercases, strips a
+     * single trailing dot, and requires a non-empty value of at most 253 characters made of dot-separated
+     * LDH labels (letters, digits, hyphen), optionally with a leading {@code *.} wildcard label. Returns
+     * the normalised form, or {@code null} when the input is blank or invalid (so the caller ignores it).
+     */
+    static String normaliseSubjectAlternativeNameDomain(String host) {
+        if (host == null) {
+            return null;
+        }
+        String normalised = host.trim().toLowerCase(java.util.Locale.ROOT);
+        if (normalised.endsWith(".")) {
+            normalised = normalised.substring(0, normalised.length() - 1);
+        }
+        if (normalised.isEmpty() || normalised.length() > 253) {
+            return null;
+        }
+        String[] labels = normalised.split("\\.", -1);
+        for (int i = 0; i < labels.length; i++) {
+            String label = labels[i];
+            boolean wildcard = i == 0 && label.equals("*");
+            if (wildcard) {
+                continue;
+            }
+            if (label.isEmpty() || label.length() > 63) {
+                return null;
+            }
+            for (int c = 0; c < label.length(); c++) {
+                char ch = label.charAt(c);
+                boolean ldh = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-';
+                if (!ldh) {
+                    return null;
+                }
+            }
+        }
+        return normalised;
     }
 
     public int ringBufferSize() {

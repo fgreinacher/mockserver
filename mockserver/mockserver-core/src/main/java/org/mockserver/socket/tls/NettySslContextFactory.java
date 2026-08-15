@@ -163,7 +163,12 @@ public class NettySslContextFactory {
         // Only hosts with an explicit per-host cert/key mapping are keyed by host; all other hosts share
         // the empty host-key so a forward proxy seeing many upstream hosts cannot grow the cache without bound.
         String hostKeyPart = perHostForwardProxyCertAndKey(host) != null ? host.toLowerCase(Locale.ROOT) : "";
-        String key = "forwardProxyClient=" + forwardProxyClient + ",enableHttp2=" + enableHttp2 + ",host=" + hostKeyPart;
+        // Fold the mutable client-TLS inputs into the cache KEY so that rotating any of them at runtime
+        // self-invalidates the cache (defect C8). Previously the client SslContext was cached for the
+        // JVM lifetime and rotating forwardProxyPrivateKey / forwardProxyCertificateChain / trust manager
+        // type / tlsMutualAuthenticationCertificateChain / tlsProtocols was silently ignored.
+        String key = "forwardProxyClient=" + forwardProxyClient + ",enableHttp2=" + enableHttp2 + ",host=" + hostKeyPart
+            + ",sig=" + clientContextSignature();
         SslContext clientSslContext = clientSslContexts.get(key);
         if (clientSslContext != null && !configuration.rebuildTLSContext()) {
             return clientSslContext;
@@ -320,39 +325,89 @@ public class NettySslContextFactory {
     }
 
     /**
-     * The client-authentication inputs baked into the cached {@link #serverSslContext}.
+     * The complete set of inputs baked into the cached {@link #serverSslContext}, compared per cached
+     * entry so the cache self-invalidates when ANY of them change — replacing the single consumable
+     * {@code rebuildServerTLSContext} boolean, which suffered a lost-update race: one thread could add a
+     * SAN and set the flag while another thread, already inside the lock, cleared it, so the second
+     * thread then returned a context that was missing the first thread's hostname (defect C4).
      *
-     * <p>Kept so a change to mTLS enforcement is detected at the point of use rather than relying on every
-     * setter remembering to raise {@link Configuration#rebuildServerTLSContext(boolean)}. Neither
-     * {@code Configuration.tlsMutualAuthenticationRequired(Boolean)} nor the static
-     * {@code ConfigurationProperties.tlsMutualAuthenticationRequired(boolean)} raised that flag, so
-     * requiring mTLS at runtime left the cached context pinned at {@link ClientAuth#OPTIONAL} with
-     * {@link InsecureTrustManagerFactory} and certificateless clients kept connecting. The flag is still
-     * raised by the setters (matching the subject-alternative-name siblings); this signature is the
-     * backstop that also covers the system-property route, which has no Configuration instance to flag.
+     * <p>Covers: the Subject-Alternative-Name domain and IP sets (unless {@code preventCertificateDynamicUpdate}
+     * is set, which pins the domain list), the certificate-authority identity and paths, the fixed
+     * leaf key/cert paths, the mTLS client-authentication inputs, and the TLS protocol/ALPN inputs.
+     * Leaf/CA EXPIRY is handled separately via {@link KeyAndCertificateFactory#certificateNeedsRenewal()}
+     * (defect C1) because it changes with the clock rather than with configuration.
      *
-     * <p>Deliberately NOT gated on {@code preventCertificateDynamicUpdate}: that option suppresses
-     * certificate REGENERATION when the domain list changes, and must not be able to suppress a
-     * tightening of client-authentication policy.
+     * <p>SAN membership is deliberately NOT gated by {@code preventCertificateDynamicUpdate} for the
+     * client-authentication inputs — that option suppresses certificate REGENERATION when the domain
+     * list changes, and must not be able to suppress a tightening of client-authentication policy.
      */
-    private volatile String serverSslContextClientAuthenticationSignature;
+    private volatile String serverSslContextSignature;
 
-    private String clientAuthenticationSignature() {
-        return configuration.tlsMutualAuthenticationRequired() + "|" + configuration.tlsMutualAuthenticationCertificateChain();
+    private String serverContextSignature() {
+        StringBuilder signature = new StringBuilder()
+            .append("mtls=").append(configuration.tlsMutualAuthenticationRequired())
+            .append("|mtlsChain=").append(configuration.tlsMutualAuthenticationCertificateChain())
+            .append("|protocols=").append(configuration.tlsProtocols())
+            .append("|insecureProtocols=").append(configuration.tlsAllowInsecureProtocols())
+            .append("|http2=").append(configuration.http2Enabled())
+            .append("|caCert=").append(configuration.certificateAuthorityCertificate())
+            .append("|caKey=").append(configuration.certificateAuthorityPrivateKey())
+            .append("|dynamicCA=").append(configuration.dynamicallyCreateCertificateAuthorityCertificate())
+            .append("|dir=").append(configuration.directoryToSaveDynamicSSLCertificate())
+            .append("|keyPath=").append(configuration.privateKeyPath())
+            .append("|certPath=").append(configuration.x509CertificatePath());
+        if (!Boolean.TRUE.equals(configuration.preventCertificateDynamicUpdate())) {
+            signature
+                .append("|sanDomains=").append(new TreeSet<>(nullSafeSet(configuration.sslSubjectAlternativeNameDomains())))
+                .append("|sanIps=").append(new TreeSet<>(nullSafeSet(configuration.sslSubjectAlternativeNameIps())));
+        }
+        return signature.toString();
+    }
+
+    /**
+     * The mutable client-TLS inputs baked into a cached client {@link SslContext}; folded into the cache
+     * key so runtime rotation self-invalidates (defect C8).
+     */
+    private String clientContextSignature() {
+        return "fwdKey=" + configuration.forwardProxyPrivateKey()
+            + "|fwdChain=" + configuration.forwardProxyCertificateChain()
+            + "|fwdByHost=" + configuration.forwardProxyClientCertificatesByHost()
+            + "|trustType=" + forwardProxyTrustManagerTypeSafe()
+            + "|customTrust=" + configuration.forwardProxyTLSCustomTrustX509Certificates()
+            + "|mtlsChain=" + configuration.tlsMutualAuthenticationCertificateChain()
+            + "|protocols=" + configuration.tlsProtocols()
+            + "|insecureProtocols=" + configuration.tlsAllowInsecureProtocols()
+            // CA identity so a runtime CA rotation invalidates the client trust anchor too (defect C9)
+            + "|caCert=" + configuration.certificateAuthorityCertificate()
+            + "|caKey=" + configuration.certificateAuthorityPrivateKey()
+            + "|dynamicCA=" + configuration.dynamicallyCreateCertificateAuthorityCertificate()
+            + "|dir=" + configuration.directoryToSaveDynamicSSLCertificate();
+    }
+
+    private String forwardProxyTrustManagerTypeSafe() {
+        try {
+            return String.valueOf(configuration.forwardProxyTLSX509CertificatesTrustManagerType());
+        } catch (RuntimeException ignore) {
+            return "";
+        }
+    }
+
+    private static <T> Set<T> nullSafeSet(Set<T> set) {
+        return set == null ? Collections.emptySet() : set;
     }
 
     public SslContext createServerSslContext() {
         if (serverSslContext != null
             && !keyAndCertificateFactory.certificateNotYetCreated()
-            && clientAuthenticationSignature().equals(serverSslContextClientAuthenticationSignature)
-            && !(configuration.rebuildServerTLSContext() && !configuration.preventCertificateDynamicUpdate())) {
+            && !keyAndCertificateFactory.certificateNeedsRenewal()
+            && serverContextSignature().equals(serverSslContextSignature)) {
             return serverSslContext;
         }
         synchronized (sslContextLock) {
             if (serverSslContext != null
                 && !keyAndCertificateFactory.certificateNotYetCreated()
-                && clientAuthenticationSignature().equals(serverSslContextClientAuthenticationSignature)
-                && !(configuration.rebuildServerTLSContext() && !configuration.preventCertificateDynamicUpdate())) {
+                && !keyAndCertificateFactory.certificateNeedsRenewal()
+                && serverContextSignature().equals(serverSslContextSignature)) {
                 return serverSslContext;
             }
             try {
@@ -375,9 +430,10 @@ public class NettySslContextFactory {
                 serverSslContext = sslServerContextBuilderCustomizer
                     .apply(sslContextBuilder)
                     .build();
-                // record the client-authentication inputs this context was built from, so a later change
-                // to them forces a rebuild even if no setter raised rebuildServerTLSContext
-                serverSslContextClientAuthenticationSignature = clientAuthenticationSignature();
+                // record the FULL set of inputs this context was built from (read AFTER the build, so any
+                // paths the factory derived during the build are captured), so a later change to any of
+                // them forces a rebuild without relying on a consumable flag
+                serverSslContextSignature = serverContextSignature();
                 configuration.rebuildServerTLSContext(false);
             } catch (Error error) {
                 throw error;

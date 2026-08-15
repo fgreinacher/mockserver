@@ -872,6 +872,9 @@
                         <!-- Mutates the process-global GrpcHealthRegistry.getInstance() singleton
                              (setStatus/removeStatus) and resets it in @After -->
                         <exclude>**/GrpcHealthRegistryTest.java</exclude>
+                        <!-- Drives the process-global BCKeyAndCertificateFactory.renewalClock static and
+                             the KeyAndCertificateFactoryFactory custom-supplier static (certificate hardening) -->
+                        <exclude>**/CertificateHardeningGlobalStateTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -1017,6 +1020,7 @@
                                 <include>**/OpenAiResponsesStateTest.java</include>
                                 <include>**/LlmDatasetExporterTest.java</include>
                                 <include>**/GrpcHealthRegistryTest.java</include>
+                                <include>**/CertificateHardeningGlobalStateTest.java</include>
                             </includes>
                         </configuration>
                     </execution>

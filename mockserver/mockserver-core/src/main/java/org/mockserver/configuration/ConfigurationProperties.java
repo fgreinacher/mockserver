@@ -414,6 +414,7 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_SSL_CERTIFICATE_DOMAIN_NAME = "mockserver.sslCertificateDomainName";
     private static final String MOCKSERVER_SSL_SUBJECT_ALTERNATIVE_NAME_DOMAINS = "mockserver.sslSubjectAlternativeNameDomains";
     private static final String MOCKSERVER_SSL_SUBJECT_ALTERNATIVE_NAME_IPS = "mockserver.sslSubjectAlternativeNameIps";
+    private static final String MOCKSERVER_MAX_SUBJECT_ALTERNATIVE_NAMES = "mockserver.maxSubjectAlternativeNames";
 
     // inbound - fixed CA
     // inbound - fixed CA
@@ -5737,6 +5738,23 @@ public class ConfigurationProperties {
 
     public static Set<String> sslSubjectAlternativeNameDomains() {
         return Sets.newConcurrentHashSet(Arrays.asList(readPropertyHierarchically(PROPERTIES, MOCKSERVER_SSL_SUBJECT_ALTERNATIVE_NAME_DOMAINS, "MOCKSERVER_SSL_SUBJECT_ALTERNATIVE_NAME_DOMAINS", "localhost").split(",")));
+    }
+
+    public static int maxSubjectAlternativeNames() {
+        return readIntegerProperty(MOCKSERVER_MAX_SUBJECT_ALTERNATIVE_NAMES, "MOCKSERVER_MAX_SUBJECT_ALTERNATIVE_NAMES", 100);
+    }
+
+    /**
+     * Maximum number of dynamically-added Subject Alternative Name (SAN) entries retained for the
+     * auto-generated TLS certificate. MockServer adds a SAN for every distinct SNI hostname and
+     * {@code Host} header it observes; without a cap a hostile client can force the leaf certificate to
+     * be re-minted with an unbounded SAN list (a memory/CPU DoS). When the cap is reached the oldest
+     * entry is evicted with a WARN. The default is 100.
+     *
+     * @param maxSubjectAlternativeNames maximum retained dynamic SAN entries
+     */
+    public static void maxSubjectAlternativeNames(int maxSubjectAlternativeNames) {
+        setProperty(MOCKSERVER_MAX_SUBJECT_ALTERNATIVE_NAMES, "" + maxSubjectAlternativeNames);
     }
 
     /**

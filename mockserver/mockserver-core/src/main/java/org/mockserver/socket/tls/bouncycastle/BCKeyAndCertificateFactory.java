@@ -27,13 +27,17 @@ import org.slf4j.event.Level;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
+import java.io.StringWriter;
 import java.math.BigInteger;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.file.StandardOpenOption;
 import java.security.*;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.*;
+import java.util.function.LongSupplier;
 
 import static org.apache.commons.lang3.StringUtils.isBlank;
 import static org.mockserver.socket.tls.PEMToFile.*;
@@ -73,11 +77,30 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
         }
     }
 
-    private PrivateKey privateKey;
-    private X509Certificate x509Certificate;
-    private List<X509Certificate> x509CertificateChain;
-    private PrivateKey certificateAuthorityPrivateKey;
-    private X509Certificate certificateAuthorityX509Certificate;
+    // Published from Netty event-loop threads (SNI provisioning) and read from others, so every mutable
+    // field is volatile and each is published only once fully built (see buildAndSave* below) to remove
+    // the null-then-assign / torn-state races (defects C6, C7).
+    private volatile PrivateKey privateKey;
+    private volatile X509Certificate x509Certificate;
+    private volatile List<X509Certificate> x509CertificateChain;
+    private volatile PrivateKey certificateAuthorityPrivateKey;
+    private volatile X509Certificate certificateAuthorityX509Certificate;
+    // The certificate-authority configuration (paths / dynamic flag / directory) that the memoised CA
+    // above was loaded from. When it changes at runtime (CA rotation) the memoised CA is discarded and
+    // reloaded rather than being pinned for the JVM lifetime (defect C9).
+    private volatile String loadedCertificateAuthoritySignature;
+
+    /**
+     * Time source consulted by {@link #certificateNeedsRenewal()} only. Package-private and overridable
+     * so tests can advance past a certificate's renewal threshold without waiting years of wall-clock
+     * time. Never used for issuance (issuance always anchors to real time via
+     * {@link KeyAndCertificateFactory#notBefore()}/{@link KeyAndCertificateFactory#notAfter()}).
+     */
+    static volatile LongSupplier renewalClock = System::currentTimeMillis;
+
+    // Latches once the dynamically-generated CA has crossed its renewal threshold so the near-expiry WARN
+    // (emitted from certificateNeedsRenewal()) is logged only once rather than on every handshake.
+    private volatile boolean certificateAuthorityRenewalWarned;
 
     public BCKeyAndCertificateFactory(Configuration configuration, MockServerLogger mockServerLogger) {
         this.configuration = configuration;
@@ -90,20 +113,64 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
     @Override
     public void buildAndSaveCertificateAuthorityPrivateKeyAndX509Certificate() {
         ensureProviderRegistered();
-        if (dynamicallyUpdateCertificateAuthority() && certificateAuthorityCertificateNotYetCreated()) {
-            try {
-                AsymmetricKeyPairAlgorithm keyGenerationAndSigningAlgorithm = KeyAndCertificateFactory.DEFAULT_KEY_GENERATION_AND_SIGNING_ALGORITHM;
-                KeyPair caKeyPair = AsymmetricKeyGenerator.createKeyPair(keyGenerationAndSigningAlgorithm);
-                saveAsPEMFile(generateCACert(keyGenerationAndSigningAlgorithm, caKeyPair.getPublic(), caKeyPair.getPrivate()), certificateAuthorityX509CertificatePath(), "Certificate Authority X509 Certificate PEM");
-                saveAsPEMFile(caKeyPair.getPrivate(), certificateAuthorityPrivateKeyPath(), "Certificate Authority Private Key PEM");
-            } catch (Exception e) {
+        if (!dynamicallyUpdateCertificateAuthority()) {
+            return;
+        }
+        // Serialise check-and-generate across processes sharing directoryToSaveDynamicSSLCertificate, so
+        // two MockServer instances cannot both mint a fresh CA and silently clobber each other's — which
+        // would invalidate every client trust store pinned to the first CA (defect C11).
+        String certificatePath = certificateAuthorityX509CertificatePath();
+        String keyPath = certificateAuthorityPrivateKeyPath();
+        try (AutoCloseable ignored = acquireCertificateAuthorityLock()) {
+            if (!certificateAuthorityCertificateNotYetCreated()) {
+                return;
+            }
+            AsymmetricKeyPairAlgorithm keyGenerationAndSigningAlgorithm = KeyAndCertificateFactory.DEFAULT_KEY_GENERATION_AND_SIGNING_ALGORITHM;
+            KeyPair caKeyPair = AsymmetricKeyGenerator.createKeyPair(keyGenerationAndSigningAlgorithm);
+            X509Certificate caCertificate = generateCACert(keyGenerationAndSigningAlgorithm, caKeyPair.getPublic(), caKeyPair.getPrivate());
+            // Write the PRIVATE KEY first and the public certificate last, each atomically, so a concurrent
+            // reader that sees the certificate is guaranteed to also see the matching key — the reverse
+            // order left a window serving new-cert / old-key (defect C11).
+            saveAsPEMFile(caKeyPair.getPrivate(), keyPath, "Certificate Authority Private Key PEM", true);
+            saveAsPEMFile(caCertificate, certificatePath, "Certificate Authority X509 Certificate PEM", false);
+        } catch (RuntimeException e) {
+            // preserve the clear corrupt-CA / directory failure message unwrapped (defects C11 / C13)
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException("exception while generating certificate authority private key and X509 certificate", e);
+        }
+    }
+
+    /**
+     * Acquire an exclusive OS file lock in {@code directoryToSaveDynamicSSLCertificate} for the duration
+     * of a CA check-and-generate, so two processes sharing that directory serialise. Returns a real
+     * {@link FileLock} (auto-closed by the caller's try-with-resources) or a no-op {@link FileLock} when
+     * a lock cannot be taken (e.g. the directory is read-only) so generation can still proceed.
+     */
+    private AutoCloseable acquireCertificateAuthorityLock() {
+        try {
+            File lockFile = new File(new File(configuration.directoryToSaveDynamicSSLCertificate()), ".mockserver-ca.lock");
+            org.mockserver.file.FileCreator.createParentDirs(lockFile);
+            FileChannel channel = FileChannel.open(lockFile.toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            FileLock lock = channel.lock();
+            return () -> {
+                try {
+                    lock.release();
+                } finally {
+                    channel.close();
+                }
+            };
+        } catch (Throwable throwable) {
+            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(DEBUG)) {
                 mockServerLogger.logEvent(
                     new LogEntry()
-                        .setLogLevel(Level.ERROR)
-                        .setMessageFormat("exception while generating certificate authority private key and X509 certificate")
-                        .setThrowable(e)
+                        .setLogLevel(DEBUG)
+                        .setMessageFormat("unable to acquire certificate authority generation lock, proceeding without cross-process serialisation")
+                        .setThrowable(throwable)
                 );
             }
+            return () -> {
+            };
         }
     }
 
@@ -120,7 +187,29 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
     /**
      * load ca private key
      */
+    /**
+     * Signature of the certificate-authority configuration inputs. When any change at runtime (CA
+     * rotation via the setters that now raise a rebuild — defect C9) the memoised CA is discarded and
+     * reloaded rather than being pinned for the JVM lifetime.
+     */
+    private String certificateAuthoritySignature() {
+        return configuration.dynamicallyCreateCertificateAuthorityCertificate()
+            + "|" + configuration.directoryToSaveDynamicSSLCertificate()
+            + "|" + configuration.certificateAuthorityCertificate()
+            + "|" + configuration.certificateAuthorityPrivateKey();
+    }
+
+    private void invalidateCertificateAuthorityIfConfigChanged() {
+        String signature = certificateAuthoritySignature();
+        if (!signature.equals(loadedCertificateAuthoritySignature)) {
+            certificateAuthorityX509Certificate = null;
+            certificateAuthorityPrivateKey = null;
+            loadedCertificateAuthoritySignature = signature;
+        }
+    }
+
     private PrivateKey certificateAuthorityPrivateKey() {
+        invalidateCertificateAuthorityIfConfigChanged();
         if (certificateAuthorityPrivateKey == null) {
             if (dynamicallyUpdateCertificateAuthority()) {
                 buildAndSaveCertificateAuthorityPrivateKeyAndX509Certificate();
@@ -161,6 +250,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
      */
     public X509Certificate certificateAuthorityX509Certificate() {
         ensureProviderRegistered();
+        invalidateCertificateAuthorityIfConfigChanged();
         if (certificateAuthorityX509Certificate == null) {
             if (dynamicallyUpdateCertificateAuthority()) {
                 buildAndSaveCertificateAuthorityPrivateKeyAndX509Certificate();
@@ -234,8 +324,13 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
                 }
                 AsymmetricKeyPairAlgorithm keyGenerationAndSigningAlgorithm = KeyAndCertificateFactory.DEFAULT_KEY_GENERATION_AND_SIGNING_ALGORITHM;
                 KeyPair keyPair = AsymmetricKeyGenerator.createKeyPair(keyGenerationAndSigningAlgorithm);
-                privateKey = keyPair.getPrivate();
-                x509Certificate = generateLeafCert(
+                // Build the new key AND certificate into locals first and publish them together only on
+                // success (defect C6). Assigning the field-by-field as we went left a new key paired with
+                // the OLD certificate if signing threw mid-flight — every subsequent handshake then failed
+                // permanently. On failure we keep the previous working pair and propagate so the caller
+                // fails loudly / retries, rather than swallowing the error and serving a torn pair.
+                PrivateKey newPrivateKey = keyPair.getPrivate();
+                X509Certificate newX509Certificate = generateLeafCert(
                     keyGenerationAndSigningAlgorithm,
                     keyPair.getPublic(),
                     certificateAuthorityX509Certificate(),
@@ -245,17 +340,23 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
                     configuration.sslSubjectAlternativeNameDomains(),
                     configuration.sslSubjectAlternativeNameIps()
                 );
+                if (configuration.preventCertificateDynamicUpdate() || configuration.proactivelyInitialiseTLS()) {
+                    // persist BEFORE publishing in-memory so a save failure does not leave the served
+                    // in-memory pair diverged from the on-disk pair
+                    saveAsPEMFile(newX509Certificate, x509CertificatePath(), "X509 Certificate PEM", false);
+                    saveAsPEMFile(newPrivateKey, privateKeyPath(), "Private Key PEM", true);
+                }
+                // atomic publish: key first then cert, both already fully built
+                privateKey = newPrivateKey;
+                x509Certificate = newX509Certificate;
+                x509CertificateChain = null;
                 if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
                     mockServerLogger.logEvent(
                         new LogEntry()
                             .setLogLevel(TRACE)
                             .setMessageFormat("created new X509{}with SAN Domain Names{}and IPs{}")
-                            .setArguments(x509Certificate(), configuration.sslSubjectAlternativeNameDomains(), configuration.sslSubjectAlternativeNameIps())
+                            .setArguments(newX509Certificate, configuration.sslSubjectAlternativeNameDomains(), configuration.sslSubjectAlternativeNameIps())
                     );
-                }
-                if (configuration.preventCertificateDynamicUpdate() || configuration.proactivelyInitialiseTLS()) {
-                    saveAsPEMFile(x509Certificate, x509CertificatePath(), "X509 Certificate PEM");
-                    saveAsPEMFile(privateKey, privateKeyPath(), "Private Key PEM");
                 }
             } catch (Exception e) {
                 mockServerLogger.logEvent(
@@ -264,6 +365,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
                         .setMessageFormat("exception while generating private key and X509 certificate")
                         .setThrowable(e)
                 );
+                throw new RuntimeException("exception while generating private key and X509 certificate", e);
             }
         }
     }
@@ -382,6 +484,50 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
         return shouldGenerateCertificates() && x509Certificate == null;
     }
 
+    /**
+     * @return true when the self-generated LEAF has passed its renewal threshold, so the cached TLS
+     * context must regenerate before reuse (defect C1). Always false for user-supplied fixed certificates
+     * — {@link CertificateConfigurationValidator} rejects those loudly on expiry instead.
+     * <p>
+     * The renewal trigger deliberately considers ONLY the leaf, never the CA. The renewal action
+     * ({@link #buildAndSavePrivateKeyAndX509Certificate()}) regenerates only the leaf — its CA guard
+     * short-circuits once a CA is on disk — so treating a past-threshold CA as "needs renewal" would
+     * re-mint the leaf on every handshake without ever clearing the trigger, a permanent self-inflicted
+     * performance collapse. Silently rotating a dynamic CA is also worse than not rotating (it invalidates
+     * every client trust store that imported it), so instead we warn once (see
+     * {@link #warnOnceIfCertificateAuthorityNearExpiry(long)}) and leave rotation to the operator.
+     */
+    @Override
+    public boolean certificateNeedsRenewal() {
+        if (!shouldGenerateCertificates()) {
+            return false;
+        }
+        long now = renewalClock.getAsLong();
+        warnOnceIfCertificateAuthorityNearExpiry(now);
+        return KeyAndCertificateFactory.isPastRenewalThreshold(x509Certificate, KeyAndCertificateFactory.RENEWAL_ELAPSED_FRACTION, now);
+    }
+
+    /**
+     * Emit a single WARN when the dynamically-generated CA has crossed its renewal threshold, so an
+     * operator knows to rotate it deliberately. Never triggers automatic regeneration — see
+     * {@link #certificateNeedsRenewal()} for why the CA must not drive the leaf-renewal trigger.
+     */
+    private void warnOnceIfCertificateAuthorityNearExpiry(long now) {
+        if (!certificateAuthorityRenewalWarned
+            && KeyAndCertificateFactory.isPastRenewalThreshold(certificateAuthorityX509Certificate, KeyAndCertificateFactory.RENEWAL_ELAPSED_FRACTION, now)) {
+            certificateAuthorityRenewalWarned = true;
+            if (mockServerLogger != null) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(WARN)
+                        .setMessageFormat("dynamically-generated certificate authority X509 certificate has passed its renewal threshold (80% of validity elapsed) and is nearing expiry{}"
+                            + "MockServer will NOT rotate it automatically because that would invalidate every client trust store that imported it; rotate it deliberately (delete the CA files in directoryToSaveDynamicSSLCertificate, or point certificateAuthorityCertificate/certificateAuthorityPrivateKey at a fresh CA) during a maintenance window")
+                        .setArguments((Object) System.lineSeparator())
+                );
+            }
+        }
+    }
+
     private boolean shouldGenerateCertificates() {
         return isBlank(configuration.privateKeyPath()) || isBlank(configuration.x509CertificatePath());
     }
@@ -391,10 +537,24 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
     }
 
     public boolean certificateAuthorityCertificateNotYetCreated() {
-        return !validX509PEMFileExists(certificateAuthorityX509CertificatePath());
+        String path = certificateAuthorityX509CertificatePath();
+        File file = new File(path);
+        if (!file.exists()) {
+            // genuinely absent — safe to generate a fresh CA
+            return true;
+        }
+        // present but must parse: a corrupt/truncated CA PEM must fail loudly rather than be silently
+        // treated as absent and overwritten with a brand-new CA, which would invalidate every client
+        // trust store pinned to the original CA with no error (defect C11).
+        if (!validX509PEMFileExists(path)) {
+            throw new RuntimeException("certificate authority X509 certificate file '" + file.getAbsolutePath()
+                + "' exists but does not contain a valid PEM-encoded X.509 certificate; refusing to overwrite it"
+                + " — remove or repair the file, or point certificateAuthorityCertificate/directoryToSaveDynamicSSLCertificate elsewhere");
+        }
+        return false;
     }
 
-    private void saveAsPEMFile(Object object, String absolutePath, String type) throws IOException {
+    private void saveAsPEMFile(Object object, String absolutePath, String type, boolean ownerOnly) throws IOException {
         if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(INFO)) {
             mockServerLogger.logEvent(
                 new LogEntry()
@@ -403,11 +563,14 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
                     .setArguments(absolutePath)
             );
         }
-        try (FileWriter pemfileWriter = new FileWriter(FileCreator.createFileIfNotExists(type, new File(absolutePath)))) {
-            try (JcaPEMWriter jcaPEMWriter = new JcaPEMWriter(pemfileWriter)) {
-                jcaPEMWriter.writeObject(object);
-            }
+        // PEM-encode in memory, then write atomically with restrictive permissions (0600 for private key
+        // material via ownerOnly, 0644 for public certificates) so keys never land world-readable and a
+        // concurrent reader never observes a truncated file (defects C10 / C15).
+        StringWriter stringWriter = new StringWriter();
+        try (JcaPEMWriter jcaPEMWriter = new JcaPEMWriter(stringWriter)) {
+            jcaPEMWriter.writeObject(object);
         }
+        FileCreator.writeToFileAtomically(type, new File(absolutePath), stringWriter.toString(), ownerOnly);
     }
 
     @Override
