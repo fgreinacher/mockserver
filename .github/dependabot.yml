@@ -25,12 +25,14 @@ updates:
       # Pin the ceiling below 15.0.0 to stay on the Java-17-compatible 14.0.x line.
       - dependency-name: "org.infinispan:infinispan-core"
         versions: [">=15.0.0"]
-      # netty-tcnative-boringssl-static is version-locked to Netty: the per-platform
-      # classifier artifacts arrive transitively at Netty's tcnative version, so bumping
-      # the base artifact independently breaks Maven dependencyConvergence (see PR #2332).
-      # It must be upgraded manually in lockstep with the netty.version bump (and the
-      # NETTY_TCNATIVE stage in docker/*/Dockerfile), so ignore standalone bumps here.
-      - dependency-name: "io.netty:netty-tcnative-boringssl-static"
+      # No ignore is needed for io.netty:netty-tcnative-boringssl-static. It carries no
+      # version anywhere in the poms - netty-bom governs the base artifact and every
+      # per-platform classifier together - so Dependabot has nothing to bump and cannot
+      # reintroduce a pin. Bumping netty.version moves tcnative transitively in lockstep,
+      # and the Docker native download derives its version from the jar's
+      # META-INF/mockserver-tcnative.version stamp. The old standalone ignore existed
+      # because an explicit override let the base artifact diverge from the classifiers
+      # and break dependencyConvergence (PR #2332); that override is gone.
       # graphql-java 22.x-24.x ship Java 11 bytecode and run on the Java 17 floor.
       # A future major could raise the runtime floor, so ceiling-pin below the next
       # unreleased major (25.x): minor/patch bumps on the 22.x-24.x line auto-update,

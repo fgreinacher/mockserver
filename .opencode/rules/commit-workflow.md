@@ -104,10 +104,12 @@ A **regression** (a recorded `.result` flips from its expected verdict), a malfo
 5. If no safe runtime mode exists for other scripts, run the script with benign inputs in an isolated context or stop and ask the user for an explicit skip
 
 ### Docker changes (`docker`)
-1. Build every changed Dockerfile with `docker build` (or `docker buildx build`) using the correct context
-2. If `hadolint` is available, run `hadolint <Dockerfile>`
-3. Run a basic smoke command from the built image when feasible (`--version`, startup help, or a short health command)
-4. If the build uses an optional corporate CA cert, verify the placeholder file exists and the real cert file is in `.gitignore`
+1. **tcnative stamp derive check (fast default — always run).** `.buildkite/scripts/steps/verify-tcnative-stamp.sh` — seconds, no image build. Confirms BOTH stamped jars (the `source=download` assembly jar and the `source=copy` shaded jar) carry a non-empty, well-formed `META-INF/mockserver-tcnative.version` that agrees with each other and the Maven-resolved `netty-tcnative-boringssl-static` version. This is the cheap inner gate that catches the actual failure mode (a jar shipped without the stamp → the Docker native download derives an empty version). Requires the jars to be built (a normal `./mvnw install` produces them) and a resolvable reactor; it fails closed if a jar or stamp is missing.
+2. **Full image build + native/TLS verify (opt-in — slower: ~70s + jlink/AppCDS for the image, plus a full `mvnw install` of the server jars, MINUTES, whenever they are absent).** `.buildkite/scripts/steps/docker-build-verify.sh` — builds the real `source=copy` image and asserts the arch-correct tcnative `.so` is baked in, the NATIVE TLS provider loads in the image JVM (`OpenSsl.isAvailable`), and the container starts and serves a real TLS handshake. It auto-detects the host arch (avoiding the classic-builder `TARGETARCH=amd64` trap on arm64), stages/cleans `ca-bundle.pem` via `docker/ensure-ca-bundle.sh`, and builds the jars on demand. Run this when the change touches the tcnative download logic, the runtime stage, or the base image; it is the SAME script CI runs on the `mockserver-container-tests` pipeline (triggered by `docker/**`). Skip it for a trivial docker change where step 1 plus a plain `docker build` suffices — a gate too slow to run every time gets skipped, so keep the derive check as the default and reach for the full build deliberately.
+3. Build every changed Dockerfile with `docker build` (or `docker buildx build`) using the correct context
+4. If `hadolint` is available, run `hadolint <Dockerfile>`
+5. Run a basic smoke command from the built image when feasible (`--version`, startup help, or a short health command)
+6. If the build uses an optional corporate CA cert, verify the placeholder file exists and the real cert file is in `.gitignore`
 
 ### Helm changes (`helm`)
 1. Run `helm lint` on the chart directory

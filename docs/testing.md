@@ -363,14 +363,16 @@ There are 6 production Docker image variants. Only the main nonroot variant is t
 
 | Variant | Dockerfile | Base Image | Tested? |
 |---------|-----------|------------|---------|
-| Main (nonroot) | `docker/Dockerfile` | `distroless/java17:nonroot` | YES (built as `integration_testing` image) |
+| Main (nonroot) | `docker/Dockerfile` | `distroless/java17:nonroot` | YES — built `source=copy` + native tcnative/TLS verified by `docker-build-verify.sh` on `mockserver-container-tests` (triggered by `docker/**`), plus the `integration_testing` HTTP suite on master |
 | GraalJS | `docker/graaljs/Dockerfile` | `distroless/java17:nonroot` | NO |
 | Root | `docker/root/Dockerfile` | `distroless/java17` | NO |
 | Snapshot (debug) | `docker/snapshot/Dockerfile` | `distroless/java17:debug-nonroot` | NO |
 | Root Snapshot | `docker/root-snapshot/Dockerfile` | `distroless/java17` | NO |
 | Local build | `docker/local/Dockerfile` | `distroless/java17:nonroot` | NO |
 
-The integration tests always build with `--build-arg source=copy` (local JAR). The default `source=download` mode (downloads from Sonatype) used by real users is never tested.
+**Build coverage of the tcnative path.** A `docker/**` change now triggers the `mockserver-container-tests` pipeline (`generate-pipeline.sh`), whose `docker-build-verify.sh` step builds the image with `--build-arg source=copy` from a locally-built jar and asserts the runtime actually works: the arch-correct tcnative `.so` is baked in, the **native** TLS provider loads in the image JVM (`OpenSsl.isAvailable`), and the container serves a real TLS handshake. This runs on every branch, not only master, and is the same script a developer runs locally. Separately, the fast `verify-tcnative-stamp.sh` gate guards **both** stamped jars (the `source=download` assembly jar and the `source=copy` shaded jar) — non-empty, well-formed, mutually consistent, and equal to the Maven-resolved `netty-tcnative-boringssl-static` version — which is what catches the actual failure mode (a jar shipped without its stamp).
+
+**Residual gap — stated, not implied.** The default `source=download` mode (which pulls the assembly jar from Sonatype) is **not built by CI**: it cannot use a published jar because a pre-stamp release fails the derive check by design, so building it would require standing up a locally-served jar — disproportionate machinery. Instead it is covered two ways short of a full download-mode build: (1) `verify-tcnative-stamp.sh` derive-checks the exact assembly jar that `source=download` consumes (the one broken by the last defect), and (2) `docker-build-verify.sh` builds `source=copy` **from that same assembly jar**, faithfully reproducing `source=download`'s native behaviour (the assembly jar bundles the per-platform natives, so the native provider loads exactly as it would in download mode). The `mockserver-infra` pipeline additionally runs the static `docker-validate-sync.sh` lint on every `docker/**` change.
 
 ### What Docker Features Are Tested
 
