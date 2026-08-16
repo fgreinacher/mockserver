@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A CI guard (`.buildkite/scripts/steps/check-certificate-expiry.sh`, wired into the Java pipeline) now sweeps every
+  committed certificate PEM and fails the build when any certificate is already expired or expires within 30 days,
+  warning between 30 and 180 days. It checks every certificate in a chain file, allow-lists the one intentional
+  expired test fixture while asserting it stays expired, and enforces two structural invariants that previously had
+  no automation: every `leaf-cert.pem` must expire on or before its sibling `ca.pem`, and the shipped default CA
+  files must stay in lockstep (the PKCS#1 and PKCS#8 CA private keys are the same key, that key matches the CA
+  certificate, and the two committed copies of the CA certificate remain byte-identical). Certificate expiry had
+  previously only ever been discovered by the build going red.
+
 ### Changed
 - Upgraded Netty from `4.2.16.Final` to `4.2.17.Final` and, in lockstep, `netty-tcnative-boringssl-static` from
   `2.0.78.Final` to `2.0.81.Final` (the tcnative version the Netty 4.2.17 BOM aligns to). The two must move together:
@@ -119,6 +129,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PKCS#1 form); the code continues to load `PKCS8CertificateAuthorityPrivateKey.pem`.
 
 ### Fixed
+- Unblocked the daily Dependabot updater, which had been failing and raising no PRs. The Maven wrappers under
+  `mockserver/` and `mockserver/mockserver-maven-plugin/` were modernised from the legacy Takari format to the
+  Apache `only-script` wrapper (`wrapperVersion` 3.3.4, Maven pinned at 3.9.16), so the `maven-wrapper-updater` can
+  parse them; `mockserver-vscode` was split into its own npm job (a lockfile `EOVERRIDE` there no longer aborts the
+  other npm directories) and pinned `js-yaml` to `^4.1.1` via `overrides`; and `/.opencode` (which had only an
+  orphan lockfile and no tracked manifest) was removed from the npm directories and its lockfile untracked.
 - Cloning an `X509Certificate` model that contains certificate metadata without an underlying Java certificate no
   longer throws a `NullPointerException`; metadata-only and certificate-backed models now both preserve their state
   when cloned ([#2527](https://github.com/mock-server/mockserver-monorepo/issues/2527)).

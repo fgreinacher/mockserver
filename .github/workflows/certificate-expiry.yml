@@ -1,0 +1,46 @@
+name: Certificate expiry guard
+
+# Committed TLS/mTLS test certificates have finite lifetimes, and expiry has
+# historically been discovered only by the build going red (2021-06, 2022-01,
+# 2023-02, 2026-05). The Buildkite step that runs this same script is path-gated
+# to mockserver/ and mockserver-ui/, so in a quiet period a certificate can cross
+# the 30-day cliff with no code change and the guard would simply never fire.
+# This weekly schedule closes that gap by running the IDENTICAL script
+# (.buildkite/scripts/steps/check-certificate-expiry.sh) on a hosted runner — it
+# needs only git + openssl, so no build agent, Maven, Docker, or AWS is involved.
+#
+# How a failure reaches a human: a hard-fail (a cert already expired or within 30
+# days) exits non-zero, turning this scheduled run red. GitHub emails the account
+# that last edited the cron line below when a scheduled workflow fails, so the
+# warning arrives without anyone opening a dashboard. Warnings (30-180 days) only
+# print to the run log — the script's Buildkite annotation is guarded by
+# `command -v buildkite-agent` and is silently skipped here, which is correct.
+
+on:
+  schedule:
+    # Monday 07:00 UTC — start of the working week for a UK-based maintainer, so a
+    # red run is seen with a full week (plus ~3 further weekly runs) of runway
+    # before the 30-day hard-fail cliff. Offset from the other scheduled workflows
+    # (stale-issues 06:00 Mon, CodeQL 22:00 Tue) to avoid a thundering herd.
+    - cron: '0 7 * * 1'
+  # Allow on-demand runs (e.g. while investigating an impending expiry).
+  workflow_dispatch:
+
+# Defence-in-depth: start from no permissions; the single job below re-grants only
+# the read access that checkout needs.
+permissions: {}
+
+jobs:
+  check-certificate-expiry:
+    name: Check committed certificate expiry
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Runs the same guard as the Buildkite pipeline — no reimplementation, so the
+      # two paths can never drift. openssl and git are preinstalled on the runner.
+      - name: Run certificate expiry guard
+        run: bash .buildkite/scripts/steps/check-certificate-expiry.sh

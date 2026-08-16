@@ -157,6 +157,11 @@ terraform/**/*.tfplan
 /.tmp/*
 !/.tmp/.gitkeep
 
+# opencode npm artifacts (dev tooling; no tracked manifest, so not Dependabot-managed) #
+########################################################################################
+/.opencode/package.json
+/.opencode/package-lock.json
+
 # git worktrees for parallel agent sessions #
 ##############################################
 .worktrees/

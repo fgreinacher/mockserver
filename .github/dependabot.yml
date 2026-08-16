@@ -62,13 +62,33 @@ updates:
       # ecosystem above) — bumping it independently breaks dependencyConvergence (PR #2332).
       - dependency-name: "io.netty:netty-tcnative-boringssl-static"
 
+  # The healthy npm directories share one grouped job. mockserver-vscode is
+  # split into its own block below so a failure there (e.g. an EOVERRIDE while
+  # regenerating its lockfile) can no longer abort PR creation for these three.
+  # /.opencode was removed from this list: it has no tracked package.json (only
+  # an orphan package-lock.json), so Dependabot could never resolve it — the
+  # lockfile has been untracked instead.
   - package-ecosystem: "npm"
     directories:
       - "/mockserver-ui"
       - "/mockserver-client-node"
       - "/mockserver-node"
-      - "/mockserver-vscode"
-      - "/.opencode"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # mockserver-vscode in its own block so one bad directory cannot take down the
+  # healthy npm directories above. The @types/vscode ignore is vscode-specific.
+  - package-ecosystem: "npm"
+    directory: "/mockserver-vscode"
     schedule:
       interval: "daily"
     open-pull-requests-limit: 10

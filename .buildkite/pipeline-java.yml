@@ -14,6 +14,17 @@ steps:
     command: ".buildkite/scripts/steps/validate-ai-evals.sh"
     timeout_in_minutes: 5
 
+  # Early-warning guard for the committed TLS/mTLS test certificates. Cert expiry
+  # has historically been discovered only by the build going red (2021-06, 2022-01,
+  # 2023-02, 2026-05); some fixtures are PKIX TrustAnchors that RFC 5280 does NOT
+  # date-check, so an expired one goes silently stale instead of failing cleanly.
+  # This hard-fails under 30 days / already-expired, warns (build annotation) under
+  # 180 days, and asserts leaf notAfter <= sibling CA notAfter. Needs only
+  # openssl + git, so it runs directly on the agent as a fast pre-build gate.
+  - label: ":lock: certificate expiry guard"
+    command: ".buildkite/scripts/steps/check-certificate-expiry.sh"
+    timeout_in_minutes: 5
+
   - label: ":docker: update docker image"
     command: "docker pull mockserver/mockserver:maven"
 

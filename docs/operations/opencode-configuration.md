@@ -24,7 +24,7 @@ global instructions"]
         RU["rules/
 24 guardrail files"]
         SK["skills/
-17 workflow definitions"]
+18 workflow definitions"]
         CM["commands/
 12 slash commands"]
         PL["plugins/
@@ -50,7 +50,7 @@ global instructions"]
 | 2 | [Model Strategy](#building-block-2-model-strategy) | `opencode.jsonc` (agent entries) | Right model for the right task |
 | 3 | [Agents](#building-block-3-agents) | `.opencode/agents/*.md` | 12 specialist sub-agents with least-privilege access |
 | 4 | [Rules](#building-block-4-rules) | `.opencode/rules/*.md` | 24 guardrails always enforced |
-| 5 | [Skills](#building-block-5-skills) | `.opencode/skills/*/SKILL.md` | 17 reusable multi-step workflows |
+| 5 | [Skills](#building-block-5-skills) | `.opencode/skills/*/SKILL.md` | 18 reusable multi-step workflows |
 | 6 | [Commands](#building-block-6-commands) | `.opencode/commands/*.md` | 12 slash shortcuts with guaranteed routing |
 | 7 | [Plugins & Tools](#building-block-7-plugins--tools) | `.opencode/plugins/*.ts` | Session and tool-execution hooks, external integrations |
 
@@ -665,7 +665,7 @@ mockserver/
     │   ├── tmp-directory.md
     │   ├── untrusted-input.md
     │   └── worktree-workflow.md
-    ├── skills/                              # 17 skill workflows
+    ├── skills/                              # 18 skill workflows
     │   ├── aws-investigation/
     │   │   ├── SKILL.md
     │   │   └── report-template.md
