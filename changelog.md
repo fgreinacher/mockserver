@@ -62,6 +62,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shipped; the pin manages `log4j-api` only (`log4j-core` is not on the dependency tree).
 - Pinned `org.jsoup:jsoup` to `1.23.1` to resolve GHSA-pmhh-3w7g-xqp8. jsoup is used only at test scope (never shipped);
   the pin guards against a future transitive downgrade below the fixed version.
+- Pinned three transitive dependencies to close vulnerability alerts that surfaced only when GitHub's Maven
+  dependency-graph submission was restored (submission had silently frozen at a pre-move snapshot on 5 May, so these
+  real exposures had been invisible to Dependabot). None required moving the direct dependency that introduces them:
+    - Jackson 3 (`tools.jackson.core:jackson-databind`, `:jackson-core`, `tools.jackson.dataformat:jackson-dataformat-yaml`)
+      pinned to `3.1.5` to resolve GHSA-5gvw-p9qm-jgwh (vulnerable `>=3.0.0, <=3.1.4`). It arrives at compile scope via
+      `com.networknt:json-schema-validator:3.0.6` and is shade-relocated into `shaded_package.tools.jackson`, so it
+      ships in every distributed jar — the one broad, shipped, runtime exposure of the three. All three artifacts
+      resolve in lockstep and are pinned together so the enforcer `DependencyConvergence` rule stays satisfied. The pin
+      is inherited by the separate `mockserver-maven-plugin` build (same parent pom), closing its alert too.
+    - `at.yawk.lz4:lz4-java` pinned to `1.11.1` to resolve GHSA-6qcp-4vqm-vf35 (native XXHash JVM crash; vulnerable
+      `<=1.11.0`). Arrives via `org.apache.kafka:kafka-clients:3.9.2` — optional in `mockserver-netty`, runtime in
+      `mockserver-async`. Note this is the `at.yawk.lz4` fork coordinate, not `org.lz4`.
+    - `org.apache.commons:commons-compress` pinned to `1.27.1` to resolve the `>=1.21, <1.26.0` advisories. Arrives at
+      test scope via `org.testcontainers:testcontainers:1.21.4`, which resolves it at `1.24.0`. The direct pin overrides
+      that transitive version without bumping Testcontainers, which is deliberately held at `1.21.4` for Docker Desktop
+      4.67+ compatibility.
 - Made outbound TLS host name verification consistent and controllable for the forward/proxy client (Wave 3). When
   `forwardProxyTLSX509CertificatesTrustManagerType` is `JVM` or `CUSTOM` — the modes that actually validate the
   upstream certificate chain — MockServer now verifies the upstream host name against the certificate (RFC 2818 / HTTPS

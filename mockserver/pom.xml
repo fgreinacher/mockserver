@@ -439,6 +439,27 @@
                 <version>1.23.1</version>
             </dependency>
 
+            <!-- lz4-java: pinned to 1.11.1 to resolve GHSA-6qcp-4vqm-vf35 (native XXHash JVM
+                 crash; vulnerable <=1.11.0). This is the at.yawk.lz4 fork coordinate (not org.lz4),
+                 arriving transitively via org.apache.kafka:kafka-clients:3.9.2 — optional in
+                 mockserver-netty and runtime in mockserver-async. -->
+            <dependency>
+                <groupId>at.yawk.lz4</groupId>
+                <artifactId>lz4-java</artifactId>
+                <version>1.11.1</version>
+            </dependency>
+
+            <!-- commons-compress: pinned to 1.27.1 to resolve GHSA advisories against the
+                 >=1.21, <1.26.0 range. Arrives transitively (test scope) via
+                 org.testcontainers:testcontainers:1.21.4, which resolves it at 1.24.0. This direct
+                 pin overrides that without bumping testcontainers, which is deliberately held at
+                 1.21.4 for Docker Desktop 4.67+ compatibility (see docs/operations/security.md). -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>1.27.1</version>
+            </dependency>
+
             <!-- HTTP/3 (QUIC) — graduated from incubator into Netty 4.2; native
                  QUIC transport required at runtime. The codec version is aligned
                  with ${netty.version} — no separate version property needed. -->
@@ -642,6 +663,27 @@
                 <groupId>com.networknt</groupId>
                 <artifactId>json-schema-validator</artifactId>
                 <version>3.0.6</version>
+            </dependency>
+            <!-- Jackson 3 (tools.jackson): pinned to 3.1.5 to resolve GHSA-5gvw-p9qm-jgwh
+                 (vulnerable >=3.0.0, <=3.1.4; first patched 3.1.5). Arrives transitively via
+                 com.networknt:json-schema-validator:3.0.6 (compile scope) and is shade-relocated
+                 to shaded_package.tools.jackson, so it ships in every distributed jar. All three
+                 coupled artifacts (databind, core, dataformat-yaml) resolve in lockstep and must
+                 be pinned together, otherwise maven-enforcer DependencyConvergence fails. -->
+            <dependency>
+                <groupId>tools.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>3.1.5</version>
+            </dependency>
+            <dependency>
+                <groupId>tools.jackson.core</groupId>
+                <artifactId>jackson-core</artifactId>
+                <version>3.1.5</version>
+            </dependency>
+            <dependency>
+                <groupId>tools.jackson.dataformat</groupId>
+                <artifactId>jackson-dataformat-yaml</artifactId>
+                <version>3.1.5</version>
             </dependency>
             <dependency>
                 <groupId>com.jayway.jsonpath</groupId>
