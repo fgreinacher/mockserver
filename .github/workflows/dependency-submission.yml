@@ -1,0 +1,117 @@
+name: Maven Dependency Submission
+
+# Dependabot vulnerability *alerts* are computed from the dependency graph that is
+# submitted to GitHub, NOT from the pom.xml manifests directly. (Dependabot's
+# security-update *pull requests* do read manifests — those kept working; it is the
+# alerting graph that this workflow fixes.)
+#
+# GitHub's managed "Automatic Dependency Submission (Maven)" only discovers a Maven
+# project at the repository ROOT. When the Java project moved into the mockserver/
+# subfolder (commit 386750356, 2026-05-05), that discovery silently stopped: the last
+# managed submission ran 2026-05-05T04:58Z, ~17 minutes before the move, and there is
+# no longer a root pom.xml for it to find. The graph then froze at a pre-move,
+# pre-Spring-7 snapshot — which is why 20 phantom Spring advisories (bounded at
+# <= 5.3.39, against a tree actually running Spring 7) had to be dismissed, and why
+# fixes such as the log4j-api 2.25.5 and jsoup 1.23.1 pins were NOT reflected in the
+# still-open alerts. A stale graph produces both phantom alerts and missed real ones.
+#
+# This workflow restores accurate submission for the monorepo layout by explicitly
+# resolving and submitting the Maven dependency tree with the official
+# advanced-security/maven-dependency-submission-action. It covers exactly the two
+# Maven projects Dependabot is configured for in .github/dependabot.yml:
+#
+#   * mockserver/                         — the main aggregator reactor. Its
+#                                           inter-module SNAPSHOT dependencies resolve
+#                                           in-reactor with no prior install, and it
+#                                           already includes ../examples/java as a
+#                                           module, so examples/java needs no separate
+#                                           submission.
+#   * mockserver/mockserver-maven-plugin/ — a SEPARATE build (not a reactor module).
+#                                           It depends on mockserver-netty and
+#                                           mockserver-integration-testing at the
+#                                           unreleased ${project.version} SNAPSHOT, so
+#                                           its tree can only resolve after those
+#                                           reactor modules are installed into ~/.m2.
+#
+# Each submission uses a distinct `correlator` so the two snapshots coexist in the
+# graph instead of clobbering one another.
+#
+# Cost: resolving a Maven tree is not free, so the push trigger is path-gated to
+# changes under mockserver/**/pom.xml — the only changes that can alter the graph.
+# workflow_dispatch allows an on-demand re-submission (e.g. right after a dependency
+# pin lands, to clear a stale alert without waiting for the next pom change).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'mockserver/**/pom.xml'
+  workflow_dispatch:
+
+# Defence-in-depth: start from no permissions; each job re-grants only what it needs.
+permissions: {}
+
+# Only the newest graph matters; supersede any in-flight submission for the same ref.
+concurrency:
+  group: maven-dependency-submission-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  submit-main-reactor:
+    name: Submit main reactor graph (mockserver/)
+    runs-on: ubuntu-latest
+    permissions:
+      # The dependency submission API writes a snapshot to the dependency graph.
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      # The aggregator reactor resolves its own inter-module SNAPSHOTs in-memory, so no
+      # prior `install` is needed. Runs mockserver/mvnw (ignore-maven-wrapper defaults
+      # to false, so the committed wrapper is used).
+      - name: Submit mockserver reactor dependency graph
+        uses: advanced-security/maven-dependency-submission-action@b275d12641ac2d2108b2cbb7598b154ad2f2cee8  # v5.0.0
+        with:
+          directory: mockserver
+          correlator: mockserver-reactor
+
+  submit-maven-plugin:
+    name: Submit maven-plugin graph (mockserver/mockserver-maven-plugin/)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      # mockserver-maven-plugin depends on mockserver-netty and
+      # mockserver-integration-testing at the unreleased ${project.version} SNAPSHOT.
+      # Install just those (and their upstream reactor modules, via -am) into ~/.m2 so
+      # the plugin's dependency tree can resolve on a clean runner. Skips tests and
+      # javadoc; only the artifacts and their POMs are needed for tree resolution.
+      - name: Install reactor SNAPSHOT dependencies the plugin needs
+        working-directory: mockserver
+        run: ./mvnw -B -DskipTests -Dmaven.javadoc.skip=true -pl mockserver-netty,mockserver-integration-testing -am install
+        env:
+          MAVEN_OPTS: -Xmx2048m
+
+      - name: Submit maven-plugin dependency graph
+        uses: advanced-security/maven-dependency-submission-action@b275d12641ac2d2108b2cbb7598b154ad2f2cee8  # v5.0.0
+        with:
+          directory: mockserver/mockserver-maven-plugin
+          correlator: mockserver-maven-plugin

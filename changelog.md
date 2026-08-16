@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A GitHub Actions workflow (`.github/workflows/dependency-submission.yml`) now submits the resolved Maven dependency
+  graph so Dependabot vulnerability **alerts** stay accurate for the monorepo layout. GitHub's managed Maven
+  auto-submission only discovers a project at the repository root, so it silently stopped when the Java project moved
+  into `mockserver/` — freezing the alerting graph at a pre-move snapshot that produced phantom Spring advisories and
+  hid already-landed `log4j-api`/`jsoup` fixes. The workflow resolves and submits the `mockserver/` reactor (which
+  includes `examples/java`) and the separate `mockserver-maven-plugin` build under distinct correlators, path-gated to
+  `mockserver/**/pom.xml`. Dependabot's security-update pull requests were unaffected — they read manifests directly;
+  it was only the alerting graph that had gone stale.
 - A CI guard (`.buildkite/scripts/steps/check-certificate-expiry.sh`, wired into the Java pipeline) now sweeps every
   committed certificate PEM and fails the build when any certificate is already expired or expires within 30 days,
   warning between 30 and 180 days. It checks every certificate in a chain file, allow-lists the one intentional

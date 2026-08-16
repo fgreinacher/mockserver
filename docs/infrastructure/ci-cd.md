@@ -569,7 +569,7 @@ It prints `build#<n> <commit> build=<state> <job>=<state> exit=<code>` and exits
 
 ## GitHub Actions
 
-Two workflows run on GitHub Actions, both triggered automatically on push and pull requests.
+Several workflows run on GitHub Actions (CodeQL, Maven dependency submission, scheduled hygiene jobs such as certificate-expiry, and issue/label automation). The security-relevant ones are described below.
 
 ### CodeQL Security Analysis
 
@@ -608,14 +608,15 @@ The workflow:
 
 ### Maven Dependency Submission
 
-GitHub's built-in dependency graph automatically indexes all manifest files (`pom.xml`, `package.json`, `Gemfile`, `requirements.txt`) and their transitive dependencies. No custom workflow is needed.
+**File:** `.github/workflows/dependency-submission.yml`
 
-**Powers:**
-- Dependency insights in the repository (Insights → Dependency graph)
-- Dependabot vulnerability alerts for transitive dependencies
-- Dependency review in pull requests (shows dependency changes and known vulnerabilities)
+Dependabot vulnerability **alerts** are computed from the dependency graph submitted to GitHub — for Maven, an *accurate transitive* graph requires **dependency submission** (a workflow that resolves the tree and POSTs it), not static manifest indexing. GitHub's managed Maven auto-submission only discovers a project at the **repository root**, so after the Java project moved into `mockserver/` it silently stopped and the graph froze at a pre-move snapshot (phantom Spring advisories, missed `log4j`/`jsoup` pins). This explicit workflow restores accurate submission for the monorepo layout, covering the `mockserver/` reactor and the separate `mockserver-maven-plugin` build under distinct correlators.
 
-**Note:** A custom `dependency-submission.yml` workflow was previously used but was removed because it never worked (the workflow failed on every run due to a GitHub-level configuration issue). The built-in dependency graph provides equivalent coverage.
+The full rationale, the two-project coverage table, the cost/trigger design, and the recommendation on the (now inert) managed submission live in **[docs/operations/security.md → Maven Dependency Graph Submission](../operations/security.md#maven-dependency-graph-submission)** — the authoritative home, since alerting is a security concern.
+
+**Triggers:** push to `master` touching `mockserver/**/pom.xml`, plus `workflow_dispatch`.
+
+**Note:** an earlier `dependency-submission.yml` was removed on the belief that the built-in graph gave equivalent coverage. That belief was wrong for a non-root Maven project and is what let the graph go stale — see the security.md section above.
 
 ### Pull requests from external forks
 

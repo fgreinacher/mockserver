@@ -184,7 +184,27 @@ The `<okhttp-sse.version>` property is named for the artifact it actually manage
 
 ### Maven Dependency Graph Submission
 
-GitHub's built-in dependency graph automatically indexes all manifest files (`pom.xml`, `package.json`, `Gemfile`, `requirements.txt`) and their transitive dependencies. This enables Dependabot vulnerability alerts for the full dependency tree -- currently tracking 2000+ packages including 347 Maven dependencies.
+**Dependabot vulnerability *alerts* are computed from the dependency graph submitted to GitHub — not from the `pom.xml` manifests directly.** (Dependabot's security-update *pull requests* are a separate mechanism that *does* read manifests; do not conflate the two.) A stale graph therefore produces **both** phantom alerts (advisories against versions the project no longer uses) **and** missed real ones (a genuine new CVE never surfaced because the graph does not reflect what the project actually resolves).
+
+For most languages GitHub builds the graph by statically indexing manifest files. For Maven the accurate, transitive graph comes instead from **dependency submission**: a workflow resolves the full Maven tree and POSTs it to the dependency-graph API.
+
+**The monorepo layout requires an *explicit* submission workflow.** GitHub's managed "Automatic Dependency Submission (Maven)" only discovers a Maven project at the **repository root**. When the Java project moved into the `mockserver/` subfolder (commit `386750356`, 2026-05-05) there was no longer a root `pom.xml`, and managed submission silently stopped — its last run was `2026-05-05T04:58Z`, ~17 minutes before the move. The graph then froze at a pre-move, **pre-Spring-7** snapshot. The concrete cost of that staleness:
+
+- **Phantom alerts:** 20 Spring advisories bounded at `<= 5.3.39` stayed open against a tree actually running Spring 7, and had to be manually triaged and dismissed as inaccurate.
+- **Missed fixes:** the `log4j-api` `2.25.5` and `jsoup` `1.23.1` pins in `mockserver/pom.xml` `dependencyManagement` were not reflected, so alerts for those (e.g. #528, #525) stayed open even though the fixed versions were already resolved.
+
+[`.github/workflows/dependency-submission.yml`](../../.github/workflows/dependency-submission.yml) restores accurate submission using the official [`advanced-security/maven-dependency-submission-action`](https://github.com/advanced-security/maven-dependency-submission-action) (SHA-pinned, as all workflow actions are). It submits exactly the two Maven projects Dependabot is configured for in `.github/dependabot.yml`, each under a distinct `correlator` so the two snapshots coexist rather than overwrite each other:
+
+| Project | `correlator` | Notes |
+|---------|--------------|-------|
+| `mockserver/` | `mockserver-reactor` | The aggregator reactor. Inter-module `SNAPSHOT` deps resolve in-reactor with no prior `install`. **`examples/java` is a reactor module (`../examples/java`), so it is covered here and needs no separate submission.** |
+| `mockserver/mockserver-maven-plugin/` | `mockserver-maven-plugin` | A **separate** build (not a reactor module). It depends on `mockserver-netty` and `mockserver-integration-testing` at the unreleased `${project.version}` `SNAPSHOT`, so its tree only resolves after those reactor modules are `install`ed into `~/.m2` — the job does a targeted `-pl mockserver-netty,mockserver-integration-testing -am install` first. |
+
+The workflow is **path-gated to `mockserver/**/pom.xml`** on pushes to `master` (plus `workflow_dispatch` for on-demand re-submission after a pin lands) because resolving a Maven tree is not free — only a pom change can alter the graph.
+
+**Recommendation on the managed submission:** it is already **inert** (it has found nothing to submit since the move) and cannot be disabled via a repo file — it is a GitHub-managed dynamic workflow. Leave it as-is; because it discovers only a root `pom.xml` that no longer exists, it will not fight the explicit workflow above. Should a root `pom.xml` ever be reintroduced, disable it under **Settings → Code security → Automatic dependency submission** to avoid two mechanisms submitting overlapping Maven graphs.
+
+**Verified locally; one thing can only be verified once it runs on `master`.** Resolving `mockserver/pom.xml` locally produces a tree containing `log4j-api:2.25.5` (compile) and `jsoup:1.23.1` (test), confirming that once submitted these alerts clear. The actual submission to the dependency-graph API — and the resulting recomputation of alerts — can only be confirmed after the workflow first runs on `master`.
 
 ## Vulnerability Scanning: Snyk
 
