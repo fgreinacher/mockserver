@@ -79,6 +79,25 @@
 
     <build>
         <plugins>
+            <!-- Expose the RESOLVED path of every dependency as a Maven property
+                 (io.netty:netty-tcnative-boringssl-static:jar -> its local-repo path).
+                 The stamp execution below reads the tcnative version from that path so
+                 the version bundled for Docker comes from the exact same resolution
+                 (netty-bom governed) as the shaded tcnative classes. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.7.0</version>
+                <executions>
+                    <execution>
+                        <id>expose-dependency-paths</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -232,6 +251,27 @@
                     <workingDirectory>${basedir}</workingDirectory>
                 </configuration>
                 <executions>
+                    <!-- Stamp the resolved netty-tcnative version into the shaded jar
+                         (META-INF/mockserver-tcnative.version) BEFORE shade runs at
+                         package, so the Docker images can read it back and download the
+                         exact-matching native .so. Never skipped (unlike the test
+                         execution below): release and Docker builds run with -DskipTests
+                         and still must produce the stamp, or the jar ships unpairable. -->
+                    <execution>
+                        <id>stamp-tcnative-version</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <skip>false</skip>
+                            <executable>src/packaging/stamp-tcnative-version.sh</executable>
+                            <arguments>
+                                <argument>${io.netty:netty-tcnative-boringssl-static:jar}</argument>
+                                <argument>${project.build.outputDirectory}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
                     <execution>
                         <id>gradle_integration_tests</id>
                         <phase>install</phase>

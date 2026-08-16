@@ -45,9 +45,12 @@ RUN if [ -s /tmp/local-ca.pem ]; then \
 # BusyBox wget ignores /etc/wgetrc, so this is a safe no-op there.
 RUN printf 'tries=5\ntimeout=60\nwaitretry=10\nretry_on_host_error=on\nretry_connrefused=on\n' >> /etc/wgetrc
 ARG TARGETARCH=amd64
-ARG NETTY_TCNATIVE=2.0.81.Final
 # Audit finding F-DKR-06: SHA256-verify tcnative download from Maven Central.
-RUN if [ "$TARGETARCH" = "amd64" ]; \
+# bring in the server jar so the tcnative version can be read from it
+COPY mockserver-netty-jar-with-dependencies.jar .
+RUN NETTY_TCNATIVE="$(unzip -p mockserver-netty-jar-with-dependencies.jar META-INF/mockserver-tcnative.version | tr -d '[:space:]')" \
+    && if [ -z "$NETTY_TCNATIVE" ]; then echo "ERROR: META-INF/mockserver-tcnative.version missing or empty in mockserver-netty-jar-with-dependencies.jar" >&2; exit 1; fi \
+    && if [ "$TARGETARCH" = "amd64" ]; \
     then TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-x86_64.jar"; \
     else TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-aarch_64.jar"; \
     fi \

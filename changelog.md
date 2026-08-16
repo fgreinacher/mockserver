@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Netty BOM pins the transitively-resolved native-classifier tcnative jars to `2.0.81.Final`, so a mismatched
   main-artifact pin fails the enforcer `DependencyConvergence` rule in `mockserver-core`. The `NETTY_TCNATIVE` build
   args in every `docker/*/Dockerfile` were updated to match. This unblocks Dependabot PRs #2523 and #2532.
+- Removed the manual `netty-tcnative` version-synchronisation step that made every Netty upgrade a convergence trap.
+  `netty-tcnative-boringssl-static` no longer has its own version property or `dependencyManagement` override — the
+  imported `netty-bom` now governs the base artifact and every OS/arch native classifier together, so the two can no
+  longer diverge and break the enforcer `DependencyConvergence` rule. The server jars (which ship tcnative classes
+  but, per #1778, no natives) are stamped at build time with their resolved tcnative version at
+  `META-INF/mockserver-tcnative.version`, and every `docker/*/Dockerfile` now derives the native `.so` download from
+  that stamp instead of a hardcoded `NETTY_TCNATIVE=` build arg (SHA256 verification of the download is unchanged).
+  Both jars a Dockerfile can consume carry the stamp: the shaded `mockserver-netty-no-dependencies` jar used by the
+  `source=copy` path (release/snapshot/CI) and the `mockserver-netty` assembly `-jar-with-dependencies.jar` used by
+  the default `source=download` path (the public reference build), stamped via the same script so they cannot drift. A
+  Netty bump therefore needs no tcnative pin update and no Docker edit, and the native `.so` can never be a different
+  version than the tcnative classes it pairs with.
 - BREAKING: The default enabled TLS protocols are now `TLSv1.2,TLSv1.3` (previously `TLSv1,TLSv1.1,TLSv1.2`), and
   `tlsAllowInsecureProtocols` now defaults to `false` (previously `true`). TLSv1 and TLSv1.1 are deprecated by RFC 8996
   and vulnerable to BEAST/POODLE, and TLSv1.3 was previously never negotiated unless explicitly configured. This is a

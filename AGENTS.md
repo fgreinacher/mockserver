@@ -12,7 +12,7 @@
 MockServer is an open-source HTTP(S) mock server and proxy for testing, written in Java. It uses Netty as the HTTP server framework, Maven for builds, and is deployed as Docker containers, JARs, and WARs.
 
 **Tech stack:** Java 17+ (minimum supported), Netty 4.2, Jackson 2.22, Maven (multi-module), Node.js/TypeScript (UI + client), Python 3.9+ (client), Ruby 3.0+ (client), Docker, Helm, Jekyll (documentation site)
-**CI/CD:** Buildkite (primary CI), GitHub Actions (Docker image builds, CodeQL)
+**CI/CD:** Buildkite (primary CI — including all Docker image builds), GitHub Actions (CodeQL, scheduled hygiene jobs such as certificate-expiry, and issue/label automation)
 **Infrastructure:** AWS (Buildkite build agents, documentation site hosting), Docker Hub (container images)
 **Repository:** GitHub (github.com)
 
@@ -31,7 +31,7 @@ MockServer is an open-source HTTP(S) mock server and proxy for testing, written 
 - **A Docker-gated suite that runs in CI needs a fail-closed assertion too.** A fail-safe probe means an unusable Docker SKIPS rather than errors, which is right off-CI but is a silent false positive in CI. Pair it with `.buildkite/scripts/steps/assert-suite-ran.sh` over the suite's surefire reports so a skip fails the build loudly.
 - `docker` CLI commands (`docker build`, `docker run`) are also available for Dockerfile smoke checks in the commit workflow.
 
-**Behind a corporate TLS-inspection proxy?** If local dependency downloads fail with TLS / `certificate verify failed` errors, every toolchain needs to trust the corporate root CA (via a combined bundle), configured ONLY in your user/shell environment — never in repo or pipeline files. Set `LOCAL_DOCKER_CA_BUNDLE` for anything run through `.buildkite/scripts/run-in-docker.sh`, and per-toolchain env / `~/.npmrc` for host builds. Full reusable setup (new-laptop checklist + per-toolchain table): [docs/operations/build-system.md → Local Development Behind a Corporate TLS-Inspection Proxy](docs/operations/build-system.md#local-development-behind-a-corporate-tls-inspection-proxy).
+**Behind a corporate TLS-inspection proxy?** If local dependency downloads fail with TLS / `certificate verify failed` errors, every toolchain needs to trust the corporate root CA (via a combined bundle), configured ONLY in your user/shell environment — never in repo or pipeline files. Set `LOCAL_DOCKER_CA_BUNDLE` for anything run through `.buildkite/scripts/run-in-docker.sh`, and per-toolchain env / `~/.npmrc` for host builds. To build **MockServer's own Docker images** (`docker/*/Dockerfile`) behind the proxy, set `MOCKSERVER_LOCAL_CA_BUNDLE` to the **combined** bundle (system roots + corporate root, e.g. `~/.tesco-ca/ca-bundle-with-tesco.pem`) and run `docker/ensure-ca-bundle.sh <context-dir>` first — it stages the CA into the build context as `ca-bundle.pem` (a scratch file; never commit it) so the alpine stages trust the proxy before fetching the tcnative native `.so`. This is a distinct mechanism from `LOCAL_DOCKER_CA_BUNDLE` (which is only for the `run-in-docker.sh` client-language toolchains). Full reusable setup (new-laptop checklist + per-toolchain table): [docs/operations/build-system.md → Local Development Behind a Corporate TLS-Inspection Proxy](docs/operations/build-system.md#local-development-behind-a-corporate-tls-inspection-proxy).
 
 ### Project Documentation
 

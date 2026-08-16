@@ -81,10 +81,15 @@
         <javadoc.additional.parameters/>
         <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
         <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
-        <!-- also update NETTY_TCNATIVE in docker/*/Dockerfile download stages.
-             MUST match the tcnative version pinned by the netty-bom above (netty 4.2.17.Final -> 2.0.81.Final)
-             or the enforcer DependencyConvergence rule fails in mockserver-core. -->
-        <netty-tcnative-boringssl-static.version>2.0.81.Final</netty-tcnative-boringssl-static.version>
+        <!-- netty-tcnative-boringssl-static has NO version property on purpose: the imported
+             netty-bom (see dependencyManagement) is the single source of truth for the tcnative
+             version, pinning the base artifact AND every per-platform classifier in lockstep with
+             ${netty.version}. The shaded server jar ships tcnative CLASSES but no natives (they
+             cannot be shade-relocated — see mockserver-netty-no-dependencies #1778); the Docker
+             images fetch the matching native .so out-of-band, deriving the version from the jar
+             itself (META-INF/mockserver-tcnative.version, stamped at build time from this same
+             resolution) so the .so and the classes can never be different versions and there is
+             no literal for a human to keep in sync. -->
         <protobuf.version>4.35.1</protobuf.version>
         <!-- grpc-java: TEST SCOPE ONLY (mockserver-netty). Used to drive MockServer with a real
              gRPC client so the gRPC wire contract (protobuf framing + grpc-status trailer) is
@@ -355,12 +360,17 @@
                 <artifactId>netty-transport-native-unix-common</artifactId>
                 <version>${netty.version}</version>
             </dependency>
-            <!-- when upgrading, also update NETTY_TCNATIVE in docker/*/Dockerfile download stages -->
-            <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-tcnative-boringssl-static</artifactId>
-                <version>${netty-tcnative-boringssl-static.version}</version>
-            </dependency>
+            <!-- netty-tcnative-boringssl-static (base + all per-platform classifier artifacts) is
+                 governed by the imported netty-bom above, so its version always tracks
+                 ${netty.version} and can never diverge from the classifier natives — which is exactly
+                 what the enforcer DependencyConvergence rule checks. Do NOT re-add an explicit
+                 <version> or a version property here: that override is precisely what caused the
+                 recurring convergence break on every netty bump (a bump moved the bom-governed
+                 classifiers while the override kept the base pinned to the old version). The shaded
+                 server jar ships tcnative CLASSES but no natives; the Docker images fetch the
+                 matching native .so out-of-band, deriving the version from the jar itself
+                 (META-INF/mockserver-tcnative.version, stamped from this same resolution) so the
+                 .so can never drift from the classes. -->
             <dependency>
                 <groupId>io.netty</groupId>
                 <artifactId>netty-resolver</artifactId>

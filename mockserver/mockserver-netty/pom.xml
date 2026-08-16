@@ -307,6 +307,65 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- Expose the RESOLVED path of every dependency as a Maven property
+                 (io.netty:netty-tcnative-boringssl-static:jar -> its local-repo path)
+                 so the stamp execution below can derive the tcnative version from the
+                 exact same (netty-bom governed) resolution as the bundled tcnative
+                 classes. Mirrors mockserver-netty-no-dependencies/pom.xml. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.7.0</version>
+                <executions>
+                    <execution>
+                        <id>expose-dependency-paths</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Stamp the resolved netty-tcnative version into the project jar
+                 (META-INF/mockserver-tcnative.version) BEFORE maven-jar-plugin and
+                 maven-assembly-plugin run at package. The assembly descriptor unpacks
+                 the project artifact (useProjectArtifact=true), so the stamp is carried
+                 into mockserver-netty-<ver>-jar-with-dependencies.jar.
+
+                 WHY THIS MODULE TOO: the Dockerfiles' default `ARG source=download`
+                 path fetches THIS assembly artifact
+                 (.../mockserver-netty/<ver>/mockserver-netty-<ver>-jar-with-dependencies.jar)
+                 and reads the stamp back to download the exact-matching native .so.
+                 The mockserver-netty-no-dependencies module stamps its own shade output
+                 for the `source=copy` path (release/snapshot/CI); BOTH artifacts must
+                 carry the stamp or the download path derives an empty version and fails
+                 closed. Reuses the same script + resolution so the two can never drift.
+
+                 Never skipped (skip=false, unlike test-bound executions): release and
+                 Docker builds run with -DskipTests and still must produce the stamp. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.6.3</version>
+                <executions>
+                    <execution>
+                        <id>stamp-tcnative-version</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <skip>false</skip>
+                            <workingDirectory>${basedir}</workingDirectory>
+                            <executable>../mockserver-netty-no-dependencies/src/packaging/stamp-tcnative-version.sh</executable>
+                            <arguments>
+                                <argument>${io.netty:netty-tcnative-boringssl-static:jar}</argument>
+                                <argument>${project.build.outputDirectory}</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <!-- make jar executable -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

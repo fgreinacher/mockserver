@@ -44,6 +44,7 @@ A corporate TLS-inspection (MITM) proxy re-signs HTTPS traffic with a certificat
 | Toolchain | Where it runs | Setting (local only) |
 |-----------|---------------|----------------------|
 | Anything in Docker via `.buildkite/scripts/run-in-docker.sh` (PHP/Python/Ruby/Go/Rust/.NET/Node) | container | `export LOCAL_DOCKER_CA_BUNDLE=~/.tesco-ca/ca-bundle-with-tesco.pem` — the wrapper mounts it read-only and points every in-container tool at it (opt-in; unset in CI). |
+| Building **MockServer's own Docker images** (`docker/*/Dockerfile`, whose alpine download/copy stages `apk add` + `wget` the tcnative native `.so` from Maven Central through the proxy) | image build context | `export MOCKSERVER_LOCAL_CA_BUNDLE=~/.tesco-ca/ca-bundle-with-tesco.pem` — `docker/ensure-ca-bundle.sh <context-dir>` stages it into the context as `ca-bundle.pem` (which the stage COPYs in and trusts before the downloads). Prefer the **combined** bundle here: it becomes the alpine stage's entire trust store, so system roots must be included or Maven Central itself fails to verify. Falls back to `LOCAL_CA_BUNDLE`, then `NODE_EXTRA_CA_CERTS`, then `AWS_CA_BUNDLE` if unset — but those may be the corporate root **alone**, so set `MOCKSERVER_LOCAL_CA_BUNDLE` explicitly to the combined bundle. This is a **different** mechanism from `LOCAL_DOCKER_CA_BUNDLE` above (that one is `run-in-docker.sh` for client-language toolchains; this one is `ensure-ca-bundle.sh` for MockServer's image builds). The staged `ca-bundle.pem` is a build-context scratch file — never commit it. |
 | npm — direct **and** the `mockserver/mockserver-netty` Maven `build-ui` step (frontend-maven-plugin) | host | `~/.npmrc` with `cafile=/Users/<you>/.tesco-ca/ca-bundle-with-tesco.pem` (npm always reads user `~/.npmrc`, so the Maven plugin's bundled node picks it up too). |
 | Node (direct scripts) | host | `export NODE_EXTRA_CA_CERTS=~/.tesco-ca/ca-bundle-with-tesco.pem` |
 | Python / pip / requests | host | `export PIP_CERT=~/.tesco-ca/ca-bundle-with-tesco.pem REQUESTS_CA_BUNDLE=~/.tesco-ca/ca-bundle-with-tesco.pem SSL_CERT_FILE=~/.tesco-ca/ca-bundle-with-tesco.pem` |
@@ -57,7 +58,7 @@ The Java/Maven build itself usually works because the JDK trust store already ch
 ### Non-negotiable: keep proxy config out of the repo and pipelines
 
 - **Never** add `cafile`/`strict-ssl`/proxy settings to a committed `.npmrc`, `pom.xml`, `pip.conf`, `Cargo` config, or any `.buildkite/scripts/**` step — that would break or skew CI, which has no proxy.
-- The only repo-side hook is the **opt-in, env-gated** `LOCAL_DOCKER_CA_BUNDLE` branch in `run-in-docker.sh`: it does nothing unless the variable is set, and CI never sets it.
+- The two repo-side hooks are both **opt-in / env-gated** and both no-op in CI: the `LOCAL_DOCKER_CA_BUNDLE` branch in `run-in-docker.sh` (does nothing unless set), and `docker/ensure-ca-bundle.sh`, which stages `MOCKSERVER_LOCAL_CA_BUNDLE` (or its fallbacks) into an image build context but writes an **empty placeholder** when none is set — the Dockerfiles' `[ -s ]` guards then skip all trust changes, so CI and published images are byte-identical to a no-CA build.
 - All other settings live in your shell profile and user-level config files (`~/.npmrc`, `~/.zshrc`).
 
 ## Java Server Build (mockserver/)
@@ -124,16 +125,41 @@ Two related choices reduce convergence pressure even without the BOM: `mockserve
 
 #### Gotcha: `netty-tcnative` and other classifier-shipped artifacts
 
-`netty-tcnative-boringssl-static` is pinned by its **own** property (`<netty-tcnative-boringssl-static.version>` in `mockserver/pom.xml`), **separately** from `<netty.version>`. This is a convergence trap when Netty is upgraded: a new Netty version pulls the tcnative **native classifier** artifacts (`linux-x86_64`, `linux-aarch_64`, `osx-*`, `windows-x86_64`) transitively at *Netty's* expected tcnative version. If the explicit `boringssl-static` pin lags behind (e.g. pinned `2.0.77.Final` while Netty `4.2.16.Final` pulls the classifiers at `2.0.78.Final`), the Enforcer `dependencyConvergence` rule fails the **entire** build — which surfaces as a red master on both Buildkite and CodeQL, not as a test failure.
+`netty-tcnative-boringssl-static` has **no version property of its own** — the imported `netty-bom` is the single source of truth, pinning the base artifact **and** every OS/arch classifier (`linux-x86_64`, `linux-aarch_64`, `osx-*`, `windows-x86_64`) in lockstep with `<netty.version>`. This is deliberate: an earlier explicit `<netty-tcnative-boringssl-static.version>` override contradicted the BOM and was a recurring convergence trap — every Netty bump moved the BOM-governed classifier jars while the override kept the base artifact pinned to the old version, failing the Enforcer `dependencyConvergence` rule in `mockserver-core` (a red master on Buildkite/CodeQL, not a test failure). Removing the override means a Netty bump now moves tcnative automatically and can never diverge. **Do not re-add a version or a property for this artifact.**
 
-When bumping Netty, keep the tcnative pin in lockstep, and also update the six Docker `NETTY_TCNATIVE=` build args (`docker/*/Dockerfile` — a comment at the pom property flags this). Verify locally before pushing with:
+The tcnative **native `.so`** is not shipped in the shaded server jar — the natives cannot be shade-relocated and would clash with a consumer's own Netty (issue #1778), so `mockserver-netty-no-dependencies` strips `META-INF/native/**` and the jar ships tcnative **classes only**. The Docker images therefore fetch the matching native out-of-band. To keep that download at the exact same version as the classes **with no manual step**, the build stamps the Maven-resolved version at `META-INF/mockserver-tcnative.version` (via `maven-dependency-plugin:properties` exposing the resolved tcnative jar path + `src/packaging/stamp-tcnative-version.sh`), and each `docker/*/Dockerfile` reads it back from the jar it will ship to build the download URL.
+
+The stamp must be present in **whichever jar the Dockerfile actually consumes**, and there are two, fed by the `source` build arg:
+
+- **`source=copy`** (release, snapshot, and the container-integration-test images — `--build-arg source=copy`) COPYs the shaded **`mockserver-netty-no-dependencies-<ver>.jar`** (maven-shade output). That module stamps its shade output.
+- **`source=download`** (the Dockerfiles' **default**, the public reference path a user gets from a plain `docker build`) downloads the **`mockserver-netty-<ver>-jar-with-dependencies.jar`** assembly artifact from Sonatype/Maven Central. That is the `mockserver-netty` module's maven-**assembly** output — a *different* jar that does not depend on the no-dependencies module — so `mockserver-netty` stamps its own `target/classes` at `prepare-package` (reusing the same script) and the assembly's `useProjectArtifact=true` unpack carries the stamp into the jar-with-dependencies.
+
+Both stampings derive from the same netty-bom-governed resolution, so the two jars can never carry different versions. The read-back line each Dockerfile runs:
+
+```dockerfile
+RUN NETTY_TCNATIVE="$(unzip -p mockserver-netty-jar-with-dependencies.jar META-INF/mockserver-tcnative.version | tr -d '[:space:]')" \
+    && if [ -z "$NETTY_TCNATIVE" ]; then echo "ERROR: ... missing ..." >&2; exit 1; fi \
+    && ...   # build URL, wget, SHA256-verify, unzip the .so
+```
+
+There is no longer any hardcoded `NETTY_TCNATIVE=` build arg to keep in sync, so a Netty bump needs no Docker edit at all. Verify a bump locally with:
 
 ```bash
 mvn -pl mockserver-core -am validate   # Enforcer runs at the validate phase
 # look for: "Rule 0: ...DependencyConvergence passed"
 ```
 
-The same trap applies to any dependency that ships OS/arch classifier variants pinned independently of its umbrella version.
+Then confirm **both** shipped jars actually carry the stamp — this is the check that catches a stamp wired into the wrong artifact (the `source=download` assembly jar and the `source=copy` shade jar are built by different modules, so it is possible to stamp one and not the other):
+
+```bash
+# copy path (shade output) and download path (assembly output)
+unzip -p mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar META-INF/mockserver-tcnative.version
+unzip -p mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar     META-INF/mockserver-tcnative.version
+# both must print the same non-empty version, equal to the netty-bom-resolved tcnative version.
+# An empty read is exactly what makes the Dockerfile derive `exit 1`.
+```
+
+The same classifier-convergence discipline applies to any dependency that ships OS/arch classifier variants: let its umbrella BOM govern the version rather than pinning it independently.
 
 ### Quick Reference
 
