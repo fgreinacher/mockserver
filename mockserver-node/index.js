@@ -9,6 +9,36 @@
 module.exports = (function () {
 
     var mockServer;
+    // Bounded ring buffer of the launched MockServer's stdout+stderr, and its exit status once it dies.
+    // Non-verbose starts used to route MockServer stdout to 'ignore', discarding the exact
+    // "SEVERE ... certificate does not verify with supplied key" line that was needed to diagnose a
+    // dynamic-CA generation race. We now always capture the output (bounded, so a long-running server
+    // cannot grow it without limit) so a failed startup / readiness check can surface the tail.
+    var mockServerOutput = '';
+    var mockServerExit;
+    // Measured in JS string length (UTF-16 code units), not bytes: String.slice works in code units, and
+    // this is only a diagnostic-tail bound, not an exact byte budget. The cap is approximate at the edges
+    // (a multibyte UTF-8 sequence straddling a chunk boundary can render as one replacement character in
+    // the tail) but the buffer is bounded either way, which is all this needs to guarantee.
+    var MAX_CAPTURED_OUTPUT_CHARS = 65536;
+
+    function appendCapturedOutput(chunk) {
+        mockServerOutput += chunk.toString();
+        if (mockServerOutput.length > MAX_CAPTURED_OUTPUT_CHARS) {
+            mockServerOutput = mockServerOutput.slice(mockServerOutput.length - MAX_CAPTURED_OUTPUT_CHARS);
+        }
+    }
+
+    function capturedOutputTail(maxLines) {
+        var lines = mockServerOutput.split(/\r?\n/).filter(function (line) {
+            return line.length > 0;
+        });
+        if (maxLines && lines.length > maxLines) {
+            lines = lines.slice(lines.length - maxLines);
+        }
+        return lines.join('\n');
+    }
+
     // KNOWN LIMITATION: logLevel, artifactoryHost, artifactoryPath and
     // mockServerVersion below are all module-level, and start_mockserver
     // overwrites each of them permanently from its options rather than treating
@@ -107,6 +137,19 @@ module.exports = (function () {
         } else {
           if (verbose) {
             console.log("MockServer failed to start");
+          }
+          // Surface the diagnostic evidence that non-verbose starts used to discard: whether the java
+          // process is still alive (and its exit status if not) and the tail of MockServer's own output.
+          if (mockServerExit) {
+            console.error("MockServer java process exited before becoming ready (code=" +
+              mockServerExit.code + ", signal=" + mockServerExit.signal + ")");
+          } else if (mockServer && mockServer.pid) {
+            console.error("MockServer java process (pid " + mockServer.pid +
+              ") is still running but did not become ready");
+          }
+          var tail = capturedOutputTail(30);
+          if (tail) {
+            console.error("last MockServer output:\n" + tail);
           }
           deferred.reject(error);
         }
@@ -332,8 +375,26 @@ module.exports = (function () {
           // stop mockserver for uncaught exceptions
           process.on('uncaughtException', exitHandler.bind(null, {exit: true, options: options}));
         }
+        // Always pipe stdout+stderr so we can capture them into the bounded ring buffer. Preserve the
+        // previous surfacing behaviour: stdout is echoed to the parent only when verbose, stderr is
+        // always echoed (as it was when routed directly to process.stderr).
+        mockServerOutput = '';
+        mockServerExit = undefined;
         mockServer = spawn('java', commandLineOptions, {
-          stdio: ['ignore', (options.verbose ? process.stdout : 'ignore'), process.stderr]
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        mockServer.stdout.on('data', function (chunk) {
+          appendCapturedOutput(chunk);
+          if (options.verbose) {
+            process.stdout.write(chunk);
+          }
+        });
+        mockServer.stderr.on('data', function (chunk) {
+          appendCapturedOutput(chunk);
+          process.stderr.write(chunk);
+        });
+        mockServer.once('exit', function (code, signal) {
+          mockServerExit = { code: code, signal: signal };
         });
   
       }).then(function () {
@@ -352,7 +413,18 @@ module.exports = (function () {
   
     return {
       start_mockserver: start_mockserver,
-      stop_mockserver: stop_mockserver
+      stop_mockserver: stop_mockserver,
+      // Diagnostics for readiness probes (e.g. test/waitForTlsReady.js): the launched child process, its
+      // exit status once it has died (undefined while running), and the captured stdout+stderr tail.
+      getMockServerProcess: function () {
+        return mockServer;
+      },
+      getMockServerExit: function () {
+        return mockServerExit;
+      },
+      getMockServerOutput: function (maxLines) {
+        return capturedOutputTail(maxLines);
+      }
     };
   })();
   

@@ -21,9 +21,21 @@ export interface StopServerOptions {
   verbose?: boolean;
 }
 
+/** Exit status of the launched MockServer java process once it has terminated. */
+export interface MockServerExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
 declare const mockserverNode: {
   start_mockserver: (options: StartServerOptions) => Promise<void>,
   stop_mockserver: (options: StopServerOptions) => Promise<void>,
+  /** The launched MockServer java child process, or undefined before the first start. */
+  getMockServerProcess: () => ChildProcess | undefined,
+  /** The java process exit status once it has died; undefined while it is still running. */
+  getMockServerExit: () => MockServerExit | undefined,
+  /** The captured stdout+stderr tail (optionally limited to the last `maxLines` non-empty lines). */
+  getMockServerOutput: (maxLines?: number) => string,
 };
 
 export default mockserverNode;

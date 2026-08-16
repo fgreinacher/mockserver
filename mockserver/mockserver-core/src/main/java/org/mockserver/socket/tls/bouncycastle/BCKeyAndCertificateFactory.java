@@ -32,11 +32,14 @@ import java.io.StringWriter;
 import java.math.BigInteger;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.StandardOpenOption;
 import java.security.*;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.LongSupplier;
 
 import static org.apache.commons.lang3.StringUtils.isBlank;
@@ -102,6 +105,21 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
     // (emitted from certificateNeedsRenewal()) is logged only once rather than on every handshake.
     private volatile boolean certificateAuthorityRenewalWarned;
 
+    // In-JVM serialisation of dynamic CA generation, keyed by the CANONICAL
+    // directoryToSaveDynamicSSLCertificate. The cross-process FileLock in acquireCertificateAuthorityLock()
+    // only serialises across DIFFERENT JVMs: a second FileChannel.lock() on the same lock file WITHIN one
+    // JVM throws OverlappingFileLockException. Without an in-JVM guard two threads — the logProxySetup
+    // startup thread (writeCertificateAuthorityToDisk) and the first SNI handshake thread
+    // (buildAndSavePrivateKeyAndX509Certificate), each holding its OWN factory instance — could both mint a
+    // fresh CA and interleave the private-key / certificate writes, publishing a torn pair whose leaf then
+    // fails signature verification on EVERY subsequent handshake for the JVM's lifetime. Serialising on a
+    // per-directory monitor closes that window; the OS FileLock remains for the cross-process case. The key
+    // is the CANONICAL path (not merely absolute) so two Configuration instances that spell the same
+    // physical directory differently (relative vs absolute, "." / ".." segments, a symlink) collapse to ONE
+    // monitor — otherwise they would share a single .mockserver-ca.lock while holding different monitors,
+    // and the OverlappingFileLockException degrade-to-no-op would let both generate concurrently.
+    private static final ConcurrentMap<String, Object> CERTIFICATE_AUTHORITY_GENERATION_MONITORS = new ConcurrentHashMap<>();
+
     public BCKeyAndCertificateFactory(Configuration configuration, MockServerLogger mockServerLogger) {
         this.configuration = configuration;
         this.mockServerLogger = mockServerLogger;
@@ -116,28 +134,61 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
         if (!dynamicallyUpdateCertificateAuthority()) {
             return;
         }
-        // Serialise check-and-generate across processes sharing directoryToSaveDynamicSSLCertificate, so
-        // two MockServer instances cannot both mint a fresh CA and silently clobber each other's — which
-        // would invalidate every client trust store pinned to the first CA (defect C11).
-        String certificatePath = certificateAuthorityX509CertificatePath();
-        String keyPath = certificateAuthorityPrivateKeyPath();
-        try (AutoCloseable ignored = acquireCertificateAuthorityLock()) {
-            if (!certificateAuthorityCertificateNotYetCreated()) {
-                return;
+        // Serialise check-and-generate WITHIN this JVM on a per-directory monitor so two threads (each with
+        // its own factory instance) cannot both mint a fresh CA and interleave the key/cert writes into a
+        // torn pair, AND across processes via the OS file lock below so two MockServer instances cannot both
+        // mint a fresh CA and silently clobber each other's — which would invalidate every client trust
+        // store pinned to the first CA (defects C11 + the in-JVM torn-CA race).
+        synchronized (certificateAuthorityGenerationMonitor()) {
+            String certificatePath = certificateAuthorityX509CertificatePath();
+            String keyPath = certificateAuthorityPrivateKeyPath();
+            try (AutoCloseable ignored = acquireCertificateAuthorityLock()) {
+                if (!certificateAuthorityCertificateNotYetCreated()) {
+                    return;
+                }
+                AsymmetricKeyPairAlgorithm keyGenerationAndSigningAlgorithm = KeyAndCertificateFactory.DEFAULT_KEY_GENERATION_AND_SIGNING_ALGORITHM;
+                KeyPair caKeyPair = AsymmetricKeyGenerator.createKeyPair(keyGenerationAndSigningAlgorithm);
+                X509Certificate caCertificate = generateCACert(keyGenerationAndSigningAlgorithm, caKeyPair.getPublic(), caKeyPair.getPrivate());
+                // Write the PRIVATE KEY first and the public certificate last, each atomically, so a concurrent
+                // reader that sees the certificate is guaranteed to also see the matching key — the reverse
+                // order left a window serving new-cert / old-key (defect C11).
+                saveAsPEMFile(caKeyPair.getPrivate(), keyPath, "Certificate Authority Private Key PEM", true);
+                saveAsPEMFile(caCertificate, certificatePath, "Certificate Authority X509 Certificate PEM", false);
+            } catch (RuntimeException e) {
+                // preserve the clear corrupt-CA / directory failure message unwrapped (defects C11 / C13)
+                throw e;
+            } catch (Exception e) {
+                throw new RuntimeException("exception while generating certificate authority private key and X509 certificate", e);
             }
-            AsymmetricKeyPairAlgorithm keyGenerationAndSigningAlgorithm = KeyAndCertificateFactory.DEFAULT_KEY_GENERATION_AND_SIGNING_ALGORITHM;
-            KeyPair caKeyPair = AsymmetricKeyGenerator.createKeyPair(keyGenerationAndSigningAlgorithm);
-            X509Certificate caCertificate = generateCACert(keyGenerationAndSigningAlgorithm, caKeyPair.getPublic(), caKeyPair.getPrivate());
-            // Write the PRIVATE KEY first and the public certificate last, each atomically, so a concurrent
-            // reader that sees the certificate is guaranteed to also see the matching key — the reverse
-            // order left a window serving new-cert / old-key (defect C11).
-            saveAsPEMFile(caKeyPair.getPrivate(), keyPath, "Certificate Authority Private Key PEM", true);
-            saveAsPEMFile(caCertificate, certificatePath, "Certificate Authority X509 Certificate PEM", false);
-        } catch (RuntimeException e) {
-            // preserve the clear corrupt-CA / directory failure message unwrapped (defects C11 / C13)
-            throw e;
-        } catch (Exception e) {
-            throw new RuntimeException("exception while generating certificate authority private key and X509 certificate", e);
+        }
+    }
+
+    /**
+     * The per-directory monitor that serialises dynamic CA generation (and the paired CA load) within this
+     * JVM. Keyed by the CANONICAL directoryToSaveDynamicSSLCertificate so two factory instances pointed at
+     * the same physical directory — however each spells it — share one monitor, while factories for
+     * different directories never block each other.
+     */
+    private Object certificateAuthorityGenerationMonitor() {
+        return CERTIFICATE_AUTHORITY_GENERATION_MONITORS.computeIfAbsent(resolvedCertificateAuthorityDirectory(), key -> new Object());
+    }
+
+    /**
+     * The canonical filesystem path of directoryToSaveDynamicSSLCertificate, used to key both the in-JVM
+     * generation monitor and the OS lock file. Canonicalisation collapses different spellings of the same
+     * physical directory (relative vs absolute, "." / ".." segments, a symlink) to one key, so two
+     * Configuration instances cannot end up with different monitors guarding the same .mockserver-ca.lock.
+     * Falls back to the (non-canonical) absolute path only when canonicalisation fails, e.g. an unresolvable
+     * symlink. This is a filesystem round-trip but is reached only on the CA generation / cold-load path
+     * (the accessors short-circuit on the memoised CA before calling the monitor), never per handshake, so
+     * it is not hot enough to warrant caching.
+     */
+    private String resolvedCertificateAuthorityDirectory() {
+        File directory = new File(configuration.directoryToSaveDynamicSSLCertificate());
+        try {
+            return directory.getCanonicalPath();
+        } catch (IOException e) {
+            return directory.getAbsolutePath();
         }
     }
 
@@ -148,29 +199,67 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
      * a lock cannot be taken (e.g. the directory is read-only) so generation can still proceed.
      */
     private AutoCloseable acquireCertificateAuthorityLock() {
+        FileChannel channel = null;
         try {
-            File lockFile = new File(new File(configuration.directoryToSaveDynamicSSLCertificate()), ".mockserver-ca.lock");
+            File lockFile = new File(resolvedCertificateAuthorityDirectory(), ".mockserver-ca.lock");
             org.mockserver.file.FileCreator.createParentDirs(lockFile);
-            FileChannel channel = FileChannel.open(lockFile.toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            channel = FileChannel.open(lockFile.toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
             FileLock lock = channel.lock();
+            final FileChannel acquiredChannel = channel;
             return () -> {
                 try {
                     lock.release();
                 } finally {
-                    channel.close();
+                    acquiredChannel.close();
                 }
             };
-        } catch (Throwable throwable) {
+        } catch (OverlappingFileLockException overlap) {
+            // The OS lock on this file is already held elsewhere in THIS JVM. This is NOT a licence to
+            // proceed unserialised (the original defect that produced a torn CA pair): in-JVM serialisation
+            // is owned by certificateAuthorityGenerationMonitor(), under which this method is always called.
+            // Because both the monitor and this lock file are keyed off the SAME canonical directory
+            // (resolvedCertificateAuthorityDirectory()), every in-JVM caller for a given physical directory
+            // holds the one monitor that also guards this lock file — so the only thread that could be
+            // holding the OS lock is one that has already released that monitor before we acquired it, and
+            // we can safely re-check certificateAuthorityCertificateNotYetCreated() under the monitor we now
+            // hold. (The canonical keying is what makes that guarantee hold; keying on the merely-absolute
+            // path could pair one lock file with two different monitors and break it.)
+            closeQuietly(channel);
             if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(DEBUG)) {
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setLogLevel(DEBUG)
-                        .setMessageFormat("unable to acquire certificate authority generation lock, proceeding without cross-process serialisation")
+                        .setMessageFormat("certificate authority generation OS lock is held elsewhere in this JVM; relying on the in-JVM generation monitor for serialisation")
+                        .setThrowable(overlap)
+                );
+            }
+            return () -> {
+            };
+        } catch (Throwable throwable) {
+            // A genuine inability to take the OS lock (e.g. a read-only directory) degrades to a no-op so
+            // generation can still proceed. Cross-process serialisation is lost in that corner case, but
+            // in-JVM serialisation is still provided by certificateAuthorityGenerationMonitor().
+            closeQuietly(channel);
+            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(DEBUG)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(DEBUG)
+                        .setMessageFormat("unable to acquire certificate authority generation OS lock, proceeding with in-JVM serialisation only")
                         .setThrowable(throwable)
                 );
             }
             return () -> {
             };
+        }
+    }
+
+    private static void closeQuietly(FileChannel channel) {
+        if (channel != null) {
+            try {
+                channel.close();
+            } catch (IOException ignore) {
+                // best effort — the lock was never handed to a caller, so nothing relies on this channel
+            }
         }
     }
 
@@ -209,29 +298,90 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
     }
 
     private PrivateKey certificateAuthorityPrivateKey() {
+        if (dynamicallyUpdateCertificateAuthority()) {
+            ensureDynamicCertificateAuthorityLoaded();
+            return certificateAuthorityPrivateKey;
+        }
+        // non-dynamic (baked-in / user-supplied) CA: load the key independently and lazily, unchanged
         invalidateCertificateAuthorityIfConfigChanged();
         if (certificateAuthorityPrivateKey == null) {
-            if (dynamicallyUpdateCertificateAuthority()) {
-                buildAndSaveCertificateAuthorityPrivateKeyAndX509Certificate();
-            }
             certificateAuthorityPrivateKey = privateKeyFromPEMFile(certificateAuthorityPrivateKeyPath());
-            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(TRACE)
-                        .setMessageFormat("loaded CA private key from path{}containing PEM{}")
-                        .setArguments(FilePath.absolutePathFromClassPathOrPath(certificateAuthorityPrivateKeyPath()), certificateAuthorityPrivateKey)
-                );
-            } else if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(INFO)) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(INFO)
-                        .setMessageFormat("loaded CA private key from path{}")
-                        .setArguments(FilePath.absolutePathFromClassPathOrPath(certificateAuthorityPrivateKeyPath()))
-                );
-            }
+            logCaPrivateKeyLoaded();
         }
         return certificateAuthorityPrivateKey;
+    }
+
+    /**
+     * Load — generating first — the DYNAMIC CA private key AND certificate as a MATCHED PAIR, publishing both
+     * volatile fields together under {@link #certificateAuthorityGenerationMonitor()}. The two accessors
+     * previously memoised independently and unsynchronised, so with two threads each generating its own CA they
+     * could pair a key from one generation with a certificate from another and produce a leaf that fails
+     * signature verification permanently. Serialising generation already guarantees a single consistent CA on
+     * disk; reading and publishing key+cert together here removes any residual in-memory tearing window and
+     * guarantees a caller that reads one then the other (e.g. buildAndSavePrivateKeyAndX509Certificate) always
+     * sees the same generation. Scoped to the dynamic case only: a baked-in / user-supplied CA may present a
+     * certificate with NO usable private key (verify-only), so its key must stay loaded lazily on demand.
+     */
+    private void ensureDynamicCertificateAuthorityLoaded() {
+        // preserve runtime CA-rotation semantics (defect C9): discard the memoised pair if the CA config changed
+        invalidateCertificateAuthorityIfConfigChanged();
+        if (certificateAuthorityPrivateKey != null && certificateAuthorityX509Certificate != null) {
+            return;
+        }
+        synchronized (certificateAuthorityGenerationMonitor()) {
+            invalidateCertificateAuthorityIfConfigChanged();
+            if (certificateAuthorityPrivateKey != null && certificateAuthorityX509Certificate != null) {
+                return;
+            }
+            buildAndSaveCertificateAuthorityPrivateKeyAndX509Certificate();
+            PrivateKey loadedPrivateKey = privateKeyFromPEMFile(certificateAuthorityPrivateKeyPath());
+            X509Certificate loadedCertificate = x509FromPEMFile(certificateAuthorityX509CertificatePath());
+            // publish the matched pair together (never a key from one generation with a cert from another)
+            certificateAuthorityPrivateKey = loadedPrivateKey;
+            certificateAuthorityX509Certificate = loadedCertificate;
+            logCaPrivateKeyLoaded();
+            logCaX509Loaded();
+        }
+    }
+
+    private void logCaPrivateKeyLoaded() {
+        if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(TRACE)
+                    .setMessageFormat("loaded CA private key from path{}containing PEM{}")
+                    .setArguments(FilePath.absolutePathFromClassPathOrPath(certificateAuthorityPrivateKeyPath()), certificateAuthorityPrivateKey)
+            );
+        } else if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(INFO)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(INFO)
+                    .setMessageFormat("loaded CA private key from path{}")
+                    .setArguments(FilePath.absolutePathFromClassPathOrPath(certificateAuthorityPrivateKeyPath()))
+            );
+        }
+    }
+
+    private void logCaX509Loaded() {
+        if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(DEBUG)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(DEBUG)
+                    .setMessageFormat("loaded CA X509 from path{}containing PEM{}as{}")
+                    .setArguments(
+                        FilePath.absolutePathFromClassPathOrPath(certificateAuthorityX509CertificatePath()),
+                        FileReader.readFileFromClassPathOrPath(certificateAuthorityX509CertificatePath()),
+                        certificateAuthorityX509Certificate
+                    )
+            );
+        } else if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(INFO)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(INFO)
+                    .setMessageFormat("loaded CA X509 from path{}containing PEM{}")
+                    .setArguments(FilePath.absolutePathFromClassPathOrPath(certificateAuthorityX509CertificatePath()), FileReader.readFileFromClassPathOrPath(certificateAuthorityX509CertificatePath()))
+            );
+        }
     }
 
     /**
@@ -250,31 +400,15 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
      */
     public X509Certificate certificateAuthorityX509Certificate() {
         ensureProviderRegistered();
+        if (dynamicallyUpdateCertificateAuthority()) {
+            ensureDynamicCertificateAuthorityLoaded();
+            return certificateAuthorityX509Certificate;
+        }
+        // non-dynamic (baked-in / user-supplied) CA: load the certificate independently and lazily, unchanged
         invalidateCertificateAuthorityIfConfigChanged();
         if (certificateAuthorityX509Certificate == null) {
-            if (dynamicallyUpdateCertificateAuthority()) {
-                buildAndSaveCertificateAuthorityPrivateKeyAndX509Certificate();
-            }
             certificateAuthorityX509Certificate = x509FromPEMFile(certificateAuthorityX509CertificatePath());
-            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(DEBUG)) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(DEBUG)
-                        .setMessageFormat("loaded CA X509 from path{}containing PEM{}as{}")
-                        .setArguments(
-                            FilePath.absolutePathFromClassPathOrPath(certificateAuthorityX509CertificatePath()),
-                            FileReader.readFileFromClassPathOrPath(certificateAuthorityX509CertificatePath()),
-                            certificateAuthorityX509Certificate
-                        )
-                );
-            } else if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(INFO)) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(INFO)
-                        .setMessageFormat("loaded CA X509 from path{}containing PEM{}")
-                        .setArguments(FilePath.absolutePathFromClassPathOrPath(certificateAuthorityX509CertificatePath()), FileReader.readFileFromClassPathOrPath(certificateAuthorityX509CertificatePath()))
-                );
-            }
+            logCaX509Loaded();
         }
         return certificateAuthorityX509Certificate;
     }

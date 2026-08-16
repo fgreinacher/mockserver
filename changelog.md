@@ -178,6 +178,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PKCS#1 form); the code continues to load `PKCS8CertificateAuthorityPrivateKey.pem`.
 
 ### Fixed
+- Fixed a thread race in dynamic Certificate Authority generation that could leave a standalone / CLI / Docker
+  MockServer serving broken TLS for the rest of the process's lifetime. When
+  `dynamicallyCreateCertificateAuthorityCertificate` is enabled, two startup paths could generate the CA
+  concurrently — the proxy-setup log (`proxySetupLogging`, on by default in the CLI) writing the CA to disk, and the
+  first HTTPS handshake building the server certificate. Generation was serialised only by a cross-process file lock;
+  a second lock attempt **within the same JVM** threw `OverlappingFileLockException`, which was caught and treated as
+  "proceed without serialisation", so both threads minted different CA key pairs and interleaved their writes. The
+  result was a torn CA key/certificate pair on disk: every leaf certificate was then signed with one generation's CA
+  key but verified against the other's CA public key, failing with `SignatureException: certificate does not verify
+  with supplied key` — and because the mismatched CA was memoised, **every subsequent TLS handshake failed for the
+  life of the process**. CA generation (and the paired load of the CA key + certificate) is now serialised within the
+  JVM on a per-directory monitor in addition to the cross-process file lock, so the key and certificate are always
+  published from the same generation. Embedded `ClientAndServer` users were unaffected (they default
+  `proxySetupLogging` off); standalone, CLI and Docker users generating a dynamic CA could hit it intermittently.
 - Unblocked the daily Dependabot updater, which had been failing and raising no PRs. The Maven wrappers under
   `mockserver/` and `mockserver/mockserver-maven-plugin/` were modernised from the legacy Takari format to the
   Apache `only-script` wrapper (`wrapperVersion` 3.3.4, Maven pinned at 3.9.16), so the `maven-wrapper-updater` can

@@ -1,6 +1,7 @@
 module.exports = (function () {
 
     var tls = require('tls');
+    var mockserver = require('..');
 
     /**
      * Wait until the server can complete a TLS handshake on the given port.
@@ -16,13 +17,18 @@ module.exports = (function () {
      * Waiting for an actual handshake to succeed gates the test on the condition it
      * really depends on, rather than retrying the assertions themselves.
      *
-     * Certificate validation is deliberately left ON. The question being asked is
-     * "has the server got as far as serving TLS", not "do we trust its certificate",
-     * so a certificate the client cannot verify - which is exactly what a freshly
-     * generated CA produces - still answers it: the server presented a certificate,
-     * therefore it is serving TLS. Only a connection that dies without ever
-     * producing one counts as not-ready. That keeps this probe from having to
-     * disable certificate checking.
+     * The question being asked is "has the server got as far as serving TLS", not
+     * "do we trust its certificate". A freshly generated dynamic CA is untrusted by
+     * design, so we disable certificate validation on this probe (rejectUnauthorized:
+     * false) and treat a completed handshake (secureConnect) as the readiness signal.
+     *
+     * This replaces an earlier, subtly-broken design that relied on a peer certificate
+     * being attached to a certificate-verification error. On Node 20/22 that branch is
+     * dead: for a self-signed cert error.cert is undefined and getPeerCertificate()
+     * returns {}, so the probe only ever succeeded via secureConnect - which in turn
+     * only fired because an unrelated test set NODE_TLS_REJECT_UNAUTHORIZED=0 process
+     * wide as a side effect. Readiness therefore silently depended on test ordering and
+     * a global env mutation. Disabling validation on the probe itself removes both.
      */
     return function (host, port, timeoutMs) {
         // Generous on purpose. Waiting costs nothing when the server is healthy - a ready server
@@ -41,7 +47,9 @@ module.exports = (function () {
                 attempts++;
                 var socket = tls.connect({
                     host: host,
-                    port: port
+                    port: port,
+                    // untrusted-by-design dynamic CA: a completed handshake is the readiness signal
+                    rejectUnauthorized: false
                 });
 
                 // a handshake that stalls must not hold the whole wait open
@@ -71,28 +79,22 @@ module.exports = (function () {
                     socket.destroy();
                     if (Date.now() >= deadline) {
                         // Report the attempt count as well - "one attempt that hung" and "hundreds
-                        // that were refused" are different faults and the message should say which.
+                        // that were refused" are different faults and the message should say which -
+                        // plus whether the java process is even still alive and what it last printed,
+                        // so a permanently-broken TLS server (e.g. a torn dynamic-CA pair) is diagnosable
+                        // from the failure itself rather than needing a re-run under a debugger.
                         reject(new Error('MockServer did not serve TLS on port ' + port +
                             ' within ' + limit + 'ms (' + attempts + ' attempts over ' +
-                            (Date.now() - start) + 'ms): ' + error.message));
+                            (Date.now() - start) + 'ms): ' + error.message + '\n' + serverDiagnostics()));
                     } else {
                         setTimeout(attempt, 100);
                     }
                 }
 
-                // a trusted certificate completes the handshake outright
+                // a completed handshake proves the server is serving TLS
                 socket.once('secureConnect', succeed);
 
-                socket.once('error', function (error) {
-                    // node attaches the peer certificate to certificate-verification
-                    // failures; either way, having one means TLS was served
-                    var certificate = error.cert || socket.getPeerCertificate();
-                    if (certificate && Object.keys(certificate).length > 0) {
-                        succeed();
-                    } else {
-                        retry(error);
-                    }
-                });
+                socket.once('error', retry);
 
                 socket.once('timeout', function () {
                     retry(new Error('TLS handshake timed out'));
@@ -102,4 +104,32 @@ module.exports = (function () {
             attempt();
         });
     };
+
+    /**
+     * Best-effort description of the launched MockServer's state for a readiness-timeout message:
+     * whether the java process is still alive (and its exit status if not) and the tail of its output.
+     */
+    function serverDiagnostics() {
+        var lines = [];
+        try {
+            var exit = mockserver.getMockServerExit && mockserver.getMockServerExit();
+            var proc = mockserver.getMockServerProcess && mockserver.getMockServerProcess();
+            if (exit) {
+                lines.push('java process has exited (code=' + exit.code + ', signal=' + exit.signal + ')');
+            } else if (proc && proc.pid && proc.exitCode === null) {
+                lines.push('java process (pid ' + proc.pid + ') is still running but is not serving TLS');
+            } else {
+                lines.push('java process state is unknown');
+            }
+            var output = mockserver.getMockServerOutput && mockserver.getMockServerOutput(30);
+            if (output) {
+                lines.push('last MockServer output:\n' + output);
+            } else {
+                lines.push('no MockServer output was captured');
+            }
+        } catch (e) {
+            lines.push('unable to collect server diagnostics: ' + e.message);
+        }
+        return lines.join('\n');
+    }
 })();
