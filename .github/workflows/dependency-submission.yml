@@ -80,7 +80,10 @@ jobs:
       - name: Submit mockserver reactor dependency graph
         uses: advanced-security/maven-dependency-submission-action@b275d12641ac2d2108b2cbb7598b154ad2f2cee8  # v5.0.0
         with:
-          directory: mockserver
+          # Must be ABSOLUTE. The action's `directory` input defaults to
+          # ${{ github.workspace }}, and a relative value makes it join the workspace
+          # prefix twice when locating mvnw (…/mockserver-monorepo/mockserver/mockserver/mvnw).
+          directory: ${{ github.workspace }}/mockserver
           correlator: mockserver-reactor
 
   submit-maven-plugin:
@@ -113,5 +116,6 @@ jobs:
       - name: Submit maven-plugin dependency graph
         uses: advanced-security/maven-dependency-submission-action@b275d12641ac2d2108b2cbb7598b154ad2f2cee8  # v5.0.0
         with:
-          directory: mockserver/mockserver-maven-plugin
+          # Absolute, for the same reason as the reactor job above.
+          directory: ${{ github.workspace }}/mockserver/mockserver-maven-plugin
           correlator: mockserver-maven-plugin
