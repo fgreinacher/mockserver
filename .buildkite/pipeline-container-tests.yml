@@ -9,25 +9,16 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
-  # Build the real Docker image (source=copy) and prove it works — the arch-correct
-  # tcnative .so is baked in, the NATIVE TLS provider actually loads in the image
-  # JVM (OpenSsl.isAvailable), and the container starts and serves a real TLS
-  # handshake. Runs on EVERY branch (not master-only): a docker/**-only change now
-  # routes here (generate-pipeline.sh), so a broken Dockerfile/stamp is caught on the
-  # PR instead of shipping unbuilt. The script builds the server jars on demand (in
-  # the mockserver/mockserver:maven image when the agent has no host JDK) and cleans
-  # up the staged jar + ca-bundle.pem it creates. Needs host Docker, so queue:default.
-  - label: ":docker: build & verify image (source=copy + native tcnative + TLS)"
-    command: ".buildkite/scripts/steps/docker-build-verify.sh"
-    timeout_in_minutes: 40
-    agents:
-      queue: default
-    retry:
-      automatic:
-        - exit_status: -1   # agent lost (e.g. Spot reclamation)
-          limit: 2
-        - exit_status: 255  # agent forced shutdown
-          limit: 2
+  # NOTE: the ":docker: build & verify image" step (docker-build-verify.sh) is
+  # intentionally NOT wired here yet. It shipped in b63d0b4da with a latent
+  # nullglob bug (an unmatched jar glob stayed literal, so the on-demand jar build
+  # was skipped and the guard misdiagnosed the result), which turned this pipeline
+  # red and blocked PRs. The bug is now fixed in docker-build-verify.sh and the
+  # developer pre-commit gate still runs it locally
+  # (.opencode/rules/commit-workflow.md); re-land this CI step only after a green
+  # run on a real amd64 default-queue agent. Docker/** CI coverage meanwhile
+  # remains the static lint in "validate container integration test scripts" above,
+  # exactly where it was before b63d0b4da.
 
   - label: ":helm: Helm integration tests (k3d)"
     command: ".buildkite/scripts/steps/helm-integration-test.sh"

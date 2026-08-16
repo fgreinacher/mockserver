@@ -67,6 +67,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
+# nullglob at SCRIPT scope so an unmatched jar glob expands to NOTHING rather than
+# staying literal. The jar globs below are expanded by THIS shell before the
+# helper functions run, so enabling nullglob only inside a helper is too late: the
+# literal pattern would already have been passed in, defeating both the
+# build-on-demand detection AND the post-build "no jar after build" guard (a
+# literal, non-existent path tests as non-empty and sails through). See the guards
+# in locate_or_build_jars().
+shopt -s nullglob
+
 STEPS_DIR="$REPO_ROOT/.buildkite/scripts/steps"
 DOCKER_CONTEXT="$REPO_ROOT/docker"
 REACTOR_DIR="$REPO_ROOT/mockserver"
@@ -114,16 +123,19 @@ fail() { echo "+++ :bangbang: $*" >&2; exit 1; }
 # dlopen, so that path silently runs on the JDK provider — which is by design for
 # docker/local, but is NOT the tcnative path this gate exists to protect.) The
 # two-jar derive check still independently covers the shaded jar's stamp.
+# nullglob is enabled at script scope (see top of file), so an unmatched caller
+# glob arrives here as ZERO args and this returns non-zero — never the literal
+# pattern. Do NOT toggle nullglob inside this function: the glob is expanded by the
+# caller before we run, so a local shopt here would be too late to matter.
 first_real_jar() {
   local f
-  shopt -s nullglob
   for f in "$@"; do
     case "$(basename "$f")" in
       *-sources.jar|*-javadoc.jar|original-*) continue ;;
     esac
-    printf '%s\n' "$f"; shopt -u nullglob; return 0
+    printf '%s\n' "$f"; return 0
   done
-  shopt -u nullglob; return 1
+  return 1
 }
 
 # Build BOTH stamped jars (assembly + shaded no-dependencies) so the inner derive

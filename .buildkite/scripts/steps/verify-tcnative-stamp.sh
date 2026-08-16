@@ -33,15 +33,25 @@
 #     stamp itself is derived from).
 #
 # HOW IT OBTAINS THE JARS
-#   It does NOT build them. It consumes the artifacts the `:maven: build` step
-#   (clean install) has already produced in the same pipeline, so it runs in
-#   seconds and cannot be starved by agent capacity. If a jar is absent the guard
-#   FAILS — that means the build did not produce it, which is exactly the
-#   condition worth failing on. It is therefore wired into the Java pipeline
-#   (after the build), not the infra/docker pipeline (which never builds the jar);
-#   the docker/** trigger gets stronger coverage still — docker-build-verify.sh
-#   runs this same derive check and then actually builds the image and proves the
-#   native tcnative .so loads at runtime.
+#   It does NOT build them. It consumes the two stamped jars that a normal reactor
+#   `clean install` produces under mockserver/mockserver-netty*/target (the
+#   assembly jar-with-dependencies is built by assembly:single at the `package`
+#   phase; skipAssembly defaults to false), so it runs in seconds and cannot be
+#   starved by agent capacity. If a jar is absent the guard FAILS — that means the
+#   build did not produce it, which is exactly the condition worth failing on.
+#
+# WHERE IT ACTUALLY RUNS (keep this accurate)
+#   * The developer pre-commit gate — .opencode/rules/commit-workflow.md runs it as
+#     the fast inner tcnative-stamp check before a commit.
+#   * As the inner gate of docker-build-verify.sh (which runs it, then builds the
+#     image and proves the native .so loads at runtime).
+#   It is NOT currently wired into any Buildkite pipeline: it is absent from
+#   pipeline-java.yml, and the docker-build-verify.sh CI step was removed from
+#   pipeline-container-tests.yml (see the note there). Re-landing CI stamp coverage
+#   is tracked in that pipeline file. If you wire it into pipeline-java.yml, it must
+#   run AFTER the install that produces the jars (in-job, after `:maven: build`, so
+#   the jars and a warm ~/.m2 are on the same agent — a separate Buildkite step does
+#   NOT share the build agent's filesystem) — update this note when you do.
 #
 # SELF-TEST
 #   Point STAMP_ASSEMBLY_JAR (or STAMP_SHADED_JAR) at a jar with no stamp — or an
@@ -87,21 +97,39 @@ locate_one_jar() {
   printf '%s\n' "${matches[0]}"
 }
 
+# Report which Maven execution path this environment provides, so a failure can be
+# diagnosed precisely instead of guessed:
+#   host   — a JDK ('java') AND the mockserver mvnw are present on the host
+#   docker — no host JDK, but the `docker` CLI is available for the
+#            mockserver/mockserver:maven image fallback (run-in-docker.sh)
+#   none   — neither: Maven cannot be run at all
+mvn_mode() {
+  if command -v java >/dev/null 2>&1 && [ -x "$REACTOR_DIR/mvnw" ]; then
+    echo host
+  elif command -v docker >/dev/null 2>&1; then
+    echo docker
+  else
+    echo none
+  fi
+}
+
 # Run `mvn dependency:list` for the tcnative artifact and echo its raw stdout.
 # Uses host mvnw when a JDK is present; otherwise runs inside the pinned
 # mockserver/mockserver:maven image via run-in-docker.sh (CI agents run Maven in
 # that image, not on the raw agent). Output is captured from stdout — no
 # -DoutputFile — so it works identically whether or not the temp path is mounted
-# into a container.
+# into a container. stderr is deliberately NOT swallowed here: the caller redirects
+# it to a temp file so a Maven failure can be reported VERBATIM (exit code + real
+# stderr) rather than misdiagnosed as a missing image.
 mvn_tcnative_list() {
   local mvn=(-B --no-transfer-progress -pl mockserver-netty
              dependency:list -DincludeArtifactIds=netty-tcnative-boringssl-static)
   if command -v java >/dev/null 2>&1 && [ -x "$REACTOR_DIR/mvnw" ]; then
-    ( cd "$REACTOR_DIR" && ./mvnw "${mvn[@]}" ) 2>/dev/null
+    ( cd "$REACTOR_DIR" && ./mvnw "${mvn[@]}" )
   else
     "$REPO_ROOT/.buildkite/scripts/run-in-docker.sh" \
       -i mockserver/mockserver:maven -w /build/mockserver --cache maven \
-      -- ./mvnw "${mvn[@]}" 2>/dev/null
+      -- ./mvnw "${mvn[@]}"
   fi
 }
 
@@ -111,21 +139,44 @@ resolve_expected_version() {
     printf '%s\n' "$STAMP_EXPECTED_VERSION"
     return 0
   fi
-  local out version
-  if ! out="$(mvn_tcnative_list)"; then
-    echo "+++ :bangbang: 'mvn dependency:list' failed while resolving netty-tcnative (no host JDK and no usable mockserver/mockserver:maven image?) — cannot establish the authoritative version, failing closed" >&2
+
+  # Distinguish the genuinely-different failure modes instead of blaming the image
+  # for all of them (which sent a past investigation down the wrong path):
+  #   1. no way to run Maven at all (no host JDK AND no Docker fallback);
+  #   2. Maven RAN and FAILED — report its real exit code + stderr verbatim;
+  #   3. Maven ran and succeeded but produced no parseable version.
+  local mode
+  mode="$(mvn_mode)"
+  if [ "$mode" = "none" ]; then
+    echo "+++ :bangbang: cannot resolve the authoritative netty-tcnative version: no host JDK ('java' + mockserver/mvnw) AND no 'docker' for the mockserver/mockserver:maven fallback — there is no way to run Maven in this environment. (Set STAMP_EXPECTED_VERSION to bypass Maven resolution.) Failing closed" >&2
     return 1
   fi
+
+  local out err rc=0
+  err="$(mktemp)"
+  if out="$(mvn_tcnative_list 2>"$err")"; then
+    rm -f "$err"
+  else
+    rc=$?
+    {
+      echo "+++ :bangbang: Maven ran via the '${mode}' path but 'mvn dependency:list' FAILED (exit ${rc}) while resolving netty-tcnative — this is a Maven/reactor failure, NOT a missing image or missing jar. Maven's own stderr (last 20 lines):"
+      sed 's/^/    | /' "$err" | tail -20
+    } >&2
+    rm -f "$err"
+    return 1
+  fi
+
   # Strip ANSI, keep tcnative lines, pull the version token, dedupe. The base
   # artifact and every per-platform classifier share one bom-governed version, so
   # a healthy resolution yields exactly one distinct value.
+  local version
   version="$(printf '%s\n' "$out" \
     | sed -E 's/\x1b\[[0-9;]*m//g' \
     | grep 'netty-tcnative-boringssl-static' \
     | grep -oE '[0-9]+(\.[0-9]+)+\.(Final|RELEASE|GA)' \
     | sort -u)"
   if [ -z "$version" ]; then
-    echo "+++ :bangbang: could not parse any netty-tcnative version from 'mvn dependency:list' output — failing closed" >&2
+    echo "+++ :bangbang: Maven ran via the '${mode}' path and succeeded, but no netty-tcnative version could be parsed from its 'dependency:list' output — failing closed" >&2
     return 1
   fi
   if [ "$(printf '%s\n' "$version" | wc -l | tr -d ' ')" != "1" ]; then
