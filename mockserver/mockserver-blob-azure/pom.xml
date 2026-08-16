@@ -16,9 +16,26 @@
 
     <properties>
         <module.name>org.mockserver.blob.azure</module.name>
-        <!-- azure-storage-blob 12.x targets Java 8+, fully Java-17-compatible -->
-        <azure.storage.blob.version>12.29.1</azure.storage.blob.version>
+        <!-- azure-storage-blob 12.x targets Java 8+, fully Java-17-compatible.
+             12.35.0 pulls azure-core-http-netty 1.16.5 -> reactor-netty-http/core 1.2.18
+             (matched pair), which is >= 1.2.8, the release that fixes the reactor-netty
+             chained-redirect credential-leak advisory (12.29.1 shipped reactor-netty 1.0.48). -->
+        <azure.storage.blob.version>12.35.0</azure.storage.blob.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- Converge reactor-core: the Azure 12.35.0 stack is internally off-by-one on
+                 this transitive — azure-core 1.58.1 declares reactor-core 3.7.18 while
+                 reactor-netty-core 1.2.18 declares 3.7.19. Pin to 3.7.19 (the higher patch,
+                 backward compatible) so maven-enforcer DependencyConvergence stays green. -->
+            <dependency>
+                <groupId>io.projectreactor</groupId>
+                <artifactId>reactor-core</artifactId>
+                <version>3.7.19</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <!-- mockserver core SPI (compile scope) -->

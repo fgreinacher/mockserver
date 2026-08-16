@@ -62,6 +62,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shipped; the pin manages `log4j-api` only (`log4j-core` is not on the dependency tree).
 - Pinned `org.jsoup:jsoup` to `1.23.1` to resolve GHSA-pmhh-3w7g-xqp8. jsoup is used only at test scope (never shipped);
   the pin guards against a future transitive downgrade below the fixed version.
+- Upgraded `com.azure:azure-storage-blob` from `12.29.1` to `12.35.0` in the optional `mockserver-blob-azure` module to
+  resolve the `io.projectreactor.netty:reactor-netty-http` chained-redirect credential-leak advisory (fixed in
+  reactor-netty `1.2.8`). The old stack pulled `azure-core-http-netty:1.15.10`, which pins the vulnerable
+  reactor-netty `1.0.48` pair transitively; `12.35.0` pulls `azure-core-http-netty:1.16.5`, which advances both
+  `reactor-netty-http` and `reactor-netty-core` to `1.2.18` as a matched pair. This exposure surfaced only when
+  GitHub's Maven dependency-graph submission was restored (submission had silently frozen at a pre-move snapshot, so
+  the alert had been invisible to Dependabot). The whole Azure stack (azure-core `1.58.1`, reactor-netty `1.2.18`,
+  reactor-core `3.7.19`) remains Java-8 bytecode, so the Java 17 floor is preserved. A module-scoped
+  `dependencyManagement` pin of `io.projectreactor:reactor-core` to `3.7.19` reconciles the one internal off-by-one in
+  the 12.35.0 stack (azure-core declares `3.7.18`, reactor-netty declares `3.7.19`) so the enforcer
+  `DependencyConvergence` rule stays satisfied. The Docker-gated Azurite contract test moves to Azurite `3.36.0` with
+  `--skipApiVersionCheck`, since the newer SDK negotiates a Storage REST API version that runs ahead of every released
+  Azurite build.
 - Pinned three transitive dependencies to close vulnerability alerts that surfaced only when GitHub's Maven
   dependency-graph submission was restored (submission had silently frozen at a pre-move snapshot on 5 May, so these
   real exposures had been invisible to Dependabot). None required moving the direct dependency that introduces them:

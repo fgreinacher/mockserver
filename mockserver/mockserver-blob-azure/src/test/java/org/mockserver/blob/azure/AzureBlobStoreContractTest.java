@@ -23,7 +23,7 @@ import java.util.UUID;
  */
 public class AzureBlobStoreContractTest extends BlobStoreContract {
 
-    private static final String AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.33.0";
+    private static final String AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.36.0";
     private static final String TEST_CONTAINER_NAME = "mockserver-test";
 
     // Azurite well-known development credentials
@@ -47,7 +47,11 @@ public class AzureBlobStoreContractTest extends BlobStoreContract {
 
         azuriteContainer = new GenericContainer<>(AZURITE_IMAGE)
             .withExposedPorts(10000)
-            .withCommand("azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000")
+            // --skipApiVersionCheck: the azure-storage-blob SDK negotiates a Storage REST
+            // API version (e.g. 2026-06-06) that runs ahead of every released Azurite build,
+            // so the emulator otherwise rejects the client with HTTP 400 InvalidHeaderValue.
+            // Azurite recommends this flag for exactly this SDK-ahead-of-emulator case.
+            .withCommand("azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000", "--skipApiVersionCheck")
             .waitingFor(Wait.forListeningPort()
                 .withStartupTimeout(Duration.ofSeconds(30)));
 
