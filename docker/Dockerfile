@@ -141,6 +141,12 @@ EXPOSE 1080
 COPY --from=appcds-build /runtime /usr/lib/jvm/temurin25-trimmed
 COPY --from=appcds-build /mockserver-netty-jar-with-dependencies.jar /
 COPY --from=appcds-build /mockserver.jsa /
+# Native-TLS fallback for read-only-rootfs deployments (docker run --read-only):
+# normally /tmp is writable and Netty extracts the tcnative .so from the jar, so
+# this copy is dormant; under --read-only that extraction fails and System.loadLibrary
+# finding /usr/lib/libnetty_tcnative_linux_<arch>.so is the only thing keeping
+# BoringSSL native TLS alive. Inert for the shaded no-dependencies jar (relocated
+# tcnative symbols cannot bind this stock .so). Introduced by e4dd3a61b.
 COPY --from=intermediate META-INF/native/libnetty_tcnative_linux_*.so /usr/lib/
 
 # don't run MockServer as root

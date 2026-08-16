@@ -161,6 +161,22 @@ unzip -p mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependen
 
 The same classifier-convergence discipline applies to any dependency that ships OS/arch classifier variants: let its umbrella BOM govern the version rather than pinning it independently.
 
+#### The `COPY ... /usr/lib/` line and the `--read-only` guard
+
+After the `.so` is fetched/unzipped, every `docker/*/Dockerfile` also does:
+
+```dockerfile
+COPY --from=intermediate META-INF/native/libnetty_tcnative_linux_*.so /usr/lib/
+```
+
+This looks redundant — the assembly jar already bundles the per-platform natives — but it is a **native-TLS fallback for read-only-rootfs deployments** (`docker run --read-only`), introduced by `e4dd3a61b`:
+
+- **Default case (writable `/tmp`):** Netty's `NativeLibraryLoader` extracts the bundled native from the jar into `java.io.tmpdir` and loads it there. The `/usr/lib` copy is **never touched** — it is dormant.
+- **`--read-only` case:** extraction to a read-only `/tmp` fails, so BoringSSL native TLS survives **only** because `System.loadLibrary` finds `/usr/lib/libnetty_tcnative_linux_<arch>.so` on the default `java.library.path` (`…:/usr/lib`). Remove the copy and those deployments **silently** downgrade to the JDK TLS provider — MockServer still serves TLS, so nothing looks broken.
+- **Inert for the shaded `no-dependencies` jar:** that jar relocates tcnative to `shaded_package.io.netty.internal.tcnative`, while the stock `/usr/lib` `.so` exports `Java_io_netty_…` symbols, so it cannot satisfy the relocated classes. Only the **assembly** jar-with-dependencies (which keeps `io.netty.*`) can use it.
+
+**What guards it:** `.buildkite/scripts/steps/docker-build-verify.sh`'s `assert_native_provider_readonly` starts the built image with `docker run --read-only` (deliberately **no** `--tmpfs /tmp`) and asserts `OpenSsl.isAvailable=true`. This is the *only* check that exercises the copy's purpose: `assert_so_present` merely confirms the file exists (it cannot tell a working `.so` from a broken one), and the plain `assert_native_provider` runs on a writable `/tmp` where the jar-bundled native masks a broken `/usr/lib` copy. Proven by replacing the image's `/usr/lib` `.so` with an empty file: under `--read-only` the probe goes red (`isAvailable=false`, "Failed to load any of the given libraries"), while the writable-`/tmp` run stays green — exactly the silent regression the guard exists to catch. **Do not add `--tmpfs /tmp` to that probe** — it would re-enable jar extraction and defeat the test.
+
 ### Quick Reference
 
 All Maven commands run from within the `mockserver/` directory:

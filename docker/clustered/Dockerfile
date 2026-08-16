@@ -71,7 +71,12 @@ EXPOSE 1080
 # copy in the main fat jar
 COPY mockserver-netty-jar-with-dependencies.jar /
 
-# copy in netty-tcnative native library for native TLS (BoringSSL)
+# Native-TLS fallback for read-only-rootfs deployments (docker run --read-only):
+# normally /tmp is writable and Netty extracts the tcnative .so from the jar, so
+# this copy is dormant; under --read-only that extraction fails and System.loadLibrary
+# finding /usr/lib/libnetty_tcnative_linux_<arch>.so is the only thing keeping
+# BoringSSL native TLS alive. Inert for the shaded no-dependencies jar (relocated
+# tcnative symbols cannot bind this stock .so). Introduced by e4dd3a61b.
 COPY --from=tcnative META-INF/native/libnetty_tcnative_linux_*.so /usr/lib/
 
 # copy in the clustered state backend libraries (Infinispan, JGroups, etc.)
