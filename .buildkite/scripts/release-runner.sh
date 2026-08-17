@@ -32,7 +32,11 @@ export NEXT_VERSION="${NEXT_VERSION:-$(get_meta next-version)}"
 export RELEASE_TYPE="${RELEASE_TYPE:-$(get_meta release-type)}"
 export CREATE_VERSIONED_SITE="${CREATE_VERSIONED_SITE:-$(get_meta create-versioned-site)}"
 [[ -z "$RELEASE_TYPE" ]] && export RELEASE_TYPE="full"
-[[ -z "$CREATE_VERSIONED_SITE" ]] && export CREATE_VERSIONED_SITE="no"
+# Default to `auto`, not `no`: the release scripts derive the correct value
+# from RELEASE_VERSION vs OLD_VERSION. A hardcoded `no` here would force a wrong
+# value on a major/minor release (and silently overwrite the previous version's
+# archived docs site).
+[[ -z "$CREATE_VERSIONED_SITE" ]] && export CREATE_VERSIONED_SITE="auto"
 
 # Buildkite triggers real releases by default. The operator can flip the
 # "Dry Run?" toggle in the input step to validate the pipeline end-to-end

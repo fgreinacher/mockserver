@@ -57,7 +57,7 @@ The full contract:
 | `NEXT_VERSION` | no | The next SNAPSHOT (defaults to RELEASE_VERSION patch+1 -SNAPSHOT) |
 | `OLD_VERSION` | no | Previous release (auto-derived from latest `mockserver-X.Y.Z` tag) |
 | `RELEASE_TYPE` | no | `full` / `maven-only` / `docker-only` / `post-maven` (default: full) |
-| `CREATE_VERSIONED_SITE` | no | `yes` / `no` (default: no) |
+| `CREATE_VERSIONED_SITE` | no | `auto` (default) / `yes` / `no`. `auto` derives it from RELEASE_VERSION vs OLD_VERSION (`yes` major/minor, `no` patch); an explicit `yes`/`no` must agree or the run fails closed (a major/minor + `no` would overwrite the previous version's docs archive) |
 | `DRY_RUN` | no | `true` / `false` (default: false in CI, true locally) |
 | `AWS_PROFILE` | no | Used outside CI for Secrets Manager lookup |
 

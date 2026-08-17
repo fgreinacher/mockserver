@@ -27,9 +27,16 @@ steps:
           - { label: "Post-Maven (skip Central)",    value: "post-maven" }
       - select: "Create Versioned Site?"
         key: "create-versioned-site"
-        default: "no"
+        # `auto` (the default) derives the correct value from the release version
+        # vs the previous tag: yes for a major/minor release, no for a patch.
+        # The explicit yes/no options are honoured only as a confirmation — the
+        # release scripts fail closed if the choice contradicts the version
+        # (a major/minor + no silently overwrites the previous version's docs
+        # archive, which is why this must not be a free operator choice).
+        default: "auto"
         options:
-          - { label: "No", value: "no" }
+          - { label: "Auto (derive from version — recommended)", value: "auto" }
+          - { label: "No (patch release)", value: "no" }
           - { label: "Yes (major/minor release)", value: "yes" }
       - select: "Dry Run?"
         key: "dry-run"

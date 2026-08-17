@@ -44,10 +44,10 @@ if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT$ ]]; then
   log_error "Current pom version must be X.Y.Z-SNAPSHOT, got: $CURRENT_VERSION"
   exit 1
 fi
-if [[ "$CREATE_VERSIONED_SITE" == "yes" && "${RELEASE_VERSION%.*}" == "${OLD_VERSION%.*}" ]]; then
-  log_error "CREATE_VERSIONED_SITE=yes only valid for major or minor releases"
-  exit 1
-fi
+# CREATE_VERSIONED_SITE is derived and validated (in BOTH directions) by
+# require_release_inputs above — a major/minor release with =no, and a patch
+# release with =yes, both fail closed there, before this script tags or pushes.
+# No additional guard is needed here.
 if git -C "$REPO_ROOT" rev-parse "mockserver-$RELEASE_VERSION" >/dev/null 2>&1; then
   log_error "Tag mockserver-$RELEASE_VERSION already exists"
   exit 1

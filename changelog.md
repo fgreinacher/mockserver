@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 ### Fixed
+- The release pipeline can no longer silently overwrite the previous version's archived documentation site. Whether a
+  release creates a new versioned subdomain (`X-Y.mock-server.com`) is fully determined by whether it is a major/minor
+  release, but it was a free operator dropdown (`create-versioned-site`) defaulting to `no`. On the 7.6.0 release that
+  default was left in place, so terraform's `latest_version` still pointed `main` at the previous version's bucket and
+  the docs publish (`aws s3 sync --delete`) destroyed the `7-5.mock-server.com` archive. The value is now **derived**
+  from `RELEASE_VERSION` vs the previous tag in `require_release_inputs` (the single input-validation chokepoint every
+  release script runs, before `prepare.sh` tags or pushes); the Buildkite input defaults to `auto`, and an explicit
+  `yes`/`no` is honoured only as a confirmation that must agree with the derived value or the run **fails closed**.
+  This makes both destructive mistakes impossible: a major/minor release with `no` (overwrites the previous archive)
+  and a patch release with `yes` (spurious subdomain).
 - Removed a live-internet dependency from the `mockserver-core` unit tests. `ExpectationSerializerTest`
   (`shouldAllowSingleOpenAPIObjectForArray` and `shouldAllowMixedExpectationTypesForArray`) referenced the bundled
   petstore OpenAPI spec via a `https://raw.githubusercontent.com/...` URL; because `deserializeArray()` actually loads

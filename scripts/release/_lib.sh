@@ -124,10 +124,49 @@ require_release_inputs() {
     *) log_error "RELEASE_TYPE must be full|maven-only|docker-only|post-maven, got: $RELEASE_TYPE"; exit 1 ;;
   esac
 
-  CREATE_VERSIONED_SITE="${CREATE_VERSIONED_SITE:-no}"
+  # Whether to stand up a new versioned-site subdomain (X-Y.mock-server.com) is
+  # NOT an operator decision — it is fully determined by whether this is a
+  # major/minor release, i.e. whether RELEASE_VERSION's major.minor differs from
+  # OLD_VERSION's major.minor. Getting it wrong is silently destructive in BOTH
+  # directions:
+  #   - major/minor + no  -> `main` still resolves to the PREVIOUS version's
+  #                          bucket (terraform latest_version not advanced), so
+  #                          website.sh's `aws s3 sync --delete` OVERWRITES the
+  #                          previous release's archived docs. This is what
+  #                          happened on the 7.6.0 release: 7-5.mock-server.com
+  #                          was destroyed, and nothing failed.
+  #   - patch + yes       -> a spurious X-Y subdomain + CloudFront distribution
+  #                          is created for a version that shares an existing
+  #                          site.
+  # So we DERIVE the correct value here (the single chokepoint every release
+  # script funnels through, before prepare.sh tags/pushes anything) rather than
+  # trust the dropdown. An explicit operator value is honoured only as a
+  # confirmation: if it CONTRADICTS the derived value we fail closed. An empty
+  # value or the literal `auto` (the pipeline default) means "use the derived
+  # value".
+  local expected_versioned_site="no"
+  if [[ "${RELEASE_VERSION%.*}" != "${OLD_VERSION%.*}" ]]; then
+    expected_versioned_site="yes"
+  fi
+  CREATE_VERSIONED_SITE="${CREATE_VERSIONED_SITE:-auto}"
   case "$CREATE_VERSIONED_SITE" in
-    yes|no) ;;
-    *) log_error "CREATE_VERSIONED_SITE must be yes|no, got: $CREATE_VERSIONED_SITE"; exit 1 ;;
+    auto)
+      CREATE_VERSIONED_SITE="$expected_versioned_site" ;;
+    yes|no)
+      if [[ "$CREATE_VERSIONED_SITE" != "$expected_versioned_site" ]]; then
+        local kind
+        [[ "$expected_versioned_site" == "yes" ]] && kind="major/minor" || kind="patch"
+        log_error "CREATE_VERSIONED_SITE=$CREATE_VERSIONED_SITE contradicts the release: $OLD_VERSION -> $RELEASE_VERSION is a $kind release, which requires CREATE_VERSIONED_SITE=$expected_versioned_site."
+        if [[ "$expected_versioned_site" == "yes" ]]; then
+          log_error "  A major/minor release with =no leaves 'main' pointing at the previous version's bucket, so the docs publish OVERWRITES the previous release's archived site."
+        else
+          log_error "  A patch release with =yes creates a spurious versioned subdomain for a version that shares an existing site."
+        fi
+        log_error "  Leave the value as 'auto' (recommended) to derive it automatically, or set it to $expected_versioned_site."
+        exit 1
+      fi
+      ;;
+    *) log_error "CREATE_VERSIONED_SITE must be yes|no|auto, got: $CREATE_VERSIONED_SITE"; exit 1 ;;
   esac
 
   CURRENT_VERSION="$(current_project_version 2>/dev/null || echo "")"

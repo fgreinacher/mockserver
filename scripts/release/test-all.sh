@@ -70,10 +70,17 @@ declare -a TESTS=(
   "$SCRIPT_DIR/components/github.sh:github"
   # Limit to one platform so the dry-run doesn't download every target JDK.
   "$SCRIPT_DIR/components/binary.sh:binary:BINARY_TARGETS=linux/x86_64"
-  "$SCRIPT_DIR/components/versioned-site.sh:versioned-site"
-  # Exercise the active path of versioned-site (not just the CREATE_VERSIONED_SITE=no
-  # early-exit). Reuse the same script with a different name so logs separate.
-  "$SCRIPT_DIR/components/versioned-site.sh:versioned-site-active:CREATE_VERSIONED_SITE=yes"
+  # Patch release: CREATE_VERSIONED_SITE derives to `no`, exercising the
+  # read-only "seed downstream outputs" path (no new site created). RELEASE and
+  # OLD are pinned to a self-consistent patch pair so this stays a patch
+  # regardless of the repo's latest tag (the derivation compares major.minor).
+  "$SCRIPT_DIR/components/versioned-site.sh:versioned-site:RELEASE_VERSION=50.0.1 OLD_VERSION=50.0.0"
+  # Major/minor release: CREATE_VERSIONED_SITE=yes agrees with the derived
+  # value, exercising the active new-site path. Pinned to a major/minor pair so
+  # it stays major/minor vs OLD (and does not trip the fail-closed agreement
+  # check) independent of repo tags. Reuse the same script under a different
+  # name so logs separate.
+  "$SCRIPT_DIR/components/versioned-site.sh:versioned-site-active:RELEASE_VERSION=50.1.0 OLD_VERSION=50.0.0 CREATE_VERSIONED_SITE=yes"
 )
 
 # Heavy tests touch Maven/JVM downloads which take minutes.
@@ -194,6 +201,40 @@ for test in "${TESTS[@]}"; do
   IFS=":" read -r script name extra_env <<< "$test"
   run_one "$script" "$name" "${extra_env:-}"
 done
+
+# ── Fail-closed assertions ────────────────────────────────────────────
+# run_one can only express "must exit 0", so the CONTRADICTION guard in
+# require_release_inputs has no coverage there — and that guard is the whole
+# defence against the 7.6.0 incident, where create-versioned-site=no on a minor
+# release let the docs publish overwrite the previous version's archive in
+# place (main_bucket_name follows latest_version, and website.sh syncs with
+# --delete). A control with no test is how that shipped, so assert it directly:
+# CREATE_VERSIONED_SITE must be REJECTED when it contradicts the derived value.
+assert_inputs_rejected() {
+  local label="$1" rv="$2" ov="$3" cvs="$4"
+  if env -u CREATE_VERSIONED_SITE \
+       RELEASE_VERSION="$rv" NEXT_VERSION="99.99.99-SNAPSHOT" OLD_VERSION="$ov" \
+       RELEASE_TYPE=full CREATE_VERSIONED_SITE="$cvs" DRY_RUN=true \
+       bash -c 'source "'"$SCRIPT_DIR"'/_lib.sh" >/dev/null 2>&1; require_release_inputs' \
+       >/dev/null 2>&1; then
+    results_fail+=("$label (accepted a contradictory CREATE_VERSIONED_SITE)")
+    echo "✗ FAIL  $label — expected rejection, got exit 0"
+  else
+    results_pass+=("$label")
+    echo "✓ PASS  $label (rejected, as required)"
+  fi
+}
+
+if [[ -z "$ONLY" || "$ONLY" == *"input-validation"* ]]; then
+  echo ""
+  echo "────────────────────────────────────────────────────────────"
+  echo "▶  input-validation (fail-closed guards)"
+  echo "────────────────────────────────────────────────────────────"
+  assert_inputs_rejected "reject minor+no (the 7.6.0 incident)" "7.6.0" "7.5.0" "no"
+  assert_inputs_rejected "reject major+no"                      "8.0.0" "7.9.0" "no"
+  assert_inputs_rejected "reject patch+yes"                     "7.6.1" "7.6.0" "yes"
+  assert_inputs_rejected "reject unknown value"                 "7.6.0" "7.5.0" "maybe"
+fi
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"

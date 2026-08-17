@@ -11,10 +11,10 @@ The end-to-end checklist a release manager follows. **Use this every release.** 
 Run the `/prepare-release` slash command from this repo. It inspects `changelog.md`, `mockserver/pom.xml`, and the latest `mockserver-X.Y.Z` git tag, then recommends:
 
 - `release-version` (e.g. `7.6.0`)
-- `next-version` (e.g. `6.1.1-SNAPSHOT`)
-- `old-version` (e.g. `6.0.0` — auto-derived, you don't need to type it on the form)
+- `next-version` (e.g. `7.6.1-SNAPSHOT`)
+- `old-version` (e.g. `7.5.0` — auto-derived, you don't need to type it on the form)
 - `release-type` (almost always `full`)
-- `create-versioned-site` (`yes` for major/minor, `no` for patch)
+- `create-versioned-site` — leave at the default **`auto`**. The release scripts derive the correct value from the release version vs the previous tag (`yes` for a major/minor release, `no` for a patch), so you no longer have to pick it. If you *do* set an explicit `yes`/`no`, it is treated only as a confirmation: the pipeline **fails closed** (before it tags or pushes) when your choice contradicts the version. This guard exists because a major/minor release with `no` silently overwrites the previous version's archived docs site — the 7.6.0 release destroyed `7-5.mock-server.com` this way.
 
 The skill applies SemVer rules:
 
@@ -93,7 +93,7 @@ Versioned Site and Update Version References run first (sequentially), then the 
 | Packagist — mockserver-testcontainers (PHP, soft) | https://packagist.org/packages/mock-server/mockserver-testcontainers |
 | GitHub Release | https://github.com/mock-server/mockserver/releases |
 | Helm chart | https://www.mock-server.com/index.yaml — should list the new version |
-| Versioned docs site (major/minor only) | `https://<release-version-with-dash>.mock-server.com` — e.g. `6-1.mock-server.com` |
+| Versioned docs site (major/minor only) | `https://<release-version-with-dash>.mock-server.com` — e.g. `7-6.mock-server.com`. Verify it serves the **new** version and that the **previous** version's subdomain still serves the **old** one; `latest_version` in `terraform/website/terraform.tfvars` decides which bucket `main` publishes into, so a missed versioned-site step overwrites the previous archive in place |
 | Website | https://www.mock-server.com — version pin in the footer should match |
 | Homebrew/homebrew-core (a few hours later — bumped by BrewTestBot) | https://formulae.brew.sh/api/formula/mockserver.json → `.versions.stable` should equal `<release-version>` |
 | Homebrew tap (`mock-server/tap`) | `brew info mock-server/tap/mockserver` — version should equal `<release-version>` |
@@ -282,11 +282,13 @@ Buildkite outage on release day? No problem. From a developer machine with `dock
 # Authenticate to AWS (for Secrets Manager + S3)
 aws sso login --profile mockserver-build
 
-# Run the same scripts the CI would have run
+# Run the same scripts the CI would have run.
+# CREATE_VERSIONED_SITE is left unset — it defaults to `auto`, which the scripts
+# derive from the version (yes for a major/minor release, no for a patch). Set it
+# explicitly only if you want the extra confirmation cross-check.
 RELEASE_VERSION=7.6.0 \
-NEXT_VERSION=6.1.1-SNAPSHOT \
+NEXT_VERSION=7.6.1-SNAPSHOT \
 RELEASE_TYPE=full \
-CREATE_VERSIONED_SITE=yes \
 ./scripts/release/release.sh --execute
 ```
 
@@ -312,7 +314,7 @@ Release scripts (`scripts/release/*`) read these env vars:
 | `NEXT_VERSION` | no | `RELEASE_VERSION` patch+1 -SNAPSHOT | Next dev version |
 | `OLD_VERSION` | no | latest `mockserver-X.Y.Z` tag | Previous release |
 | `RELEASE_TYPE` | no | `full` | One of: full, maven-only, docker-only, post-maven |
-| `CREATE_VERSIONED_SITE` | no | `no` | `yes` for major/minor releases |
+| `CREATE_VERSIONED_SITE` | no | `auto` | `auto` derives it (`yes` major/minor, `no` patch); an explicit `yes`/`no` must agree with the version or the run fails closed before tagging |
 | `DRY_RUN` | no | `true` | `false` to actually publish |
 | `AWS_PROFILE` | no | (not set) | Used outside CI for Secrets Manager auth |
 
@@ -430,7 +432,7 @@ RELEASE_VERSION=7.6.0 ./scripts/release/components/npm.sh --execute
 # Pull the same env vars Buildkite was using (or set them by hand) and run
 # the same script.
 RELEASE_VERSION=7.6.0 \
-NEXT_VERSION=6.1.1-SNAPSHOT \
+NEXT_VERSION=7.6.1-SNAPSHOT \
 ./scripts/release/components/maven-central.sh --dry-run
 ```
 
