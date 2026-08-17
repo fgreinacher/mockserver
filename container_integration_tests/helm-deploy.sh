@@ -14,7 +14,31 @@ function start-up-k8s() {
   if k3d cluster list 2>&1 | grep -qw "${CLUSTER_NAME}"; then
     printMessage "Found existing cluster"
   else
-    runCommand "k3d cluster create --config ${SCRIPT_DIR}/k3d-config.yaml"
+    # -------------------------------------------------------------------------
+    # Local-only TLS CA injection into the in-node containerd trust store
+    # (opt-in via K3D_LOCAL_CA_BUNDLE; unset in CI, so the created command is
+    # byte-identical there). Mirrors LOCAL_DOCKER_CA_BUNDLE in
+    # .buildkite/scripts/run-in-docker.sh.
+    #
+    # Behind a corporate TLS-inspection proxy the host Docker daemon may already
+    # trust the corporate root (so `k3d cluster create` pulls the k3s node image
+    # fine), but containerd INSIDE the k3s node has its OWN trust store at
+    # /etc/ssl/certs/ca-certificates.crt (public roots only). Without the
+    # corporate root there it cannot pull even the rancher/mirrored-pause sandbox
+    # image, so every pod fails at sandbox creation with
+    # "x509: certificate signed by unknown authority". Overmounting the COMBINED
+    # bundle (public roots + corporate root) as containerd's entire trust store
+    # is the fix. Warn (do not fail) if the variable is set but the file is
+    # missing, matching run-in-docker.sh.
+    local ca_volume=""
+    if [[ -n "${K3D_LOCAL_CA_BUNDLE:-}" ]]; then
+      if [[ -f "${K3D_LOCAL_CA_BUNDLE}" ]]; then
+        ca_volume=" --volume ${K3D_LOCAL_CA_BUNDLE}:/etc/ssl/certs/ca-certificates.crt@server:*"
+      else
+        printMessage "WARNING: K3D_LOCAL_CA_BUNDLE='${K3D_LOCAL_CA_BUNDLE}' not found -- skipping in-node CA injection"
+      fi
+    fi
+    runCommand "k3d cluster create --config ${SCRIPT_DIR}/k3d-config.yaml${ca_volume}"
   fi
 
   runCommand "k3d image import --cluster ${CLUSTER_NAME} mockserver/mockserver:integration_testing"

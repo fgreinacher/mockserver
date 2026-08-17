@@ -101,6 +101,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files must stay in lockstep (the PKCS#1 and PKCS#8 CA private keys are the same key, that key matches the CA
   certificate, and the two committed copies of the CA certificate remain byte-identical). Certificate expiry had
   previously only ever been discovered by the build going red.
+- A local-only, opt-in `K3D_LOCAL_CA_BUNDLE` hook in `container_integration_tests/helm-deploy.sh` so the Helm
+  integration suite's k3d cluster can be stood up on a developer machine behind a corporate TLS-inspection proxy.
+  When set, `start-up-k8s` overmounts the given **combined** CA bundle (system/public roots + corporate root) as the
+  k3s node's containerd trust store at cluster-create time; when unset the `k3d cluster create` command is
+  byte-identical to before, so CI (which never sets it) is unchanged. Warns rather than fails if the variable is set
+  but the file is missing, mirroring `LOCAL_DOCKER_CA_BUNDLE` in `.buildkite/scripts/run-in-docker.sh`. This unblocks
+  the three Kubernetes test-coverage gaps that were previously (and incorrectly) deferred as impossible behind the
+  proxy: the host Docker daemon already trusts the corporate root so the node image pulls, but the *in-node*
+  containerd has its own public-roots-only trust store and otherwise cannot pull even the `rancher/mirrored-pause`
+  sandbox image (every pod fails sandbox creation with `x509: certificate signed by unknown authority`). See
+  `docs/operations/build-system.md` → *Local Development Behind a Corporate TLS-Inspection Proxy*.
 
 ### Changed
 - The `docker_compose_war_tomcat` container integration test (MockServer deployed as a WAR into Tomcat 10.1) now
