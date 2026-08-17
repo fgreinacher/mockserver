@@ -9,8 +9,10 @@
 #   2. Clear expectations on pod A  -> pod B also returns 404
 #   3. Times.exactly(3) fleet-wide  -> exactly 3 total matches across pods
 #
-# Non-blocking: uses logTestResultNonBlocking so a failure does not red
-# the pipeline on day one (mirrors logging.sh pattern).
+# Blocking: uses logTestResult so a genuine cluster-formation or state-
+# convergence failure reds the suite. The harness gates this case on the
+# -clustered image being present (SKIP otherwise) and imports it
+# deterministically, so a failure here is a real clustering regression.
 
 set -euo pipefail
 
@@ -26,6 +28,22 @@ KUBE_CONTEXT="k3d-mockserver"
 
 printMessage "Start: \"${TEST_CASE}\""
 
+# Ensure the target namespace is fully ABSENT before deploying. A prior run (or
+# a Buildkite auto-retry) can leave it Terminating, and `helm install` into a
+# terminating namespace fails with "namespace ... is being terminated". Deleting
+# with --wait=false and NOT waiting is what makes back-to-back runs flaky — the
+# exact failure that must not red a now-blocking test spuriously. Wait it out.
+function ensure_namespace_absent() {
+  local ns="$1" attempts=40
+  kubectl --context "${KUBE_CONTEXT}" delete namespace "${ns}" --wait=false 2>/dev/null || true
+  for _ in $(seq 1 "${attempts}"); do
+    kubectl --context "${KUBE_CONTEXT}" get namespace "${ns}" >/dev/null 2>&1 || return 0
+    sleep 3
+  done
+  printFailureMessage "namespace ${ns} still present after waiting — cannot deploy cleanly"
+  return 1
+}
+
 function wait_for_pods_ready() {
   local attempts=60
   for i in $(seq 1 "${attempts}"); do
@@ -33,7 +51,7 @@ function wait_for_pods_ready() {
     ready=$(kubectl --context "${KUBE_CONTEXT}" -n "${NAMESPACE}" get pods \
       -l "app=mockserver,release=${RELEASE_NAME}" \
       -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null \
-      | grep -c "True" || echo "0")
+      | grep -c "True" || true)
     if [[ "${ready}" -ge "${REPLICAS}" ]]; then
       printMessage "All ${REPLICAS} pods are Ready"
       return 0
@@ -171,8 +189,13 @@ function clear_on_pod() {
 function integration_test() {
   local TEST_EXIT_CODE=0
 
-  # Deploy with clustering enabled
+  # Deploy with clustering enabled (after guaranteeing a clean namespace)
   printMessage "Deploying ${REPLICAS} clustered replicas"
+  ensure_namespace_absent "${NAMESPACE}" || TEST_EXIT_CODE=1
+  if [[ "${TEST_EXIT_CODE}" -ne 0 ]]; then
+    logTestResult "1" "${TEST_CASE}"
+    return 1
+  fi
   helm --kube-context "${KUBE_CONTEXT}" upgrade --install \
     --namespace "${NAMESPACE}" --create-namespace \
     --set replicaCount="${REPLICAS}" \
@@ -258,16 +281,22 @@ function integration_test() {
       fi
     done
 
+    # The 6 requests are issued SEQUENTIALLY (one short-lived port-forward + one
+    # curl at a time), so there is no client-side concurrency race. A correct
+    # fleet-wide Times.exactly(3) — an atomic decrement over the shared Infinispan
+    # counter — therefore yields EXACTLY 3 matches deterministically, regardless
+    # of the A/B interleave or replication lag: an un-replicated early miss on a
+    # pod consumes no counter slot, so a later request still picks it up (proven
+    # by construction — pod A alone serves all 3 before its counter reaches 0).
+    # Hence there is NO legitimate +/-1 slop here; a tolerance would mask exactly
+    # the accounting bug this test exists to catch. 6 matches => the counter is
+    # NOT shared (per-pod counting); 2 or 4 => a genuine off-by-one in fleet-wide
+    # remainingTimes accounting. Only exactly 3 passes.
     if [[ "${match_count}" -eq 3 ]]; then
       printPassMessage "Test 3 PASSED: Times.exactly(3) yielded exactly 3 matches across fleet"
     else
-      # Allow +/-1 tolerance for cluster timing
-      if [[ "${match_count}" -ge 2 && "${match_count}" -le 4 ]]; then
-        printMessage "Test 3 SOFT PASS: Times.exactly(3) yielded ${match_count} matches (tolerance 2-4)"
-      else
-        printFailureMessage "Test 3 FAILED: Times.exactly(3) yielded ${match_count} matches"
-        TEST_EXIT_CODE=1
-      fi
+      printFailureMessage "Test 3 FAILED: Times.exactly(3) yielded ${match_count} matches (expected exactly 3; 6 => counter not shared/per-pod, 2 or 4 => off-by-one accounting)"
+      TEST_EXIT_CODE=1
     fi
   fi
 
@@ -285,9 +314,12 @@ function integration_test() {
   helm --kube-context "${KUBE_CONTEXT}" -n "${NAMESPACE}" delete "${RELEASE_NAME}" 2>/dev/null || true
   kubectl --context "${KUBE_CONTEXT}" delete namespace "${NAMESPACE}" --wait=false 2>/dev/null || true
 
-  # Non-blocking: warn but do not red the pipeline
-  logTestResultNonBlocking "${TEST_EXIT_CODE}" "${TEST_CASE}"
-  return 0
+  # Blocking: a genuine cluster-formation or convergence failure reds the suite.
+  # The harness only reaches this case when the -clustered image is present (it
+  # records a SKIP otherwise), and imports it deterministically first, so a
+  # failure here is a real regression in clustering, not missing-image noise.
+  logTestResult "${TEST_EXIT_CODE}" "${TEST_CASE}"
+  return "${TEST_EXIT_CODE}"
 }
 
 integration_test

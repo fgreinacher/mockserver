@@ -82,6 +82,8 @@ helm helm_remote_host_and_port
 helm helm_inline_config
 helm helm_configmap_injection
 helm helm_mockserver_config_chart
+helm helm_sidecar_injection
 
 # ---- helm_clustered: clustered-state convergence e2e (SKIP_CLUSTERED_TEST) ----
 helm_clustered helm_clustered_convergence
+helm_clustered helm_jgroups_dns_ping

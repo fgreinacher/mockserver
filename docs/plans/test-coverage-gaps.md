@@ -4,26 +4,66 @@ Five open gaps. Distilled from the 2026-07-21 coverage audit, re-verified agains
 `master` on 2026-08-17 (81 of the original 93 were already closed), then worked down
 from twelve to five on 2026-08-17.
 
-**All five that remain are blocked or judged not worth doing** — none is simply
-outstanding work. Each says why below, so nobody re-opens them without new information.
+**Two are judged not worth doing; the three Kubernetes gaps are now CLOSED** — each has a
+live k3d test that was proven red by degrading the behaviour it names before being trusted
+green. Each says why below, so nobody re-opens the deferred ones without new information.
 
-## Blocked on a Kubernetes cluster
+## Kubernetes gaps — CLOSED (2026-08-17)
 
-These three share one blocker: they need a real k3d cluster, which the corporate
-TLS-inspection proxy prevents standing up locally. They are CI-only work and cannot be
-verified from a developer machine behind the proxy.
+~~Blocked on a Kubernetes cluster.~~ **The proxy blocker was wrong and is now resolved.**
+These three needed a real k3d cluster, which was believed impossible to stand up locally
+behind the corporate TLS-inspection proxy. It is not: a k3d cluster stands up and the full
+Helm suite passes from a developer machine behind the proxy. All three now ship as live
+`container_integration_tests/helm_*` cases.
 
-**1. `helm_clustered_convergence` is non-blocking.** `container_integration_tests/.../integration_tests.sh`
-still runs it as `non_blocking || true`. A one-line flip once the k3d image-import race is
-stable — the cheapest of the three, and the one to do first.
+The misdiagnosis was a **two-trust-stores** trap. The *host* Docker daemon already trusts
+the corporate root, so `k3d cluster create` pulls the k3s node image fine — which made
+"Docker works, so k3d works" look true. But **containerd *inside* the k3s node has its own
+trust store** (`/etc/ssl/certs/ca-certificates.crt`, public roots only); without the
+corporate root there it cannot pull even the `rancher/mirrored-pause` sandbox image, so
+every pod fails at sandbox creation with `x509: certificate signed by unknown authority`.
+The fix — overmounting the **combined** bundle as containerd's trust store when the cluster
+is created — is now wired into `helm-deploy.sh`'s `start-up-k8s` behind the opt-in,
+CI-inert `K3D_LOCAL_CA_BUNDLE` env var (see
+[docs/operations/build-system.md](../operations/build-system.md#local-development-behind-a-corporate-tls-inspection-proxy)).
 
-**2. No live sidecar-injection test for the k8s MutatingWebhook.** No
-`container_integration_tests/helm_*` case references webhook, inject or sidecar, so the
-admission path ships unproven.
+**1. `helm_clustered_convergence` — now BLOCKING.** Flipped from `non_blocking || true` to a
+blocking `test "helm_clustered_convergence"`. The flip was earned, not asserted: the
+swallowed `k3d image import ... 2>/dev/null || true` (the stated "image-import race") is
+replaced by `import_image_into_k3d`, which imports deterministically and asserts the image is
+present in the node's containerd (via `crictl`) before deploying; and the real back-to-back
+flake — `helm install` into a still-`Terminating` namespace left by a prior run/retry — is
+fixed by a pre-deploy `ensure_namespace_absent` guard. Characterised over 6 local runs: 5
+green, the 1 failure was the namespace-termination collision (now fixed), after which 3
+back-to-back runs were green. Fails loudly on a genuinely broken deploy (proven: a deploy
+that could not proceed recorded `Failed: helm_clustered_convergence`).
 
-**3. JGroups `DNS_PING` discovery is unproven.** `JGroupsKubernetesStackTest` only parses
-XML, and `ClusteredTwoNodeTest` uses loopback TCP/MPING. The Kubernetes discovery path
-itself is never exercised.
+**2. Live sidecar-injection test — `helm_sidecar_injection`.** Deploys the chart with
+`webhook.enabled=true` (self-signed TLS bootstrap + handler Deployment + MWC), drives a real
+labelled pod CREATE through the admission path, and asserts the resulting pod **spec** carries
+the injected `mockserver-sidecar` container, `mockserver-iptables-init` init container, and
+`mockserver.org/injected` annotation — plus a negative-control pod (no annotation) that must
+**not** be injected. Proven red by disabling the webhook (deleting the MWC): the annotated
+pod then has only `[app]`.
+
+**3. JGroups `DNS_PING` discovery — `helm_jgroups_dns_ping`.** Deploys 2 clustered replicas
+and asserts the headless Service is truly headless (`clusterIP: None`), that `JGROUPS_DNS_QUERY`
+is wired to its FQDN, that it resolves to ≥2 pod IPs (Endpoints + an in-cluster `nslookup`),
+that a ≥2-node JGroups view forms (the anti "two clusters of one" guard), and that state
+converges across the pods. Chosen as a k3d/helm case rather than Java Testcontainers because
+DNS_PING genuinely requires Kubernetes DNS + a headless Service, which a JVM/Testcontainers
+harness cannot provide without re-implementing k8s DNS. Proven red by deleting the headless
+Service and rolling the pods: both then report a 1-node view and state does not converge.
+
+### CI reach (important caveat)
+
+All three depend on Java-built images — the `-clustered` variant and the webhook handler —
+that the current CI helm step (`helm-integration-test.sh`, `SKIP_JAVA_BUILD=true`, no JDK)
+does **not** build. So in CI today they record an honest **SKIP** (not a pass, not a warn),
+gated on `clustered_image_available` / `webhook_image_available`; they run **blocking** only
+where those images exist (local dev, or a future CI step that builds them). Making them run
+green in CI requires extending the helm CI step to build the `-clustered` and
+`mockserver-webhook` images — tracked separately as it touches `.buildkite/**`.
 
 ## Judged not worth doing
 

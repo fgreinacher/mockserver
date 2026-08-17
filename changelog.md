@@ -124,8 +124,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   containerd has its own public-roots-only trust store and otherwise cannot pull even the `rancher/mirrored-pause`
   sandbox image (every pod fails sandbox creation with `x509: certificate signed by unknown authority`). See
   `docs/operations/build-system.md` → *Local Development Behind a Corporate TLS-Inspection Proxy*.
+- Two live Kubernetes container-integration tests that exercise admission-webhook and JGroups discovery paths which
+  previously shipped unproven. `helm_sidecar_injection` deploys the chart with `webhook.enabled=true` (self-signed TLS
+  bootstrap Jobs + webhook handler Deployment + `MutatingWebhookConfiguration`), drives a real labelled pod `CREATE`
+  through the admission path, and asserts the resulting pod **spec** carries the injected `mockserver-sidecar` container,
+  `mockserver-iptables-init` init container, and `mockserver.org/injected` annotation — with a negative-control pod (no
+  opt-in annotation) that must **not** be injected, so a webhook that injects unconditionally fails the test.
+  `helm_jgroups_dns_ping` deploys two clustered replicas and asserts the headless Service is truly headless
+  (`clusterIP: None`), that `JGROUPS_DNS_QUERY` is wired to its FQDN, that it resolves to ≥2 pod IPs (Endpoints plus an
+  in-cluster `nslookup`), that a ≥2-node JGroups/Infinispan view forms (the anti "two clusters of one" guard), and that
+  state converges across the pods — exercising the Kubernetes DNS discovery path that `JGroupsKubernetesStackTest`
+  (XML-parse only) and `ClusteredTwoNodeTest` (loopback MPING) never run. Both were proven red by degrading the exact
+  behaviour they name (deleting the `MutatingWebhookConfiguration`; deleting the headless Service and rolling the pods).
+  Both depend on Java-built images (the `-clustered` variant and the `mockserver-webhook` handler); when those images
+  are absent — e.g. the CI helm step runs with `SKIP_JAVA_BUILD=true` and no JDK — the cases record an honest **SKIP**
+  rather than a misleading pass, and run **blocking** only where the images exist.
 
 ### Changed
+- `helm_clustered_convergence` is now a **blocking** container-integration test rather than `non_blocking || true`. The
+  swallowed `k3d image import ... 2>/dev/null || true` is replaced by a deterministic import that verifies the image is
+  present in the k3d node's containerd (via `crictl`) before deploying, and a pre-deploy `ensure_namespace_absent` guard
+  removes the real back-to-back flake (`helm install` into a still-`Terminating` namespace left by a prior run/retry).
+  When the `-clustered` image is absent (CI helm step, no JDK) the case records an honest **SKIP**; when present it runs
+  blocking so a genuine clustering regression reds the suite.
 - The `docker_compose_war_tomcat` container integration test (MockServer deployed as a WAR into Tomcat 10.1) now
   actually runs in CI, closing a false-green gap where it silently skipped with *"WAR artifact not present … CI wiring
   is a follow-up"* — a working behavioural test that never ran, in a demonstrated weak spot (the ROOT-context

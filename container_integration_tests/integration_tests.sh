@@ -599,6 +599,71 @@ function assert_manifest_complete() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Image availability + deterministic k3d import helpers.
+#
+# The clustered (-clustered) and admission-webhook images are Java artefacts
+# built only when a JDK + Maven reactor is present (build_clustered_docker and
+# the webhook Dockerfile). The CI helm step runs with SKIP_JAVA_BUILD=true on an
+# agent WITHOUT a JDK, so neither image is built there. The three k8s cases that
+# depend on them (helm_sidecar_injection, helm_clustered_convergence,
+# helm_jgroups_dns_ping) therefore record an honest SKIP when their image is
+# absent, and run BLOCKING when it is present — a genuine failure reds the suite.
+# This keeps them real gates locally (and in any CI that builds the images)
+# without a false red on the current CI helm step.
+CLUSTERED_IMAGE="mockserver/mockserver:integration_testing_clustered"
+WEBHOOK_IMAGE_REPO="mockserver/mockserver-webhook"
+
+function clustered_image_available() {
+  docker image inspect "${CLUSTERED_IMAGE}" >/dev/null 2>&1
+}
+
+# Echoes the first concrete (non-<none>) local tag of the webhook handler image,
+# or nothing. The webhook image tag tracks the project version, so it is resolved
+# from the image itself rather than hard-coded (which would drift every release).
+function webhook_image_ref() {
+  docker images "${WEBHOOK_IMAGE_REPO}" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+    | grep -v ':<none>$' | head -1
+}
+
+function webhook_image_available() {
+  [[ -n "$(webhook_image_ref)" ]]
+}
+
+# Deterministically import a host image into the k3d node and PROVE it landed in
+# the node's containerd before any deploy relies on it (pods use pullPolicy=Never
+# / IfNotPresent with no registry). Replaces the old
+# `k3d image import ... 2>/dev/null || true`, whose swallowed failure was the
+# root of the flaky "image-import race": a silently-missing image surfaced later
+# and confusingly as ErrImageNeverPull / a formation timeout. Returns non-zero on
+# any import or verification failure so the caller can record a real result.
+function import_image_into_k3d() {
+  local image="$1"
+  local node="k3d-${CLUSTER_NAME}-server-0"
+  # A concrete tag string to grep for in `crictl images` (unique enough on its
+  # own: `integration_testing_clustered`, `7.5.1-SNAPSHOT`, ...).
+  local tag="${image##*:}"
+
+  if ! runCommand "k3d image import --cluster ${CLUSTER_NAME} ${image}"; then
+    printFailureMessage "k3d image import FAILED for ${image} (not swallowed) — dependent case cannot run"
+    return 1
+  fi
+
+  # Assert presence in the node's containerd. k3d nodes ship crictl. Poll briefly
+  # because import registration can lag the CLI returning.
+  local attempts=15
+  for _ in $(seq 1 "${attempts}"); do
+    if docker exec "${node}" crictl images 2>/dev/null | grep -q -- "${tag}"; then
+      printMessage "Verified image present in ${node}: ${image}"
+      return 0
+    fi
+    sleep 1
+  done
+  printFailureMessage "image ${image} NOT visible in ${node} containerd after import (tag '${tag}')"
+  docker exec "${node}" crictl images 2>/dev/null | tail -20 >&2 || true
+  return 1
+}
+
 function run_all_tests() {
   export PASS_LOG_FILE=$(mktemp)
   export FAIL_LOG_FILE=$(mktemp)
@@ -659,16 +724,50 @@ function run_all_tests() {
       test "helm_inline_config"
       test "helm_configmap_injection"
       test "helm_mockserver_config_chart"
-      # Clustered state convergence e2e (non-blocking — new test, may be flaky)
+
+      # Sidecar-injection admission webhook e2e. Deploys the chart with the
+      # MutatingWebhookConfiguration + webhook handler, creates a labelled pod,
+      # and asserts the webhook actually MUTATED the pod spec to carry the
+      # MockServer sidecar container (a negative-control pod proves it does not
+      # inject unconditionally). Needs the webhook handler image, built only with
+      # a JDK+Maven reactor — SKIP (honest) when absent, BLOCKING when present.
+      if webhook_image_available; then
+        WEBHOOK_IMAGE="$(webhook_image_ref)"
+        if import_image_into_k3d "${WEBHOOK_IMAGE}"; then
+          # The injected sidecar uses this already-imported image (pullPolicy
+          # IfNotPresent). Passed to the test so it need not re-resolve versions.
+          export MOCKSERVER_WEBHOOK_IMAGE="${WEBHOOK_IMAGE}"
+          export MOCKSERVER_SIDECAR_IMAGE="mockserver/mockserver:integration_testing"
+          test "helm_sidecar_injection"
+          unset MOCKSERVER_WEBHOOK_IMAGE MOCKSERVER_SIDECAR_IMAGE
+        else
+          logTestResult "1" "helm_sidecar_injection"
+        fi
+      else
+        logTestSkip "helm_sidecar_injection" "webhook handler image not built (needs JDK+Maven reactor; not built in the CI helm step)"
+      fi
+
+      # Clustered state convergence + JGroups DNS_PING discovery e2e. Both need
+      # the -clustered image variant. When it is present they run BLOCKING (a
+      # genuine failure reds the suite); when absent (CI helm step, no JDK) they
+      # record an honest SKIP rather than a misleading warn/pass. The old flow
+      # imported with `2>/dev/null || true` and ran non_blocking — a swallowed
+      # import failure plus an advisory result meant a broken cluster could not
+      # red the build. import_image_into_k3d now imports deterministically and
+      # verifies the image is in the node before deploying.
       if [[ "${SKIP_CLUSTERED_TEST:-}" != "true" ]]; then
-        # Import the -clustered image into k3d so pods can pull it locally
-        k3d image import --cluster "${CLUSTER_NAME}" mockserver/mockserver:integration_testing_clustered 2>/dev/null || true
-        # non_blocking: a `set -e` abort before this test reaches
-        # logTestResultNonBlocking (kubectl timeout, pod-not-ready, k3d
-        # image-import race) must warn, not red the suite. A caller-side
-        # `|| true` cannot express that — test() records the result as a side
-        # effect before returning — so the mode is passed explicitly.
-        test "helm_clustered_convergence" non_blocking || true
+        if clustered_image_available; then
+          if import_image_into_k3d "${CLUSTERED_IMAGE}"; then
+            test "helm_clustered_convergence"
+            test "helm_jgroups_dns_ping"
+          else
+            logTestResult "1" "helm_clustered_convergence"
+            logTestResult "1" "helm_jgroups_dns_ping"
+          fi
+        else
+          logTestSkip "helm_clustered_convergence" "clustered image not built (needs JDK+Maven reactor; not built in the CI helm step)"
+          logTestSkip "helm_jgroups_dns_ping" "clustered image not built (needs JDK+Maven reactor; not built in the CI helm step)"
+        fi
       fi
       tear-down-k8s
     fi
