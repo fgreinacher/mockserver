@@ -93,14 +93,14 @@ cosign verify \
 # Or verify the tag (resolves to digest internally)
 cosign verify \
   --key https://www.mock-server.com/mockserver-cosign.pub \
-  mockserver/mockserver:7.5.0
+  mockserver/mockserver:7.6.0
 ```
 
 The public key corresponding to `mockserver-release/cosign-key` is **published at `https://www.mock-server.com/mockserver-cosign.pub`** (source: `jekyll-www.mock-server.com/mockserver-cosign.pub`; an identical copy is at `helm/mockserver/cosign.pub`). It can also be re-derived from the private key with `cosign public-key --key cosign.key`. The same key signs the Helm chart.
 
 Signing is non-fatal in the release pipeline: if the key is absent (or the cosign binary cannot be downloaded), images are published unsigned and the release continues. The cosign binary itself is no longer a prerequisite — the release step downloads and checksum-verifies it on demand.
 
-> **IAM note:** the signing step is gated by `aws secretsmanager describe-secret mockserver-release/cosign-key`, so the release-queue role needs **`secretsmanager:DescribeSecret`** on that secret in addition to `GetSecretValue` — otherwise the probe fails and signing is silently skipped (this caused the 7.5.0 chart/images to publish unsigned until the grant was added to `read_release_secrets`).
+> **IAM note:** the signing step is gated by `aws secretsmanager describe-secret mockserver-release/cosign-key`, so the release-queue role needs **`secretsmanager:DescribeSecret`** on that secret in addition to `GetSecretValue` — otherwise the probe fails and signing is silently skipped (this caused the 7.6.0 chart/images to publish unsigned until the grant was added to `read_release_secrets`).
 
 ### Base Image CVE Baseline
 
@@ -219,7 +219,7 @@ After the source stage the JAR flows through an **AppCDS build stage** (see [App
 
 **Graceful fallback (validated):** the runtime relies on the JVM default `-Xshare:auto`, so a **missing or corrupt** `/mockserver.jsa` (bind-mounted away, arch mismatch, truncated) logs a CDS warning (`Unable to map shared spaces` / `bad magic number`) and starts **normally** rather than failing. This is the guarantee the DEFAULT image depends on — unlike the `-aot` variant it cannot soft-fail at release time. Verified by running the image with the archive replaced by `/dev/null` and by random bytes: both reached `PUT /mockserver/status` → 200.
 
-**Image size:** roughly break-even with the old `distroless/java17` image (the jlink-trimmed JDK 25 runtime offsets the ~33 MB archive; measured ~411 MB vs ~422 MB for `mockserver/mockserver:7.5.0` — re-measure on JDK 25 at the next size audit).
+**Image size:** roughly break-even with the old `distroless/java17` image (the jlink-trimmed JDK 25 runtime offsets the ~33 MB archive; measured ~411 MB vs ~422 MB for `mockserver/mockserver:7.6.0` — re-measure on JDK 25 at the next size audit).
 
 **QEMU note (release/CI):** the release pipeline builds multi-arch via `buildx` on amd64 agents, so the **arm64 training run executes under QEMU emulation** and is slower than a native run. This is the same cost the `-aot` image already pays. Unlike `-aot` (which is error-isolated / soft-fail), the standard image is the primary artifact, so a training-run failure under QEMU would fail the build — the training loop polls for up to 120 s and stops cleanly, which is ample on emulated arm64.
 

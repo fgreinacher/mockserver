@@ -5,11 +5,11 @@
   {"name": "jar-warmup-off", "kind": "java",
    "cmd": ["java", "-Dmockserver.startupWarmup=false", "-jar", "JAR", "-serverPort", "PORT", "-logLevel", "WARN"]},
 
-  {"name": "docker-standard-7.5.0", "kind": "docker",
-   "image": "mockserver/mockserver:7.5.0",
+  {"name": "docker-standard-7.6.0", "kind": "docker",
+   "image": "mockserver/mockserver:7.6.0",
    "args": ["-serverPort", "PORT", "-logLevel", "WARN"]},
 
-  {"name": "docker-aot-7.5.0", "kind": "docker",
-   "image": "mockserver/mockserver:7.5.0-aot",
+  {"name": "docker-aot-7.6.0", "kind": "docker",
+   "image": "mockserver/mockserver:7.6.0-aot",
    "args": ["-serverPort", "PORT", "-logLevel", "WARN"]}
 ]

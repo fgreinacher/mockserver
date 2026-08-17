@@ -6,7 +6,7 @@ MockServer requires **Java 17** as the minimum supported runtime (raised from Ja
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 7.5.x   | :white_check_mark: |
+| 7.6.x   | :white_check_mark: |
 | 6.0.x   | :white_check_mark: |
 | < 6.0   | :x:                |
 

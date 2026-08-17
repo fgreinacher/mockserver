@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+## [7.6.0] - 2026-08-17
+
 ### Changed
 - The three Kubernetes container-integration cases that need Java-built images — `helm_sidecar_injection`
   (admission-webhook sidecar injection), `helm_clustered_convergence`, and `helm_jgroups_dns_ping` (both the

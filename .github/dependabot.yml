@@ -110,7 +110,7 @@ updates:
       # change, not a dependency sweep. Bumped 1.80.0 -> 1.125.0 inside the
       # minor-and-patch group in #21d7ae412; compile stayed green because this is
       # a vsce rule rather than a tsc one, and it surfaced only when the release
-      # packaged the extension, leaving 7.5.0 without a VS Code release.
+      # packaged the extension, leaving 7.6.0 without a VS Code release.
       # Ceiling matches engines.vscode ^1.80.0.
       - dependency-name: "@types/vscode"
         versions: [">=1.81.0"]

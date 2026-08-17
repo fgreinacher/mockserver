@@ -185,10 +185,10 @@ See the [Homebrew install page](https://www.mock-server.com/where/homebrew.html)
 * [MockServer Helm Chart](helm/mockserver/README.md) - installs MockServer into a Kubernetes cluster. The chart is published to the GitHub Container Registry as an OCI artifact (no `helm repo add` needed):
 
   ```bash
-  helm upgrade --install --create-namespace --namespace mockserver --version 7.5.0 mockserver oci://ghcr.io/mock-server/charts/mockserver
+  helm upgrade --install --create-namespace --namespace mockserver --version 7.6.0 mockserver oci://ghcr.io/mock-server/charts/mockserver
   ```
 
-  See the [Install MockServer Helm Chart](helm/mockserver/README.md) guide for all versions and configuration options. A legacy `.tgz` is also available from [www.mock-server.com](https://www.mock-server.com/mockserver-7.5.0.tgz).
+  See the [Install MockServer Helm Chart](helm/mockserver/README.md) guide for all versions and configuration options. A legacy `.tgz` is also available from [www.mock-server.com](https://www.mock-server.com/mockserver-7.6.0.tgz).
 
 ##### MockServer Clients
 
@@ -208,7 +208,7 @@ See the [Homebrew install page](https://www.mock-server.com/where/homebrew.html)
 ##### Previous Versions
 | Version        | Date        | Git & Docker Tag / Git Hash                                                                                                                                                                                   | Documentation                                 | Java API                                                               | REST API                                                                                  |
 |:---------------|:------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:----------------------------------------------|:-----------------------------------------------------------------------|:------------------------------------------------------------------------------------------|
-| 7.5.0 (latest) | 06 Jun 2026 | [mockserver-7.5.0](https://github.com/mock-server/mockserver-monorepo/tree/mockserver-7.5.0)   / [9755e9](https://github.com/mock-server/mockserver-monorepo/commit/9755e9ccf4d3bcad1d1cc2dd218614f59441c0f3) | [Documentation](https://mock-server.com)      | [Java API](https://mock-server.com/versions/7.5.0/apidocs/index.html)  | [7.5.x REST API](https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/7.5.x)   |
+| 7.6.0 (latest) | 06 Jun 2026 | [mockserver-7.6.0](https://github.com/mock-server/mockserver-monorepo/tree/mockserver-7.6.0)   / [9755e9](https://github.com/mock-server/mockserver-monorepo/commit/9755e9ccf4d3bcad1d1cc2dd218614f59441c0f3) | [Documentation](https://mock-server.com)      | [Java API](https://mock-server.com/versions/7.6.0/apidocs/index.html)  | [7.6.x REST API](https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/7.6.x)   |
 | 6.1.0          | 27 May 2026 | [mockserver-6.1.0](https://github.com/mock-server/mockserver-monorepo/tree/mockserver-6.1.0)   / [33c273](https://github.com/mock-server/mockserver-monorepo/commit/33c2739febd07ce1bf1e3f31ed9d93a61ac871dc) | [Documentation](https://mock-server.com)      | [Java API](https://mock-server.com/versions/6.1.0/apidocs/index.html)  | [6.1.x REST API](https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/6.1.x)   |
 | 6.0.0          | 20 May 2026 | [mockserver-6.0.0](https://github.com/mock-server/mockserver-monorepo/tree/mockserver-6.0.0)   / [6a254e](https://github.com/mock-server/mockserver-monorepo/commit/6a254e2a5cb925c41bf8c0ef6a98e2c02712e3ab) | [Documentation](https://mock-server.com)      | [Java API](https://mock-server.com/versions/6.0.0/apidocs/index.html)  | [6.0.x REST API](https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/6.0.x)   |
 | 5.15.0         | 11 Jan 2023 | [mockserver-5.15.0](https://github.com/mock-server/mockserver-monorepo/tree/mockserver-5.15.0) / [7c071b](https://github.com/mock-server/mockserver-monorepo/commit/7c071b8be3608036f2a2ea45eee6970d2f2b8d02) | [Documentation](https://5-15.mock-server.com) | [Java API](https://mock-server.com/versions/5.15.0/apidocs/index.html) | [5.15.x REST API](https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/5.15.x) |
@@ -236,7 +236,7 @@ See the [Homebrew install page](https://www.mock-server.com/where/homebrew.html)
 ### Issues
 
 If you have any problems, please [check the project issues](https://github.com/mock-server/mockserver-monorepo/issues?state=open) and avoid opening issues that have already been fixed.  When you open an issue please provide the following information:
-- MockServer version (i.e. 7.5.0)
+- MockServer version (i.e. 7.6.0)
 - How your running the MockServer (i.e maven plugin, docker, etc)
 - MockServer log output, at INFO level (or higher)
 - What the error is

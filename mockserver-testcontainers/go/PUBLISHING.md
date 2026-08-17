@@ -17,14 +17,14 @@ github.com/mock-server/mockserver-monorepo/mockserver-testcontainers/go
 
 ```bash
 # 1. Tag the module with the release version (must match the Go module path prefix)
-git tag mockserver-testcontainers/go/v7.5.0
+git tag mockserver-testcontainers/go/v7.6.0
 
 # 2. Push the tag to GitHub
-git push origin mockserver-testcontainers/go/v7.5.0
+git push origin mockserver-testcontainers/go/v7.6.0
 
 # 3. Request the Go module proxy to index it (optional — happens on first `go get`)
 GOPROXY=https://proxy.golang.org GO111MODULE=on \
-  go list -m github.com/mock-server/mockserver-monorepo/mockserver-testcontainers/go@v7.5.0
+  go list -m github.com/mock-server/mockserver-monorepo/mockserver-testcontainers/go@v7.6.0
 ```
 
 ## Secret Required
