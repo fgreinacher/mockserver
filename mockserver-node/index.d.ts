@@ -6,6 +6,15 @@ export interface StartServerOptions {
   artifactoryHost?: string;
   artifactoryPath?: string;
   mockServerVersion?: string;
+  /**
+   * Absolute or relative path to a pre-provisioned mockserver-netty
+   * jar-with-dependencies. When set (or via the MOCKSERVER_JAR_PATH environment
+   * variable), this exact jar is launched and no download is attempted; a
+   * missing path is a hard error rather than a silent fall-back to a released
+   * jar. Intended for air-gapped/corporate use and for testing a locally-built
+   * jar. Takes precedence over mockServerVersion / artifactory* download options.
+   */
+  jarPath?: string;
   initializationJsonPath?: string;
   trace?: boolean;
   verbose?: boolean;

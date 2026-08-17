@@ -93,6 +93,43 @@ module.exports = (function () {
       throw new Error('Unable to find ' + jarName + ', looked in: ' + candidates.join(', '));
     }
 
+    /**
+     * Resolve an explicitly-configured jar (the jarPath option or the
+     * MOCKSERVER_JAR_PATH environment variable) to an absolute path, failing
+     * loudly if nothing usable is there.
+     *
+     * Unlike resolveJarPath / downloadJar, this deliberately does NOT fall back
+     * to a downloaded release: a caller that named a specific jar wants THAT jar,
+     * and silently downloading a published version instead would mask a
+     * missing/mis-built artifact - in CI, the very failure this exists to catch
+     * (a build step that should have produced the jar but did not). A missing
+     * path, or one that is not a regular file, is therefore a hard error.
+     *
+     * @param {string} configuredPath the path as configured
+     * @param {string} source human-readable origin, used in the log/error message
+     * @param {boolean} log whether to log the resolved path
+     * @returns {string} absolute path to the existing jar file
+     * @throws {Error} if the path does not resolve to an existing regular file
+     */
+    function resolveExplicitJarPath(configuredPath, source, log) {
+      var absolute = path.resolve(configuredPath);
+      var stats;
+      try {
+        stats = fs.statSync(absolute);
+      } catch (missing) {
+        throw new Error('The MockServer jar configured via ' + source + ' ("' + configuredPath +
+          '") does not exist at ' + absolute + ' - refusing to fall back to downloading a release');
+      }
+      if (!stats.isFile()) {
+        throw new Error('The MockServer jar configured via ' + source + ' ("' + configuredPath +
+          '") is not a regular file at ' + absolute + ' - refusing to fall back to downloading a release');
+      }
+      if (log) {
+        console.log('Using MockServer jar from ' + source + ': ' + absolute);
+      }
+      return absolute;
+    }
+
     function defer() {
       var promise = (global.protractor && protractor.promise.USE_PROMISE_MANAGER !== false)
         ? protractor.promise
@@ -315,10 +352,37 @@ module.exports = (function () {
       }
   
       var startupRetries = options.startupRetries || options.javaDebugPort ? 500 : 110;
-  
-      // double check the jar has already been downloaded
-      require('./downloadJar').downloadJar(mockServerVersion, artifactoryHost, artifactoryPath, logLevel).then(function () {
-  
+
+      // An explicitly-provided jar (the jarPath option or the MOCKSERVER_JAR_PATH
+      // environment variable) is used as-is and short-circuits the download
+      // entirely. This is how an air-gapped / corporate user runs a jar they
+      // provisioned themselves, and how CI launches a jar freshly built from the
+      // tree instead of a published release. A configured path that is missing is
+      // a hard error (resolveExplicitJarPath) - never a silent fall-back to a
+      // download, which would hide the intended jar being absent.
+      var explicitJarPath = options.jarPath || process.env.MOCKSERVER_JAR_PATH;
+      var jarReady;
+      if (explicitJarPath) {
+        try {
+          jarReady = Q.resolve(resolveExplicitJarPath(
+            explicitJarPath,
+            options.jarPath ? 'jarPath option' : 'MOCKSERVER_JAR_PATH',
+            logLevel || options.verbose));
+        } catch (error) {
+          jarReady = Q.reject(error);
+        }
+      } else {
+        // double check the jar has already been downloaded, then resolve the jar
+        // for the specific version being launched - a wildcard version would match
+        // every downloaded version and push an array, which spawn joins with a
+        // comma into an invalid "a.jar,b.jar" path.
+        jarReady = require('./downloadJar').downloadJar(mockServerVersion, artifactoryHost, artifactoryPath, logLevel).then(function () {
+          return resolveJarPath('mockserver-netty-' + mockServerVersion + '-jar-with-dependencies.jar');
+        });
+      }
+
+      jarReady.then(function (jarFile) {
+
         var spawn = require('child_process').spawn;
         var commandLineOptions = ['-Dfile.encoding=UTF-8'];
         if (options.initializationJsonPath) {
@@ -336,10 +400,7 @@ module.exports = (function () {
           }
         }
         commandLineOptions.push('-jar');
-        // Resolve the jar for the specific version being launched - a wildcard
-        // version would match every downloaded version and push an array, which
-        // spawn joins with a comma into an invalid "a.jar,b.jar" path.
-        commandLineOptions.push(resolveJarPath('mockserver-netty-' + mockServerVersion + '-jar-with-dependencies.jar'));
+        commandLineOptions.push(jarFile);
         if (options.serverPort) {
           commandLineOptions.push("-serverPort");
           commandLineOptions.push(options.serverPort);

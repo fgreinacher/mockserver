@@ -53,7 +53,29 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
+  # Build the mockserver-netty jar FROM THIS TREE and hand it to the launcher
+  # tests as an artifact. The launcher tests must run against the repo's code,
+  # not a Maven Central release — and this independent node pipeline cannot see
+  # the mockserver-java pipeline's artifacts (separate builds, no shared
+  # filesystem), so the jar has to be produced here. See node-launcher-build-jar.sh.
+  - label: ":maven: :java: build node launcher jar"
+    key: "node-launcher-jar"
+    command: ".buildkite/scripts/steps/node-launcher-build-jar.sh"
+    artifact_paths:
+      - "mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar"
+    timeout_in_minutes: 60
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
   - label: ":node: :java: node launcher integration tests"
+    # Runs against the tree-built jar from the step above (downloaded as an
+    # artifact). depends_on lets it start as soon as that jar is ready without
+    # waiting on the other (jar-independent) steps in this group.
+    depends_on: "node-launcher-jar"
     command: ".buildkite/scripts/steps/node-launcher-test.sh"
     timeout_in_minutes: 15
     retry:

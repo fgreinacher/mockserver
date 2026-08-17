@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A `jarPath` launcher option and matching `MOCKSERVER_JAR_PATH` environment variable for `mockserver-node`, pointing
+  `start_mockserver` at a pre-provisioned `mockserver-netty` jar-with-dependencies instead of downloading one from
+  Maven Central. When set, that exact jar is launched and no download is attempted; a configured-but-missing path is a
+  **hard error** (`... refusing to fall back to downloading a release`) rather than a silent fall-back to a released
+  jar, so a missing artifact fails loudly. Mirrors the existing `MOCKSERVER_BINARY_BASE_URL` bring-your-own-artifact
+  path for the standalone binary, and serves air-gapped/corporate installs as well as testing a locally-built jar
+  (`jarPath` takes precedence over `mockServerVersion`/`artifactory*`; the option beats the env var). The Node launcher
+  integration tests now use it in CI: a new `:maven: build node launcher jar` step builds the jar **from the tree** and
+  the launcher-test step downloads it as an artifact and launches it via `MOCKSERVER_JAR_PATH` — so the suite finally
+  tests the repo's own code instead of the last release. Previously it ran a downloaded release chosen by
+  `package.json`'s version, so a `mockserver-core` fix could not green it and a regression could not red it; that
+  released jar also carried the shipped dynamic-CA generation race (fixed on master in `4cff56e61`) and flaked ~8% of
+  runs. The launcher step **fails closed** if the tree-built jar is absent rather than reverting to a download, and
+  local `npm test` outside CI is unchanged (with neither the option nor the env var set it still downloads as before).
 - A structural wire-contract test for the LLM provider codecs (`LlmCodecStructuralContractTest`), breaking the
   self-derivation weakness in the golden-file drift test. `LlmCodecGoldenFileTest` regenerates its golden **bodies**
   from the codec itself (`-Dmockserver.updateLlmGoldens=true`), so a structural codec defect — a renamed field, a

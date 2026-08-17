@@ -147,6 +147,23 @@ This value specifies the artifact version of MockServer to download.
 
 **Note:** It is also possible to specify a SNAPSHOT version to get the latest unreleased changes.
 
+#### options.jarPath
+Type: `String`
+Default value: `undefined`
+
+Absolute or relative path to a pre-provisioned `mockserver-netty` jar-with-dependencies. When set, this exact jar is launched and **no download is attempted** — the `mockServerVersion`, `artifactoryHost` and `artifactoryPath` options are ignored. A path that does not point at an existing file is a hard error: MockServer will **not** silently fall back to downloading a released jar, so a missing or mis-built jar fails loudly rather than quietly running a different version.
+
+Use this for air-gapped or corporate environments where the jar is provisioned separately, or to launch a locally-built jar for development.
+
+The environment variable `MOCKSERVER_JAR_PATH` sets the same behaviour; the `jarPath` option takes precedence over it when both are given.
+
+```js
+start_mockserver({
+    serverPort: 1080,
+    jarPath: "./mockserver-netty-7.5.1-SNAPSHOT-jar-with-dependencies.jar"
+});
+```
+
 #### options.verbose
 Type: `Boolean`
 Default value: `false`
