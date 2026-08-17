@@ -152,8 +152,25 @@ fi
 # mockserver-client-python/mockserver/launcher.py, ...), so a commit that drifts one of them routes
 # only to that client's own pipeline. Attaching this to any path filter means the guard never sees
 # the change it exists to catch. It is a few greps and costs ~1s.
+#
+# The false-green guard runs always-on for the same reason: a new false-green shape can be introduced
+# from a Java test source (routes to mockserver-java), a .buildkite step script (mockserver-infra), a
+# client test step (that client's pipeline) or a container_integration_tests script — no single
+# path-filtered pipeline sees them all, so only an always-on step catches every case. Also greps-only,
+# ~1s.
 ALWAYS_STEPS='  - label: ":package: validate client version pins"
     command: ".buildkite/scripts/steps/clients-version-consistency.sh"
+    timeout_in_minutes: 5
+    agents:
+      queue: trigger
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+  - label: ":detective: guard against false-green test shapes"
+    command: ".buildkite/scripts/steps/check-false-green-guards.sh"
     timeout_in_minutes: 5
     agents:
       queue: trigger

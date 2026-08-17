@@ -101,6 +101,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   files must stay in lockstep (the PKCS#1 and PKCS#8 CA private keys are the same key, that key matches the CA
   certificate, and the two committed copies of the CA certificate remain byte-identical). Certificate expiry had
   previously only ever been discovered by the build going red.
+- A standing CI guard (`check-false-green-guards.sh`) that fails closed when a new "false-green" test shape is
+  introduced — a test or CI step that reports success while verifying nothing. The 2026-07-21 coverage audit named
+  these shapes but they lived only in plan documents, and the repository then produced ~a dozen fresh instances in a
+  single day. The guard enforces the three that can be pinned down precisely and each caused a real shipped false
+  green: (1) every JUnit suite gated by `Assume.assumeTrue(DockerAvailability.isAvailable(...))` must be paired with
+  `assert-suite-ran.sh` over its reports, or a broken Docker socket skips it while the build stays green; (2) no CI
+  step may mount the Docker socket and then deselect the Docker-marked tests (e.g. `pytest -m "not docker"`),
+  starting no container yet passing; (3) no container-integration `logTestSkip` may park deferred work ("CI wiring is
+  a follow-up") as a green skip. It runs always-on (a new false green can enter from any of several pipelines) and
+  carries a justified, self-verifying allow-list that fails if an entry no longer names what it claims. Wiring this
+  up also closed a live gap it found — the `Gcs`/`Azure` `RegistrarConfigWiringTest` cloud suites ran under a Docker
+  socket in CI but were not fail-closed-asserted. See `docs/operations/false-green-guards.md`.
 - A local-only, opt-in `K3D_LOCAL_CA_BUNDLE` hook in `container_integration_tests/helm-deploy.sh` so the Helm
   integration suite's k3d cluster can be stood up on a developer machine behind a corporate TLS-inspection proxy.
   When set, `start-up-k8s` overmounts the given **combined** CA bundle (system/public roots + corporate root) as the

@@ -137,5 +137,7 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
       'mockserver-blob-s3/target/surefire-reports/TEST-*BlobStoreContractTest.xml' \
       'mockserver-blob-s3/target/surefire-reports/TEST-*S3ExpectationPersistenceReloadTest.xml' \
       'mockserver-blob-gcs/target/surefire-reports/TEST-*BlobStoreContractTest.xml' \
-      'mockserver-blob-azure/target/surefire-reports/TEST-*BlobStoreContractTest.xml'
+      'mockserver-blob-gcs/target/surefire-reports/TEST-*RegistrarConfigWiringTest.xml' \
+      'mockserver-blob-azure/target/surefire-reports/TEST-*BlobStoreContractTest.xml' \
+      'mockserver-blob-azure/target/surefire-reports/TEST-*RegistrarConfigWiringTest.xml'
   "
