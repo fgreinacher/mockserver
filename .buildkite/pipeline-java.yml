@@ -58,6 +58,10 @@ steps:
       - "mockserver/jacoco-html-reports.tar.gz"
       - "mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar"
       - "mockserver/mockserver-k8s-webhook/target/mockserver-k8s-webhook-*-jar-with-dependencies.jar"
+      # The WAR built by the reactor, consumed by the container-tests step's
+      # docker_compose_war_tomcat case (container-tests-run.sh downloads it).
+      # Buildkite steps do NOT share a filesystem, so it must be uploaded here.
+      - "mockserver/mockserver-war/target/mockserver-war-*.war"
     timeout_in_minutes: 60
     # The default queue is partly Spot; a reclaim mid-build kills the agent
     # (exit -1 / agent lost). Auto-retry so an infra eviction re-runs the long

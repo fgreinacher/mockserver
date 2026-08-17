@@ -10,13 +10,19 @@ printMessage "Start: \"${SCRIPT_DIR/\//}\""
 
 # The WAR is built by the Maven build and must be copied into the test
 # directory before docker-compose build can package it into the Tomcat image.
+# It reaches this test from mockserver/mockserver-war/target/ — produced by the
+# reactor `package` locally, and downloaded as a Buildkite artifact in CI (the
+# `:maven: build` step uploads it; container-tests-run.sh downloads it). A
+# missing WAR is a FAILURE, not a skip: WAR deployment is a demonstrated weak
+# spot (the ROOT-context percent-decode regression 66b5d51d2 shipped and broke
+# builds), so a silent green here would re-open exactly the hole this case exists
+# to close.
 function prepare_war() {
   local war
   war=$(ls "${SCRIPT_DIR}"/../../mockserver/mockserver-war/target/mockserver-war-*.war 2>/dev/null | head -1)
   if [[ -z "${war}" ]]; then
-    # WAR artifact is absent — this is expected in CI where only the netty
-    # JAR is downloaded. Return 2 to signal "skip" (distinct from error=1).
-    return 2
+    printFailureMessage "WAR artifact not found under mockserver/mockserver-war/target/ — expected the Maven reactor to have built it (local dev) or the CI step to have downloaded it as a Buildkite artifact. Failing closed rather than skipping."
+    return 1
   fi
   cp "${war}" "${SCRIPT_DIR}/mockserver-war.war"
 }
@@ -29,14 +35,9 @@ function cleanup() {
 function integration_test() {
   trap cleanup EXIT
 
-  local prep_rc=0
-  prepare_war || prep_rc=$?
-  if [[ "${prep_rc}" -eq 2 ]]; then
-    # WAR artifact not present (expected in CI where only the netty JAR is
-    # downloaded). Skip cleanly without recording a failure.
-    logTestSkip "${TEST_CASE}" "WAR artifact not present (built locally only); CI wiring is a follow-up"
-    return 0
-  elif [[ "${prep_rc}" -ne 0 ]]; then
+  if ! prepare_war; then
+    # WAR absent (or un-copyable): fail closed. This case must never pass by
+    # skipping — see prepare_war's header for why.
     logTestResult "1" "${TEST_CASE}"
     return 1
   fi
