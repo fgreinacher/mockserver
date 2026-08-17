@@ -86,6 +86,20 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # TypeScript 7.x is blocked by typescript-eslint, whose peer range is
+      # `typescript >=4.8.4 <6.1.0`. `npm ci` fails with ERESOLVE before lint or
+      # typecheck can run, so the bump cannot pass the UI gate no matter what
+      # else moves — nothing else in the tree raises that ceiling. TypeScript 7
+      # is the new native-compiler major and typescript-eslint support for it is
+      # a large piece of upstream work with no committed date.
+      #
+      # REVISIT when typescript-eslint publishes a release whose peer range
+      # admits typescript 7 (watch https://github.com/typescript-eslint/typescript-eslint).
+      # At that point remove this ignore and bump both together — typescript
+      # alone will still fail. PR #2547 was closed under this rule.
+      - dependency-name: "typescript"
+        versions: [">=7.0.0"]
 
   # mockserver-vscode in its own block so one bad directory cannot take down the
   # healthy npm directories above. The @types/vscode ignore is vscode-specific.

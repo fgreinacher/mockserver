@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Dependabot no longer proposes TypeScript 7.x for the Node/UI packages. `typescript-eslint`'s peer range is
+  `typescript >=4.8.4 <6.1.0`, so a TypeScript 7 bump fails `npm ci` with `ERESOLVE` before lint or typecheck can run,
+  and nothing else in the tree raises that ceiling — the upgrade is unmergeable until `typescript-eslint` ships
+  support for the new major. The `ignore` carries the reason and an explicit revisit condition, so it is a recorded
+  decision rather than silent suppression.
 
 ### Fixed
 - The release pipeline can no longer silently overwrite the previous version's archived documentation site. Whether a
