@@ -175,10 +175,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the default `source=download` path (the public reference build), stamped via the same script so they cannot drift. A
   Netty bump therefore needs no tcnative pin update and no Docker edit, and the native `.so` can never be a different
   version than the tcnative classes it pairs with.
-- BREAKING: The default enabled TLS protocols are now `TLSv1.2,TLSv1.3` (previously `TLSv1,TLSv1.1,TLSv1.2`), and
-  `tlsAllowInsecureProtocols` now defaults to `false` (previously `true`). TLSv1 and TLSv1.1 are deprecated by RFC 8996
-  and vulnerable to BEAST/POODLE, and TLSv1.3 was previously never negotiated unless explicitly configured. This is a
-  breaking change for a client that can only speak TLSv1 or TLSv1.1: its handshake to MockServer will now fail. To
+- **BREAKING BEHAVIOUR: the default enabled TLS protocols are now `TLSv1.2,TLSv1.3` (previously
+  `TLSv1,TLSv1.1,TLSv1.2`), and `tlsAllowInsecureProtocols` now defaults to `false` (previously `true`).**
+  TLSv1 and TLSv1.1 are deprecated by RFC 8996 and vulnerable to BEAST/POODLE, and TLSv1.3 was previously never
+  negotiated unless explicitly configured. This is a breaking change for a client that can only speak TLSv1 or
+  TLSv1.1: its handshake to MockServer will now fail. To
   restore the legacy protocols set `mockserver.tlsProtocols=TLSv1,TLSv1.1,TLSv1.2` AND
   `mockserver.tlsAllowInsecureProtocols=true` (both are required — the insecure-protocol filter strips TLSv1/TLSv1.1
   unless it is explicitly allowed). The inbound server always applies the strong `Http2SecurityUtil` cipher suites, so
