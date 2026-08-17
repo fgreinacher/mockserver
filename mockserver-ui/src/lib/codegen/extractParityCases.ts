@@ -12,7 +12,7 @@ import {
   standardToGo,
   type StandardMatcher,
   type StandardActionPayload,
-} from '../standardCodegen';
+} from '../standardCodegen.ts';
 
 function baseMatcher(overrides?: Partial<StandardMatcher>): StandardMatcher {
   return {
