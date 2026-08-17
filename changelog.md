@@ -290,6 +290,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PKCS#1 form); the code continues to load `PKCS8CertificateAuthorityPrivateKey.pem`.
 
 ### Fixed
+- Fixed the Helm chart's sidecar-injection webhook being broken out of the box. The default TLS-bootstrap image
+  `webhook.tls.setupImage: bitnami/kubectl:1.31` no longer exists — Bitnami withdrew the tag from Docker Hub — so both
+  bootstrap Jobs failed, the `MutatingWebhookConfiguration`'s `caBundle` was never patched, and because
+  `failurePolicy: Fail` the webhook then **rejected every matched pod CREATE**. Anyone enabling `webhook.enabled=true`
+  from the shipped defaults got an admission path that blocked pod creation rather than injecting a sidecar. The
+  bootstrap now uses `registry.k8s.io/ingress-nginx/kube-webhook-certgen`, the purpose-built tool for exactly this
+  job, published on the most stable-publication registry available and self-contained (no shell, no `openssl` CLI, no
+  install-at-runtime step that would fail on an airgapped or proxied cluster). Phase 2's ClusterRole also gains the
+  `update` verb, which the patch step genuinely needs. `helm_sidecar_injection` now renders and asserts the **chart
+  default** is pullable rather than overriding it, so this cannot silently rot again.
+- Fixed the Kubernetes sidecar-injection webhook rejecting valid TLS private keys. `WebhookServer` parsed PKCS#8 only
+  and explicitly rejected anything else, which broke the **cert-manager** path as well: the chart's `Certificate`
+  requests `algorithm: RSA` without `encoding: PKCS8`, i.e. PKCS#1, so a cert-manager-issued key could not be loaded.
+  It now accepts any standard unencrypted PEM private key — PKCS#8, PKCS#1, and SEC1 EC. This coupling is why the
+  broken bootstrap image above could not simply be swapped: the handler only tolerated the one format that one
+  withdrawn image happened to emit.
 - Fixed a thread race in dynamic Certificate Authority generation that could leave a standalone / CLI / Docker
   MockServer serving broken TLS for the rest of the process's lifetime. When
   `dynamicallyCreateCertificateAuthorityCertificate` is enabled, two startup paths could generate the CA

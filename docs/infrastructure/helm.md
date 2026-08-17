@@ -316,13 +316,13 @@ When `webhook.enabled=true`, the chart deploys a MutatingAdmissionWebhook that a
 3. Pods without the annotation, or already injected, are allowed through unchanged
 
 **TLS bootstrap:** Two options:
-- **Self-signed (default):** two Helm hook Jobs work together to avoid a deadlock under `helm install --wait` and GitOps tools (ArgoCD, Flux):
-  1. A **pre-install/pre-upgrade** Job (hook-weight -5) generates a self-signed CA + server certificate and creates the TLS Secret. This runs before Helm applies non-hook resources, so the Deployment can mount the Secret and become Ready immediately.
-  2. A **post-install/post-upgrade** Job (hook-weight 0) reads `ca.crt` from the Secret and patches the MutatingWebhookConfiguration's `caBundle`. This runs after non-hook resources exist, so the MWC is available to patch.
-  No external dependencies. Compatible with both `helm install` and `helm install --wait`.
+- **Self-signed (default):** two Helm hook Jobs (both running `webhook.tls.setupImage`, the purpose-built [`kube-webhook-certgen`](https://github.com/kubernetes/ingress-nginx/tree/main/images/kube-webhook-certgen) from `registry.k8s.io`) work together to avoid a deadlock under `helm install --wait` and GitOps tools (ArgoCD, Flux):
+  1. A **pre-install/pre-upgrade** Job (hook-weight -5) generates a self-signed CA + serving certificate and creates the TLS Secret (`create`). This runs before Helm applies non-hook resources, so the Deployment can mount the Secret and become Ready immediately. It is idempotent: an existing valid Secret is reused, so upgrades do not needlessly rotate the serving cert.
+  2. A **post-install/post-upgrade** Job (hook-weight 0) reads the CA from the Secret and patches the MutatingWebhookConfiguration's `caBundle` (`patch`). This runs after non-hook resources exist, so the MWC is available to patch.
+  No external dependencies, no runtime package installs. Override `webhook.tls.setupImage` with a mirrored image for airgapped clusters. Compatible with both `helm install` and `helm install --wait`.
 - **cert-manager:** set `webhook.certManager.enabled=true`. The chart creates an Issuer + Certificate and annotates the MutatingWebhookConfiguration with `cert-manager.io/inject-ca-from`.
 
-**Webhook server:** The `mockserver-k8s-webhook` module includes a runnable HTTPS server (`WebhookServer`) that handles AdmissionReview requests on `POST /inject` and serves a health check on `GET /healthz`. The server is packaged as a fat jar (`mockserver-k8s-webhook-<version>-jar-with-dependencies.jar`) and published as the `mockserver/mockserver-webhook` Docker image. Configuration (TLS cert/key paths, sidecar injection settings) is read from environment variables matching the Helm `webhook-deployment.yaml` template.
+**Webhook server:** The `mockserver-k8s-webhook` module includes a runnable HTTPS server (`WebhookServer`) that handles AdmissionReview requests on `POST /inject` and serves a health check on `GET /healthz`. The server is packaged as a fat jar (`mockserver-k8s-webhook-<version>-jar-with-dependencies.jar`) and published as the `mockserver/mockserver-webhook` Docker image. Configuration (TLS cert/key paths, sidecar injection settings) is read from environment variables matching the Helm `webhook-deployment.yaml` template. Its serving key is loaded via BouncyCastle and accepts any standard unencrypted PEM private key — PKCS#8 (`BEGIN PRIVATE KEY`), PKCS#1 (`BEGIN RSA PRIVATE KEY`, e.g. cert-manager's default RSA encoding) and SEC1 EC (`BEGIN EC PRIVATE KEY`, e.g. kube-webhook-certgen's ECDSA key) — so the TLS bootstrap tool can change without breaking the handler.
 
 **Webhook Docker image:** The `mockserver/mockserver-webhook` image is published to Docker Hub and ECR Public by the release pipeline alongside the main MockServer image. The Helm chart defaults to `mockserver/mockserver-webhook:<appVersion>`, so `helm install --set webhook.enabled=true` works out of the box once a release ships.
 
@@ -351,7 +351,7 @@ docker build -t mockserver/mockserver-webhook:6.1.1-SNAPSHOT docker/webhook
 | `webhook.sidecar.redirectPorts` | string | `"80,443"` | Ports redirected by iptables |
 | `webhook.sidecar.runAsUser` | int | `65534` | UID for the sidecar (must match iptables exclusion) |
 | `webhook.certManager.enabled` | bool | `false` | Use cert-manager for TLS instead of self-signed |
-| `webhook.tls.certValidityDays` | int | `3650` | Self-signed cert validity (days) |
+| `webhook.tls.setupImage` | string | `registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.4` | Image for the self-signed TLS bootstrap Jobs (create the cert Secret + patch the webhook caBundle); override with a mirror for airgapped clusters |
 
 **Backward compatibility:** Disabled by default. When disabled, no webhook-related resources are rendered.
 

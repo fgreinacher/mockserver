@@ -3,6 +3,10 @@ package org.mockserver.webhook;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
+import org.bouncycastle.openssl.PEMKeyPair;
+import org.bouncycastle.openssl.PEMParser;
+import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,17 +15,15 @@ import javax.net.ssl.SSLContext;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.StringReader;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.KeyFactory;
 import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
-import java.security.spec.PKCS8EncodedKeySpec;
-import java.util.Base64;
 import java.util.Collection;
 import java.util.concurrent.Executors;
 
@@ -185,7 +187,7 @@ public class WebhookServer {
      * Builds an SSLContext from PEM-encoded certificate and private key files.
      *
      * @param certPath path to the PEM certificate file (may contain a chain)
-     * @param keyPath  path to the PEM private key file (PKCS#8)
+     * @param keyPath  path to the PEM private key file (PKCS#8, PKCS#1 or SEC1 EC)
      * @return a configured SSLContext
      */
     public static SSLContext buildSslContext(Path certPath, Path keyPath) throws Exception {
@@ -201,7 +203,7 @@ public class WebhookServer {
 
         // Load private key
         String keyPem = Files.readString(keyPath, StandardCharsets.UTF_8);
-        PrivateKey privateKey = loadPkcs8PrivateKey(keyPem);
+        PrivateKey privateKey = loadPrivateKey(keyPem);
 
         // Build KeyStore
         KeyStore ks = KeyStore.getInstance("PKCS12");
@@ -219,36 +221,36 @@ public class WebhookServer {
     }
 
     /**
-     * Parses a PKCS#8 PEM private key (supports both RSA and EC).
-     * <p>
-     * Only PKCS#8 format ("BEGIN PRIVATE KEY") is supported. PKCS#1 format
-     * ("BEGIN RSA PRIVATE KEY") is NOT supported and will fail with an
-     * InvalidKeySpecException. The Helm self-signed TLS Job uses
-     * {@code openssl genpkey} which always produces PKCS#8.
+     * Parses a PEM-encoded private key in any of the standard unencrypted forms,
+     * for both RSA and EC keys:
+     * <ul>
+     *   <li>PKCS#8  — {@code -----BEGIN PRIVATE KEY-----} (e.g. {@code openssl genpkey})</li>
+     *   <li>PKCS#1  — {@code -----BEGIN RSA PRIVATE KEY-----} (e.g. cert-manager's default RSA encoding)</li>
+     *   <li>SEC1 EC — {@code -----BEGIN EC PRIVATE KEY-----} (e.g. kube-webhook-certgen's ECDSA key)</li>
+     * </ul>
+     * Accepting all three decouples the webhook server from the exact tool that
+     * generates its serving key, so the Helm chart's TLS bootstrap image can
+     * change without breaking the handler. Encrypted keys are not supported.
      */
-    static PrivateKey loadPkcs8PrivateKey(String pem) throws Exception {
-        if (pem.contains("-----BEGIN RSA PRIVATE KEY-----")) {
-            throw new IllegalArgumentException(
-                "PKCS#1 format (BEGIN RSA PRIVATE KEY) is not supported; "
-                    + "use PKCS#8 (BEGIN PRIVATE KEY) instead — generate with 'openssl genpkey'"
-            );
+    static PrivateKey loadPrivateKey(String pem) throws Exception {
+        final Object parsed;
+        try (PEMParser parser = new PEMParser(new StringReader(pem))) {
+            parsed = parser.readObject();
         }
-
-        // Strip PEM headers/footers and decode base64
-        String base64 = pem
-            .replace("-----BEGIN PRIVATE KEY-----", "")
-            .replace("-----END PRIVATE KEY-----", "")
-            .replaceAll("\\s", "");
-
-        byte[] keyBytes = Base64.getDecoder().decode(base64);
-        PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(keyBytes);
-
-        // Try RSA first, then EC
-        try {
-            return KeyFactory.getInstance("RSA").generatePrivate(keySpec);
-        } catch (Exception e) {
-            return KeyFactory.getInstance("EC").generatePrivate(keySpec);
+        JcaPEMKeyConverter converter = new JcaPEMKeyConverter();
+        if (parsed instanceof PEMKeyPair) {
+            // PKCS#1 (BEGIN RSA PRIVATE KEY) and SEC1 (BEGIN EC PRIVATE KEY)
+            return converter.getKeyPair((PEMKeyPair) parsed).getPrivate();
         }
+        if (parsed instanceof PrivateKeyInfo) {
+            // PKCS#8 (BEGIN PRIVATE KEY)
+            return converter.getPrivateKey((PrivateKeyInfo) parsed);
+        }
+        throw new IllegalArgumentException(
+            "no supported PEM private key found (expected an unencrypted PKCS#8, "
+                + "PKCS#1 or SEC1 key); parsed object was "
+                + (parsed == null ? "null" : parsed.getClass().getName())
+        );
     }
 
     // ================================================================

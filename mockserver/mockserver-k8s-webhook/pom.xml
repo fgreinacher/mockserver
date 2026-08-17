@@ -25,6 +25,13 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
+        <!-- PEM private-key parsing (PKCS#8, PKCS#1, SEC1 EC) for the webhook's
+             self-signed / cert-manager TLS key, whatever the bootstrap tool emits -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcpkix-jdk18on</artifactId>
+        </dependency>
+
         <!-- logging -->
         <dependency>
             <groupId>org.slf4j</groupId>

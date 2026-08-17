@@ -389,10 +389,15 @@ webhook:
     duration: "8760h"     # 1 year
     renewBefore: "720h"   # 30 days
   tls:
-    # Image used by the self-signed TLS setup Job (needs openssl + kubectl).
-    # Pinned by default; override with your own pinned/mirrored image for production.
-    setupImage: "bitnami/kubectl:1.31"
-    certValidityDays: 3650
+    # Image for the two self-signed TLS bootstrap Jobs. Uses the purpose-built
+    # kube-webhook-certgen (generate the CA + serving-cert Secret, then patch the
+    # webhook caBundle) published on registry.k8s.io — a stable, long-lived
+    # registry, unlike the withdrawn bitnami/kubectl tags. The tool issues a
+    # long-lived self-signed cert and reuses it across upgrades; use the
+    # cert-manager path (webhook.certManager.enabled) if you need a controlled
+    # validity period or automatic rotation. Override with your own mirrored
+    # image (any kube-webhook-certgen build) for airgapped clusters.
+    setupImage: "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.4"
   # caBundle: set this to a base64-encoded CA certificate if you manage TLS
   # yourself (outside both the self-signed Job and cert-manager). When the
   # self-signed Job runs, it patches this value into the webhook config.

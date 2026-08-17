@@ -19,6 +19,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.KeyStore;
+import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.util.Base64;
 
@@ -255,17 +256,124 @@ class WebhookServerTest {
     @Nested
     class PrivateKeyLoading {
 
-        @Test
-        void pkcs1FormatIsRejectedWithClearMessage() {
-            String pkcs1Pem = "-----BEGIN RSA PRIVATE KEY-----\n"
-                + "MIIBogIBAAJBALRiMLAR/fakekeydata\n"
+        // Throwaway keys generated with openssl, one per standard unencrypted PEM
+        // form. The webhook must accept all of them so the chart's TLS bootstrap
+        // tool can change without breaking the handler.
+
+        // openssl genpkey -algorithm RSA  (the original self-signed Job's format)
+        private static final String PKCS8_RSA =
+            "-----BEGIN PRIVATE KEY-----\n"
+                + "MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDF0C1/qG+p8swV\n"
+                + "/iZyzEI4/x7/CfEvcrawiVcwSCN3yM/BNMO5IWNi5aV0z3RpnordHCMkRAeIalXh\n"
+                + "Hwm1tQw1teHBsX4pEETp1VEYzdjIySLwhOBZj/abg50gfWwHi3X1AbwZ7lJ7sWi8\n"
+                + "SST8fCsYcaU5rYXdm5MNONYMOvI8gTu4TaXJFqBwCSI5e8bjwzXzt5l9G038CM5w\n"
+                + "E6saieDjxtF1JS02C96DTg11kYeAhYLFhIZGjl/JnWTdk0j4xeAySWVp9TMSRqLf\n"
+                + "4hZCsgxK5iM8KCPQ3rqveS4b03dzoxiBWftdfWvocP+s8IoCVhdUb3bEVLogh025\n"
+                + "dIEjldNFAgMBAAECggEAKwTZiDwswJRtXtENMoUKV9PfvU4/tfZoFZ9gpz7g+8Ff\n"
+                + "sSBU+lNxBkZ0A6HEKt4QTAK8/7uNudSKRbGWzn4HoDykUpfTnIGNwx6hitflb9ES\n"
+                + "OKVlFwUwd+SZDMJJ9qAVMInGiwshxAWyhdQQZ5pnUuMQMCl1Bds6ETONlU5SdOax\n"
+                + "0Yv9sAMPMElT4uF2DX6XPXYJ8RxxBITcq4k8LfmzkTRP6p336LH4QXzWyk5SKjvA\n"
+                + "4RQ/EKIOFsXGDxyqI/ouSaoh32yPIqEsS6ADYihueuPxAdQElJXRGcXWIqwPzUZK\n"
+                + "NI+KjfpFkGGl/qe4Q4r9YZF6Vb2RR6pmEUdu6obwMQKBgQDzw1sxNIJNV+/3ZXZX\n"
+                + "0Km4vpXCcXp3dVFIGax2SCUIBAJdm85LXdCq4VR//+IRsWQ1uVCpv9D3CACcokTy\n"
+                + "DyFzcJ15nagDw8vZRhfRdjaIfuvUJmtretCwoigLo9k1E9JblG5AhVFYKLVmptnt\n"
+                + "dWT9o2KEUOM79Z8TErls/B3eqQKBgQDPvk+S7T5B2DnaxyLrWAZ2n6Y/M/aoL4PD\n"
+                + "uUHlWKRsC6QjHLUAWYpHezGUTO/oUsX2oK5k27b+LJ9BQpOWJ0pOUGpFKnC4mAlX\n"
+                + "pV6yEzXSGrJUOeKBF8iD0nmvWgE85h0jgf1ycv8nbqrlQcxghINfkh9581eAdmf8\n"
+                + "pzBUYI29PQKBgQCZZgTLMDoXphEy5LzWgk9sHTNtS7A/4Kon71Ail0AGjU9XzSbD\n"
+                + "MuSPxIFCk6qWa8WeMWJbkIRWEMkhyNQOaAsq9GGFGPuUcvCjaIKwo+2pdAXAWfUb\n"
+                + "jAwsO79ro86aokCstPm0zLDmA6g0UyetUUUegGUM00JMh0N140ChHv9FEQKBgQDG\n"
+                + "cjl5VP+/zlmVz9xfjDrAXklk3rKkfp8T/IgiGccXHxewIuAUcXRSTDBURhp2h3tr\n"
+                + "2Jo+5lOsAdwvbvWk3etxXAfoAl6jNzjVbLdEzG0BQ1dOde0U/C8jHY/4HbZJAlib\n"
+                + "brU4+vkaJfFCBtTA7lTAmslOqVHQ+UrkYqEcOQ+s0QKBgQC06krsihf2tJCHPLoM\n"
+                + "1hFcYeVsDngoX1rAsPdA/p5Q6qWEEIwvD0ZbufjBM6E0p0lRaBdLj6Xb3tGfziZo\n"
+                + "s4iCEoQY1bFF+3MSF3t0n7M4CQ6C4sOxzYCBIbHBHt9tI5LQyKkh8jAuaSW8K4c9\n"
+                + "IsZmglTNjl7gu/U7vRzW3UdWbg==\n"
+                + "-----END PRIVATE KEY-----\n";
+
+        // cert-manager's default RSA encoding (privateKey with no encoding: PKCS8)
+        private static final String PKCS1_RSA =
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+                + "MIIEpAIBAAKCAQEA6lmaTCvEn2VWSxb1ftqKt2JtpbwxEI+s8Ln7ASLcLl0LCfzY\n"
+                + "i2KcItj7PO/6MfEGdU/uxoUoDqPo5OHx6vaxAY8K4bK+WcJc1lijw3b3yJmQ9qWA\n"
+                + "QPaB0CU56aL5nbMWb0AT/sh/JCqf9jgncgkBpWoMKFinuADuYUvFz6/jQTycYRk4\n"
+                + "qS4SSDJ63KeV46nvSqEI9bM2BiPFrWA1pFQmrbBLbHjVIjM1DxYJtTYw7L0kbQkI\n"
+                + "u3xhNy62VmWCC/Yj2hKNXYGoCam3WVXTzKpOdFw8Y7wcVxX/MwOLpKnXfAgsNING\n"
+                + "uIZeJs6+D1mk0wx0FrT1vyFmBJE3YSjz7zSMFQIDAQABAoIBAB7c9BQqA3gWiXnU\n"
+                + "KTqun2wtW1FjanbK5TTC2Yq5w5Obj1OeaApbT0LLnrLUy/d9zaLvhvvAF5lt/sL9\n"
+                + "+rU+Deutofo9ZxI9JarY+6BHb7SMfOnuu+hSTqBR9sGNRCB/sGmwX7HDR/NEZdKw\n"
+                + "bIl5JC1bvQQnQNdb0AkiSIfkmyJBD7N0NC1XPyvhAEO5vJsyfQVipHdu91byQ6Tk\n"
+                + "ZPnboR8eV7gQf3yedzBeZD0HSKHBUpl/xdiKHgKQTJSy4vFmcmsxKV30a/aBRlz9\n"
+                + "IEySqVtp1UFj7A39OQ+ffUF7r01Ci9npTNSVlltEiaMUoA6oIlDfbioWa8Yo9R5h\n"
+                + "XluYP4ECgYEA+kWlqD2dUFGQyQRh62vY9vWz7XJ2M25asmDiG0Hq6HRAKwDPTk81\n"
+                + "zItP1RhgO7zE+A4tre/ph8E55yhDC0KK6GMFmhdDI12AHiRMeQky9Y+Ms13rTOpP\n"
+                + "RIDJg20o93CtHWTQ0Tg7NS9CVrQ3oR2fVRuA+XHs5UpwtQp4Kjln9aECgYEA77aq\n"
+                + "84eNa6XFm/480TTmOuxiAQYHRaDX+iRcWnGUT424LUf5YtetepU6IWjqE+KG8tWb\n"
+                + "RxdjFGfbver4Jik196RiYrw13B0pe9Xe/aNvGouOeEmdRtc/1OuxRWCsirZxLmp2\n"
+                + "E+vjvEuM2fm/5LSASFPs28c9pHNlBEV5F93h2fUCgYEA5VCFjhcOmnZyFE3Irt49\n"
+                + "iWLuPwXe2hcmUUVGR7VpWR6TYRO330fiwo1vU5CnNHUtgR/0qOgncTUSKgSREbMh\n"
+                + "9fYtPthLsw7MAlI+I7TTFX83a24F2I7knJ7ohVyy6a47YLBsSRed4Ihx32H3is/K\n"
+                + "mz+9OFIzvpArnyZ9nirFX6ECgYEA5aEaygcEFibK0dAN+mquUau3hjt8I9sciebj\n"
+                + "AVDkPgEIeXgFEgaBjHf/I5oZActycpTlFoj0xMto2NmJtSStKfkytlqNTboxzwrl\n"
+                + "fhtdhxRA+kGqg/4Wi6TsQAWHw6lZaplZW2QQ2IOW/ggdJr0yVhbvQuntxucz0Y+r\n"
+                + "nI1UmTECgYAutbgN5BDD+JJvzh/x6iHTiRKH4unbOvVlTNCjdcgNynwmQykNMl3G\n"
+                + "T1gKHfFoSGbJ+oAXLqZ9EC6nzhdTVdmdjmdJilvJsn2lxq3YYq7kS/jvRsrcrgsz\n"
+                + "f2TSztlxQyRi0xT6s/f/7wueFbuD+Bvr4aUEsoQssM12VX6r99bN6Q==\n"
                 + "-----END RSA PRIVATE KEY-----\n";
 
+        // openssl genpkey -algorithm EC  (PKCS#8 EC)
+        private static final String PKCS8_EC =
+            "-----BEGIN PRIVATE KEY-----\n"
+                + "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgb/8uKvlcw3gdsnxF\n"
+                + "bqOpdGeZoUnu3lkNeK/kCn30LaChRANCAATUG8vWtNU83xr4cGEcSqQlIWjJkehC\n"
+                + "jjrV2JVIQKkZg36F1bFkG/ZHW7rUulizCgBottUq3cY4nKaRrd5bv2kr\n"
+                + "-----END PRIVATE KEY-----\n";
+
+        // kube-webhook-certgen's ECDSA serving key (SEC1) — the format that broke
+        // the original PKCS#8-only loader and motivated this fix.
+        private static final String SEC1_EC =
+            "-----BEGIN EC PRIVATE KEY-----\n"
+                + "MHcCAQEEIFLFm37VkhZvEMzRpv/RBtP4pwYpNtiyucmjZV11kwVIoAoGCCqGSM49\n"
+                + "AwEHoUQDQgAENY2vl7hRGfgerolj9DND2mR2VZRQv9YrwzbL1rgmsyUX6uk4uS56\n"
+                + "uP+IKIruIAn2pMo5w/xeiHcYwFcwVXgC2w==\n"
+                + "-----END EC PRIVATE KEY-----\n";
+
+        @Test
+        void pkcs8RsaKeyIsAccepted() throws Exception {
+            PrivateKey key = WebhookServer.loadPrivateKey(PKCS8_RSA);
+            assertThat(key, is(notNullValue()));
+            assertThat(key.getAlgorithm(), is("RSA"));
+        }
+
+        @Test
+        void pkcs1RsaKeyIsAccepted() throws Exception {
+            PrivateKey key = WebhookServer.loadPrivateKey(PKCS1_RSA);
+            assertThat(key, is(notNullValue()));
+            assertThat(key.getAlgorithm(), is("RSA"));
+        }
+
+        @Test
+        void pkcs8EcKeyIsAccepted() throws Exception {
+            PrivateKey key = WebhookServer.loadPrivateKey(PKCS8_EC);
+            assertThat(key, is(notNullValue()));
+            assertThat(key.getAlgorithm(), is("EC"));
+        }
+
+        @Test
+        void sec1EcKeyIsAccepted() throws Exception {
+            PrivateKey key = WebhookServer.loadPrivateKey(SEC1_EC);
+            assertThat(key, is(notNullValue()));
+            assertThat(key.getAlgorithm(), is("EC"));
+        }
+
+        @Test
+        void nonKeyPemIsRejectedWithClearMessage() {
+            // No PEM object at all — PEMParser returns null and the loader must
+            // reject it with a clear message rather than a NullPointerException.
+            String notAKey = "this file contains no PEM private key\n";
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                () -> WebhookServer.loadPkcs8PrivateKey(pkcs1Pem));
-            assertThat(ex.getMessage(), containsString("PKCS#1"));
-            assertThat(ex.getMessage(), containsString("PKCS#8"));
-            assertThat(ex.getMessage(), containsString("openssl genpkey"));
+                () -> WebhookServer.loadPrivateKey(notAKey));
+            assertThat(ex.getMessage(), containsString("no supported PEM private key"));
         }
     }
 

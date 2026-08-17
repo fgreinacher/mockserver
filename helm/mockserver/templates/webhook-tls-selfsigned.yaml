@@ -9,7 +9,7 @@
 #   the Secret and become Ready.
 #
 # Phase 2 (post-install/post-upgrade, hook-weight 0):
-#   Reads ca.crt from the existing Secret and patches it into the
+#   Reads the CA from the existing Secret and patches it into the
 #   MutatingWebhookConfiguration's caBundle. Runs AFTER non-hook resources
 #   (including the MWC) exist.
 #
@@ -105,87 +105,20 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: tls-create
-          image: {{ .Values.webhook.tls.setupImage | default "bitnami/kubectl:1.31" }}
-          command:
-            - /bin/sh
-            - -c
-            - |
-              set -e
-
-              SERVICE_NAME="{{ template "release.name" . }}-webhook"
-              NAMESPACE="{{ .Release.Namespace }}"
-              SECRET_NAME="{{ template "release.name" . }}-webhook-tls"
-              DAYS="{{ .Values.webhook.tls.certValidityDays | default 3650 | int }}"
-
-              # Generate CA key and certificate
-              openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/ca.key
-              openssl req -x509 -new -nodes \
-                -key /tmp/ca.key \
-                -sha256 \
-                -days ${DAYS} \
-                -out /tmp/ca.crt \
-                -subj "/CN=MockServer Webhook CA"
-
-              # Generate server key (PKCS#8) and CSR
-              openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/server.key
-              cat > /tmp/server.conf <<EOF
-              [req]
-              req_extensions = v3_req
-              distinguished_name = req_distinguished_name
-              [req_distinguished_name]
-              [v3_req]
-              basicConstraints = CA:FALSE
-              keyUsage = digitalSignature, keyEncipherment
-              extendedKeyUsage = serverAuth
-              subjectAltName = @alt_names
-              [alt_names]
-              DNS.1 = ${SERVICE_NAME}
-              DNS.2 = ${SERVICE_NAME}.${NAMESPACE}
-              DNS.3 = ${SERVICE_NAME}.${NAMESPACE}.svc
-              DNS.4 = ${SERVICE_NAME}.${NAMESPACE}.svc.cluster.local
-              EOF
-
-              openssl req -new \
-                -key /tmp/server.key \
-                -out /tmp/server.csr \
-                -subj "/CN=${SERVICE_NAME}.${NAMESPACE}.svc" \
-                -config /tmp/server.conf
-
-              # Sign the server certificate with the CA
-              openssl x509 -req \
-                -in /tmp/server.csr \
-                -CA /tmp/ca.crt \
-                -CAkey /tmp/ca.key \
-                -CAcreateserial \
-                -out /tmp/server.crt \
-                -days ${DAYS} \
-                -sha256 \
-                -extensions v3_req \
-                -extfile /tmp/server.conf
-
-              # Base64 encode for Kubernetes Secret
-              CA_BUNDLE=$(cat /tmp/ca.crt | base64 | tr -d '\n')
-              TLS_CRT=$(cat /tmp/server.crt | base64 | tr -d '\n')
-              TLS_KEY=$(cat /tmp/server.key | base64 | tr -d '\n')
-
-              # Create or update the TLS secret
-              kubectl apply -f - <<EOF
-              apiVersion: v1
-              kind: Secret
-              metadata:
-                name: ${SECRET_NAME}
-                namespace: ${NAMESPACE}
-              type: kubernetes.io/tls
-              data:
-                tls.crt: ${TLS_CRT}
-                tls.key: ${TLS_KEY}
-                ca.crt: ${CA_BUNDLE}
-              EOF
-
-              echo "TLS Secret ${SECRET_NAME} created in namespace ${NAMESPACE}"
-
-              # Clean up
-              rm -f /tmp/ca.key /tmp/ca.crt /tmp/server.key /tmp/server.csr /tmp/server.crt /tmp/server.conf /tmp/ca.srl
+          image: {{ .Values.webhook.tls.setupImage | default "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.4" }}
+          # kube-webhook-certgen generates a self-signed CA + serving cert and
+          # writes them into the TLS Secret under keys ca / tls.crt / tls.key
+          # (the Deployment mounts tls.crt + tls.key at /etc/webhook/tls). It is
+          # idempotent: if the Secret already holds a valid cert it is reused, so
+          # `helm upgrade` does not needlessly rotate the webhook's serving cert.
+          # SANs must include the in-cluster Service DNS the API server dials.
+          args:
+            - create
+            - --host={{ template "release.name" . }}-webhook,{{ template "release.name" . }}-webhook.{{ .Release.Namespace }},{{ template "release.name" . }}-webhook.{{ .Release.Namespace }}.svc,{{ template "release.name" . }}-webhook.{{ .Release.Namespace }}.svc.cluster.local
+            - --namespace={{ .Release.Namespace }}
+            - --secret-name={{ template "release.name" . }}-webhook-tls
+            - --cert-name=tls.crt
+            - --key-name=tls.key
 
 # ============================================================
 # Phase 2: RBAC + Job — patch MWC caBundle (post-install/post-upgrade)
@@ -260,7 +193,9 @@ rules:
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["mutatingwebhookconfigurations"]
     resourceNames: ["{{ template "release.name" . }}-sidecar-injector"]
-    verbs: ["get", "patch"]
+    # kube-webhook-certgen reads then Updates the webhook config to inject the
+    # caBundle, so "update" is required in addition to "get"/"patch".
+    verbs: ["get", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -305,31 +240,15 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: tls-patch
-          image: {{ .Values.webhook.tls.setupImage | default "bitnami/kubectl:1.31" }}
-          command:
-            - /bin/sh
-            - -c
-            - |
-              set -e
-
-              NAMESPACE="{{ .Release.Namespace }}"
-              SECRET_NAME="{{ template "release.name" . }}-webhook-tls"
-              WEBHOOK_NAME="{{ template "release.name" . }}-sidecar-injector"
-
-              # Read ca.crt from the Secret created by the pre-install Job
-              CA_BUNDLE=$(kubectl get secret "${SECRET_NAME}" -n "${NAMESPACE}" \
-                -o jsonpath='{.data.ca\.crt}')
-
-              if [ -z "${CA_BUNDLE}" ]; then
-                echo "ERROR: ca.crt not found in Secret ${SECRET_NAME}" >&2
-                exit 1
-              fi
-
-              # Patch the MutatingWebhookConfiguration with the CA bundle
-              echo "Patching caBundle into MutatingWebhookConfiguration ${WEBHOOK_NAME}"
-              kubectl patch mutatingwebhookconfiguration "${WEBHOOK_NAME}" \
-                --type='json' \
-                -p="[{\"op\": \"replace\", \"path\": \"/webhooks/0/clientConfig/caBundle\", \"value\": \"${CA_BUNDLE}\"}]"
-
-              echo "caBundle patch complete for ${WEBHOOK_NAME}"
+          image: {{ .Values.webhook.tls.setupImage | default "registry.k8s.io/ingress-nginx/kube-webhook-certgen:v1.4.4" }}
+          # Reads the CA from the Secret created by the pre-install Job and patches
+          # it into the MutatingWebhookConfiguration's caBundle. --patch-validating
+          # is false because this chart only ships a MutatingWebhookConfiguration.
+          args:
+            - patch
+            - --webhook-name={{ template "release.name" . }}-sidecar-injector
+            - --namespace={{ .Release.Namespace }}
+            - --secret-name={{ template "release.name" . }}-webhook-tls
+            - --patch-mutating=true
+            - --patch-validating=false
 {{- end }}
