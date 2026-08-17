@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The LLM provider list in the two consumer-facing published contracts — the OpenAPI specification
+  (`jekyll-www.mock-server.com/mockserver-openapi.yaml`, schema `HttpLlmResponse.provider`) and the Node client's
+  `LlmProvider` type union (`mockserver-client-node/mockServer.d.ts`) — is now pinned to the server's `Provider` enum
+  by `ProviderConsumerContractEnumParityTest`. Previously a new provider could be added to `Provider` and every
+  server-side registration point while both published contracts were left behind, and nothing failed: the existing
+  internal-schema parity test does not read these files, and the Node drift test compares the `.d.ts` only against the
+  OpenAPI spec, so the two consumer copies could drift from the server in lock-step yet still agree with each other.
+  Both consumer artefacts are now driven from the one authority (the compiled `Provider` enum), in both directions, and
+  each failure message names the missing provider, the exact file, and how to fix it.
 
 ### Changed
 - Dependabot no longer proposes TypeScript 7.x for the Node/UI packages. `typescript-eslint`'s peer range is
