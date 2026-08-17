@@ -81,4 +81,54 @@
         </dependency>
     </dependencies>
 
+    <profiles>
+        <!-- Opt-in assembly of the Infinispan runtime classpath (JGroups, Infinispan,
+             ProtoStream, ...) the `-clustered` Docker image mounts on its /libs/*
+             classpath. Activated with `-P clustered-libs`.
+
+             WHY A PACKAGE-BOUND EXECUTION rather than a standalone
+             `dependency:copy-dependencies` invocation: copy-dependencies operates on
+             this project's ALREADY-RESOLVED dependency set. Bound to `package` inside
+             the SAME reactor build that packages the module, the org.mock-server
+             siblings (mockserver-core, ...) are resolved from the in-session reactor
+             outputs — nothing is resolved against ~/.m2. A separate, later
+             `-pl mockserver-state-infinispan` invocation instead starts a fresh reactor
+             with no in-session siblings, so it can only resolve those SNAPSHOTs if a
+             prior `install` populated ~/.m2 — which fails closed on a clean CI agent
+             (the module jars are never installed by `package`). Keeping the copy in the
+             build reactor removes that cross-invocation dependency entirely.
+
+             -DincludeScope=runtime copies the compile+runtime classpath;
+             -DexcludeGroupIds=org.mock-server keeps the mock-server module jars out of
+             the copied set (the module jar itself is staged alongside these by the
+             consumer — build_clustered_docker() / the CI image step). Inert on a normal
+             build because the profile is off by default. -->
+        <profile>
+            <id>clustered-libs</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-dependency-plugin</artifactId>
+                        <version>3.7.0</version>
+                        <executions>
+                            <execution>
+                                <id>copy-clustered-runtime-libs</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>copy-dependencies</goal>
+                                </goals>
+                                <configuration>
+                                    <includeScope>runtime</includeScope>
+                                    <excludeGroupIds>org.mock-server</excludeGroupIds>
+                                    <outputDirectory>${project.build.directory}/clustered-libs</outputDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>

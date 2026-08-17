@@ -36,9 +36,25 @@ set -euo pipefail
 # resolved a single time); `-DskipTests -Dmaven.test.skip=true` skips all test
 # compilation/execution — testing the Java is the Java pipeline's job, this step
 # only needs the assembled jars.
+#
+# `-P clustered-libs` activates a package-bound `dependency:copy-dependencies`
+# execution in the mockserver-state-infinispan module that stages that module's
+# Infinispan runtime classpath (JGroups, Infinispan, ProtoStream, ...) into
+# target/clustered-libs — the /libs/* classpath the `-clustered` image mounts.
+# Doing this INSIDE the build reactor (not a second, standalone `-pl` Maven run)
+# is deliberate: copy-dependencies operates on the module's already-resolved
+# dependency set, so the org.mock-server siblings it must resolve first come from
+# the in-session reactor, never ~/.m2. A separate invocation starts a fresh
+# reactor with no in-session siblings and can only resolve those SNAPSHOTs from a
+# populated ~/.m2 — which `package` never writes, so it failed closed on a clean
+# CI agent ("Could not find artifact org.mock-server:mockserver-core:...:SNAPSHOT").
+# One reactor invocation has no cross-invocation cache state to get wrong.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# SC2016: the single-quoted bash -c body is intentional — $PWD and $LIBS_DIR must
+# expand inside the container's shell at run time, not on the host at compose time.
+# shellcheck disable=SC2016
 exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i mockserver/mockserver:maven \
   -w /build/mockserver \
@@ -47,17 +63,15 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -e "MAVEN_OPTS=-Xms2048m -Xmx6144m" \
   -- bash -c '
     set -euo pipefail
-    ./mvnw -B --no-transfer-progress -T 1C -DskipTests -Dmaven.test.skip=true \
-      -pl mockserver-netty,mockserver-k8s-webhook,mockserver-state-infinispan -am package
-    # Stage the Infinispan runtime classpath (JGroups, Infinispan, ProtoStream, ...)
-    # the clustered image mounts on its /libs/* classpath. Exclude org.mock-server
-    # (the module jar itself is copied in explicitly next) and add it back so the
-    # clustered image /libs holds module + deps, exactly as build_clustered_docker()
-    # assembles it for local dev.
     LIBS_DIR="$PWD/mockserver-state-infinispan/target/clustered-libs"
-    rm -rf "$LIBS_DIR" && mkdir -p "$LIBS_DIR"
-    ./mvnw -B --no-transfer-progress -pl mockserver-state-infinispan \
-      dependency:copy-dependencies -DincludeScope=runtime -DexcludeGroupIds=org.mock-server \
-      -DoutputDirectory="$LIBS_DIR"
+    # Clear any stale libs from an earlier local build; the reactor recreates the
+    # directory during the infinispan module package phase (clustered-libs profile).
+    rm -rf "$LIBS_DIR"
+    ./mvnw -B --no-transfer-progress -T 1C -DskipTests -Dmaven.test.skip=true \
+      -P clustered-libs \
+      -pl mockserver-netty,mockserver-k8s-webhook,mockserver-state-infinispan -am package
+    # copy-dependencies (above) staged the runtime deps into clustered-libs, excluding
+    # org.mock-server. Add the module jar itself so /libs holds module + deps, exactly
+    # as build_clustered_docker() assembles it for local dev.
     cp mockserver-state-infinispan/target/mockserver-state-infinispan-*.jar "$LIBS_DIR/"
   '
