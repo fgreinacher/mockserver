@@ -1,59 +1,91 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-JAR_DIR="mockserver/mockserver-netty/target"
-SHADED_DIR="mockserver/mockserver-netty-no-dependencies/target"
+# ---------------------------------------------------------------------------
+# The three image-dependent k3d cases (helm_sidecar_injection,
+# helm_clustered_convergence, helm_jgroups_dns_ping) need Java-built images the
+# Maven reactor produces. This step runs on a Docker-only agent with NO JDK, so
+# the jars are built by the upstream "build container-test images (jars)" step
+# (container-tests-build-images.sh) and handed here as Buildkite artifacts. We
+# download them and do cheap `docker build`s (COPY jar into distroless), then run
+# the harness with REQUIRE_*_IMAGE=true so an absent image is a FAILURE, never a
+# silent skip. Failing to download the jars fails this step closed — a missing
+# build cannot revert to skipping.
+# ---------------------------------------------------------------------------
+NETTY_JAR_DIR="mockserver/mockserver-netty/target"
+WEBHOOK_JAR_DIR="mockserver/mockserver-k8s-webhook/target"
+CLUSTERED_LIBS_DIR="mockserver/mockserver-state-infinispan/target/clustered-libs"
 
-echo "--- :buildkite: Downloading shaded JAR artifact"
-if command -v buildkite-agent &>/dev/null && buildkite-agent artifact download "$SHADED_DIR/mockserver-netty-no-dependencies-*.jar" . 2>/dev/null; then
-  shopt -s nullglob
-  SHADED_JAR=""
-  for f in "$SHADED_DIR"/mockserver-netty-no-dependencies-*.jar; do
-    case "$(basename "$f")" in
-      *-sources.jar|*-javadoc.jar|original-*) continue ;;
-    esac
-    SHADED_JAR="$f"
-    break
-  done
-  shopt -u nullglob
-  if [ -z "$SHADED_JAR" ]; then
-    echo "Error: shaded JAR not found after artifact download"
-    exit 1
-  fi
-  mkdir -p "$JAR_DIR"
-  VERSION=$(basename "$SHADED_JAR" | sed -E 's/^mockserver-netty-no-dependencies-(.+)\.jar$/\1/')
-  if [ -z "$VERSION" ] || [ "$VERSION" = "$(basename "$SHADED_JAR")" ]; then
-    echo "Error: could not extract version from $SHADED_JAR"
-    exit 1
-  fi
-  JAR_NAME="mockserver-netty-${VERSION}-jar-with-dependencies.jar"
-  cp "$SHADED_JAR" "$JAR_DIR/$JAR_NAME"
-else
-  echo "No artifact available — building JAR from source"
-  echo "--- :maven: Building mockserver-netty shaded JAR"
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  "$SCRIPT_DIR/../run-in-docker.sh" \
-    -i mockserver/mockserver:maven \
-    -m 7g \
-    -w /build/mockserver \
-    -e "MAVEN_OPTS=-Xms2048m -Xmx6144m" \
-    -- ./mvnw -B --no-transfer-progress -pl mockserver-netty -am package -DskipTests -q
-  JAR_NAME=$(ls "${JAR_DIR}"/mockserver-netty-*-jar-with-dependencies.jar 2>/dev/null | head -1 | xargs basename)
-fi
-
-if [ -z "$JAR_NAME" ] || [ ! -f "$JAR_DIR/$JAR_NAME" ]; then
-  echo "Error: jar-with-dependencies JAR not found in $JAR_DIR"
+if ! command -v buildkite-agent &>/dev/null; then
+  echo ":x: buildkite-agent not found — cannot download the tree-built image jars, so the -clustered + webhook images cannot be built and the k3d image-dependent cases would silently skip. Failing closed." >&2
   exit 1
 fi
 
-echo "--- :docker: Building MockServer Docker image for testing"
-cp "$JAR_DIR/$JAR_NAME" docker/mockserver-netty-jar-with-dependencies.jar
+echo "--- :buildkite: Downloading tree-built image jars"
+buildkite-agent artifact download "$NETTY_JAR_DIR/mockserver-netty-*-jar-with-dependencies.jar" .
+buildkite-agent artifact download "$WEBHOOK_JAR_DIR/mockserver-k8s-webhook-*-jar-with-dependencies.jar" .
+buildkite-agent artifact download "$CLUSTERED_LIBS_DIR/*.jar" .
+
+# Resolve the concrete fat jars (exclude sources/javadoc/original- classifiers).
+shopt -s nullglob
+NETTY_JAR=""
+for f in "$NETTY_JAR_DIR"/mockserver-netty-*-jar-with-dependencies.jar; do
+  case "$(basename "$f")" in *-sources.jar|*-javadoc.jar|original-*) continue ;; esac
+  NETTY_JAR="$f"; break
+done
+WEBHOOK_JAR=""
+for f in "$WEBHOOK_JAR_DIR"/mockserver-k8s-webhook-*-jar-with-dependencies.jar; do
+  case "$(basename "$f")" in *-sources.jar|*-javadoc.jar|original-*) continue ;; esac
+  WEBHOOK_JAR="$f"; break
+done
+shopt -u nullglob
+
+CLUSTERED_LIB_COUNT=0
+if [ -d "$CLUSTERED_LIBS_DIR" ]; then
+  CLUSTERED_LIB_COUNT=$(find "$CLUSTERED_LIBS_DIR" -name '*.jar' -type f | wc -l | tr -d ' ')
+fi
+
+if [ -z "$NETTY_JAR" ] || [ ! -f "$NETTY_JAR" ]; then
+  echo ":x: netty fat jar not found after artifact download — the upstream build step did not produce it. Failing closed." >&2
+  exit 1
+fi
+if [ -z "$WEBHOOK_JAR" ] || [ ! -f "$WEBHOOK_JAR" ]; then
+  echo ":x: webhook fat jar not found after artifact download — the upstream build step did not produce it. Failing closed." >&2
+  exit 1
+fi
+if [ "$CLUSTERED_LIB_COUNT" -eq 0 ]; then
+  echo ":x: clustered /libs jars not found after artifact download — the upstream build step did not produce them. Failing closed." >&2
+  exit 1
+fi
+
+echo "--- :docker: Building mockserver/mockserver:integration_testing (base image)"
+cp "$NETTY_JAR" docker/mockserver-netty-jar-with-dependencies.jar
 # The base docker/Dockerfile COPYs ca-bundle.pem; stage a placeholder (or the
 # corporate CA via MOCKSERVER_LOCAL_CA_BUNDLE) before building, clean up after.
 CA_BUNDLE_STATE=$(docker/ensure-ca-bundle.sh docker)
 docker build --no-cache -t mockserver/mockserver:integration_testing --build-arg source=copy docker
-rm docker/mockserver-netty-jar-with-dependencies.jar
+rm -f docker/mockserver-netty-jar-with-dependencies.jar
 [ "$CA_BUNDLE_STATE" = "created" ] && rm -f docker/ca-bundle.pem
+
+echo "--- :docker: Building mockserver/mockserver:integration_testing_clustered"
+# Assemble the clustered build context exactly as build_clustered_docker() does
+# for local dev: the netty fat jar as the base + the Infinispan module and its
+# runtime deps under /libs (the clustered ENTRYPOINT globs /libs/* onto the
+# classpath).
+cp "$NETTY_JAR" docker/clustered/mockserver-netty-jar-with-dependencies.jar
+rm -rf docker/clustered/libs && mkdir -p docker/clustered/libs
+cp "$CLUSTERED_LIBS_DIR"/*.jar docker/clustered/libs/
+CLUSTERED_CA_STATE=$(docker/ensure-ca-bundle.sh docker/clustered)
+docker build --no-cache -t mockserver/mockserver:integration_testing_clustered docker/clustered
+rm -f docker/clustered/mockserver-netty-jar-with-dependencies.jar
+rm -rf docker/clustered/libs
+[ "$CLUSTERED_CA_STATE" = "created" ] && rm -f docker/clustered/ca-bundle.pem
+
+echo "--- :docker: Building mockserver/mockserver-webhook:integration_testing"
+# docker/webhook is single-stage distroless and does NOT COPY a ca-bundle.
+cp "$WEBHOOK_JAR" docker/webhook/mockserver-webhook.jar
+docker build --no-cache -t mockserver/mockserver-webhook:integration_testing docker/webhook
+rm -f docker/webhook/mockserver-webhook.jar
 
 echo "--- :helm: Installing helm (if needed)"
 # Build agents are spot instances and helm pre-installation is inconsistent
@@ -154,5 +186,10 @@ export SKIP_DOCKER_BUILD_MOCKSERVER=true
 export SKIP_DOCKER_REBUILD_CLIENT=true
 export SKIP_DOCKER_TESTS=true
 export DELETE_CLUSTER=true
+# CI fail-closed: the -clustered + webhook images were just built above, so the
+# three image-dependent cases MUST run blocking. If either image is somehow
+# absent the harness records a FAILURE (not a skip) — a skip in CI is impossible.
+export REQUIRE_CLUSTERED_IMAGE=true
+export REQUIRE_WEBHOOK_IMAGE=true
 
 exec container_integration_tests/integration_tests.sh

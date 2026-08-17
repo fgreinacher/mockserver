@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The three Kubernetes container-integration cases that need Java-built images — `helm_sidecar_injection`
+  (admission-webhook sidecar injection), `helm_clustered_convergence`, and `helm_jgroups_dns_ping` (both the
+  `-clustered` Infinispan image) — now run **blocking in CI** instead of recording a skip. Previously the CI helm step
+  ran with no JDK and never built those images, so all three recorded an honest but permanent SKIP — coverage that
+  looked green while proving nothing. A new `:maven: build container-test images (jars)` step in the
+  `mockserver-container-tests` pipeline builds the `mockserver-netty`, `mockserver-k8s-webhook`, and
+  `mockserver-state-infinispan` jars **from the tree** (once, via the Maven-in-Docker reactor) and hands them to the
+  helm step as Buildkite artifacts; the helm step downloads them and does cheap `docker build`s (a COPY into
+  distroless) to produce the `-clustered` and `mockserver-webhook` images, then runs the suite. The jars travel as
+  artifacts (~200 MB total) rather than `docker save`d images (~1.3 GB), mirroring the node-launcher / WAR hand-off. Both
+  layers **fail closed**: the helm step exits non-zero if any jar artifact is absent, and the harness runs with
+  `REQUIRE_CLUSTERED_IMAGE=true`/`REQUIRE_WEBHOOK_IMAGE=true` so an image that is expected-but-absent is recorded as a
+  **FAILURE**, never a skip — a skip in CI is now impossible. Local `container_integration_tests/integration_tests.sh`
+  is unchanged for a developer without the images: it still records a comprehensible SKIP (no fail-closed flag set),
+  and the harness now also builds the `mockserver-webhook` image locally (`build_webhook_docker`) so the sidecar case
+  runs blocking in local dev too — it was never built by the harness before, so that case had always skipped.
+
 ### Added
 - A `jarPath` launcher option and matching `MOCKSERVER_JAR_PATH` environment variable for `mockserver-node`, pointing
   `start_mockserver` at a pre-provisioned `mockserver-netty` jar-with-dependencies instead of downloading one from

@@ -55,15 +55,23 @@ DNS_PING genuinely requires Kubernetes DNS + a headless Service, which a JVM/Tes
 harness cannot provide without re-implementing k8s DNS. Proven red by deleting the headless
 Service and rolling the pods: both then report a 1-node view and state does not converge.
 
-### CI reach (important caveat)
+### CI reach — CLOSED (2026-08-17)
 
-All three depend on Java-built images — the `-clustered` variant and the webhook handler —
-that the current CI helm step (`helm-integration-test.sh`, `SKIP_JAVA_BUILD=true`, no JDK)
-does **not** build. So in CI today they record an honest **SKIP** (not a pass, not a warn),
-gated on `clustered_image_available` / `webhook_image_available`; they run **blocking** only
-where those images exist (local dev, or a future CI step that builds them). Making them run
-green in CI requires extending the helm CI step to build the `-clustered` and
-`mockserver-webhook` images — tracked separately as it touches `.buildkite/**`.
+All three depend on Java-built images — the `-clustered` variant and the webhook handler.
+They now run **blocking in CI**, not skipping. A new `:maven: build container-test images
+(jars)` step (`container-tests-build-images.sh`) in the `mockserver-container-tests` pipeline
+builds the `mockserver-netty`, `mockserver-k8s-webhook`, and `mockserver-state-infinispan`
+jars from the tree via the Maven-in-Docker reactor and uploads them as Buildkite artifacts;
+the helm step (`helm-integration-test.sh`) `depends_on` it, downloads the jars, and does cheap
+`docker build`s to produce the `-clustered` and `mockserver-webhook` images before running the
+suite (jars travel as artifacts, not `docker save`d images, since both steps share the same
+pipeline's artifacts but no filesystem). The step then exports
+`REQUIRE_CLUSTERED_IMAGE=true`/`REQUIRE_WEBHOOK_IMAGE=true`, so the harness records a **FAILURE**
+(not a skip) for any expected-but-absent image — a CI skip is impossible. The
+`clustered_image_available` / `webhook_image_available` gates remain, but only degrade to an
+honest SKIP for genuine local-dev-without-images (no `REQUIRE_*` flag set). Proven: images build
+from the jars and boot; with `REQUIRE_*=true` and the images removed, all three cases record
+`Failed:` and the harness exits 1; with the flags unset they SKIP and exit 0.
 
 ## Judged not worth doing
 

@@ -61,6 +61,7 @@ function build_docker() {
   fi
   if [[ "${SKIP_DOCKER_BUILD_MOCKSERVER:-}" != "true" ]]; then
     build_clustered_docker
+    build_webhook_docker
   fi
   if [[ "${SKIP_DOCKER_REBUILD_CLIENT:-}" != "true" ]]; then
     runCommand "docker build -t mockserver/mockserver:integration_testing_client_curl -f ${SCRIPT_DIR}/client_docker_images/CurlClientDockerfile ${SCRIPT_DIR}/client_docker_images"
@@ -112,6 +113,36 @@ function build_clustered_docker() {
   if [[ "${ca_bundle_created}" == "true" ]]; then
     rm -f "${clustered_dir}/ca-bundle.pem"
   fi
+}
+
+# Build the admission-webhook image (mockserver/mockserver-webhook) so the
+# helm_sidecar_injection e2e runs blocking in local dev too. Symmetric with
+# build_clustered_docker: needs the mockserver-k8s-webhook fat jar, which the
+# reactor `package` in build_docker() produces. Without this the webhook image
+# was never built by the harness at all — so the sidecar case always skipped,
+# even locally. docker/webhook is single-stage distroless and does NOT COPY a
+# ca-bundle, so no ensure_variant_ca_bundle staging is needed.
+function build_webhook_docker() {
+  local webhook_dir="${SCRIPT_DIR}/../docker/webhook"
+
+  # Same host-JDK guard as build_clustered_docker: the CI helm step runs with no
+  # JDK and builds this image itself from a downloaded jar, so skip here.
+  if ! command -v java >/dev/null 2>&1; then
+    printMessage "webhook: skipping build (no JDK on host — the CI helm step builds this image from a jar artifact)"
+    return 0
+  fi
+
+  local source_jar
+  source_jar=$(ls "${SCRIPT_DIR}"/../mockserver/mockserver-k8s-webhook/target/mockserver-k8s-webhook-*-jar-with-dependencies.jar 2>/dev/null | head -1)
+  if [[ -z "${source_jar}" ]]; then
+    printMessage "webhook: skipping build (no local mockserver-k8s-webhook fat jar — run a reactor package first)"
+    return 0
+  fi
+  cp "${source_jar}" "${webhook_dir}/mockserver-webhook.jar"
+
+  runCommand "docker build --no-cache -t ${WEBHOOK_IMAGE_REPO}:integration_testing ${webhook_dir}"
+
+  rm -f "${webhook_dir}/mockserver-webhook.jar"
 }
 
 # test <test_case> [non_blocking]
@@ -614,6 +645,15 @@ function assert_manifest_complete() {
 CLUSTERED_IMAGE="mockserver/mockserver:integration_testing_clustered"
 WEBHOOK_IMAGE_REPO="mockserver/mockserver-webhook"
 
+# Fail-closed switches for CI. Off by default so a local run WITHOUT the images
+# degrades to an honest SKIP (right off-CI). The CI helm step BUILDS both images
+# and sets these to true, so an absent image there is a FAILURE, not a skip — a
+# skip that masquerades as coverage is exactly what these remove. Belt-and-braces
+# with the helm step's own fail-closed jar download: even if the gate flags were
+# the only thing standing, a missing image reds the build.
+REQUIRE_CLUSTERED_IMAGE="${REQUIRE_CLUSTERED_IMAGE:-false}"
+REQUIRE_WEBHOOK_IMAGE="${REQUIRE_WEBHOOK_IMAGE:-false}"
+
 function clustered_image_available() {
   docker image inspect "${CLUSTERED_IMAGE}" >/dev/null 2>&1
 }
@@ -743,8 +783,13 @@ function run_all_tests() {
         else
           logTestResult "1" "helm_sidecar_injection"
         fi
+      elif [[ "${REQUIRE_WEBHOOK_IMAGE}" == "true" ]]; then
+        # CI: the webhook image is REQUIRED (the helm step built it). Absent here
+        # means the build did not produce it — fail closed, never skip.
+        printFailureMessage "webhook handler image REQUIRED (REQUIRE_WEBHOOK_IMAGE=true) but absent — the image-build step must produce ${WEBHOOK_IMAGE_REPO}. Failing closed."
+        logTestResult "1" "helm_sidecar_injection"
       else
-        logTestSkip "helm_sidecar_injection" "webhook handler image not built (needs JDK+Maven reactor; not built in the CI helm step)"
+        logTestSkip "helm_sidecar_injection" "webhook handler image absent in this local build (build the mockserver-k8s-webhook image to run this case)"
       fi
 
       # Clustered state convergence + JGroups DNS_PING discovery e2e. Both need
@@ -764,9 +809,15 @@ function run_all_tests() {
             logTestResult "1" "helm_clustered_convergence"
             logTestResult "1" "helm_jgroups_dns_ping"
           fi
+        elif [[ "${REQUIRE_CLUSTERED_IMAGE}" == "true" ]]; then
+          # CI: the clustered image is REQUIRED (the helm step built it). Absent
+          # here means the build did not produce it — fail closed, never skip.
+          printFailureMessage "clustered image REQUIRED (REQUIRE_CLUSTERED_IMAGE=true) but absent — the image-build step must produce ${CLUSTERED_IMAGE}. Failing closed."
+          logTestResult "1" "helm_clustered_convergence"
+          logTestResult "1" "helm_jgroups_dns_ping"
         else
-          logTestSkip "helm_clustered_convergence" "clustered image not built (needs JDK+Maven reactor; not built in the CI helm step)"
-          logTestSkip "helm_jgroups_dns_ping" "clustered image not built (needs JDK+Maven reactor; not built in the CI helm step)"
+          logTestSkip "helm_clustered_convergence" "clustered image absent in this local build (build the -clustered image to run this case)"
+          logTestSkip "helm_jgroups_dns_ping" "clustered image absent in this local build (build the -clustered image to run this case)"
         fi
       fi
       tear-down-k8s
@@ -830,5 +881,11 @@ function run_all_tests() {
   exit ${EXIT_CODE:-0}
 }
 
-build_docker
-run_all_tests
+# Only build + run when EXECUTED, not when SOURCED. Executing the script keeps the
+# original behaviour (BASH_SOURCE[0] == $0); sourcing it (e.g. from a focused test
+# that drives run_all_tests with the k3d plumbing stubbed to prove the fail-closed
+# image gates) defines the functions without side effects.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  build_docker
+  run_all_tests
+fi

@@ -305,7 +305,7 @@ scripts/local_docker_launch.sh
 
 ## Container Integration Tests
 
-The `container_integration_tests/` directory contains 24 automated tests (16 Docker Compose + 8 Helm), plus non-blocking smoke tests for image variants:
+The `container_integration_tests/` directory contains 26 automated tests (16 Docker Compose + 10 Helm/k3d), plus non-blocking smoke tests for image variants:
 
 ```mermaid
 graph TD
@@ -330,7 +330,7 @@ graph TD
         DC16[WAR Tomcat]
     end
 
-    subgraph "Helm Tests (8)"
+    subgraph "Helm/k3d Tests (10)"
         H1[Default Helm values]
         H2[Helm with local Docker image]
         H3[Helm with custom port]
@@ -338,7 +338,9 @@ graph TD
         H5[Helm with inline config]
         H6[Helm ConfigMap injection]
         H7[Helm MockServer config chart]
-        H8[Clustered state convergence]
+        H8[Sidecar injection webhook]
+        H9[Clustered state convergence]
+        H10[JGroups DNS_PING discovery]
     end
 
     TESTS --> DC1
@@ -365,7 +367,17 @@ graph TD
     TESTS --> H6
     TESTS --> H7
     TESTS --> H8
+    TESTS --> H9
+    TESTS --> H10
 ```
+
+`H8`–`H10` need Java-built images (the webhook handler and the `-clustered` Infinispan
+variant). In CI the `mockserver-container-tests` pipeline builds those images from tree-built
+jar artifacts (a dedicated `build container-test images (jars)` step hands the jars to the k3d
+helm step, which does the `docker build`s), then runs these cases **blocking** with
+`REQUIRE_CLUSTERED_IMAGE=true`/`REQUIRE_WEBHOOK_IMAGE=true` so an absent image is a failure, not
+a skip. In local dev the harness builds the same images itself (`build_clustered_docker`,
+`build_webhook_docker`); a developer without them gets an honest skip.
 
 Each test:
 1. Starts MockServer (via Docker Compose or Helm/k3d)

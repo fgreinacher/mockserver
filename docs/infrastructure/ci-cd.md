@@ -165,7 +165,7 @@ All pipelines are managed via Terraform in `terraform/buildkite-pipelines/pipeli
 | `mockserver-ruby` | `pipeline-ruby.yml` | Orchestrator | Ruby unit + integration tests (builds MockServer image from HEAD) |
 | `mockserver-maven-plugin` | `pipeline-maven-plugin.yml` | Orchestrator | Maven plugin build and test |
 | `mockserver-performance-test` | `pipeline-perf-test.yml` | Orchestrator | Perf test script validation |
-| `mockserver-container-tests` | `pipeline-container-tests.yml` | Orchestrator | Shell script validation |
+| `mockserver-container-tests` | `pipeline-container-tests.yml` | Orchestrator | Shell script validation + k3d Helm integration tests (builds the `-clustered` + webhook images from tree-built jar artifacts) |
 | `mockserver-website` | `pipeline-website.yml` | Orchestrator | Jekyll site build |
 | `mockserver-infra` | `pipeline-infra.yml` | Orchestrator | Infrastructure validation |
 | `mockserver-build-image` | `docker-push-maven.yml` | Orchestrator + Manual | Build/push maven CI image |

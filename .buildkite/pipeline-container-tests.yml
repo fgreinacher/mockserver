@@ -20,10 +20,38 @@ steps:
   # remains the static lint in "validate container integration test scripts" above,
   # exactly where it was before b63d0b4da.
 
+  # Build the -clustered + webhook + netty jars FROM THIS TREE and hand them to
+  # the helm step as artifacts. That step runs on a Docker-only agent with no JDK
+  # and cannot run the Maven reactor these images need; producing the jars here
+  # (same pipeline, so the artifacts are reachable) lets the three image-dependent
+  # k3d cases (helm_sidecar_injection, helm_clustered_convergence,
+  # helm_jgroups_dns_ping) run BLOCKING in CI instead of skipping. See
+  # container-tests-build-images.sh for the jars-not-`docker save`-images rationale.
+  - label: ":maven: :java: build container-test images (jars)"
+    key: "container-test-image-jars"
+    command: ".buildkite/scripts/steps/container-tests-build-images.sh"
+    artifact_paths:
+      - "mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar"
+      - "mockserver/mockserver-k8s-webhook/target/mockserver-k8s-webhook-*-jar-with-dependencies.jar"
+      - "mockserver/mockserver-state-infinispan/target/clustered-libs/*.jar"
+    timeout_in_minutes: 60
+    agents:
+      queue: default
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
   - label: ":helm: Helm integration tests (k3d)"
     command: ".buildkite/scripts/steps/helm-integration-test.sh"
-    timeout_in_minutes: 15
-    depends_on: ~
+    timeout_in_minutes: 20
+    # Runs against the tree-built jars from the step above (downloaded as
+    # artifacts) so the -clustered + webhook images exist and the three
+    # image-dependent cases run blocking. depends_on lets it start as soon as the
+    # jars are ready.
+    depends_on: "container-test-image-jars"
     agents:
       queue: default
     retry:
