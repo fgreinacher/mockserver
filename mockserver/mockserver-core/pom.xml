@@ -879,6 +879,19 @@
                         <exclude>**/CertificateHardeningGlobalStateTest.java</exclude>
                         <!-- Registers into and resets the process-wide CassetteRegistry singleton -->
                         <exclude>**/HttpStateCassetteEndpointTest.java</exclude>
+                        <!-- Force a fresh <clinit> of MockServerLogger / ConfigurationProperties in an
+                             isolated child-first classloader. That <clinit> reaches
+                             MockServerLogger.installDefaultJavaLoggingFormat() ->
+                             LogManager.getLogManager().readConfiguration(...), and java.util.logging's
+                             LogManager is a JVM-global singleton the child-first loader does NOT isolate:
+                             readConfiguration performs a reset() that strips EVERY handler from EVERY
+                             logger process-wide. Run beside any handler-capturing test in the parallel
+                             phase (e.g. ConfigurationValueRedactionTest / ConfigurationDTOCredentialMaskingTest,
+                             which attach a JUL handler and assert an exact capture count) this reset
+                             detaches the victim's handler mid-test, silently dropping a captured record.
+                             So these must never run concurrently with any such test. -->
+                        <exclude>**/ClassInitializationDeadlockTest.java</exclude>
+                        <exclude>**/ConfigurationPropertiesInitializationTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -1028,6 +1041,11 @@
                                 <include>**/GrpcHealthRegistryTest.java</include>
                                 <include>**/CertificateHardeningGlobalStateTest.java</include>
                                 <include>**/HttpStateCassetteEndpointTest.java</include>
+                                <!-- Fresh <clinit> in an isolated classloader performs a JVM-global
+                                     LogManager reset (readConfiguration) that strips handlers from every
+                                     logger, corrupting handler-capturing tests run beside them. -->
+                                <include>**/ClassInitializationDeadlockTest.java</include>
+                                <include>**/ConfigurationPropertiesInitializationTest.java</include>
                             </includes>
                         </configuration>
                     </execution>

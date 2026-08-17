@@ -330,6 +330,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PKCS#1 form); the code continues to load `PKCS8CertificateAuthorityPrivateKey.pem`.
 
 ### Fixed
+- Fixed a rare `mockserver-core` unit-test flake (`ConfigurationValueRedactionTest` /
+  `ConfigurationDTOCredentialMaskingTest` failing with `Expected: is <1> but: was <0>` when asserting an exact count of
+  captured log records). These tests attach a `java.util.logging` handler and assert what is emitted. Two other tests —
+  `ClassInitializationDeadlockTest` and `ConfigurationPropertiesInitializationTest` — force a fresh `<clinit>` of
+  MockServer classes in an isolated child-first classloader; that initialisation reaches
+  `MockServerLogger.installDefaultJavaLoggingFormat()` → `LogManager.getLogManager().readConfiguration(...)`, and
+  `java.util.logging.LogManager` is a **JVM-global singleton the child-first classloader does not isolate**, so its
+  `readConfiguration` performs a `reset()` that removes every handler from every logger in the JVM. When one of those
+  classes ran in the parallel Surefire phase alongside a handler-capturing test, the reset detached the capturing
+  handler mid-test and a subsequent emit went uncounted. Both fresh-`<clinit>` classes are now pinned to the sequential
+  (`parallel=none`) Surefire phase in `mockserver-core/pom.xml`, so they can never run concurrently with a
+  handler-capturing test. No production behaviour changes.
 - Fixed the Helm chart's sidecar-injection webhook being broken out of the box. The default TLS-bootstrap image
   `webhook.tls.setupImage: bitnami/kubectl:1.31` no longer exists — Bitnami withdrew the tag from Docker Hub — so both
   bootstrap Jobs failed, the `MutatingWebhookConfiguration`'s `caBundle` was never patched, and because
