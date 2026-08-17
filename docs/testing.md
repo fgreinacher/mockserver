@@ -47,7 +47,7 @@ No TestNG is used anywhere in the project.
 |--------|-----------|-------------------|-----------------|-------------|
 | `mockserver-core` | ~220 | ~62 | ~282 | Largest suite: matchers, serialization, validators, actions, collections, auth, logging |
 | `mockserver-netty` | ~13 | ~64 | ~77 | Server lifecycle, TLS, proxy, CORS, authenticated control plane |
-| `mockserver-examples` | 0 | ~25 | ~25 | End-to-end examples with various HTTP clients |
+| `mockserver-examples` | 0 | ~25 | ~25 | End-to-end examples with various HTTP clients (sample code, built + tested standalone — not a reactor module) |
 | `mockserver-junit-jupiter` | ~6 | ~12 | ~18 | JUnit 5 extension tests (injection, parallel safety, settings) |
 | `mockserver-junit-rule` | ~4 | ~4 | ~8 | JUnit 4 Rule/ClassRule tests |
 | `mockserver-war` | 0 | ~8 | ~8 | WAR deployment integration tests (embedded Tomcat) |

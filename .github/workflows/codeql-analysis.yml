@@ -48,10 +48,11 @@ jobs:
     - name: Build with Maven
       if: matrix.language == 'java'
       working-directory: mockserver
-      # 'package' (not 'compile') is required: mockserver-examples depends on
-      # the *-no-dependencies shaded jars, whose classes only exist after the
-      # maven-shade-plugin runs in the package phase. A compile-only build
-      # leaves those jars empty and mockserver-examples fails to compile.
+      # 'package' (not 'compile') fully builds the reactor including the
+      # *-no-dependencies shaded jars, whose classes only exist after the
+      # maven-shade-plugin runs in the package phase. CodeQL scans the reactor;
+      # mockserver-examples is no longer part of it (moved to the standalone
+      # examples/java, built in Buildkite) so it is not analysed here.
       run: ./mvnw -B clean package -DskipTests -Dmaven.javadoc.skip=true
       env:
         MAVEN_OPTS: -Xmx2048m

@@ -1,8 +1,14 @@
 # Java Examples
 
 Java client and proxy examples for MockServer. Unlike the other tracks, this is a
-**buildable Maven module** (`org.mock-server:mockserver-examples`) wired into the reactor,
-so the examples are **compiled and tested in CI** and cannot silently rot.
+**buildable Maven project** (`org.mock-server:mockserver-examples`). It is sample code —
+**not** a published artifact (see the `### Removed` note in the repo `changelog.md`) — and
+it is **not** a module of the `mockserver` reactor, which is precisely what keeps it
+unpublished, since the release deploys that reactor. It is instead
+built and tested standalone: its parent POM is `../../mockserver/pom.xml`, so it resolves the
+reactor's just-installed `SNAPSHOT` artifacts from your local `~/.m2`. CI keeps it compiled
+**and** tested by running a second, standalone Maven invocation immediately after the reactor
+`install` (`scripts/buildkite_quick_build.sh`), so the examples still cannot silently rot.
 
 ## What it demonstrates
 
@@ -13,17 +19,28 @@ so the examples are **compiled and tested in CI** and cannot silently rot.
 
 ## Prerequisites
 
-- JDK 17+ and Maven (or run from the repo's reactor).
+- JDK 17+ and Maven.
+- The MockServer `SNAPSHOT` artifacts this project depends on must be in your local `~/.m2`.
+  Because `examples/java` is **not** a reactor module you cannot reach it with `-pl`/`-am`
+  from the reactor (Maven reports `Could not find the selected project in the reactor`).
+  Install the reactor first:
+
+  ```bash
+  # From the repo root — installs the reactor's SNAPSHOT artifacts into ~/.m2:
+  ( cd mockserver && ./mvnw -pl mockserver-netty-no-dependencies,mockserver-client-java-no-dependencies,mockserver-testing -am install -DskipTests )
+  ```
 
 ## Run
 
+Build/test the examples **standalone** (this is exactly what CI does after the reactor
+`install`):
+
 ```bash
-# Compile/package within the reactor (resolves sibling MockServer artifacts):
-cd ../../mockserver
-mvn -pl ../examples/java -am package -DskipTests
+# From the repo root — compile/package (uses the mvnw wrapper in mockserver/):
+mockserver/mvnw -f examples/java/pom.xml package -DskipTests
 
 # Run the example tests (they start a MockServer and exercise the scenarios):
-mvn -pl ../examples/java -am test
+mockserver/mvnw -f examples/java/pom.xml test
 ```
 
 ## Expected output

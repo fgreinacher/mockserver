@@ -128,8 +128,18 @@
         <module>mockserver-spring-test-listener</module>
         <module>mockserver-spring-test-listener-no-dependencies</module>
         <module>mockserver-spring-boot-starter</module>
-        <!-- examples relocated to repo-root examples/java (kept in the reactor so they stay compiled/tested) -->
-        <module>../examples/java</module>
+        <!-- examples/java is deliberately NOT a module of this reactor. It lives at
+             the repo-root examples/java and is built + tested standalone (its parent
+             is ../../mockserver/pom.xml, so it resolves this reactor's just-installed
+             SNAPSHOT artifacts). It CANNOT be a `<module>../examples/java</module>`
+             here: that path escapes Dependabot's directory:"/mockserver" scope, and
+             with no repo-root pom.xml Dependabot re-parses a file subset, finds no
+             top-level pom and aborts EVERY grouped Maven update for this reactor with
+             "No pom.xml!" (broken from d3cfa9aaf until this was removed). CI keeps the
+             examples compiled + tested via a second Maven invocation immediately after
+             this reactor's `install` — see scripts/buildkite_quick_build.sh. Its own
+             dependency updates are covered by the /examples/java block in
+             .github/dependabot.yml. -->
         <module>mockserver-async</module>
         <module>mockserver-testcontainers</module>
         <module>mockserver-state-infinispan</module>

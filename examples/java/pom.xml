@@ -19,6 +19,33 @@
 
     <properties>
         <module.name>org.mockserver.examples</module.name>
+        <!-- This module is sample code that demonstrates usage; it is NOT a supported,
+             published artifact. Historically it WAS published: it had no skip, it was a
+             `<module>` of the mockserver reactor, and
+             `scripts/release/components/maven-central.sh` runs `mvn deploy -P release`
+             across that whole reactor with no `-pl` restriction — so
+             `org.mock-server:mockserver-examples` was GPG-signed and pushed to Maven
+             Central every release. Consumers who need the samples should copy the code
+             rather than depend on the artifact.
+
+             What actually keeps it unpublished is that it is no longer a `<module>` of
+             the release reactor, so `mvn deploy -P release` never reaches it.
+             `skipPublishing` below is the belt-and-braces guard for the one scenario
+             that would undo that: someone re-adding a `<module>../examples/java</module>`
+             entry.
+
+             It MUST be `skipPublishing`, not `maven.deploy.skip`. This project publishes
+             with org.sonatype.central:central-publishing-maven-plugin (see the `release`
+             profile in mockserver/pom.xml), whose DeployLifecycleParticipant actively
+             DISABLES maven-deploy-plugin and binds its own `publish` goal to the `deploy`
+             phase. Verified against the plugin jar: it contains zero references to
+             `maven.deploy.skip`, and its only skip gate is the `${skipPublishing}`
+             parameter. Setting `maven.deploy.skip` here would disable a plugin that is
+             already disabled — an inert guard that reads like a real one. -->
+        <skipPublishing>true</skipPublishing>
+        <!-- Harmless defence-in-depth if this is ever built with a stock deploy plugin
+             (e.g. outside the `release` profile). NOT the operative control - see above. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
         <jersey.version>4.0.2</jersey.version>
         <jetty.version>12.1.10</jetty.version>
         <google-http-client.version>2.1.0</google-http-client.version>

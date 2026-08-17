@@ -160,7 +160,9 @@ Integration test infrastructure:
 
 ### mockserver-examples
 
-Usage examples:
+Usage examples (sample code — **not** a published artifact and **not** a module of the
+`mockserver` reactor; lives at the repo root `examples/java/` and is built + tested standalone
+in CI right after the reactor `install`):
 
 - Docker Compose configuration samples (11 scenarios including mTLS)
 - Code examples referenced by the Jekyll documentation site

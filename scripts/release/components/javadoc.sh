@@ -36,12 +36,12 @@ log_info "Generate aggregate Javadoc"
 # maven-javadoc-plugin's `aggregate` goal forks `compile` on each reactor
 # module, but the forked compile resolves inter-module dependencies via the
 # local Maven repository — not the reactor's in-flight build. On a fresh
-# Buildkite agent the local repo is empty, so mockserver-examples (which
-# depends on mockserver-client-java, mockserver-netty, etc.) fails its
-# default-compile with "package org.mockserver.client does not exist" and
-# the whole aggregate aborts. Two-pass: install first to populate the local
-# repo at $RELEASE_VERSION, then aggregate javadoc with all dependencies
-# resolvable.
+# Buildkite agent the local repo is empty, so a downstream module (e.g.
+# mockserver-netty, which depends on mockserver-core) fails its default-compile
+# with "package org.mockserver... does not exist" and the whole aggregate
+# aborts. Two-pass: install first to populate the local repo at $RELEASE_VERSION,
+# then aggregate javadoc with all dependencies resolvable. (examples/java is not
+# a reactor module, so it is not part of the aggregate javadoc.)
 #
 # IMPORTANT: the install pass MUST NOT use `-P release`. That profile activates
 # maven-gpg-plugin which signs every artifact, and the Javadoc job's container

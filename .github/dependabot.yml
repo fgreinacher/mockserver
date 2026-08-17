@@ -40,6 +40,28 @@ updates:
       - dependency-name: "com.graphql-java:graphql-java"
         versions: [">=25.0.0"]
 
+  # examples/java is the relocated example suite. It is deliberately NOT a module
+  # of the /mockserver reactor (a `<module>../examples/java</module>` path escaped
+  # this directory scope and made Dependabot abort every grouped core update with
+  # "No pom.xml!" — see the comment in mockserver/pom.xml). Because it sits outside
+  # the reactor it has its own self-contained pom, so it needs its own Dependabot
+  # block or its dependencies get NO coverage at all. Mirrors the /mockserver block
+  # conventions (daily, dependencies+java labels, minor+patch grouping). Expect it
+  # to open PRs once live — these dependencies have never been swept before.
+  - package-ecosystem: "maven"
+    directory: "/examples/java"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "java"
+    groups:
+      maven-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
   - package-ecosystem: "maven"
     directory: "/mockserver/mockserver-maven-plugin"
     schedule:

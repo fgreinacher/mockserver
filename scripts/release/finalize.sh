@@ -65,12 +65,13 @@ log_info "Bump pom.xml: $RELEASE_VERSION -> $NEXT_VERSION"
 if is_dry_run; then
   log_dry "would: update_pom_versions \$REPO_ROOT $RELEASE_VERSION $NEXT_VERSION"
 else
-  # Scan the whole repo (not just mockserver/): the reactor includes sibling
-  # modules outside mockserver/ (examples/java, wired in via ../examples/java).
-  # If examples/java is left at the released version while the rest moves to the
-  # next SNAPSHOT, it detaches from the in-reactor parent and the `mvn deploy`
-  # below fails (e.g. examples checkstyle can no longer resolve checkstyle.xml).
-  # Mirrors the same fix in prepare.sh.
+  # Scan the whole repo (not just mockserver/): examples/java lives outside
+  # mockserver/ and is a standalone build whose parent is ../../mockserver/pom.xml
+  # (no longer a reactor module). If it is left at the released version while the
+  # reactor moves to the next SNAPSHOT, its parent reference dangles and the CI
+  # examples build (scripts/buildkite_quick_build.sh) can no longer resolve the
+  # parent. Bumping it here keeps it attached; it is also committed explicitly
+  # below. Mirrors the same scan in prepare.sh.
   update_pom_versions "$REPO_ROOT" "$RELEASE_VERSION" "$NEXT_VERSION"
 fi
 

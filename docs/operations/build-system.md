@@ -93,7 +93,7 @@ The project comprises 25 Maven modules:
 | `mockserver-junit-jupiter-no-dependencies` | jar (shaded) | JUnit 5 extension, shaded |
 | `mockserver-spring-test-listener` | jar | Spring Test integration |
 | `mockserver-spring-test-listener-no-dependencies` | jar (shaded) | Spring Test integration, shaded |
-| `mockserver-examples` (at `../examples/java`) | jar | Usage examples |
+| `mockserver-examples` (at `examples/java`, built standalone — not a reactor module) | jar | Usage examples |
 | `mockserver-async` | jar | AsyncAPI broker mocking |
 | `mockserver-testcontainers` | jar | Testcontainers integration module |
 | `mockserver-state-infinispan` | jar | Infinispan-backed clustered state backend |

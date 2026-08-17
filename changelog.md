@@ -24,7 +24,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   support for the new major. The `ignore` carries the reason and an explicit revisit condition, so it is a recorded
   decision rather than silent suppression.
 
+### Removed
+- **BREAKING BEHAVIOUR: `org.mock-server:mockserver-examples` is no longer published to Maven Central, and the
+  `org.mockserver.examples` JPMS automatic module is no longer resolvable.** This artifact was only ever sample code
+  demonstrating client and proxy usage — not a supported consumer dependency — but it had been GPG-signed and deployed
+  to Maven Central on every release (it was a `<module>` of the `mockserver` reactor, and the release deploy runs
+  `mvn deploy -P release` over that whole reactor with no `-pl` restriction). It has now been removed from the `mockserver`
+  reactor, so the release deploy no longer reaches it and no new versions will appear on Central
+  (`skipPublishing=true` in its POM guards against a future re-add). **Previously published versions (7.6.0 and earlier)
+  remain available and resolvable forever** — only new releases are affected. Anyone who declared a dependency on
+  `mockserver-examples` or `requires org.mockserver.examples` should pin the last published version or, preferably,
+  copy the sample code (`examples/java/`) into their own project. This is marked `BREAKING BEHAVIOUR` rather than plain
+  `BREAKING` because it does not force a major version bump: the artifact was never a supported dependency, no shipped
+  MockServer artifact depends on it, and every previously published version stays available.
+
 ### Fixed
+- Dependabot now proposes grouped Maven updates for the core `mockserver` reactor again. The reactor's
+  `mockserver/pom.xml` declared `<module>../examples/java</module>`, a path that escaped Dependabot's
+  `directory: "/mockserver"` scope; with no repository-root `pom.xml`, Dependabot re-parsed a scoped file subset,
+  found no top-level pom and aborted every grouped-update run for the reactor with `No pom.xml!`. As a result **no**
+  grouped Maven PR was ever created for the core modules (broken since the examples were unified in `d3cfa9aaf`),
+  while the self-contained `mockserver-maven-plugin` sibling kept working, and `examples/java`'s own dependencies had
+  no coverage at all. `examples/java` is now removed from the reactor so `/mockserver` is a self-contained Maven
+  directory; the examples are kept compiled and tested by a second standalone Maven invocation in CI immediately after
+  the reactor `install` (`scripts/buildkite_quick_build.sh`), and their own dependencies are covered by a new
+  `/examples/java` block in `.github/dependabot.yml`. (Vulnerability *alerts* were never affected — those come from the
+  submitted dependency graph, not update proposal.)
 - The release pipeline can no longer silently overwrite the previous version's archived documentation site. Whether a
   release creates a new versioned subdomain (`X-Y.mock-server.com`) is fully determined by whether it is a major/minor
   release, but it was a free operator dropdown (`create-versioned-site`) defaulting to `no`. On the 7.6.0 release that

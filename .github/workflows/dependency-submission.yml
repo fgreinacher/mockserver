@@ -22,10 +22,20 @@ name: Maven Dependency Submission
 #
 #   * mockserver/                         — the main aggregator reactor. Its
 #                                           inter-module SNAPSHOT dependencies resolve
-#                                           in-reactor with no prior install, and it
-#                                           already includes ../examples/java as a
-#                                           module, so examples/java needs no separate
-#                                           submission.
+#                                           in-reactor with no prior install.
+#                                           NOTE: examples/java is NO LONGER a reactor
+#                                           module (removed from mockserver/pom.xml so
+#                                           /mockserver is a self-contained directory
+#                                           for Dependabot's grouped updates), so its
+#                                           dependencies are no longer in this graph.
+#                                           That is intentional: examples/java is sample
+#                                           code that is no longer published to Maven
+#                                           Central (it is no longer a module of the
+#                                           release reactor, so `mvn deploy -P release`
+#                                           never reaches it), so it does
+#                                           not need vulnerability-ALERT submission. Its
+#                                           dependency-UPDATE proposals are still covered
+#                                           by the /examples/java block in dependabot.yml.
 #   * mockserver/mockserver-maven-plugin/ — a SEPARATE build (not a reactor module).
 #                                           It depends on mockserver-netty and
 #                                           mockserver-integration-testing at the

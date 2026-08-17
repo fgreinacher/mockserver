@@ -74,11 +74,14 @@ log_info "Updating pom.xml versions from $CURRENT_VERSION to $RELEASE_VERSION"
 if is_dry_run; then
   log_dry "would: update Maven pom.xml files"
 else
-  # Scan the whole repo, not just mockserver/, because the reactor includes
-  # sibling modules that live outside mockserver/ (e.g. examples/java, wired in
-  # via <module>../examples/java</module>). update_pom_versions only rewrites
-  # poms containing the exact <version>$CURRENT_VERSION</version> literal, so
-  # integration-test fixture poms pinned to released versions are left alone.
+  # Scan the whole repo, not just mockserver/, because sibling builds live
+  # outside mockserver/ and must move in lock-step with it: examples/java (a
+  # standalone build whose parent is ../../mockserver/pom.xml, no longer a
+  # reactor module) and the mockserver-maven-plugin. update_pom_versions only
+  # rewrites poms containing the exact <version>$CURRENT_VERSION</version>
+  # literal, so integration-test fixture poms pinned to released versions are
+  # left alone. examples/java/pom.xml is also listed explicitly in the commit
+  # below.
   update_pom_versions "$REPO_ROOT" "$CURRENT_VERSION" "$RELEASE_VERSION"
 
   # Guard: fail before we commit, tag, and push if any reactor pom was missed.

@@ -48,6 +48,7 @@ Dependabot monitors **8 package ecosystems** across the monorepo for outdated an
 | Ecosystem | Directory(ies) | PR Limit |
 |-----------|----------------|:--------:|
 | Maven | `/mockserver` | 20 |
+| Maven | `/examples/java` | 10 |
 | Maven | `/mockserver/mockserver-maven-plugin` | 10 |
 | npm | `/mockserver-ui`, `/mockserver-client-node`, `/mockserver-node`, `/.opencode` | 10 |
 | pip | `/mockserver-client-python` | 10 |
@@ -197,7 +198,7 @@ For most languages GitHub builds the graph by statically indexing manifest files
 
 | Project | `correlator` | Notes |
 |---------|--------------|-------|
-| `mockserver/` | `mockserver-reactor` | The aggregator reactor. Inter-module `SNAPSHOT` deps resolve in-reactor with no prior `install`. **`examples/java` is a reactor module (`../examples/java`), so it is covered here and needs no separate submission.** |
+| `mockserver/` | `mockserver-reactor` | The aggregator reactor. Inter-module `SNAPSHOT` deps resolve in-reactor with no prior `install`. **`examples/java` is no longer a reactor module** (removed from `mockserver/pom.xml` so `/mockserver` is a self-contained directory for Dependabot's grouped updates), so its dependencies are not in this graph — intentional, as `examples/java` is sample code that is no longer published to Maven Central (it is no longer in the release reactor, so `mvn deploy -P release` never reaches it; `skipPublishing=true` in its POM guards a future re-add), so it needs no vulnerability-alert submission. Its dependency-*update* proposals are still covered by the `/examples/java` Dependabot block. |
 | `mockserver/mockserver-maven-plugin/` | `mockserver-maven-plugin` | A **separate** build (not a reactor module). It depends on `mockserver-netty` and `mockserver-integration-testing` at the unreleased `${project.version}` `SNAPSHOT`, so its tree only resolves after those reactor modules are `install`ed into `~/.m2` — the job does a targeted `-pl mockserver-netty,mockserver-integration-testing -am install` first. |
 
 The workflow is **path-gated to `mockserver/**/pom.xml`** on pushes to `master` (plus `workflow_dispatch` for on-demand re-submission after a pin lands) because resolving a Maven tree is not free — only a pom change can alter the graph.
@@ -214,7 +215,7 @@ Snyk provides a second layer of vulnerability scanning, independent of Dependabo
 - **Dashboard:** [app.snyk.io/org/mockserver/projects](https://app.snyk.io/org/mockserver/projects)
 - **Policy file:** [`.snyk`](../../.snyk) documents any vulnerability IDs that are explicitly ignored, along with the rationale and a review date
 
-The `.snyk` policy file excludes `mockserver-examples` (sample code, not shipped). As of the Java 17 / Jakarta EE 10 modernisation the ignore list is **empty** — the Java-11-era ignores (which suppressed ~20 Spring/Jetty/Boot/OkHttp/Reactor CVEs whose only fix required Java 17+) were removed once those vulnerable versions left the dependency tree. Vulnerabilities are now resolved through normal upgrades; add a new, dated ignore only when a deliberate constraint genuinely blocks a fix.
+The `.snyk` policy file has an `exclude:` entry intended to skip the example project (sample code, not published to Maven Central) — but its effectiveness is unverified: the key is a bare directory/module name (`mockserver-examples`), that directory was relocated to `examples/java` by `d3cfa9aaf` in June 2026, and the exclusion has never been validated with a real `snyk test` run. Treat example-project findings as in-scope until a real `snyk test` run proves otherwise. As of the Java 17 / Jakarta EE 10 modernisation the ignore list is **empty** — the Java-11-era ignores (which suppressed ~20 Spring/Jetty/Boot/OkHttp/Reactor CVEs whose only fix required Java 17+) were removed once those vulnerable versions left the dependency tree. Vulnerabilities are now resolved through normal upgrades; add a new, dated ignore only when a deliberate constraint genuinely blocks a fix.
 
 ### Renewing Snyk ignores
 

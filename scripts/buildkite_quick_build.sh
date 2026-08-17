@@ -36,6 +36,35 @@ set +e
 ./mvnw -B --no-transfer-progress -T 1C clean install ${1:-} -Dmockserver.testOutput=quiet -DredirectTestOutputToFile=true -Dmockserver.testLogLevel=INFO "-Dmockserver.testArgLine=-Dmockserver.maxLogEntries=10000 -Dmockserver.maxExpectations=5000"
 MVN_EXIT=$?
 log_debug "Maven exited with code=$MVN_EXIT"
+
+# ──────────────────────────────────────────────────────────────────────
+# Build the relocated examples/ suite standalone.
+#
+# examples/java was removed as a `<module>` of the mockserver reactor
+# (mockserver/pom.xml) so that /mockserver is a self-contained Maven directory:
+# a module path that escaped Dependabot's directory:"/mockserver" scope made
+# Dependabot abort EVERY grouped core update with "No pom.xml!". The examples
+# must still stay compiled AND tested, so they are built here — in the SAME
+# container, immediately after the reactor `install` that populated ~/.m2 with
+# the SNAPSHOT artifacts they depend on (mockserver-netty-no-dependencies,
+# mockserver-client-java-no-dependencies, mockserver-testing) and the parent POM
+# they inherit (../../mockserver/pom.xml). This ordering guarantee is exactly why
+# the invocation lives here rather than in a separate Buildkite step, which would
+# not share this container's freshly-installed local repo.
+#
+# Only build the examples when the reactor build itself passed, and fold the
+# examples exit code into MVN_EXIT so an examples compile/test break turns the
+# whole build red (the silent-stop this guards against). Mirrors the reactor's
+# test-output flags for a consistent, quiet CI log.
+if [ "$MVN_EXIT" -eq 0 ]; then
+    log_debug "Building relocated examples/ suite standalone (mvn -f ../examples/java/pom.xml)..."
+    ./mvnw -B --no-transfer-progress -f ../examples/java/pom.xml clean install ${1:-} -Dmockserver.testOutput=quiet -DredirectTestOutputToFile=true -Dmockserver.testLogLevel=INFO "-Dmockserver.testArgLine=-Dmockserver.maxLogEntries=10000 -Dmockserver.maxExpectations=5000"
+    EXAMPLES_EXIT=$?
+    log_debug "examples/ build exited with code=$EXAMPLES_EXIT"
+    if [ "$EXAMPLES_EXIT" -ne 0 ]; then
+        MVN_EXIT=$EXAMPLES_EXIT
+    fi
+fi
 set -e
 
 trap - SIGTERM SIGINT
