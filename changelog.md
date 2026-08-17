@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A structural wire-contract test for the LLM provider codecs (`LlmCodecStructuralContractTest`), breaking the
+  self-derivation weakness in the golden-file drift test. `LlmCodecGoldenFileTest` regenerates its golden **bodies**
+  from the codec itself (`-Dmockserver.updateLlmGoldens=true`), so a structural codec defect — a renamed field, a
+  wrong SSE event name, a dropped `finish_reason` — bakes straight into its own golden and the byte-for-byte drift
+  test then passes forever, confirming only that the codec is consistent with itself (token *counts* were already
+  pinned separately by `shouldEncodeCanonicalTokenUsageCounts`; the bodies were not). The new test asserts the live
+  codec output against **hand-authored expectations taken from each provider's published API schema** — required
+  fields, JSON types, the enum discriminators each provider uses (`object`/`type`/`finish_reason`/`stop_reason`/
+  `finishReason`/`status`/`done`), the tool-call envelope shape (arguments as a JSON *string* for OpenAI/Responses
+  vs a structured *object* for Anthropic/Gemini/Ollama), and the exact SSE event-name sequence for the event-typed
+  providers — across all seven chat/completion providers (Azure and Bedrock via their delegate codecs). Crucially it
+  **never reads the golden files and is unaffected by `-Dmockserver.updateLlmGoldens=true`**, so regenerating goldens
+  cannot silence it. Each named defect class was injected into a codec and confirmed to turn the test red without
+  regenerating goldens (OpenAI renamed `finish_reason`; Anthropic SSE `content_block_delta`→`content_delta`; Gemini
+  dropped `finishReason`; Responses renamed `status`; Ollama renamed terminal `done`), then reverted. Residual
+  streaming-over-the-wire behaviour remains covered by `LlmAgentLoopE2eTest`.
 - Endpoint-level test (`HttpStateCassetteEndpointTest`) and an authoritative `CassetteRegistry` javadoc note pinning
   the settled decision that **loading and recording register a cassette automatically**. The `record_llm_fixtures`
   and `load_expectations_from_file` MCP tools already auto-register the fixture in the process-wide `CassetteRegistry`

@@ -6,6 +6,23 @@ normalized to remove volatile fields, and committed to the repository. The test
 `LlmCodecGoldenFileTest` asserts them on every test run to catch wire-format
 drift in our codecs.
 
+> **Two complementary tests, one deliberate division of labour.** The golden
+> bodies are regenerated *from the codec itself* (see *Regenerating golden
+> files* below), so on their own they only prove the codec is **consistent with
+> itself** — a structural defect (renamed field, wrong SSE event name, dropped
+> `finish_reason`) bakes straight into its own golden and the drift test then
+> passes forever. Two things break that self-derivation and must **not** be
+> weakened by anyone regenerating goldens:
+>
+> 1. **`LlmCodecGoldenFileTest.shouldEncodeCanonicalTokenUsageCounts`** pins the
+>    **token-count values** against hand-authored `Usage` numbers (the goldens
+>    normalise usage to `0`).
+> 2. **`LlmCodecStructuralContractTest`** pins the **wire body/streaming
+>    structure** against hand-authored, provider-schema-sourced expectations. It
+>    reads live codec output only — it never reads the golden files and is not
+>    affected by `-Dmockserver.updateLlmGoldens=true`. See
+>    [Structural contract test](#structural-contract-test-breaks-self-derivation).
+
 ## How it works
 
 1. **Fixed canonical inputs** -- the test encodes two fixed `Completion` objects
@@ -19,6 +36,58 @@ drift in our codecs.
 4. **Refresh switch** -- when system property `mockserver.updateLlmGoldens`
    (or env `MOCKSERVER_UPDATE_LLM_GOLDENS`) is `true`, the test writes the
    normalized output to the golden files instead of asserting, then passes.
+
+## Structural contract test (breaks self-derivation)
+
+`LlmCodecStructuralContractTest` is the answer to the golden files'
+self-derivation weakness. Where `LlmCodecGoldenFileTest` compares codec output
+against a golden **that was generated from that same codec**,
+`LlmCodecStructuralContractTest` compares codec output against **hand-authored
+structural expectations taken from each provider's published API schema**.
+
+Key properties a future maintainer must preserve:
+
+- **It never reads the golden files.** It encodes the same canonical
+  completions and asserts the live codec output directly (like the token-count
+  test). Running `-Dmockserver.updateLlmGoldens=true` therefore cannot silence
+  it — regenerating goldens does not touch it. **Do not "fix" a failure of this
+  test by regenerating goldens.** A failure means the codec no longer matches
+  the provider's real wire contract; either the codec regressed (fix the codec)
+  or the provider genuinely changed its API (update the hand-authored assertion
+  *and* the golden together, deliberately).
+- **The assertions are external knowledge, not derived from our output.** They
+  pin required fields, JSON types, the enum discriminators each provider uses
+  (`object` / `type` / `finish_reason` / `stop_reason` / `finishReason` /
+  `status` / `done`), the tool-call envelope shape (arguments as a JSON *string*
+  for OpenAI/Responses vs a structured *object* for Anthropic/Gemini/Ollama),
+  and the exact SSE event-name sequence for the event-typed providers
+  (Anthropic/Bedrock `message_start … content_block_delta … message_stop`;
+  Responses `response.created … response.output_text.delta …
+  response.completed`).
+- **Streaming text is asserted by reassembly, not by chunk boundaries.** The
+  test concatenates the streamed deltas and asserts the whole text, so it is not
+  coupled to streaming physics / token chunking (which `LlmAgentLoopE2eTest`
+  covers over a real socket).
+
+### Coverage and the two families
+
+Seven chat/completion providers are pinned. Because Azure OpenAI delegates to
+`OpenAiChatCompletionsCodec` and Bedrock delegates to `AnthropicCodec`, the
+assertions are grouped by wire family, so a defect in a base codec is caught for
+both the base and the delegating provider.
+
+### Proven to bite
+
+Each defect class named in the coverage-gap ticket was injected into a codec and
+confirmed to turn this test red **without** regenerating any golden:
+
+| Provider (family)        | Injected defect                                   | Caught by |
+|--------------------------|---------------------------------------------------|-----------|
+| OpenAI (→ Azure)         | renamed `finish_reason` → `finishReason`          | non-streaming body |
+| Anthropic (→ Bedrock)    | SSE event `content_block_delta` → `content_delta` | streaming framing |
+| Gemini                   | dropped `finishReason` emission                   | non-streaming body |
+| OpenAI-Responses         | renamed `status` → `state`                        | non-streaming body |
+| Ollama                   | renamed terminal `done` → `finished`              | non-streaming body |
 
 ## Where fixtures live
 
@@ -55,6 +124,14 @@ MOCKSERVER_UPDATE_LLM_GOLDENS=true mvn -pl mockserver/mockserver-core test \
 
 Then review the diff with `git diff` and commit the updated golden files
 alongside the codec changes.
+
+> **Regeneration cannot make a structural regression pass.**
+> `-Dmockserver.updateLlmGoldens=true` rewrites the golden bodies but has **no
+> effect on `LlmCodecStructuralContractTest`** (it reads live codec output, not
+> the goldens). If that test is red after a codec change, regenerating goldens
+> will not turn it green — and should not be attempted as a workaround. Fix the
+> codec, or, if the provider genuinely changed its API, update the hand-authored
+> structural assertion deliberately in the same change as the golden refresh.
 
 ## Asserting golden files (normal test run)
 
