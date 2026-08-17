@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 ### Fixed
+- Removed a live-internet dependency from the `mockserver-core` unit tests. `ExpectationSerializerTest`
+  (`shouldAllowSingleOpenAPIObjectForArray` and `shouldAllowMixedExpectationTypesForArray`) referenced the bundled
+  petstore OpenAPI spec via a `https://raw.githubusercontent.com/...` URL; because `deserializeArray()` actually loads
+  the spec to generate example bodies, every ordinary build fetched that URL over the internet. A transient HTTP 429
+  (rate limit) from `raw.githubusercontent.com` failed the test — and took down the 7.6.0 release build after it had
+  already tagged and pushed. Both tests now resolve the byte-identical copy from the test classpath
+  (`org/mockserver/openapi/openapi_petstore_example.json`, the same local reference the sibling `HttpStateTest` and
+  `JsonSchemaExpectationValidatorTest` already use), so the suite no longer depends on GitHub being reachable or
+  un-rate-limited. The behaviour under test (a single OpenAPI object deserialising into an array of expectations with
+  the correct generated bodies) is unchanged and still fully asserted.
 
 ## [7.6.0] - 2026-08-17
 

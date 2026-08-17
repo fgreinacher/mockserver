@@ -77,7 +77,12 @@ public class ExpectationSerializerTest {
     @Test
     public void shouldAllowSingleOpenAPIObjectForArray() {
         // given
-        String specUrlOrPayload = "https://raw.githubusercontent.com/mock-server/mockserver-monorepo/master/mockserver/mockserver-integration-testing/src/main/resources/org/mockserver/openapi/openapi_petstore_example.json";
+        // resolve the OpenAPI spec from the test classpath (mockserver-core test resources) rather
+        // than a live raw.githubusercontent.com URL - deserializeArray() actually loads the spec, so
+        // a remote reference makes this unit test depend on GitHub being reachable and un-rate-limited
+        // (a 429 from raw.githubusercontent.com took down the 7.6.0 release build here). The classpath
+        // copy is byte-identical to the bundled petstore example, so the generated example bodies match.
+        String specUrlOrPayload = "org/mockserver/openapi/openapi_petstore_example.json";
         String requestBytes = ("{" + NEW_LINE +
             "    \"specUrlOrPayload\": \"" + specUrlOrPayload + "\"," + NEW_LINE +
             "    \"operationsAndResponses\": {" + NEW_LINE +
@@ -133,7 +138,12 @@ public class ExpectationSerializerTest {
     @Test
     public void shouldAllowMixedExpectationTypesForArray() {
         // given
-        String specUrlOrPayload = "https://raw.githubusercontent.com/mock-server/mockserver-monorepo/master/mockserver/mockserver-integration-testing/src/main/resources/org/mockserver/openapi/openapi_petstore_example.json";
+        // resolve the OpenAPI spec from the test classpath (mockserver-core test resources) rather
+        // than a live raw.githubusercontent.com URL - deserializeArray() actually loads the spec, so
+        // a remote reference makes this unit test depend on GitHub being reachable and un-rate-limited
+        // (a 429 from raw.githubusercontent.com took down the 7.6.0 release build here). The classpath
+        // copy is byte-identical to the bundled petstore example, so the generated example bodies match.
+        String specUrlOrPayload = "org/mockserver/openapi/openapi_petstore_example.json";
         String requestBytes = ("[ {" + NEW_LINE +
             "    \"specUrlOrPayload\": \"" + specUrlOrPayload + "\"," + NEW_LINE +
             "    \"operationsAndResponses\": {" + NEW_LINE +
