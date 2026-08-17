@@ -9,13 +9,24 @@ describe("MockServerContainer (integration)", () => {
   let isDockerAvailable = false;
 
   beforeAll(async () => {
-    // Probe Docker availability by running a quick Docker info command
-    try {
-      const { execSync } = await import("child_process");
-      execSync("docker info", { stdio: "ignore", timeout: 10_000 });
+    // Probe Docker the way Testcontainers itself connects — directly to the
+    // daemon socket — NOT via a `docker` CLI. Slim CI language images (this
+    // suite runs inside node:20 with the socket bind-mounted) have no docker
+    // binary, so a `docker info` probe would wrongly report "unavailable" and
+    // skip every test while reading as a green pass — the exact false positive
+    // the CI step's evidence-marker guard exists to catch.
+    const { existsSync } = await import("fs");
+    const dockerHost = process.env.DOCKER_HOST;
+    if (dockerHost && dockerHost.trim() !== "") {
+      // A tcp:// or unix:// DOCKER_HOST is set — Testcontainers will use it.
       isDockerAvailable = true;
-    } catch {
-      isDockerAvailable = false;
+    } else {
+      // Fall back to the conventional daemon socket locations: the bind mount at
+      // /var/run/docker.sock in CI, or the Docker Desktop socket on a dev host.
+      const home = process.env.HOME ?? "";
+      isDockerAvailable =
+        existsSync("/var/run/docker.sock") ||
+        (home !== "" && existsSync(`${home}/.docker/run/docker.sock`));
     }
   });
 
@@ -42,6 +53,13 @@ describe("MockServerContainer (integration)", () => {
         method: "PUT",
       });
       expect(response.status).toBe(200);
+
+      // Emit a stable, intentional evidence marker. The CI step
+      // (node-testcontainers-test.sh) greps for this line to fail closed: it
+      // proves a real container started and answered /mockserver/status, rather
+      // than trusting Jest's exit code (this test returns early — a green pass —
+      // when Docker is unavailable, so a skip would otherwise read as success).
+      console.log(`NODE_TESTCONTAINERS_STATUS_OK url=${url} status=${response.status}`);
 
       const body = (await response.json()) as { ports?: unknown[] };
       expect(body).toHaveProperty("ports");

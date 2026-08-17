@@ -42,6 +42,13 @@ def test_container_starts_and_is_reachable(mockserver):
     response = requests.put(f"{url}/mockserver/status")
     assert response.status_code == 200
 
+    # Emit a stable, intentional evidence marker. The CI step
+    # (python-testcontainers-test.sh) greps for this line to fail closed: it
+    # proves a real container started and answered /mockserver/status, rather
+    # than trusting pytest's exit code (the fixture calls pytest.skip when Docker
+    # is unavailable, so a skip would otherwise read as a green pass).
+    print(f"PYTHON_TESTCONTAINERS_STATUS_OK url={url} status={response.status_code}")
+
     body = response.json()
     assert "ports" in body
 

@@ -36,7 +36,7 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
-  - label: ":python: testcontainers-python unit tests"
+  - label: ":python: testcontainers-python unit + container tests"
     command: ".buildkite/scripts/steps/python-testcontainers-test.sh"
     timeout_in_minutes: 10
     retry:

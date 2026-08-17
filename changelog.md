@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Compile gates for the dashboard composer's generated client code in Python, Ruby, Go and Rust
+  (`.buildkite/scripts/steps/ui-client-codegen-compile.sh`, wired into `pipeline-ui.yml`), closing the gap where
+  five of the composer's seven languages had no compile check — only Java (`ui-java-codegen-compile.sh`) and C#
+  (`ComposerCodegenEquivalenceTests.cs`) were gated, so an emitter bug or a client-API rename would ship broken
+  generated code to users caught by nothing (the existing per-language tests only string/byte-compare the emitter
+  output, never feed it to a compiler). Each gate drives the shared representative composer matrix
+  (`extractParityCases.ts` — the exact `combos` the byte-identity parity tests use) through that language's emitter
+  and runs the lightest credible toolchain check: `python -m py_compile` and `ruby -c` catch any emitter bug that
+  produces malformed source (the strongest static check for a dynamically-typed client with no shipped type stubs),
+  while **Go** (`go build`/`go vet ./...`) and **Rust** (`cargo check`) compile the generated code against the real
+  in-repo `mockserver-client-go` / `mockserver-client-rust`, so a renamed client method fails the build — the direct
+  analog of the Java `javac` gate. Node was already covered: the `tsc` type-proof in `node.test.ts`
+  (`typecheck-node-codegen.mjs`) runs under `npm test`, so the orphaned-script concern was already resolved by that
+  test. All four new gates are proven to go red (emitter drift → non-zero exit) and green. Each phase runs in its
+  toolchain's Docker image via `run-in-docker.sh`; set `CODEGEN_COMPILE_USE_DOCKER=false` for host validation.
+- Config-to-client wiring tests for the GCS and Azure blob-store backends
+  (`GcsBlobStoreRegistrarConfigWiringTest`, `AzureBlobStoreRegistrarConfigWiringTest`), closing the gap where
+  only S3 (`S3BlobStoreRegistrarConfigWiringTest`) proved that `blobStoreType` configuration is turned into a
+  working client. The GCS and Azure contract tests hand-build their clients (`new GcsBlobStore(storage, …)`,
+  `new AzureBlobStore(containerClient, …)`), so the registrar that reads the bucket/container name, endpoint,
+  credentials and project from configuration and constructs the client was never exercised — a wiring bug there
+  would ship silently because the contract tests bypass it. The new tests drive each registrar from configuration
+  only (as production does) against the same Docker emulator the contract tests use (fake-gcs-server for GCS,
+  Azurite `3.36.0 --skipApiVersionCheck` for Azure) and assert the wiring that can actually be got wrong:
+  endpoint override, credentials, project id, and that a round-tripped object lands in the *configured*
+  bucket/container under the *configured* key prefix — verified through an independent admin client so a
+  mis-wired name cannot pass. Docker-gated via the canonical `DockerAvailability.isAvailable(...)` probe.
+- The Node and Python Testcontainers modules (`mockserver-testcontainers/node`, `mockserver-testcontainers/python`)
+  now start a real MockServer container in CI and assert against it, closing a false-green gap where both published
+  client libraries had jobs that passed having exercised nothing (`npm run test:unit` and `pytest -m "not docker"`
+  both skipped the container). Their CI steps now mount the Docker socket, run the existing integration tests that
+  start a `mockserver/mockserver` container and drive it over HTTP, and — mirroring the Go/.NET/Rust steps — fail
+  closed by grepping for an evidence marker the test prints only after a real container answered
+  `PUT /mockserver/status` with `200`. A skip (test filtered out, renamed, or Docker unusable) therefore fails the
+  CI build loudly instead of reading as green, while the tests still degrade gracefully to a skip off-CI.
 - A GitHub Actions workflow (`.github/workflows/dependency-submission.yml`) now submits the resolved Maven dependency
   graph so Dependabot vulnerability **alerts** stay accurate for the monorepo layout. GitHub's managed Maven
   auto-submission only discovers a project at the repository root, so it silently stopped when the Java project moved

@@ -63,7 +63,7 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
-  - label: ":node: testcontainers-node build + unit tests"
+  - label: ":node: testcontainers-node unit + container tests"
     command: ".buildkite/scripts/steps/node-testcontainers-test.sh"
     timeout_in_minutes: 10
     retry:
