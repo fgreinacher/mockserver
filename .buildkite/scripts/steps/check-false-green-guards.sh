@@ -49,6 +49,33 @@
 #     months. This flags skips whose message defers work rather than declaring a
 #     case genuinely N/A.
 #
+#   Rule 4 — a helm/k3d harness run that can silently revert to skipping.
+#     The image-dependent k3d cases (helm_sidecar_injection, helm_clustered_
+#     convergence, helm_jgroups_dns_ping) only fail closed on a missing image when
+#     the step that runs the harness exports BOTH REQUIRE_CLUSTERED_IMAGE=true and
+#     REQUIRE_WEBHOOK_IMAGE=true; delete those exports and CI silently records a
+#     SKIP — green, testing nothing. This asserts every step that runs the harness
+#     with helm tests active (invokes integration_tests.sh and does NOT set
+#     SKIP_HELM_TESTS=true) exports both flags. Keyed on that BEHAVIOUR, not on the
+#     filename helm-integration-test.sh, so a rename or a second helm-running step
+#     is covered automatically and the docker-only harness step (which sets
+#     SKIP_HELM_TESTS=true) is correctly exempt.
+#
+#   Rule 5 — a JVM-global logging side effect in mockserver-core's parallel phase.
+#     LogManager.getLogManager().readConfiguration(...) performs a JVM-global
+#     reset() that strips every handler from every logger; LogManager is not
+#     classloader-isolated. A mockserver-core test that reaches that reset — by
+#     forcing a fresh <clinit> of MockServerLogger/ConfigurationProperties via an
+#     isolated classloader, or by calling the static logging setters — races the
+#     log capture of any concurrently-running test, silently zeroing a capture (a
+#     failing test) or falsely passing a silence assertion (a false green). Such a
+#     class MUST be in the sequential-includes list in mockserver-core/pom.xml.
+#     ParallelStaticStateGuardTest cannot catch this: it only checks classes
+#     EXCLUDED from the parallel phase, and these are in neither list. This asserts
+#     every core test source matching a (rare) global-logging signature is
+#     sequential. See the signature list below for what it deliberately does NOT
+#     catch (static-import call sites; other modules).
+#
 # ALLOW-LISTS
 #
 # Some Docker-gated files are legitimately NOT assert-suite-ran-paired (the probe's
@@ -382,6 +409,230 @@ done < <(git grep -niE "logTestSkip.*${DEFERRAL_RE}" -- 'container_integration_t
 for entry in ${R3_ALLOWLIST[@]+"${R3_ALLOWLIST[@]}"}; do
   if ! printf '%s' "$R3_SEEN" | grep -Fxq "$entry"; then
     echo "+++ :bangbang: Rule 3 allow-list entry '${entry}' no longer matches a deferral skip — remove it (the allow-list must not rot into a no-op)" >&2
+    errors=$(( errors + 1 ))
+  fi
+done
+
+# ══════════════════════════════════════════════════════════════════════
+# Rule 4 — a helm/k3d harness run that can silently revert to skipping
+# ══════════════════════════════════════════════════════════════════════
+echo "--- :helm: Rule 4: helm/k3d harness runs must require the built images"
+
+# See R1_ALLOWLIST for the format/justification contract. Entry form: "<file>".
+# A legitimate case would be a helm-running harness step that genuinely must NOT
+# require the images (e.g. images pre-published out of band); none is known.
+R4_ALLOWLIST=()
+
+r4_is_allowlisted() {
+  local path="$1" entry
+  # ${arr[@]+…} keeps an EMPTY array from tripping `set -u` on bash 3.2.
+  for entry in ${R4_ALLOWLIST[@]+"${R4_ALLOWLIST[@]}"}; do
+    [ "$path" = "$entry" ] && return 0
+  done
+  return 1
+}
+
+# Detect, on the COMMENT-STRIPPED body (reusing Rule 2's quote-aware stripper), so
+# a commented-out `export REQUIRE_*_IMAGE=true` can never satisfy the rule and a
+# comment that merely mentions integration_tests.sh (e.g. docker-build-verify.sh)
+# is not mistaken for a harness invocation.
+r4_has() { printf '%s\n' "$1" | grep -qE "$2"; }
+
+# Value must be literally true after expansion (the harness compares == "true");
+# accept optional quoting, reject a longer identifier like `trueish`.
+R4_TRUE='=['\''"]?true([^A-Za-z0-9_]|$)'
+
+R4_SEEN=$'\n'
+r4_helm_running=0
+while IFS= read -r script; do
+  [ -n "$script" ] || continue
+  body="$(strip_comments "$script")"
+  # Only steps that actually RUN the container-integration harness.
+  r4_has "$body" 'integration_tests\.sh' || continue
+  # …with the helm/k3d cases ACTIVE. A step that opts out via SKIP_HELM_TESTS=true
+  # (the docker-compose-only run) does not build or need the images, so it is not
+  # subject to this rule.
+  if r4_has "$body" "SKIP_HELM_TESTS${R4_TRUE}"; then
+    continue
+  fi
+  r4_helm_running=$(( r4_helm_running + 1 ))
+  has_clustered=0; has_webhook=0
+  r4_has "$body" "REQUIRE_CLUSTERED_IMAGE${R4_TRUE}" && has_clustered=1
+  r4_has "$body" "REQUIRE_WEBHOOK_IMAGE${R4_TRUE}"   && has_webhook=1
+  if [ "$has_clustered" -eq 1 ] && [ "$has_webhook" -eq 1 ]; then
+    echo "    :white_check_mark: ${script}: runs the helm harness and exports both REQUIRE_*_IMAGE=true"
+  elif r4_is_allowlisted "$script"; then
+    R4_SEEN="${R4_SEEN}${script}"$'\n'
+    echo "    :white_check_mark: allow-list ok: ${script} (helm harness without required images, justified)"
+  else
+    missing=""
+    [ "$has_clustered" -eq 0 ] && missing="${missing} REQUIRE_CLUSTERED_IMAGE=true"
+    [ "$has_webhook" -eq 0 ] && missing="${missing} REQUIRE_WEBHOOK_IMAGE=true"
+    echo "+++ :bangbang: ${script}: runs the container-integration harness with helm/k3d tests active but does NOT export${missing} — a missing image would then record a SKIP instead of a FAILURE and the build would stay green having tested nothing. Export both flags (see helm-integration-test.sh), or set SKIP_HELM_TESTS=true if this step genuinely does not run the helm cases." >&2
+    errors=$(( errors + 1 ))
+  fi
+done < <(git ls-files '.buildkite/scripts/steps/*.sh')
+
+# Fail closed if NO step runs the helm harness at all: the rule would then be
+# inspecting nothing (the step was renamed, moved, or the harness invocation
+# changed) and could never fire — a silent false positive of its own.
+if [ "$r4_helm_running" -eq 0 ]; then
+  echo "+++ :bangbang: Rule 4: found no CI step that runs the container-integration harness with helm/k3d tests active — the sweep matched nothing (step renamed or harness invocation changed?), so the rule can never fire; failing closed" >&2
+  errors=$(( errors + 1 ))
+fi
+
+for entry in ${R4_ALLOWLIST[@]+"${R4_ALLOWLIST[@]}"}; do
+  if ! printf '%s' "$R4_SEEN" | grep -Fxq "$entry"; then
+    echo "+++ :bangbang: Rule 4 allow-list entry '${entry}' no longer runs the helm harness while missing a REQUIRE_*_IMAGE=true export — remove it (the allow-list must not rot into a no-op)" >&2
+    errors=$(( errors + 1 ))
+  fi
+done
+
+# ══════════════════════════════════════════════════════════════════════
+# Rule 5 — a JVM-global logging side effect in mockserver-core's parallel phase
+# ══════════════════════════════════════════════════════════════════════
+echo "--- :scroll: Rule 5: core tests with a global logging side effect must be sequential"
+
+# See R1_ALLOWLIST for the format/justification contract. Entry form: "<repo-
+# relative .java path>". A legitimate case would be a core test that matches a
+# signature but provably cannot race the shared LogManager (e.g. it re-inits an
+# org.mockserver class with no logging in its <clinit> chain); none is known.
+R5_ALLOWLIST=()
+
+r5_is_allowlisted() {
+  local path="$1" entry
+  # ${arr[@]+…} keeps an EMPTY array from tripping `set -u` on bash 3.2.
+  for entry in ${R5_ALLOWLIST[@]+"${R5_ALLOWLIST[@]}"}; do
+    [ "$path" = "$entry" ] && return 0
+  done
+  return 1
+}
+
+# Global-logging signatures, each rare in test sources and validated against the
+# tree (today's core matches in parentheses). ALL four ultimately reach
+# LogManager.getLogManager().readConfiguration(...) — a JVM-wide handler reset:
+#
+#   S1  LogManager.getLogManager().readConfiguration   — the reset itself (0)
+#   S2  MockServerLogger.configureLogger(              — its only caller (0)
+#   S3  ConfigurationProperties.{logLevel|disableSystemOut|disableLogging}(<arg>)
+#       — the static setters, each of which calls configureLogger() (Configuration
+#       Test, ExceptionHandlingTest)
+#   S4  Class.forName(<expr>, true, <loader>)          — a fresh <clinit> forced via
+#       an isolated classloader, which re-runs MockServerLogger's static reset
+#       (ClassInitializationDeadlockTest, ConfigurationPropertiesInitializationTest)
+#
+# DELIBERATELY REJECTED as too noisy (would be muted by allow-list churn):
+#   * bare `disableSystemOut(`/`disableLogging(`/`logLevel(` WITHOUT the
+#     `ConfigurationProperties.` qualifier — these match the per-instance
+#     `Configuration` builder (`configuration().logLevel(Level.INFO)
+#     .disableSystemOut(false)`), which is NOT a global side effect; requiring the
+#     static qualifier drops GrpcFailSafeLoggingTest, ConfigurationSerializerTest,
+#     ConfigurationDTOTest and MockServerLoggerTest, all legitimately parallel.
+#   * `Class.forName(` in any form — the 1-arg `Class.forName(className)` (already-
+#     loaded classes) and `Class.forName('java.lang.Runtime')` inside a template
+#     string are legitimately parallel; only the 3-arg initialize=true form forces
+#     a fresh <clinit>.
+#
+# LIMITS (stated rather than implied — this rule does NOT catch):
+#   * a call site reached via a static import (bare `logLevel("X")`) or reflection
+#     — indistinguishable from the per-instance builder without semantic analysis,
+#     so the qualified form is the low-false-positive choice;
+#   * a global logging side effect in a module OTHER than mockserver-core — only
+#     core has the parallel/sequential surefire split this rule keys on;
+#   * S4 keys on the reflective SHAPE, not the loaded class name (one true call
+#     site loads a variable), so a 3-arg initialize=true load of a non-logging
+#     class would be flagged too — but forcing a fresh <clinit> in a chosen loader
+#     is itself parallel-unsafe, and there are zero such cases today.
+R5_SIGNATURES=(
+  'LogManager\.getLogManager\(\)\.readConfiguration'
+  'MockServerLogger\.configureLogger\('
+  'ConfigurationProperties\.logLevel\([^)]'
+  'ConfigurationProperties\.disableSystemOut\([^)]'
+  'ConfigurationProperties\.disableLogging\([^)]'
+  'Class\.forName\([^,)]+,[[:space:]]*true[[:space:]]*,'
+)
+
+# The sequential-includes list lives in the `sequential-tests` execution of
+# mockserver-core/pom.xml. Extract ONLY that execution's <include> basenames — a
+# second, unrelated <includes> block (the state/contract failsafe run) must not be
+# read as "sequential". Track the execution by its <id> and close on </execution>.
+CORE_POM="mockserver/mockserver-core/pom.xml"
+SEQUENTIAL_INCLUDES="$(awk '
+  /<id>sequential-tests<\/id>/ { inseq = 1 }
+  inseq && /<include>/ {
+    line = $0
+    sub(/.*<include>\*\*\//, "", line)
+    sub(/<\/include>.*/, "", line)
+    sub(/\.java$/, "", line)
+    print line
+  }
+  inseq && /<\/execution>/ { inseq = 0 }
+' "$CORE_POM")"
+
+r5_is_sequential() {
+  local cls="$1" seq
+  while IFS= read -r seq; do
+    [ "$cls" = "$seq" ] && return 0
+  done <<EOF
+$SEQUENTIAL_INCLUDES
+EOF
+  return 1
+}
+
+# Collect offending files: every mockserver-core test source with a signature
+# match on a NON-COMMENT line (a Java comment mentioning a setter or forName must
+# not count). git grep -n gives path:lineno:content.
+R5_OFFENDERS=""
+r5_corpus=0
+for sig in "${R5_SIGNATURES[@]}"; do
+  while IFS= read -r hit; do
+    [ -n "$hit" ] || continue
+    file="${hit%%:*}"
+    rest="${hit#*:}"
+    content="${rest#*:}"
+    trimmed="$(printf '%s' "$content" | sed -E 's/^[[:space:]]*//')"
+    # Drop Java comment lines (javadoc `*`, `//`, block `/*`/`*/`).
+    case "$trimmed" in
+      \**|//*|/\**) continue ;;
+    esac
+    r5_corpus=$(( r5_corpus + 1 ))
+    R5_OFFENDERS="${R5_OFFENDERS}${file}"$'\n'
+  done < <(git grep -nE "$sig" -- '*.java' \
+             | grep '/mockserver-core/' \
+             | grep '/src/test/' || true)
+done
+
+# Fail closed on an empty corpus: if NO signature matches any core test source,
+# the signatures have rotted (methods renamed / tree moved) and the rule can never
+# fire — a silent false positive. (Today S4 alone guarantees ≥2 matches.)
+if [ "$r5_corpus" -eq 0 ]; then
+  echo "+++ :bangbang: Rule 5: no core test source matches any JVM-global-logging signature — the signatures have rotted (methods renamed or tree moved?), so the rule can never fire; failing closed" >&2
+  errors=$(( errors + 1 ))
+fi
+
+R5_SEEN=$'\n'
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  cls="$(basename "$file" .java)"
+  if r5_is_sequential "$cls"; then
+    echo "    :white_check_mark: ${cls}: performs a global logging side effect and is sequential"
+  elif r5_is_allowlisted "$file"; then
+    R5_SEEN="${R5_SEEN}${file}"$'\n'
+    echo "    :white_check_mark: allow-list ok: ${file} (global logging side effect, justified as non-racing)"
+  else
+    echo "+++ :bangbang: ${file}: performs a JVM-global logging side effect (LogManager reset via a static logging setter or a forced fresh <clinit>) but is NOT in the sequential-includes list of ${CORE_POM} — in the parallel phase it races other tests' log capture, silently zeroing a capture or falsely passing a silence assertion. Add <include>**/${cls}.java</include> to the sequential-tests execution (and the matching parallel <exclude>), or allow-list it with a justification." >&2
+    errors=$(( errors + 1 ))
+  fi
+done < <(printf '%s' "$R5_OFFENDERS" | sort -u)
+
+for entry in ${R5_ALLOWLIST[@]+"${R5_ALLOWLIST[@]}"}; do
+  if [ ! -f "$entry" ]; then
+    echo "+++ :bangbang: Rule 5 allow-list entry '${entry}' does not exist — remove it or fix the path (the allow-list must not rot into a no-op)" >&2
+    errors=$(( errors + 1 ))
+    continue
+  fi
+  if ! printf '%s' "$R5_SEEN" | grep -Fxq "$entry"; then
+    echo "+++ :bangbang: Rule 5 allow-list entry '${entry}' either no longer matches a global-logging signature or has since been added to the sequential list — the exemption is now meaningless; remove it" >&2
     errors=$(( errors + 1 ))
   fi
 done

@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs blocking in local dev too — it was never built by the harness before, so that case had always skipped.
 
 ### Added
+- Two new rules in the always-on `check-false-green-guards.sh` CI gate. **Rule 4** fails the build if a CI step runs the
+  container-integration harness with the helm/k3d cases active but does not export both `REQUIRE_CLUSTERED_IMAGE=true` and
+  `REQUIRE_WEBHOOK_IMAGE=true` — the exact way the three image-dependent Kubernetes cases could silently revert to a green
+  SKIP. It is keyed on the step's *behaviour* (invokes `integration_tests.sh` without `SKIP_HELM_TESTS=true`), not on a
+  filename, so a rename or a second helm-running step is covered automatically. **Rule 5** fails the build if a
+  `mockserver-core` test that performs a JVM-global logging side effect (reaching `LogManager.readConfiguration`'s handler
+  `reset()` via the static `ConfigurationProperties` logging setters or a forced fresh `<clinit>`) is not in the
+  `sequential-tests` include list — the shape behind a release-blocking flake that `ParallelStaticStateGuardTest`
+  structurally cannot catch. Both rules fail closed on an empty corpus and carry a rotating allow-list. See
+  [docs/operations/false-green-guards.md](docs/operations/false-green-guards.md).
 - A `jarPath` launcher option and matching `MOCKSERVER_JAR_PATH` environment variable for `mockserver-node`, pointing
   `start_mockserver` at a pre-provisioned `mockserver-netty` jar-with-dependencies instead of downloading one from
   Maven Central. When set, that exact jar is launched and no download is attempted; a configured-but-missing path is a

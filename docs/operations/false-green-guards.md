@@ -26,12 +26,18 @@ flowchart TD
   A["check-false-green-guards.sh (always-on)"] --> R1
   A --> R2
   A --> R3
+  A --> R4
+  A --> R5
   R1["Rule 1\nDocker-gated suite\nmust be assert-suite-ran-paired"]
   R2["Rule 2\nno step mounts the Docker socket\nthen deselects Docker tests"]
   R3["Rule 3\nno container-integration skip\nparks deferred work as green"]
+  R4["Rule 4\nhelm/k3d harness run\nmust require the built images"]
+  R5["Rule 5\ncore test with a global logging\nside effect must be sequential"]
   R1 --> V{"new violation?"}
   R2 --> V
   R3 --> V
+  R4 --> V
+  R5 --> V
   V -- yes --> F["exit 1 — fail the build"]
   V -- no --> P["exit 0"]
 ```
@@ -41,6 +47,8 @@ flowchart TD
 | **1** | A suite gated by `Assume.assumeTrue(DockerAvailability.isAvailable(...))` that is not paired with an `assert-suite-ran.sh` glob **for its own Maven module**. When Docker is unusable the suite reports SKIPPED and Maven exits 0, so a CI step checking only the exit code goes green having tested nothing. | The HTTP/3 suite and the socket-gated testcontainer/cloud suites, which skipped on 100% of builds while reporting green; and (found by this guard) the `Gcs`/`Azure` `RegistrarConfigWiringTest` cloud suites, which ran under a socket in CI but were never fail-closed-asserted. |
 | **2** | A CI step that grants the Docker socket (`run-in-docker.sh -s`/`--docker-socket`) but then deselects the Docker-marked tests (e.g. `pytest -m "not docker"`). It pays to mount the socket, then starts no container, and passes green. | The python client job: `pytest -m "not docker"` deselected every container test while the socket was mounted; the job passed having started nothing. |
 | **3** | A container-integration `logTestSkip` invoked with deferral language ("CI wiring is a follow-up", TODO, pending, …). A skip that parks unfinished work reads as green forever. | The `docker_compose_war_tomcat` WAR case, skipped as a "follow-up" and read as green for months. |
+| **4** | A CI step that runs the container-integration harness (`integration_tests.sh`) with the helm/k3d cases active (does **not** set `SKIP_HELM_TESTS=true`) but fails to export **both** `REQUIRE_CLUSTERED_IMAGE=true` and `REQUIRE_WEBHOOK_IMAGE=true`. Without both, a missing image records a SKIP instead of a FAILURE and the three image-dependent cases silently stop running. | Deleting the two `REQUIRE_*_IMAGE=true` exports from `helm-integration-test.sh` — which reverts `helm_sidecar_injection`, `helm_clustered_convergence` and `helm_jgroups_dns_ping` to a green SKIP with no guard tripped. |
+| **5** | A `mockserver-core` test whose source performs a JVM-global logging side effect — reaching `LogManager.getLogManager().readConfiguration(...)` (a JVM-wide handler `reset()`) via the static logging setters or a forced fresh `<clinit>` — that is **not** in the sequential-includes list of `mockserver-core/pom.xml`. In the parallel phase it races another test's log capture, silently zeroing a capture (a failing test) or falsely passing a silence assertion (a false green). | The release-blocking flake where `ClassInitializationDeadlockTest` / `ConfigurationPropertiesInitializationTest` forced a fresh `MockServerLogger`/`ConfigurationProperties` `<clinit>` in the parallel phase, resetting every logger's handlers mid-run. `ParallelStaticStateGuardTest` structurally cannot catch it — those classes are in neither the parallel-exclude nor the sequential-include list. |
 
 Rule 1's match is **module-scoped**, not class-name-only. The correlation key is
 the Maven module directory name — the last path segment before `/target/` in an
@@ -74,6 +82,52 @@ suite that no longer exists (renamed or removed) — so an assertion can never r
 into a permanent no-op. (The dangling check is class-name-only by design: a glob
 whose class still exists but has *moved modules* surfaces above as a coverage
 miss for the suite, not as a dangling glob.)
+
+### Rule 4 is keyed on behaviour, not on a filename
+
+Rule 4 does **not** hard-code `helm-integration-test.sh`. It sweeps every step
+script, keeps the ones whose (comment-stripped) body **invokes the harness**
+(`integration_tests.sh`) **with the helm cases active** (does not set
+`SKIP_HELM_TESTS=true`), and requires each to export both `REQUIRE_*_IMAGE=true`
+flags. Keying on that behaviour means a rename of the step, or a *second* step
+that runs the helm harness, is covered automatically, while the docker-compose-only
+harness step (`container-tests-run.sh`, which sets `SKIP_HELM_TESTS=true` and needs
+no images) is correctly exempt. The exports are checked on the comment-stripped
+body, so a commented-out `export REQUIRE_*_IMAGE=true` cannot satisfy the rule.
+
+What Rule 4 does **not** catch: it verifies the exports are *present and set to
+`true`*, not that the images are actually built upstream — that remains the
+harness's own fail-closed check (`printFailureMessage … Failing closed`). If **no**
+step runs the helm harness at all, Rule 4 fails closed rather than passing having
+inspected nothing.
+
+### Rule 5 is precise about "global logging side effect", and admits its limits
+
+Rule 5 scopes to **`mockserver-core` test sources only** — the one module with the
+parallel/sequential Surefire split it keys on — and flags a class only when a
+signature matches a **non-comment** line. The signatures are deliberately narrow:
+
+- the static setters carry the **`ConfigurationProperties.` qualifier**. The bare
+  forms (`configuration().logLevel(Level.INFO).disableSystemOut(false)`) call the
+  per-instance `Configuration` builder, which is **not** a global side effect;
+  requiring the qualifier drops four legitimately-parallel classes
+  (`GrpcFailSafeLoggingTest`, `ConfigurationSerializerTest`, `ConfigurationDTOTest`,
+  `MockServerLoggerTest`) that a bare grep would have falsely flagged;
+- the reflection signature is the **3-argument `Class.forName(…, true, …)`** form
+  (a fresh `<clinit>` forced through a chosen classloader), not `Class.forName(` in
+  general — the 1-arg `Class.forName(className)` over already-loaded classes and a
+  `Class.forName('java.lang.Runtime')` inside a template string are both left alone.
+
+Stated plainly, so the rule is not read as more than it is, Rule 5 does **not**
+catch: a call site reached via a **static import** (bare `logLevel("X")`) or via
+reflection — indistinguishable from the per-instance builder without semantic
+analysis, so the qualified form is the low-false-positive choice; a global logging
+side effect in **any module other than `mockserver-core`**; and, because the
+reflection signature keys on the *shape* rather than the loaded class name (one real
+call site loads a variable), it would also flag a 3-arg `initialize=true` load of a
+*non-logging* class — acceptable, since forcing a fresh `<clinit>` in a chosen loader
+is itself parallel-unsafe, and there are zero such cases today. If **no** core test
+source matches any signature, Rule 5 fails closed (the signatures have rotted).
 
 ## Where it runs
 
@@ -121,8 +175,7 @@ the socket **and** deselect the tests that need it.
 Some Docker-gated files are legitimately **not** assert-suite-ran-paired (for
 example the probe's own unit test, `DockerAvailabilityTest`, which calls
 `isAvailable()` with stubbed suppliers and starts no container). Each rule has an
-allow-list array near the top of the script (`R1_ALLOWLIST`, `R2_ALLOWLIST`,
-`R3_ALLOWLIST`).
+allow-list array (`R1_ALLOWLIST` … `R5_ALLOWLIST`).
 
 An allow-list entry is a **justification, never a mute button.** Follow the
 precedent of `check-certificate-expiry.sh`, which allow-lists the intentionally
@@ -150,7 +203,16 @@ goes red, then restore:
 - **Rule 2** — re-add `-m "not docker"` to `pytest` in a socket-mounting step.
 - **Rule 3** — add a `logTestSkip "... follow-up"` line under
   `container_integration_tests/`.
-- **Allow-list rot** — point an allow-list entry at a nonexistent path.
+- **Rule 4** — delete the two `export REQUIRE_*_IMAGE=true` lines from
+  `helm-integration-test.sh` (the exact defect the rule exists to catch).
+- **Rule 5** — remove a class from the `sequential-tests` `<include>` list in
+  `mockserver-core/pom.xml` (e.g. `ClassInitializationDeadlockTest`); it is then
+  flagged as a global-logging side effect not run sequentially.
+- **Allow-list rot** — point an allow-list entry at a nonexistent path (Rules 1/5),
+  or at a location that no longer matches the rule's condition (Rules 2/3/4/5).
+- **Empty corpus** — each rule also fails closed if its sweep matches nothing
+  (globs/steps/signatures renamed or moved), rather than passing having scanned
+  nothing.
 
 Each should turn the guard's exit code to 1 with a `+++ :bangbang:` line naming
 the offender.
