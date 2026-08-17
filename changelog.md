@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Endpoint-level test (`HttpStateCassetteEndpointTest`) and an authoritative `CassetteRegistry` javadoc note pinning
+  the settled decision that **loading and recording register a cassette automatically**. The `record_llm_fixtures`
+  and `load_expectations_from_file` MCP tools already auto-register the fixture in the process-wide `CassetteRegistry`
+  (keyed by file path, origin `recorded`/`loaded`, upserting on re-load/re-record) so it surfaces under
+  `GET /mockserver/cassettes` and in the dashboard's Cassettes tab without a manual `PUT /mockserver/cassettes` — but
+  nothing pinned that a so-registered cassette is actually retrievable *through the GET endpoint*, and the registration
+  policy lived only in the two MCP callers, inviting the question to be re-opened. The new test drives
+  `GET /mockserver/cassettes` (and the bare `/cassettes` alias) against a registry populated the way the load/record
+  handlers populate it and asserts the documented body shape (path, derived filename, expectation count, origin,
+  lastUsed), that record-then-load on one path yields a single upserted entry, and that a server reset clears it. The
+  MCP tools and consumer docs (`ai_mcp_tools.html`) already stated this behaviour; both are now clarified to say the
+  fixture is registered automatically. This closes the "CassetteRegistry auto-population" product-decision item by
+  recording the decision in code, docs, and a test rather than leaving it to resurface.
 - Compile gates for the dashboard composer's generated client code in Python, Ruby, Go and Rust
   (`.buildkite/scripts/steps/ui-client-codegen-compile.sh`, wired into `pipeline-ui.yml`), closing the gap where
   five of the composer's seven languages had no compile check — only Java (`ui-java-codegen-compile.sh`) and C#
@@ -60,6 +73,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   previously only ever been discovered by the build going red.
 
 ### Changed
+- The `docker_compose_war_tomcat` container integration test (MockServer deployed as a WAR into Tomcat 10.1) now
+  actually runs in CI, closing a false-green gap where it silently skipped with *"WAR artifact not present … CI wiring
+  is a follow-up"* — a working behavioural test that never ran, in a demonstrated weak spot (the ROOT-context
+  percent-decode regression `66b5d51d2` shipped and broke builds, and this is the suite that would have caught it).
+  Buildkite steps share no filesystem, so the WAR (already built by the reactor in the `:maven: build` step but never
+  published) is now uploaded via that step's `artifact_paths` and downloaded by `container-tests-run.sh` into the path
+  the test globs. A missing WAR now fails the step **closed** (both an explicit presence check in `container-tests-run.sh`
+  and, defensively, `prepare_war` in `integration_test.sh` red the case) instead of skipping — a skip that reads as green
+  is the exact defect being closed. The case runs in the Java pipeline's master-only `:docker: container integration
+  tests` step (triggered by `mockserver/`, `mockserver-ui/`, `test-fixtures/` changes); it was already declared required
+  in `expected_tests.manifest`, so no manifest change was needed.
 - Upgraded Netty from `4.2.16.Final` to `4.2.17.Final` and, in lockstep, `netty-tcnative-boringssl-static` from
   `2.0.78.Final` to `2.0.81.Final` (the tcnative version the Netty 4.2.17 BOM aligns to). The two must move together:
   the Netty BOM pins the transitively-resolved native-classifier tcnative jars to `2.0.81.Final`, so a mismatched

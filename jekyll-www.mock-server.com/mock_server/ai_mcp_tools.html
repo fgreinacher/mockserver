@@ -1029,6 +1029,8 @@ keywords: "mcp tools, mockserver mcp tools, create_expectation, verify_request, 
 
 <p>Snapshots LLM/MCP traffic recorded through MockServer's forwarding proxy into a committable, secret-free fixture file for deterministic replay. Converts SSE streaming responses (from APIs like Anthropic Claude, OpenAI, etc.) into MockServer's SSE response format for faithful event-by-event replay. Sensitive headers (Authorization, api-key, Cookie, etc.) are automatically redacted. Note that request and response bodies are <strong>not</strong> redacted &mdash; if your application places credentials in a request or response body, review fixture files before committing them to version control.</p>
 
+<p>The written fixture is <strong>automatically registered as a cassette</strong> (origin <code>recorded</code>), so it appears under <code>GET /mockserver/cassettes</code> and in the dashboard's <a href="/mock_server/mockserver_ui.html#ui_library_section">Cassettes</a> tab without a separate <code>PUT /mockserver/cassettes</code> call. Recording to the same path again updates that entry in place rather than adding a duplicate.</p>
+
 <table>
     <thead>
         <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
@@ -1077,6 +1079,8 @@ keywords: "mcp tools, mockserver mcp tools, create_expectation, verify_request, 
 <h3>load_expectations_from_file</h3>
 
 <p>Loads expectations from a JSON fixture file and adds them as active mock expectations in MockServer. Use this to replay LLM/MCP traffic previously recorded with <code class="code inline">record_llm_fixtures</code>. SSE streaming responses in the fixture are replayed with Server-Sent Events.</p>
+
+<p>The loaded fixture is <strong>automatically registered as a cassette</strong> (origin <code>loaded</code>), so it appears under <code>GET /mockserver/cassettes</code> and in the dashboard's <a href="/mock_server/mockserver_ui.html#ui_library_section">Cassettes</a> tab without a separate <code>PUT /mockserver/cassettes</code> call. Loading the same path again updates that entry in place rather than adding a duplicate.</p>
 
 <table>
     <thead>

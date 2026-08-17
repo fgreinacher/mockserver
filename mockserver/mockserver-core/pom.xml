@@ -877,6 +877,8 @@
                         <!-- Drives the process-global BCKeyAndCertificateFactory.renewalClock static and
                              the KeyAndCertificateFactoryFactory custom-supplier static (certificate hardening) -->
                         <exclude>**/CertificateHardeningGlobalStateTest.java</exclude>
+                        <!-- Registers into and resets the process-wide CassetteRegistry singleton -->
+                        <exclude>**/HttpStateCassetteEndpointTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -1025,6 +1027,7 @@
                                 <include>**/LlmDatasetExporterTest.java</include>
                                 <include>**/GrpcHealthRegistryTest.java</include>
                                 <include>**/CertificateHardeningGlobalStateTest.java</include>
+                                <include>**/HttpStateCassetteEndpointTest.java</include>
                             </includes>
                         </configuration>
                     </execution>

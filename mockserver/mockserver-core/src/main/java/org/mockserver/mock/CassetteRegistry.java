@@ -20,6 +20,20 @@ import java.util.function.LongSupplier;
  * cleared on server reset (see {@code HttpState.reset()}).
  *
  * <p>Exposed over the control plane as {@code GET/PUT/DELETE /mockserver/cassettes}.
+ *
+ * <p><strong>Registration policy (settled — do not re-open).</strong> A cassette enters this registry
+ * from exactly three places, and <em>loading and recording register automatically</em>:
+ * <ul>
+ *     <li>the {@code record_llm_fixtures} MCP tool, when it writes a fixture file (origin {@code "recorded"});</li>
+ *     <li>the {@code load_expectations_from_file} MCP tool, when it loads a fixture file (origin {@code "loaded"});</li>
+ *     <li>an explicit {@code PUT /mockserver/cassettes}, to track a cassette produced some other way.</li>
+ * </ul>
+ * The two MCP tools each own the file path and expectation count at the point the file is written/loaded,
+ * so they call {@link #register} directly rather than routing through a shared load/record method — there is
+ * no such method: recording writes bytes and loading reads them, and they converge only on this registry.
+ * A manual {@code PUT} is therefore <em>not</em> required after a load or a record. Every path upserts by
+ * file path (see {@link #register}), so re-loading or re-recording the same file updates the existing entry
+ * in place rather than duplicating it.
  */
 public class CassetteRegistry {
 
