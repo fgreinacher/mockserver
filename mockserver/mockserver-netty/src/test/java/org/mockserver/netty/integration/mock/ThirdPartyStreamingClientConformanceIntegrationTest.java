@@ -330,7 +330,19 @@ public class ThirdPartyStreamingClientConformanceIntegrationTest {
             );
 
         RecordingWebSocketClient client = new RecordingWebSocketClient("/ws-server-close");
-        assertTrue(client.connectBlocking(10, TimeUnit.SECONDS));
+        // This is the only WEBSOCKET HANDSHAKE site whose server is configured withCloseConnection(true)
+        // (the other withCloseConnection(true) uses in this file are SSE responses read by okhttp, not
+        // connectBlocking call sites, so they cannot hit this race): it delivers
+        // "bye" and closes immediately, by design. connectBlocking()'s boolean is therefore unusable
+        // here — Java-WebSocket returns connectLatch.await(...) && engine.isOpen(), and that same
+        // latch is counted down by BOTH onWebsocketOpen and onWebsocketClose, so against a connection
+        // built to close now it races the close: once "bye"+close land before isOpen() is read it
+        // returns false and a bare assert fails in ~12ms (green on Buildkite, red on a slower runner).
+        // Assert the observable handshake outcome via the opened latch instead — onOpen is guaranteed
+        // before any close on a successful handshake. Do NOT reinstate connectBlocking()'s boolean.
+        client.connect();
+        assertTrue("the websocket never completed its opening handshake",
+            client.opened.await(10, TimeUnit.SECONDS));
 
         assertTrue("server never closed the connection", client.closed.await(10, TimeUnit.SECONDS));
         assertThat(client.messages, hasItem("bye"));

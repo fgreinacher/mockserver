@@ -131,6 +131,7 @@ jobs:
       # deviating (e.g. WARN) would report a false failure. maven.javadoc.skip keeps
       # the run to compile+test.
       - name: Build and test the full Maven reactor
+        id: reactor
         working-directory: mockserver
         env:
           MAVEN_OPTS: -Xms2048m -Xmx6144m
@@ -165,11 +166,22 @@ jobs:
       # and Maven still exits 0 — the job would go green having covered far less. This
       # reuses Buildkite's own assert-suite-ran.sh (unmodified) over the same report
       # globs its java-cloud-store-test.sh / java-async-broker-test.sh steps assert,
-      # turning that silent skip into a loud failure. Runs even after a test failure
-      # (fail-at-end) so a Docker-less run cannot slip through as green; it only reds
-      # when a listed suite did not actually execute. Globs are relative to mockserver/.
+      # turning that silent skip into a loud failure.
+      #
+      # GATED ON THE REACTOR PASSING (steps.reactor.outcome == 'success'), NOT just
+      # !cancelled(), and this is load-bearing for BOTH correctness AND clarity:
+      #   * The blob-store modules have a test-scope reactor dependency on mockserver-netty.
+      #     When an UNRELATED test fails there (as it did on the run this guards against),
+      #     -fae still marks the reactor FAILED and Maven never builds mockserver-blob-s3 —
+      #     so its reports are legitimately absent. Running this check then would red with
+      #     "the suite did not run", blaming a Docker/skip problem for a test failure two
+      #     modules away. Skipping it when the reactor failed lets the reactor's own failure
+      #     be the single, accurate red.
+      #   * The no-Docker case this guard EXISTS for is preserved: assumeTrue-skips leave
+      #     Maven exit 0, so the reactor step SUCCEEDS, this step runs, finds no matching
+      #     report, and reds loudly. Fail-closed intact.
       - name: Assert Docker-gated suites actually ran
-        if: ${{ !cancelled() }}
+        if: ${{ steps.reactor.outcome == 'success' }}
         working-directory: mockserver
         run: |
           ../.buildkite/scripts/steps/assert-suite-ran.sh \
@@ -183,10 +195,14 @@ jobs:
 
       # Build the relocated examples/ suite standalone — same ordering rationale as
       # buildkite_quick_build.sh (needs the reactor SNAPSHOTs freshly installed into
-      # ~/.m2 above). Runs even if the reactor step failed so an examples-only break
-      # is still reported; skipped only on cancellation.
+      # ~/.m2 above). GATED ON THE REACTOR PASSING (steps.reactor.outcome == 'success'),
+      # mirroring buildkite_quick_build.sh: the examples build resolves the reactor's
+      # freshly-installed SNAPSHOTs, so if `clean install` did not complete this step can
+      # only die with "Could not resolve dependencies for ... mockserver-examples" — a
+      # derivative red that blames the examples for the reactor's failure. One real
+      # failure should produce one red step.
       - name: Build and test the standalone examples
-        if: ${{ !cancelled() }}
+        if: ${{ steps.reactor.outcome == 'success' }}
         working-directory: mockserver
         env:
           MAVEN_OPTS: -Xms2048m -Xmx6144m

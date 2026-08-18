@@ -58,6 +58,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MockServer artifact depends on it, and every previously published version stays available.
 
 ### Fixed
+- The new fork-PR test workflow (`.github/workflows/pr-tests.yml`) now reports one red per real failure instead of
+  three. A latent race in `ThirdPartyStreamingClientConformanceIntegrationTest` surfaced on the slower
+  `ubuntu-latest` runner: `shouldDeliverMessageThenCloseWhenCloseConnectionIsSet` is the one case whose server is
+  configured `withCloseConnection(true)` (it delivers `"bye"` and closes immediately, by design), yet it asserted on
+  Java-WebSocket's `connectBlocking()` boolean, which returns `connectLatch.await(...) && engine.isOpen()` — and that
+  latch is counted down by both `onWebsocketOpen` and `onWebsocketClose`, so the deliberate close races the
+  `isOpen()` read and the bare assert fails in ~12 ms. It now asserts the observable handshake outcome via the
+  client's `opened` latch (`onOpen` always precedes any close on a successful handshake); the close, the `"bye"`
+  payload, and the orderly close code were already verified race-free and are preserved. The product is unchanged —
+  `withCloseConnection(true)` did exactly what it promises. Two derivative reds in the same workflow are gone too:
+  the standalone-examples step and the "assert Docker-gated suites actually ran" step are now gated on the reactor
+  step succeeding (`steps.reactor.outcome == 'success'`) rather than merely `!cancelled()`, so a reactor failure no
+  longer makes the examples build die with "Could not resolve dependencies for … mockserver-examples" (the reactor's
+  `install` never completed) or makes the suite-ran check red on `mockserver-blob-s3` with "the suite did not run"
+  (S3 was only skipped because of its test-scope reactor dependency on the failed `mockserver-netty`, two modules
+  away). The suite-ran check stays fail-closed for the case it exists for: a runner without Docker `assumeTrue`-skips
+  the suites, Maven still exits 0, so the reactor step succeeds, the check runs, finds no report, and reds loudly.
 - Dependabot now proposes grouped Maven updates for the core `mockserver` reactor again. The reactor's
   `mockserver/pom.xml` declared `<module>../examples/java</module>`, a path that escaped Dependabot's
   `directory: "/mockserver"` scope; with no repository-root `pom.xml`, Dependabot re-parsed a scoped file subset,
