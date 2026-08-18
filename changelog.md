@@ -58,6 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MockServer artifact depends on it, and every previously published version stays available.
 
 ### Fixed
+- Fixed an order-dependent failure in the blob-store registrar tests, surfaced by running the suite on hardware
+  with a different class ordering. `S3ExpectationPersistenceReloadTest` starts a real server with
+  `blobStoreType("s3")`, which makes `StateBackendFactory` discover and register the s3 factory in its JVM-global
+  registry, and its teardown stopped the server and the MinIO container without resetting that registry. Every test
+  class in the module shares one reused fork under surefire's default `filesystem` run order, which is not stable
+  across machines — so whenever that class happened to run first, `S3BlobStoreRegistrarTest`'s "s3 should not be
+  registered before register()" precondition saw inherited state and failed. The leak is now cleaned up on
+  teardown, and all three registrar tests (s3, gcs, azure) scrub the registry on **entry** as well as exit, so the
+  precondition holds regardless of what ran before them. The gcs and azure tests had the identical latent shape and
+  passed only because their modules contain no equivalent leaker. Reproduced by forcing the losing order
+  (`-Dsurefire.runOrder=reversealphabetical`) and confirmed fixed under it.
 - The new fork-PR test workflow (`.github/workflows/pr-tests.yml`) now reports one red per real failure instead of
   three. A latent race in `ThirdPartyStreamingClientConformanceIntegrationTest` surfaced on the slower
   `ubuntu-latest` runner: `shouldDeliverMessageThenCloseWhenCloseConnectionIsSet` is the one case whose server is

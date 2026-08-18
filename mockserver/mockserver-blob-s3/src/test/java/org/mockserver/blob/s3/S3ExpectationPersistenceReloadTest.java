@@ -8,6 +8,7 @@ import org.junit.Test;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.integration.ClientAndServer;
 import org.mockserver.socket.PortFactory;
+import org.mockserver.state.StateBackendFactory;
 import org.mockserver.test.DockerAvailability;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
@@ -111,6 +112,12 @@ public class S3ExpectationPersistenceReloadTest {
     @After
     public void stopServer() {
         stopQuietly(server);
+        // Starting a server with blobStoreType("s3") makes StateBackendFactory discover and
+        // register the s3 factory in its JVM-global registry. This module runs every test class
+        // in ONE reused fork, so leaving that entry behind leaks into whatever runs next — it is
+        // what failed S3BlobStoreRegistrarTest's "not registered yet" precondition on a hosted
+        // runner while passing on Buildkite, purely on class ordering. Leave the JVM as we found it.
+        StateBackendFactory.resetToDefault();
     }
 
     private Configuration s3PersistenceConfiguration(String persistedExpectationsPath, String keyPrefix) {
