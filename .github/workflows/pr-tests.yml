@@ -1,0 +1,219 @@
+name: PR Tests
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Fork-safe test signal for pull requests.
+#
+# WHY THIS EXISTS
+#   Buildkite is the primary CI, but it deliberately does NOT build pull requests
+#   from third-party forks (`build_pull_request_forks: false`). Buildkite agents
+#   run on EC2 with IAM roles, mount the Docker socket, and can read AWS Secrets
+#   Manager (Sonatype, Docker Hub, PyPI/RubyGems, the GPG signing key, the GitHub
+#   token, the release TOTP seed, npm, SwaggerHub, website role). Running an
+#   outside contributor's code there would expose every publish credential and the
+#   signing key, so fork builds are (correctly) turned off — see
+#   docs/infrastructure/ci-cd.md → "Pull requests from external forks".
+#
+#   The consequence was that community PRs (e.g. #2545) got NO automated test
+#   signal at all: the contributor could not tell whether their change worked, and
+#   reviewers had nothing to look at. This workflow closes that gap by running the
+#   test suite in an environment with NOTHING WORTH STEALING.
+#
+# SECURITY MODEL — read before editing, all points are load-bearing:
+#   * Triggered on `pull_request`, NEVER `pull_request_target`. `pull_request` runs
+#     fork code with a read-only GITHUB_TOKEN in the FORK's context, with no access
+#     to repository secrets. `pull_request_target` would run in the BASE repo's
+#     context WITH secrets against attacker-controlled code — the single most common
+#     way repositories leak credentials. If a future change seems to need
+#     `pull_request_target`, stop: that is a signal the design has gone wrong.
+#   * No `secrets.*` reference anywhere, and no `environment:`. There is nothing for
+#     a malicious PR to exfiltrate — the whole point.
+#   * Explicit least-privilege permissions: the workflow starts from none, and the
+#     one job grants only `contents: read`. (The repo default is already `read`.)
+#   * GitHub-owned, SHA-pinned actions only. Repo policy is `allowed_actions:
+#     selected` with `github_owned_allowed: true` and `verified_allowed: false`, so
+#     only actions in the `actions/`/`github/` orgs (plus one unrelated allow-listed
+#     pattern) start at all. Each action is pinned by commit SHA with a version
+#     comment, matching .github/workflows/dependency-submission.yml.
+#
+# SCOPE — what runs here vs. what does not
+#   This runs the FULL Maven reactor `clean install` (Surefire unit tests AND
+#   Failsafe integration tests) plus the standalone examples build — the same build
+#   Buildkite runs for in-repo branches. GitHub-hosted Ubuntu runners have Docker,
+#   so the Testcontainers / Docker-gated suites genuinely execute: the cloud
+#   blob-store contract suites run against LOCAL emulator containers (MinIO for S3,
+#   fake-gcs-server for GCS, Azurite for Azure — all with well-known dev
+#   credentials, no real cloud accounts), and the async broker suites run against
+#   local Kafka/RabbitMQ/Mosquitto containers. None of these need a secret.
+#
+#   NOT run here (each genuinely cannot work on a GitHub-hosted runner, none merely
+#   "too slow"):
+#     * The transparent-proxy end-to-end suites (SoOriginalDstEndToEndIntegrationTest,
+#       TproxyEndToEndIntegrationTest, EbpfOriginalDestinationEndToEndIntegrationTest
+#       in mockserver-netty). They shell out to the `docker` CLI to build and run a
+#       privileged sibling container (--cap-add=NET_ADMIN / --privileged) — behaviour
+#       a GitHub-hosted runner cannot be relied on to support. Their ONLY code-level
+#       gate is DockerCliTestSupport.isDockerAvailable() (a `docker info` probe),
+#       which is TRUE on ubuntu-latest, so — unlike on Buildkite — a plain `mvn
+#       install` WOULD run them here. RUN_TRANSPARENT_PROXY_E2E is a Buildkite
+#       SHELL-STEP gate only (.buildkite/scripts/steps/java-transparent-proxy-test.sh);
+#       nothing in Maven or the test code consults it, so it does NOT keep them out of
+#       this build. They are therefore excluded EXPLICITLY here, by name, via
+#       -Dfailsafe.excludesFile (see the reactor build step below — a POM-include-
+#       preserving exclude that does NOT disturb any other integration test). They
+#       remain covered by Buildkite's privileged transparent-proxy step for in-repo
+#       branches.
+#     * The client-language pipelines (Node, Python, Ruby, Go, .NET, Rust, PHP), the
+#       dashboard UI build, the k3d/Helm container-integration tests, Docker image
+#       builds, and snapshot/release publishing. Those live in Buildkite or need
+#       credentials/privileged tooling, and remain Buildkite's job for in-repo
+#       branches. A fork PR touching those areas still needs the maintainer
+#       fork-CI trigger documented in docs/infrastructure/ci-cd.md.
+#
+# This is a real signal, not full CI. Slow-but-complete feedback beats none: the
+# job favours completeness over speed and reports exactly which test failed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+    branches: [master]
+  # Manual lever so a maintainer can smoke-test that this workflow still works
+  # without waiting for a fork PR to arrive (the job below otherwise runs only on
+  # fork PRs — see the `if:` guard and the fork-gating note in ci-cd.md).
+  workflow_dispatch:
+
+# Defence-in-depth: start from no permissions; the job re-grants only read.
+permissions: {}
+
+# A newer push to the same PR supersedes the in-flight run — saves runner minutes.
+# workflow_dispatch runs key on run_id so they never cancel each other or a PR run.
+concurrency:
+  group: pr-tests-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build & test full reactor
+    # Run ONLY where this adds a signal Buildkite does not already provide: fork
+    # PRs (Buildkite skips those) and manual dispatch. In-repo branch PRs already
+    # get the full Buildkite pipeline, so running this expensive ~1.5–3h suite on
+    # them too would double the compute for no new signal. workflow_dispatch keeps a
+    # way to exercise the workflow on demand so we still notice if it breaks.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.fork == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # The full suite (incl. Testcontainers image pulls) is expected to take
+    # ~1.5–3h on a 4-core hosted runner. This ceiling is generous headroom so a
+    # slow-but-real run is never killed, while a genuinely hung run cannot burn the
+    # 6h GitHub maximum. Well under 6h, so a single job (no matrix) is appropriate.
+    timeout-minutes: 240
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          # Maven dependency cache. Safe for a fork PR to enable: GitHub scopes a
+          # cache written by a pull_request run to that PR's ref, and PR runs cannot
+          # write to the base/default-branch scope, so a fork PR CANNOT poison the
+          # cache master restores. A fork run only READS master's cache (public
+          # dependency jars) and writes its own — no cross-contamination path.
+          cache: 'maven'
+
+      # Mirror scripts/buildkite_quick_build.sh, with one deliberate difference for
+      # contributor feedback: `-fae` (fail-at-end) so ALL modules run and every
+      # failure is collected rather than stopping at the first. The test flags
+      # (including testLogLevel=INFO) match Buildkite EXACTLY — ConfigurationTest
+      # .shouldSetAndGetLogLevel asserts against the injected mockserver.logLevel, so
+      # deviating (e.g. WARN) would report a false failure. maven.javadoc.skip keeps
+      # the run to compile+test.
+      - name: Build and test the full Maven reactor
+        working-directory: mockserver
+        env:
+          MAVEN_OPTS: -Xms2048m -Xmx6144m
+        run: |
+          # Explicitly exclude the three privileged transparent-proxy end-to-end
+          # suites from Failsafe on this runner (see the SCOPE block above for why).
+          # -Dfailsafe.excludesFile ADDS to Failsafe's <excludes> and PRESERVES the
+          # POM <includes> (**/*IntegrationTest.java), so every other integration
+          # test still runs — verified. This is deliberately NOT `-Dit.test=!...`:
+          # that flag overrides the POM includes/excludes wholesale (it makes
+          # Failsafe run all **/*Test unit classes and is silently ignored when
+          # combined with an excludesFile), which would drop or misroute real
+          # integration tests. The path must be absolute so it resolves identically
+          # in every reactor module; $RUNNER_TEMP is absolute on hosted runners.
+          EXCLUDES_FILE="$RUNNER_TEMP/failsafe-transparent-proxy-excludes.txt"
+          printf '%s\n' \
+            '**/SoOriginalDstEndToEndIntegrationTest.java' \
+            '**/TproxyEndToEndIntegrationTest.java' \
+            '**/EbpfOriginalDestinationEndToEndIntegrationTest.java' \
+            > "$EXCLUDES_FILE"
+          ./mvnw -B --no-transfer-progress -T 1C -fae clean install \
+            -Dmaven.javadoc.skip=true \
+            -Dfailsafe.excludesFile="$EXCLUDES_FILE" \
+            -Dmockserver.testOutput=quiet \
+            -DredirectTestOutputToFile=true \
+            -Dmockserver.testLogLevel=INFO \
+            "-Dmockserver.testArgLine=-Dmockserver.maxLogEntries=10000 -Dmockserver.maxExpectations=5000"
+
+      # Fail closed if a Docker-gated Testcontainers suite SKIPPED instead of running.
+      # Every such suite is guarded by Assume.assumeTrue(DockerAvailability.isAvailable
+      # (...)), so on a runner image without a usable Docker daemon it reports SKIPPED
+      # and Maven still exits 0 — the job would go green having covered far less. This
+      # reuses Buildkite's own assert-suite-ran.sh (unmodified) over the same report
+      # globs its java-cloud-store-test.sh / java-async-broker-test.sh steps assert,
+      # turning that silent skip into a loud failure. Runs even after a test failure
+      # (fail-at-end) so a Docker-less run cannot slip through as green; it only reds
+      # when a listed suite did not actually execute. Globs are relative to mockserver/.
+      - name: Assert Docker-gated suites actually ran
+        if: ${{ !cancelled() }}
+        working-directory: mockserver
+        run: |
+          ../.buildkite/scripts/steps/assert-suite-ran.sh \
+            'mockserver-blob-s3/target/surefire-reports/TEST-*BlobStoreContractTest.xml' \
+            'mockserver-blob-s3/target/surefire-reports/TEST-*S3ExpectationPersistenceReloadTest.xml' \
+            'mockserver-blob-gcs/target/surefire-reports/TEST-*BlobStoreContractTest.xml' \
+            'mockserver-blob-gcs/target/surefire-reports/TEST-*RegistrarConfigWiringTest.xml' \
+            'mockserver-blob-azure/target/surefire-reports/TEST-*BlobStoreContractTest.xml' \
+            'mockserver-blob-azure/target/surefire-reports/TEST-*RegistrarConfigWiringTest.xml' \
+            'mockserver-async/target/failsafe-reports/TEST-*LiveBrokerIntegrationTest.xml'
+
+      # Build the relocated examples/ suite standalone — same ordering rationale as
+      # buildkite_quick_build.sh (needs the reactor SNAPSHOTs freshly installed into
+      # ~/.m2 above). Runs even if the reactor step failed so an examples-only break
+      # is still reported; skipped only on cancellation.
+      - name: Build and test the standalone examples
+        if: ${{ !cancelled() }}
+        working-directory: mockserver
+        env:
+          MAVEN_OPTS: -Xms2048m -Xmx6144m
+        run: |
+          ./mvnw -B --no-transfer-progress -fae -f ../examples/java/pom.xml clean install \
+            -Dmockserver.testOutput=quiet \
+            -DredirectTestOutputToFile=true \
+            -Dmockserver.testLogLevel=INFO \
+            "-Dmockserver.testArgLine=-Dmockserver.maxLogEntries=10000 -Dmockserver.maxExpectations=5000"
+
+      # Print the end-of-log pass/fail roll-up (total passed/failed/skipped + the
+      # failing class names) and curate the failing tests' TEST-*.xml and captured
+      # console output into mockserver/target/failed-tests/. Reuses the exact
+      # Buildkite collector so a fork contributor gets the same triage view. The
+      # script always exits 0, so it never changes the job's pass/fail verdict.
+      - name: Summarise failing tests
+        if: ${{ !cancelled() }}
+        run: .buildkite/scripts/steps/java-collect-failures.sh
+
+      # Attach the curated failing-test reports so the contributor can see WHICH
+      # test failed and why without maintainer help. Uploaded only when there are
+      # failures (if-no-files-found: ignore makes a green run a no-op).
+      - name: Upload failing-test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: failed-tests
+          path: mockserver/target/failed-tests/**
+          if-no-files-found: ignore
+          retention-days: 14

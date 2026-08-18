@@ -39,7 +39,7 @@ All custom CI pipelines run on Buildkite with self-managed EC2 agents. This keep
 
 | Concern | Approach |
 |---|---|
-| Build & test | Buildkite (EC2 agents, secrets in AWS Secrets Manager) |
+| Build & test | Buildkite (EC2 agents, secrets in AWS Secrets Manager) for in-repo branches; **fork PRs** build & test on GitHub Actions (`pr-tests.yml`, secret-free, read-only token) since Buildkite must not run fork code |
 | Docker push | Buildkite (Docker Hub credentials in AWS Secrets Manager) |
 | GitHub event reactions | Buildkite Pipeline Triggers (GitHub webhook → Buildkite, no secrets in GitHub) |
 | Security scanning | GitHub Actions CodeQL (read-only, no secrets needed) |
@@ -618,12 +618,102 @@ The full rationale, the two-project coverage table, the cost/trigger design, and
 
 **Note:** an earlier `dependency-submission.yml` was removed on the belief that the built-in graph gave equivalent coverage. That belief was wrong for a non-root Maven project and is what let the graph go stale — see the security.md section above.
 
+### PR Tests (fork-safe)
+
+**File:** `.github/workflows/pr-tests.yml`
+
+**Why it exists:** Buildkite does not build fork PRs (next section), so community PRs
+had **no automated test signal at all** — the contributor could not tell whether
+their change worked and reviewers had nothing to look at. This workflow gives fork
+PRs a real test signal in an environment with **nothing worth stealing**.
+
+**Security model (all points load-bearing — do not weaken):**
+
+| Property | Setting | Why |
+|---|---|---|
+| Trigger | `on: pull_request` (+ `workflow_dispatch`) — **never** `pull_request_target` | `pull_request` runs fork code with a read-only token in the fork's context and **no repo secrets**. `pull_request_target` would run untrusted code in the base-repo context **with** secrets — the classic credential-leak vector. |
+| Secrets | none referenced; no `environment:` | Nothing for a malicious PR to exfiltrate. |
+| Token | workflow `permissions: {}`; job `contents: read` only | Least privilege; the repo default is already `read`. |
+| Actions | `actions/checkout`, `actions/setup-java`, `actions/upload-artifact` — GitHub-owned, **SHA-pinned** with version comments | Passes the repo's `allowed_actions: selected` / `github_owned_allowed: true` / `verified_allowed: false` policy. |
+
+**What it runs:** the full Maven reactor `clean install` (Surefire unit tests **and**
+Failsafe integration tests) plus the standalone `examples/java` build — the same
+build Buildkite runs for in-repo branches, via the same flags as
+`scripts/buildkite_quick_build.sh` (plus `-fae` so every module's failures are
+collected, not just the first). GitHub-hosted Ubuntu runners have Docker, so the
+Docker-gated Testcontainers suites **genuinely execute**: the cloud blob-store
+contract suites run against **local emulator containers** (MinIO for S3,
+fake-gcs-server for GCS, Azurite for Azure — all with well-known dev credentials,
+no cloud accounts), and the async broker suites run against local
+Kafka/RabbitMQ/Mosquitto containers. Failing tests are summarised in the log by the
+reused `java-collect-failures.sh` collector and uploaded as a `failed-tests`
+artifact so the contributor can see **which test failed and why** without maintainer
+help.
+
+Because those Docker-gated suites are guarded by
+`Assume.assumeTrue(DockerAvailability.isAvailable(…))`, a runner image with an
+unusable Docker daemon would report them **SKIPPED** while Maven still exits 0 — a
+silent false green covering far less than it appears to. To close that, the workflow
+runs Buildkite's own `assert-suite-ran.sh` (unmodified) over the same report globs its
+`java-cloud-store-test.sh` / `java-async-broker-test.sh` steps assert, turning a skip
+into a loud failure; it runs even after a test failure so a Docker-less run cannot
+slip through green.
+
+**What it does NOT run** (each genuinely cannot work on a hosted runner — not merely
+"too slow"):
+- The **privileged transparent-proxy end-to-end suites** (`SoOriginalDstEndToEndIntegrationTest`,
+  `TproxyEndToEndIntegrationTest`, `EbpfOriginalDestinationEndToEndIntegrationTest`),
+  which need the `docker` CLI to build a `--cap-add=NET_ADMIN`/`--privileged` sibling
+  container — behaviour a GitHub-hosted runner cannot be relied on to support. Note
+  that `RUN_TRANSPARENT_PROXY_E2E` does **not** keep them out of this build: it is a
+  Buildkite **shell-step** gate only (`.buildkite/scripts/steps/java-transparent-proxy-test.sh`),
+  and nothing in Maven or the test code reads it. Their only code-level gate is
+  `DockerCliTestSupport.isDockerAvailable()` (a `docker info` probe), which is **true**
+  on `ubuntu-latest`, so a plain `mvn install` would otherwise run them here. They are
+  therefore excluded **explicitly**, by name, via `-Dfailsafe.excludesFile` in the
+  reactor build step — a POM-`<includes>`-preserving exclude that drops only those
+  three classes and no other integration test (deliberately **not** `-Dit.test=!…`,
+  which overrides the POM includes/excludes wholesale). They remain covered by
+  Buildkite's privileged transparent-proxy step for in-repo branches.
+- The **client-language pipelines** (Node/Python/Ruby/Go/.NET/Rust/PHP), the **UI**
+  build, the **k3d/Helm** container-integration tests, **Docker image** builds, and
+  snapshot/release **publishing** — those live in Buildkite or need
+  credentials/privileged tooling. A fork PR touching those areas still needs the
+  maintainer fork-CI trigger below.
+
+**Runtime & scope:** ~1.5–3h on a 4-core hosted runner (Testcontainers image pulls
+included); `timeout-minutes: 240` is generous headroom under GitHub's 6h job cap, so
+a single job (no matrix) is appropriate — slow-but-complete feedback is the explicit
+goal.
+
+**Fork-only gating:** the job is guarded by
+`if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.fork == true`,
+so it runs on **fork PRs and manual dispatch only**. In-repo branch PRs already get
+the full Buildkite pipeline, so running this expensive suite on them too would double
+the compute for no new signal; `workflow_dispatch` keeps a way to smoke-test the
+workflow so we still notice if it breaks.
+
+**Cache safety:** `setup-java`'s `cache: 'maven'` is safe for fork PRs. GitHub scopes
+a cache written by a `pull_request` run to that PR's ref, and PR runs cannot write to
+the base/default-branch scope, so a fork PR **cannot poison the cache `master`
+restores** — a fork run only reads `master`'s cache (public dependency jars) and
+writes its own.
+
+**First-time-contributor approval:** the repo's fork-PR approval policy is
+`first_time_contributors` (`gh api repos/.../actions/permissions/fork-pr-contributor-approval`),
+so a brand-new contributor's workflow run requires one-click maintainer approval
+before it starts. That is defence-in-depth against CI-minute abuse — even though the
+workflow is secret-free, the approval gate stops an anonymous PR from burning runner
+minutes. `all` (require approval for every outside collaborator) is the more
+conservative option if abuse ever becomes a problem.
+
 ### Pull requests from external forks
 
-PRs from a third-party **fork** (`isCrossRepository: true`) do not get the full pipeline automatically, unlike in-repo branches (e.g. Dependabot, which pushes to branches inside this repo and therefore builds normally). Two things differ:
+PRs from a third-party **fork** (`isCrossRepository: true`) do not get the full pipeline automatically, unlike in-repo branches (e.g. Dependabot, which pushes to branches inside this repo and therefore builds normally). Three things differ:
 
-- **Buildkite does not build fork PRs.** The orchestrator triggers from GitHub webhooks scoped to this repository's branches, so a fork PR shows only the Snyk (and, once approved, CodeQL) checks — never a `buildkite/mockserver` status. This is intentional: it keeps CI credentials off untrusted fork code.
-- **CodeQL requires manual approval.** A fork PR's CodeQL run lands in the `action_required` state (GitHub's first-time/​fork-contributor gate) and will not start until a maintainer approves it.
+- **Buildkite does not build fork PRs — and must not.** The orchestrator triggers from GitHub webhooks scoped to this repository's branches, and `build_pull_request_forks` is `false`, so a fork PR never gets a `buildkite/mockserver` status. **Do not "helpfully" enable it.** Buildkite agents run on EC2 with IAM roles, mount the Docker socket, and can read AWS Secrets Manager — the Sonatype, Docker Hub, PyPI/RubyGems, npm, SwaggerHub, and website credentials, the **GPG signing key**, the GitHub token, and the release TOTP seed. Building an outside contributor's code there would run arbitrary code with access to every publish credential and the signing key. Keeping fork builds off is the control that prevents that; the fork-safe test signal is provided instead by the secret-free **[PR Tests](#pr-tests-fork-safe)** GitHub Actions workflow above.
+- **`pr-tests` (GitHub Actions) gives fork PRs their test signal.** It runs the full reactor build and test suite with no secrets and a read-only token (see [PR Tests (fork-safe)](#pr-tests-fork-safe)), so a fork PR shows a `PR Tests` check with real pass/fail feedback in addition to Snyk and CodeQL.
+- **CodeQL and `pr-tests` require manual approval for first-time contributors.** A first-time contributor's Actions runs land in the `action_required` state (GitHub's fork-contributor gate) and will not start until a maintainer approves them.
 
 To drive a fork PR green so it can be merged:
 

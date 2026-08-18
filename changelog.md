@@ -16,6 +16,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OpenAPI spec, so the two consumer copies could drift from the server in lock-step yet still agree with each other.
   Both consumer artefacts are now driven from the one authority (the compiled `Provider` enum), in both directions, and
   each failure message names the missing provider, the exact file, and how to fix it.
+- Pull requests from third-party forks now get an automated test signal, via a new GitHub Actions workflow
+  (`.github/workflows/pr-tests.yml`). Buildkite — the primary CI — deliberately does not build fork PRs
+  (`build_pull_request_forks: false`) because its EC2 agents carry the signing key and every publish credential, so
+  community PRs previously got no test feedback at all. The new workflow runs the full Maven reactor `clean install`
+  (Surefire unit tests and Failsafe integration tests, including the Docker-gated Testcontainers suites, which execute
+  against local emulator containers on the Docker-enabled hosted runner — no cloud credentials) plus the standalone
+  examples build, and uploads the failing tests' reports as an artifact so the contributor can see which test failed
+  and why. It is secret-free by construction — `on: pull_request` (never `pull_request_target`), no `secrets.*`
+  reference, workflow-level `permissions: {}` with the one job granted only `contents: read`, and GitHub-owned
+  SHA-pinned actions only — so it is useless to an attacker who controls the code it runs. It runs only on fork PRs
+  (where Buildkite adds nothing) and on manual `workflow_dispatch`; in-repo branches keep their full Buildkite
+  pipeline. The three privileged transparent-proxy end-to-end suites are excluded explicitly here — by name, via
+  `-Dfailsafe.excludesFile`, which preserves the POM includes and drops only those classes — because they build
+  `--cap-add=NET_ADMIN`/`--privileged` sibling containers a hosted runner cannot be relied on to support, and their
+  only code-level gate (`DockerCliTestSupport.isDockerAvailable()`) is true on `ubuntu-latest` (Maven has no
+  `RUN_TRANSPARENT_PROXY_E2E` gate — that is a Buildkite shell-step switch only); they, and the client-language/UI/Helm
+  pipelines, remain Buildkite's responsibility. The Docker-gated Testcontainers suites that do run are paired with a
+  fail-closed `assert-suite-ran.sh` check, so a runner without a usable Docker daemon reds the job rather than passing
+  green on skipped coverage.
 
 ### Changed
 - Dependabot no longer proposes TypeScript 7.x for the Node/UI packages. `typescript-eslint`'s peer range is
