@@ -42,6 +42,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and nothing else in the tree raises that ceiling — the upgrade is unmergeable until `typescript-eslint` ships
   support for the new major. The `ignore` carries the reason and an explicit revisit condition, so it is a recorded
   decision rather than silent suppression.
+- Dependabot version-ceiling ignores that guard a dependency declared in the reactor parent `mockserver/pom.xml`
+  are now mirrored into every Dependabot block whose module inherits that parent — `/examples/java` and
+  `/mockserver/mockserver-maven-plugin`. Because those child directories resolve *up* into the parent pom, Dependabot
+  scanning them could bump a parent-declared dependency and brand the PR with the child scope, sidestepping an ignore
+  that existed only in the `/mockserver` block. That is exactly how the un-passable `checkstyle 12.3.1 -> 13.10.0`
+  PR #2554 was generated from `/examples/java` (checkstyle 13 ships Java 21 bytecode; the project floor is Java 17).
+  The `checkstyle >= 13.0.0` and `graphql-java` ceilings are now present in all three parent-reaching blocks;
+  the module-only `infinispan-core` ignore is deliberately not mirrored because it is unreachable from those scopes.
+  Each block carries a `SYNC-WITH-PARENT` note so future ignores are added in every parent-reaching block.
+- Corrected a second, freshly-introduced ceiling suppression of the same class. The `typescript >= 7.0.0` ignore
+  added on 2026-08-17 was placed on the npm block **shared** by `/mockserver-ui`, `/mockserver-client-node` and
+  `/mockserver-node`, but its rationale (a `typescript-eslint` peer conflict) applies only to the UI.
+  `mockserver-client-node` was already on typescript `~7.0.2` — above the ceiling — and carries no
+  `typescript-eslint`, so the ignore silently froze every typescript update for that published package.
+  `/mockserver-ui` now has its own block carrying the ignore, mirroring how `/mockserver-vscode` was already
+  split for the same reason: a directory-specific constraint must not leak onto directories it does not apply to.
+- Corrected a Dependabot ceiling that had been suppressing every `graphql-java` update, including security patches.
+  The ignore read `>= 25.0.0` while `mockserver/pom.xml` had already moved to `26.0`, so the in-use version was itself
+  above the ceiling and no candidate could ever be proposed. This was found while mirroring the ignore into the two
+  parent-reaching blocks — the mirror would have propagated the fault rather than the control. Raised to `>= 27.0.0`
+  in all three blocks and documented the invariant inline: **a ceiling must stay above the version in use**, because
+  one at or below it is indistinguishable from a working ceiling — no pull requests appear either way. The stale
+  "22.x line" comments in `mockserver/pom.xml` and the `< 25.0.0` row in `docs/operations/security.md` are corrected
+  to match the 26.x reality.
+- A managed `org.jspecify:jspecify` version (`1.0.1`) is now pinned in `mockserver/pom.xml` `<dependencyManagement>`
+  so `maven-enforcer`'s `DependencyConvergence` stays green across Guava and graphql-java bumps. Guava `33.7.0-jre`
+  pulls jspecify `1.0.1` while `graphql-java -> java-dataloader:6.0.0` pulls `1.0.0`; with no managed version the two
+  transitive paths diverge the moment Guava moves, which is why Dependabot PR #2555 (`guava 33.6.0 -> 33.7.0`) failed
+  the enforcer. jspecify is an annotation-only artifact and `1.0.1` is a backward-compatible patch that neither
+  consumer rejects, so the higher line is pinned.
 
 ### Removed
 - **BREAKING BEHAVIOUR: `org.mock-server:mockserver-examples` is no longer published to Maven Central, and the

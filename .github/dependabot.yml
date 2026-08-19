@@ -16,6 +16,16 @@ updates:
     ignore:
       # Future Java floor or namespace migrations may add ignores here.
       # The javax → jakarta block was removed when the codebase migrated.
+      #
+      # KEEP IN SYNC: any ignore below that guards a dependency DECLARED IN THIS pom
+      # (mockserver/pom.xml) must ALSO be added to every Dependabot block whose pom inherits this
+      # one as its <parent> — currently /examples/java and /mockserver/mockserver-maven-plugin.
+      # Dependabot scanning those child directories resolves up into this parent and can bump the
+      # same declaration while branding the PR with the child scope; a lone ignore here does NOT
+      # cover them (that gap generated the un-passable checkstyle 13 PR #2554 from /examples/java).
+      # Ignores that guard a dependency declared only in a sibling MODULE pom (e.g. infinispan-core
+      # in mockserver-state-infinispan) are NOT inherited and must NOT be mirrored.
+      #
       # checkstyle 13.x requires Java 21 runtime; we target Java 17.
       # Pin the ceiling below 13.0.0 — this is stricter than ignoring only
       # semver-major bumps and keeps us on the Java-17-compatible 12.x line.
@@ -33,12 +43,18 @@ updates:
       # META-INF/mockserver-tcnative.version stamp. The old standalone ignore existed
       # because an explicit override let the base artifact diverge from the classifiers
       # and break dependencyConvergence (PR #2332); that override is gone.
-      # graphql-java 22.x-24.x ship Java 11 bytecode and run on the Java 17 floor.
+      # graphql-java through 26.x ships Java 11 bytecode and runs on the Java 17 floor.
       # A future major could raise the runtime floor, so ceiling-pin below the next
-      # unreleased major (25.x): minor/patch bumps on the 22.x-24.x line auto-update,
-      # but a major must be manually verified to still build/run on Java 17 first.
+      # unreleased major: minor/patch bumps on the in-use line auto-update, but a major
+      # must be manually verified to still build/run on Java 17 first.
+      #
+      # KEEP THIS CEILING ABOVE THE VERSION IN USE (mockserver/pom.xml). It read
+      # ">=25.0.0" while the pom was already on 26.0, so it suppressed EVERY graphql-java
+      # update — patches and security fixes included — because the in-use version was
+      # itself above the ceiling. A ceiling at or below the pinned version looks exactly
+      # like a working one: no PRs appear either way.
       - dependency-name: "com.graphql-java:graphql-java"
-        versions: [">=25.0.0"]
+        versions: [">=27.0.0"]
 
   # examples/java is the relocated example suite. It is deliberately NOT a module
   # of the /mockserver reactor (a `<module>../examples/java</module>` path escaped
@@ -61,6 +77,36 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # SYNC-WITH-PARENT — read before adding or removing anything here.
+      # examples/java/pom.xml declares <parent>org.mock-server:mockserver</parent>, so Dependabot
+      # scanning THIS directory resolves UP into mockserver/pom.xml and can bump any dependency
+      # declared in that parent while branding the PR with this child directory. That is exactly
+      # how the un-passable checkstyle 12.3.1 -> 13.10.0 PR #2554 was generated from this scope even
+      # though the /mockserver block already ignored checkstyle >= 13. Therefore every ignore in the
+      # /mockserver block that guards a dependency DECLARED IN THE PARENT pom must be mirrored here
+      # (and in the /mockserver/mockserver-maven-plugin block, which reaches the same parent).
+      # If you add a parent-declared ignore to /mockserver, add it to every parent-reaching block.
+      # NOT mirrored: org.infinispan:infinispan-core — it is declared in the mockserver-state-infinispan
+      # MODULE pom, which is not on this directory's parent chain, so it cannot be reached from here.
+      #
+      # checkstyle 13.x requires Java 21 runtime; we target Java 17.
+      # Pin the ceiling below 13.0.0 — this is stricter than ignoring only
+      # semver-major bumps and keeps us on the Java-17-compatible 12.x line.
+      - dependency-name: "com.puppycrawl.tools:checkstyle"
+        versions: [">=13.0.0"]
+      # graphql-java through 26.x ships Java 11 bytecode and runs on the Java 17 floor.
+      # A future major could raise the runtime floor, so ceiling-pin below the next
+      # unreleased major: minor/patch bumps on the in-use line auto-update, but a major
+      # must be manually verified to still build/run on Java 17 first.
+      #
+      # KEEP THIS CEILING ABOVE THE VERSION IN USE (mockserver/pom.xml). It read
+      # ">=25.0.0" while the pom was already on 26.0, so it suppressed EVERY graphql-java
+      # update — patches and security fixes included — because the in-use version was
+      # itself above the ceiling. A ceiling at or below the pinned version looks exactly
+      # like a working one: no PRs appear either way.
+      - dependency-name: "com.graphql-java:graphql-java"
+        versions: [">=27.0.0"]
 
   - package-ecosystem: "maven"
     directory: "/mockserver/mockserver-maven-plugin"
@@ -77,11 +123,31 @@ updates:
           - "minor"
           - "patch"
     ignore:
+      # SYNC-WITH-PARENT — mockserver-maven-plugin/pom.xml declares
+      # <parent>org.mock-server:mockserver</parent>, so Dependabot scanning this directory resolves
+      # UP into mockserver/pom.xml and can bump any dependency declared in that parent while branding
+      # the PR with this child directory (same escape route as PR #2554 from /examples/java). Every
+      # ignore in the /mockserver block that guards a PARENT-declared dependency must be mirrored here.
+      # NOT mirrored: org.infinispan:infinispan-core is declared in the mockserver-state-infinispan
+      # module pom, off this directory's parent chain, so it cannot be reached from here.
+      #
       # checkstyle 13.x requires Java 21 runtime; we target Java 17.
       # Pin the ceiling below 13.0.0 — this is stricter than ignoring only
       # semver-major bumps and keeps us on the Java-17-compatible 12.x line.
       - dependency-name: "com.puppycrawl.tools:checkstyle"
         versions: [">=13.0.0"]
+      # graphql-java through 26.x ships Java 11 bytecode and runs on the Java 17 floor.
+      # A future major could raise the runtime floor, so ceiling-pin below the next
+      # unreleased major: minor/patch bumps on the in-use line auto-update, but a major
+      # must be manually verified to still build/run on Java 17 first.
+      #
+      # KEEP THIS CEILING ABOVE THE VERSION IN USE (mockserver/pom.xml). It read
+      # ">=25.0.0" while the pom was already on 26.0, so it suppressed EVERY graphql-java
+      # update — patches and security fixes included — because the in-use version was
+      # itself above the ceiling. A ceiling at or below the pinned version looks exactly
+      # like a working one: no PRs appear either way.
+      - dependency-name: "com.graphql-java:graphql-java"
+        versions: [">=27.0.0"]
       # netty-tcnative-boringssl-static is version-locked to Netty (see the /mockserver
       # ecosystem above) — bumping it independently breaks dependencyConvergence (PR #2332).
       - dependency-name: "io.netty:netty-tcnative-boringssl-static"
@@ -92,11 +158,11 @@ updates:
   # /.opencode was removed from this list: it has no tracked package.json (only
   # an orphan package-lock.json), so Dependabot could never resolve it — the
   # lockfile has been untracked instead.
+  # mockserver-ui is in its OWN block because its TypeScript ignore below is
+  # UI-specific and must not leak onto the other npm directories — the same
+  # reason mockserver-vscode is split out further down.
   - package-ecosystem: "npm"
-    directories:
-      - "/mockserver-ui"
-      - "/mockserver-client-node"
-      - "/mockserver-node"
+    directory: "/mockserver-ui"
     schedule:
       interval: "daily"
     open-pull-requests-limit: 10
@@ -116,12 +182,40 @@ updates:
       # is the new native-compiler major and typescript-eslint support for it is
       # a large piece of upstream work with no committed date.
       #
+      # SCOPED TO THIS DIRECTORY ONLY. When this ignore lived on a block shared
+      # with /mockserver-client-node it froze that package's typescript, which
+      # was ALREADY on ~7.0.2 (landed green in July — it has no typescript-eslint,
+      # so the peer conflict does not apply there). An ignore whose ceiling sits
+      # at or below a directory's in-use version suppresses every update for it,
+      # security patches included, and looks identical to a working ceiling: no
+      # pull requests appear either way. Keep directory-specific constraints in
+      # directory-specific blocks.
+      #
       # REVISIT when typescript-eslint publishes a release whose peer range
       # admits typescript 7 (watch https://github.com/typescript-eslint/typescript-eslint).
       # At that point remove this ignore and bump both together — typescript
       # alone will still fail. PR #2547 was closed under this rule.
       - dependency-name: "typescript"
         versions: [">=7.0.0"]
+
+  # The published Node packages. No TypeScript ignore here: mockserver-client-node
+  # is on typescript ~7.0.2 already and carries no typescript-eslint, so the UI's
+  # constraint does not apply and must not freeze it.
+  - package-ecosystem: "npm"
+    directories:
+      - "/mockserver-client-node"
+      - "/mockserver-node"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # mockserver-vscode in its own block so one bad directory cannot take down the
   # healthy npm directories above. The @types/vscode ignore is vscode-specific.

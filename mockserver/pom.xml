@@ -733,14 +733,16 @@
             </dependency>
 
             <!-- graphql schema parsing + response synthesis (schema-valid GraphQL responses).
-                 Pinned to the 22.x line: 22.x ships Java 11 bytecode and runs on the Java 17 floor.
-                 Newer majors are ceiling-pinned in .github/dependabot.yml in case they raise the floor. -->
+                 26.x ships Java 11 bytecode and runs on the Java 17 floor. Newer majors are
+                 ceiling-pinned in .github/dependabot.yml in case they raise the floor — keep that
+                 ceiling ABOVE this version, or it suppresses every update to this dependency
+                 (it read >=25.0.0 while this was already 26.0, which silently blocked them all). -->
             <dependency>
                 <groupId>com.graphql-java</groupId>
                 <artifactId>graphql-java</artifactId>
                 <version>26.0</version>
             </dependency>
-            <!-- Converge reactive-streams: graphql-java 22.x brings 1.0.3 while infinispan/rxjava bring 1.0.4.
+            <!-- Converge reactive-streams: graphql-java brings 1.0.3 while infinispan/rxjava bring 1.0.4.
                  Pin to 1.0.4 (a backward-compatible patch) so maven-enforcer DependencyConvergence passes in
                  mockserver-state-infinispan. -->
             <dependency>
@@ -796,6 +798,17 @@
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
                 <version>33.6.0-jre</version>
+            </dependency>
+            <!-- Pin jspecify to resolve convergence: com.google.guava (33.7.0-jre onward) wants
+                 1.0.1, while com.graphql-java:graphql-java -> com.graphql-java:java-dataloader:6.0.0
+                 wants 1.0.0. There is no managed version, so the two transitive paths diverge the
+                 moment guava moves (PR #2555). jspecify is an annotation-only artifact and 1.0.1 is
+                 a backward-compatible patch that neither consumer rejects, so pin the newer line and
+                 maven-enforcer DependencyConvergence passes across future guava / graphql-java bumps. -->
+            <dependency>
+                <groupId>org.jspecify</groupId>
+                <artifactId>jspecify</artifactId>
+                <version>1.0.1</version>
             </dependency>
 
             <!-- classpath scanning -->
