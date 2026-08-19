@@ -618,6 +618,56 @@ The full rationale, the two-project coverage table, the cost/trigger design, and
 
 **Note:** an earlier `dependency-submission.yml` was removed on the belief that the built-in graph gave equivalent coverage. That belief was wrong for a non-root Maven project and is what let the graph go stale — see the security.md section above.
 
+### Dependabot auto-merge
+
+**File:** `.github/workflows/dependabot-auto-merge.yml`
+
+**Bottom line:** minor/patch Dependabot PRs are merged automatically once **every check that actually exists on the PR head commit has genuinely passed** — read live from **both** GitHub check APIs, never from a maintained list. Anything ambiguous fails closed and the PR is left for a human.
+
+**Why not GitHub-native auto-merge?** Native auto-merge waits only on the branch-protection **required-status-check list**. In this repo Buildkite and both Snyk scans are **not** required checks (see [Pull requests from external forks](#pull-requests-from-external-forks) — a docs-only change can merge on green CodeQL alone). So native auto-merge would merge a Dependabot PR the moment its *required* checks were green while Buildkite or a Snyk scan was still pending or **red** — and any newly-added check is invisible to it until someone remembers to add it to the required list. That silent under-coverage is the exact class of miss this repo has shipped before. **Do not replace this workflow with native auto-merge or `gh pr merge --auto`.**
+
+**The defining property — read the checks that exist, not a list.** The two GitHub APIs report **disjoint** sets and both must be aggregated:
+
+| API | Endpoint | What it carries here (verified on PR #2562's head) |
+|---|---|---|
+| Check Runs | `GET /commits/{sha}/check-runs` | 6 runs — CodeQL, the four `Analyze (*)` language runs, and the fork-only `Build & test full reactor` (which is `skipped` on in-repo branches) |
+| Commit Statuses | `GET /commits/{sha}/status` | 3 statuses — `buildkite/mockserver` and **both** Snyk scans |
+
+A workflow reading only check-runs would see 6 green and merge **while missing the build and the vulnerability scanner entirely**. This workflow aggregates all **9** signals and requires every one to be green.
+
+**Fail-closed decision matrix.** The job refuses (and logs *why*) on any of:
+
+- author is not `dependabot[bot]`; PR not `open`; PR is a draft;
+- head repo ≠ base repo (a **fork** — never merged, never mergeable via this path);
+- head branch is not a `*-minor-and-patch-*` group branch (see major exclusion below);
+- `mergeable` is not `true` (unknown/conflicting), or `mergeable_state` is `dirty`/`behind`/`blocked`/`unknown`;
+- **zero** checks found on the head commit (the empty-set trap — silence is never success);
+- any check-run not `completed`, or with conclusion `failure`/`cancelled`/`timed_out`/`action_required`/`stale`/`startup_failure`/null/**any unrecognised value**;
+- any commit status whose state is not `success` (i.e. `pending`/`failure`/`error`/unrecognised);
+- no successful check at all (e.g. everything `skipped`); or any API call erroring.
+
+`skipped` and `neutral` check-run conclusions are treated as **non-blocking** (GitHub itself treats them as non-failing), because the fork-only `Build & test full reactor` check is legitimately `skipped` on every in-repo branch — treating `skipped` as a failure would merge nothing. Requiredness cannot be read without the branch-protection list this workflow deliberately avoids, so it defers to GitHub's own non-failing treatment of `skipped`/`neutral` while still requiring at least one genuine `success`.
+
+**Why that leniency is safe, and the assumption it rests on.** It can only ever apply to *check runs*. `buildkite/mockserver` and both Snyk scans are **commit statuses**, and the legacy Commit Status API has only four states — `error`, `failure`, `pending`, `success`. There is no `skipped` or `neutral` for a status to report, so the build and the vulnerability scanners are structurally incapable of reaching the non-blocking path: they either pass or they refuse the merge. That is why no allowlist of required contexts is needed — naming them would reintroduce exactly the maintained list that made native auto-merge unsafe.
+
+**If Buildkite or Snyk ever migrates to the Checks API** (for example by installing Snyk's GitHub App in checks mode), this reasoning stops holding: a `skipped` or `neutral` from them would become non-blocking, and the workflow would be able to merge past the build or a vulnerability scan. Revisit the leniency if either ever stops reporting as a commit status. The `Reported as` column in the table above is the thing to check.
+
+**One residual gap, recorded rather than fixed.** The workflow gates only checks that have already posted; it cannot tell "this context does not apply" from "this context has not reported yet". It relies on Buildkite and Snyk registering their `pending` status within seconds of a push, well before the slower CodeQL runs complete — so any sweep that sees a green check-run also sees those statuses (as `pending`, which refuses). A future check that reports much faster than Buildkite could in principle open that window.
+
+**Majors are excluded structurally, not by parsing.** `.github/dependabot.yml` groups `minor`+`patch` into `*-minor-and-patch` groups for every ecosystem; **majors are excluded from every group's `update-types`**, so a major arrives as an **ungrouped single-dependency** branch (e.g. `dependabot/maven/mockserver/com.graphql-java-graphql-java-27.0.0`) that does not match `^dependabot/.+-minor-and-patch-[0-9a-f]+$`. This is **spoof-resistant** because the head branch lives **in this repository** and is created by **Dependabot alone**: a PR author cannot cause Dependabot to name a major-bump branch after a minor/patch group, and the fork gate independently rejects any branch not in this repo. Group membership is therefore a *structural* signal, not a parsed version string — and being conservative (declining an eligible PR) is always the safe failure direction.
+
+**Security posture (all load-bearing — do not weaken):**
+
+| Property | Setting | Why |
+|---|---|---|
+| Trigger | `schedule` (every 3h) + `workflow_dispatch`; **never** `pull_request`/`pull_request_target` | No PR-authored input ever reaches the job. A sweep is inherently self-retrying and carries the lowest attack surface; dependency bumps need not merge within seconds. |
+| PR code | **no `actions/checkout`**, no PR ref fetched | This runs with write permissions in base-repo context; it never executes PR code. State is read via the API; the merge is by PR number. |
+| Actions | **none** (uses `gh` in a `run:` step) | Nothing third-party to compromise or SHA-drift; trivially satisfies `allowed_actions: selected`. |
+| Token | workflow `permissions: {}`; job `contents: write` + `pull-requests: write`; token from `github.token` | Least privilege at job level only; no `secrets.*` reference. |
+| Merge | `gh pr merge --squash --delete-branch` | Keeps `master` linear per `AGENTS.md`. |
+
+**Trialling / going live.** `dry_run` defaults **ON** (env `DEFAULT_DRY_RUN: 'true'`), so scheduled runs log their decision (`DRY-RUN: would squash-merge …`) and merge nothing. `workflow_dispatch` exposes a `dry_run` toggle and an optional single-`pr` input to evaluate one PR. To enable live merging on the schedule, flip `DEFAULT_DRY_RUN` to `'false'`. Watch it decide correctly first.
+
 ### PR Tests (fork-safe)
 
 **File:** `.github/workflows/pr-tests.yml`

@@ -35,6 +35,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pipelines, remain Buildkite's responsibility. The Docker-gated Testcontainers suites that do run are paired with a
   fail-closed `assert-suite-ran.sh` check, so a runner without a usable Docker daemon reds the job rather than passing
   green on skipped coverage.
+- Dependabot minor/patch pull requests are now merged automatically once **every** check that actually exists on the
+  PR head commit has genuinely passed, via a new GitHub Actions workflow (`.github/workflows/dependabot-auto-merge.yml`).
+  It was chosen deliberately over GitHub's native auto-merge: native auto-merge waits only on the branch-protection
+  *required-status-check list*, and in this repo Buildkite and both Snyk scans are **not** required checks, so native
+  auto-merge would merge the instant the *required* checks were green while the build or the vulnerability scanner was
+  still pending or red — and a newly-added check stays invisible to it until someone edits the list. Instead the workflow
+  reads the checks that actually exist by aggregating **both** GitHub APIs — the Check Runs API
+  (`/commits/{sha}/check-runs`, which on a Dependabot head carries CodeQL and the language `Analyze` runs) **and** the
+  legacy Commit Status API (`/commits/{sha}/status`, which carries `buildkite/mockserver` and both Snyk scans) — and
+  requires them to pass. Commit statuses must be `success` — the legacy status API has only `error`/`failure`/`pending`/
+  `success`, so the security-critical contexts cannot report a non-blocking state. Check runs may be `skipped` or
+  `neutral` without blocking (the fork-only test workflow is always skipped on an in-repo PR, so requiring literal
+  success from every run would merge nothing), but at least one genuine success is still required. It fails closed on
+  every other ambiguity: any pending, failed, cancelled or unrecognised result, **zero** checks found (the empty-set
+  trap), an API error, or unknown mergeability all refuse the merge with a logged reason. It merges only PRs authored by `dependabot[bot]` whose head branch is in this
+  repository (not a fork), and only **minor/patch** updates: `.github/dependabot.yml` groups minor+patch into
+  `*-minor-and-patch` groups and excludes majors, so a major arrives as an ungrouped single-dependency branch that fails
+  the group-branch check — a structural, spoof-resistant signal because only Dependabot creates those in-repo branches.
+  The workflow runs on a `schedule` sweep plus `workflow_dispatch` (never `pull_request`/`pull_request_target`), checks
+  out no PR code, uses no third-party actions and no `secrets.*`, and holds only job-level `contents: write` +
+  `pull-requests: write` under a workflow-level `permissions: {}`. It ships with `dry_run` defaulting **ON** so it can be
+  trialled — logging each decision without merging — until the schedule default is flipped to live.
 
 ### Changed
 - Dependabot no longer proposes TypeScript 7.x for the Node/UI packages. `typescript-eslint`'s peer range is

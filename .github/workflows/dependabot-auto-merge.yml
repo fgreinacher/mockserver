@@ -1,0 +1,225 @@
+# Auto-merge Dependabot minor/patch PRs once EVERY check that actually exists on
+# the PR head has genuinely passed.
+#
+# Why not GitHub native auto-merge? Native auto-merge waits only on the repo's
+# *configured* required-status-check list. In this repo Buildkite and Snyk are
+# NOT required checks (see docs/infrastructure/ci-cd.md), so native auto-merge
+# would merge a Dependabot PR the moment its *required* checks were green while
+# Buildkite or a Snyk scan was still pending or red — and a newly-added check is
+# invisible to it until someone remembers to add it to the list. This workflow
+# instead reads the checks that ACTUALLY exist on the head commit — from BOTH the
+# Check Runs API and the legacy Commit Status API — and refuses unless every one
+# of them is green. It never trusts a maintained list.
+#
+# Security posture (all load-bearing — see docs/infrastructure/ci-cd.md):
+#   * schedule/workflow_dispatch only — NEVER pull_request_target; no PR-authored
+#     input ever reaches this job.
+#   * No checkout. PR code is never fetched or executed. State is read via the API
+#     and the merge is by PR number.
+#   * workflow-level permissions {}; the single job gets contents:write +
+#     pull-requests:write and nothing else.
+#   * No secrets.* — the API token comes from the job-scoped github.token context.
+#   * No third-party actions, so nothing to be compromised or SHA-drift.
+#   * Fails closed on every ambiguity (see the DECISION MATRIX in the run step).
+name: Dependabot auto-merge
+
+on:
+  schedule:
+    # Every 3 hours, offset off the hour. Dependency bumps do not need to merge
+    # within seconds; a sweep is inherently self-retrying (a PR that is pending
+    # now is re-evaluated next run) and carries no PR-controlled trigger input.
+    - cron: '23 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log decisions without merging (leave ON to trial).'
+        type: boolean
+        default: true
+      pr:
+        description: 'Optional single PR number to evaluate (else sweep all open).'
+        type: string
+        required: false
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    name: Evaluate and merge eligible Dependabot PRs
+    runs-on: ubuntu-latest
+    # Least privilege, granted at job level only.
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      # Manual-dispatch overrides (empty on the schedule path).
+      DISPATCH_DRY_RUN: ${{ github.event.inputs.dry_run }}
+      DISPATCH_PR: ${{ github.event.inputs.pr }}
+      # TO GO LIVE ON THE SCHEDULE: change this from 'true' to 'false'. Kept ON so
+      # the workflow can be landed and watched deciding correctly before it acts.
+      DEFAULT_DRY_RUN: 'true'
+    steps:
+      # NOTE: deliberately no actions/checkout — this job fetches no PR code.
+      - name: Evaluate open Dependabot PRs and merge the eligible ones
+        run: |
+          set -uo pipefail
+
+          DRY_RUN="${DISPATCH_DRY_RUN:-$DEFAULT_DRY_RUN}"
+          ONLY_PR="${DISPATCH_PR:-}"
+
+          # The Dependabot minor+patch groups configured in .github/dependabot.yml
+          # all end in "-minor-and-patch". A grouped Dependabot branch embeds the
+          # group name; MAJORS are excluded from every group's update-types, so
+          # they arrive as UNGROUPED single-dependency branches that do NOT match
+          # this pattern. The branch lives in the base repo and only Dependabot
+          # creates it, so group membership is a structural signal that cannot be
+          # forged by a PR author (see docs/infrastructure/ci-cd.md).
+          GROUP_BRANCH_REGEX='^dependabot/.+-minor-and-patch-[0-9a-f]+$'
+
+          log()    { printf '%s\n' "$*"; }
+          refuse() { log "  REFUSE (#$1): $2"; }
+
+          # Evaluate one PR. Returns 0 only if it merged (or would in dry-run).
+          # Never exits the process — a single bad PR must not abort the sweep.
+          evaluate_pr() {
+            pr="$1"
+            log "── PR #$pr ─────────────────────────────────────────────"
+
+            if ! prjson="$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null)"; then
+              refuse "$pr" "API error fetching PR (fail closed)"; return 1
+            fi
+
+            state="$(jq -r '.state // ""' <<<"$prjson")"
+            draft="$(jq -r '.draft // false' <<<"$prjson")"
+            user="$(jq -r '.user.login // ""' <<<"$prjson")"
+            head_ref="$(jq -r '.head.ref // ""' <<<"$prjson")"
+            head_sha="$(jq -r '.head.sha // ""' <<<"$prjson")"
+            head_repo="$(jq -r '.head.repo.full_name // ""' <<<"$prjson")"
+            base_repo="$(jq -r '.base.repo.full_name // ""' <<<"$prjson")"
+
+            # Gate: author is Dependabot.
+            if [ "$user" != "dependabot[bot]" ]; then
+              refuse "$pr" "author is '$user', not dependabot[bot]"; return 1
+            fi
+            # Gate: PR is open.
+            if [ "$state" != "open" ]; then
+              refuse "$pr" "state is '$state', not open"; return 1
+            fi
+            # Gate: not a draft.
+            if [ "$draft" = "true" ]; then
+              refuse "$pr" "PR is a draft"; return 1
+            fi
+            # Gate: head is a branch in THIS repo, not a fork.
+            if [ -z "$head_repo" ] || [ "$head_repo" != "$base_repo" ]; then
+              refuse "$pr" "head repo '$head_repo' != base '$base_repo' (fork/deleted)"; return 1
+            fi
+            # Gate: grouped minor/patch branch (structural exclusion of majors).
+            if ! printf '%s' "$head_ref" | grep -Eq "$GROUP_BRANCH_REGEX"; then
+              refuse "$pr" "branch '$head_ref' is not a *-minor-and-patch group (major/ungrouped)"; return 1
+            fi
+
+            # Gate: mergeable. GitHub computes this asynchronously; retry while null.
+            mergeable="$(jq -r '.mergeable' <<<"$prjson")"
+            mstate="$(jq -r '.mergeable_state // "unknown"' <<<"$prjson")"
+            tries=0
+            while [ "$mergeable" = "null" ] && [ "$tries" -lt 3 ]; do
+              sleep 3; tries=$((tries+1))
+              prjson="$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null)" || { refuse "$pr" "API error re-fetching mergeability"; return 1; }
+              mergeable="$(jq -r '.mergeable' <<<"$prjson")"
+              mstate="$(jq -r '.mergeable_state // "unknown"' <<<"$prjson")"
+            done
+            if [ "$mergeable" != "true" ]; then
+              refuse "$pr" "mergeable='$mergeable' (unknown/conflicting) — fail closed"; return 1
+            fi
+            case "$mstate" in
+              clean|unstable|has_hooks) : ;;  # our own check aggregation below is the green authority
+              *) refuse "$pr" "mergeable_state='$mstate' (dirty/behind/blocked/unknown)"; return 1 ;;
+            esac
+
+            # ── DECISION MATRIX: every check that exists must be green ──────────
+            # Aggregate BOTH APIs. Reading only check-runs would miss Buildkite and
+            # both Snyk scans, which are Commit Statuses, not Check Runs.
+            if ! cr="$(gh api "repos/$REPO/commits/$head_sha/check-runs?per_page=100" 2>/dev/null)"; then
+              refuse "$pr" "API error fetching check-runs (fail closed)"; return 1
+            fi
+            if ! st="$(gh api "repos/$REPO/commits/$head_sha/status?per_page=100" 2>/dev/null)"; then
+              refuse "$pr" "API error fetching commit statuses (fail closed)"; return 1
+            fi
+
+            n_cr="$(jq -r '.check_runs | length' <<<"$cr")"
+            n_st="$(jq -r '.statuses | length' <<<"$st")"
+            n_total=$((n_cr + n_st))
+            log "  aggregated signals: check-runs=$n_cr + statuses=$n_st = $n_total"
+
+            # Empty-set trap: silence is never success.
+            if [ "$n_total" -eq 0 ]; then
+              refuse "$pr" "ZERO checks found on head $head_sha (empty-set trap)"; return 1
+            fi
+
+            success=0; problems=0
+            # Check Runs: require completed + success. skipped/neutral are
+            # non-blocking (GitHub treats them as non-failing; the fork-only
+            # 'Build & test full reactor' check is legitimately skipped on in-repo
+            # branches, so treating skipped as failure would merge nothing). Every
+            # other value — failure/cancelled/timed_out/action_required/stale/
+            # startup_failure, a null conclusion, or anything unrecognised — fails.
+            while IFS="$(printf '\t')" read -r name status conclusion; do
+              [ -z "$name" ] && continue
+              if [ "$status" != "completed" ]; then
+                log "    check-run '$name': status=$status → NOT COMPLETE"; problems=$((problems+1)); continue
+              fi
+              case "$conclusion" in
+                success)         success=$((success+1)) ;;
+                skipped|neutral) log "    check-run '$name': $conclusion (non-blocking)" ;;
+                *)               log "    check-run '$name': conclusion=$conclusion → PROBLEM"; problems=$((problems+1)) ;;
+              esac
+            done < <(jq -r '.check_runs[] | [.name, .status, (.conclusion // "null")] | @tsv' <<<"$cr")
+
+            # Commit Statuses: require state=success; anything else fails closed.
+            while IFS="$(printf '\t')" read -r ctx cstate; do
+              [ -z "$ctx" ] && continue
+              case "$cstate" in
+                success) success=$((success+1)) ;;
+                *)       log "    status '$ctx': state=$cstate → PROBLEM"; problems=$((problems+1)) ;;
+              esac
+            done < <(jq -r '.statuses[] | [.context, .state] | @tsv' <<<"$st")
+
+            if [ "$problems" -gt 0 ]; then
+              refuse "$pr" "$problems check(s) not green — fail closed"; return 1
+            fi
+            if [ "$success" -lt 1 ]; then
+              refuse "$pr" "no successful check present (all skipped/neutral) — fail closed"; return 1
+            fi
+
+            log "  ELIGIBLE: $success success + $((n_total - success)) non-blocking, 0 problems"
+
+            if [ "$DRY_RUN" = "true" ]; then
+              log "  DRY-RUN: would squash-merge PR #$pr"; return 0
+            fi
+            # --match-head-commit pins the merge to the exact SHA whose checks were
+            # validated above. Without it, a force-push landing between validation and
+            # merge would merge an unvalidated head; GitHub refuses instead.
+            if gh pr merge "$pr" --repo "$REPO" --squash --delete-branch \
+                 --match-head-commit "$head_sha"; then
+              log "  MERGED PR #$pr (squash)"; return 0
+            fi
+            refuse "$pr" "gh pr merge failed (GitHub refused) — left for inspection"; return 1
+          }
+
+          # Build the candidate list.
+          candidates=()
+          if [ -n "$ONLY_PR" ]; then
+            candidates=("$ONLY_PR")
+          else
+            if ! list="$(gh pr list --repo "$REPO" --state open --limit 100 --json number --jq '.[].number')"; then
+              log "FATAL: could not list open PRs"; exit 1
+            fi
+            while IFS= read -r n; do [ -n "$n" ] && candidates+=("$n"); done <<<"$list"
+          fi
+
+          log "DRY_RUN=$DRY_RUN  candidates=${#candidates[@]}"
+          for pr in "${candidates[@]}"; do
+            evaluate_pr "$pr" || true
+          done
+          log "done."
