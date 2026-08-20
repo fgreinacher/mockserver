@@ -50,9 +50,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   success from every run would merge nothing), but at least one genuine success is still required. It fails closed on
   every other ambiguity: any pending, failed, cancelled or unrecognised result, **zero** checks found (the empty-set
   trap), an API error, or unknown mergeability all refuse the merge with a logged reason. It merges only PRs authored by `dependabot[bot]` whose head branch is in this
-  repository (not a fork), and only **minor/patch** updates: `.github/dependabot.yml` groups minor+patch into
-  `*-minor-and-patch` groups and excludes majors, so a major arrives as an ungrouped single-dependency branch that fails
-  the group-branch check — a structural, spoof-resistant signal because only Dependabot creates those in-repo branches.
+  repository (not a fork), and only two branch classes: **minor/patch** group updates and Docker **digest** bumps. For
+  the first, `.github/dependabot.yml` groups minor+patch into `*-minor-and-patch` groups and excludes majors, so a major
+  arrives as an ungrouped single-dependency branch that fails the group-branch check — a structural, spoof-resistant
+  signal because only Dependabot creates those in-repo branches. For the second, a Docker image-digest bump (a new SHA
+  on an *unchanged* tag) carries no semver and so joins no group; it is now accepted directly, but **only** for the
+  distroless runtime bases — the one image class that, being pinned on non-semver tags, has only ever moved by digest in
+  this repo's entire Dependabot history — and only when **two** independent Dependabot-generated signals agree: the
+  branch is a `.../distroless/<image>-<hex-sha>` path **and** the PR title is Dependabot's digest-bump shape (`bump … from
+  <hex-sha> to <hex-sha>`). A version or tag bump matches neither (its branch and title carry bare versions, not hex
+  shas), and the two-signal AND fails closed, so a major or tag change can never be auto-merged. The semver-tagged
+  images (`alpine`, `ubuntu`, `eclipse-temurin`, `grafana/k6`) are deliberately excluded from the digest path — safety
+  over completeness. `.github/dependabot.yml` is unchanged.
   The workflow runs on a `schedule` sweep plus `workflow_dispatch` (never `pull_request`/`pull_request_target`), checks
   out no PR code, uses no third-party actions and no `secrets.*`, and holds only job-level `contents: write` +
   `pull-requests: write` under a workflow-level `permissions: {}`. It ships with `dry_run` defaulting **ON** so it can be

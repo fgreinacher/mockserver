@@ -68,14 +68,55 @@ jobs:
           DRY_RUN="${DISPATCH_DRY_RUN:-$DEFAULT_DRY_RUN}"
           ONLY_PR="${DISPATCH_PR:-}"
 
-          # The Dependabot minor+patch groups configured in .github/dependabot.yml
-          # all end in "-minor-and-patch". A grouped Dependabot branch embeds the
-          # group name; MAJORS are excluded from every group's update-types, so
-          # they arrive as UNGROUPED single-dependency branches that do NOT match
-          # this pattern. The branch lives in the base repo and only Dependabot
-          # creates it, so group membership is a structural signal that cannot be
-          # forged by a PR author (see docs/infrastructure/ci-cd.md).
+          # ── Two accepted branch classes, both structural and forge-resistant ──
+          #
+          # (A) GROUP_BRANCH_REGEX — a "-minor-and-patch" GROUP branch. The
+          #     minor+patch groups configured in .github/dependabot.yml embed the
+          #     group name verbatim; MAJORS are excluded from every group's
+          #     update-types, so a major arrives as an UNGROUPED single-dependency
+          #     branch (e.g. dependabot/maven/mockserver/com.graphql-java-graphql-
+          #     java-27.0.0) that does not match. Verified against real history:
+          #     genuine minors group here (grafana/k6 2.0.0→2.1.0) while majors do
+          #     not (eclipse-temurin 17→25, ubuntu 24.04→25.10 both arrived
+          #     ungrouped).
+          #
+          # (B) DIGEST_BRANCH_REGEX — an UNGROUPED Docker DIGEST bump on a distroless
+          #     base. Dependabot's grouping of digest updates is inconsistent (a
+          #     distroless digest once grouped as docker-minor-and-patch "across 6
+          #     directories", yet the current six arrive one-per-directory and
+          #     ungrouped), so digests cannot be caught by grouping alone. They are
+          #     matched directly instead, on TWO independent Dependabot-generated
+          #     signals that must BOTH hold (see the title check in the gate below):
+          #       1. the branch is under a ".../distroless/<image>-<hexsha>" path,
+          #          and 2. the PR title is Dependabot's digest-bump shape
+          #          ("bump X from `<hexsha>` to `<hexsha>`").
+          #     This is scoped to distroless ON PURPOSE: distroless is pinned on
+          #     NON-SEMVER tags (nonroot/debug-nonroot/latest), so across the dozens
+          #     of distroless PRs in this repo's history EVERY ONE is a digest bump
+          #     and NONE is a version/tag change — it is the one image class that can
+          #     only ever move by digest. Dependabot bumps tags/digests, never the
+          #     image *repository* name, so "distroless/java17" can never silently
+          #     become a "distroless/java21" tag change. Semver-tagged images
+          #     (alpine, ubuntu, eclipse-temurin, grafana/k6) are deliberately NOT
+          #     matched here — their digest bumps stay ungrouped and are refused, so
+          #     no version string can ever reach this path.
+          #
+          # Both branch classes live in the base repo and are created by Dependabot
+          # alone, so a PR author cannot forge either (the fork gate above
+          # independently rejects any branch not in this repo). The trailing hex run
+          # in each regex means an ungrouped major (…-27.0.0, …-25.10, …-25-jdk-noble)
+          # can never match: a dot or a non-hex tag ends the string first.
+          # See docs/infrastructure/ci-cd.md for the full argument and the evidence.
           GROUP_BRANCH_REGEX='^dependabot/.+-minor-and-patch-[0-9a-f]+$'
+          DIGEST_BRANCH_REGEX='^dependabot/docker/.+/distroless/[a-z0-9._-]+-[0-9a-f]{7,}$'
+          # Dependabot's digest-bump title: bump <image> from `<sha>` to `<sha>`
+          # (the shas are backticked). A version bump titles the from/to as bare
+          # versions ("from 24.04 to 25.10", "from 17-jdk-noble to 25-jdk-noble"),
+          # so requiring a >=7-char HEX run either side can only match a digest
+          # movement, never a tag/version change. The single "." stands in for the
+          # backtick that wraps each sha — written this way (not a literal backtick)
+          # so the regex is unambiguous shell and stays shellcheck-clean.
+          DIGEST_TITLE_REGEX='bump [^ ]+ from .[0-9a-f]{7,}. to .[0-9a-f]{7,}.'
 
           log()    { printf '%s\n' "$*"; }
           refuse() { log "  REFUSE (#$1): $2"; }
@@ -97,6 +138,7 @@ jobs:
             head_sha="$(jq -r '.head.sha // ""' <<<"$prjson")"
             head_repo="$(jq -r '.head.repo.full_name // ""' <<<"$prjson")"
             base_repo="$(jq -r '.base.repo.full_name // ""' <<<"$prjson")"
+            title="$(jq -r '.title // ""' <<<"$prjson")"
 
             # Gate: author is Dependabot.
             if [ "$user" != "dependabot[bot]" ]; then
@@ -114,9 +156,21 @@ jobs:
             if [ -z "$head_repo" ] || [ "$head_repo" != "$base_repo" ]; then
               refuse "$pr" "head repo '$head_repo' != base '$base_repo' (fork/deleted)"; return 1
             fi
-            # Gate: grouped minor/patch branch (structural exclusion of majors).
-            if ! printf '%s' "$head_ref" | grep -Eq "$GROUP_BRANCH_REGEX"; then
-              refuse "$pr" "branch '$head_ref' is not a *-minor-and-patch group (major/ungrouped)"; return 1
+            # Gate: branch is either (A) a minor/patch GROUP branch, or (B) a
+            # distroless DIGEST branch whose TITLE is also Dependabot's digest-bump
+            # shape. Majors and tag changes match neither (see the regexes above).
+            if printf '%s' "$head_ref" | grep -Eq "$GROUP_BRANCH_REGEX"; then
+              : # (A) accepted — structural major-exclusion via group membership
+            elif printf '%s' "$head_ref" | grep -Eq "$DIGEST_BRANCH_REGEX"; then
+              # (B) branch looks like a distroless digest bump; require the PR title
+              # to ALSO be a digest-bump title. Two independent Dependabot-generated
+              # signals must agree — fail closed if the title is anything else (e.g.
+              # a version bump that somehow shared the branch shape).
+              if ! printf '%s' "$title" | grep -Eq "$DIGEST_TITLE_REGEX"; then
+                refuse "$pr" "branch '$head_ref' looks like a digest bump but title '$title' is not a digest-bump title — fail closed"; return 1
+              fi
+            else
+              refuse "$pr" "branch '$head_ref' is neither a *-minor-and-patch group nor a distroless digest bump (major/tag/ungrouped)"; return 1
             fi
 
             # Gate: mergeable. GitHub computes this asynchronously; retry while null.
