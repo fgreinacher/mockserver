@@ -56,9 +56,10 @@ jobs:
       # Manual-dispatch overrides (empty on the schedule path).
       DISPATCH_DRY_RUN: ${{ github.event.inputs.dry_run }}
       DISPATCH_PR: ${{ github.event.inputs.pr }}
-      # TO GO LIVE ON THE SCHEDULE: change this from 'true' to 'false'. Kept ON so
-      # the workflow can be landed and watched deciding correctly before it acts.
-      DEFAULT_DRY_RUN: 'true'
+      # LIVE ON THE SCHEDULE: the scheduled sweep actually merges eligible PRs.
+      # The workflow_dispatch `dry_run` input still defaults to true, so a MANUAL
+      # run is a safe dry-run probe unless the operator explicitly sets it false.
+      DEFAULT_DRY_RUN: 'false'
     steps:
       # NOTE: deliberately no actions/checkout — this job fetches no PR code.
       - name: Evaluate open Dependabot PRs and merge the eligible ones

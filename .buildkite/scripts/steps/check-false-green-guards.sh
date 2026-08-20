@@ -76,6 +76,30 @@
 #     sequential. See the signature list below for what it deliberately does NOT
 #     catch (static-import call sites; other modules).
 #
+#   Rule 6 — the Dependabot auto-merge workflow's acceptance paths must stay
+#     narrow. .github/workflows/dependabot-auto-merge.yml merges Dependabot PRs
+#     with NO human in the loop; four load-bearing properties keep majors and
+#     version bumps out, and each is easy to "tidy away" in a later edit. This
+#     parses the three acceptance regexes out of the workflow and asserts:
+#     (6a) DIGEST_BRANCH_REGEX stays anchored (^…$), confined to dependabot/
+#     docker/, keeps the literal /distroless/ segment, and ends in a hex-run
+#     floor of >=7 — the /distroless/ scope is load-bearing, not cosmetic:
+#     without it a date-tagged bump ("bump ubuntu from 202401151200 to 202402201200",
+#     whose date tokens are all hex) satisfies the title regex and would merge as
+#     a VERSION change, the scope being the only thing that rejects it; (6b)
+#     DIGEST_TITLE_REGEX requires a >=7 hex run on BOTH the from and to sides;
+#     (6c) path B still cross-checks the title as a conjunct of the branch shape,
+#     failing closed on mismatch (the two-signal AND cannot collapse to the
+#     branch alone); (6d) every group name in .github/dependabot.yml that path
+#     A's GROUP_BRANCH_REGEX accepts declares update-types ⊆ {minor,patch}, so a
+#     major can never ride a branch literally named *-minor-and-patch. Fails
+#     closed if the workflow is missing, a regex cannot be extracted, path B
+#     cannot be located, or no group is accepted by path A (an empty sweep is the
+#     specific shape this file exists to catch). NO allow-list by design — none
+#     of these four has a legitimate exemption (a group in a branch named
+#     minor-and-patch must never carry a major), so every violation is a real
+#     regression, not a case to wave through.
+#
 # ALLOW-LISTS
 #
 # Some Docker-gated files are legitimately NOT assert-suite-ran-paired (the probe's
@@ -84,7 +108,7 @@
 # names something that no longer exists, or that is no longer exempt for the reason
 # claimed, FAILS the build so the allow-list can never quietly mask a regression.
 #
-# Requires: git, grep, sed. Runs directly on the agent (no Docker). Bash 3.2 safe.
+# Requires: git, grep, sed, awk. Runs directly on the agent (no Docker). Bash 3.2 safe.
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -636,6 +660,215 @@ for entry in ${R5_ALLOWLIST[@]+"${R5_ALLOWLIST[@]}"}; do
     errors=$(( errors + 1 ))
   fi
 done
+
+# ══════════════════════════════════════════════════════════════════════
+# Rule 6 — the Dependabot auto-merge acceptance paths must stay narrow
+# ══════════════════════════════════════════════════════════════════════
+echo "--- :robot_face: Rule 6: Dependabot auto-merge acceptance paths stay narrow"
+
+# There is deliberately NO allow-list for Rule 6 (unlike Rules 1-5): it does not
+# sweep a set of files where an individual entry could be legitimately exempt — it
+# parses fixed properties out of one workflow, none of which has a valid exemption
+# (a group in a branch named minor-and-patch must never carry a major, a digest
+# path must always keep its /distroless/ scope, etc.). Any violation is a real
+# regression, so there is nothing to wave through.
+WF=".github/workflows/dependabot-auto-merge.yml"
+DEPENDABOT_YML=".github/dependabot.yml"
+
+if [ ! -f "$WF" ]; then
+  echo "+++ :bangbang: Rule 6: ${WF} is missing — the auto-merge guard cannot verify the acceptance paths; failing closed" >&2
+  errors=$(( errors + 1 ))
+else
+  # Extract the single-quoted RHS of `VAR='...'` (one assignment line per var; the
+  # comments that mention these names never begin with `VAR='` so are not matched).
+  r6_extract() {
+    sed -n -E "s/^[[:space:]]*$1='([^']*)'.*/\1/p" "$WF"
+  }
+  # numeric-safe ">= floor" test — never let a non-integer trip `set -e` under `[`.
+  r6_ge() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge "$2" ]; }
+
+  GROUP_RE="$(r6_extract GROUP_BRANCH_REGEX || true)"
+  DIGEST_BR_RE="$(r6_extract DIGEST_BRANCH_REGEX || true)"
+  DIGEST_TI_RE="$(r6_extract DIGEST_TITLE_REGEX || true)"
+
+  # ── extraction fail-closed: a missing/renamed assignment must FAIL, not pass ──
+  if [ -z "$GROUP_RE" ]; then
+    echo "+++ :bangbang: Rule 6: could not extract GROUP_BRANCH_REGEX from ${WF} — the assignment moved or was renamed; failing closed" >&2
+    errors=$(( errors + 1 ))
+  fi
+  if [ -z "$DIGEST_BR_RE" ]; then
+    echo "+++ :bangbang: Rule 6: could not extract DIGEST_BRANCH_REGEX from ${WF} — the assignment moved or was renamed; failing closed" >&2
+    errors=$(( errors + 1 ))
+  fi
+  if [ -z "$DIGEST_TI_RE" ]; then
+    echo "+++ :bangbang: Rule 6: could not extract DIGEST_TITLE_REGEX from ${WF} — the assignment moved or was renamed; failing closed" >&2
+    errors=$(( errors + 1 ))
+  fi
+
+  # ── 6a: DIGEST_BRANCH_REGEX shape ────────────────────────────────────────────
+  if [ -n "$DIGEST_BR_RE" ]; then
+    r6a_ok=1
+    case "$DIGEST_BR_RE" in
+      '^'*) ;;
+      *) echo "+++ :bangbang: Rule 6a: DIGEST_BRANCH_REGEX ('${DIGEST_BR_RE}') is not start-anchored (^) — an unanchored match accepts far more than a digest branch" >&2; errors=$(( errors + 1 )); r6a_ok=0 ;;
+    esac
+    case "$DIGEST_BR_RE" in
+      *'$') ;;
+      *) echo "+++ :bangbang: Rule 6a: DIGEST_BRANCH_REGEX ('${DIGEST_BR_RE}') is not end-anchored (\$) — trailing text after the hex run would still match" >&2; errors=$(( errors + 1 )); r6a_ok=0 ;;
+    esac
+    case "$DIGEST_BR_RE" in
+      '^dependabot/docker/'*) ;;
+      *) echo "+++ :bangbang: Rule 6a: DIGEST_BRANCH_REGEX ('${DIGEST_BR_RE}') is not confined to '^dependabot/docker/' — it could match non-Docker ecosystems" >&2; errors=$(( errors + 1 )); r6a_ok=0 ;;
+    esac
+    case "$DIGEST_BR_RE" in
+      *'/distroless/'*) ;;
+      *) echo "+++ :bangbang: Rule 6a: DIGEST_BRANCH_REGEX ('${DIGEST_BR_RE}') dropped the load-bearing '/distroless/' scope — a date-tagged version bump (e.g. ubuntu 20240115->20240220, whose date tokens are all hex) would then satisfy DIGEST_TITLE_REGEX and auto-merge as a digest bump. This scope is the ONLY thing that rejects it." >&2; errors=$(( errors + 1 )); r6a_ok=0 ;;
+    esac
+    if printf '%s' "$DIGEST_BR_RE" | grep -Eq '\[0-9a-f\]\{[0-9]+,\}\$$'; then
+      r6a_floor="$(printf '%s' "$DIGEST_BR_RE" | sed -E 's/.*\[0-9a-f\]\{([0-9]+),\}\$$/\1/')"
+      if ! r6_ge "$r6a_floor" 7; then
+        echo "+++ :bangbang: Rule 6a: DIGEST_BRANCH_REGEX trailing hex-run floor is {${r6a_floor},} — it must be at least {7,}; a shorter run lets short tag tokens through" >&2; errors=$(( errors + 1 )); r6a_ok=0
+      fi
+    else
+      echo "+++ :bangbang: Rule 6a: DIGEST_BRANCH_REGEX ('${DIGEST_BR_RE}') does not end in a hex-run quantifier ([0-9a-f]{N,}\$) — it can no longer pin the trailing digest sha" >&2; errors=$(( errors + 1 )); r6a_ok=0
+    fi
+    [ "$r6a_ok" -eq 1 ] && echo "    :white_check_mark: DIGEST_BRANCH_REGEX: anchored, docker/distroless-scoped, trailing hex-run floor >=7"
+  fi
+
+  # ── 6b: DIGEST_TITLE_REGEX needs a >=7 hex run on BOTH the from and to sides ──
+  r6_title_side() {  # $1=label $2=regex-fragment ; return 1 (with a message) if no >=7 hex run
+    local lbl="$1" part="$2" f
+    if ! printf '%s' "$part" | grep -Eq '\[0-9a-f\]\{[0-9]+,\}'; then
+      echo "+++ :bangbang: Rule 6b: DIGEST_TITLE_REGEX '${lbl}' side has no [0-9a-f]{N,} hex run — collapsing the two-sided sha check lets a version-bump title match" >&2
+      return 1
+    fi
+    f="$(printf '%s' "$part" | sed -E 's/.*\[0-9a-f\]\{([0-9]+),\}.*/\1/')"
+    if ! r6_ge "$f" 7; then
+      echo "+++ :bangbang: Rule 6b: DIGEST_TITLE_REGEX '${lbl}' side hex-run floor is {${f},} — it must be at least {7,} so a bare version token cannot match" >&2
+      return 1
+    fi
+    return 0
+  }
+  if [ -n "$DIGEST_TI_RE" ]; then
+    r6b_ok=1
+    r6b_from="${DIGEST_TI_RE%% to *}"
+    r6b_to="${DIGEST_TI_RE#* to }"
+    if [ "$r6b_from" = "$DIGEST_TI_RE" ]; then
+      echo "+++ :bangbang: Rule 6b: DIGEST_TITLE_REGEX ('${DIGEST_TI_RE}') has no ' to ' separator — it cannot express a from/to digest-bump shape" >&2; errors=$(( errors + 1 )); r6b_ok=0
+    else
+      case "$r6b_from" in
+        *from*) ;;
+        *) echo "+++ :bangbang: Rule 6b: DIGEST_TITLE_REGEX ('${DIGEST_TI_RE}') is missing the 'from' keyword before the first sha" >&2; errors=$(( errors + 1 )); r6b_ok=0 ;;
+      esac
+      if ! r6_title_side from "$r6b_from"; then errors=$(( errors + 1 )); r6b_ok=0; fi
+      if ! r6_title_side to   "$r6b_to";   then errors=$(( errors + 1 )); r6b_ok=0; fi
+    fi
+    [ "$r6b_ok" -eq 1 ] && echo "    :white_check_mark: DIGEST_TITLE_REGEX: requires a >=7 hex run on both the from and to sides"
+  fi
+
+  # ── 6c: path B keeps the branch+title AND (the title cross-check is a conjunct) ──
+  # Isolate path B — the `elif … DIGEST_BRANCH_REGEX … then` branch, up to the next
+  # `else`/`elif` at that level — and require it to (1) reference DIGEST_TITLE_REGEX
+  # in a negated guard and (2) fail closed (return 1). Drop either and a branch that
+  # merely matches the shape would auto-merge without a digest-bump title.
+  r6c_block="$(awk '
+    /elif .*DIGEST_BRANCH_REGEX.*then/ { inblk = 1; next }
+    inblk && /^[[:space:]]*else[[:space:]]*$/ { inblk = 0 }
+    inblk && /^[[:space:]]*elif[[:space:]]/ { inblk = 0 }
+    inblk { print }
+  ' "$WF")"
+  if [ -z "$r6c_block" ]; then
+    echo "+++ :bangbang: Rule 6c: could not locate path B (the 'elif … DIGEST_BRANCH_REGEX … then' acceptance branch) in ${WF} — the acceptance structure changed; failing closed" >&2
+    errors=$(( errors + 1 ))
+  elif ! printf '%s\n' "$r6c_block" | grep -Eq 'if ! .*DIGEST_TITLE_REGEX'; then
+    echo "+++ :bangbang: Rule 6c: path B (distroless digest branch) no longer cross-checks DIGEST_TITLE_REGEX — the two-signal AND has collapsed to the branch shape alone, so a branch matching the shape would auto-merge without a digest-bump title. Restore the title conjunct." >&2
+    errors=$(( errors + 1 ))
+  elif ! printf '%s\n' "$r6c_block" | grep -q 'return 1'; then
+    echo "+++ :bangbang: Rule 6c: path B references DIGEST_TITLE_REGEX but no longer fails closed (no 'return 1') when the title does not match — the cross-check is non-blocking. Restore the refuse/return." >&2
+    errors=$(( errors + 1 ))
+  else
+    echo "    :white_check_mark: path B cross-checks the digest-bump title and fails closed on mismatch"
+  fi
+
+  # ── 6d: every group name path A accepts must exclude majors ───────────────────
+  if [ -n "$GROUP_RE" ]; then
+    if [ ! -f "$DEPENDABOT_YML" ]; then
+      echo "+++ :bangbang: Rule 6d: ${DEPENDABOT_YML} is missing — cannot verify that path-A-accepted groups exclude majors; failing closed" >&2
+      errors=$(( errors + 1 ))
+    else
+      # One record per group: "<group-name>\t<space-separated update-types>".
+      # Indentation-driven (match($0,/^ */) → RLENGTH) so it needs no interval
+      # support: groups: at ind 4, group name at 6, update-types: at 8, items at 10;
+      # any non-blank line dedented to <=4 ends the block.
+      r6_groups="$(awk '
+        { match($0, /^ */); ind = RLENGTH }
+        ind == 4 && /^    groups:[[:space:]]*$/ { ingroups = 1; next }
+        ingroups && ind <= 4 && $0 !~ /^[[:space:]]*$/ { ingroups = 0 }
+        ingroups && ind == 6 && /:[[:space:]]*$/ {
+          if (name != "") print name "\t" types
+          key = $0; sub(/^ +/, "", key); sub(/:[[:space:]]*$/, "", key)
+          name = key; types = ""; intypes = 0; next
+        }
+        # A group written inline as an empty mapping -- `name: {}` -- must be RECORDED
+        # with no types, not ignored. `{}` is valid Dependabot config and defaults to
+        # ALL update-types, majors included; skipping the line entirely meant such a
+        # group was never checked, while the other block-style groups kept the
+        # empty-sweep guard from firing. Recorded with types="" so 6d fails it.
+        ingroups && ind == 6 && /:[[:space:]]*\{[[:space:]]*\}[[:space:]]*$/ {
+          if (name != "") print name "\t" types
+          key = $0; sub(/^ +/, "", key); sub(/:[[:space:]]*\{.*$/, "", key)
+          name = key; types = ""; intypes = 0; next
+        }
+        ingroups && ind == 8 && /^ +update-types:[[:space:]]*$/ { intypes = 1; next }
+        ingroups && intypes && ind == 10 && /^ +- / {
+          v = $0; sub(/^ +- +/, "", v); gsub(/"/, "", v); sub(/[[:space:]]+$/, "", v)
+          if (v != "") types = (types == "" ? v : types " " v)
+          next
+        }
+        ingroups && ind == 8 && $0 !~ /^ +update-types:/ { intypes = 0 }
+        END { if (name != "") print name "\t" types }
+      ' "$DEPENDABOT_YML")"
+
+      r6d_matched=0
+      while IFS=$'\t' read -r gname gtypes; do
+        [ -n "$gname" ] || continue
+        # Would path A accept a Dependabot branch carrying this group name?
+        synthetic="dependabot/testeco/testdir/${gname}-a1b2c3d"
+        if printf '%s' "$synthetic" | grep -Eq "$GROUP_RE"; then
+          r6d_matched=$(( r6d_matched + 1 ))
+          bad=""
+          if [ -z "$gtypes" ]; then
+            bad="declares NO update-types (defaults to ALL types, major included)"
+          else
+            offending=""
+            for t in $gtypes; do
+              case "$t" in
+                minor|patch) ;;
+                *) offending="${offending}${offending:+ }${t}" ;;
+              esac
+            done
+            [ -n "$offending" ] && bad="declares out-of-policy update-type(s): ${offending}"
+          fi
+          if [ -n "$bad" ]; then
+            echo "+++ :bangbang: Rule 6d: Dependabot group '${gname}' produces branches accepted by path A (GROUP_BRANCH_REGEX '${GROUP_RE}') but ${bad} — path A would then auto-merge that update on a branch literally named '*-minor-and-patch'. Restrict this group's update-types to minor+patch, or rename it so path A no longer accepts it." >&2
+            errors=$(( errors + 1 ))
+          else
+            echo "    :white_check_mark: group '${gname}': accepted by path A and correctly limited to minor+patch"
+          fi
+        fi
+      done <<EOF
+$r6_groups
+EOF
+      # Fail closed if path A accepts NO group at all — the sweep matched nothing
+      # (groups renamed, regex changed, or the parser broke), so the rule could
+      # never fire. This empty-set case is the specific shape this file exists to catch.
+      if [ "$r6d_matched" -eq 0 ]; then
+        echo "+++ :bangbang: Rule 6d: no Dependabot group in ${DEPENDABOT_YML} is accepted by path A (GROUP_BRANCH_REGEX '${GROUP_RE}') — the sweep matched nothing (groups renamed, regex changed, or parser broken); failing closed" >&2
+        errors=$(( errors + 1 ))
+      fi
+    fi
+  fi
+fi
 
 # ══════════════════════════════════════════════════════════════════════
 echo "--- :bar_chart: false-green guard summary: ${errors} error(s)"

@@ -68,6 +68,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trialled — logging each decision without merging — until the schedule default is flipped to live.
 
 ### Changed
+- The Dependabot auto-merge workflow (`.github/workflows/dependabot-auto-merge.yml`) is now **live on the schedule**:
+  `DEFAULT_DRY_RUN` was flipped from `'true'` to `'false'`, so the scheduled sweep actually merges eligible PRs rather
+  than only logging its decisions. The `workflow_dispatch` `dry_run` input still defaults to `true`, so a manual run
+  stays a safe dry-run probe unless the operator explicitly sets it false. Arming it is backed by a new standing guard
+  (Rule 6 in `.buildkite/scripts/steps/check-false-green-guards.sh`) that fails the build if any of the four
+  load-bearing properties keeping majors and version bumps out of auto-merge is quietly weakened: it parses the three
+  acceptance regexes out of the workflow and asserts the digest-branch regex stays anchored, confined to
+  `dependabot/docker/`, keeps its literal `/distroless/` scope and a trailing hex-run floor of at least 7 (without the
+  scope a date-tagged bump such as `bump ubuntu from 202401151200 to 202402201200`, whose date tokens are all hex, would match
+  the title regex); the digest-title regex requires a `[0-9a-f]{7,}` run on both the from and to sides; path B still
+  cross-checks the title as a conjunct of the branch shape and fails closed on mismatch; and every group in
+  `.github/dependabot.yml` whose branch name path A accepts declares `update-types` within `{minor, patch}`, so a major
+  can never ride a branch literally named `*-minor-and-patch`. The guard fails closed if the workflow is missing, a
+  regex cannot be extracted, path B cannot be located, or no group is accepted by path A.
 - Dependabot no longer proposes TypeScript 7.x for the Node/UI packages. `typescript-eslint`'s peer range is
   `typescript >=4.8.4 <6.1.0`, so a TypeScript 7 bump fails `npm ci` with `ERESOLVE` before lint or typecheck can run,
   and nothing else in the tree raises that ceiling — the upgrade is unmergeable until `typescript-eslint` ships

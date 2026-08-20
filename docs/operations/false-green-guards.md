@@ -28,16 +28,19 @@ flowchart TD
   A --> R3
   A --> R4
   A --> R5
+  A --> R6
   R1["Rule 1\nDocker-gated suite\nmust be assert-suite-ran-paired"]
   R2["Rule 2\nno step mounts the Docker socket\nthen deselects Docker tests"]
   R3["Rule 3\nno container-integration skip\nparks deferred work as green"]
   R4["Rule 4\nhelm/k3d harness run\nmust require the built images"]
   R5["Rule 5\ncore test with a global logging\nside effect must be sequential"]
+  R6["Rule 6\nDependabot auto-merge gate\nmust keep its two-signal scope"]
   R1 --> V{"new violation?"}
   R2 --> V
   R3 --> V
   R4 --> V
   R5 --> V
+  R6 --> V
   V -- yes --> F["exit 1 — fail the build"]
   V -- no --> P["exit 0"]
 ```
@@ -49,6 +52,7 @@ flowchart TD
 | **3** | A container-integration `logTestSkip` invoked with deferral language ("CI wiring is a follow-up", TODO, pending, …). A skip that parks unfinished work reads as green forever. | The `docker_compose_war_tomcat` WAR case, skipped as a "follow-up" and read as green for months. |
 | **4** | A CI step that runs the container-integration harness (`integration_tests.sh`) with the helm/k3d cases active (does **not** set `SKIP_HELM_TESTS=true`) but fails to export **both** `REQUIRE_CLUSTERED_IMAGE=true` and `REQUIRE_WEBHOOK_IMAGE=true`. Without both, a missing image records a SKIP instead of a FAILURE and the three image-dependent cases silently stop running. | Deleting the two `REQUIRE_*_IMAGE=true` exports from `helm-integration-test.sh` — which reverts `helm_sidecar_injection`, `helm_clustered_convergence` and `helm_jgroups_dns_ping` to a green SKIP with no guard tripped. |
 | **5** | A `mockserver-core` test whose source performs a JVM-global logging side effect — reaching `LogManager.getLogManager().readConfiguration(...)` (a JVM-wide handler `reset()`) via the static logging setters or a forced fresh `<clinit>` — that is **not** in the sequential-includes list of `mockserver-core/pom.xml`. In the parallel phase it races another test's log capture, silently zeroing a capture (a failing test) or falsely passing a silence assertion (a false green). | The release-blocking flake where `ClassInitializationDeadlockTest` / `ConfigurationPropertiesInitializationTest` forced a fresh `MockServerLogger`/`ConfigurationProperties` `<clinit>` in the parallel phase, resetting every logger's handlers mid-run. `ParallelStaticStateGuardTest` structurally cannot catch it — those classes are in neither the parallel-exclude nor the sequential-include list. |
+| **6** | The Dependabot auto-merge gate losing one of the four properties its safety rests on: the `/distroless/` scope on the digest branch regex, a trailing hex-run floor of at least 7, the title cross-check that makes path B a two-signal AND, or `update-types` staying within {minor, patch} for every group whose name path A accepts. Each is a plausible tidy-up, and each silently widens what merges into `master` unattended. | Dropping `/distroless/` — a date-tagged bump such as `bump ubuntu from 202401151200 to 202402201200` matches the title regex (date tokens are all hex), so the scope is the only thing rejecting it; and adding `major` to a `*-minor-and-patch` group, which would put majors into a branch literally named `minor-and-patch` and auto-merge them. |
 
 Rule 1's match is **module-scoped**, not class-name-only. The correlation key is
 the Maven module directory name — the last path segment before `/target/` in an
