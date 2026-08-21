@@ -220,6 +220,64 @@ public class JavaScriptTemplateEngineTest {
     }
 
     @Test
+    public void shouldResolveJavaScriptHeaderNameCaseInsensitively() {
+        // issue #2575: HTTP header names are case-insensitive (RFC 9110). Inside a JavaScript template
+        // the request is a JSON.parse'd plain object, so request.headers.host is a native property
+        // lookup — the Java-side case-insensitive map does nothing here; the Proxy wrapper in
+        // PolyglotRunner is what makes all four casing combinations resolve. Bounded by the shared
+        // configuration's javascriptTemplateExecutionTimeout(0) to avoid GraalJS busy-loop flakiness.
+        graalJsAvailable();
+
+        // client sends Host, template asks host (the reported bug — undefined without the Proxy)
+        assertThat(new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': request.headers.host[0] };",
+                request().withHeader("Host", "mock-server.com"), HttpResponseDTO.class).getBodyAsString(),
+            is("mock-server.com"));
+
+        // client sends host, template asks Host
+        assertThat(new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': request.headers.Host[0] };",
+                request().withHeader("host", "mock-server.com"), HttpResponseDTO.class).getBodyAsString(),
+            is("mock-server.com"));
+
+        // client sends Host, template asks Host (worked before — must not regress via the fast path)
+        assertThat(new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': request.headers.Host[0] };",
+                request().withHeader("Host", "mock-server.com"), HttpResponseDTO.class).getBodyAsString(),
+            is("mock-server.com"));
+
+        // client sends host, template asks host (worked before — must not regress)
+        assertThat(new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': request.headers.host[0] };",
+                request().withHeader("host", "mock-server.com"), HttpResponseDTO.class).getBodyAsString(),
+            is("mock-server.com"));
+    }
+
+    @Test
+    public void shouldPreserveJavaScriptHeaderIterationWhenCaseInsensitiveLookupApplied() {
+        // The Proxy is strictly additive: it does not trap ownKeys, so Object.keys / JSON.stringify /
+        // for-in still enumerate exactly the original keys with the original casing and no duplicates.
+        graalJsAvailable();
+        assertThat(new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': Object.keys(request.headers).join(',') };",
+                request().withHeader("Host", "mock-server.com").withHeader("Accept", "text/plain"),
+                HttpResponseDTO.class).getBodyAsString(),
+            is("Host,Accept"));
+    }
+
+    @Test
+    public void shouldMergeJavaScriptHeaderValuesWhenSameNameDifferentCasing() {
+        // when Host and host arrive as separate fields their values combine into one entry keyed by
+        // the first-seen casing (merged Java-side before JSON serialisation to the JS engine).
+        graalJsAvailable();
+        assertThat(new JavaScriptTemplateEngine(mockServerLogger, configuration).executeTemplate(
+                "return { 'statusCode': 200, 'body': request.headers.host[0] + '-' + request.headers.Host[1] };",
+                request().withHeader("Host", "first.example.com").withHeader("host", "second.example.com"),
+                HttpResponseDTO.class).getBodyAsString(),
+            is("first.example.com-second.example.com"));
+    }
+
+    @Test
     public void shouldHandleHttpRequestsWithJavaScriptResponseTemplateWithParametersCookiesAndBody() throws JsonProcessingException {
         // given
         graalJsAvailable();

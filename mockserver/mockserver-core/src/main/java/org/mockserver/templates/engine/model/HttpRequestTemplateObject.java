@@ -10,7 +10,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -33,7 +32,10 @@ public class HttpRequestTemplateObject extends RequestDefinition {
     private final Map<String, String> namedPathGroups = new HashMap<>();
     private final Map<String, List<String>> queryStringParameters = new HashMap<>();
     private final Map<String, String> cookies = new HashMap<>();
-    private final Map<String, List<String>> headers = new LinkedHashMap<>();
+    // Case-insensitive on the header NAME (issue #2575): a template can read $request.headers.Host
+    // regardless of the casing the client sent, and vice-versa, consistent with HTTP field-name
+    // case-insensitivity (RFC 9110). Insertion order and original casing are preserved.
+    private final Map<String, List<String>> headers = new CaseInsensitiveHeaderMap();
     private BodyDTO body = null;
     private Boolean secure = null;
     private List<X509Certificate> clientCertificateChain = null;

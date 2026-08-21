@@ -224,6 +224,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *numbers* — it fails with `JsonParseException` without the fix. Because it mutates the JVM-global default
   locale it is registered in both the parallel-excludes and the sequential-includes. Hex `%x` formatting is
   unaffected — `java.util.Formatter` does not localise `o`/`x`/`X` conversions.
+- Response and forward templates now read request header names case-insensitively, as HTTP requires
+  (issue #2575). HTTP field names are case-insensitive per RFC 9110 §5.1 and MockServer's matchers already
+  treated them so, but templates reached the headers through plain map semantics: Velocity's Uberspector turns
+  `$request.headers.host` into `get("host")`, Mustache's fetcher calls `containsKey` then `get`, and a
+  JavaScript template gets a `JSON.parse`'d plain object where `request.headers.host` is a native property
+  lookup. A template asking for `$request.headers.Host` therefore missed a header the client sent as `host`,
+  and vice-versa — and which one you got depended on the protocol, because HTTP/2 lower-cases field names on
+  the wire while HTTP/1.1 preserves whatever casing the client chose, so the same template silently produced
+  different output over HTTP/1.1 and HTTP/2. All four combinations of wire casing and template casing now
+  resolve, in all three engines. Lookup is strictly additive: an exact-case hit is returned unchanged and only
+  a *miss* falls back to a case-insensitive lookup, so no read that already resolved returns anything different.
+  Header names keep their original wire casing and arrival order when iterated or serialised — no key is
+  lower-cased — so loop-over-headers templates are unaffected; the JavaScript wrapper does not trap `ownKeys`,
+  so `Object.keys`, `JSON.stringify`, spread and `for-in` still enumerate exactly the original keys with no
+  duplicates. One case does change value, deliberately: if two differently-cased spellings of one name arrive
+  as separate fields (`Host` and `host`), their values are now combined into the single first-seen entry,
+  matching HTTP's same-name-field rule, rather than one silently overwriting the other — so where
+  `headers.host[0]` previously gave you whichever spelling arrived last, it now gives you the first, with the
+  rest following in arrival order. Headers only — cookie, query-string-parameter and path-parameter
+  names remain case-sensitive, as their specifications require.
 
 ## [7.6.0] - 2026-08-17
 

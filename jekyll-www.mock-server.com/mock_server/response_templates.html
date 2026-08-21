@@ -661,6 +661,12 @@ System.out.println("httpResponse = " + httpResponse);</code></pre>
                 <td><code class="inline code">request.headers[&lt;key&gt;][&lt;index&gt;]</code></td>
             </tr>
         </table>
+        <p style="margin-top: 10px;">Header <strong>name</strong> lookup is <strong>case-insensitive</strong>, as HTTP header names are.
+            Any casing in the template resolves any casing the client sent on the wire &mdash; for example
+            <code class="inline code">request.headers.host</code>, <code class="inline code">request.headers.Host</code> and
+            <code class="inline code">request.headers.HOST</code> all read the same header, whether the request arrived over HTTP/1.1
+            (which keeps the client's casing) or HTTP/2 (which lower-cases header names). This applies to headers only;
+            cookie, query-string-parameter and path-parameter names remain case-sensitive.</p>
     </li>
     <li><strong>cookies</strong>&nbsp;&nbsp;<span>(see below for single-value map access patterns)</span>
         <table>

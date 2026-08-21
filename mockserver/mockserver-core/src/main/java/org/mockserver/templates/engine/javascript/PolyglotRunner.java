@@ -97,13 +97,37 @@ final class PolyglotRunner {
         // no-response (single-argument) template shape.
         String serialiseFunction;
         if (rawText) {
-            serialiseFunction = " function serialise(request) { var r = handle(JSON.parse(request)); return (r === null || r === undefined) ? '' : ((typeof r === 'string') ? r : JSON.stringify(r)); }";
+            serialiseFunction = " function serialise(request) { var r = handle(__mockserverCaseInsensitiveHeaders(JSON.parse(request))); return (r === null || r === undefined) ? '' : ((typeof r === 'string') ? r : JSON.stringify(r)); }";
         } else if (includeResponse) {
-            serialiseFunction = " function serialise(request, response) { return JSON.stringify(handle(JSON.parse(request), JSON.parse(response)), null, 2); }";
+            serialiseFunction = " function serialise(request, response) { return JSON.stringify(handle(__mockserverCaseInsensitiveHeaders(JSON.parse(request)), JSON.parse(response)), null, 2); }";
         } else {
-            serialiseFunction = " function serialise(request) { return JSON.stringify(handle(JSON.parse(request)), null, 2); }";
+            serialiseFunction = " function serialise(request) { return JSON.stringify(handle(__mockserverCaseInsensitiveHeaders(JSON.parse(request))), null, 2); }";
         }
-        String fullScript = script + serialiseFunction;
+        // HTTP field names are case-insensitive (RFC 9110), but request is a JSON.parse'd plain JS
+        // object, so request.headers.host is a native property lookup that misses a header the client
+        // sent as "Host" (and vice-versa) — the JS side of issue #2575. Wrap headers in a Proxy whose
+        // get/has traps take an exact-key hit unchanged (fast path) and only fall back to a
+        // case-insensitive key scan on a miss. This is strictly additive: ownKeys is NOT trapped, so
+        // Object.keys/JSON.stringify/spread/for-in still enumerate exactly the original keys with no
+        // duplicates. It operates purely on the parsed plain JS object — no host object is exposed and
+        // no new route to Java.type/Function/eval is created, so the template sandbox is unaffected.
+        String headerAccessorFunction = " function __mockserverCaseInsensitiveHeaders(request) {"
+            + " if (request && request.headers && typeof request.headers === 'object') {"
+            + " request.headers = new Proxy(request.headers, {"
+            + " get: function(target, prop, receiver) {"
+            + " if (typeof prop === 'string' && !(prop in target)) {"
+            + " var lower = prop.toLowerCase();"
+            + " var keys = Object.keys(target);"
+            + " for (var i = 0; i < keys.length; i++) { if (keys[i].toLowerCase() === lower) { return target[keys[i]]; } } }"
+            + " return Reflect.get(target, prop, receiver); },"
+            + " has: function(target, prop) {"
+            + " if (typeof prop === 'string' && !(prop in target)) {"
+            + " var lower = prop.toLowerCase();"
+            + " var keys = Object.keys(target);"
+            + " for (var i = 0; i < keys.length; i++) { if (keys[i].toLowerCase() === lower) { return true; } } }"
+            + " return prop in target; } }); }"
+            + " return request; }";
+        String fullScript = script + serialiseFunction + headerAccessorFunction;
 
         // HOST_ACCESS is HostAccess.ALL (equivalent to the previous JSR-223 polyglot.js.allowHostAccess=true)
         // minus every member of java.lang.Class and java.lang.ClassLoader — see HOST_ACCESS below. Together

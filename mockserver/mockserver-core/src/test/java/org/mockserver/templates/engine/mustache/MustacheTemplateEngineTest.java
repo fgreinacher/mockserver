@@ -138,6 +138,45 @@ public class MustacheTemplateEngineTest {
     }
 
     @Test
+    public void shouldResolveMustacheHeaderNameCaseInsensitively() {
+        // issue #2575: HTTP header names are case-insensitive (RFC 9110), so a template must read a
+        // header regardless of the casing the client used on the wire or the casing written in the
+        // template. All four combinations must resolve.
+
+        // client sends Host, template asks host (the reported bug)
+        assertThat(new MustacheTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "{{ request.headers.host.0 }}", request().withHeader("Host", "mock-server.com"), null),
+            org.hamcrest.Matchers.is("mock-server.com"));
+
+        // client sends host, template asks Host
+        assertThat(new MustacheTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "{{ request.headers.Host.0 }}", request().withHeader("host", "mock-server.com"), null),
+            org.hamcrest.Matchers.is("mock-server.com"));
+
+        // client sends Host, template asks Host (worked before — must not regress)
+        assertThat(new MustacheTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "{{ request.headers.Host.0 }}", request().withHeader("Host", "mock-server.com"), null),
+            org.hamcrest.Matchers.is("mock-server.com"));
+
+        // client sends host, template asks host (worked before — must not regress)
+        assertThat(new MustacheTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "{{ request.headers.host.0 }}", request().withHeader("host", "mock-server.com"), null),
+            org.hamcrest.Matchers.is("mock-server.com"));
+    }
+
+    @Test
+    public void shouldMergeMustacheHeaderValuesWhenSameNameDifferentCasing() {
+        // when Host and host arrive as separate fields their values combine into one entry keyed by
+        // the first-seen casing, rather than one silently overwriting the other (HTTP same-name rule).
+        HttpRequest request = request()
+            .withHeader("Host", "first.example.com")
+            .withHeader("host", "second.example.com");
+        assertThat(new MustacheTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "{{ request.headers.host.0 }}-{{ request.headers.Host.1 }}", request, null),
+            org.hamcrest.Matchers.is("first.example.com-second.example.com"));
+    }
+
+    @Test
     public void shouldLogTemplateGenerationFailedWhenRenderedResponseIsNotAValidHttpResponse() {
         // given - a template that renders valid JSON which is NOT a valid HttpResponse ("path" is a
         // request-only field, so it fails HttpResponse schema validation with "is not defined in the schema")

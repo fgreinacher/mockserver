@@ -141,6 +141,45 @@ public class VelocityTemplateEngineTest {
     }
 
     @Test
+    public void shouldResolveVelocityHeaderNameCaseInsensitively() {
+        // issue #2575: HTTP header names are case-insensitive (RFC 9110), so a template must read a
+        // header regardless of the casing the client used on the wire or the casing written in the
+        // template. All four combinations must resolve.
+
+        // client sends Host, template asks host (the reported bug)
+        assertThat(new VelocityTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "$request.headers.host[0]", request().withHeader("Host", "mock-server.com"), null),
+            org.hamcrest.Matchers.is("mock-server.com"));
+
+        // client sends host, template asks Host
+        assertThat(new VelocityTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "$request.headers.Host[0]", request().withHeader("host", "mock-server.com"), null),
+            org.hamcrest.Matchers.is("mock-server.com"));
+
+        // client sends Host, template asks Host (worked before — must not regress)
+        assertThat(new VelocityTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "$request.headers.Host[0]", request().withHeader("Host", "mock-server.com"), null),
+            org.hamcrest.Matchers.is("mock-server.com"));
+
+        // client sends host, template asks host (worked before — must not regress)
+        assertThat(new VelocityTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "$request.headers.host[0]", request().withHeader("host", "mock-server.com"), null),
+            org.hamcrest.Matchers.is("mock-server.com"));
+    }
+
+    @Test
+    public void shouldMergeVelocityHeaderValuesWhenSameNameDifferentCasing() {
+        // when Host and host arrive as separate fields their values combine into one entry keyed by
+        // the first-seen casing, rather than one silently overwriting the other (HTTP same-name rule).
+        HttpRequest request = request()
+            .withHeader("Host", "first.example.com")
+            .withHeader("host", "second.example.com");
+        assertThat(new VelocityTemplateEngine(mockServerLogger, configuration).renderTemplate(
+                "$request.headers.host[0]-$request.headers.Host[1]", request, null),
+            org.hamcrest.Matchers.is("first.example.com-second.example.com"));
+    }
+
+    @Test
     public void shouldHandleHttpRequestsWithVelocityResponseTemplateWithParametersCookiesAndBody() throws JsonProcessingException {
         // given
         String template = "{" + NEW_LINE +
