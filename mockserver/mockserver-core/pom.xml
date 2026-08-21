@@ -854,6 +854,9 @@
                         <exclude>**/ConfigurationPropertiesEffectiveConfigGlobalStateTest.java</exclude>
                         <!-- Mutates mockserver.llmOptimisationMaxCalls / fixtureBodyRedactFields global config -->
                         <exclude>**/LlmOptimisationReportServiceTest.java</exclude>
+                        <!-- Mutates the JVM-global default Locale (Locale.setDefault(GERMANY)) to prove
+                             locale-insensitive number formatting; must never race other tests in parallel -->
+                        <exclude>**/LocaleInsensitiveNumberFormattingTest.java</exclude>
                         <!-- Resets the ForwardCircuitBreaker singleton (shared with the upstream_circuit_open gauge) -->
                         <exclude>**/HttpForwardActionResilienceTest.java</exclude>
                         <!-- Sets/clears the mockserver.otelEndpoint JVM system property and property cache -->
@@ -1030,6 +1033,7 @@
                                 <include>**/HttpStateReadinessTest.java</include>
                                 <include>**/ConfigurationPropertiesEffectiveConfigGlobalStateTest.java</include>
                                 <include>**/LlmOptimisationReportServiceTest.java</include>
+                                <include>**/LocaleInsensitiveNumberFormattingTest.java</include>
                                 <include>**/HttpForwardActionResilienceTest.java</include>
                                 <include>**/OtelEndpointConfigurationTest.java</include>
                                 <include>**/PrometheusRemoteWriteExporterTest.java</include>

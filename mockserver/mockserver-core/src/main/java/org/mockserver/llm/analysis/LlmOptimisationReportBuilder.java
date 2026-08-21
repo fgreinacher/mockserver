@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 
@@ -491,11 +492,11 @@ public class LlmOptimisationReportBuilder {
         // grade A so it does NOT contradict the findings listed beneath it.
         if ("A".equals(letter)) {
             return "Grade A — well optimised; " + findingCount + " low-impact " + findingsWord
-                + " noted (" + breakdown + "), estimated saving " + String.format("$%.2f", totalSaving)
+                + " noted (" + breakdown + "), estimated saving " + String.format(Locale.ROOT, "$%.2f", totalSaving)
                 + " (" + percent + "% of spend).";
         }
         return "Grade " + letter + " — an estimated " + percent + "% of spend ("
-            + String.format("$%.2f", totalSaving) + ") is recoverable across " + findingCount + " "
+            + String.format(Locale.ROOT, "$%.2f", totalSaving) + ") is recoverable across " + findingCount + " "
             + findingsWord + " (" + breakdown + ").";
     }
 

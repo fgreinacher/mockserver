@@ -13,6 +13,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -713,6 +714,6 @@ public class OptimisationSignals {
     }
 
     private static String formatTokens(long tokens) {
-        return String.format("%,d", tokens);
+        return String.format(Locale.ROOT, "%,d", tokens);
     }
 }

@@ -6,6 +6,7 @@ import org.mockserver.metrics.Metrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.mockserver.model.HttpResponse.response;
@@ -126,8 +127,8 @@ public class LlmCostBudgetMonitor {
         double budgetUsd = budgetUsd(configuration);
         LOG.warn(
             "LLM cost budget exceeded: cumulative ${} >= budget ${} — blocking LLM forward",
-            String.format("%.6f", cumulativeUsd),
-            String.format("%.6f", budgetUsd)
+            String.format(Locale.ROOT, "%.6f", cumulativeUsd),
+            String.format(Locale.ROOT, "%.6f", budgetUsd)
         );
         Metrics.incrementLlmCostBudgetTripped();
         return response()
@@ -135,10 +136,10 @@ public class LlmCostBudgetMonitor {
             .withHeader("content-type", "application/json")
             .withBody("{\"error\":{\"type\":\"cost_budget_exceeded\","
                 + "\"message\":\"LLM cost budget exceeded (cumulative $"
-                + String.format("%.4f", cumulativeUsd)
-                + " >= budget $" + String.format("%.4f", budgetUsd) + ")\","
-                + "\"cumulative_cost_usd\":" + String.format("%.6f", cumulativeUsd) + ","
-                + "\"budget_usd\":" + String.format("%.6f", budgetUsd) + "}}");
+                + String.format(Locale.ROOT, "%.4f", cumulativeUsd)
+                + " >= budget $" + String.format(Locale.ROOT, "%.4f", budgetUsd) + ")\","
+                + "\"cumulative_cost_usd\":" + String.format(Locale.ROOT, "%.6f", cumulativeUsd) + ","
+                + "\"budget_usd\":" + String.format(Locale.ROOT, "%.6f", budgetUsd) + "}}");
     }
 
     /**

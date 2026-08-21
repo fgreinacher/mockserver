@@ -8,6 +8,7 @@ import org.junit.runner.notification.RunListener;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -199,7 +200,7 @@ public class PrintOutCurrentTestRunListener extends RunListener {
         if (millis < 1000) {
             return millis + "ms";
         }
-        return String.format("%.1fs", millis / 1000.0);
+        return String.format(Locale.ROOT, "%.1fs", millis / 1000.0);
     }
 
     private static String indent(String text) {

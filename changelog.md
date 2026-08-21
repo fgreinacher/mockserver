@@ -207,6 +207,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `exit 101` with two errors; the fix is clean) plus the full `cargo test --all-targets` suite. Note that a
   locally-installed clippy older than 1.98 cannot see this lint at all, so reproducing it requires the container.
 
+- The LLM cost-budget 429 response body is now valid JSON on every JVM locale. `LlmCostBudgetMonitor`
+  hand-builds the `cost_budget_exceeded` body and formatted the two numeric fields with
+  `String.format("%.6f", ...)` and no explicit `Locale`, so it used the JVM **default** locale. On any
+  comma-decimal locale (de, fr, es, it, pt-BR, ru — and a container inherits the host/env locale) it emitted
+  `"cumulative_cost_usd":1,500000,`, which is syntactically invalid JSON: a client parsing the 429 got a parse
+  error instead of a structured budget signal, so the feature silently failed for a large part of the world.
+  The same defect rendered the optimisation report's saving text as `$0,00` and the token counts with the wrong
+  grouping separator, and it made `LlmOptimisationBriefRendererTest.matchesGoldenFile` fail on whichever build
+  agent happened to have a non-US default locale — which is how it was found, having red-herring-failed an
+  unrelated Dependabot pull request. All ten locale-sensitive `String.format` sites across
+  `LlmCostBudgetMonitor`, `LlmOptimisationReportBuilder`, `OptimisationSignals` and
+  `PrintOutCurrentTestRunListener` now pass `Locale.ROOT`, matching the convention already used in
+  `LlmOptimisationBriefRenderer`. Guarded by `LocaleInsensitiveNumberFormattingTest`, which forces
+  `Locale.GERMANY` and asserts the 429 body parses and that `cumulative_cost_usd`/`budget_usd` are JSON
+  *numbers* — it fails with `JsonParseException` without the fix. Because it mutates the JVM-global default
+  locale it is registered in both the parallel-excludes and the sequential-includes. Hex `%x` formatting is
+  unaffected — `java.util.Formatter` does not localise `o`/`x`/`X` conversions.
+
 ## [7.6.0] - 2026-08-17
 
 ### Changed
