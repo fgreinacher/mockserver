@@ -49,12 +49,24 @@ const IMAGE_NAME: &str = "mockserver/mockserver";
 pub const DEFAULT_PORT: u16 = 1080;
 
 /// The log message MockServer emits when it is ready to accept connections.
-const READY_LOG_MESSAGE: &str = "started on port:";
+///
+/// Deliberately WITHOUT the trailing colon. `LifeCycle.startedServer()` writes
+/// `started on port: 1080` for a single port but `started on ports: [1080, 1090]`
+/// for several, so matching `started on port:` silently never fires whenever more
+/// than one port is configured and the container wait then blocks until it times
+/// out. `started on port` is the stable prefix common to both forms.
+///
+/// The other Testcontainers modules in this repository avoid the problem entirely by waiting on
+/// `PUT /mockserver/status` instead; a log wait is used here because the Rust testcontainers crate
+/// has no built-in HTTP wait strategy.
+const READY_LOG_MESSAGE: &str = "started on port";
 
 /// A Testcontainers [`Image`] for [MockServer](https://www.mock-server.com).
 ///
 /// Starts `mockserver/mockserver:<tag>` with port 1080 exposed, waiting for the
-/// "started on port:" log message that indicates readiness.
+/// "started on port" log message that indicates readiness (matched without the
+/// trailing colon so it also fires for the multi-port `started on ports: [...]`
+/// form).
 ///
 /// # Configuration
 ///
@@ -288,6 +300,29 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "MOCKSERVER_LOG_LEVEL" && v == "DEBUG");
         assert!(has_log_level);
+    }
+
+    /// The readiness message must be the stable prefix shared by BOTH banner forms
+    /// MockServer emits: `started on port: 1080` (one port) and
+    /// `started on ports: [1080, 1090]` (several). Matching the singular form with
+    /// its colon never fires in the multi-port case, so the container wait blocks
+    /// until it times out.
+    #[test]
+    fn ready_log_message_matches_single_and_multi_port_banners() {
+        let single = "2026-08-21 22:14:22 7.6.0 INFO 1080 started on port: 1080 ";
+        let multi = "2026-08-21 22:14:24 7.6.0 INFO 1080 started on ports: [1080, 1090] ";
+        assert!(
+            single.contains(READY_LOG_MESSAGE),
+            "readiness message {READY_LOG_MESSAGE:?} does not match the single-port banner"
+        );
+        assert!(
+            multi.contains(READY_LOG_MESSAGE),
+            "readiness message {READY_LOG_MESSAGE:?} does not match the multi-port banner"
+        );
+        assert!(
+            !single.contains("started on ports"),
+            "single-port banner sample should not contain the plural form"
+        );
     }
 
     #[test]

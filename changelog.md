@@ -244,6 +244,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `headers.host[0]` previously gave you whichever spelling arrived last, it now gives you the first, with the
   rest following in arrival order. Headers only — cookie, query-string-parameter and path-parameter
   names remain case-sensitive, as their specifications require.
+- The Rust Testcontainers module no longer hangs waiting for readiness when MockServer is configured with more
+  than one port (found while investigating issue #2580). `LifeCycle.startedServer()` words its startup banner
+  according to how many ports it bound — `started on port: 1080` for one, but `started on ports: [1080, 1090]`
+  for several — and `testcontainers-mockserver` waited on the literal string `started on port:`, colon
+  included. That never matches the plural form, so any multi-port container start blocked until the
+  Testcontainers wait timed out, with nothing in the log to explain why. It now waits on `started on port`, the
+  stable prefix both forms share. The server's log output is
+  unchanged. Guarded on both sides: a Rust unit test asserts the readiness string matches real single- and
+  multi-port banner samples, and `JarWithDependenciesLoggingIntegrationTest` now boots the executable jar on
+  two ports and asserts the prefix still appears, so a future rewording fails in this repository rather than as
+  an unexplained hang in a downstream consumer's test suite. The Testcontainers documentation now also
+  describes both readiness signals, recommending `PUT /mockserver/status` over the log line — the status
+  endpoint is unaffected by log level, whereas the banner is logged at `INFO` and so disappears entirely when
+  `MOCKSERVER_LOG_LEVEL` is raised to `WARN` or above.
 
 ## [7.6.0] - 2026-08-17
 

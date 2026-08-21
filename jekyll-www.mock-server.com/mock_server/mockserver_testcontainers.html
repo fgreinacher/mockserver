@@ -70,6 +70,38 @@ sitemap:
     </tbody>
 </table>
 
+<a id="container_readiness" class="anchor" href="#container_readiness">&nbsp;</a>
+
+<h2>Container Readiness</h2>
+
+<p>Every official module above already waits for readiness for you &mdash; this section matters only if you start the image with a plain
+    <span class="inline_code">GenericContainer</span> and write your own wait strategy.</p>
+
+<p>There are two readiness signals, and the more robust of the two is the status endpoint:</p>
+
+<ul>
+    <li><strong>The status endpoint</strong> &mdash; <span class="inline_code">PUT /mockserver/status</span> returns
+        <span class="inline_code">200</span> once MockServer is accepting requests. This is what the built-in Docker
+        <span class="inline_code">HEALTHCHECK</span> uses, and it is the signal to prefer: it does not depend on log wording or log level.</li>
+    <li><strong>The startup log line</strong> &mdash; MockServer logs an <span class="inline_code">INFO</span> line when it has bound its port(s).</li>
+</ul>
+
+<p>If you wait on the log line, match <span class="inline_code">started on port</span> <strong>without</strong> a trailing colon. The wording is
+    singular/plural depending on how many ports are bound:</p>
+
+<pre><code class="code">1080 started on port: 1080
+1080 started on ports: [1080, 1090]</code></pre>
+
+<p>So a regex written as <span class="inline_code">.*started on port:.*</span> matches the single-port form but silently stops matching the moment a
+    second port is configured &mdash; the wait then blocks until it times out, with nothing in the log to explain why. Prefer:</p>
+
+<pre><code class="code">// Java, Testcontainers
+.waitingFor(Wait.forLogMessage(".*started on port.*", 1))</code></pre>
+
+<p>Note also that the log line is emitted at <span class="inline_code">INFO</span>, so raising
+    <span class="inline_code">MOCKSERVER_LOG_LEVEL</span> to <span class="inline_code">WARN</span> or above suppresses it and any
+    log-based wait strategy with it. The status endpoint is unaffected by the log level.</p>
+
 <a id="java-testcontainers" class="anchor" href="#java-testcontainers">&nbsp;</a>
 
 <h2>Java</h2>
