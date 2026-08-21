@@ -244,6 +244,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `headers.host[0]` previously gave you whichever spelling arrived last, it now gives you the first, with the
   rest following in arrival order. Headers only — cookie, query-string-parameter and path-parameter
   names remain case-sensitive, as their specifications require.
+- Concurrently creating expectations no longer silently drops some of them (issue #2579). Each
+  `PUT /mockserver/expectation` returned `201` with a unique id, yet under load roughly a quarter of runs
+  left one or more of those expectations permanently absent from `retrieveActiveExpectations` (and therefore
+  unmatchable), while `nioEventLoopThreadCount=1` made the loss vanish. Root cause was a non-atomic
+  read-modify-write in `RequestMatchers.add`: it inserted the compiled matcher into the node-local cache
+  (`matcherCacheById`, the `CircularPriorityQueue` and `expectationRequestDefinitions`) *first*, then wrote the
+  backend key-value store, then ran an eviction reconcile (`reconcileFromBackend → trimEvictedFromBackend`)
+  that infers backend eviction from a size comparison. Because control-plane adds actually run in parallel on
+  the `nioEventLoopThreadCount` Netty worker threads (one per connection) — not serialized by a single writer
+  as an out-of-date contract comment claimed — one thread's trim could observe a second thread's just-inserted
+  local matcher *before* that thread's backend write landed, mis-classify it as backend-evicted and delete it
+  from every node-local structure; the victim's own later trim then saw `local <= backend` and never rebuilt
+  it. The `reconcileFromBackend` monitor was `synchronized`, but `add`'s local mutation and backend write sat
+  outside it, so the trim observed torn state. The fix restores a genuine single-writer contract by serializing
+  every node-local cache mutator (`add`, `update`, `reset`, the `clear` family, `removeHttpRequestMatcher`,
+  `applyConfigurationCapacity`) on the **same** instance monitor `reconcileFromBackend` already uses, so no
+  mutator can observe another's half-applied state — including against a clustered backend's cross-node
+  invalidation callback. The monitor is reentrant, so a mutator's backend put synchronously re-entering the
+  reconcile on the same thread is safe; `add`, `update` and `reset` fire their listener notifications *after*
+  releasing the monitor, so a registered listener's blocking work (the file-persistence write lock and disk
+  I/O) does not run under it; and the read/matching hot path (`firstMatchingExpectation`, the `retrieve*` family) is deliberately left
+  unsynchronized so request throughput is unaffected. Guarded by `RequestMatchersConcurrentAddTest`, which both
+  deterministically forces the exact interleaving (via a test backend that parks one add between its local put
+  and its backend put while another runs its trim) and hammers 8 threads × 64 distinct expectations across
+  several rounds; both fail (a dropped expectation) against the pre-fix code and pass after it.
 - The Rust Testcontainers module no longer hangs waiting for readiness when MockServer is configured with more
   than one port (found while investigating issue #2580). `LifeCycle.startedServer()` words its startup banner
   according to how many ports it bound — `started on port: 1080` for one, but `started on ports: [1080, 1090]`
