@@ -193,6 +193,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   un-rate-limited. The behaviour under test (a single OpenAPI object deserialising into an array of expectations with
   the correct generated bodies) is unchanged and still fully asserted.
 
+- The Rust client's `cargo clippy` gate no longer fails the build on an unchanged source tree. The
+  `mockserver-rust` pipeline lints inside a container pulled from the **floating** `rust:1` tag, and that tag moved to
+  clippy 1.98.0, whose `clippy::needless_late_init` now also flags late-initialised `let` chains assigned across an
+  `if`/`else if` sequence. `resolve_platform()` in `mockserver-client-rust/src/launcher.rs` had two such chains
+  (`os_name`/`ext`, and `arch`), so with `-D warnings` the lint became a hard error and the crate stopped compiling —
+  on code nobody had touched. Master build #638 passed this exact source; build #639, fifteen hours later on a newer
+  `rust:1`, failed it, which also red-herring-failed an unrelated Dependabot pull request whose only change was to a
+  Java dependency. Both chains are now initialising `if`/`else` expressions (a tuple for the jointly-assigned
+  `os_name`/`ext` pair), exactly the rewrite clippy itself suggests; the diverging `else` arms still `return Err(...)`
+  and coerce as `!`. Behaviour is byte-for-byte identical — same platform tokens, same error messages, same `Platform`
+  — and was confirmed by running the fix under the real clippy 1.98.0 in `rust:1` (the original code reproduces as
+  `exit 101` with two errors; the fix is clean) plus the full `cargo test --all-targets` suite. Note that a
+  locally-installed clippy older than 1.98 cannot see this lint at all, so reproducing it requires the container.
+
 ## [7.6.0] - 2026-08-17
 
 ### Changed

@@ -235,36 +235,29 @@ pub struct Platform {
 ///
 /// Returns an error on unsupported OS/arch combinations.
 pub fn resolve_platform() -> LauncherResult<Platform> {
-    let os_name;
-    let ext;
-
-    if cfg!(target_os = "linux") {
-        os_name = "linux";
-        ext = "tar.gz";
+    let (os_name, ext) = if cfg!(target_os = "linux") {
+        ("linux", "tar.gz")
     } else if cfg!(target_os = "macos") {
-        os_name = "darwin";
-        ext = "tar.gz";
+        ("darwin", "tar.gz")
     } else if cfg!(target_os = "windows") {
-        os_name = "windows";
-        ext = "zip";
+        ("windows", "zip")
     } else {
         return Err(LauncherError::UnsupportedPlatform(format!(
             "unsupported OS: {}",
             std::env::consts::OS
         )));
-    }
+    };
 
-    let arch;
-    if cfg!(target_arch = "x86_64") {
-        arch = "x86_64";
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x86_64"
     } else if cfg!(target_arch = "aarch64") {
-        arch = "aarch64";
+        "aarch64"
     } else {
         return Err(LauncherError::UnsupportedPlatform(format!(
             "unsupported architecture: {}",
             std::env::consts::ARCH
         )));
-    }
+    };
 
     Ok(Platform { os_name, arch, ext })
 }
