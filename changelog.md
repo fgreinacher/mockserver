@@ -258,6 +258,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   describes both readiness signals, recommending `PUT /mockserver/status` over the log line — the status
   endpoint is unaffected by log level, whereas the banner is logged at `INFO` and so disappears entirely when
   `MOCKSERVER_LOG_LEVEL` is raised to `WARN` or above.
+- Concurrently creating expectations no longer silently drops some of them (issue #2579). Each
+  `PUT /mockserver/expectation` returned `201` with a unique id, yet under load roughly a quarter of runs left
+  one or more of those expectations permanently absent from `retrieveActiveExpectations` (and therefore
+  unmatchable), while `nioEventLoopThreadCount=1` made the loss vanish. Control-plane adds actually run in
+  parallel on the `nioEventLoopThreadCount` Netty worker threads (one per connection), and `RequestMatchers.add`
+  inserts the compiled matcher into its node-local cache *before* writing the backend key-value store and then
+  running an eviction reconcile that infers backend eviction from a snapshot. One thread's reconcile could
+  observe a second thread's just-inserted matcher before that thread's backend write had landed, mis-classify it
+  as backend-evicted, and delete it — the victim's own later reconcile then never rebuilt it. The fix registers
+  every in-flight add in a set before it mutates the cache and deregisters it only after its backend write
+  returns, and both reconcile paths — the single-node eviction trim and the clustered cross-node scan — take
+  their `cached → in-flight → backend` snapshots in that fixed order (reading the cached ids first and the
+  backend last) and never evict an in-flight id, so a not-yet-persisted matcher can no longer be dropped. The
+  in-flight registry is reference-counted so two concurrent writers of the same id both keep protection until
+  both complete. The genuinely non-thread-safe
+  node-local structures (the priority queue and the request-definition map) are now mutated only inside a short
+  `synchronized` critical section, closing a second latent data race under concurrent writes.
+  **An earlier attempt at this fix (reverted) deadlocked the clustered (Infinispan) backend** because it held
+  that same monitor across the backend `put`, which for a distributed cache is a blocking cross-node round-trip
+  while the receiving node's invalidation listener needed the monitor to progress — hanging `ClusteredTwoNodeTest`
+  and `ClusteredExpectationPersistenceReloadTest` to their timeouts. This redesign never holds any lock across a
+  backend call: the monitor guards only in-memory structure mutation, `add`/`update` release it before the
+  backend `put`, and the reconcile takes its backend snapshot before acquiring it. Guarded by
+  `RequestMatchersConcurrentAddTest`, which deterministically forces the drop interleaving, hammers 8 threads ×
+  64 distinct expectations across several rounds, and asserts two adds whose backend puts interleave complete
+  without deadlocking (the last case fails against the reverted approach and passes against this one).
 
 ## [7.6.0] - 2026-08-17
 

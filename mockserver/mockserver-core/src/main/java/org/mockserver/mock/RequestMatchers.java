@@ -71,6 +71,34 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     // only non-sort fields (e.g. response body) — without this, such updates
     // would leave a stale matcher serving the old behaviour.
     private final ConcurrentHashMap<String, Long> lastReconciledVersion = new ConcurrentHashMap<>();
+    // CONCURRENCY (issue #2579): ids of adds/updates whose node-local matcher has been
+    // inserted but whose backend put has NOT yet returned. An id is registered here
+    // BEFORE any node-local mutation and deregistered only AFTER its backend write
+    // returns/throws. trimEvictedFromBackend() and reconcileClusteredScan() treat these
+    // ids as PROTECTED so a concurrent eviction reconcile can never mis-classify a
+    // just-inserted-but-not-yet-persisted matcher as backend-evicted and drop it. See
+    // the load-bearing snapshot-ordering proof on trimEvictedFromBackend().
+    // REFERENCE-COUNTED (not a plain Set): two concurrent writers of the SAME id must
+    // both hold protection until BOTH complete. A per-id counter means the first
+    // writer's deregistration (e.g. its put threw) cannot lift protection while a second
+    // writer for that id is still mid-flight with its own put not yet landed — which
+    // would otherwise let a trim evict the second writer's not-yet-persisted matcher.
+    private final ConcurrentHashMap<String, Integer> addsInFlight = new ConcurrentHashMap<>();
+
+    /** Register an in-flight add for {@code id} (reference-counted — see field javadoc). */
+    private void beginInFlight(String id) {
+        addsInFlight.merge(id, 1, Integer::sum);
+    }
+
+    /** Deregister one in-flight add for {@code id}; protection lifts only when the last writer completes. */
+    private void endInFlight(String id) {
+        addsInFlight.computeIfPresent(id, (key, count) -> count <= 1 ? null : count - 1);
+    }
+
+    /** Snapshot of the ids currently protected as in-flight adds (count &gt; 0). */
+    private Set<String> inFlightIdsSnapshot() {
+        return new HashSet<>(addsInFlight.keySet());
+    }
     // T1-C1: candidate index for expectation matching above a size threshold. Below
     // the threshold firstMatchingExpectation runs the EXACT existing linear scan
     // (byte-for-byte, zero added per-request cost); above it the scan is narrowed to
@@ -206,16 +234,43 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * on update-in-place vs re-insert). {@link #reconcileEvictions()} trims
      * the node-local cache after each backend mutation.
      * <p>
-     * <b>Threading contract:</b> all control-plane mutations (add, update,
-     * remove, clear, reset, setStateBackend) are assumed to be externally
-     * serialized — i.e. a single writer at a time. This is satisfied today
-     * because {@code HttpState} serializes control-plane calls on the Netty
-     * event loop or holds the action lock.
-     * <p>
-     * TODO(jamesdbloom): phase 2c — when remote invalidation events arrive
-     * concurrently from a clustered backend, this single-writer assumption
-     * must be revisited — likely by introducing an internal lock or
-     * event-queue around the node-local cache reconciliation.
+     * <b>Threading contract (issue #2579):</b> control-plane mutations are NOT
+     * externally serialized — {@code PUT /mockserver/expectation} adds run
+     * concurrently on the {@code nioEventLoopThreadCount} Netty worker threads
+     * (one per connection), and a clustered backend fires invalidation callbacks
+     * from its own threads. Correctness is guaranteed internally by two
+     * mechanisms, deliberately kept separate:
+     * <ol>
+     *   <li><b>The node-local structure mutation is serialized on this instance's
+     *       monitor.</b> {@link #add}, {@link #update}, {@link #reset},
+     *       {@link #removeHttpRequestMatcher}, {@link #trimEvictedFromBackend} and
+     *       {@link #reconcileClusteredScan} mutate the non-thread-safe
+     *       {@code httpRequestMatchers} ({@link CircularPriorityQueue}) and
+     *       {@code expectationRequestDefinitions} ({@link CircularHashMap}) only
+     *       inside a {@code synchronized(this)} critical section. Each such section
+     *       is short, purely in-memory, and — this is the load-bearing invariant —
+     *       contains NO backend call, NO listener notification and NO blocking I/O.</li>
+     *   <li><b>The eviction reconcile protects in-flight adds.</b> An add registers
+     *       its id in {@link #addsInFlight} before mutating the node-local cache and
+     *       deregisters it only after its backend put returns; the trim excludes
+     *       in-flight ids from eviction (see {@link #trimEvictedFromBackend}).</li>
+     * </ol>
+     * <b>What is deliberately NOT guaranteed:</b> no lock spans a backend call. In
+     * particular {@code add}/{@code update} release the monitor BEFORE
+     * {@code expectationBackend.put(...)}, and {@code trimEvictedFromBackend}/
+     * {@code reconcileClusteredScan} take their backend snapshot BEFORE acquiring
+     * the monitor. This is the specific rule the first #2579 fix (reverted commit
+     * {@code 98ab5d8de}) violated: it held this monitor across
+     * {@code expectationBackend.put}, which for a clustered (Infinispan) backend is
+     * a blocking distributed round-trip, while the node's own invalidation listener
+     * needed the same monitor to progress — deadlocking the two nodes. Listener
+     * notifications ({@link #notifyListeners}) are fired AFTER the monitor is
+     * released so a listener's blocking work (the file-persistence write lock and
+     * disk I/O) never runs under it. The READ / matching path
+     * ({@link #firstMatchingExpectation}, {@link #firstMatchingEarlyExpectation},
+     * the {@code retrieve*} family and {@link #size()}) is intentionally NOT
+     * synchronized — it relies on the CPQ's eventually-consistent
+     * {@code toSortedList()} snapshot and must not be throttled by the mutator monitor.
      */
     public void setStateBackend(StateBackend stateBackend) {
         this.stateBackend = stateBackend;
@@ -263,81 +318,125 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     public void applyConfigurationCapacity() {
         int maxExpectations = configuration.maxExpectations();
         if (expectationBackend != null) {
+            // Backend resize is a backend call — NOT under the monitor (issue #2579).
             expectationBackend.setMaxSize(maxExpectations);
             // The backend may have evicted entries — drop them from the node-local view (matcher
             // cache, CPQ, request-definition map and candidate index) before the map is trimmed.
             reconcileFromBackend();
         } else {
-            httpRequestMatchers.setMaxSize(maxExpectations);
+            // No backend: the CPQ carries the bound. Its resize is a structural mutation of a
+            // non-thread-safe queue, so serialize it on the monitor (no backend call inside).
+            synchronized (this) {
+                httpRequestMatchers.setMaxSize(maxExpectations);
+            }
         }
-        expectationRequestDefinitions.setMaxSize(maxExpectations);
+        // CircularHashMap resize can evict entries — structural, so serialize on the monitor.
+        synchronized (this) {
+            expectationRequestDefinitions.setMaxSize(maxExpectations);
+        }
     }
 
     public Expectation add(Expectation expectation, Cause cause) {
         Expectation upsertedExpectation = null;
         if (expectation != null) {
             validateRespondBeforeBody(expectation);
-            expectationRequestDefinitions.put(expectation.getId(), expectation.getHttpRequest());
+            final String expectationId = expectation.getId();
+            // CONCURRENCY (issue #2579): register this id as an in-flight add BEFORE any
+            // node-local mutation, and deregister it in the finally below only AFTER the
+            // backend write has returned/thrown. trimEvictedFromBackend() treats in-flight
+            // ids as protected, so a concurrent add's eviction trim can never observe this
+            // add's just-inserted local matcher (before its backend put has landed) and
+            // mis-classify it as backend-evicted. See the ordering proof on
+            // trimEvictedFromBackend().
+            beginInFlight(expectationId);
+            // Guard so this id is deregistered EXACTLY once (ref-counted), whether via the
+            // explicit deregistration before the reconcile or the finally safety net.
+            boolean deregistered = false;
+            try {
+                // CPX-04: Propagate created time from existing backend entry (if updating) to
+                // preserve ordering — must happen before the backend put. This is a BACKEND READ
+                // and is performed OUTSIDE the monitor so no lock is ever held across a backend
+                // call (issue #2579 revert lesson). The node-local created propagation inside the
+                // monitor below takes precedence and covers the no-backend fallback path.
+                if (expectationBackend != null) {
+                    expectationBackend.get(expectationId).ifPresent(existing ->
+                        expectation.withCreated(existing.getValue().getExpectation().getCreated()));
+                }
 
-            // CPX-04: Propagate created time from existing backend entry (if
-            // updating) to preserve ordering — must happen before backend put.
-            // This is intentionally redundant with the node-local created
-            // propagation below (line ~155): the backend propagation covers
-            // the case where the node-local CPQ does not yet have the matcher
-            // (e.g. after a cold-start rebuild from backend state), while the
-            // node-local propagation covers the no-backend fallback path.
-            if (expectationBackend != null) {
-                expectationBackend.get(expectation.getId()).ifPresent(existing -> {
-                    expectation.withCreated(existing.getValue().getExpectation().getCreated());
-                });
+                // CONCURRENCY (issue #2579): serialise ONLY the node-local structure mutation
+                // (expectationRequestDefinitions + httpRequestMatchers CPQ + matcherCacheById) on
+                // the instance monitor. This critical section is purely in-memory and contains NO
+                // backend call, NO listener notification and NO blocking I/O — which is exactly why
+                // it cannot deadlock the way the reverted commit 98ab5d8de did by holding this
+                // monitor across expectationBackend.put.
+                synchronized (this) {
+                    expectationRequestDefinitions.put(expectationId, expectation.getHttpRequest());
+                    upsertedExpectation = httpRequestMatchers
+                        .getByKey(expectationId)
+                        .map(httpRequestMatcher -> {
+                            if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
+                                metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
+                            }
+                            if (httpRequestMatcher.getExpectation() != null) {
+                                // propagate created time from previous entry to avoid re-ordering on update
+                                expectation.withCreated(httpRequestMatcher.getExpectation().getCreated());
+                            }
+                            httpRequestMatchers.removePriorityKey(httpRequestMatcher);
+                            if (httpRequestMatcher.update(expectation)) {
+                                httpRequestMatchers.addPriorityKey(httpRequestMatcher);
+                                if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                                    mockServerLogger.logEvent(
+                                        new LogEntry()
+                                            .setType(UPDATED_EXPECTATION)
+                                            .setLogLevel(Level.INFO)
+                                            .setHttpRequest(expectation.getHttpRequest())
+                                            .setMessageFormat(UPDATED_EXPECTATION_MESSAGE_FORMAT)
+                                            .setArguments(expectation.clone(), expectation.getId())
+                                    );
+                                }
+                                if (expectation.getAction() != null) {
+                                    metrics.increment(expectation.getAction().getType());
+                                }
+                            } else {
+                                httpRequestMatchers.addPriorityKey(httpRequestMatcher);
+                            }
+                            matcherCacheById.put(expectationId, httpRequestMatcher);
+                            return httpRequestMatcher;
+                        })
+                        .orElseGet(() -> addPrioritisedExpectation(expectation, cause))
+                        .getExpectation();
+                }
+
+                // Put into backend KV (source of truth) — this may trigger maxExpectations
+                // eviction inside the backend's CPQ. Performed OUTSIDE the monitor: for a
+                // clustered backend this is a blocking distributed round-trip and MUST NOT run
+                // under any lock (issue #2579 revert lesson).
+                if (expectationBackend != null) {
+                    long newVersion = expectationBackend.put(expectationId, new ExpectationEntry(expectation));
+                    lastReconciledVersion.put(expectationId, newVersion);
+                    // Deregister BEFORE this add's OWN eviction reconcile. The put has returned, so
+                    // this id is now in the backend and no longer needs in-flight protection (the
+                    // ordering proof only requires deregistration after the put returns, which this
+                    // satisfies). Leaving it registered would inflate the conservative size shortcut
+                    // and suppress a legitimate eviction of a DIFFERENT, backend-evicted id.
+                    endInFlight(expectationId);
+                    deregistered = true;
+                    reconcileEvictions();
+                }
+
+                // Invalidate the candidate index: this add may have created a new matcher
+                // or updated an existing one in place (changing its method/path bucket).
+                markMatchersModified();
+            } finally {
+                // Safety net: covers the no-backend path and the case where the backend put
+                // threw before the explicit deregistration above. Runs at most once per add.
+                if (!deregistered) {
+                    endInFlight(expectationId);
+                }
             }
-
-            upsertedExpectation = httpRequestMatchers
-                .getByKey(expectation.getId())
-                .map(httpRequestMatcher -> {
-                    if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
-                        metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
-                    }
-                    if (httpRequestMatcher.getExpectation() != null) {
-                        // propagate created time from previous entry to avoid re-ordering on update
-                        expectation.withCreated(httpRequestMatcher.getExpectation().getCreated());
-                    }
-                    httpRequestMatchers.removePriorityKey(httpRequestMatcher);
-                    if (httpRequestMatcher.update(expectation)) {
-                        httpRequestMatchers.addPriorityKey(httpRequestMatcher);
-                        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
-                            mockServerLogger.logEvent(
-                                new LogEntry()
-                                    .setType(UPDATED_EXPECTATION)
-                                    .setLogLevel(Level.INFO)
-                                    .setHttpRequest(expectation.getHttpRequest())
-                                    .setMessageFormat(UPDATED_EXPECTATION_MESSAGE_FORMAT)
-                                    .setArguments(expectation.clone(), expectation.getId())
-                            );
-                        }
-                        if (expectation.getAction() != null) {
-                            metrics.increment(expectation.getAction().getType());
-                        }
-                    } else {
-                        httpRequestMatchers.addPriorityKey(httpRequestMatcher);
-                    }
-                    matcherCacheById.put(expectation.getId(), httpRequestMatcher);
-                    return httpRequestMatcher;
-                })
-                .orElseGet(() -> addPrioritisedExpectation(expectation, cause))
-                .getExpectation();
-
-            // Put into backend KV (source of truth) — this may trigger
-            // maxExpectations eviction inside the backend's CPQ.
-            if (expectationBackend != null) {
-                long newVersion = expectationBackend.put(expectation.getId(), new ExpectationEntry(expectation));
-                lastReconciledVersion.put(expectation.getId(), newVersion);
-                reconcileEvictions();
-            }
-
-            // Invalidate the candidate index: this add may have created a new matcher
-            // or updated an existing one in place (changing its method/path bucket).
-            markMatchersModified();
+            // Fire listeners OUTSIDE the monitor: a registered listener
+            // (ExpectationFileSystemPersistence.updated) takes its own write lock and does
+            // blocking disk I/O — it must never run under the mutator monitor.
             notifyListeners(this, cause);
         }
         return upsertedExpectation;
@@ -346,30 +445,44 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     public void update(Expectation[] expectations, Cause cause) {
         AtomicInteger numberOfChanges = new AtomicInteger(0);
         if (expectations != null) {
-            Map<String, HttpRequestMatcher> httpRequestMatchersByKey = httpRequestMatchers.keyMap();
-            Set<String> existingKeysForCause = httpRequestMatchersByKey
-                .entrySet()
-                .stream()
-                .filter(entry -> entry.getValue().getSource().equals(cause))
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toSet());
-            Set<String> addedIds = new HashSet<>();
-            Arrays
-                .stream(expectations)
-                .forEach(expectation -> {
-                    // ensure duplicate ids are skipped in input array
-                    if (!addedIds.contains(expectation.getId())) {
-                        validateRespondBeforeBody(expectation);
-                        addedIds.add(expectation.getId());
+            // Distinct expectations by id (first occurrence wins), validated up front — this
+            // reproduces the previous "skip duplicate ids in the input array" behaviour.
+            LinkedHashMap<String, Expectation> distinct = new LinkedHashMap<>();
+            for (Expectation expectation : expectations) {
+                if (expectation != null && !distinct.containsKey(expectation.getId())) {
+                    validateRespondBeforeBody(expectation);
+                    distinct.put(expectation.getId(), expectation);
+                }
+            }
+            // CONCURRENCY (issue #2579): register every id in-flight BEFORE any node-local
+            // mutation; deregister in the finally AFTER the backend writes return, so a
+            // concurrent eviction trim treats them as protected (see trimEvictedFromBackend()).
+            distinct.keySet().forEach(this::beginInFlight);
+            // Guard so each id is deregistered EXACTLY once (ref-counted).
+            boolean deregistered = false;
+            try {
+                // BACKEND READ (no lock): propagate created time from the backend before mutating;
+                // the node-local created propagation inside the monitor below takes precedence.
+                if (expectationBackend != null) {
+                    distinct.values().forEach(expectation ->
+                        expectationBackend.get(expectation.getId()).ifPresent(existing ->
+                            expectation.withCreated(existing.getValue().getExpectation().getCreated())));
+                }
+
+                List<HttpRequestMatcher> toRemove = new ArrayList<>();
+                // Serialise the node-local batch mutation on the monitor — NO backend call and NO
+                // listener notification inside (issue #2579). Backend puts/removes happen after.
+                synchronized (this) {
+                    Map<String, HttpRequestMatcher> httpRequestMatchersByKey = httpRequestMatchers.keyMap();
+                    Set<String> existingKeysForCause = httpRequestMatchersByKey
+                        .entrySet()
+                        .stream()
+                        .filter(entry -> entry.getValue().getSource().equals(cause))
+                        .map(Map.Entry::getKey)
+                        .collect(Collectors.toSet());
+                    for (Expectation expectation : distinct.values()) {
                         expectationRequestDefinitions.put(expectation.getId(), expectation.getHttpRequest());
                         existingKeysForCause.remove(expectation.getId());
-
-                        // Propagate created time from backend if present
-                        if (expectationBackend != null) {
-                            expectationBackend.get(expectation.getId()).ifPresent(existing -> {
-                                expectation.withCreated(existing.getValue().getExpectation().getCreated());
-                            });
-                        }
 
                         if (httpRequestMatchersByKey.containsKey(expectation.getId())) {
                             HttpRequestMatcher httpRequestMatcher = httpRequestMatchersByKey.get(expectation.getId());
@@ -407,27 +520,41 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                             addPrioritisedExpectation(expectation, cause);
                             numberOfChanges.getAndIncrement();
                         }
-
-                        // Put into backend KV (source of truth)
-                        if (expectationBackend != null) {
-                            long newVersion = expectationBackend.put(expectation.getId(), new ExpectationEntry(expectation));
-                            lastReconciledVersion.put(expectation.getId(), newVersion);
-                        }
                     }
-                });
-            existingKeysForCause
-                .forEach(key -> {
+                    // Collect matchers for this cause that are no longer present — removed OUTSIDE
+                    // the monitor below, because removeHttpRequestMatcher issues a backend remove.
+                    existingKeysForCause.forEach(key -> toRemove.add(httpRequestMatchersByKey.get(key)));
+                }
+
+                // Removals — OUTSIDE the monitor (removeHttpRequestMatcher self-serialises its CPQ
+                // mutation and issues a backend remove, which must not run under a lock).
+                toRemove.forEach(httpRequestMatcher -> {
                     numberOfChanges.getAndIncrement();
-                    HttpRequestMatcher httpRequestMatcher = httpRequestMatchersByKey.get(key);
                     removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getUUID());
                     if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
                         metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
                     }
                 });
 
-            // Reconcile evictions after batch update
-            if (expectationBackend != null) {
-                reconcileEvictions();
+                // Backend writes — OUTSIDE the monitor (a clustered put is a blocking round-trip).
+                if (expectationBackend != null) {
+                    for (Expectation expectation : distinct.values()) {
+                        long newVersion = expectationBackend.put(expectation.getId(), new ExpectationEntry(expectation));
+                        lastReconciledVersion.put(expectation.getId(), newVersion);
+                    }
+                    // Deregister BEFORE the batch's own eviction reconcile (same reasoning as add()):
+                    // every id has now been persisted, so keeping them in-flight would inflate the
+                    // conservative size shortcut and suppress a legitimate eviction.
+                    distinct.keySet().forEach(this::endInFlight);
+                    deregistered = true;
+                    // Reconcile evictions after batch update
+                    reconcileEvictions();
+                }
+            } finally {
+                // Safety net: no-backend path and the put-threw path. Runs at most once per batch.
+                if (!deregistered) {
+                    distinct.keySet().forEach(this::endInFlight);
+                }
             }
 
             if (numberOfChanges.get() > 0) {
@@ -507,9 +634,15 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     }
 
     public void reset(Cause cause) {
+        // Each removeHttpRequestMatcher self-serialises its own CPQ removal (and issues its
+        // backend remove OUTSIDE the monitor).
         httpRequestMatchers.stream().forEach(httpRequestMatcher -> removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getUUID()));
-        expectationRequestDefinitions.clear();
-        matcherCacheById.clear();
+        // Structural clears of the non-thread-safe local maps — serialise on the monitor
+        // (no backend call inside); the backend clear runs afterwards, outside the monitor.
+        synchronized (this) {
+            expectationRequestDefinitions.clear();
+            matcherCacheById.clear();
+        }
         lastReconciledVersion.clear();
         if (expectationBackend != null) {
             expectationBackend.clear();
@@ -1089,12 +1222,16 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * backend is LOCAL (non-clustered), only eviction applies because all
      * mutations originate locally and the CPQ is already in sync.
      * <p>
-     * <b>Threading contract:</b> serialized via {@code synchronized} so
-     * that concurrent remote invalidation events (from a clustered backend)
-     * do not corrupt the node-local CPQ. Local mutations are still
-     * single-writer (Netty event loop / action lock); the lock is
-     * reentrant-safe for local callers because Java's {@code synchronized}
-     * is reentrant.
+     * <b>Threading contract (issue #2579):</b> this method is deliberately NOT
+     * {@code synchronized} at the method level, because it makes backend calls
+     * ({@code expectationBackend.size()}/{@code entries()}) and no lock may span a
+     * backend call (the rule the reverted commit {@code 98ab5d8de} broke, deadlocking
+     * a clustered backend). Instead {@link #trimEvictedFromBackend} and
+     * {@link #reconcileClusteredScan} take their backend snapshot OUTSIDE the monitor
+     * and then acquire {@code synchronized(this)} for ONLY the short, in-memory
+     * mutation of the node-local CPQ. Concurrent remote invalidation events therefore
+     * serialise on that inner monitor (so the CPQ is never corrupted) without ever
+     * blocking on the network while holding it.
      * <p>
      * <b>Concurrent matching (data-plane) note:</b> this method applies
      * incremental per-entry mutations (add/update/remove) to the CPQ — the
@@ -1106,7 +1243,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * will never see a torn/empty view. This matches the pre-existing
      * control-plane / data-plane concurrency contract.
      */
-    public synchronized void reconcileFromBackend() {
+    public void reconcileFromBackend() {
         if (expectationBackend == null) {
             return;
         }
@@ -1130,67 +1267,102 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     /**
      * The expensive clustered reconcile scan: snapshots the entire backend and
      * diffs it against the node-local matcher cache (evict / remote-add /
-     * remote-update). Only ever invoked from {@link #reconcileFromBackend()}
-     * under its {@code synchronized} monitor.
+     * remote-update).
+     * <p>
+     * <b>Locking (issue #2579):</b> the three snapshots are taken BEFORE the monitor is
+     * acquired — no lock spans a backend call. All node-local structure mutation then runs
+     * inside a single {@code synchronized(this)} block that contains no backend call, so
+     * concurrent invalidation callbacks and local {@code add}/{@code update} mutations
+     * serialise without ever blocking on the network under the monitor.
+     * <p>
+     * <b>Load-bearing snapshot order (issue #2579) — identical to {@link #trimEvictedFromBackend},
+     * do NOT reorder.</b> The eviction set MUST be computed from a <em>snapshot</em> of the cached
+     * ids taken FIRST, never from the live {@code matcherCacheById.keySet()} read last: reading the
+     * cache last while the backend snapshot was taken first lets a fully-completed concurrent
+     * {@code add} (registered, inserted, persisted and deregistered entirely after both snapshots)
+     * appear in the live cache yet be absent from the stale backend snapshot and from the protected
+     * set — and so be wrongly evicted (the #2579 symptom on the clustered path).
+     * <ol>
+     *   <li>{@code cachedIds}     — copy of {@code matcherCacheById.keySet()}</li>
+     *   <li>{@code protectedIds}  — copy of the in-flight-add ids ({@link #inFlightIdsSnapshot})</li>
+     *   <li>{@code backendEntries}— snapshot of {@code expectationBackend.entries()}</li>
+     * </ol>
+     * then {@code evict = cachedIds − backendIds − protectedIds}. Proof it cannot drop a persisted
+     * add: if {@code X ∈ cachedIds}, its local insert preceded (1), and its in-flight registration
+     * preceded that insert, so it preceded (1) ≤ (2). At (2) either {@code X} is still in-flight —
+     * protected, so excluded — or it was already deregistered; deregistration happens only after
+     * {@code X}'s backend put returned, therefore before (2) &lt; (3), so {@code X ∈ backendIds} and
+     * is excluded. Either way {@code X} is never evicted. The remote-add/update pass (step 2) reads
+     * the live cache because it only inserts/updates, never drops.
      */
     private void reconcileClusteredScan() {
-        // Snapshot backend state
+        // LOAD-BEARING SNAPSHOT ORDER (issue #2579) — see javadoc proof. Taken OUTSIDE the monitor.
+        // (1) ids currently cached locally
+        Set<String> cachedIds = new HashSet<>(matcherCacheById.keySet());
+        // (2) in-flight adds — MUST be snapshotted AFTER cachedIds and BEFORE the backend snapshot
+        Set<String> protectedIds = inFlightIdsSnapshot();
+        // (3) backend snapshot — backend call, taken LAST and WITHOUT the monitor
         Map<String, KeyValueStore.Entry<ExpectationEntry>> backendEntries = new HashMap<>();
         expectationBackend.entries().forEach(e -> backendEntries.put(e.getKey(), e));
-
         Set<String> backendIds = backendEntries.keySet();
 
-        // 1. Remove evicted matchers (id no longer in backend)
+        // (4) evict = cachedIds − backendIds − protectedIds, computed over the cachedIds SNAPSHOT
+        //     (never the live keySet — that is the ordering the buggy first cut inverted).
         List<String> evictedIds = new ArrayList<>();
-        for (String cachedId : matcherCacheById.keySet()) {
-            if (!backendIds.contains(cachedId)) {
+        for (String cachedId : cachedIds) {
+            if (!backendIds.contains(cachedId) && !protectedIds.contains(cachedId)) {
                 evictedIds.add(cachedId);
             }
         }
-        for (String evictedId : evictedIds) {
-            HttpRequestMatcher evictedMatcher = matcherCacheById.remove(evictedId);
-            if (evictedMatcher != null) {
-                httpRequestMatchers.remove(evictedMatcher);
-            }
-            expectationRequestDefinitions.remove(evictedId);
-            lastReconciledVersion.remove(evictedId);
-        }
 
-        // 2. Add new entries and update stale entries (remote writes)
-        for (Map.Entry<String, KeyValueStore.Entry<ExpectationEntry>> entry : backendEntries.entrySet()) {
-            String id = entry.getKey();
-            long backendVersion = entry.getValue().getVersion();
-            ExpectationEntry backendEntry = entry.getValue().getValue();
-            Expectation expectation = backendEntry.getExpectation();
-
-            HttpRequestMatcher existing = matcherCacheById.get(id);
-            if (existing == null) {
-                // New entry from remote node — build matcher locally
-                HttpRequestMatcher newMatcher = matcherBuilder.transformsToMatcher(expectation);
-                httpRequestMatchers.add(newMatcher);
-                newMatcher.withSource(Cause.API);
-                matcherCacheById.put(id, newMatcher);
-                expectationRequestDefinitions.put(id, expectation.getHttpRequest());
-                lastReconciledVersion.put(id, backendVersion);
-                if (expectation.getAction() != null) {
-                    metrics.increment(expectation.getAction().getType());
+        // Apply the diff under the monitor — purely in-memory, NO backend call inside.
+        synchronized (this) {
+            // 1. Remove evicted matchers (id no longer in backend AND not an in-flight local add)
+            for (String evictedId : evictedIds) {
+                HttpRequestMatcher evictedMatcher = matcherCacheById.remove(evictedId);
+                if (evictedMatcher != null) {
+                    httpRequestMatchers.remove(evictedMatcher);
                 }
-            } else if (existing.getExpectation() != null) {
-                // Check if backend version is strictly newer than the last
-                // version we reconciled for this id. This catches ALL remote
-                // updates — not just sort-field changes (id/priority/created)
-                // but also response body, request pattern, or action changes.
-                Long lastVersion = lastReconciledVersion.get(id);
-                if (lastVersion == null || backendVersion > lastVersion) {
-                    // Update the matcher preserving runtime state (Times,
-                    // responseInProgress). Re-insert priority key if sort
-                    // fields changed.
-                    httpRequestMatchers.removePriorityKey(existing);
-                    existing.update(expectation);
-                    httpRequestMatchers.addPriorityKey(existing);
-                    matcherCacheById.put(id, existing);
+                expectationRequestDefinitions.remove(evictedId);
+                lastReconciledVersion.remove(evictedId);
+            }
+
+            // 2. Add new entries and update stale entries (remote writes)
+            for (Map.Entry<String, KeyValueStore.Entry<ExpectationEntry>> entry : backendEntries.entrySet()) {
+                String id = entry.getKey();
+                long backendVersion = entry.getValue().getVersion();
+                ExpectationEntry backendEntry = entry.getValue().getValue();
+                Expectation expectation = backendEntry.getExpectation();
+
+                HttpRequestMatcher existing = matcherCacheById.get(id);
+                if (existing == null) {
+                    // New entry from remote node — build matcher locally
+                    HttpRequestMatcher newMatcher = matcherBuilder.transformsToMatcher(expectation);
+                    httpRequestMatchers.add(newMatcher);
+                    newMatcher.withSource(Cause.API);
+                    matcherCacheById.put(id, newMatcher);
                     expectationRequestDefinitions.put(id, expectation.getHttpRequest());
                     lastReconciledVersion.put(id, backendVersion);
+                    if (expectation.getAction() != null) {
+                        metrics.increment(expectation.getAction().getType());
+                    }
+                } else if (existing.getExpectation() != null) {
+                    // Check if backend version is strictly newer than the last
+                    // version we reconciled for this id. This catches ALL remote
+                    // updates — not just sort-field changes (id/priority/created)
+                    // but also response body, request pattern, or action changes.
+                    Long lastVersion = lastReconciledVersion.get(id);
+                    if (lastVersion == null || backendVersion > lastVersion) {
+                        // Update the matcher preserving runtime state (Times,
+                        // responseInProgress). Re-insert priority key if sort
+                        // fields changed.
+                        httpRequestMatchers.removePriorityKey(existing);
+                        existing.update(expectation);
+                        httpRequestMatchers.addPriorityKey(existing);
+                        matcherCacheById.put(id, existing);
+                        expectationRequestDefinitions.put(id, expectation.getHttpRequest());
+                        lastReconciledVersion.put(id, backendVersion);
+                    }
                 }
             }
         }
@@ -1210,44 +1382,82 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * now-evicted id and must drop it.
      * <p>
      * Common-case fast exit: if the node-local cache holds no more ids than the
-     * backend, nothing was evicted and this returns immediately without
-     * iterating. Only when {@code matcherCacheById.size() > backend.size()} —
-     * i.e. an eviction actually happened — does it walk the cached ids and drop
-     * those no longer present in the backend. This keeps registration O(n)
-     * overall instead of the O(n^2) caused by a full snapshot-and-walk reconcile
+     * backend (plus in-flight adds), nothing was evicted and this returns immediately
+     * without iterating. Only when the cache genuinely outgrows the backend does it
+     * walk the cached ids and drop those no longer present. This keeps registration
+     * O(n) overall instead of the O(n^2) caused by a full snapshot-and-walk reconcile
      * on every add.
+     * <p>
+     * <b>False-positive eviction fix (issue #2579):</b> control-plane adds run
+     * concurrently, and each add inserts its matcher into the node-local cache BEFORE
+     * its backend put lands. Without protection, a concurrent add's trim would observe
+     * that just-inserted matcher, find its id absent from the backend snapshot, and
+     * delete it — silently dropping a {@code 201}-acknowledged expectation. The fix is
+     * to exclude {@link #addsInFlight} ids from eviction, and — critically — to take the
+     * three snapshots in a <b>load-bearing order</b> (do NOT reorder):
+     * <ol>
+     *   <li>{@code cachedIds}    — copy of {@code matcherCacheById.keySet()}</li>
+     *   <li>{@code protectedIds} — copy of {@code addsInFlight}</li>
+     *   <li>{@code backendIds}   — snapshot of {@code expectationBackend.entries()}</li>
+     * </ol>
+     * then {@code evict = cachedIds − backendIds − protectedIds}. Why it is correct: if
+     * an id is in {@code cachedIds}, its local insert preceded snapshot (1), and (by
+     * construction in {@link #add}/{@link #update}) its in-flight registration preceded
+     * that insert. So at snapshot (2) either it is still registered — protected — or it
+     * was already deregistered; deregistration happens only after its backend put
+     * returned, therefore before (2) and so before (3), meaning it appears in
+     * {@code backendIds}. Either way it cannot be wrongly evicted. Any other ordering
+     * (e.g. taking {@code backendIds} before {@code protectedIds}) reopens the race.
+     * <p>
+     * <b>Locking:</b> the size shortcut and the {@code entries()} snapshot are backend
+     * calls and run WITHOUT the monitor; only the short in-memory removal loop is under
+     * {@code synchronized(this)}. The size shortcut is deliberately conservative
+     * ({@code + addsInFlight.size()}), so it may skip a genuine eviction trim — that is
+     * intended and harmless, a later reconcile retries it.
      */
     private void trimEvictedFromBackend() {
         if (expectationBackend == null) {
             return;
         }
-        if (matcherCacheById.size() <= expectationBackend.size()) {
-            // Nothing was evicted — the common case. No iteration needed.
+        // Conservative size shortcut (issue #2579): count in-flight adds as if already in
+        // the backend so a not-yet-persisted add never makes the cache look "over-full" and
+        // trigger a trim that could race it. Backend call — NOT under the monitor.
+        if (matcherCacheById.size() <= expectationBackend.size() + addsInFlight.size()) {
+            // Nothing was evicted (accounting for in-flight adds) — the common case.
             return;
         }
-        // An eviction happened: build the set of ids still present in the
-        // backend, then drop any cached id no longer present.
+        // LOAD-BEARING SNAPSHOT ORDER (issue #2579) — do NOT reorder. See the javadoc proof.
+        // (a) ids currently cached locally
+        Set<String> cachedIds = new HashSet<>(matcherCacheById.keySet());
+        // (b) ids of in-flight adds — MUST be snapshotted AFTER cachedIds and BEFORE backendIds
+        Set<String> protectedIds = inFlightIdsSnapshot();
+        // (c) ids present in the backend — backend call, taken LAST and WITHOUT the monitor
         Set<String> backendIds = new HashSet<>();
         expectationBackend.entries().forEach(e -> backendIds.add(e.getKey()));
+        // (d) evict = cachedIds − backendIds − protectedIds
         List<String> evictedIds = new ArrayList<>();
-        for (String cachedId : matcherCacheById.keySet()) {
-            if (!backendIds.contains(cachedId)) {
+        for (String cachedId : cachedIds) {
+            if (!backendIds.contains(cachedId) && !protectedIds.contains(cachedId)) {
                 evictedIds.add(cachedId);
             }
         }
-        for (String evictedId : evictedIds) {
-            HttpRequestMatcher evictedMatcher = matcherCacheById.remove(evictedId);
-            if (evictedMatcher != null) {
-                httpRequestMatchers.remove(evictedMatcher);
+        if (evictedIds.isEmpty()) {
+            return;
+        }
+        // Apply the removals under the monitor — purely in-memory, NO backend call inside.
+        synchronized (this) {
+            for (String evictedId : evictedIds) {
+                HttpRequestMatcher evictedMatcher = matcherCacheById.remove(evictedId);
+                if (evictedMatcher != null) {
+                    httpRequestMatchers.remove(evictedMatcher);
+                }
+                expectationRequestDefinitions.remove(evictedId);
+                lastReconciledVersion.remove(evictedId);
             }
-            expectationRequestDefinitions.remove(evictedId);
-            lastReconciledVersion.remove(evictedId);
         }
         // Backend eviction dropped matchers from the node-local store — invalidate
         // the candidate index so it no longer holds the evicted entries.
-        if (!evictedIds.isEmpty()) {
-            markMatchersModified();
-        }
+        markMatchersModified();
     }
 
     /**
@@ -1311,7 +1521,15 @@ public class RequestMatchers extends MockServerMatcherNotifier {
 
     @SuppressWarnings("rawtypes")
     private void removeHttpRequestMatcher(HttpRequestMatcher httpRequestMatcher, Cause cause, boolean notifyAndUpdateMetrics, String logCorrelationId) {
-        if (httpRequestMatchers.remove(httpRequestMatcher)) {
+        // CONCURRENCY (issue #2579): the CPQ removal is a structural mutation of a
+        // non-thread-safe queue, so serialise ONLY that call on the monitor. Everything
+        // that follows (including expectationBackend.remove and the listener notify) runs
+        // OUTSIDE the monitor, so no lock spans a backend call.
+        final boolean removed;
+        synchronized (this) {
+            removed = httpRequestMatchers.remove(httpRequestMatcher);
+        }
+        if (removed) {
             // Invalidate the candidate index — a matcher was removed from the store.
             markMatchersModified();
             // Remove from backend KV and node-local cache
