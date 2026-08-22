@@ -206,24 +206,16 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * on update-in-place vs re-insert). {@link #reconcileEvictions()} trims
      * the node-local cache after each backend mutation.
      * <p>
-     * <b>Threading contract (issue #2579):</b> the node-local cache mutators
-     * ({@link #add}, {@link #update}, {@link #reset}, the {@code clear} family,
-     * {@link #removeHttpRequestMatcher}, {@link #applyConfigurationCapacity} and
-     * {@link #reconcileFromBackend}) are serialized internally on this instance's
-     * monitor, so at most one of them mutates the cache at a time — there is NO
-     * reliance on an external single-writer. This is required because control-plane
-     * adds actually run concurrently on the {@code nioEventLoopThreadCount} Netty
-     * worker threads (one per connection), and the {@code synchronized} monitor
-     * (the same one {@link #reconcileFromBackend} uses) also covers the invalidation
-     * callback a clustered backend fires from its own threads. The monitor is
-     * reentrant, so a mutator's own backend put/clear synchronously re-entering
-     * {@link #reconcileFromBackend} on the same thread is safe. Listener
-     * notifications ({@link #notifyListeners}) are deliberately fired AFTER the
-     * monitor is released so a listener's blocking work (e.g. the file-persistence
-     * write lock and disk I/O) never runs under it. The READ / matching path
-     * ({@link #firstMatchingExpectation}, the {@code retrieve*} family) is
-     * intentionally NOT synchronized — it relies on the CPQ's eventually-consistent
-     * {@code toSortedList()} snapshot and must not be throttled by the mutator monitor.
+     * <b>Threading contract:</b> all control-plane mutations (add, update,
+     * remove, clear, reset, setStateBackend) are assumed to be externally
+     * serialized — i.e. a single writer at a time. This is satisfied today
+     * because {@code HttpState} serializes control-plane calls on the Netty
+     * event loop or holds the action lock.
+     * <p>
+     * TODO(jamesdbloom): phase 2c — when remote invalidation events arrive
+     * concurrently from a clustered backend, this single-writer assumption
+     * must be revisited — likely by introducing an internal lock or
+     * event-queue around the node-local cache reconciliation.
      */
     public void setStateBackend(StateBackend stateBackend) {
         this.stateBackend = stateBackend;
@@ -268,8 +260,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * then reconciled to drop anything the backend evicted. Without a backend the node-local queue
      * carries the bound and is resized directly.
      */
-    // CONCURRENCY (issue #2579): serialised on the same monitor as add()/reconcileFromBackend().
-    public synchronized void applyConfigurationCapacity() {
+    public void applyConfigurationCapacity() {
         int maxExpectations = configuration.maxExpectations();
         if (expectationBackend != null) {
             expectationBackend.setMaxSize(maxExpectations);
@@ -285,87 +276,68 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     public Expectation add(Expectation expectation, Cause cause) {
         Expectation upsertedExpectation = null;
         if (expectation != null) {
-            // CONCURRENCY (issue #2579): serialise the ENTIRE read-modify-write of the
-            // node-local cache (matcherCacheById + httpRequestMatchers CPQ +
-            // expectationRequestDefinitions), the backend put and the eviction reconcile on
-            // the SAME monitor reconcileFromBackend() uses. Without this, a concurrent add's
-            // eviction trim (reconcileFromBackend -> trimEvictedFromBackend) observes this
-            // add's just-inserted local entry BEFORE its backend put lands, mis-classifies it
-            // as backend-evicted and deletes it from every node-local structure — so the
-            // expectation returns 201 but is permanently absent from retrieveActiveExpectations.
-            // The monitor is reentrant, so the backend put's synchronous invalidation callback
-            // (InMemoryExpectationKeyValueStore.put -> fireChanged -> reconcileFromBackend) on
-            // THIS thread re-acquires it harmlessly. notifyListeners() is fired AFTER releasing
-            // the monitor — see below.
-            synchronized (this) {
-                validateRespondBeforeBody(expectation);
-                expectationRequestDefinitions.put(expectation.getId(), expectation.getHttpRequest());
+            validateRespondBeforeBody(expectation);
+            expectationRequestDefinitions.put(expectation.getId(), expectation.getHttpRequest());
 
-                // CPX-04: Propagate created time from existing backend entry (if
-                // updating) to preserve ordering — must happen before backend put.
-                // This is intentionally redundant with the node-local created
-                // propagation below (line ~155): the backend propagation covers
-                // the case where the node-local CPQ does not yet have the matcher
-                // (e.g. after a cold-start rebuild from backend state), while the
-                // node-local propagation covers the no-backend fallback path.
-                if (expectationBackend != null) {
-                    expectationBackend.get(expectation.getId()).ifPresent(existing -> {
-                        expectation.withCreated(existing.getValue().getExpectation().getCreated());
-                    });
-                }
-
-                upsertedExpectation = httpRequestMatchers
-                    .getByKey(expectation.getId())
-                    .map(httpRequestMatcher -> {
-                        if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
-                            metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
-                        }
-                        if (httpRequestMatcher.getExpectation() != null) {
-                            // propagate created time from previous entry to avoid re-ordering on update
-                            expectation.withCreated(httpRequestMatcher.getExpectation().getCreated());
-                        }
-                        httpRequestMatchers.removePriorityKey(httpRequestMatcher);
-                        if (httpRequestMatcher.update(expectation)) {
-                            httpRequestMatchers.addPriorityKey(httpRequestMatcher);
-                            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
-                                mockServerLogger.logEvent(
-                                    new LogEntry()
-                                        .setType(UPDATED_EXPECTATION)
-                                        .setLogLevel(Level.INFO)
-                                        .setHttpRequest(expectation.getHttpRequest())
-                                        .setMessageFormat(UPDATED_EXPECTATION_MESSAGE_FORMAT)
-                                        .setArguments(expectation.clone(), expectation.getId())
-                                );
-                            }
-                            if (expectation.getAction() != null) {
-                                metrics.increment(expectation.getAction().getType());
-                            }
-                        } else {
-                            httpRequestMatchers.addPriorityKey(httpRequestMatcher);
-                        }
-                        matcherCacheById.put(expectation.getId(), httpRequestMatcher);
-                        return httpRequestMatcher;
-                    })
-                    .orElseGet(() -> addPrioritisedExpectation(expectation, cause))
-                    .getExpectation();
-
-                // Put into backend KV (source of truth) — this may trigger
-                // maxExpectations eviction inside the backend's CPQ.
-                if (expectationBackend != null) {
-                    long newVersion = expectationBackend.put(expectation.getId(), new ExpectationEntry(expectation));
-                    lastReconciledVersion.put(expectation.getId(), newVersion);
-                    reconcileEvictions();
-                }
-
-                // Invalidate the candidate index: this add may have created a new matcher
-                // or updated an existing one in place (changing its method/path bucket).
-                markMatchersModified();
+            // CPX-04: Propagate created time from existing backend entry (if
+            // updating) to preserve ordering — must happen before backend put.
+            // This is intentionally redundant with the node-local created
+            // propagation below (line ~155): the backend propagation covers
+            // the case where the node-local CPQ does not yet have the matcher
+            // (e.g. after a cold-start rebuild from backend state), while the
+            // node-local propagation covers the no-backend fallback path.
+            if (expectationBackend != null) {
+                expectationBackend.get(expectation.getId()).ifPresent(existing -> {
+                    expectation.withCreated(existing.getValue().getExpectation().getCreated());
+                });
             }
 
-            // Fire listeners OUTSIDE the monitor: a registered listener
-            // (ExpectationFileSystemPersistence.updated) takes its own write lock and does
-            // blocking disk I/O, and the scheduler may run listeners synchronously in tests —
-            // neither may execute while this monitor is held (throughput and deadlock hygiene).
+            upsertedExpectation = httpRequestMatchers
+                .getByKey(expectation.getId())
+                .map(httpRequestMatcher -> {
+                    if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
+                        metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
+                    }
+                    if (httpRequestMatcher.getExpectation() != null) {
+                        // propagate created time from previous entry to avoid re-ordering on update
+                        expectation.withCreated(httpRequestMatcher.getExpectation().getCreated());
+                    }
+                    httpRequestMatchers.removePriorityKey(httpRequestMatcher);
+                    if (httpRequestMatcher.update(expectation)) {
+                        httpRequestMatchers.addPriorityKey(httpRequestMatcher);
+                        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setType(UPDATED_EXPECTATION)
+                                    .setLogLevel(Level.INFO)
+                                    .setHttpRequest(expectation.getHttpRequest())
+                                    .setMessageFormat(UPDATED_EXPECTATION_MESSAGE_FORMAT)
+                                    .setArguments(expectation.clone(), expectation.getId())
+                            );
+                        }
+                        if (expectation.getAction() != null) {
+                            metrics.increment(expectation.getAction().getType());
+                        }
+                    } else {
+                        httpRequestMatchers.addPriorityKey(httpRequestMatcher);
+                    }
+                    matcherCacheById.put(expectation.getId(), httpRequestMatcher);
+                    return httpRequestMatcher;
+                })
+                .orElseGet(() -> addPrioritisedExpectation(expectation, cause))
+                .getExpectation();
+
+            // Put into backend KV (source of truth) — this may trigger
+            // maxExpectations eviction inside the backend's CPQ.
+            if (expectationBackend != null) {
+                long newVersion = expectationBackend.put(expectation.getId(), new ExpectationEntry(expectation));
+                lastReconciledVersion.put(expectation.getId(), newVersion);
+                reconcileEvictions();
+            }
+
+            // Invalidate the candidate index: this add may have created a new matcher
+            // or updated an existing one in place (changing its method/path bucket).
+            markMatchersModified();
             notifyListeners(this, cause);
         }
         return upsertedExpectation;
@@ -374,104 +346,93 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     public void update(Expectation[] expectations, Cause cause) {
         AtomicInteger numberOfChanges = new AtomicInteger(0);
         if (expectations != null) {
-            // CONCURRENCY (issue #2579): serialise the whole batch mutation on the SAME
-            // monitor add()/reconcileFromBackend() use, so no concurrent mutator (including
-            // the eviction trim) ever observes a half-applied batch. Reentrant w.r.t. the
-            // backend put's synchronous invalidation callback. Listeners fire after the
-            // monitor is released (see below).
-            synchronized (this) {
-                Map<String, HttpRequestMatcher> httpRequestMatchersByKey = httpRequestMatchers.keyMap();
-                Set<String> existingKeysForCause = httpRequestMatchersByKey
-                    .entrySet()
-                    .stream()
-                    .filter(entry -> entry.getValue().getSource().equals(cause))
-                    .map(Map.Entry::getKey)
-                    .collect(Collectors.toSet());
-                Set<String> addedIds = new HashSet<>();
-                Arrays
-                    .stream(expectations)
-                    .forEach(expectation -> {
-                        // ensure duplicate ids are skipped in input array
-                        if (!addedIds.contains(expectation.getId())) {
-                            validateRespondBeforeBody(expectation);
-                            addedIds.add(expectation.getId());
-                            expectationRequestDefinitions.put(expectation.getId(), expectation.getHttpRequest());
-                            existingKeysForCause.remove(expectation.getId());
+            Map<String, HttpRequestMatcher> httpRequestMatchersByKey = httpRequestMatchers.keyMap();
+            Set<String> existingKeysForCause = httpRequestMatchersByKey
+                .entrySet()
+                .stream()
+                .filter(entry -> entry.getValue().getSource().equals(cause))
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toSet());
+            Set<String> addedIds = new HashSet<>();
+            Arrays
+                .stream(expectations)
+                .forEach(expectation -> {
+                    // ensure duplicate ids are skipped in input array
+                    if (!addedIds.contains(expectation.getId())) {
+                        validateRespondBeforeBody(expectation);
+                        addedIds.add(expectation.getId());
+                        expectationRequestDefinitions.put(expectation.getId(), expectation.getHttpRequest());
+                        existingKeysForCause.remove(expectation.getId());
 
-                            // Propagate created time from backend if present
-                            if (expectationBackend != null) {
-                                expectationBackend.get(expectation.getId()).ifPresent(existing -> {
-                                    expectation.withCreated(existing.getValue().getExpectation().getCreated());
-                                });
+                        // Propagate created time from backend if present
+                        if (expectationBackend != null) {
+                            expectationBackend.get(expectation.getId()).ifPresent(existing -> {
+                                expectation.withCreated(existing.getValue().getExpectation().getCreated());
+                            });
+                        }
+
+                        if (httpRequestMatchersByKey.containsKey(expectation.getId())) {
+                            HttpRequestMatcher httpRequestMatcher = httpRequestMatchersByKey.get(expectation.getId());
+                            // update source to new cause
+                            httpRequestMatcher.withSource(cause);
+                            if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
+                                metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
                             }
-
-                            if (httpRequestMatchersByKey.containsKey(expectation.getId())) {
-                                HttpRequestMatcher httpRequestMatcher = httpRequestMatchersByKey.get(expectation.getId());
-                                // update source to new cause
-                                httpRequestMatcher.withSource(cause);
-                                if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
-                                    metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
-                                }
-                                if (httpRequestMatcher.getExpectation() != null) {
-                                    // propagate created time from previous entry to avoid re-ordering on update
-                                    expectation.withCreated(httpRequestMatcher.getExpectation().getCreated());
-                                }
-                                httpRequestMatchers.removePriorityKey(httpRequestMatcher);
-                                if (httpRequestMatcher.update(expectation)) {
-                                    httpRequestMatchers.addPriorityKey(httpRequestMatcher);
-                                    numberOfChanges.getAndIncrement();
-                                    if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
-                                        mockServerLogger.logEvent(
-                                            new LogEntry()
-                                                .setType(UPDATED_EXPECTATION)
-                                                .setLogLevel(Level.INFO)
-                                                .setHttpRequest(expectation.getHttpRequest())
-                                                .setMessageFormat(UPDATED_EXPECTATION_MESSAGE_FORMAT)
-                                                .setArguments(expectation.clone(), expectation.getId())
-                                        );
-                                    }
-                                    if (expectation.getAction() != null) {
-                                        metrics.increment(expectation.getAction().getType());
-                                    }
-                                } else {
-                                    httpRequestMatchers.addPriorityKey(httpRequestMatcher);
-                                }
-                                matcherCacheById.put(expectation.getId(), httpRequestMatcher);
-                            } else {
-                                addPrioritisedExpectation(expectation, cause);
+                            if (httpRequestMatcher.getExpectation() != null) {
+                                // propagate created time from previous entry to avoid re-ordering on update
+                                expectation.withCreated(httpRequestMatcher.getExpectation().getCreated());
+                            }
+                            httpRequestMatchers.removePriorityKey(httpRequestMatcher);
+                            if (httpRequestMatcher.update(expectation)) {
+                                httpRequestMatchers.addPriorityKey(httpRequestMatcher);
                                 numberOfChanges.getAndIncrement();
+                                if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                                    mockServerLogger.logEvent(
+                                        new LogEntry()
+                                            .setType(UPDATED_EXPECTATION)
+                                            .setLogLevel(Level.INFO)
+                                            .setHttpRequest(expectation.getHttpRequest())
+                                            .setMessageFormat(UPDATED_EXPECTATION_MESSAGE_FORMAT)
+                                            .setArguments(expectation.clone(), expectation.getId())
+                                    );
+                                }
+                                if (expectation.getAction() != null) {
+                                    metrics.increment(expectation.getAction().getType());
+                                }
+                            } else {
+                                httpRequestMatchers.addPriorityKey(httpRequestMatcher);
                             }
-
-                            // Put into backend KV (source of truth)
-                            if (expectationBackend != null) {
-                                long newVersion = expectationBackend.put(expectation.getId(), new ExpectationEntry(expectation));
-                                lastReconciledVersion.put(expectation.getId(), newVersion);
-                            }
+                            matcherCacheById.put(expectation.getId(), httpRequestMatcher);
+                        } else {
+                            addPrioritisedExpectation(expectation, cause);
+                            numberOfChanges.getAndIncrement();
                         }
-                    });
-                existingKeysForCause
-                    .forEach(key -> {
-                        numberOfChanges.getAndIncrement();
-                        HttpRequestMatcher httpRequestMatcher = httpRequestMatchersByKey.get(key);
-                        removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getUUID());
-                        if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
-                            metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
+
+                        // Put into backend KV (source of truth)
+                        if (expectationBackend != null) {
+                            long newVersion = expectationBackend.put(expectation.getId(), new ExpectationEntry(expectation));
+                            lastReconciledVersion.put(expectation.getId(), newVersion);
                         }
-                    });
+                    }
+                });
+            existingKeysForCause
+                .forEach(key -> {
+                    numberOfChanges.getAndIncrement();
+                    HttpRequestMatcher httpRequestMatcher = httpRequestMatchersByKey.get(key);
+                    removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getUUID());
+                    if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
+                        metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
+                    }
+                });
 
-                // Reconcile evictions after batch update
-                if (expectationBackend != null) {
-                    reconcileEvictions();
-                }
-
-                if (numberOfChanges.get() > 0) {
-                    // Invalidate the candidate index after a batch of adds/updates/removes.
-                    markMatchersModified();
-                }
+            // Reconcile evictions after batch update
+            if (expectationBackend != null) {
+                reconcileEvictions();
             }
 
-            // Fire listeners OUTSIDE the monitor (see add() rationale).
             if (numberOfChanges.get() > 0) {
+                // Invalidate the candidate index after a batch of adds/updates/removes.
+                markMatchersModified();
                 notifyListeners(this, cause);
             }
         }
@@ -546,24 +507,18 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     }
 
     public void reset(Cause cause) {
-        // CONCURRENCY (issue #2579): serialise the full clear on the SAME monitor
-        // add()/reconcileFromBackend() use so a concurrent add cannot interleave and leave
-        // an orphaned matcher behind. Reentrant w.r.t. the backend clear()'s synchronous
-        // onCleared -> reconcileFromBackend callback. Listeners fire after release.
-        synchronized (this) {
-            httpRequestMatchers.stream().forEach(httpRequestMatcher -> removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getUUID()));
-            expectationRequestDefinitions.clear();
-            matcherCacheById.clear();
-            lastReconciledVersion.clear();
-            if (expectationBackend != null) {
-                expectationBackend.clear();
-            }
-            // Invalidate the candidate index — the store is now empty.
-            markMatchersModified();
-            scenarioManager.reset();
-            Metrics.clearActionMetrics();
-            Metrics.clearRequestAndExpectationMetrics();
+        httpRequestMatchers.stream().forEach(httpRequestMatcher -> removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getUUID()));
+        expectationRequestDefinitions.clear();
+        matcherCacheById.clear();
+        lastReconciledVersion.clear();
+        if (expectationBackend != null) {
+            expectationBackend.clear();
         }
+        // Invalidate the candidate index — the store is now empty.
+        markMatchersModified();
+        scenarioManager.reset();
+        Metrics.clearActionMetrics();
+        Metrics.clearRequestAndExpectationMetrics();
         notifyListeners(this, cause);
     }
 
@@ -1027,9 +982,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         return null;
     }
 
-    // CONCURRENCY (issue #2579): serialised on the same monitor as add()/reconcileFromBackend()
-    // so the snapshot-iterate-and-remove clear is atomic w.r.t. concurrent adds/removes.
-    public synchronized void clear(RequestDefinition requestDefinition) {
+    public void clear(RequestDefinition requestDefinition) {
         if (requestDefinition != null) {
             HttpRequestMatcher clearHttpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinition);
             getHttpRequestMatchersCopy().forEach(httpRequestMatcher -> {
@@ -1073,7 +1026,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * @param namespace        the namespace whose expectations to clear
      * @param logCorrelationId correlation id for the resulting CLEARED log entry
      */
-    public synchronized void clearByNamespace(String namespace, String logCorrelationId) {
+    public void clearByNamespace(String namespace, String logCorrelationId) {
         if (isBlank(namespace)) {
             return;
         }
@@ -1099,7 +1052,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         }
     }
 
-    public synchronized void clear(ExpectationId expectationId, String logCorrelationId) {
+    public void clear(ExpectationId expectationId, String logCorrelationId) {
         if (expectationId != null) {
             httpRequestMatchers
                 .getByKey(expectationId.getId())
@@ -1136,16 +1089,12 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * backend is LOCAL (non-clustered), only eviction applies because all
      * mutations originate locally and the CPQ is already in sync.
      * <p>
-     * <b>Threading contract (issue #2579):</b> serialized via {@code synchronized}
-     * on this instance's monitor so that concurrent local adds (which run on the
-     * {@code nioEventLoopThreadCount} Netty worker threads) and remote invalidation
-     * events (from a clustered backend) cannot corrupt the node-local CPQ. Every
-     * node-local cache mutator ({@link #add}, {@link #update}, {@link #reset}, the
-     * {@code clear} family, {@link #removeHttpRequestMatcher}) holds the SAME monitor,
-     * so this reconcile never observes a half-applied mutation. The lock is
-     * reentrant-safe for local callers because Java's {@code synchronized} is
-     * reentrant, so a mutator's backend put synchronously re-entering here on the
-     * same thread simply re-acquires it.
+     * <b>Threading contract:</b> serialized via {@code synchronized} so
+     * that concurrent remote invalidation events (from a clustered backend)
+     * do not corrupt the node-local CPQ. Local mutations are still
+     * single-writer (Netty event loop / action lock); the lock is
+     * reentrant-safe for local callers because Java's {@code synchronized}
+     * is reentrant.
      * <p>
      * <b>Concurrent matching (data-plane) note:</b> this method applies
      * incremental per-entry mutations (add/update/remove) to the CPQ — the
@@ -1360,18 +1309,8 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         }
     }
 
-    // CONCURRENCY (issue #2579): synchronized on the SAME monitor as add()/reconcileFromBackend()
-    // so the structural removal of a matcher from the node-local cache (CPQ + matcherCacheById +
-    // expectationRequestDefinitions) and the backend is atomic w.r.t. every other mutator — this
-    // closes the race not just for control-plane clear/update but also for the DATA-PLANE removals
-    // (postProcess, scheduleLazyRemoval, exhausted-clustered-CAS) that run on scheduler/data-plane
-    // threads. Reentrant, so a caller already holding the monitor (clear/update/reset) nests safely.
-    // Note: this does NOT put the matching read path (firstMatchingExpectation) under the monitor —
-    // only the removal itself; postProcess reads its cache lock-free and only enters here when it
-    // actually removes an exhausted expectation. The inner notifyListeners is a non-blocking
-    // scheduler.submit, so it is safe to leave under the monitor.
     @SuppressWarnings("rawtypes")
-    private synchronized void removeHttpRequestMatcher(HttpRequestMatcher httpRequestMatcher, Cause cause, boolean notifyAndUpdateMetrics, String logCorrelationId) {
+    private void removeHttpRequestMatcher(HttpRequestMatcher httpRequestMatcher, Cause cause, boolean notifyAndUpdateMetrics, String logCorrelationId) {
         if (httpRequestMatchers.remove(httpRequestMatcher)) {
             // Invalidate the candidate index — a matcher was removed from the store.
             markMatchersModified();
