@@ -528,6 +528,22 @@ export interface MockServerClient {
     retrieveLogMessages(pathOrRequestDefinition: PathOrRequestDefinition): Promise<string[]>;
 
     /**
+     * Retrieve by expectation id instead of by request matcher. For
+     * `retrieveActiveExpectationsById` only the expectation with that id is returned; the
+     * other methods return the entries matching that expectation's request, exactly as
+     * verify by expectation id matches them. An unknown id is rejected with a 400.
+     */
+    retrieveRecordedRequestsById(expectationId: string): Promise<HttpResponse[]>;
+
+    retrieveRecordedRequestsAndResponsesById(expectationId: string): Promise<HttpRequestAndHttpResponse[]>;
+
+    retrieveActiveExpectationsById(expectationId: string): Promise<Expectation[]>;
+
+    retrieveRecordedExpectationsById(expectationId: string): Promise<Expectation[]>;
+
+    retrieveLogMessagesById(expectationId: string): Promise<string[]>;
+
+    /**
      * Register a breakpoint matcher with per-phase handlers.
      * The callback WebSocket is opened lazily on the first call and reused.
      *

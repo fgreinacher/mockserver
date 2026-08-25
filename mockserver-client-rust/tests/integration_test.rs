@@ -664,3 +664,51 @@ fn test_mustache_response_template_rendered_over_wire() {
 
     client.reset().expect("reset failed");
 }
+
+/// Retrieve filtered by expectation id (GitHub issue #2591).
+///
+/// Two expectations match the same request, so this also pins the distinction that
+/// matters: `retrieve_active_expectations_by_id` returns only the expectation with that
+/// id, while `retrieve_active_expectations` with the same request matcher returns both.
+#[test]
+#[ignore]
+fn test_retrieve_by_expectation_id() {
+    let client = get_client();
+    client.reset().expect("reset failed");
+
+    client
+        .upsert(&[Expectation::new(HttpRequest::new().path("/retrieve-by-id"))
+            .id("retrieve-by-id-one")
+            .respond(HttpResponse::new().status_code(200).body("one"))])
+        .expect("creating expectation one failed");
+    client
+        .upsert(&[Expectation::new(HttpRequest::new().path("/retrieve-by-id"))
+            .id("retrieve-by-id-two")
+            .respond(HttpResponse::new().status_code(200).body("two"))])
+        .expect("creating expectation two failed");
+
+    let by_id = client
+        .retrieve_active_expectations_by_id("retrieve-by-id-one")
+        .expect("retrieve by id failed");
+    assert_eq!(by_id.len(), 1, "expected only the expectation with that id");
+    assert_eq!(by_id[0].id.as_deref(), Some("retrieve-by-id-one"));
+
+    let by_matcher = client
+        .retrieve_active_expectations(Some(&HttpRequest::new().path("/retrieve-by-id")))
+        .expect("retrieve by matcher failed");
+    assert_eq!(
+        by_matcher.len(),
+        2,
+        "the request matcher matches both expectations"
+    );
+
+    // an unknown id is rejected rather than silently matching everything
+    assert!(
+        client
+            .retrieve_active_expectations_by_id("no-such-expectation-id")
+            .is_err(),
+        "an unknown expectation id should be rejected"
+    );
+
+    client.reset().expect("reset failed");
+}

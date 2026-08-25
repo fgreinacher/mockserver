@@ -798,6 +798,93 @@ func TestClient_ClearByID_URL(t *testing.T) {
 	}
 }
 
+func TestClient_RetrieveByID(t *testing.T) {
+	cases := []struct {
+		name         string
+		call         func(c *Client) error
+		expectedType string
+	}{
+		{
+			name: "active expectations",
+			call: func(c *Client) error {
+				_, err := c.RetrieveActiveExpectationsByID("exp-123")
+				return err
+			},
+			expectedType: "active_expectations",
+		},
+		{
+			name: "recorded requests",
+			call: func(c *Client) error {
+				_, err := c.RetrieveRecordedRequestsByID("exp-123")
+				return err
+			},
+			expectedType: "requests",
+		},
+		{
+			name: "recorded expectations",
+			call: func(c *Client) error {
+				_, err := c.RetrieveRecordedExpectationsByID("exp-123")
+				return err
+			},
+			expectedType: "recorded_expectations",
+		},
+		{
+			name: "log messages",
+			call: func(c *Client) error {
+				_, err := c.RetrieveLogMessagesByID("exp-123")
+				return err
+			},
+			expectedType: "logs",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var receivedBody []byte
+			var receivedType string
+
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedBody, _ = io.ReadAll(r.Body)
+				receivedType = r.URL.Query().Get("type")
+				w.WriteHeader(200)
+				_, _ = w.Write([]byte("[]"))
+			}))
+			defer ts.Close()
+
+			if err := tc.call(NewFromURL(ts.URL)); err != nil {
+				t.Fatal(err)
+			}
+
+			var m map[string]string
+			if err := json.Unmarshal(receivedBody, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m["id"] != "exp-123" {
+				t.Errorf("expected id exp-123, got %s", m["id"])
+			}
+			if receivedType != tc.expectedType {
+				t.Errorf("expected type %s, got %s", tc.expectedType, receivedType)
+			}
+		})
+	}
+}
+
+func TestClient_RetrieveByID_UnknownIDIsAnError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte("No expectation found with id exp-missing"))
+	}))
+	defer ts.Close()
+
+	_, err := NewFromURL(ts.URL).RetrieveActiveExpectationsByID("exp-missing")
+	if err == nil {
+		t.Fatal("expected an error for an unknown expectation id")
+	}
+	if !strings.Contains(err.Error(), "No expectation found with id exp-missing") {
+		t.Errorf("expected the server error to be surfaced, got %v", err)
+	}
+}
+
 func TestClient_Reset_URL(t *testing.T) {
 	var receivedPath string
 	var receivedMethod string

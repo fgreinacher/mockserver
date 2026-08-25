@@ -491,15 +491,10 @@ public class HttpState {
         ExpectationId expectationId = null;
         if (isNotBlank(request.getBodyAsString())) {
             String body = request.getBodyAsJsonOrXmlString();
-            try {
-                expectationId = getExpectationIdSerializer().deserialize(body);
-            } catch (Throwable throwable) {
-                // assume not expectationId
-                requestDefinition = getRequestDefinitionSerializer().deserialize(body);
-            }
-            if (expectationId != null) {
-                requestDefinition = resolveExpectationId(expectationId);
-            }
+            expectationId = parseExpectationId(body);
+            requestDefinition = expectationId != null
+                ? resolveExpectationId(expectationId)
+                : getRequestDefinitionSerializer().deserialize(body);
         }
         if (requestDefinition != null) {
             requestDefinition.withLogCorrelationId(logCorrelationId);
@@ -567,6 +562,22 @@ public class HttpState {
             }
         }
         return null;
+    }
+
+    /**
+     * Parses a control-plane request body (clear / retrieve) as an {@link ExpectationId} pointer,
+     * i.e. {@code {"id": "..."}}. Returns null when the body is not an expectation id, in which case
+     * the caller treats it as a request matcher instead. The two forms are unambiguous: both JSON
+     * schemas set {@code additionalProperties: false} and only the expectation id schema allows
+     * (and requires) an {@code id} property.
+     */
+    private ExpectationId parseExpectationId(String body) {
+        try {
+            return getExpectationIdSerializer().deserialize(body);
+        } catch (Throwable throwable) {
+            // assume not expectationId
+            return null;
+        }
     }
 
     private RequestDefinition resolveExpectationId(ExpectationId expectationId) {
@@ -1112,8 +1123,27 @@ public class HttpState {
         HttpResponse response = response().withStatusCode(OK.code());
         if (request != null) {
             try {
-                final RequestDefinition requestDefinition = isNotBlank(request.getBodyAsString()) ? getRequestDefinitionSerializer().deserialize(request.getBodyAsJsonOrXmlString()) : request();
-                requestDefinition.withLogCorrelationId(logCorrelationId);
+                // The body is either a request matcher or an ExpectationId pointer (i.e. {"id": "..."}),
+                // exactly as for clear and verify. An ExpectationId is resolved to the request definition
+                // of that expectation, so recorded requests, responses and log messages are filtered by
+                // the same request that verify(ExpectationId) filters them by. The id must be parsed
+                // BEFORE the body reaches the request definition serializer, which rejects {"id": "..."}
+                // on schema validation.
+                final String body = isNotBlank(request.getBodyAsString()) ? request.getBodyAsJsonOrXmlString() : null;
+                final ExpectationId expectationId = body != null ? parseExpectationId(body) : null;
+                final RequestDefinition requestDefinition;
+                if (expectationId != null) {
+                    requestDefinition = resolveExpectationId(expectationId);
+                    if (requestDefinition == null) {
+                        // fail closed - a filter that resolved to nothing must not degrade into "match everything"
+                        throw new IllegalArgumentException("No expectation found with id " + expectationId.getId());
+                    }
+                } else {
+                    requestDefinition = body != null ? getRequestDefinitionSerializer().deserialize(body) : request();
+                }
+                if (requestDefinition != null) {
+                    requestDefinition.withLogCorrelationId(logCorrelationId);
+                }
                 Format format = Format.valueOf(defaultIfEmpty(request.getFirstQueryStringParameter("format").toUpperCase(), "JSON"));
                 RetrieveType type = RetrieveType.valueOf(defaultIfEmpty(request.getFirstQueryStringParameter("type").toUpperCase(), "REQUESTS"));
                 final String correlationIdFilter = request.getFirstQueryStringParameter("correlationId");
@@ -1624,7 +1654,21 @@ public class HttpState {
                         break;
                     }
                     case ACTIVE_EXPECTATIONS: {
-                        List<Expectation> expectations = requestMatchers.retrieveActiveExpectations(requestDefinition);
+                        // An expectation id identifies exactly one expectation, so filter on the id
+                        // itself rather than on the request definition it resolved to - matching by
+                        // request definition would also return every other expectation whose matcher
+                        // matches the same request, and would miss expectations (OpenAPI, schema or
+                        // regex matchers) whose own definition does not match their matcher.
+                        List<Expectation> expectations;
+                        if (expectationId != null) {
+                            expectations = requestMatchers
+                                .retrieveActiveExpectations(null)
+                                .stream()
+                                .filter(expectation -> expectationId.getId().equals(expectation.getId()))
+                                .collect(Collectors.toList());
+                        } else {
+                            expectations = requestMatchers.retrieveActiveExpectations(requestDefinition);
+                        }
                         if (isNotBlank(namespaceFilter)) {
                             // Tenant view: keep this namespace's expectations plus global
                             // (no-namespace) expectations; hide other tenants' expectations.

@@ -671,6 +671,95 @@ impl MockServerClient {
         Ok(serde_json::from_str(&text)?)
     }
 
+    /// Retrieve the active expectation with the given expectation id.
+    ///
+    /// Unlike [`Self::retrieve_active_expectations`] this returns only the expectation
+    /// with that id, never other expectations whose matcher happens to match the same
+    /// request. An unknown id is rejected with [`Error::InvalidRequest`].
+    pub fn retrieve_active_expectations_by_id(
+        &self,
+        expectation_id: &str,
+    ) -> Result<Vec<Expectation>> {
+        let text = self.do_retrieve_by_id(
+            expectation_id,
+            RetrieveType::ActiveExpectations,
+            RetrieveFormat::Json,
+        )?;
+        if text.is_empty() {
+            return Ok(vec![]);
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// Retrieve the recorded requests matching the request of the expectation with the
+    /// given expectation id.
+    pub fn retrieve_recorded_requests_by_id(
+        &self,
+        expectation_id: &str,
+    ) -> Result<Vec<HttpRequest>> {
+        let text = self.do_retrieve_by_id(
+            expectation_id,
+            RetrieveType::Requests,
+            RetrieveFormat::Json,
+        )?;
+        if text.is_empty() {
+            return Ok(vec![]);
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// Retrieve the recorded expectations matching the request of the expectation with
+    /// the given expectation id.
+    pub fn retrieve_recorded_expectations_by_id(
+        &self,
+        expectation_id: &str,
+    ) -> Result<Vec<Expectation>> {
+        let text = self.do_retrieve_by_id(
+            expectation_id,
+            RetrieveType::RecordedExpectations,
+            RetrieveFormat::Json,
+        )?;
+        if text.is_empty() {
+            return Ok(vec![]);
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// Retrieve the recorded request/response pairs matching the request of the
+    /// expectation with the given expectation id.
+    pub fn retrieve_request_responses_by_id(&self, expectation_id: &str) -> Result<Vec<Value>> {
+        let text = self.do_retrieve_by_id(
+            expectation_id,
+            RetrieveType::RequestResponses,
+            RetrieveFormat::Json,
+        )?;
+        if text.is_empty() {
+            return Ok(vec![]);
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// Retrieve the log messages matching the request of the expectation with the given
+    /// expectation id.
+    pub fn retrieve_log_messages_by_id(&self, expectation_id: &str) -> Result<Vec<String>> {
+        let text = self.do_retrieve_by_id(
+            expectation_id,
+            RetrieveType::Logs,
+            RetrieveFormat::LogEntries,
+        )?;
+        if text.is_empty() {
+            return Ok(vec![]);
+        }
+        if let Ok(arr) = serde_json::from_str::<Vec<String>>(&text) {
+            return Ok(arr);
+        }
+        Ok(text
+            .split("------------------------------------\n")
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .collect())
+    }
+
     // ------------------------------------------------------------------
     // Status / Bind
     // ------------------------------------------------------------------
@@ -2171,6 +2260,40 @@ impl MockServerClient {
 
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
+    }
+
+    /// Send a retrieve request filtered by expectation id rather than by a request
+    /// matcher.
+    ///
+    /// For [`RetrieveType::ActiveExpectations`] the server returns only the expectation
+    /// with that id; for every other type it returns the entries matching that
+    /// expectation's request, exactly as verify by expectation id matches them. An
+    /// unknown id is rejected with a 400 ([`Error::InvalidRequest`]).
+    fn do_retrieve_by_id(
+        &self,
+        expectation_id: &str,
+        retrieve_type: RetrieveType,
+        format: RetrieveFormat,
+    ) -> Result<String> {
+        let url = format!(
+            "{}?type={}&format={}",
+            self.url("/mockserver/retrieve"),
+            retrieve_type.as_str(),
+            format.as_str(),
+        );
+
+        let body = serde_json::json!({ "id": expectation_id });
+        let resp = self.http.put(&url).json(&body).send()?;
+
+        let status = resp.status().as_u16();
+        match status {
+            200 => Ok(resp.text()?),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
+            _ => Err(Error::UnexpectedStatus {
+                status,
+                body: resp.text().unwrap_or_default(),
+            }),
+        }
     }
 
     fn do_retrieve(

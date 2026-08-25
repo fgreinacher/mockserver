@@ -32,7 +32,7 @@ body:json {
 docs {
   Retrieve recorded requests, active expectations, recorded expectations or log messages.
   
-  request used to match which recorded requests, expectations or log messages to return, an empty body matches all requests, expectations or log messages
+  request used to match which recorded requests, expectations or log messages to return, an empty body matches all requests, expectations or log messages. An expectation id (i.e. {"id": "..."}) may be sent instead of a request matcher - for "active_expectations" it returns only the expectation with that id, and for every other type it returns the entries matching that expectation's request, exactly as verify by expectation id matches them. An unknown id is rejected with 400.
   
   Full API reference: https://www.mock-server.com/mock_server/mockserver_clients.html
 }

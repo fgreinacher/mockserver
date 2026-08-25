@@ -1895,6 +1895,109 @@ var mockServerClient;
         };
 
         /**
+         * Retrieve recorded requests, request-responses, expectations or log messages by
+         * expectation id, instead of by request matcher.
+         *
+         * For type 'ACTIVE_EXPECTATIONS' only the expectation with that id is returned; for
+         * every other type the entries matching that expectation's request are returned,
+         * exactly as verify by expectation id matches them. An unknown id is rejected by
+         * MockServer with a 400.
+         *
+         * @param typeAndFormat         the retrieve query string, e.g. "type=REQUESTS&format=JSON"
+         * @param expectationId         the expectation id to retrieve for
+         */
+        var retrieveById = function (typeAndFormat, expectationId) {
+            return makeRequest(host, port, "/mockserver/retrieve?" + typeAndFormat, {id: expectationId});
+        };
+        /**
+         * Retrieve the recorded requests that match the request of the expectation with the given id
+         *
+         * @param expectationId         the expectation id whose request is matched against each recorded request
+         */
+        var retrieveRecordedRequestsById = function (expectationId) {
+            return {
+                then: function (sucess, error) {
+                    return retrieveById("type=REQUESTS&format=JSON", expectationId)
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Retrieve the recorded requests and their responses that match the request of the
+         * expectation with the given id
+         *
+         * @param expectationId         the expectation id whose request is matched against each recorded request
+         */
+        var retrieveRecordedRequestsAndResponsesById = function (expectationId) {
+            return {
+                then: function (sucess, error) {
+                    return retrieveById("type=REQUEST_RESPONSES&format=JSON", expectationId)
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Retrieve the active expectation with the given id
+         *
+         * @param expectationId         the expectation id to retrieve
+         */
+        var retrieveActiveExpectationsById = function (expectationId) {
+            return {
+                then: function (sucess, error) {
+                    return retrieveById("type=ACTIVE_EXPECTATIONS&format=JSON", expectationId)
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Retrieve, as expectations, the request-response pairs recorded for the request of the
+         * expectation with the given id
+         *
+         * @param expectationId         the expectation id whose request is matched against each recorded expectation
+         */
+        var retrieveRecordedExpectationsById = function (expectationId) {
+            return {
+                then: function (sucess, error) {
+                    return retrieveById("type=RECORDED_EXPECTATIONS&format=JSON", expectationId)
+                        .then(function (result) {
+                            sucess(result.body && JSON.parse(result.body));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+        /**
+         * Retrieve the log messages for the request of the expectation with the given id
+         *
+         * @param expectationId         the expectation id whose request is matched against each log message
+         */
+        var retrieveLogMessagesById = function (expectationId) {
+            return {
+                then: function (sucess, error) {
+                    return retrieveById("type=LOGS", expectationId)
+                        .then(function (result) {
+                            sucess(result.body && result.body.split("------------------------------------"));
+                        }, function (err) {
+                            error(err);
+                        });
+                }
+            };
+        };
+
+        /**
          * Freeze the server clock at the given ISO-8601 instant.
          * If instant is omitted, the clock freezes at the current real time.
          *
@@ -3290,6 +3393,11 @@ var mockServerClient;
             retrieveExpectationsAsCode: retrieveExpectationsAsCode,
             retrieveRecordedExpectationsAsCode: retrieveRecordedExpectationsAsCode,
             retrieveLogMessages: retrieveLogMessages,
+            retrieveRecordedRequestsById: retrieveRecordedRequestsById,
+            retrieveRecordedRequestsAndResponsesById: retrieveRecordedRequestsAndResponsesById,
+            retrieveActiveExpectationsById: retrieveActiveExpectationsById,
+            retrieveRecordedExpectationsById: retrieveRecordedExpectationsById,
+            retrieveLogMessagesById: retrieveLogMessagesById,
             addBreakpoint: addBreakpoint,
             addRequestBreakpoint: addRequestBreakpoint,
             addRequestAndResponseBreakpoint: addRequestAndResponseBreakpoint,

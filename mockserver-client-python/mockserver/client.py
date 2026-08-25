@@ -552,6 +552,41 @@ class MockServerClient:
     ) -> list[Expectation]:
         return self._run(self._async_client.retrieve_recorded_expectations(request))
 
+    def retrieve_recorded_requests_by_id(
+        self, expectation_id: str
+    ) -> list[HttpRequest]:
+        return self._run(
+            self._async_client.retrieve_recorded_requests_by_id(expectation_id)
+        )
+
+    def retrieve_active_expectations_by_id(
+        self, expectation_id: str
+    ) -> list[Expectation]:
+        return self._run(
+            self._async_client.retrieve_active_expectations_by_id(expectation_id)
+        )
+
+    def retrieve_recorded_expectations_by_id(
+        self, expectation_id: str
+    ) -> list[Expectation]:
+        return self._run(
+            self._async_client.retrieve_recorded_expectations_by_id(expectation_id)
+        )
+
+    def retrieve_recorded_requests_and_responses_by_id(
+        self, expectation_id: str
+    ) -> list[HttpRequestAndHttpResponse]:
+        return self._run(
+            self._async_client.retrieve_recorded_requests_and_responses_by_id(
+                expectation_id
+            )
+        )
+
+    def retrieve_log_messages_by_id(self, expectation_id: str) -> list[str]:
+        return self._run(
+            self._async_client.retrieve_log_messages_by_id(expectation_id)
+        )
+
     def retrieve_expectations_as_code(
         self, fmt: str = "java", request: HttpRequest | None = None
     ) -> str:

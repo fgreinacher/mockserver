@@ -1972,6 +1972,60 @@ describe('mock server node client (no proxy)', { concurrency: 1 }, function () {
         await assert.rejects(sendRequest("GET", mockServerHost, mockServerPort, "/clearById"), function (err) { return err === "404 Not Found"; });
     });
 
+    it('should retrieve by expectation id', async function () {
+        await client.mockAnyResponse({
+            'id': 'retrieve-by-id-one',
+            'httpRequest': { 'path': '/retrieveById' },
+            'httpResponse': { 'statusCode': 200, 'body': 'one' },
+            'times': { 'unlimited': true }
+        });
+        await client.mockAnyResponse({
+            'id': 'retrieve-by-id-two',
+            'httpRequest': { 'path': '/retrieveByIdOther' },
+            'httpResponse': { 'statusCode': 200, 'body': 'two' },
+            'times': { 'unlimited': true }
+        });
+
+        await sendRequest("GET", mockServerHost, mockServerPort, "/retrieveById");
+        await sendRequest("GET", mockServerHost, mockServerPort, "/retrieveByIdOther");
+
+        // only the expectation with that id, not every expectation matching the same request
+        var expectations = await client.retrieveActiveExpectationsById('retrieve-by-id-one');
+        assert.equal(expectations.length, 1);
+        assert.equal(expectations[0].id, 'retrieve-by-id-one');
+        assert.equal(expectations[0].httpRequest.path, '/retrieveById');
+
+        // recorded requests are filtered by the request that expectation matches
+        var requests = await client.retrieveRecordedRequestsById('retrieve-by-id-one');
+        assert.equal(requests.length, 1);
+        assert.equal(requests[0].path, '/retrieveById');
+
+        var requestResponses = await client.retrieveRecordedRequestsAndResponsesById('retrieve-by-id-one');
+        assert.equal(requestResponses.length, 1);
+        assert.equal(requestResponses[0].httpRequest.path, '/retrieveById');
+
+        // nothing was proxied, so there are no recorded (forwarded) expectations to return
+        var recorded = await client.retrieveRecordedExpectationsById('retrieve-by-id-one');
+        assert.equal(recorded.length, 0);
+
+        var logs = await client.retrieveLogMessagesById('retrieve-by-id-one');
+        assert.ok(logs.length > 0);
+    });
+
+    it('should reject retrieve by an unknown expectation id', async function () {
+        var failure = null;
+        try {
+            await client.retrieveActiveExpectationsById('no-such-expectation-id');
+        } catch (err) {
+            failure = err;
+        }
+        assert.ok(failure !== null, "an unknown expectation id should be rejected");
+        assert.ok(
+            JSON.stringify(failure).indexOf('No expectation found with id no-such-expectation-id') !== -1,
+            "expected the server error to be surfaced, got: " + JSON.stringify(failure)
+        );
+    });
+
     it('should verify zero interactions', async function () {
         // After reset (from beforeEach), no requests should have been recorded
         await client.verifyZeroInteractions();

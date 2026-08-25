@@ -1129,6 +1129,116 @@ module MockServer
       []
     end
 
+    # Send a retrieve request filtered by expectation id.
+    #
+    # An expectation id may be sent in place of a request matcher. For
+    # "ACTIVE_EXPECTATIONS" the server returns only the expectation with that id;
+    # for every other type it returns the entries matching that expectation's
+    # request, exactly as verify by expectation id matches them. An unknown id is
+    # rejected with a 400.
+    #
+    # @param expectation_id [String]
+    # @param query_params [Hash]
+    # @return [Array(Integer, String)] the status and response body
+    # @api private
+    def retrieve_by_id(expectation_id, query_params)
+      do_request(
+        'PUT', '/mockserver/retrieve', JSON.generate({ 'id' => expectation_id }), query_params
+      )
+    end
+    private :retrieve_by_id
+
+    # Retrieve the recorded requests matching the request of the expectation with the given id.
+    # @param expectation_id [String]
+    # @return [Array<HttpRequest>]
+    def retrieve_recorded_requests_by_id(expectation_id)
+      status, response_body = retrieve_by_id(
+        expectation_id, { 'type' => 'REQUESTS', 'format' => 'JSON' }
+      )
+      if status >= 400
+        raise Error, "Failed to retrieve recorded requests by id (status=#{status}): #{response_body}"
+      end
+
+      if response_body && !response_body.empty?
+        parsed = JSON.parse(response_body)
+        return parsed.map { |r| HttpRequest.from_hash(r) } if parsed.is_a?(Array)
+      end
+      []
+    end
+
+    # Retrieve the active expectation with the given id.
+    # @param expectation_id [String]
+    # @return [Array<Expectation>]
+    def retrieve_active_expectations_by_id(expectation_id)
+      status, response_body = retrieve_by_id(
+        expectation_id, { 'type' => 'ACTIVE_EXPECTATIONS', 'format' => 'JSON' }
+      )
+      if status >= 400
+        raise Error, "Failed to retrieve active expectations by id (status=#{status}): #{response_body}"
+      end
+
+      if response_body && !response_body.empty?
+        parsed = JSON.parse(response_body)
+        return parsed.map { |e| Expectation.from_hash(e) } if parsed.is_a?(Array)
+      end
+      []
+    end
+
+    # Retrieve the recorded expectations matching the request of the expectation with the given id.
+    # @param expectation_id [String]
+    # @return [Array<Expectation>]
+    def retrieve_recorded_expectations_by_id(expectation_id)
+      status, response_body = retrieve_by_id(
+        expectation_id, { 'type' => 'RECORDED_EXPECTATIONS', 'format' => 'JSON' }
+      )
+      if status >= 400
+        raise Error, "Failed to retrieve recorded expectations by id (status=#{status}): #{response_body}"
+      end
+
+      if response_body && !response_body.empty?
+        parsed = JSON.parse(response_body)
+        return parsed.map { |e| Expectation.from_hash(e) } if parsed.is_a?(Array)
+      end
+      []
+    end
+
+    # Retrieve the recorded requests and responses matching the request of the expectation with the given id.
+    # @param expectation_id [String]
+    # @return [Array<HttpRequestAndHttpResponse>]
+    def retrieve_recorded_requests_and_responses_by_id(expectation_id)
+      status, response_body = retrieve_by_id(
+        expectation_id, { 'type' => 'REQUEST_RESPONSES', 'format' => 'JSON' }
+      )
+      if status >= 400
+        raise Error, "Failed to retrieve request/responses by id (status=#{status}): #{response_body}"
+      end
+
+      if response_body && !response_body.empty?
+        parsed = JSON.parse(response_body)
+        return parsed.map { |rr| HttpRequestAndHttpResponse.from_hash(rr) } if parsed.is_a?(Array)
+      end
+      []
+    end
+
+    # Retrieve the log messages matching the request of the expectation with the given id.
+    # @param expectation_id [String]
+    # @return [Array<String>]
+    def retrieve_log_messages_by_id(expectation_id)
+      status, response_body = retrieve_by_id(expectation_id, { 'type' => 'LOGS' })
+      if status >= 400
+        raise Error, "Failed to retrieve log messages by id (status=#{status}): #{response_body}"
+      end
+
+      return [] unless response_body && !response_body.empty?
+
+      begin
+        parsed = JSON.parse(response_body)
+        parsed.is_a?(Array) ? parsed : []
+      rescue JSON::ParserError
+        response_body.split("------------------------------------\n")
+      end
+    end
+
     # Retrieve the active expectations as MockServer SDK setup code (the builder
     # code that recreates the expectations) in the requested language.
     # @param format [String] one of "java", "javascript", "python", "go",

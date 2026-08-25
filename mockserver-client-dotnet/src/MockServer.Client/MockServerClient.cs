@@ -480,6 +480,114 @@ public sealed class MockServerClient : IDisposable
     }
 
     /// <summary>
+    /// Retrieve filtered by expectation ID rather than by a request matcher (async).
+    /// For type "active_expectations" only the expectation with that ID is returned; for
+    /// every other type the entries matching that expectation's request are returned,
+    /// exactly as verify by expectation ID matches them. An unknown ID is rejected with a
+    /// 400.
+    /// </summary>
+    private async Task<string> RetrieveByIdAsync(string expectationId, string typeAndFormat)
+    {
+        var json = JsonSerializer.Serialize(new { id = expectationId }, JsonOptions);
+        var (statusCode, body) = await PutAsync("/mockserver/retrieve?" + typeAndFormat, json).ConfigureAwait(false);
+
+        if (statusCode >= 400)
+            throw new MockServerClientException($"Failed to retrieve by id (HTTP {statusCode}): {body}");
+
+        return body ?? "";
+    }
+
+    /// <summary>
+    /// Retrieve the recorded requests matching the request of the expectation with the given ID.
+    /// </summary>
+    public List<HttpRequest> RetrieveRecordedRequestsById(string expectationId)
+        => RetrieveRecordedRequestsByIdAsync(expectationId).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Retrieve the recorded requests matching the request of the expectation with the given ID (async).
+    /// </summary>
+    public async Task<List<HttpRequest>> RetrieveRecordedRequestsByIdAsync(string expectationId)
+    {
+        var body = await RetrieveByIdAsync(expectationId, "type=requests&format=json").ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(body))
+        {
+            var result = JsonSerializer.Deserialize<List<HttpRequest>>(body, JsonOptions);
+            if (result != null) return result;
+        }
+        return new List<HttpRequest>();
+    }
+
+    /// <summary>
+    /// Retrieve the active expectation with the given ID. Unlike
+    /// <see cref="RetrieveActiveExpectations"/> this returns only the expectation with that
+    /// ID, never other expectations whose matcher happens to match the same request.
+    /// </summary>
+    public List<Expectation> RetrieveActiveExpectationsById(string expectationId)
+        => RetrieveActiveExpectationsByIdAsync(expectationId).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Retrieve the active expectation with the given ID (async).
+    /// </summary>
+    public async Task<List<Expectation>> RetrieveActiveExpectationsByIdAsync(string expectationId)
+    {
+        var body = await RetrieveByIdAsync(expectationId, "type=active_expectations&format=json").ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(body))
+        {
+            var result = JsonSerializer.Deserialize<List<Expectation>>(body, JsonOptions);
+            if (result != null) return result;
+        }
+        return new List<Expectation>();
+    }
+
+    /// <summary>
+    /// Retrieve the recorded expectations matching the request of the expectation with the given ID.
+    /// </summary>
+    public List<Expectation> RetrieveRecordedExpectationsById(string expectationId)
+        => RetrieveRecordedExpectationsByIdAsync(expectationId).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Retrieve the recorded expectations matching the request of the expectation with the given ID (async).
+    /// </summary>
+    public async Task<List<Expectation>> RetrieveRecordedExpectationsByIdAsync(string expectationId)
+    {
+        var body = await RetrieveByIdAsync(expectationId, "type=recorded_expectations&format=json").ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(body))
+        {
+            var result = JsonSerializer.Deserialize<List<Expectation>>(body, JsonOptions);
+            if (result != null) return result;
+        }
+        return new List<Expectation>();
+    }
+
+    /// <summary>
+    /// Retrieve the log messages matching the request of the expectation with the given ID.
+    /// </summary>
+    public List<string> RetrieveLogMessagesById(string expectationId)
+        => RetrieveLogMessagesByIdAsync(expectationId).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Retrieve the log messages matching the request of the expectation with the given ID (async).
+    /// </summary>
+    public async Task<List<string>> RetrieveLogMessagesByIdAsync(string expectationId)
+    {
+        var body = await RetrieveByIdAsync(expectationId, "type=logs").ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(body))
+        {
+            try
+            {
+                var result = JsonSerializer.Deserialize<List<string>>(body, JsonOptions);
+                if (result != null) return result;
+            }
+            catch (JsonException)
+            {
+                // Log messages may come as separator-delimited text
+                return new List<string>(body.Split(new[] { "------------------------------------\n" }, StringSplitOptions.RemoveEmptyEntries));
+            }
+        }
+        return new List<string>();
+    }
+
+    /// <summary>
     /// Retrieve the active expectations as MockServer SDK setup code (the builder
     /// code that recreates the expectations) in the requested language.
     /// </summary>

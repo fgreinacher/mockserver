@@ -415,7 +415,7 @@
                 }
               ]
             },
-            "description": "Retrieve recorded requests, active expectations, recorded expectations or log messages.\n\nrequest used to match which recorded requests, expectations or log messages to return, an empty body matches all requests, expectations or log messages\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "description": "Retrieve recorded requests, active expectations, recorded expectations or log messages.\n\nrequest used to match which recorded requests, expectations or log messages to return, an empty body matches all requests, expectations or log messages. An expectation id (i.e. {\"id\": \"...\"}) may be sent instead of a request matcher - for \"active_expectations\" it returns only the expectation with that id, and for every other type it returns the entries matching that expectation's request, exactly as verify by expectation id matches them. An unknown id is rejected with 400.\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"path\": \"/api/users\"\n}",

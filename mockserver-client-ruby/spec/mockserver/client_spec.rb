@@ -362,6 +362,69 @@ RSpec.describe MockServer::Client do
   end
 
   # -------------------------------------------------------------------
+  # retrieve by expectation id
+  # -------------------------------------------------------------------
+  describe 'retrieve by expectation id' do
+    it 'retrieves recorded requests by id' do
+      stub_request(:put, "#{base_url}/mockserver/retrieve?format=JSON&type=REQUESTS")
+        .to_return(status: 200, body: JSON.generate([{ 'method' => 'GET', 'path' => '/test' }]))
+
+      result = client.retrieve_recorded_requests_by_id('exp-1')
+
+      expect(result.length).to eq(1)
+      expect(result[0].path).to eq('/test')
+      expect(WebMock).to have_requested(:put, "#{base_url}/mockserver/retrieve?format=JSON&type=REQUESTS")
+        .with { |r| JSON.parse(r.body)['id'] == 'exp-1' }
+    end
+
+    it 'retrieves active expectations by id' do
+      stub_request(:put, "#{base_url}/mockserver/retrieve?format=JSON&type=ACTIVE_EXPECTATIONS")
+        .to_return(status: 200, body: JSON.generate([{ 'id' => 'exp-1' }]))
+
+      result = client.retrieve_active_expectations_by_id('exp-1')
+
+      expect(result.length).to eq(1)
+      expect(WebMock).to have_requested(:put, "#{base_url}/mockserver/retrieve?format=JSON&type=ACTIVE_EXPECTATIONS")
+        .with { |r| JSON.parse(r.body)['id'] == 'exp-1' }
+    end
+
+    it 'retrieves recorded expectations by id' do
+      stub_request(:put, "#{base_url}/mockserver/retrieve?format=JSON&type=RECORDED_EXPECTATIONS")
+        .to_return(status: 200, body: JSON.generate([{ 'id' => 'exp-1' }]))
+
+      result = client.retrieve_recorded_expectations_by_id('exp-1')
+
+      expect(result.length).to eq(1)
+    end
+
+    it 'retrieves recorded requests and responses by id' do
+      stub_request(:put, "#{base_url}/mockserver/retrieve?format=JSON&type=REQUEST_RESPONSES")
+        .to_return(status: 200, body: JSON.generate([{ 'httpRequest' => { 'path' => '/test' } }]))
+
+      result = client.retrieve_recorded_requests_and_responses_by_id('exp-1')
+
+      expect(result.length).to eq(1)
+    end
+
+    it 'retrieves log messages by id' do
+      stub_request(:put, "#{base_url}/mockserver/retrieve?type=LOGS")
+        .to_return(status: 200, body: JSON.generate(['log one']))
+
+      result = client.retrieve_log_messages_by_id('exp-1')
+
+      expect(result).to eq(['log one'])
+    end
+
+    it 'raises when the expectation id is unknown' do
+      stub_request(:put, "#{base_url}/mockserver/retrieve?format=JSON&type=ACTIVE_EXPECTATIONS")
+        .to_return(status: 400, body: 'No expectation found with id exp-missing')
+
+      expect { client.retrieve_active_expectations_by_id('exp-missing') }
+        .to raise_error(MockServer::Error, /No expectation found with id exp-missing/)
+    end
+  end
+
+  # -------------------------------------------------------------------
   # retrieve_recorded_requests
   # -------------------------------------------------------------------
   describe '#retrieve_recorded_requests' do

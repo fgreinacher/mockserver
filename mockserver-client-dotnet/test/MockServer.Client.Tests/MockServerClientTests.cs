@@ -415,6 +415,74 @@ public class MockServerClientTests
     }
 
     [Fact]
+    public void RetrieveActiveExpectationsById_SendsIdBody()
+    {
+        var (client, handler) = CreateClient();
+        handler.ResponseStatusCode = HttpStatusCode.OK;
+        handler.ResponseBody = "[{\"id\":\"my-expectation-id\",\"httpRequest\":{\"path\":\"/active\"}}]";
+
+        var results = client.RetrieveActiveExpectationsById("my-expectation-id");
+
+        handler.LastRequest!.RequestUri!.PathAndQuery.Should().Contain("type=active_expectations");
+        handler.LastRequestBody.Should().Contain("\"id\":\"my-expectation-id\"");
+        results.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public void RetrieveRecordedRequestsById_SendsIdBody()
+    {
+        var (client, handler) = CreateClient();
+        handler.ResponseStatusCode = HttpStatusCode.OK;
+        handler.ResponseBody = "[{\"path\":\"/recorded\"}]";
+
+        var results = client.RetrieveRecordedRequestsById("my-expectation-id");
+
+        handler.LastRequest!.RequestUri!.PathAndQuery.Should().Contain("type=requests");
+        handler.LastRequestBody.Should().Contain("\"id\":\"my-expectation-id\"");
+        results.Should().HaveCount(1);
+        results[0].Path.Should().Be("/recorded");
+    }
+
+    [Fact]
+    public void RetrieveRecordedExpectationsById_SendsIdBody()
+    {
+        var (client, handler) = CreateClient();
+        handler.ResponseStatusCode = HttpStatusCode.OK;
+        handler.ResponseBody = "[]";
+
+        client.RetrieveRecordedExpectationsById("my-expectation-id");
+
+        handler.LastRequest!.RequestUri!.PathAndQuery.Should().Contain("type=recorded_expectations");
+        handler.LastRequestBody.Should().Contain("\"id\":\"my-expectation-id\"");
+    }
+
+    [Fact]
+    public void RetrieveLogMessagesById_SendsIdBody()
+    {
+        var (client, handler) = CreateClient();
+        handler.ResponseStatusCode = HttpStatusCode.OK;
+        handler.ResponseBody = "[]";
+
+        client.RetrieveLogMessagesById("my-expectation-id");
+
+        handler.LastRequest!.RequestUri!.PathAndQuery.Should().Contain("type=logs");
+        handler.LastRequestBody.Should().Contain("\"id\":\"my-expectation-id\"");
+    }
+
+    [Fact]
+    public void RetrieveById_ThrowsForUnknownId()
+    {
+        var (client, handler) = CreateClient();
+        handler.ResponseStatusCode = HttpStatusCode.BadRequest;
+        handler.ResponseBody = "No expectation found with id missing";
+
+        var act = () => client.RetrieveActiveExpectationsById("missing");
+
+        act.Should().Throw<MockServerClientException>()
+            .WithMessage("*No expectation found with id missing*");
+    }
+
+    [Fact]
     public void RetrieveExpectationsAsCode_SendsCorrectRequestAndReturnsCode()
     {
         var (client, handler) = CreateClient();

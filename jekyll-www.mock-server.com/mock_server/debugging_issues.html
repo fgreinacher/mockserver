@@ -43,6 +43,8 @@ lastmod: 2019-11-10T08:00:00+01:00
 
 <p>Most retrieval endpoints use <span class="inline_code">PUT /mockserver/retrieve</span> with a <span class="inline_code">type</span> query parameter; metrics and configuration are separate <span class="inline_code">GET</span> endpoints (see table). Java client methods take an optional request matcher (pass <span class="inline_code">null</span> to retrieve everything). Click the row to jump to full code examples.</p>
 
+<p>Instead of a request matcher you can send an <strong>expectation id</strong> &mdash; the body <span class="inline_code">{"id": "..."}</span>, or the <span class="inline_code">...ById</span> client methods &mdash; just as you can when <a href="/mock_server/clearing_and_resetting.html">clearing</a> or <a href="/mock_server/verification.html">verifying</a>. For <span class="inline_code">ACTIVE_EXPECTATIONS</span> that returns only the expectation with that id; for the other types it returns the entries matching that expectation&apos;s request. An id that does not exist is rejected with <span class="inline_code">400 No expectation found with id ...</span>.</p>
+
 <table class="table-scroll">
     <thead>
         <tr>
@@ -106,7 +108,7 @@ lastmod: 2019-11-10T08:00:00+01:00
 
 <p>It is possible to retrieve the active expectations, as show below in the code examples.</p>
 
-<p>Expectations are returned in the order they have been added. The expectations are returned can be filter using a <a href="/mock_server/creating_expectations.html#request_matchers">request matcher</a>.</p>
+<p>Expectations are returned in the order they have been added. The expectations are returned can be filter using a <a href="/mock_server/creating_expectations.html#request_matchers">request matcher</a>, or narrowed to a single expectation using its <strong>expectation id</strong>.</p>
 
 <button id="button_active_expectations" class="accordion title"><strong>Retrieving Active Expectations Code Examples</strong></button>
 <div class="panel title">
@@ -274,6 +276,88 @@ $activeExpectations = $client-&gt;retrieveActiveExpectations(
             <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=ACTIVE_EXPECTATIONS" -d '{
     "path": "/some/path",
     "method": "POST"
+}'</code></pre>
+            <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/control/put_retrieve" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+        </div>
+    </div>
+    <button id="button_retrieve_active_expectations_by_id" class="accordion">retrieve active expectation that matches expectation id</button>
+    <div class="panel">
+        <p>Retrieving by <strong>expectation id</strong> returns only the expectation with that id.
+            This differs from retrieving by request matcher, which returns every expectation whose
+            matcher matches that request &mdash; often more than one. An id that does not exist is
+            rejected with <span class="inline_code">400 No expectation found with id ...</span>.</p>
+        <p>The same expectation id can be sent when retrieving recorded requests, recorded
+            request-responses, recorded expectations or log messages; for those it returns the
+            entries matching that expectation&apos;s request, exactly as verifying by expectation id
+            matches them.</p>
+        <button class="accordion inner">Java</button>
+        <div class="panel">
+            <pre class="prettyprint lang-java code"><code class="code">Expectation[] activeExpectations = new MockServerClient("localhost", 1080)
+    .retrieveActiveExpectationsById("31e4ca35-66c6-4645-afeb-6e66c4ca0559");</code></pre>
+        </div>
+        <button class="accordion inner">JavaScript</button>
+        <div class="panel">
+            <pre class="prettyprint lang-javascript code"><code class="code">var mockServerClient = require('mockserver-client').mockServerClient;
+mockServerClient("localhost", 1080)
+    .retrieveActiveExpectationsById("31e4ca35-66c6-4645-afeb-6e66c4ca0559")
+    .then(
+        function (activeExpectations) {
+            console.log(JSON.stringify(activeExpectations));
+        },
+        function (error) {
+            console.log(error);
+        }
+    );</code></pre>
+            <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/control/put_retrieve" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
+        </div>
+        <button class="accordion inner">Python</button>
+        <div class="panel">
+            <pre class="prettyprint lang-python code"><code class="code">from mockserver.client import MockServerClient
+
+client = MockServerClient("localhost", 1080)
+active_expectations = client.retrieve_active_expectations_by_id("31e4ca35-66c6-4645-afeb-6e66c4ca0559")</code></pre>
+        </div>
+        <button class="accordion inner">Ruby</button>
+        <div class="panel">
+            <pre class="prettyprint lang-ruby code"><code class="code">require 'mockserver-client'
+
+client = MockServer::Client.new('localhost', 1080)
+active_expectations = client.retrieve_active_expectations_by_id('31e4ca35-66c6-4645-afeb-6e66c4ca0559')</code></pre>
+        </div>
+        <button class="accordion inner">Go</button>
+        <div class="panel">
+            <pre class="prettyprint lang-go code"><code class="code">import mockserver "github.com/mock-server/mockserver-monorepo/mockserver-client-go/v7"
+
+client := mockserver.New("localhost", 1080)
+activeExpectations, err := client.RetrieveActiveExpectationsByID("31e4ca35-66c6-4645-afeb-6e66c4ca0559")</code></pre>
+        </div>
+        <button class="accordion inner">.NET</button>
+        <div class="panel">
+            <pre class="prettyprint lang-csharp code"><code class="code">using MockServer.Client;
+
+using var client = new MockServerClient("localhost", 1080);
+var activeExpectations = client.RetrieveActiveExpectationsById("31e4ca35-66c6-4645-afeb-6e66c4ca0559");</code></pre>
+        </div>
+        <button class="accordion inner">Rust</button>
+        <div class="panel">
+            <pre class="prettyprint lang-rust code"><code class="code">use mockserver_client::ClientBuilder;
+
+let client = ClientBuilder::new("localhost", 1080).build().unwrap();
+let active_expectations = client
+    .retrieve_active_expectations_by_id("31e4ca35-66c6-4645-afeb-6e66c4ca0559")
+    .unwrap();</code></pre>
+        </div>
+        <button class="accordion inner">PHP</button>
+        <div class="panel">
+            <pre class="prettyprint lang-php code"><code class="code">use MockServer\MockServerClient;
+
+$client = new MockServerClient('localhost', 1080);
+$activeExpectations = $client-&gt;retrieveActiveExpectationsById('31e4ca35-66c6-4645-afeb-6e66c4ca0559');</code></pre>
+        </div>
+        <button class="accordion inner">REST API</button>
+        <div class="panel">
+            <pre class="prettyprint code"><code class="code">curl -v -X PUT "http://localhost:1080/mockserver/retrieve?type=ACTIVE_EXPECTATIONS" -d '{
+    "id": "31e4ca35-66c6-4645-afeb-6e66c4ca0559"
 }'</code></pre>
             <p>See <a  href="https://app.swaggerhub.com/apis/jamesdbloom/mock-server-openapi/{{ site.mockserver_api_version }}#/control/put_retrieve" target="_blank" rel="noopener noreferrer">REST API</a> for full JSON specification</p>
         </div>

@@ -4,6 +4,7 @@ import org.junit.Test;
 import org.mockserver.matchers.TimeToLive;
 import org.mockserver.mock.Expectation;
 import org.mockserver.model.ClearType;
+import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.model.HttpStatusCode;
 import org.mockserver.model.RequestDefinition;
@@ -912,6 +913,66 @@ public abstract class AbstractControlPlaneIntegrationTest extends AbstractMockin
             mockServerClient.retrieveActiveExpectations(null).length,
             equalTo(0)
         );
+    }
+
+    @Test
+    public void shouldRetrieveByExpectationId() {
+        // given - two expectations that both match the same request, so retrieving by the
+        // request matcher would return both while retrieving by id must return only one
+        mockServerClient
+            .upsert(
+                new Expectation(request().withPath(calculatePath("retrieve_by_id")))
+                    .withId("retrieve_by_id_one")
+                    .thenRespond(response().withBody("one")),
+                new Expectation(request().withPath(calculatePath("retrieve_by_id")))
+                    .withId("retrieve_by_id_two")
+                    .thenRespond(response().withBody("two")),
+                new Expectation(request().withPath(calculatePath("retrieve_by_id_other")))
+                    .withId("retrieve_by_id_other")
+                    .thenRespond(response().withBody("other"))
+            );
+
+        makeRequest(request().withPath(calculatePath("retrieve_by_id")), getHeadersToRemove());
+        makeRequest(request().withPath(calculatePath("retrieve_by_id_other")), getHeadersToRemove());
+
+        // then - only the expectation with that id
+        Expectation[] byId = mockServerClient.retrieveActiveExpectationsById("retrieve_by_id_one");
+        assertThat(byId.length, equalTo(1));
+        assertThat(byId[0].getId(), equalTo("retrieve_by_id_one"));
+
+        // and - the request matcher matches both expectations
+        assertThat(
+            mockServerClient.retrieveActiveExpectations(request().withPath(calculatePath("retrieve_by_id"))).length,
+            equalTo(2)
+        );
+
+        // and - recorded requests are filtered by the request that expectation matches
+        HttpRequest[] recordedRequests = mockServerClient.retrieveRecordedRequestsById("retrieve_by_id_one");
+        assertThat(recordedRequests.length, equalTo(1));
+        assertThat(recordedRequests[0].getPath().getValue(), equalTo(calculatePath("retrieve_by_id")));
+
+        assertThat(
+            mockServerClient.retrieveRecordedRequestsAndResponsesById("retrieve_by_id_one").length,
+            equalTo(1)
+        );
+
+        // and - log messages are filtered the same way
+        assertThat(
+            mockServerClient.retrieveLogMessagesById("retrieve_by_id_one"),
+            containsString(calculatePath("retrieve_by_id"))
+        );
+    }
+
+    @Test
+    public void shouldRejectRetrieveByUnknownExpectationId() {
+        // when
+        try {
+            mockServerClient.retrieveActiveExpectationsById("does_not_exist");
+            fail("expected an exception for an unknown expectation id");
+        } catch (Throwable throwable) {
+            // then
+            assertThat(throwable.getMessage(), containsString("No expectation found with id does_not_exist"));
+        }
     }
 
     // ========================================================================

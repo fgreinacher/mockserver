@@ -1215,6 +1215,105 @@ class AsyncMockServerClient:
                 return [Expectation.from_dict(e) for e in parsed]
         return []
 
+    async def _retrieve_by_id(
+        self, expectation_id: str, query_params: dict[str, str]
+    ) -> tuple[int, str]:
+        """Send a retrieve request filtered by expectation id.
+
+        An expectation id may be sent in place of a request matcher. For
+        ``ACTIVE_EXPECTATIONS`` the server returns only the expectation with that
+        id; for every other type it returns the entries matching that
+        expectation's request, exactly as verify by expectation id matches them.
+        An unknown id is rejected with a 400.
+        """
+        return await self._request(
+            "PUT",
+            "/mockserver/retrieve",
+            json.dumps({"id": expectation_id}),
+            query_params,
+        )
+
+    async def retrieve_recorded_requests_by_id(
+        self, expectation_id: str
+    ) -> list[HttpRequest]:
+        status, response_body = await self._retrieve_by_id(
+            expectation_id, {"type": "REQUESTS", "format": "JSON"}
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve recorded requests by id (status={status}): {response_body}"
+            )
+        if response_body:
+            parsed = json.loads(response_body)
+            if isinstance(parsed, list):
+                return [HttpRequest.from_dict(r) for r in parsed]
+        return []
+
+    async def retrieve_active_expectations_by_id(
+        self, expectation_id: str
+    ) -> list[Expectation]:
+        status, response_body = await self._retrieve_by_id(
+            expectation_id, {"type": "ACTIVE_EXPECTATIONS", "format": "JSON"}
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve active expectations by id (status={status}): {response_body}"
+            )
+        if response_body:
+            parsed = json.loads(response_body)
+            if isinstance(parsed, list):
+                return [Expectation.from_dict(e) for e in parsed]
+        return []
+
+    async def retrieve_recorded_expectations_by_id(
+        self, expectation_id: str
+    ) -> list[Expectation]:
+        status, response_body = await self._retrieve_by_id(
+            expectation_id, {"type": "RECORDED_EXPECTATIONS", "format": "JSON"}
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve recorded expectations by id (status={status}): {response_body}"
+            )
+        if response_body:
+            parsed = json.loads(response_body)
+            if isinstance(parsed, list):
+                return [Expectation.from_dict(e) for e in parsed]
+        return []
+
+    async def retrieve_recorded_requests_and_responses_by_id(
+        self, expectation_id: str
+    ) -> list[HttpRequestAndHttpResponse]:
+        status, response_body = await self._retrieve_by_id(
+            expectation_id, {"type": "REQUEST_RESPONSES", "format": "JSON"}
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve request/responses by id (status={status}): {response_body}"
+            )
+        if response_body:
+            parsed = json.loads(response_body)
+            if isinstance(parsed, list):
+                return [HttpRequestAndHttpResponse.from_dict(rr) for rr in parsed]
+        return []
+
+    async def retrieve_log_messages_by_id(self, expectation_id: str) -> list[str]:
+        status, response_body = await self._retrieve_by_id(
+            expectation_id, {"type": "LOGS"}
+        )
+        if status >= 400:
+            raise MockServerError(
+                f"Failed to retrieve log messages by id (status={status}): {response_body}"
+            )
+        if response_body:
+            try:
+                parsed = json.loads(response_body)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                return response_body.split("------------------------------------\n")
+        return []
+
     async def retrieve_expectations_as_code(
         self, fmt: str = "java", request: HttpRequest | None = None
     ) -> str:

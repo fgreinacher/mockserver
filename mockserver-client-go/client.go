@@ -780,6 +780,93 @@ func (c *Client) RetrieveLogMessages(rb *RequestBuilder) ([]byte, error) {
 	return c.Retrieve(rb, RetrieveLogs, FormatJSON)
 }
 
+// RetrieveByID retrieves recorded data from MockServer filtered by expectation ID
+// rather than by a request matcher. The result is the raw response body.
+//
+// For RetrieveActiveExpectations only the expectation with that ID is returned; for
+// every other type the entries matching that expectation's request are returned,
+// exactly as verify by expectation ID matches them. An unknown ID is rejected with a
+// 400.
+func (c *Client) RetrieveByID(expectationID string, retrieveType RetrieveType, format RetrieveFormat) ([]byte, error) {
+	body, err := json.Marshal(map[string]string{"id": expectationID})
+	if err != nil {
+		return nil, fmt.Errorf("mockserver: marshal retrieve by id: %w", err)
+	}
+
+	params := make(url.Values)
+	if retrieveType != "" {
+		params.Set("type", string(retrieveType))
+	}
+	if format != "" {
+		params.Set("format", string(format))
+	}
+
+	respBody, statusCode, err := c.doRequest("PUT", "/mockserver/retrieve", body, params)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode >= 400 {
+		return nil, fmt.Errorf("mockserver: retrieve by id failed (status %d): %s", statusCode, string(respBody))
+	}
+	return respBody, nil
+}
+
+// RetrieveActiveExpectationsByID retrieves the active expectation with the given ID.
+func (c *Client) RetrieveActiveExpectationsByID(expectationID string) ([]Expectation, error) {
+	data, err := c.RetrieveByID(expectationID, RetrieveActiveExpectations, FormatJSON)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var result []Expectation
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("mockserver: unmarshal active expectations: %w", err)
+	}
+	return result, nil
+}
+
+// RetrieveRecordedRequestsByID retrieves the recorded requests matching the request
+// of the expectation with the given ID.
+func (c *Client) RetrieveRecordedRequestsByID(expectationID string) ([]HttpRequest, error) {
+	data, err := c.RetrieveByID(expectationID, RetrieveRequests, FormatJSON)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var result []HttpRequest
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("mockserver: unmarshal recorded requests: %w", err)
+	}
+	return result, nil
+}
+
+// RetrieveRecordedExpectationsByID retrieves the recorded expectations matching the
+// request of the expectation with the given ID.
+func (c *Client) RetrieveRecordedExpectationsByID(expectationID string) ([]Expectation, error) {
+	data, err := c.RetrieveByID(expectationID, RetrieveRecordedExpectations, FormatJSON)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var result []Expectation
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("mockserver: unmarshal recorded expectations: %w", err)
+	}
+	return result, nil
+}
+
+// RetrieveLogMessagesByID retrieves the log messages matching the request of the
+// expectation with the given ID.
+func (c *Client) RetrieveLogMessagesByID(expectationID string) ([]byte, error) {
+	return c.RetrieveByID(expectationID, RetrieveLogs, FormatJSON)
+}
+
 // RetrieveExpectationsAsCode retrieves the active expectations as MockServer SDK
 // setup code (the builder code that recreates the expectations) in the requested
 // language. The format is one of the code-generation formats (e.g. FormatJava,

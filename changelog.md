@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `PUT /mockserver/retrieve` now accepts an expectation id (`{"id": "..."}`) in the request body instead of a request
+  matcher, matching what `PUT /mockserver/clear` and `PUT /mockserver/verify` have always accepted (GitHub issue #2591).
+  For `?type=active_expectations` this returns only the expectation with that id — filtering on the id itself, not on
+  the request definition it resolves to, so it neither returns every other expectation whose matcher matches the same
+  request nor misses expectations (OpenAPI, schema or regex matchers) whose own definition does not match their own
+  matcher. For `requests`, `request_responses`, `recorded_expectations` and `logs` it returns the entries matching that
+  expectation's request, exactly as verify by expectation id matches them. An unknown id is rejected with
+  `400 No expectation found with id ...` rather than silently matching everything. The expectation-id body and the
+  request-matcher body are unambiguous — both JSON schemas set `additionalProperties: false` and only the expectation
+  id schema allows (and requires) an `id` property — so existing request-matcher and empty bodies are unaffected. All
+  nine clients gained the corresponding calls: Java `retrieve*ById(...)`, Node `retrieve*ById(...)`, Python/Ruby
+  `retrieve_*_by_id(...)`, Go `Retrieve*ByID(...)`, Rust `retrieve_*_by_id(...)`, PHP `retrieve*ById(...)` and
+  .NET `Retrieve*ById(...)`.
 - The LLM provider list in the two consumer-facing published contracts — the OpenAPI specification
   (`jekyll-www.mock-server.com/mockserver-openapi.yaml`, schema `HttpLlmResponse.provider`) and the Node client's
   `LlmProvider` type union (`mockserver-client-node/mockServer.d.ts`) — is now pinned to the server's `Provider` enum

@@ -171,6 +171,23 @@ The retrieve and clear endpoints accept type parameters:
 
 Clear also supports clearing by `ExpectationId` (not just `RequestDefinition`).
 
+**Retrieve by `ExpectationId`.** `PUT /mockserver/retrieve` accepts an `ExpectationId` body (`{"id": "..."}`) in
+place of a `RequestDefinition`, the same as clear and verify. `HttpState.retrieve()` and `HttpState.clear()` share
+`parseExpectationId(body)`, which attempts `ExpectationIdSerializer.deserialize` and returns null when the body is not
+an id — the two forms are unambiguous because both JSON schemas set `additionalProperties: false` and only
+`expectationId.json` allows (and requires) `id`. **Order matters:** the id must be parsed *before* the body is handed
+to `RequestDefinitionSerializer`, which rejects `{"id": "..."}` on schema validation.
+
+The id is then resolved to that expectation's request definition via `resolveExpectationId(...)` and used as the
+filter, so `REQUESTS`, `REQUEST_RESPONSES`, `RECORDED_EXPECTATIONS` and `LOGS` are filtered exactly as
+`verify(ExpectationId)` filters them; an unknown id throws `IllegalArgumentException("No expectation found with id ...")`
+from `RequestMatchers.retrieveRequestDefinitions`, surfacing as a 400.
+
+`ACTIVE_EXPECTATIONS` is the exception: it filters on the **id itself** (`retrieveActiveExpectations(null)` then a
+`getId()` filter), not on the resolved request definition. Matching by request definition would return every *other*
+expectation whose matcher also matches that request, and would miss expectations (OpenAPI, JSON-schema or regex
+matchers) whose own request definition does not match their own matcher.
+
 ### Pre-HttpRequestHandler Routes
 
 Before a request reaches `HttpRequestHandler`, the Netty pipeline may intercept it at an earlier stage:

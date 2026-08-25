@@ -11,6 +11,7 @@ use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use MockServer\Exception\ConnectionException;
 use MockServer\Exception\InvalidRequestException;
+use MockServer\Exception\MockServerException;
 use MockServer\Exception\VerificationException;
 use MockServer\HttpForward;
 use MockServer\HttpRequest;
@@ -546,6 +547,86 @@ class MockServerClientTest extends TestCase
         $this->assertCount(2, $result);
         $this->assertSame('GET', $result[0]['method']);
         $this->assertSame('/bar', $result[1]['path']);
+    }
+
+    public function testRetrieveActiveExpectationsById(): void
+    {
+        $history = [];
+        $client = $this->createClientWithMock([
+            new Response(200, [], json_encode([['id' => 'my-exp-id']])),
+        ], $history);
+
+        $result = $client->retrieveActiveExpectationsById('my-exp-id');
+
+        $this->assertCount(1, $result);
+        $this->assertSame('my-exp-id', $result[0]['id']);
+        $request = $history[0]['request'];
+        $this->assertStringContainsString('type=ACTIVE_EXPECTATIONS', (string) $request->getUri());
+        $body = json_decode((string) $request->getBody(), true);
+        $this->assertSame('my-exp-id', $body['id']);
+    }
+
+    public function testRetrieveRecordedRequestsById(): void
+    {
+        $history = [];
+        $client = $this->createClientWithMock([
+            new Response(200, [], json_encode([['method' => 'GET', 'path' => '/foo']])),
+        ], $history);
+
+        $result = $client->retrieveRecordedRequestsById('my-exp-id');
+
+        $this->assertCount(1, $result);
+        $request = $history[0]['request'];
+        $this->assertStringContainsString('type=REQUESTS', (string) $request->getUri());
+        $this->assertSame('my-exp-id', json_decode((string) $request->getBody(), true)['id']);
+    }
+
+    public function testRetrieveRecordedRequestsAndResponsesById(): void
+    {
+        $history = [];
+        $client = $this->createClientWithMock([
+            new Response(200, [], '[]'),
+        ], $history);
+
+        $client->retrieveRecordedRequestsAndResponsesById('my-exp-id');
+
+        $this->assertStringContainsString('type=REQUEST_RESPONSES', (string) $history[0]['request']->getUri());
+    }
+
+    public function testRetrieveRecordedExpectationsById(): void
+    {
+        $history = [];
+        $client = $this->createClientWithMock([
+            new Response(200, [], '[]'),
+        ], $history);
+
+        $client->retrieveRecordedExpectationsById('my-exp-id');
+
+        $this->assertStringContainsString('type=RECORDED_EXPECTATIONS', (string) $history[0]['request']->getUri());
+    }
+
+    public function testRetrieveLogMessagesById(): void
+    {
+        $history = [];
+        $client = $this->createClientWithMock([
+            new Response(200, [], '[]'),
+        ], $history);
+
+        $client->retrieveLogMessagesById('my-exp-id');
+
+        $this->assertStringContainsString('type=LOGS', (string) $history[0]['request']->getUri());
+    }
+
+    public function testRetrieveByIdThrowsForUnknownId(): void
+    {
+        $client = $this->createClientWithMock([
+            new Response(400, [], 'No expectation found with id missing'),
+        ]);
+
+        $this->expectException(MockServerException::class);
+        $this->expectExceptionMessage('No expectation found with id missing');
+
+        $client->retrieveActiveExpectationsById('missing');
     }
 
     public function testRetrieveActiveExpectations(): void

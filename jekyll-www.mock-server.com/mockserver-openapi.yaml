@@ -279,11 +279,18 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RequestDefinition"
+              oneOf:
+                - $ref: "#/components/schemas/RequestDefinition"
+                - $ref: "#/components/schemas/ExpectationId"
             example:
               path: /api/users
         description: >-
-          request used to match which recorded requests, expectations or log messages to return, an empty body matches all requests, expectations or log messages
+          request used to match which recorded requests, expectations or log messages to return, an
+          empty body matches all requests, expectations or log messages. An expectation id (i.e.
+          {"id": "..."}) may be sent instead of a request matcher - for "active_expectations" it
+          returns only the expectation with that id, and for every other type it returns the entries
+          matching that expectation's request, exactly as verify by expectation id matches them. An
+          unknown id is rejected with 400.
   /mockserver/verify:
     put:
       tags:

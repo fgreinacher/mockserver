@@ -245,6 +245,54 @@ class TestSyncRetrieve:
             result = client.retrieve_recorded_expectations()
             assert len(result) == 1
 
+    def test_retrieve_recorded_requests_by_id(self, sync_mock_server):
+        SyncMockHandler.response_body = json.dumps([
+            {"method": "GET", "path": "/recorded"},
+        ])
+        with MockServerClient("127.0.0.1", sync_mock_server) as client:
+            result = client.retrieve_recorded_requests_by_id("exp-abc")
+            assert len(result) == 1
+            assert result[0].path == "/recorded"
+            assert json.loads(SyncMockHandler.last_request_body)["id"] == "exp-abc"
+            assert "type=REQUESTS" in SyncMockHandler.last_path
+
+    def test_retrieve_active_expectations_by_id(self, sync_mock_server):
+        SyncMockHandler.response_body = json.dumps([
+            {"id": "exp-abc", "httpRequest": {"path": "/active"}},
+        ])
+        with MockServerClient("127.0.0.1", sync_mock_server) as client:
+            result = client.retrieve_active_expectations_by_id("exp-abc")
+            assert len(result) == 1
+            assert result[0].id == "exp-abc"
+            assert json.loads(SyncMockHandler.last_request_body)["id"] == "exp-abc"
+            assert "type=ACTIVE_EXPECTATIONS" in SyncMockHandler.last_path
+
+    def test_retrieve_recorded_expectations_by_id(self, sync_mock_server):
+        SyncMockHandler.response_body = json.dumps([{"id": "re1"}])
+        with MockServerClient("127.0.0.1", sync_mock_server) as client:
+            result = client.retrieve_recorded_expectations_by_id("exp-abc")
+            assert len(result) == 1
+            assert json.loads(SyncMockHandler.last_request_body)["id"] == "exp-abc"
+            assert "type=RECORDED_EXPECTATIONS" in SyncMockHandler.last_path
+
+    def test_retrieve_recorded_requests_and_responses_by_id(self, sync_mock_server):
+        SyncMockHandler.response_body = json.dumps([
+            {"httpRequest": {"path": "/recorded"}, "httpResponse": {"statusCode": 200}},
+        ])
+        with MockServerClient("127.0.0.1", sync_mock_server) as client:
+            result = client.retrieve_recorded_requests_and_responses_by_id("exp-abc")
+            assert len(result) == 1
+            assert json.loads(SyncMockHandler.last_request_body)["id"] == "exp-abc"
+            assert "type=REQUEST_RESPONSES" in SyncMockHandler.last_path
+
+    def test_retrieve_log_messages_by_id(self, sync_mock_server):
+        SyncMockHandler.response_body = json.dumps(["log one"])
+        with MockServerClient("127.0.0.1", sync_mock_server) as client:
+            result = client.retrieve_log_messages_by_id("exp-abc")
+            assert result == ["log one"]
+            assert json.loads(SyncMockHandler.last_request_body)["id"] == "exp-abc"
+            assert "type=LOGS" in SyncMockHandler.last_path
+
     def test_retrieve_expectations_as_code(self, sync_mock_server):
         SyncMockHandler.response_body = 'when(request().withPath("/code"));'
         with MockServerClient("127.0.0.1", sync_mock_server) as client:

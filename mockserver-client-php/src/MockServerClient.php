@@ -652,6 +652,65 @@ class MockServerClient
     }
 
     /**
+     * Retrieve the recorded requests matching the request of the expectation with the given ID.
+     *
+     * @param string $expectationId The ID of the expectation to filter by
+     * @return array List of recorded request arrays
+     */
+    public function retrieveRecordedRequestsById(string $expectationId): array
+    {
+        return $this->retrieveById($expectationId, 'REQUESTS', 'JSON');
+    }
+
+    /**
+     * Retrieve the active expectation with the given ID.
+     *
+     * Unlike retrieveActiveExpectations() this returns only the expectation with that ID,
+     * never other expectations whose matcher happens to match the same request.
+     *
+     * @param string $expectationId The ID of the expectation to retrieve
+     * @return array List containing the expectation with that ID
+     */
+    public function retrieveActiveExpectationsById(string $expectationId): array
+    {
+        return $this->retrieveById($expectationId, 'ACTIVE_EXPECTATIONS', 'JSON');
+    }
+
+    /**
+     * Retrieve the recorded expectations matching the request of the expectation with the given ID.
+     *
+     * @param string $expectationId The ID of the expectation to filter by
+     * @return array List of expectation arrays
+     */
+    public function retrieveRecordedExpectationsById(string $expectationId): array
+    {
+        return $this->retrieveById($expectationId, 'RECORDED_EXPECTATIONS', 'JSON');
+    }
+
+    /**
+     * Retrieve the recorded request/response pairs matching the request of the expectation
+     * with the given ID.
+     *
+     * @param string $expectationId The ID of the expectation to filter by
+     * @return array List of request/response arrays
+     */
+    public function retrieveRecordedRequestsAndResponsesById(string $expectationId): array
+    {
+        return $this->retrieveById($expectationId, 'REQUEST_RESPONSES', 'JSON');
+    }
+
+    /**
+     * Retrieve the log messages matching the request of the expectation with the given ID.
+     *
+     * @param string $expectationId The ID of the expectation to filter by
+     * @return array List of log entry strings/arrays
+     */
+    public function retrieveLogMessagesById(string $expectationId): array
+    {
+        return $this->retrieveById($expectationId, 'LOGS', 'JSON');
+    }
+
+    /**
      * Check the server status (bound ports).
      *
      * @return array{ports: list<int>} Status response
@@ -2311,6 +2370,42 @@ class MockServerClient
 
         if ($status >= 400) {
             throw new MockServerException("Retrieve ({$type}) failed (HTTP {$status}): {$responseBody}");
+        }
+
+        if ($responseBody !== '') {
+            $parsed = json_decode($responseBody, true);
+            if (is_array($parsed)) {
+                return $parsed;
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Retrieve filtered by expectation ID rather than by a request matcher.
+     *
+     * For ACTIVE_EXPECTATIONS the server returns only the expectation with that ID; for
+     * every other type it returns the entries matching that expectation's request, exactly
+     * as verify by expectation ID matches them. An unknown ID is rejected with a 400.
+     *
+     * @param string $expectationId The ID of the expectation to filter by
+     * @param string $type REQUESTS, REQUEST_RESPONSES, RECORDED_EXPECTATIONS, ACTIVE_EXPECTATIONS or LOGS
+     * @param string $format JSON
+     * @return array
+     */
+    private function retrieveById(string $expectationId, string $type, string $format): array
+    {
+        $path = '/mockserver/retrieve?type=' . urlencode($type) . '&format=' . urlencode($format);
+        $body = json_encode(['id' => $expectationId], JSON_THROW_ON_ERROR);
+
+        $response = $this->put($path, $body);
+
+        $status = $response->getStatusCode();
+        $responseBody = (string) $response->getBody();
+
+        if ($status >= 400) {
+            throw new MockServerException("Retrieve by ID ({$type}) failed (HTTP {$status}): {$responseBody}");
         }
 
         if ($responseBody !== '') {

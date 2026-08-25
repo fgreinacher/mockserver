@@ -3038,6 +3038,160 @@ public class HttpStateTest {
     }
 
     @Test
+    public void shouldRetrieveActiveExpectationsByExpectationId() {
+        // given - two expectations that both match the same request, so filtering by the
+        // request definition the id resolves to would return both
+        Expectation expectationOne = new Expectation(request("request_one")).withId("one").thenRespond(response("response_one"));
+        httpState.add(expectationOne);
+        Expectation expectationTwo = new Expectation(request("request_two")).withId("two").thenRespond(response("response_two"));
+        httpState.add(expectationTwo);
+        Expectation expectationThree = new Expectation(request("request_one")).withId("three").thenRespond(response("response_three"));
+        httpState.add(expectationThree);
+
+        // when
+        HttpResponse response = httpState
+            .retrieve(
+                request()
+                    .withQueryStringParameter("type", "active_expectations")
+                    .withBody(expectationIdSerializer.serialize(expectationId("one")))
+            );
+
+        // then - only the expectation with that id, not every expectation matching the same request
+        assertThat(response,
+            is(response().withBody(expectationSerializer.serialize(Collections.singletonList(
+                expectationOne
+            )), MediaType.JSON_UTF_8).withStatusCode(200))
+        );
+    }
+
+    @Test
+    public void shouldRetrieveRecordedRequestsByExpectationId() {
+        // given
+        httpState.add(new Expectation(request("request_one")).withId("one").thenRespond(response("response_one")));
+        httpState.add(new Expectation(request("request_two")).withId("two").thenRespond(response("response_two")));
+        httpState.log(
+            new LogEntry()
+                .setHttpRequest(request("request_one"))
+                .setType(RECEIVED_REQUEST)
+        );
+        httpState.log(
+            new LogEntry()
+                .setHttpRequest(request("request_two"))
+                .setType(RECEIVED_REQUEST)
+        );
+        httpState.log(
+            new LogEntry()
+                .setHttpRequest(request("request_one"))
+                .setType(RECEIVED_REQUEST)
+        );
+
+        // when
+        HttpResponse response = httpState
+            .retrieve(
+                request()
+                    .withBody(expectationIdSerializer.serialize(expectationId("one")))
+            );
+
+        // then
+        assertThat(response,
+            is(response().withBody(requestDefinitionSerializer.serialize(Arrays.asList(
+                request("request_one"),
+                request("request_one")
+            )), MediaType.JSON_UTF_8).withStatusCode(200))
+        );
+    }
+
+    @Test
+    public void shouldRetrieveRecordedRequestResponsesByExpectationId() {
+        // given
+        httpState.add(new Expectation(request("request_one")).withId("one").thenRespond(response("response_one")));
+        httpState.add(new Expectation(request("request_two")).withId("two").thenRespond(response("response_two")));
+        httpState.log(
+            new LogEntry()
+                .setHttpRequest(request("request_one"))
+                .setHttpResponse(response("response_one"))
+                .setType(EXPECTATION_RESPONSE)
+        );
+        httpState.log(
+            new LogEntry()
+                .setHttpRequest(request("request_two"))
+                .setHttpResponse(response("response_two"))
+                .setType(EXPECTATION_RESPONSE)
+        );
+
+        // when
+        HttpResponse response = httpState
+            .retrieve(
+                request()
+                    .withQueryStringParameter("type", REQUEST_RESPONSES.name())
+                    .withQueryStringParameter("format", LOG_ENTRIES.name())
+                    .withBody(expectationIdSerializer.serialize(expectationId("one")))
+            );
+
+        // then
+        assertThat(
+            response.getBodyAsString(),
+            is(new LogEntrySerializer(new MockServerLogger()).serialize(Collections.singletonList(
+                new LogEntry()
+                    .setHttpRequest(request("request_one"))
+                    .setHttpResponse(response("response_one"))
+                    .setType(EXPECTATION_RESPONSE)
+            )))
+        );
+    }
+
+    @Test
+    public void shouldRetrieveLogMessagesByExpectationId() {
+        // given
+        httpState.add(new Expectation(request("request_one")).withId("one").thenRespond(response("response_one")));
+        httpState.add(new Expectation(request("request_two")).withId("two").thenRespond(response("response_two")));
+        httpState.log(
+            new LogEntry()
+                .setLogLevel(INFO)
+                .setHttpRequest(request("request_one"))
+                .setMessageFormat("some random message with a request:{}")
+                .setArguments(request("request_one"))
+        );
+        httpState.log(
+            new LogEntry()
+                .setLogLevel(INFO)
+                .setHttpRequest(request("request_two"))
+                .setMessageFormat("some random message with a request:{}")
+                .setArguments(request("request_two"))
+        );
+
+        // when
+        HttpResponse response = httpState
+            .retrieve(
+                request()
+                    .withQueryStringParameter("type", "logs")
+                    .withBody(expectationIdSerializer.serialize(expectationId("one")))
+            );
+
+        // then - only the log messages for the request the expectation id resolves to
+        assertThat(response.getBodyAsString(), containsString("some random message with a request:" + NEW_LINE + NEW_LINE + "  {" + NEW_LINE + "    \"path\" : \"request_one\""));
+        assertThat(response.getBodyAsString(), not(containsString("\"path\" : \"request_two\"")));
+    }
+
+    @Test
+    public void shouldReturnErrorForRetrieveByUnknownExpectationId() {
+        // given
+        httpState.add(new Expectation(request("request_one")).withId("one").thenRespond(response("response_one")));
+
+        // then
+        exception.expect(IllegalArgumentException.class);
+        exception.expectMessage(containsString("No expectation found with id does_not_exist"));
+
+        // when
+        httpState
+            .retrieve(
+                request()
+                    .withQueryStringParameter("type", "active_expectations")
+                    .withBody(expectationIdSerializer.serialize(expectationId("does_not_exist")))
+            );
+    }
+
+    @Test
     public void shouldRetrieveActiveExpectationsAsJava() {
         // given
         Expectation expectationOne = new Expectation(request("request_one")).thenRespond(response("response_one"));

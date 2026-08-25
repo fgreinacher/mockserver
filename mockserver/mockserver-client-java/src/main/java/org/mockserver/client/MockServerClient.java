@@ -2810,6 +2810,170 @@ public class MockServerClient implements Stoppable {
     }
 
     /**
+     * Retrieve recorded requests, recorded request-responses, recorded expectations or log messages by
+     * expectation id, in the requested format.
+     * <p>
+     * For {@link RetrieveType#ACTIVE_EXPECTATIONS} this returns only the expectation with that id. For
+     * every other type it returns the entries matching that expectation's request, exactly as
+     * {@link #verify(ExpectationId...)} matches them. An unknown id is rejected by MockServer.
+     *
+     * @param type          the type of object to retrieve
+     * @param format        the format to retrieve the objects in
+     * @param expectationId the id of the expectation to retrieve for
+     * @return the raw response body in the requested format
+     */
+    private String retrieveById(RetrieveType type, Format format, String expectationId) {
+        HttpResponse httpResponse = sendRequest(
+            request()
+                .withMethod("PUT")
+                .withContentType(APPLICATION_JSON_UTF_8)
+                .withPath(calculatePath("retrieve"))
+                .withQueryStringParameter("type", type.name())
+                .withQueryStringParameter("format", format.name())
+                .withBody(expectationIdSerializer.serialize(expectationId(expectationId)), StandardCharsets.UTF_8),
+            true
+        );
+        return httpResponse.getBodyAsString();
+    }
+
+    /**
+     * Retrieve the recorded requests that match the request of the expectation with the given id
+     *
+     * @param expectationId the id of the expectation whose request is matched against when deciding whether to return each request
+     * @return an array of all requests that have been recorded by the MockServer in the order they have been received and including duplicates where the same request has been received multiple times
+     */
+    public HttpRequest[] retrieveRecordedRequestsById(String expectationId) {
+        RequestDefinition[] requestDefinitions = new RequestDefinition[0];
+        String recordedRequests = retrieveRecordedRequestsById(expectationId, Format.JSON);
+        if (isNotBlank(recordedRequests) && !recordedRequests.equals("[]")) {
+            requestDefinitions = requestDefinitionSerializer.deserializeArray(recordedRequests);
+        }
+        return Arrays.stream(requestDefinitions).map(HttpRequest.class::cast).toArray(HttpRequest[]::new);
+    }
+
+    /**
+     * Retrieve the recorded requests that match the request of the expectation with the given id
+     *
+     * @param expectationId the id of the expectation whose request is matched against when deciding whether to return each request
+     * @param format        the format to retrieve the requests in
+     * @return all requests that have been recorded by the MockServer in the requested format
+     */
+    public String retrieveRecordedRequestsById(String expectationId, Format format) {
+        return retrieveById(RetrieveType.REQUESTS, format, expectationId);
+    }
+
+    /**
+     * Retrieve the recorded requests and responses that match the request of the expectation with the given id
+     *
+     * @param expectationId the id of the expectation whose request is matched against when deciding whether to return each request (and its corresponding response)
+     * @return an array of all requests and responses that have been recorded by the MockServer in the order they have been received and including duplicates where the same request has been received multiple times
+     */
+    public LogEventRequestAndResponse[] retrieveRecordedRequestsAndResponsesById(String expectationId) {
+        String recordedRequests = retrieveRecordedRequestsAndResponsesById(expectationId, Format.JSON);
+        if (isNotBlank(recordedRequests) && !recordedRequests.equals("[]")) {
+            return httpRequestResponseSerializer.deserializeArray(recordedRequests);
+        } else {
+            return new LogEventRequestAndResponse[0];
+        }
+    }
+
+    /**
+     * Retrieve the recorded requests and responses that match the request of the expectation with the given id
+     *
+     * @param expectationId the id of the expectation whose request is matched against when deciding whether to return each request (and its corresponding response)
+     * @param format        the format to retrieve the requests and responses in
+     * @return all requests and responses that have been recorded by the MockServer in the requested format
+     */
+    public String retrieveRecordedRequestsAndResponsesById(String expectationId, Format format) {
+        return retrieveById(RetrieveType.REQUEST_RESPONSES, format, expectationId);
+    }
+
+    /**
+     * Retrieve, as a list of expectations, the request-response combinations recorded for the request of
+     * the expectation with the given id
+     *
+     * @param expectationId the id of the expectation whose request is matched against when deciding whether to return each recorded expectation
+     * @return an array of all expectations that have been recorded by the MockServer in the order they have been received and including duplicates where the same request has been received multiple times
+     */
+    public Expectation[] retrieveRecordedExpectationsById(String expectationId) {
+        String recordedExpectations = retrieveRecordedExpectationsById(expectationId, Format.JSON);
+        if (isNotBlank(recordedExpectations) && !recordedExpectations.equals("[]")) {
+            return expectationSerializer.deserializeArray(recordedExpectations, true);
+        } else {
+            return new Expectation[0];
+        }
+    }
+
+    /**
+     * Retrieve, as a list of expectations, the request-response combinations recorded for the request of
+     * the expectation with the given id
+     *
+     * @param expectationId the id of the expectation whose request is matched against when deciding whether to return each recorded expectation
+     * @param format        the format to retrieve the expectations in
+     * @return all expectations that have been recorded by the MockServer in the requested format
+     */
+    public String retrieveRecordedExpectationsById(String expectationId, Format format) {
+        return retrieveById(RetrieveType.RECORDED_EXPECTATIONS, format, expectationId);
+    }
+
+    /**
+     * Retrieve the active expectation with the given id, or an empty array if no such expectation exists
+     *
+     * @param expectationId the id of the expectation to retrieve
+     * @return an array containing the expectation with that id, if it has been setup and has not expired
+     */
+    public Expectation[] retrieveActiveExpectationsById(String expectationId) {
+        String activeExpectations = retrieveActiveExpectationsById(expectationId, Format.JSON);
+        if (isNotBlank(activeExpectations) && !activeExpectations.equals("[]")) {
+            return expectationSerializer.deserializeArray(activeExpectations, true);
+        } else {
+            return new Expectation[0];
+        }
+    }
+
+    /**
+     * Retrieve the active expectation with the given id in the requested format
+     *
+     * @param expectationId the id of the expectation to retrieve
+     * @param format        the format to retrieve the expectation in
+     * @return the expectation with that id in the requested format
+     */
+    public String retrieveActiveExpectationsById(String expectationId, Format format) {
+        return retrieveById(RetrieveType.ACTIVE_EXPECTATIONS, format, expectationId);
+    }
+
+    /**
+     * Retrieve the logs associated with the request of the expectation with the given id, this shows all
+     * logs for expectation matching, verification, clearing, etc
+     *
+     * @param expectationId the id of the expectation whose request is matched against when deciding whether to return each log message
+     * @return all log messages recorded by the MockServer when creating expectations, matching expectations, performing verification, clearing logs, etc
+     */
+    public String retrieveLogMessagesById(String expectationId) {
+        HttpResponse httpResponse = sendRequest(
+            request()
+                .withMethod("PUT")
+                .withContentType(APPLICATION_JSON_UTF_8)
+                .withPath(calculatePath("retrieve"))
+                .withQueryStringParameter("type", RetrieveType.LOGS.name())
+                .withBody(expectationIdSerializer.serialize(expectationId(expectationId)), StandardCharsets.UTF_8),
+            true
+        );
+        return httpResponse.getBodyAsString();
+    }
+
+    /**
+     * Retrieve the logs associated with the request of the expectation with the given id, this shows all
+     * logs for expectation matching, verification, clearing, etc
+     *
+     * @param expectationId the id of the expectation whose request is matched against when deciding whether to return each log message
+     * @return an array of all log messages recorded by the MockServer when creating expectations, matching expectations, performing verification, clearing logs, etc
+     */
+    public String[] retrieveLogMessagesArrayById(String expectationId) {
+        return retrieveLogMessagesById(expectationId).split(LOG_SEPARATOR);
+    }
+
+    /**
      * Analyze why a request does not match any active expectations, showing per-field match failures for each expectation.
      * Returns a JSON string containing the total number of expectations, the closest match, and per-expectation results
      * with field-level differences.
