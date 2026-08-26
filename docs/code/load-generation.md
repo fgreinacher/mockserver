@@ -607,8 +607,11 @@ curl -X PUT http://localhost:1080/mockserver/loadScenario/generateFromRecording 
 curl -X PUT http://localhost:1080/mockserver/loadScenario/start -d '{ "name": "replay-prod-traffic" }'
 ```
 
-A missing `name`, no recorded requests to convert (none recorded, or none matching `requestFilter`), an
-invalid `mode`, or a generated scenario that fails validation all return `400 {error}`.
+A missing `name`, an invalid `mode`, or a generated scenario that fails validation return
+`400 {error}`. Having **no recorded requests to convert** (none recorded, or none matching
+`requestFilter`) returns `409 {error}` instead — the request is well-formed and parsed, there is
+simply no traffic recorded yet, and sharing `400` with a malformed body left callers unable to tell
+"record some traffic first" apart from "your request is wrong".
 
 > The `TEMPLATIZED` seeder now emits a **weighted mix**: each route's `weight` is its observed hit
 > count and the scenario is marked [`stepSelection: WEIGHTED`](#weighted-step-selection), so each

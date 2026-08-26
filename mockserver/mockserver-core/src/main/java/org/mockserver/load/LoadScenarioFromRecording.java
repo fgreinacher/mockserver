@@ -96,6 +96,21 @@ public class LoadScenarioFromRecording {
     }
 
     /**
+     * Raised when there is no recorded traffic to convert into a load scenario.
+     *
+     * <p>This is a <strong>state</strong> condition, not a malformed request: the caller's body is
+     * well-formed and parsed, there is simply nothing recorded yet. The control plane maps it to
+     * {@code 409 CONFLICT} rather than {@code 400 BAD_REQUEST} so a caller can tell "record some
+     * traffic first" apart from "your request body is wrong". It extends
+     * {@link IllegalArgumentException} so existing callers that catch that keep working.
+     */
+    public static class NoRecordedTrafficException extends IllegalArgumentException {
+        public NoRecordedTrafficException() {
+            super("no recorded requests to convert into a load scenario (record traffic through the proxy first)");
+        }
+    }
+
+    /**
      * Generates a {@link LoadScenario} from recorded requests.
      *
      * @param name             the generated scenario name
@@ -107,12 +122,12 @@ public class LoadScenarioFromRecording {
      * @param target           explicit network target applied to every step (may be null — see class-level precedence)
      * @param profile          explicit load profile (may be null — a conservative default is applied)
      * @return the generated, editable {@link LoadScenario}
-     * @throws IllegalArgumentException if there are no recorded requests to convert
+     * @throws NoRecordedTrafficException if there are no recorded requests to convert
      */
     public static LoadScenario generate(String name, List<? extends RequestDefinition> recordedRequests, Mode mode, Integer maxSteps, Target target, LoadProfile profile) {
         List<HttpRequest> httpRequests = toHttpRequests(recordedRequests);
         if (httpRequests.isEmpty()) {
-            throw new IllegalArgumentException("no recorded requests to convert into a load scenario (record traffic through the proxy first)");
+            throw new NoRecordedTrafficException();
         }
 
         Mode effectiveMode = mode != null ? mode : Mode.VERBATIM;
@@ -127,7 +142,7 @@ public class LoadScenarioFromRecording {
         if (scenario.getSteps().isEmpty()) {
             // Defensive: only reachable if every recorded entry had no usable request, which the
             // toHttpRequests filter already excludes.
-            throw new IllegalArgumentException("no recorded requests to convert into a load scenario (record traffic through the proxy first)");
+            throw new NoRecordedTrafficException();
         }
 
         scenario.withProfile(profile != null ? profile : LoadScenarioFromOpenAPI.defaultProfile());

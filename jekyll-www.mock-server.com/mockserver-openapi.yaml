@@ -3288,7 +3288,18 @@ paths:
                   scenario:
                     $ref: "#/components/schemas/LoadScenario"
         '400':
-          description: missing name, no recorded requests to convert, an invalid mode, or a generated scenario that fails validation
+          description: missing name, an invalid mode, or a generated scenario that fails validation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '409':
+          description: >-
+            no recorded requests to convert - the request is well-formed, there is simply no recorded
+            traffic yet (record traffic through the proxy first)
           content:
             application/json:
               schema:

@@ -2123,12 +2123,26 @@ public class MockServerClientTest {
 
     @Test
     public void shouldThrowErrorWhenGenerateLoadScenarioFromRecordingBadRequest() {
-        // given (sendRequest itself maps 400 to IllegalArgumentException carrying the server body)
+        // given (sendRequest itself maps 400 to IllegalArgumentException carrying the server body).
+        // 400 now means only that the request is malformed - an empty event log is a 409.
         when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
-            .thenReturn(response().withStatusCode(BAD_REQUEST.code()).withBody("{\"error\":\"no recorded requests to convert\"}"));
+            .thenReturn(response().withStatusCode(BAD_REQUEST.code()).withBody("{\"error\":\"invalid 'mode'\"}"));
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> mockServerClient.generateLoadScenarioFromRecording("{\"name\":\"x\"}"));
+
+        // then
+        assertThat(exception.getMessage(), containsString("invalid 'mode'"));
+    }
+
+    @Test
+    public void shouldThrowErrorWhenGenerateLoadScenarioFromRecordingHasNoRecordedTraffic() {
+        // given - 409 when the event log is empty: the body was well-formed, only the state is missing
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(CONFLICT.code()).withBody("{\"error\":\"no recorded requests to convert\"}"));
+
+        // when
+        ClientException exception = assertThrows(ClientException.class, () -> mockServerClient.generateLoadScenarioFromRecording("{\"name\":\"x\"}"));
 
         // then
         assertThat(exception.getMessage(), containsString("no recorded requests to convert"));

@@ -4329,6 +4329,12 @@ public class HttpState {
             org.mockserver.load.LoadScenario scenario;
             try {
                 scenario = org.mockserver.load.LoadScenarioFromRecording.generate(name, recordedRequests, mode, maxSteps, target, profile);
+            } catch (org.mockserver.load.LoadScenarioFromRecording.NoRecordedTrafficException e) {
+                // 409, not 400: the body is well-formed and parsed - there is simply nothing recorded
+                // yet. 400 told the caller its request was malformed and gave it no way to tell that
+                // apart from "record some traffic first".
+                return loadScenarioError(objectMapper, CONFLICT.code(),
+                    "failed to generate load scenario from recording: " + e.getMessage());
             } catch (IllegalArgumentException e) {
                 return loadScenarioError(objectMapper, "failed to generate load scenario from recording: " + e.getMessage());
             }
@@ -4859,12 +4865,16 @@ public class HttpState {
     }
 
     private HttpResponse loadScenarioError(com.fasterxml.jackson.databind.ObjectMapper objectMapper, String message) {
+        return loadScenarioError(objectMapper, BAD_REQUEST.code(), message);
+    }
+
+    private HttpResponse loadScenarioError(com.fasterxml.jackson.databind.ObjectMapper objectMapper, int statusCode, String message) {
         try {
-            return response().withStatusCode(BAD_REQUEST.code())
+            return response().withStatusCode(statusCode)
                 .withBody(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(
                     objectMapper.createObjectNode().put("error", message)), MediaType.JSON_UTF_8);
         } catch (Exception jsonError) {
-            return response().withStatusCode(BAD_REQUEST.code())
+            return response().withStatusCode(statusCode)
                 .withBody("{\"error\":\"failed to process load scenario request\"}", MediaType.JSON_UTF_8);
         }
     }

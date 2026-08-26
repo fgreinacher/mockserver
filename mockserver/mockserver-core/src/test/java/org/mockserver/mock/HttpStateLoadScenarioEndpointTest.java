@@ -662,10 +662,23 @@ public class HttpStateLoadScenarioEndpointTest {
     }
 
     @Test
-    public void generateFromRecordingReturns400WhenNoRecordings() throws Exception {
+    public void generateFromRecordingReturns409WhenNoRecordings() throws Exception {
+        // 409, not 400: the body is well-formed and parsed - there is simply nothing recorded yet.
+        // Sharing 400 with a malformed body left callers unable to tell "record some traffic first"
+        // apart from "your request is wrong".
         HttpResponse response = generateFromRecording("{ \"name\": \"empty-rec\" }");
-        assertThat(response.getStatusCode(), is(400));
+        assertThat(response.getStatusCode(), is(409));
         assertThat(body(response).get("error").asText(), containsString("no recorded requests"));
+    }
+
+    @Test
+    public void generateFromRecordingStillReturns400ForAMalformedBodyWhenRecordingsExist() throws Exception {
+        // the 409 above must not swallow the malformed-body case, so the two stay distinguishable
+        // by status code alone even once traffic has been recorded
+        record(request().withMethod("GET").withPath("/a"));
+        HttpResponse response = generateFromRecording("{ \"name\": \"bad\", \"mode\": \"SIDEWAYS\" }");
+        assertThat(response.getStatusCode(), is(400));
+        assertThat(body(response).get("error").asText(), containsString("invalid 'mode'"));
     }
 
     @Test

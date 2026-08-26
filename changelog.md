@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   egress. Both now carry an inline specification.
 
 ### Changed
+- `PUT /mockserver/loadScenario/generateFromRecording` answers **409** rather than 400 when there is no
+  recorded traffic to convert; 400 now means only that the request is malformed (missing `name`, an invalid
+  `mode`, or a scenario that fails validation). The body was always well-formed in the no-traffic case — only
+  the state was missing — so 400 told callers their request was wrong and gave them no way to tell that apart
+  from "record some traffic through the proxy first". The core throws a dedicated
+  `LoadScenarioFromRecording.NoRecordedTrafficException`, which extends `IllegalArgumentException` so existing
+  callers that catch it keep working. This was the last entry in the collection gate's `KNOWN_FAILING`
+  ratchet, which is now empty: every example the published Postman/Bruno collections carry is accepted by a
+  default container.
 - `PUT /mockserver/verifySLO` answers **403** rather than 400 when SLO tracking is disabled
   (`sloTrackingEnabled=false`); 400 now means only that the criteria are malformed. The two cases previously
   shared 400, so a caller could not tell a typo in its criteria from a server with the feature switched off —

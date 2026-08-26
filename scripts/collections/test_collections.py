@@ -42,12 +42,11 @@ SKIP_PATHS = {
 #      outlive the bug it documents — you are forced to delete the entry.
 #   2. Every entry carries a reason. An entry without one is drift wearing an exemption.
 #
-# The one remaining entry is state-dependent rather than a broken example: the request body is
-# well-formed and the handler parses it, but a freshly-started container has no recorded traffic for
-# it to convert. Clearing it needs the harness to record traffic through the proxy first, not a
-# change to the example.
+# This list is now EMPTY, and the ratchet's first rule keeps it that way: an entry that stops
+# failing fails the run, so nothing can be parked here and forgotten. Every example the collection
+# publishes is accepted by a default container.
 #
-# The four entries that used to sit here were each a real defect, and each is now fixed rather than
+# The five entries that used to sit here were each a real defect, and each was fixed rather than
 # excused:
 #   - /mockserver/graphql            application/graphql was not in MediaType.isString(), so the SDL
 #                                    arrived base64-encoded (same for application/yaml)
@@ -56,8 +55,13 @@ SKIP_PATHS = {
 #   - .../generateFromOpenAPI        the example fetched its spec from a URL; it is now inline, so the
 #                                    published example works without egress
 #   - /mockserver/verifySLO          a disabled feature answered 400 (malformed body) instead of 403
+#   - .../generateFromRecording      an empty event log answered 400 (malformed body) instead of 409;
+#                                    the body was always well-formed, only the state was missing, and
+#                                    a state code is one the gate already accepts
+#
+# Adding an entry here is a last resort. Prefer fixing the example or the handler: four of the five
+# above looked like "the example cannot work in a bare container" and were nothing of the sort.
 KNOWN_FAILING = {
-    "/mockserver/loadScenario/generateFromRecording": "requires recorded traffic that does not exist yet",
 }
 
 
