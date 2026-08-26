@@ -2566,14 +2566,15 @@ var mockServerClient;
          * Evaluate a set of service-level objectives (SLOs) over a window of the
          * recorded SLI samples (PUT /mockserver/verifySLO). The server encodes
          * the verdict in the HTTP status: 200 for PASS or INCONCLUSIVE, 406 for
-         * FAIL, 400 for malformed criteria or when SLO tracking is disabled
-         * (sloTrackingEnabled=false).
+         * FAIL, 403 when SLO tracking is disabled (sloTrackingEnabled=false) and
+         * 400 for malformed criteria.
          *
          * The returned promise RESOLVES with the parsed SloVerdict object
          * (result PASS or INCONCLUSIVE) on 200, and REJECTS on FAIL (406) — the
          * rejection value is a string carrying the verdict body so callers can
-         * inspect the per-objective results. A 400 disabled/invalid response
-         * rejects with a clear message explaining how to enable SLO tracking.
+         * inspect the per-objective results. A 403 rejects with a message
+         * explaining how to enable SLO tracking; a 400 rejects naming the
+         * criteria as invalid.
          *
          * @param criteria the SLO criteria ({name, window, minimumSampleCount,
          *        upstreamHosts, objectives:[{sli, comparator, threshold, scope}]})
@@ -2593,7 +2594,8 @@ var mockServerClient;
                             // The transport rejects on any >= 400 with the response
                             // body string. A FAIL verdict (406) carries a SloVerdict
                             // JSON body with result:"FAIL"; a disabled/invalid
-                            // request (400) carries a plain error message.
+                            // request (403 disabled / 400 malformed) carries an
+                            // {"error": "..."} body naming which.
                             var body = (typeof err === "string") ? err : "";
                             var parsed = null;
                             try {
@@ -2610,9 +2612,18 @@ var mockServerClient;
                                 }
                                 return;
                             }
-                            var failure = (parsed && parsed.result === "FAIL")
-                                ? "SLO verdict FAIL: " + body
-                                : "invalid SLO criteria (or SLO tracking disabled - set sloTrackingEnabled=true): " + body;
+                            var failure;
+                            if (parsed && parsed.result === "FAIL") {
+                                failure = "SLO verdict FAIL: " + body;
+                            } else if (parsed && parsed.error) {
+                                // The server already distinguishes 403 (SLO tracking disabled) from
+                                // 400 (malformed criteria) in its own error message, and this
+                                // transport rejects with the body alone - no status is in scope here
+                                // - so surface the server's message verbatim rather than guess.
+                                failure = "verifySLO failed: " + parsed.error;
+                            } else {
+                                failure = "invalid SLO criteria: " + body;
+                            }
                             // As with verify*, a FAILED verdict must stay failed: hand it
                             // to the error callback when one was supplied, otherwise
                             // re-throw so the returned promise rejects rather than

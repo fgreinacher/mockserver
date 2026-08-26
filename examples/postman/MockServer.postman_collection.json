@@ -197,7 +197,16 @@
                 "http"
               ]
             },
-            "description": "Generates HTTP expectations from an AsyncAPI 2.x/3.x spec (JSON/YAML, or a {spec, channelPathPrefix} wrapper) so each channel's example message can be served over plain HTTP without a live broker. One GET expectation is created per channel returning that channel's schema-aware example payload. This is distinct from PUT /mockserver/asyncapi, which loads a spec into the broker-publishing mock. Requires the mockserver-async module on the classpath (501 otherwise).\n\nAsyncAPI spec to import as HTTP expectations\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html"
+            "description": "Generates HTTP expectations from an AsyncAPI 2.x/3.x spec (JSON/YAML, or a {spec, channelPathPrefix} wrapper) so each channel's example message can be served over plain HTTP without a live broker. One GET expectation is created per channel returning that channel's schema-aware example payload. This is distinct from PUT /mockserver/asyncapi, which loads a spec into the broker-publishing mock. Requires the mockserver-async module on the classpath (501 otherwise).\n\nAsyncAPI spec to import as HTTP expectations\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"spec\": \"asyncapi: 2.6.0\\ninfo:\\n  title: Test Service\\n  version: 1.0.0\\nchannels:\\n  user/signedup:\\n    publish:\\n      message:\\n        payload:\\n          type: object\\n          properties:\\n            userId:\\n              type: string\",\n  \"channelPathPrefix\": \"/events\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           }
         }
       ]
@@ -2808,7 +2817,7 @@
             "description": "Generates an editable load scenario from an OpenAPI spec and loads (registers) it into the registry under \"name\" in the LOADED state \u2014 exactly like PUT /mockserver/loadScenario, it generates no traffic and is allowed even when loadGenerationEnabled is false. One step is produced per OpenAPI operation (in a stable path-then-method order), each with the operation's method and server-prefixed path, a representative request-body example, and a Content-Type header. The spec is accepted identically to PUT /mockserver/openapi/expectation \u2014 an inline JSON/YAML payload, a URL, or a file/classpath reference. Target precedence for where each request is sent (carried as the request's Host header and secure flag): an explicit \"target\" wins, else the spec's servers[0] URL, else the request is left path-only for the operator to edit. When no \"profile\" is supplied a conservative default is applied (one short constant-VU stage) so the scenario is immediately runnable yet safe \u2014 the operator edits it before scaling up. The generated scenario is returned so a client/UI can show and edit it before triggering a run.\n\nthe scenario name plus the OpenAPI spec (with optional target and profile)\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"petstore-load\",\n  \"specUrlOrPayload\": \"https://raw.githubusercontent.com/OAI/OpenAPI-Specification/master/examples/v3.0/petstore.yaml\",\n  \"target\": {\n    \"host\": \"petstore.svc\",\n    \"port\": 8080,\n    \"scheme\": \"http\"\n  }\n}",
+              "raw": "{\n  \"name\": \"petstore-load\",\n  \"specUrlOrPayload\": \"openapi: 3.0.0\\ninfo:\\n  title: Petstore\\n  version: 1.0.0\\npaths:\\n  /pets:\\n    get:\\n      operationId: listPets\\n      responses:\\n        \\\"200\\\":\\n          description: a list of pets\",\n  \"target\": {\n    \"host\": \"petstore.svc\",\n    \"port\": 8080,\n    \"scheme\": \"http\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2963,7 +2972,7 @@
             "description": "Runs each operation of an OpenAPI specification against a live service and validates that the actual responses conform to the spec. Supply the spec as a URL, file path or inline JSON/YAML (\"spec\", or its alias \"specUrlOrPayload\"), the base URL of the service under test (\"baseUrl\"), and optionally a single \"operationId\" to restrict the run. The target host is subject to the SSRF policy (forwardProxyBlockPrivateNetworks). Returns a per-operation pass/fail report.\n\nthe OpenAPI spec and live-service base URL to contract-test\n\nFull API reference: https://www.mock-server.com/mock_server/mockserver_clients.html",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"spec\": \"https://petstore.swagger.io/v2/swagger.json\",\n  \"baseUrl\": \"http://localhost:8080\",\n  \"operationId\": \"listPets\"\n}",
+              "raw": "{\n  \"spec\": \"openapi: 3.0.0\\ninfo:\\n  title: Petstore\\n  version: 1.0.0\\npaths:\\n  /pets:\\n    get:\\n      operationId: listPets\\n      responses:\\n        \\\"200\\\":\\n          description: a list of pets\",\n  \"baseUrl\": \"http://localhost:8080\",\n  \"operationId\": \"listPets\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

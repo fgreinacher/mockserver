@@ -16,7 +16,7 @@ headers {
 
 body:json {
   {
-    "spec": "https://petstore.swagger.io/v2/swagger.json",
+    "spec": "openapi: 3.0.0\ninfo:\n  title: Petstore\n  version: 1.0.0\npaths:\n  /pets:\n    get:\n      operationId: listPets\n      responses:\n        \"200\":\n          description: a list of pets",
     "baseUrl": "http://localhost:8080",
     "operationId": "listPets"
   }

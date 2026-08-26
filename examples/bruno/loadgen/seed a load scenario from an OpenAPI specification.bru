@@ -17,7 +17,7 @@ headers {
 body:json {
   {
     "name": "petstore-load",
-    "specUrlOrPayload": "https://raw.githubusercontent.com/OAI/OpenAPI-Specification/master/examples/v3.0/petstore.yaml",
+    "specUrlOrPayload": "openapi: 3.0.0\ninfo:\n  title: Petstore\n  version: 1.0.0\npaths:\n  /pets:\n    get:\n      operationId: listPets\n      responses:\n        \"200\":\n          description: a list of pets",
     "target": {
       "host": "petstore.svc",
       "port": 8080,

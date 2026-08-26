@@ -2831,8 +2831,24 @@ paths:
         content:
           application/json:
             schema:
-              type: string
+              type: object
               description: AsyncAPI spec (JSON/YAML) or a {spec, channelPathPrefix} wrapper
+            example:
+              spec: |-
+                asyncapi: 2.6.0
+                info:
+                  title: Test Service
+                  version: 1.0.0
+                channels:
+                  user/signedup:
+                    publish:
+                      message:
+                        payload:
+                          type: object
+                          properties:
+                            userId:
+                              type: string
+              channelPathPrefix: /events
         description: AsyncAPI spec to import as HTTP expectations
         required: true
   /mockserver/grpc/services:
@@ -3211,7 +3227,18 @@ paths:
                   $ref: "#/components/schemas/LoadProfile"
             example:
               name: petstore-load
-              specUrlOrPayload: "https://raw.githubusercontent.com/OAI/OpenAPI-Specification/master/examples/v3.0/petstore.yaml"
+              specUrlOrPayload: |-
+                openapi: 3.0.0
+                info:
+                  title: Petstore
+                  version: 1.0.0
+                paths:
+                  /pets:
+                    get:
+                      operationId: listPets
+                      responses:
+                        "200":
+                          description: a list of pets
               target:
                 host: petstore.svc
                 port: 8080
@@ -3478,7 +3505,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/SloVerdict"
         '400':
-          description: malformed criteria, or SLO tracking is disabled (sloTrackingEnabled=false)
+          description: malformed criteria
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '403':
+          description: SLO tracking is disabled (sloTrackingEnabled=false)
           content:
             application/json:
               schema:
@@ -3821,7 +3857,18 @@ paths:
             schema:
               $ref: "#/components/schemas/ContractTestRequest"
             example:
-              spec: https://petstore.swagger.io/v2/swagger.json
+              spec: |-
+                openapi: 3.0.0
+                info:
+                  title: Petstore
+                  version: 1.0.0
+                paths:
+                  /pets:
+                    get:
+                      operationId: listPets
+                      responses:
+                        "200":
+                          description: a list of pets
               baseUrl: http://localhost:8080
               operationId: listPets
         description: the OpenAPI spec and live-service base URL to contract-test

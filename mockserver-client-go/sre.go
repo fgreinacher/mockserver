@@ -925,13 +925,15 @@ type SloVerdict struct {
 
 // VerifySLO evaluates a set of service-level objectives over a window
 // (PUT /mockserver/verifySLO). The server encodes the verdict in the HTTP
-// status: 200 for PASS or INCONCLUSIVE, 406 for FAIL, 400 for a malformed
-// criteria or when SLO tracking is disabled (sloTrackingEnabled=false).
+// status: 200 for PASS or INCONCLUSIVE, 406 for FAIL, 403 when SLO tracking is
+// disabled (sloTrackingEnabled=false), and 400 for malformed criteria.
 //
 // The decoded SloVerdict is returned for both PASS/INCONCLUSIVE (200) and FAIL
 // (406) so callers can inspect the per-objective results; the returned error is
-// non-nil only on FAIL or a real error. A 400 disabled response is surfaced as
-// a FeatureDisabledError.
+// non-nil only on FAIL or a real error. A 403 is surfaced as a
+// FeatureDisabledError, a 400 as a plain error naming the criteria — these used
+// to be the same status, so a malformed criteria was misreported as a disabled
+// feature.
 func (c *Client) VerifySLO(criteria SloCriteria) (SloVerdict, error) {
 	var verdict SloVerdict
 
@@ -945,8 +947,11 @@ func (c *Client) VerifySLO(criteria SloCriteria) (SloVerdict, error) {
 		return verdict, err
 	}
 
-	if statusCode == 400 {
+	if statusCode == 403 {
 		return verdict, &FeatureDisabledError{Feature: "SLO tracking", Status: statusCode, Body: string(respBody)}
+	}
+	if statusCode == 400 {
+		return verdict, fmt.Errorf("mockserver: invalid SLO criteria: %s", string(respBody))
 	}
 	if statusCode != 200 && statusCode != 406 {
 		return verdict, fmt.Errorf("mockserver: verify SLO failed (status %d): %s", statusCode, string(respBody))

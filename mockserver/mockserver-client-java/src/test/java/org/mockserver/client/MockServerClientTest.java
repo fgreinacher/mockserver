@@ -2808,16 +2808,32 @@ public class MockServerClientTest {
     }
 
     @Test
-    public void shouldSurface400AsIllegalArgumentWhenSloTrackingDisabled() {
-        // given - server returns 400 when sloTrackingEnabled=false; sendRequest maps 400 -> IllegalArgumentException
+    public void shouldSurface403AsIllegalStateWhenSloTrackingDisabled() {
+        // given - the server returns 403 when sloTrackingEnabled=false. This used to be a 400, which
+        // it shared with malformed criteria, so a caller could not tell a typo in its criteria from a
+        // server with the feature switched off.
         when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
-            .thenReturn(response().withStatusCode(BAD_REQUEST.code()).withBody("{\"error\":\"SLO tracking not enabled (set sloTrackingEnabled=true)\"}"));
+            .thenReturn(response().withStatusCode(FORBIDDEN.code()).withBody("{\"error\":\"SLO tracking not enabled (set sloTrackingEnabled=true)\"}"));
+
+        // when
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> mockServerClient.verifySLO(sampleSloCriteria()));
+
+        // then
+        assertThat(exception.getMessage(), containsString("sloTrackingEnabled=true"));
+    }
+
+    @Test
+    public void shouldSurface400AsIllegalArgumentForMalformedSloCriteria() {
+        // given - 400 now means only that the criteria are malformed; sendRequest maps it to
+        // IllegalArgumentException, the common client convention for every 400
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), anyLong(), any(TimeUnit.class), anyBoolean()))
+            .thenReturn(response().withStatusCode(BAD_REQUEST.code()).withBody("{\"error\":\"objectives must be an array\"}"));
 
         // when
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> mockServerClient.verifySLO(sampleSloCriteria()));
 
         // then
-        assertThat(exception.getMessage(), containsString("sloTrackingEnabled=true"));
+        assertThat(exception.getMessage(), containsString("objectives must be an array"));
     }
 
     @Test

@@ -6,12 +6,19 @@ meta {
 
 put {
   url: {{baseUrl}}/mockserver/asyncapi/http
-  body: none
+  body: json
   auth: inherit
 }
 
 headers {
   Content-Type: application/json
+}
+
+body:json {
+  {
+    "spec": "asyncapi: 2.6.0\ninfo:\n  title: Test Service\n  version: 1.0.0\nchannels:\n  user/signedup:\n    publish:\n      message:\n        payload:\n          type: object\n          properties:\n            userId:\n              type: string",
+    "channelPathPrefix": "/events"
+  }
 }
 
 docs {

@@ -1581,8 +1581,10 @@ impl MockServerClient {
                 let text = resp.text()?;
                 Ok(serde_json::from_str(&text)?)
             }
-            400 => Err(Error::FeatureDisabled(resp.text()?)),
+            // 403 is "SLO tracking is off"; 400 is "these criteria are malformed". They used to
+            // be the same status, so a malformed criteria was misreported as a disabled feature.
             403 => Err(Error::FeatureDisabled(resp.text()?)),
+            400 => Err(Error::InvalidRequest(resp.text()?)),
             _ => Err(Error::UnexpectedStatus {
                 status,
                 body: resp.text().unwrap_or_default(),

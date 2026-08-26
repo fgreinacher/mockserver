@@ -603,10 +603,18 @@ class TestSyncVerifySlo:
                 client.verify_slo({"name": "x"})
 
     def test_verify_slo_disabled_raises_error(self, sync_mock_server):
-        SyncMockHandler.response_status = 400
-        SyncMockHandler.response_body = "SLO tracking disabled"
+        # 403 is "SLO tracking is off"; it used to share 400 with malformed criteria
+        SyncMockHandler.response_status = 403
+        SyncMockHandler.response_body = "SLO tracking not enabled"
         with MockServerClient("127.0.0.1", sync_mock_server) as client:
-            with pytest.raises(MockServerError, match="SLO tracking disabled"):
+            with pytest.raises(MockServerError, match="sloTrackingEnabled=true"):
+                client.verify_slo({"name": "x"})
+
+    def test_verify_slo_malformed_criteria_raises_invalid_error(self, sync_mock_server):
+        SyncMockHandler.response_status = 400
+        SyncMockHandler.response_body = "objectives must be an array"
+        with MockServerClient("127.0.0.1", sync_mock_server) as client:
+            with pytest.raises(MockServerError, match="Invalid SLO criteria"):
                 client.verify_slo({"name": "x"})
 
 

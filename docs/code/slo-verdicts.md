@@ -24,7 +24,7 @@ flowchart TD
     F --> G["SloEvaluator.evaluate"]
     D --> G
     G --> H["SloVerdict"]
-    H --> I["200 PASS / INCONCLUSIVE\n406 FAIL\n400 malformed or disabled"]
+    H --> I["200 PASS / INCONCLUSIVE\n406 FAIL\n403 disabled\n400 malformed"]
 ```
 
 ## Key components
@@ -90,7 +90,8 @@ A criteria PASSes only when **all** objectives hold (logical AND):
 - else any objective **INCONCLUSIVE**, or the window holds fewer than
   `minimumSampleCount` samples → verdict **INCONCLUSIVE** → HTTP `200`
 - else → verdict **PASS** → HTTP `200`
-- malformed body, or `sloTrackingEnabled=false` → HTTP `400` with a JSON `error`
+- `sloTrackingEnabled=false` → HTTP `403` with a JSON `error` (matches `PUT /mockserver/loadScenario/start`)
+- malformed body → HTTP `400` with a JSON `error`
 
 An objective is INCONCLUSIVE when its indicator cannot be computed — no latency
 samples in the window, or error rate over zero requests — so an empty window never
@@ -139,4 +140,4 @@ enforced by `GlobalStateMutationGuardTest`).
 | `SloSampleStoreTest` | record gating, count/age eviction, window/scope/host filters, error counts, percentile vs brute-force oracle, empty window |
 | `SloEvaluatorTest` | comparators, AND-ing, `minimumSampleCount` guard, INCONCLUSIVE cases, LOOKBACK (frozen clock) + EXPLICIT windows |
 | `SloCriteriaSerializerTest` | lenient parse, verdict serialization, DTO round-trip |
-| `HttpStateVerifySloEndpointTest` | routing/auth, `200` PASS, `406` FAIL, `400` malformed, `400` disabled |
+| `HttpStateVerifySloEndpointTest` | routing/auth, `200` PASS, `406` FAIL, `400` malformed, `403` disabled |

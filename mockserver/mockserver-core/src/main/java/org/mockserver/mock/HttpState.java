@@ -3974,14 +3974,21 @@ public class HttpState {
      *
      * <p>Status mapping: {@code 200 OK} for a PASS or INCONCLUSIVE verdict,
      * {@code 406 NOT_ACCEPTABLE} for a FAIL verdict (so a CI gate can assert on
-     * the status code alone), {@code 400 BAD_REQUEST} for a malformed body or
-     * when SLO tracking is disabled. The body is always JSON.
+     * the status code alone), {@code 400 BAD_REQUEST} for a malformed body, and
+     * {@code 403 FORBIDDEN} when SLO tracking is disabled. The body is always JSON.
+     *
+     * <p>The disabled case is deliberately NOT 400: 400 told the caller its criteria
+     * were malformed when the criteria were fine and only the feature flag was off,
+     * and every client library had to paper over it with a combined
+     * "invalid criteria (or SLO tracking disabled)" message. 403 matches
+     * {@code PUT /mockserver/loadScenario/start}, which is the same situation, and the
+     * feature-disabled exception the clients already model.
      */
     private HttpResponse handleVerifySlo(HttpRequest request) {
         com.fasterxml.jackson.databind.ObjectMapper objectMapper = ObjectMapperFactory.createObjectMapper();
         try {
             if (!configuration.sloTrackingEnabled()) {
-                return sloError(objectMapper, "SLO tracking not enabled (set sloTrackingEnabled=true)");
+                return sloError(objectMapper, FORBIDDEN.code(), "SLO tracking not enabled (set sloTrackingEnabled=true)");
             }
             org.mockserver.slo.SloCriteria criteria = getSloCriteriaSerializer().deserialize(request.getBodyAsJsonOrXmlString());
             org.mockserver.slo.SloVerdict verdict = new org.mockserver.slo.SloEvaluator().evaluate(criteria);
@@ -3998,6 +4005,10 @@ public class HttpState {
     }
 
     private HttpResponse sloError(com.fasterxml.jackson.databind.ObjectMapper objectMapper, String message) {
+        return sloError(objectMapper, BAD_REQUEST.code(), message);
+    }
+
+    private HttpResponse sloError(com.fasterxml.jackson.databind.ObjectMapper objectMapper, int statusCode, String message) {
         com.fasterxml.jackson.databind.node.ObjectNode errorNode = objectMapper.createObjectNode();
         errorNode.put("error", message);
         String body;
@@ -4006,7 +4017,7 @@ public class HttpState {
         } catch (Exception e) {
             body = "{\"error\":\"failed to render SLO error\"}";
         }
-        return response().withStatusCode(BAD_REQUEST.code())
+        return response().withStatusCode(statusCode)
             .withBody(body, MediaType.JSON_UTF_8);
     }
 
@@ -6867,7 +6878,16 @@ public class HttpState {
                     reportNode.put("totalOperations", results.size());
                     reportNode.put("passed", passed);
                     reportNode.put("failed", results.size() - passed);
-                    reportNode.put("allPassed", passed == results.size());
+                    // A run that exercised NO operation has verified nothing, so it must not report
+                    // success - "passed == results.size()" is vacuously true for an empty result set,
+                    // which silently passed a contract test whose operationId filter was typo'd or had
+                    // gone stale against a renamed operation.
+                    reportNode.put("allPassed", !results.isEmpty() && passed == results.size());
+                    if (results.isEmpty()) {
+                        reportNode.put("error", isNotBlank(operationIdFilter)
+                            ? "no operation matched operationId \"" + operationIdFilter + "\" - nothing was verified"
+                            : "the specification declares no operations to test - nothing was verified");
+                    }
                     com.fasterxml.jackson.databind.node.ArrayNode resultsNode = reportNode.putArray("results");
                     for (org.mockserver.openapi.OpenApiContractTest.ContractTestResult result : results) {
                         com.fasterxml.jackson.databind.node.ObjectNode resultNode = resultsNode.addObject();

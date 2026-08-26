@@ -130,16 +130,28 @@ public class HttpStateVerifySloEndpointTest {
     }
 
     @Test
-    public void shouldReturn400WhenTrackingDisabled() throws Exception {
+    public void shouldReturn403WhenTrackingDisabled() throws Exception {
+        // 403, not 400: the criteria are well-formed and only the feature flag is off, which is the
+        // same situation as PUT /mockserver/loadScenario/start with load generation disabled. 400
+        // told callers their criteria were malformed and forced every client library into a combined
+        // "invalid criteria (or SLO tracking disabled)" message.
         ConfigurationProperties.sloTrackingEnabled(false);
         Configuration configuration = configuration().sloTrackingEnabled(false);
         Scheduler scheduler = new Scheduler(configuration, new MockServerLogger(configuration, HttpStateVerifySloEndpointTest.class), true);
         httpState = new HttpState(configuration, new MockServerLogger(configuration, HttpStateVerifySloEndpointTest.class), scheduler);
 
         HttpResponse response = handle(criteria("LESS_THAN", 500));
-        assertThat(response.getStatusCode(), is(400));
+        assertThat(response.getStatusCode(), is(403));
         JsonNode body = objectMapper.readTree(response.getBodyAsString());
         assertThat(body.get("error").asText(), containsString("SLO tracking not enabled"));
+    }
+
+    @Test
+    public void shouldStillReturn400ForMalformedCriteriaWhenTrackingEnabled() throws Exception {
+        // the 403 above must not swallow the malformed-body case: with tracking ON a bad body is
+        // still a 400, so the two failures stay distinguishable by status code alone
+        HttpResponse response = handle("{\"objectives\": \"not-an-array\"}");
+        assertThat(response.getStatusCode(), is(400));
     }
 
     @Test

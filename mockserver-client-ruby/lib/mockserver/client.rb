@@ -862,8 +862,8 @@ module MockServer
     # (PUT /mockserver/verifySLO).
     #
     # The server encodes the verdict in the HTTP status: 200 for PASS or
-    # INCONCLUSIVE, 406 for FAIL, 400 for malformed criteria or when SLO tracking
-    # is disabled (+sloTrackingEnabled=false+). The decoded verdict Hash carries
+    # INCONCLUSIVE, 406 for FAIL, 403 when SLO tracking is disabled
+    # (+sloTrackingEnabled=false+) and 400 for malformed criteria. The decoded verdict Hash carries
     # the overall +result+ and the per-objective +objectiveResults+ so callers can
     # inspect why an SLO failed.
     #
@@ -875,7 +875,7 @@ module MockServer
     # @param criteria [Hash, #to_h] the SLO criteria
     # @return [Hash] the SLO verdict (result PASS or INCONCLUSIVE)
     # @raise [VerificationError] if the verdict is FAIL (HTTP 406)
-    # @raise [Error] if criteria are malformed or SLO tracking is disabled (HTTP 400),
+    # @raise [Error] if SLO tracking is disabled (HTTP 403) or criteria are malformed (HTTP 400),
     #   or on any other failure
     def verify_slo(criteria)
       payload = criteria.respond_to?(:to_h) ? criteria.to_h : criteria
@@ -884,9 +884,12 @@ module MockServer
       if status == 406
         raise VerificationError, (response_body && !response_body.empty? ? response_body : 'SLO verdict: FAIL')
       end
+      if status == 403
+        raise Error, 'SLO tracking is disabled — set sloTrackingEnabled=true ' \
+                     "on the server: #{response_body}"
+      end
       if status == 400
-        raise Error, 'Invalid SLO criteria (or SLO tracking disabled — set ' \
-                     "sloTrackingEnabled=true on the server): #{response_body}"
+        raise Error, "Invalid SLO criteria: #{response_body}"
       end
       if status >= 400
         raise Error, "Failed to verify SLO (status=#{status}): #{response_body}"

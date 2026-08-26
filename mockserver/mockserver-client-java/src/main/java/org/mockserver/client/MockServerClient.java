@@ -3895,16 +3895,22 @@ public class MockServerClient implements Stoppable {
      *       {@code verify(...)} methods so an SLO gate is catchable the same way. The
      *       verdict is also attached via {@link Throwable#initCause(Throwable)} as an
      *       {@link SloVerdictAssertionError} for callers that want the parsed result.</li>
-     *   <li>{@code 400 BAD_REQUEST} — malformed criteria, or SLO tracking is disabled on
-     *       the server (set {@code sloTrackingEnabled=true}); this surfaces as an
+     *   <li>{@code 403 FORBIDDEN} — SLO tracking is disabled on the server (start it with
+     *       {@code sloTrackingEnabled=true}); this surfaces as an
+     *       {@link IllegalStateException} naming the flag to enable.</li>
+     *   <li>{@code 400 BAD_REQUEST} — malformed criteria; this surfaces as an
      *       {@link IllegalArgumentException} carrying the server's error body (the common
      *       client convention — {@code sendRequest} maps every {@code 400} this way).</li>
      * </ul>
      *
+     * <p>The disabled case used to share {@code 400} with malformed criteria, so a typo in the
+     * criteria and a server with the feature switched off were indistinguishable to a caller.
+     *
      * @param criteria the SLO criteria to evaluate (see {@link org.mockserver.slo.SloCriteria})
      * @return the parsed {@link SloVerdict} for a {@code PASS} or {@code INCONCLUSIVE} result
      * @throws AssertionError         if the verdict is {@code FAIL} (server responds {@code 406})
-     * @throws IllegalArgumentException if the criteria are invalid or SLO tracking is disabled (server responds {@code 400})
+     * @throws IllegalStateException  if SLO tracking is disabled (server responds {@code 403})
+     * @throws IllegalArgumentException if the criteria are invalid (server responds {@code 400})
      */
     public SloVerdict verifySLO(SloCriteria criteria) throws AssertionError {
         if (criteria == null) {
@@ -3929,9 +3935,11 @@ public class MockServerClient implements Stoppable {
                     // body was not a parseable verdict — the message still carries it
                 }
                 throw assertionError;
+            } else if (statusCode == FORBIDDEN.code()) {
+                throw new IllegalStateException("SLO tracking is disabled - start MockServer with sloTrackingEnabled=true: " + body);
             } else if (statusCode >= 400) {
-                // 400 is already mapped to IllegalArgumentException by sendRequest (SLO tracking
-                // disabled / malformed criteria); this covers any other unexpected error status.
+                // 400 (malformed criteria) is already mapped to IllegalArgumentException by
+                // sendRequest; this covers any other unexpected error status.
                 throw new ClientException(formatLogMessage("error:{}while verifying SLO", body));
             }
         }

@@ -1391,10 +1391,13 @@ class MockServerClient
         if ($status === 406) {
             throw new VerificationException($responseBody ?: 'SLO verdict: FAIL');
         }
-        if ($status === 400) {
-            throw new InvalidRequestException(
-                "Invalid SLO criteria (or SLO tracking disabled — set sloTrackingEnabled=true): {$responseBody}"
+        if ($status === 403) {
+            throw new FeatureNotEnabledException(
+                "SLO tracking is disabled (start MockServer with sloTrackingEnabled=true) (HTTP 403): {$responseBody}"
             );
+        }
+        if ($status === 400) {
+            throw new InvalidRequestException("Invalid SLO criteria (HTTP 400): {$responseBody}");
         }
         if ($status >= 400) {
             throw new MockServerException("Verify SLO failed (HTTP {$status}): {$responseBody}");

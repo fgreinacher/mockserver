@@ -265,6 +265,36 @@ public class HttpStateTest {
     }
 
     @Test
+    public void shouldNotReportContractTestSuccessWhenNoOperationRan() throws Exception {
+        // given — an operationId filter that matches nothing in the spec. "allPassed" used to be
+        // computed as "passed == results.size()", which is vacuously true for an empty result set,
+        // so a mistyped or stale operationId reported a green contract test that verified nothing.
+        String spec = FileReader.readFileFromClassPathOrPath("org/mockserver/openapi/openapi_petstore_example.json");
+        httpState.setReplayHandler(req -> {
+            throw new AssertionError("no operation matched the filter, so no request should be sent");
+        });
+        HttpRequest contractTestRequest = request("/mockserver/contractTest")
+            .withMethod("PUT")
+            .withBody("{\"spec\":" + org.mockserver.serialization.ObjectMapperFactory.createObjectMapper().writeValueAsString(spec)
+                + ",\"baseUrl\":\"http://localhost:1080\",\"operationId\":\"noSuchOperation\"}");
+        FakeResponseWriter responseWriter = new FakeResponseWriter();
+
+        // when
+        boolean handle = httpState.handle(contractTestRequest, responseWriter, false);
+
+        // then
+        assertThat(handle, is(true));
+        assertThat(responseWriter.response.getStatusCode(), is(200));
+        com.fasterxml.jackson.databind.JsonNode report =
+            org.mockserver.serialization.ObjectMapperFactory.createObjectMapper()
+                .readTree(responseWriter.response.getBodyAsString());
+        assertThat(report.get("totalOperations").asInt(), is(0));
+        assertThat("a run that exercised no operation has verified nothing and must not report success",
+            report.get("allPassed").asBoolean(), is(false));
+        assertThat(report.get("error").asText(), containsString("noSuchOperation"));
+    }
+
+    @Test
     public void shouldHandleContractTestRequestWhenServiceViolatesSpec() throws Exception {
         // given — a non-conformant SUT: listPets returns a JSON object instead of an array
         String spec = FileReader.readFileFromClassPathOrPath("org/mockserver/openapi/openapi_petstore_example.json");

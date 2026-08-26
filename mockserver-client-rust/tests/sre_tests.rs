@@ -714,12 +714,24 @@ fn test_verify_slo_406_is_fail_verdict_not_error() {
 }
 
 #[test]
-fn test_verify_slo_400_is_feature_disabled() {
-    let (client, _rx) = stub(400, r#"{"error":"SLO tracking disabled"}"#);
+fn test_verify_slo_403_is_feature_disabled() {
+    // 403 is "SLO tracking is off", matching PUT /mockserver/loadScenario/start. It used to share
+    // 400 with malformed criteria, so a typo in the criteria was reported as a disabled feature.
+    let (client, _rx) = stub(403, r#"{"error":"SLO tracking not enabled"}"#);
     let criteria = SloCriteria::new(vec![SloObjective::new("ERROR_RATE", "LESS_THAN", 0.01)]);
     match client.verify_slo(&criteria) {
-        Err(Error::FeatureDisabled(msg)) => assert!(msg.contains("disabled")),
+        Err(Error::FeatureDisabled(msg)) => assert!(msg.contains("not enabled")),
         other => panic!("expected FeatureDisabled, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_verify_slo_400_is_invalid_request() {
+    let (client, _rx) = stub(400, r#"{"error":"objectives must be an array"}"#);
+    let criteria = SloCriteria::new(vec![SloObjective::new("ERROR_RATE", "LESS_THAN", 0.01)]);
+    match client.verify_slo(&criteria) {
+        Err(Error::InvalidRequest(msg)) => assert!(msg.contains("objectives must be an array")),
+        other => panic!("expected InvalidRequest, got {other:?}"),
     }
 }
 

@@ -583,14 +583,28 @@ class MockServerClientSreTest extends TestCase
         $client->verifySlo(['objectives' => []]);
     }
 
-    public function testVerifySloThrowsInvalidRequestOn400Disabled(): void
+    public function testVerifySloThrowsFeatureNotEnabledOn403Disabled(): void
+    {
+        // 403 is "SLO tracking is off"; it used to share 400 with malformed criteria, so a typo in
+        // the criteria was reported to callers as a disabled feature and vice versa.
+        $client = $this->createClientWithMock([
+            new Response(403, [], 'SLO tracking not enabled'),
+        ]);
+
+        $this->expectException(FeatureNotEnabledException::class);
+        $this->expectExceptionMessage('sloTrackingEnabled=true');
+
+        $client->verifySlo(['objectives' => []]);
+    }
+
+    public function testVerifySloThrowsInvalidRequestOn400MalformedCriteria(): void
     {
         $client = $this->createClientWithMock([
-            new Response(400, [], 'SLO tracking disabled'),
+            new Response(400, [], 'objectives must be an array'),
         ]);
 
         $this->expectException(InvalidRequestException::class);
-        $this->expectExceptionMessage('sloTrackingEnabled=true');
+        $this->expectExceptionMessage('Invalid SLO criteria');
 
         $client->verifySlo(['objectives' => []]);
     }

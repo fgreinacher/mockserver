@@ -57,12 +57,20 @@ RSpec.describe MockServer::Client do
         .to raise_error(MockServer::VerificationError, /FAIL/)
     end
 
-    it 'raises Error on 400 (malformed or SLO tracking disabled)' do
+    it 'raises Error on 403 (SLO tracking disabled)' do
       stub_request(:put, "#{base_url}/mockserver/verifySLO")
-        .to_return(status: 400, body: 'SLO tracking disabled')
+        .to_return(status: 403, body: 'SLO tracking not enabled')
 
       expect { client.verify_slo(criteria) }
         .to raise_error(MockServer::Error, /sloTrackingEnabled=true/)
+    end
+
+    it 'raises Error naming the criteria on 400 (malformed criteria)' do
+      stub_request(:put, "#{base_url}/mockserver/verifySLO")
+        .to_return(status: 400, body: 'objectives must be an array')
+
+      expect { client.verify_slo(criteria) }
+        .to raise_error(MockServer::Error, /Invalid SLO criteria/)
     end
 
     it 'accepts an object responding to to_h' do

@@ -725,14 +725,27 @@ public class SreControlPlaneTests
     }
 
     [Fact]
-    public void VerifySlo_ThrowsOnDisabled400()
+    public void VerifySlo_ThrowsOnDisabled403()
     {
+        // 403 is "SLO tracking is off"; it used to share 400 with malformed criteria, so a typo in
+        // the criteria was reported to callers as a disabled feature and vice versa.
         var (client, handler) = CreateClient();
-        handler.ResponseStatusCode = HttpStatusCode.BadRequest;
-        handler.ResponseBody = "{\"error\":\"SLO tracking disabled\"}";
+        handler.ResponseStatusCode = HttpStatusCode.Forbidden;
+        handler.ResponseBody = "{\"error\":\"SLO tracking not enabled\"}";
 
         var act = () => client.VerifySlo(new SloCriteria { Objectives = new List<SloObjective>() });
         act.Should().Throw<MockServerClientException>().WithMessage("*sloTrackingEnabled*");
+    }
+
+    [Fact]
+    public void VerifySlo_ThrowsOnMalformedCriteria400()
+    {
+        var (client, handler) = CreateClient();
+        handler.ResponseStatusCode = HttpStatusCode.BadRequest;
+        handler.ResponseBody = "{\"error\":\"objectives must be an array\"}";
+
+        var act = () => client.VerifySlo(new SloCriteria { Objectives = new List<SloObjective>() });
+        act.Should().Throw<MockServerClientException>().WithMessage("*malformed criteria*");
     }
 
     // -------------------------------------------------------------------

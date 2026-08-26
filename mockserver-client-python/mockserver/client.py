@@ -378,7 +378,8 @@ class MockServerClient:
 
         Returns the verdict dict (``result`` PASS or INCONCLUSIVE). A FAIL verdict
         (HTTP 406) raises :class:`MockServerVerificationError`. SLO tracking is off
-        by default (HTTP 400 until ``sloTrackingEnabled=true``).
+        by default (HTTP 403 until ``sloTrackingEnabled=true``); malformed criteria
+        are a separate HTTP 400.
         """
         return self._run(self._async_client.verify_slo(criteria))
 

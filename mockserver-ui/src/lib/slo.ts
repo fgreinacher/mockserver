@@ -11,8 +11,8 @@
  * HTTP status mapping (per HttpState.handleVerifySlo):
  *   - 200 OK            → PASS or INCONCLUSIVE verdict (body is the verdict JSON)
  *   - 406 NOT_ACCEPTABLE → FAIL verdict (still carries the verdict JSON body)
- *   - 400 BAD_REQUEST    → malformed criteria, or SLO tracking disabled
- *                          (body is `{ "error": "..." }`)
+ *   - 403 FORBIDDEN      → SLO tracking disabled (body is `{ "error": "..." }`)
+ *   - 400 BAD_REQUEST    → malformed criteria (body is `{ "error": "..." }`)
  */
 import { buildBaseUrl } from './mcpClient';
 import type { ConnectionParams } from '../hooks/useConnectionParams';

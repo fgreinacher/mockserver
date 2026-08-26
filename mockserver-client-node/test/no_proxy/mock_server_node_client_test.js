@@ -880,7 +880,7 @@ describe('mock server node client (no proxy)', { concurrency: 1 }, function () {
     });
 
     it('should reject when a failed verifySLO is consumed with a single-argument then', async function () {
-        // SLO tracking is disabled by default, so the server answers 400 — the
+        // SLO tracking is disabled by default, so the server answers 403 — the
         // same rejection path a FAIL verdict (406) takes. Either way the failure
         // must not be swallowed into a resolved promise.
         var successHandlerRan = false;

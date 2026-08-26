@@ -127,15 +127,28 @@ describe('client.verifySLO', function () {
         assert.ok(rejected, 'expected verifySLO to reject on FAIL');
     });
 
-    it('rejects with enablement guidance on a disabled/invalid (400) response', async function () {
+    it('rejects with enablement guidance on a disabled (403) response', async function () {
+        // the real server body — the guidance lives in the server's own error message, which the
+        // client surfaces verbatim rather than guessing from a status it cannot see on this path
         var rejected = false;
         try {
-            await clientWith(rejectStub('SLO tracking is not enabled')).verifySLO(criteria);
+            await clientWith(rejectStub('{"error":"SLO tracking not enabled (set sloTrackingEnabled=true)"}')).verifySLO(criteria);
         } catch (err) {
             rejected = true;
             assert.ok(String(err).indexOf('sloTrackingEnabled=true') !== -1);
         }
         assert.ok(rejected, 'expected verifySLO to reject when disabled');
+    });
+
+    it('rejects naming the criteria on a malformed (400) response', async function () {
+        var rejected = false;
+        try {
+            await clientWith(rejectStub('{"error":"objectives must be an array"}')).verifySLO(criteria);
+        } catch (err) {
+            rejected = true;
+            assert.ok(String(err).indexOf('objectives must be an array') !== -1);
+        }
+        assert.ok(rejected, 'expected verifySLO to reject on malformed criteria');
     });
 });
 

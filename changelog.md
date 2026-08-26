@@ -6,6 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Request bodies sent as `application/yaml`, `application/x-yaml` or `application/graphql` are no longer
+  corrupted. None of those subtypes were in `MediaType.isString()`, so the body was stored as a `BinaryBody`
+  and `getBodyAsString()` handed back **base64** — silently mangling every YAML specification and GraphQL SDL
+  document sent with its natural content type, on the control plane (`PUT /mockserver/graphql` rejected its
+  own documented example this way, and `PUT /mockserver/openapi` did the same for a YAML spec) and in user
+  request matchers alike. `application/yaml` is the media type registered by RFC 9512; all three are UTF-8
+  text with neither a `text` type nor a `+json`/`+xml` suffix to fall back on.
+- `PUT /mockserver/contractTest` no longer reports success for a run that verified nothing. `allPassed` was
+  computed as `passed == results.size()`, which is vacuously true for an empty result set, so a contract test
+  whose `operationId` filter was mistyped or had gone stale against a renamed operation returned
+  `{"totalOperations": 0, "allPassed": true}`. An empty run is now `allPassed: false` and carries an `error`
+  naming why nothing ran.
+- The published OpenAPI examples for `PUT /mockserver/asyncapi/http`, `PUT /mockserver/loadScenario/generateFromOpenAPI`
+  and `PUT /mockserver/contractTest` now work as published. The AsyncAPI endpoint declared no request-body
+  example at all (so the generated Postman/Bruno collections sent an empty body and the endpoint rejected it),
+  and the other two fetched their specification from a remote URL, so the example failed anywhere without
+  egress. Both now carry an inline specification.
+
+### Changed
+- `PUT /mockserver/verifySLO` answers **403** rather than 400 when SLO tracking is disabled
+  (`sloTrackingEnabled=false`); 400 now means only that the criteria are malformed. The two cases previously
+  shared 400, so a caller could not tell a typo in its criteria from a server with the feature switched off —
+  every client library papered over it with a combined "invalid criteria (or SLO tracking disabled)" message.
+  403 matches `PUT /mockserver/loadScenario/start`, which is the same situation, and the feature-disabled
+  error the clients already model. All nine clients now distinguish the two: Go returns `FeatureDisabledError`
+  on 403 and a criteria error on 400, PHP throws `FeatureNotEnabledException` on 403, Java throws
+  `IllegalStateException` on 403 and keeps `IllegalArgumentException` for 400, and the Python, Ruby, Node,
+  Rust, .NET and dashboard clients give distinct messages for each.
+
 ### Added
 - `PUT /mockserver/retrieve` now accepts an expectation id (`{"id": "..."}`) in the request body instead of a request
   matcher, matching what `PUT /mockserver/clear` and `PUT /mockserver/verify` have always accepted (GitHub issue #2591).

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -872,17 +873,37 @@ func TestClient_VerifySLO_Fail(t *testing.T) {
 }
 
 func TestClient_VerifySLO_Disabled(t *testing.T) {
-	ts := stubServer(t, 400, `{"error":"SLO tracking is disabled"}`, nil, nil, nil)
+	// 403 is "SLO tracking is off"; it used to share 400 with malformed criteria, so a typo in
+	// the criteria was reported to callers as a disabled feature.
+	ts := stubServer(t, 403, `{"error":"SLO tracking not enabled"}`, nil, nil, nil)
 	defer ts.Close()
 
 	client := NewFromURL(ts.URL)
 	_, err := client.VerifySLO(sloCriteria())
 	if err == nil {
-		t.Fatal("expected error for disabled (400)")
+		t.Fatal("expected error for disabled (403)")
 	}
 	var fde *FeatureDisabledError
 	if !errors.As(err, &fde) {
 		t.Fatalf("expected FeatureDisabledError, got %T: %v", err, err)
+	}
+}
+
+func TestClient_VerifySLO_MalformedCriteria(t *testing.T) {
+	ts := stubServer(t, 400, `{"error":"objectives must be an array"}`, nil, nil, nil)
+	defer ts.Close()
+
+	client := NewFromURL(ts.URL)
+	_, err := client.VerifySLO(sloCriteria())
+	if err == nil {
+		t.Fatal("expected error for malformed criteria (400)")
+	}
+	var fde *FeatureDisabledError
+	if errors.As(err, &fde) {
+		t.Fatalf("a malformed criteria must not be reported as a disabled feature: %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid SLO criteria") {
+		t.Errorf("expected the error to name the criteria, got %v", err)
 	}
 }
 

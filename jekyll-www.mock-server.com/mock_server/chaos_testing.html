@@ -3148,7 +3148,7 @@ mock_server_active_service_chaos{fault_type="drop"}</code></pre>
 
 <p>After injecting faults and driving load, you can ask MockServer synchronously: <strong>"did the traffic just handled meet a service-level objective?"</strong> The SLO verdict endpoint evaluates latency percentiles and error rates over a configurable time window and returns a PASS / FAIL verdict, with the HTTP status code encoding the result so a CI step or chaos gate can assert on it without parsing the body.</p>
 
-<p><strong>Enable tracking first.</strong> SLO tracking is off by default — set <code class="inline code">sloTrackingEnabled=true</code> so MockServer records a latency + error sample for every forwarded upstream round-trip. The endpoint returns <code class="inline code">400</code> with an error message if tracking is disabled.</p>
+<p><strong>Enable tracking first.</strong> SLO tracking is off by default — set <code class="inline code">sloTrackingEnabled=true</code> so MockServer records a latency + error sample for every forwarded upstream round-trip. The endpoint returns <code class="inline code">403</code> with an error message if tracking is disabled (a <code class="inline code">400</code> means the criteria themselves are malformed).</p>
 
 <pre class="code"><code class="code">docker run -e MOCKSERVER_SLO_TRACKING_ENABLED=true mockserver/mockserver</code></pre>
 

@@ -244,7 +244,7 @@ Opt-in SLO sample tracking that backs `PUT /mockserver/verifySLO` (see [docs/cod
 | `sloWindowRetentionMillis` | `600000` (10 min) | Maximum age of a retained sample, measured relative to the newest recorded sample. Older samples are evicted lazily on record and on query. Set the trailing window of history you want verdicts to draw on. |
 | `sloWindowMaxSamples` | `50000` | Hard cap on retained samples; the oldest is evicted when the cap is exceeded. Bounds memory regardless of throughput. |
 
-Because tracking is off by default, the `verifySLO` endpoint returns `400` with `SLO tracking not enabled (set sloTrackingEnabled=true)` until you enable it.
+Because tracking is off by default, the `verifySLO` endpoint returns `403` with `SLO tracking not enabled (set sloTrackingEnabled=true)` until you enable it. A `400` from that endpoint means the criteria themselves are malformed — the two shared `400` until they were split, which left callers unable to tell a typo from a disabled feature.
 
 ### `loadGeneration*`
 

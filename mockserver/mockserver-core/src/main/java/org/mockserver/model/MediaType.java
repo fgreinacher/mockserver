@@ -309,7 +309,14 @@ public class MediaType extends ObjectWithJsonToString {
             "xml",
             "wsdl",
             "csv",
-            "urlencoded"
+            "urlencoded",
+            // application/yaml (RFC 9512), application/x-yaml and application/graphql are UTF-8 text
+            // formats with no "text" type and no "+json"/"+xml" suffix to fall back on. Without them
+            // here the body is stored as a BinaryBody, so getBodyAsString() hands back base64 - which
+            // silently corrupts every YAML spec and GraphQL SDL document sent with its natural
+            // content type, on the control plane and in user request matchers alike.
+            "yaml",
+            "graphql"
         })) {
             return true;
         }

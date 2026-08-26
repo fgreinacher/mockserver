@@ -757,18 +757,21 @@ class AsyncMockServerClient:
         Returns the verdict dict with a ``result`` of ``PASS`` or ``INCONCLUSIVE``
         (HTTP 200). A ``FAIL`` verdict (HTTP 406) raises
         :class:`MockServerVerificationError` so a CI or chaos gate can assert on it
-        directly. SLO tracking is off by default — the server returns 400 (raised as
-        :class:`MockServerError`) until started with ``sloTrackingEnabled=true``.
+        directly. SLO tracking is off by default — the server returns 403 (raised as
+        :class:`MockServerError`) until started with ``sloTrackingEnabled=true``;
+        malformed criteria are a separate 400.
         """
         body = json.dumps(criteria)
         status, response_body = await self._request("PUT", "/mockserver/verifySLO", body)
         if status == 406:
             raise MockServerVerificationError(response_body or "SLO verdict: FAIL")
-        if status == 400:
+        if status == 403:
             raise MockServerError(
-                "Invalid SLO criteria (or SLO tracking disabled — set "
-                f"sloTrackingEnabled=true): {response_body}"
+                "SLO tracking is disabled — start MockServer with "
+                f"sloTrackingEnabled=true: {response_body}"
             )
+        if status == 400:
+            raise MockServerError(f"Invalid SLO criteria: {response_body}")
         if status >= 400:
             raise MockServerError(
                 f"Failed to verify SLO (status={status}): {response_body}"

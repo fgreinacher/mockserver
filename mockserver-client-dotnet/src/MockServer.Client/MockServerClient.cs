@@ -1539,10 +1539,15 @@ public sealed class MockServerClient : IDisposable
             return new SloVerdict();
         }
 
+        // 403 is "SLO tracking is off"; 400 is "these criteria are malformed". They used to be the
+        // same status, so a malformed criteria was misreported as a disabled feature and vice versa.
+        if (statusCode == 403)
+            throw new MockServerClientException(
+                "Failed to verify SLO: SLO tracking is disabled " +
+                $"(start MockServer with sloTrackingEnabled=true) (HTTP 403): {body}");
         if (statusCode == 400)
             throw new MockServerClientException(
-                "Failed to verify SLO: malformed criteria, or SLO tracking is disabled " +
-                $"(start MockServer with sloTrackingEnabled=true) (HTTP 400): {body}");
+                $"Failed to verify SLO: malformed criteria (HTTP 400): {body}");
         throw new MockServerClientException($"Failed to verify SLO (HTTP {statusCode}): {body}");
     }
 

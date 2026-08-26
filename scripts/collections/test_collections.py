@@ -42,14 +42,22 @@ SKIP_PATHS = {
 #      outlive the bug it documents — you are forced to delete the entry.
 #   2. Every entry carries a reason. An entry without one is drift wearing an exemption.
 #
-# All current entries are pre-existing, none were introduced by the endpoints documented alongside
-# this list, and each sends a spec/schema payload the handler rejects in a default container.
+# The one remaining entry is state-dependent rather than a broken example: the request body is
+# well-formed and the handler parses it, but a freshly-started container has no recorded traffic for
+# it to convert. Clearing it needs the harness to record traffic through the proxy first, not a
+# change to the example.
+#
+# The four entries that used to sit here were each a real defect, and each is now fixed rather than
+# excused:
+#   - /mockserver/graphql            application/graphql was not in MediaType.isString(), so the SDL
+#                                    arrived base64-encoded (same for application/yaml)
+#   - /mockserver/asyncapi/http      the OpenAPI spec declared no requestBody example at all, so the
+#                                    generated collection sent an empty body
+#   - .../generateFromOpenAPI        the example fetched its spec from a URL; it is now inline, so the
+#                                    published example works without egress
+#   - /mockserver/verifySLO          a disabled feature answered 400 (malformed body) instead of 403
 KNOWN_FAILING = {
-    "/mockserver/graphql": "example GraphQL SDL rejected by the schema parser",
-    "/mockserver/asyncapi/http": "example AsyncAPI document rejected by the parser",
-    "/mockserver/loadScenario/generateFromOpenAPI": "example fetches a spec by URL; needs egress",
     "/mockserver/loadScenario/generateFromRecording": "requires recorded traffic that does not exist yet",
-    "/mockserver/verifySLO": "requires sloTrackingEnabled, off by default",
 }
 
 

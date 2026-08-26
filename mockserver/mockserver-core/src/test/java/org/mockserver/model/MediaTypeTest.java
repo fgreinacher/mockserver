@@ -384,6 +384,26 @@ public class MediaTypeTest {
     }
 
     @Test
+    public void shouldDetectTextFormatsWithoutATextTypeAsString() {
+        // application/yaml (RFC 9512), application/x-yaml and application/graphql are UTF-8 text but
+        // have neither a "text" type nor a "+json"/"+xml" suffix. Treating them as binary made
+        // getBodyAsString() return base64, corrupting YAML specs and GraphQL SDL documents sent with
+        // their natural content type.
+        List<String> textContentTypes = Arrays.asList(
+            "application/yaml",
+            "application/x-yaml",
+            "text/yaml",
+            "application/yaml; charset=utf-8",
+            "application/graphql",
+            "application/graphql; charset=utf-8"
+        );
+        for (String contentType : textContentTypes) {
+            MediaType parse = MediaType.parse(contentType);
+            assertThat(contentType + " should be string", parse.isString(), is(true));
+        }
+    }
+
+    @Test
     public void shouldDetectAsJson() {
         List<String> jsonContentTypes = Arrays.asList(
             "application/json",
