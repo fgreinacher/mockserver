@@ -164,9 +164,11 @@ completed when the client replies or the timeout fires. No thread is blocked.
   along with the `Configuration` to the handler constructor.
 - **gRPC-bidi inbound over HTTP/3 (QUIC):** `Http3GrpcBidiStreamHandler.onData` — the
   HTTP/3 analogue of the HTTP/2 gRPC-bidi inbound path. The QUIC driver
-  (`Http3MockServerHandler`) already copies each `Http3DataFrame` to a `byte[]` and
-  releases the frame BEFORE calling `onData`, so the byte copy is parked with no
-  `ByteBuf` retained and the QUIC flow-control window is never pinned by a held frame.
+  (`Http3MockServerHandler`) copies each `Http3DataFrame`'s bytes to a `byte[]` before
+  calling `onData`, then releases the frame in `channelRead`'s `finally` block
+  immediately after `onData` returns. Since `onData` dispatches asynchronously, the
+  QUIC flow-control window is released promptly — no `ByteBuf` is retained across a
+  hold and the QUIC flow-control window is never pinned by a parked frame.
   Backpressure/ordering differs from HTTP/2: rather than withholding `ctx.read()`, the
   handler dispatches one inbound frame at a time and buffers any frames the client sends
   while one is held in a bounded in-handler queue (bounded by `maxRequestBodySize`, which

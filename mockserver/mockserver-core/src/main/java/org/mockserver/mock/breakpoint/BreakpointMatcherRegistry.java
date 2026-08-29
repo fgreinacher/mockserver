@@ -215,7 +215,9 @@ public class BreakpointMatcherRegistry {
      *       window — identical to {@link #findMatch}.</li>
      * </ul>
      *
-     * <p>Matchers with no response condition behave exactly as in {@link #findMatch}.
+     * <p>Matchers with no response condition are handled identically to the request-only path:
+     * the matcher owns the decision on first match, its per-matcher hit counter is incremented,
+     * and it pauses only if it falls outside any configured skip window.
      * This method is safe to call on the data plane (no allocation beyond the matcher's
      * own logic and the condition evaluation).
      *

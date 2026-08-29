@@ -420,7 +420,7 @@ When `VerificationSequence.httpResponses` is non-empty, sequence verification sw
 
 **Root causes:**
 
-1. **Async application under test** — If your application sends requests asynchronously (e.g., fire-and-forget, background workers), calling `verify()` before the application has actually sent the request will fail. Verification operations are serialized through the same ring buffer as request recording (FIFO order), so once a request has reached MockServer and been published to the ring buffer, subsequent verification calls will see it.
+1. **Async application under test** — If your application sends requests asynchronously (e.g., fire-and-forget, background workers), calling `verify()` before the application has actually sent the request will fail. Verification queries are themselves published as `RUNNABLE` events to the same disruptor ring buffer as request recording. Because the Disruptor has a single consumer thread that processes events in FIFO order, a verification query published after a log entry is guaranteed to see that entry. This means: once a request has reached MockServer and been published to the ring buffer, subsequent verification calls will see it.
 2. **Log eviction** — The event log is bounded by `maxLogEntries` (default: `min(free heap KB / 8, 100000)`). In high-throughput parallel testing, old entries may be evicted before verification runs.
 3. **Cross-test interference** — If multiple tests share the same MockServer instance, requests from other tests may inflate the count or interfere with sequence verification.
 

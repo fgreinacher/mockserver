@@ -76,8 +76,10 @@ import java.util.Locale;
  * inbound interception in {@link org.mockserver.netty.grpc.GrpcBidiStreamHandler}.
  * <p>
  * <strong>Ordering &amp; flow control.</strong> The QUIC driver
- * ({@link Http3MockServerHandler}) copies each DATA frame's bytes to a {@code byte[]} and
- * releases the {@code Http3DataFrame} <em>before</em> calling {@link #onData(byte[])}, so no
+ * ({@link Http3MockServerHandler}) copies each DATA frame's bytes to a {@code byte[]}
+ * before calling {@link #onData(byte[])}, then
+ * releases the {@code Http3DataFrame} in {@code channelRead}'s {@code finally} block immediately
+ * after {@code onData} returns. Since {@code onData} dispatches asynchronously, no
  * {@code ByteBuf} is retained across a hold and the QUIC stream/connection flow-control window is
  * never pinned by a parked frame. To preserve per-frame ordering while a frame is parked, at most
  * one inbound frame is dispatched at a time; any frames the client sends while a frame is held are
