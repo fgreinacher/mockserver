@@ -43,6 +43,16 @@ public class HttpForwardConnectionPoolTest {
 
     private EmbeddedChannel newChannel() {
         EmbeddedChannel channel = new EmbeddedChannel();
+        // Freeze the embedded clock so idle-eviction timing is fully deterministic. Without this,
+        // EmbeddedChannel.advanceTimeBy() only shifts an offset while nanoTime() keeps reading the
+        // REAL system ticker (see io.netty.channel.embedded.EmbeddedEventLoop$FreezableTicker: time
+        // is NOT frozen by default). The eviction deadline is captured at release() as
+        // nanoTime + IDLE_TIMEOUT_MILLIS; after advanceTimeBy(IDLE_TIMEOUT_MILLIS - 1) the "not yet
+        // evicted" assertions leave only a 1ms margin, so any real wall-clock stall (GC pause /
+        // scheduler jitter on a loaded CI agent) between release() and runScheduledPendingTasks()
+        // leaks into that margin and fires the reaper early -- the intermittent CI flake. Freezing
+        // makes nanoTime() advance ONLY via advanceTimeBy(), so the boundary is exact and stable.
+        channel.freezeTime();
         channels.add(channel);
         return channel;
     }
