@@ -12,10 +12,24 @@
 # credentials are missing, or the bucket doesn't exist, both scripts exit 0
 # (clean no-op) and the build proceeds with a cold cache.
 #
-# The IAM policy is DETACHED from all agent roles. The runtime wiring (S3
-# cache-restore/cache-save in the pipeline) was reverted. The policy and
-# bucket remain defined so the infrastructure is ready to re-enable once
-# cache integrity (signed/content-addressed entries) is implemented.
+# STATUS: LIVE. The IAM policy IS attached to the `default` and `release` agent
+# roles (main.tf `managed_policy_arns`), and the runtime wiring IS active --
+# cache-restore.sh / cache-save.sh run in the java, maven-plugin, node, python,
+# ruby, ui and website pipelines. An earlier revision of this comment claimed the
+# policy was detached and the wiring reverted; that was stale and wrong on both
+# counts. Verify against main.tf and .buildkite/pipeline-*.yml, not this comment.
+#
+# KNOWN GAP -- cache integrity is NOT implemented. Entries are plain lockfile-keyed
+# tarballs: not signed, not content-addressed, and not verified on restore. Anyone
+# who can run a build on the `default` queue can therefore write an entry that a
+# later build on that queue restores and trusts. Fork PRs cannot reach these agents
+# (build_pull_request_forks: false), so this is bounded by push access rather than
+# open to the internet, and the release pipelines do NOT restore the cache
+# (release-pipeline.yml / release-preflight-pipeline.yml have no cache-restore step),
+# so a poisoned entry has no direct path into a published artefact today. That
+# containment is incidental, not enforced -- adding a cache-restore step to a release
+# pipeline would silently remove it. Signed/content-addressed entries remain
+# outstanding work; the `release` role holds this policy despite not using it.
 # ---------------------------------------------------------------------------
 # Provides a shared S3 bucket for caching Maven, npm, pip, and Bundler
 # dependencies across ephemeral scale-to-zero build agents.  Without this,
