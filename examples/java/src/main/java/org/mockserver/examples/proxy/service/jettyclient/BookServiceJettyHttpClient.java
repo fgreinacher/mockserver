@@ -21,14 +21,16 @@ public class BookServiceJettyHttpClient implements BookService {
 
     @Resource
     private Environment environment;
-    private Integer port;
     private String host;
+
+    private int port() {
+        return Integer.parseInt(System.getProperty("bookService.port"));
+    }
     private ObjectMapper objectMapper;
     private HttpClient httpClient;
 
     @PostConstruct
     private void initialise() {
-        port = Integer.parseInt(System.getProperty("bookService.port"));
         host = environment.getProperty("bookService.host", "localhost");
         objectMapper = createObjectMapper();
         httpClient = createHttpClient();
@@ -57,10 +59,10 @@ public class BookServiceJettyHttpClient implements BookService {
     @Override
     public Book[] getAllBooks() {
         try {
-            logger.info("Sending request to http://" + host + ":" + port + "/get_books");
-            return objectMapper.readValue(httpClient.GET("http://" + host + ":" + port + "/get_books").getContentAsString(), Book[].class);
+            logger.info("Sending request to http://" + host + ":" + port() + "/get_books");
+            return objectMapper.readValue(httpClient.GET("http://" + host + ":" + port() + "/get_books").getContentAsString(), Book[].class);
         } catch (Exception e) {
-            logger.info("Exception sending request to http://" + host + ":" + port + "/get_books", e);
+            logger.info("Exception sending request to http://" + host + ":" + port() + "/get_books", e);
             throw new RuntimeException("Exception making request to retrieve all books", e);
         }
     }
@@ -68,10 +70,10 @@ public class BookServiceJettyHttpClient implements BookService {
     @Override
     public Book getBook(String id) {
         try {
-            logger.info("Sending request to http://" + host + ":" + port + "/get_book?id=" + id);
-            return objectMapper.readValue(httpClient.GET("http://" + host + ":" + port + "/get_book" + "?id=" + id).getContentAsString(), Book.class);
+            logger.info("Sending request to http://" + host + ":" + port() + "/get_book?id=" + id);
+            return objectMapper.readValue(httpClient.GET("http://" + host + ":" + port() + "/get_book" + "?id=" + id).getContentAsString(), Book.class);
         } catch (Exception e) {
-            logger.info("Exception sending request to http://" + host + ":" + port + "/get_books", e);
+            logger.info("Exception sending request to http://" + host + ":" + port() + "/get_books", e);
             throw new RuntimeException("Exception making request to retrieve a book with id [" + id + "]", e);
         }
     }

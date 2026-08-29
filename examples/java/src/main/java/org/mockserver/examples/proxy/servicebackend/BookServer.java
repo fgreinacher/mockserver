@@ -16,10 +16,10 @@ import org.mockserver.scheduler.Scheduler;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 
+import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
@@ -39,6 +39,8 @@ public class BookServer {
     private final int httpPort;
     private final boolean secure;
     private final ExampleNettySslContextFactory exampleNettySslContextFactory;
+    private Channel channel;
+    private int boundPort;
 
     BookServer(int httpPort, boolean secure) {
         this.httpPort = httpPort;
@@ -74,9 +76,21 @@ public class BookServer {
                 throw new RuntimeException("Exception starting BookServer", e);
             }
         }
-        System.out.println("starting service on port: " + httpPort);
-        serverBootstrap.bind(httpPort);
-        TimeUnit.SECONDS.sleep(3);
+        // Bind synchronously and fail loudly rather than firing bind() and hoping. The
+        // previous code ignored the bind ChannelFuture and slept 3 seconds, so a failed
+        // bind (e.g. the port was claimed by another process between findFreePort() and
+        // bind() — a TOCTOU race PortFactory itself warns about) was silently swallowed:
+        // nothing listened on the backend port, and the proxied request later surfaced as
+        // an intermittent "502 Bad Gateway" when MockServer could not reach this backend.
+        //
+        // Binding to an ephemeral port (0) and then publishing the ACTUAL bound port
+        // removes the find-then-bind race entirely — the port cannot be taken between
+        // selection and binding because the OS selects it at bind time. sync() also gives
+        // us real readiness (the socket is accepting) in place of the fixed sleep.
+        channel = serverBootstrap.bind(httpPort).sync().channel();
+        boundPort = ((InetSocketAddress) channel.localAddress()).getPort();
+        System.setProperty("bookService.port", String.valueOf(boundPort));
+        System.out.println("started service on port: " + boundPort);
     }
 
     private Map<String, Book> createBookData() {
@@ -98,7 +112,10 @@ public class BookServer {
 
     @PreDestroy
     public void stopServer() {
-        System.out.println("stopping service on port: " + httpPort);
+        System.out.println("stopping service on port: " + boundPort);
+        if (channel != null) {
+            channel.close().awaitUninterruptibly();
+        }
     }
 
     private class BookHandler extends SimpleChannelInboundHandler<FullHttpRequest> {

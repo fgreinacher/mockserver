@@ -1,6 +1,5 @@
 package org.mockserver.examples.proxy.servicebackend;
 
-import org.mockserver.socket.PortFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -23,8 +22,12 @@ public class BackEndServiceConfiguration {
 
     @Bean
     public BookServer bookServer() {
-        System.setProperty("bookService.port", "" + PortFactory.findFreePort());
-        return new BookServer(Integer.parseInt(System.getProperty("bookService.port")), false);
+        // Bind to an ephemeral port (0). BookServer.startServer() binds it, reads back the
+        // actual OS-assigned port and publishes it as the "bookService.port" system property
+        // that the HTTP client beans read. This removes the find-a-free-port-then-bind-it-later
+        // (TOCTOU) race that could leave the backend unbound and surface as an intermittent
+        // "502 Bad Gateway" from the proxy when it could not reach this backend.
+        return new BookServer(0, false);
     }
 
 }

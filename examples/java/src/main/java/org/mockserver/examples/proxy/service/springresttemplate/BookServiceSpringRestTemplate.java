@@ -29,14 +29,16 @@ public class BookServiceSpringRestTemplate implements BookService {
 
     @Resource
     private Environment environment;
-    private Integer port;
     private String host;
+
+    private int port() {
+        return Integer.parseInt(System.getProperty("bookService.port"));
+    }
     private ObjectMapper objectMapper;
     private RestTemplate restTemplate;
 
     @PostConstruct
     private void initialise() {
-        port = Integer.parseInt(System.getProperty("bookService.port"));
         host = environment.getProperty("bookService.host", "localhost");
         objectMapper = createObjectMapper();
         restTemplate = createRestTemplate();
@@ -67,10 +69,10 @@ public class BookServiceSpringRestTemplate implements BookService {
     @Override
     public Book[] getAllBooks() {
         try {
-            logger.info("Sending request to http://" + host + ":" + port + "/get_books");
-            return restTemplate.getForObject("http://" + host + ":" + port + "/get_books", Book[].class);
+            logger.info("Sending request to http://" + host + ":" + port() + "/get_books");
+            return restTemplate.getForObject("http://" + host + ":" + port() + "/get_books", Book[].class);
         } catch (Exception e) {
-            logger.info("Exception sending request to http://" + host + ":" + port + "/get_books", e);
+            logger.info("Exception sending request to http://" + host + ":" + port() + "/get_books", e);
             throw new RuntimeException("Exception making request to retrieve all books", e);
         }
     }
@@ -78,10 +80,10 @@ public class BookServiceSpringRestTemplate implements BookService {
     @Override
     public Book getBook(String id) {
         try {
-            logger.info("Sending request to http://" + host + ":" + port + "/get_book?id=" + id);
-            return restTemplate.getForObject("http://" + host + ":" + port + "/get_book?id=" + id, Book.class);
+            logger.info("Sending request to http://" + host + ":" + port() + "/get_book?id=" + id);
+            return restTemplate.getForObject("http://" + host + ":" + port() + "/get_book?id=" + id, Book.class);
         } catch (Exception e) {
-            logger.info("Exception sending request to http://" + host + ":" + port + "/get_books", e);
+            logger.info("Exception sending request to http://" + host + ":" + port() + "/get_books", e);
             throw new RuntimeException("Exception making request to retrieve a book with id [" + id + "]", e);
         }
     }

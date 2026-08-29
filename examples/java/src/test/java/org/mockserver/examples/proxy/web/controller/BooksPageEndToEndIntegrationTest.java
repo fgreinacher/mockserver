@@ -11,7 +11,6 @@ import org.mockserver.examples.proxy.web.controller.pageobjects.BookPage;
 import org.mockserver.examples.proxy.web.controller.pageobjects.BooksPage;
 import org.mockserver.integration.ClientAndServer;
 import org.mockserver.model.Parameter;
-import org.mockserver.socket.PortFactory;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -43,7 +42,10 @@ public abstract class BooksPageEndToEndIntegrationTest {
 
     @BeforeClass
     public static void startProxy() {
-        System.setProperty("bookService.port", "" + PortFactory.findFreePort());
+        // NB: "bookService.port" is NOT set here. The real backend (BookServer, activated by
+        // the "backend" Spring profile) binds an ephemeral port and publishes the actual bound
+        // port as "bookService.port" for the client beans. Pre-seeding a separate findFreePort()
+        // value here was both redundant and racy (a second free-port allocation nothing binds).
         proxy = ClientAndServer.startClientAndServer();
         System.setProperty("http.proxyHost", "127.0.0.1");
         System.setProperty("http.proxyPort", String.valueOf(proxy.getPort()));

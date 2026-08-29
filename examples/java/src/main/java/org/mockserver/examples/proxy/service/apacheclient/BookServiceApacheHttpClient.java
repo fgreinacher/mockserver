@@ -29,14 +29,16 @@ public class BookServiceApacheHttpClient implements BookService {
 
     @Resource
     private Environment environment;
-    private Integer port;
     private String host;
+
+    private int port() {
+        return Integer.parseInt(System.getProperty("bookService.port"));
+    }
     private ObjectMapper objectMapper;
     private HttpClient httpClient;
 
     @PostConstruct
     private void initialise() {
-        port = Integer.parseInt(System.getProperty("bookService.port"));
         host = environment.getProperty("bookService.host", "localhost");
         objectMapper = createObjectMapper();
         httpClient = createHttpClient();
@@ -54,7 +56,7 @@ public class BookServiceApacheHttpClient implements BookService {
             HttpResponse response = httpClient.execute(new HttpGet(new URIBuilder()
                 .setScheme("http")
                 .setHost(host)
-                .setPort(port)
+                .setPort(port())
                 .setPath("/get_books")
                 .build()));
             responseBody = new String(EntityUtils.toByteArray(response.getEntity()), StandardCharsets.UTF_8);
@@ -73,7 +75,7 @@ public class BookServiceApacheHttpClient implements BookService {
             HttpResponse response = httpClient.execute(new HttpGet(new URIBuilder()
                 .setScheme("http")
                 .setHost(host)
-                .setPort(port)
+                .setPort(port())
                 .setPath("/get_book")
                 .setParameter("id", id)
                 .build()));
