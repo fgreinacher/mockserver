@@ -21,6 +21,11 @@ steps:
           limit: 2
         - exit_status: 255  # agent forced shutdown
           limit: 2
+        # Builds the mockserver jar from HEAD (Maven) before testing. A transient
+        # Maven Central resolution failure is remapped to sentinel 42 by
+        # run-in-docker.sh; a real test failure exits 1 and can never reach 42.
+        - exit_status: 42   # transient Maven Central resolution failure
+          limit: 2
 
   # soft_fail removed: a failing testcontainers suite reported green, which is
   # the same silent-skip defect in another form.

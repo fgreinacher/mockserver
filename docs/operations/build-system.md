@@ -70,6 +70,16 @@ MockServer uses Maven 3.9.16 via the Maven Wrapper (`mvnw`). The project targets
 
 `mockserver/.mvn/maven.config` sets `-T 1C` so the reactor builds with the parallel (one-thread-per-core) `MultiThreadedBuilder` by default, matching CI (`./mvnw -T 1C clean install`). This is a free speed-up on the multi-module compile/package phases and composes with the within-module parallel unit tests (see [performance-tuning.md](performance-tuning.md)). Pass `-T 1` on the command line to force a single-threaded build when debugging reactor ordering or interleaved log output.
 
+The same file also sets Maven Resolver HTTP-transport retry flags so a transient Maven Central failure (`Connection reset` / timeout / 5xx during artifact or plugin resolution) is retried in-process instead of failing the build:
+
+```
+-Daether.connector.http.retryHandler.count=5
+-Daether.connector.http.retryHandler.requestSentEnabled=true
+-Daether.connector.http.connectionMaxTtl=120
+```
+
+These are the **native** transport property names. Maven 3.9 defaults to the native Maven Resolver HTTP transport, which **ignores** the legacy `maven.wagon.http.*` properties — using the wagon names here would be a silent no-op. Because every Maven invocation runs with its working directory inside the `mockserver/` reactor, all of them inherit these flags through this one file (the isolated `maven-invoker-plugin` child builds, which have their own base directory, are the only exception and resolve against the already-populated local repo). This is the in-process layer of the broader transient-Central resilience described in [ci-cd.md → Transient Maven Central Resilience](../infrastructure/ci-cd.md#transient-maven-central-resilience).
+
 ### Modules
 
 The project comprises 25 Maven modules:

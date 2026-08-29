@@ -66,6 +66,18 @@ steps:
     # The default queue is partly Spot; a reclaim mid-build kills the agent
     # (exit -1 / agent lost). Auto-retry so an infra eviction re-runs the long
     # build instead of failing it. Real test failures exit 1 and are NOT retried.
+    #
+    # NOTE: deliberately NO `exit_status: 42` (transient-Maven-Central) retry here.
+    # Unlike the client jar-build steps -- which isolate a `-DskipTests` Maven
+    # resolution in its own run-in-docker.sh invocation, separate from their test
+    # run -- this step runs `clean install` (resolution AND the whole unit +
+    # Failsafe reactor) in ONE classified invocation. Under `-T 1C` fail-fast a
+    # transient transfer line in one module can co-occur in the same log with a
+    # genuine test failure in another, so the "a test failure can never reach 42"
+    # invariant does NOT hold for this step and a 42-retry could re-run a real
+    # (flaky) test failure. This reactor build instead relies on the in-Maven
+    # retry (.mvn/maven.config) and the warm maven cache (restored above); see
+    # docs/infrastructure/ci-cd.md -> Transient Maven Central Resilience.
     retry:
       automatic:
         - exit_status: -1   # agent lost (e.g. Spot reclamation)

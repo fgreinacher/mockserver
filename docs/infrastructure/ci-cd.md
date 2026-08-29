@@ -394,6 +394,30 @@ Two complementary mitigations:
 - **`automatic_retry` on agent-lost** — the long, non-`soft_fail` command steps (`:maven: build`, deploy snapshot, container integration tests, build-and-push `:snapshot`) declare `retry.automatic` for `exit_status: -1` and `255` (`limit: 2`). A Spot reclaim silently re-queues the job onto a fresh agent instead of reddening the build. **Real test failures exit `1` and are NOT retried**, so this never masks genuine breakage.
 - **Higher on-demand ratio** — the default queue's `on_demand_percentage` was raised from 20% to 60% so a long build is much less likely to land on a Spot instance in the first place (the on-demand base capacity of 1 is unchanged).
 
+### Transient Maven Central Resilience
+
+A single transient failure from `repo.maven.apache.org` (a `Connection reset` / timeout / 5xx while resolving one artifact or plugin) used to redden a whole multi-module build — including builds that had already passed every test, and child pipelines (python/ruby/node/UI) that only touch Maven to build the mockserver jar before their own language tests. Three complementary, defence-in-depth mechanisms address it. They are layered deliberately: each covers a failure window the others do not.
+
+| Layer | Mechanism | Bridges | Where |
+|-------|-----------|---------|-------|
+| In-Maven retry | `aether.connector.http.retryHandler.count=5` + `requestSentEnabled=true` + `connectionMaxTtl=120` | A sub-second blip: immediate in-process retries of the failed transfer | `mockserver/.mvn/maven.config` (every reactor-rooted Maven invocation inherits it) |
+| Warm local repo | Restore the S3 `maven` dependency cache before the jar build so most resolutions never touch Central at all | Everything already cached (the common case) | `cache-restore.sh maven` in the java, maven-plugin, **python, ruby, node and UI** pipelines; `build-local-mockserver-image.sh` now mounts `--cache maven` |
+| Step re-run | Buildkite `retry.automatic` on a dedicated **sentinel exit code 42** | A longer outage window (minutes): the whole step is re-queued and re-run later | `run-in-docker.sh` remaps transient failures to 42 (CI only); **jar-only** steps opt in with `- exit_status: 42` (`limit: 2`) |
+
+**Why the native-transport property names, not `maven.wagon.http.*`.** Maven 3.9 defaults to the native Maven Resolver HTTP transport, which **ignores** the legacy `maven.wagon.http.*` properties — setting those would be a silent no-op (a false-green). The `aether.connector.http.*` keys are the ones the native transport reads (verified: with them a `Connection reset` is retried the configured number of times; without them the resolver's default of 3 immediate retries applies). Note the native default is already 3 **immediate, no-backoff** retries, which is why a sub-second blip can still slip through and why the warm cache and step-retry layers matter more than the raised count.
+
+**Why a sentinel exit code for the Buildkite retry.** Buildkite `retry.automatic` matches only on exit status, and a transient Central failure exits `1` — the **same** code as a genuine test/compile failure — so retrying on `1` would silently retry real regressions into green. Instead, `run-in-docker.sh` inspects the build output on failure and, **only** when it sees a Maven *resolution* phrase (`Could not transfer artifact` / `Failed to read artifact descriptor` / `Could not resolve dependencies` …) **and** a *network* cause (`Connection reset` / timeout / 5xx) on the same line, remaps the exit to `42`. That precision is load-bearing:
+
+- A test that itself logs `Connection reset` (many MockServer tests do) carries no resolution phrase on that line → **not** remapped.
+- A genuine missing-artifact / 404 (`Could not find artifact`, no network cause) → **not** remapped, so a real dependency bug stays red.
+- The remap is **CI-only** (`BUILDKITE=true`); local `run-in-docker.sh` keeps its original `exec` semantics and real exit code.
+
+**What a retry can and cannot mask.** It CAN mask (by re-running, up to `limit: 2`) a transient-infra window that outlasts Maven's own in-process retries. It CANNOT mask a test, compile, or asset regression on the steps that opt in: each of those steps isolates a `-DskipTests` Maven resolution in its **own** `run-in-docker.sh` invocation, separate from the invocation that runs the tests (the jar build, then a distinct pytest/rspec/Playwright/etc. run) — so a real test failure occurs in an invocation whose log carries no Maven-resolution line, exits `1`, and can never reach `42`. It also cannot mask a Central outage longer than the retries — that still ends red after the cap.
+
+**Why the java `:maven: build` step is deliberately NOT opted in.** That step runs `clean install` — dependency resolution AND the entire unit + Failsafe reactor — in one classified `run-in-docker.sh` invocation. Under the default `-T 1C` fail-fast reactor a transient transfer line in one module can co-occur in the same log with a genuine test failure in another, so the "never reach 42" invariant would NOT hold there and a 42-retry could re-run a real (flaky) test failure. The java reactor build therefore relies only on layers 1 and 2 (in-Maven retry + the warm maven cache it restores at the top of its pipeline, which it is also the sole saver of). Only steps whose Maven work is a pure `-DskipTests` jar build, isolated from their tests, carry the step-retry.
+
+**Coverage and limits.** The sentinel is produced centrally in `run-in-docker.sh`, so it covers every Maven build that runs through it. Maven invocations that bypass `run-in-docker.sh` (host `mvn` in `perf-test-microbench.sh`, and the host-`mvnw` fallbacks in `docker-build-verify.sh` / `verify-tcnative-stamp.sh`) do not get the step-retry, but still benefit from the in-Maven retry layer. The `maven` cache key is the hash of every `mockserver/**/pom.xml`, so a **dependency bump changes the key and forces a cold (cache-miss) build** — meaning the warm-cache layer does *not* help the very Dependabot PRs that most often trigger the transient, which is precisely why the in-Maven retry and step-retry layers exist alongside it. Client pipelines restore the maven cache **read-only**; the java and maven-plugin pipelines remain the sole savers.
+
 ### Python and Ruby Client Integration Tests
 
 **Files:** `.buildkite/scripts/steps/python-integration-test.sh`, `.buildkite/scripts/steps/ruby-integration-test.sh`
@@ -1091,9 +1115,11 @@ The previous caching attempt (reverted) broke builds by writing to `/var/cache` 
 
 ### Activation
 
-The S3 bucket and IAM policy are defined in `terraform/buildkite-agents/dependency-cache.tf`. The IAM policy is currently **detached from all agent roles** — the runtime pipeline wiring (cache-restore/cache-save steps) was reverted. The bucket and policy remain in place so the infrastructure is ready to re-enable once cache-integrity verification (signed or content-addressed entries) is implemented.
+The S3 bucket and IAM policy are defined in `terraform/buildkite-agents/dependency-cache.tf`, and `aws_iam_policy.dependency_cache` is **attached** to the `default` and `release` queues in `main.tf` — see the `managed_policy_arns` lists. The pipelines wire it up with `cache-restore.sh` / `cache-save.sh` steps, so the cache is live: the `maven`, `npm`, `pip` and `bundler` caches restore and save on the queues that own them.
 
-To re-activate: attach `aws_iam_policy.dependency_cache` to the relevant queues in `main.tf` and re-add the cache restore/save steps to the affected pipelines.
+> **Note:** the header comment in `dependency-cache.tf` still describes the policy as "DETACHED / reverted" from an earlier iteration; that comment is stale — the policy is attached in `main.tf` today. Treat the `managed_policy_arns` attachments (and live AWS state) as authoritative.
+
+**Save ownership.** The `maven` cache is *saved* only by the `mockserver-java` and `mockserver-maven-plugin` pipelines (they build the full reactor, so their `~/.m2` is the canonical superset). The `python`, `ruby`, `node` and `ui` pipelines restore the `maven` cache **read-only** — they build only a jar subset, so letting them save would risk overwriting the full cache with a partial one under the same key.
 
 Until the IAM policy is re-attached, the cache scripts will detect missing credentials and no-op gracefully. No pipeline will break.
 

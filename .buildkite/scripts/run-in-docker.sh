@@ -274,4 +274,52 @@ FULL_CMD="docker run ${DISPLAY_ARGS[*]} $IMAGE ${DISPLAY_CMD_ARGS[*]}"
   echo ""
 } >&2
 
-exec docker run "${DOCKER_ARGS[@]}" "$IMAGE" "${COMMAND_ARGS[@]}"
+# ---------------------------------------------------------------------------
+# Transient Maven Central failure -> Buildkite retry signal (CI only)
+# ---------------------------------------------------------------------------
+# A transient Maven Central network failure (Connection reset / timeout / 5xx)
+# during artifact or plugin resolution kills the whole build with exit 1 -- the
+# SAME code a genuine test/compile failure produces, so Buildkite cannot safely
+# auto-retry on exit 1. To let CI self-heal a flaky-infra window WITHOUT masking
+# real regressions, we detect the transient-transfer signature in the build
+# output and remap ONLY that failure to a dedicated sentinel exit code
+# (MAVEN_TRANSIENT_EXIT_CODE, default 42). The pipeline opts specific steps in to
+# retry just that code, capped low (see the `- exit_status: 42` retry entries).
+#
+# The signature requires a Maven RESOLUTION phrase AND a NETWORK cause on the
+# SAME line. That precision matters:
+#   * a test that itself logs "Connection reset" (many MockServer tests do) has
+#     no Maven-resolution phrase on that line -> NOT misclassified;
+#   * a genuine missing-artifact / 404 ("could not be resolved", no network
+#     cause) -> NOT retried (a real dependency bug must stay red).
+# What a retry CAN mask: a Central outage long enough to also fail the retries
+# (still ends red after `limit`). What it must NEVER mask: a test/compile/asset
+# regression -- which cannot reach exit 42 because it never prints this line.
+#
+# Local runs (BUILDKITE unset) keep the original exec semantics and real exit
+# code -- the remap is CI-only.
+if [[ "${BUILDKITE:-}" != "true" ]]; then
+  exec docker run "${DOCKER_ARGS[@]}" "$IMAGE" "${COMMAND_ARGS[@]}"
+fi
+
+RID_LOG="$(mktemp "${TMPDIR:-/tmp}/run-in-docker.XXXXXX")"
+set +e
+# Tee ONLY stdout to the classification log; stderr is left on its own fd so a
+# caller that captures the wrapped command's stdout ($(run-in-docker ...) -- e.g.
+# a build-classpath) is unaffected. Maven writes its transfer/resolution errors
+# ("Could not transfer/resolve ... Connection reset") to STDOUT, so the signature
+# is on this stream. A plain pipe is race-free (the shell waits for tee to exit
+# before the grep below reads the file, unlike a >(process substitution)).
+docker run "${DOCKER_ARGS[@]}" "$IMAGE" "${COMMAND_ARGS[@]}" | tee "$RID_LOG"
+RID_RC=${PIPESTATUS[0]}
+set -e
+
+RID_SENTINEL="${MAVEN_TRANSIENT_EXIT_CODE:-42}"
+# Maven-resolution phrase AND a transient network cause, on the same line.
+RID_SIG='(Could not transfer artifact|Failed to read artifact descriptor|Could not resolve (dependencies|plugin)|Non-resolvable [A-Za-z ]*POM|Plugin .* or one of its dependencies could not be resolved).*(Connection reset|Connection timed out|Connection refused|Read timed out|Broken pipe|peer not authenticated|Received fatal alert|Remote host terminated|Premature end of (Content-Length|chunk)|Network is unreachable|Temporary failure in name resolution|Service Unavailable|status code: (429|50[0-9]))'
+if [[ "$RID_RC" -ne 0 ]] && grep -Eq "$RID_SIG" "$RID_LOG"; then
+  echo "+++ :maven: :recycle: Transient Maven Central transfer failure detected -- remapping exit ${RID_RC} to sentinel ${RID_SENTINEL} so Buildkite can retry this step (this is NOT a test/compile failure)" >&2
+  RID_RC="$RID_SENTINEL"
+fi
+rm -f "$RID_LOG"
+exit "$RID_RC"

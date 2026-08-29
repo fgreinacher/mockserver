@@ -56,9 +56,18 @@ else
   # Run Maven inside the CI Docker image so no JDK is needed on the host.
   # run-in-docker.sh mounts the repo at /build; the JAR lands on the shared
   # volume at the same host path, visible to _find_shaded_jar afterward.
+  #
+  # --cache maven mounts the workspace-local .buildkite-cache/maven into the
+  # container at ~/.m2/repository. When a client-language pipeline restores the
+  # maven cache first (`.buildkite/scripts/cache-restore.sh maven`), this jar
+  # build resolves from a warm local repo instead of hammering Maven Central,
+  # which is what previously made these jobs die on a transient Central
+  # "Connection reset". If no cache was restored the mount is an empty dir
+  # (run-in-docker creates it) and the build is cold — identical to before.
   "$_BLM_SCRIPT_DIR/run-in-docker.sh" \
     -i mockserver/mockserver:maven \
     -w /build/mockserver \
+    --cache maven \
     -- ./mvnw package -pl mockserver-netty-no-dependencies -am \
       -DskipTests -Djacoco.skip=true -Dmaven.javadoc.skip=true \
       -Dmaven.gitcommitid.skip=true -P '!build-ui' \

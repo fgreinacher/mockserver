@@ -10,6 +10,24 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
+  # The integration suite builds the mockserver jar from HEAD (via Maven, inside
+  # build-local-mockserver-image.sh) before it runs. Restore the shared maven
+  # local-repo cache so that build resolves from a warm ~/.m2 instead of Maven
+  # Central — a transient Central "Connection reset" during that resolve is what
+  # previously killed this child build. Restore-only: the mockserver-java and
+  # mockserver-maven-plugin pipelines own the maven cache SAVE. soft_fail so a
+  # cache miss / no S3 creds never fails the build (falls back to a cold build).
+  - label: ":s3: restore maven cache"
+    command: ".buildkite/scripts/cache-restore.sh maven"
+    timeout_in_minutes: 10
+    soft_fail: true
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
   - wait
 
   - label: ":python: Python client unit tests"
@@ -34,6 +52,11 @@ steps:
         - exit_status: -1   # agent lost (e.g. Spot reclamation)
           limit: 2
         - exit_status: 255  # agent forced shutdown
+          limit: 2
+        # This step builds the mockserver jar from HEAD (Maven) before testing.
+        # A transient Maven Central resolution failure is remapped to sentinel 42
+        # by run-in-docker.sh; a real test failure exits 1 and can never reach 42.
+        - exit_status: 42   # transient Maven Central resolution failure
           limit: 2
 
   - label: ":python: testcontainers-python unit + container tests"
