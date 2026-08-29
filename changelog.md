@@ -46,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rust, .NET and dashboard clients give distinct messages for each.
 
 ### Added
+- **`ORCAROUTER` is now a supported LLM provider.** OrcaRouter (`api.orcarouter.ai`) is an OpenAI-chat-compatible
+  AI gateway that fronts many upstream models with vendor-prefixed model ids, so it is wired exactly like
+  `OPENROUTER`: it produces the OpenAI Chat Completions wire format, is detected from its host on proxied
+  traffic, and prices vendor-prefixed model ids through the underlying vendor's table. This completes community
+  contribution [#2545](https://github.com/mock-server/mockserver-monorepo/pull/2545) by adding `ORCAROUTER` to
+  the two consumer-facing published contracts the server-side change had left out — the published OpenAPI
+  specification's `httpLlmResponse.provider` enum and the Node client's `LlmProvider` type union — so the
+  provider is reachable from generated tooling and the TypeScript client, and by documenting it on the LLM
+  response mocking page.
 - `PUT /mockserver/retrieve` now accepts an expectation id (`{"id": "..."}`) in the request body instead of a request
   matcher, matching what `PUT /mockserver/clear` and `PUT /mockserver/verify` have always accepted (GitHub issue #2591).
   For `?type=active_expectations` this returns only the expectation with that id — filtering on the id itself, not on

@@ -681,7 +681,8 @@ export type LlmProvider =
   | "XAI"
   | "DEEPSEEK"
   | "GROQ"
-  | "OPENROUTER";
+  | "OPENROUTER"
+  | "ORCAROUTER";
 
 /** Role of the latest parsed conversation message, used by conversation predicates. */
 export type LlmRole = "USER" | "ASSISTANT" | "TOOL" | "SYSTEM";

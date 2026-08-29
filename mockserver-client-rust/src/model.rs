@@ -3812,7 +3812,7 @@ pub struct HttpLlmResponse {
 
     /// `"ANTHROPIC"`, `"OPENAI"`, `"OPENAI_RESPONSES"`, `"GEMINI"`, `"BEDROCK"`,
     /// `"AZURE_OPENAI"`, `"OLLAMA"`, `"COHERE"`, `"VOYAGE"`, and the OpenAI-chat-compatible
-    /// `"MISTRAL"`, `"XAI"`, `"DEEPSEEK"`, `"GROQ"`, `"OPENROUTER"`.
+    /// `"MISTRAL"`, `"XAI"`, `"DEEPSEEK"`, `"GROQ"`, `"OPENROUTER"`, `"ORCAROUTER"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
 
