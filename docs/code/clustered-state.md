@@ -130,11 +130,15 @@ sequenceDiagram
     RM->>RM: build HttpRequestMatcher for new entry
 ```
 
-`reconcileFromBackend()` in `RequestMatchers` performs a three-step diff against the backend:
+`reconcileFromBackend()` in `RequestMatchers` dispatches on `StateBackend.isClustered()` to one of two implementations:
 
-1. **Evict** — remove node-local matchers whose id no longer appears in the backend
-2. **Add** — for new backend entries, build a local `HttpRequestMatcher` via `MatcherBuilder`
-3. **Update** — for existing entries whose backend version is strictly newer than the last reconciled version, update the local matcher (preserving runtime state such as `Times` counters) and re-insert its priority key if sort fields changed
+- **non-clustered fast path — `trimEvictedFromBackend()`** (the in-memory default). All mutations originate locally and the node-local CPQ is already in sync, so the ONLY divergence to reconcile is backend self-eviction past `maxExpectations`: this path does an eviction-only trim and nothing else. It never walks the backend to add/update, keeping registration O(n).
+- **clustered scan — `reconcileClusteredScan()`.** Entries can appear or change on other nodes, so this path performs the full three-step diff against the backend:
+  1. **Evict** — remove node-local matchers whose id no longer appears in the backend
+  2. **Add** — for new backend entries, build a local `HttpRequestMatcher` via `MatcherBuilder`
+  3. **Update** — for existing entries whose backend version is strictly newer than the last reconciled version, update the local matcher (preserving runtime state such as `Times` counters) and re-insert its priority key if sort fields changed
+
+The remote-add and remote-update legs of the clustered scan are pinned by `RequestMatchersStateBackendTest.clusteredReconcilePicksUpRemoteAdd` and `reconcileFromBackendPicksUpResponseBodyChange`; the eviction leg that both paths share is covered as described below.
 
 #### Concurrency contract — no lock spans a backend call (issue #2579)
 
@@ -143,6 +147,15 @@ sequenceDiagram
 This rule exists because the first fix for issue #2579 (reverted commit `98ab5d8de`) violated it: it serialized the mutators on the monitor in a way that held it across `expectationBackend.put`. For the Infinispan backend `put` is a blocking distributed `Cache.compute` round-trip, and the receiving node's own invalidation listener needs the same monitor to make progress — so two nodes deadlocked and `ClusteredTwoNodeTest`/`ClusteredExpectationPersistenceReloadTest` hung to their 60s timeouts. The redesign keeps the mutation atomic with respect to the eviction reconcile **without** blocking on the network under any lock.
 
 Because control-plane `add`s run concurrently (one per connection across the `nioEventLoopThreadCount` Netty worker threads) and insert into the node-local cache before their backend `put` lands, the eviction trim also protects **in-flight adds**: each `add`/`update` registers its id in the reference-counted `addsInFlight` registry before mutating the cache and deregisters it only after the backend write returns, and **both** reconcile paths (`trimEvictedFromBackend` and `reconcileClusteredScan`) exclude those ids from eviction, computing the eviction set from a `cachedIds → protectedIds → backendIds` snapshot taken in exactly that order — the cached ids first and the backend last, never the live cache read last. Without this, one thread's trim would delete another thread's not-yet-persisted matcher, silently dropping a `201`-acknowledged expectation.
+
+**This "both paths" claim is test-enforced per path (issue #2579 follow-up), not just asserted here.** An earlier revision of this section claimed the ordering applied to both siblings while, in the shipped code, only `trimEvictedFromBackend` actually took the snapshot in that order — `reconcileClusteredScan` read the live cache last. The prose masked the divergence, which is how the same drop-a-live-expectation defect reached review twice on the clustered leg. Coverage now pins each leg independently:
+
+| Claim | Enforced by |
+|-------|-------------|
+| `trimEvictedFromBackend` protects in-flight adds and takes the snapshot `cachedIds → protectedIds → backendIds` | `RequestMatchersConcurrentAddTest.concurrentAddDoesNotDropExpectationWhenTrimRacesAnInFlightPut`, the `concurrentAddsNeverLoseAnAcknowledgedExpectation` hammer, and the `twoConcurrentAddsWhosePutsInterleaveDoNotDeadlock` deadlock guard (all non-clustered) |
+| `reconcileClusteredScan` uses the identical ordering — the leg that originally shipped the inverted order | `RequestMatchersConcurrentAddTest.clusteredReconcileDoesNotDropAConcurrentlyAddedExpectation` (parks a clustered reconcile holding a stale backend snapshot while a concurrent `add` lands, and asserts it is not evicted) |
+| The behaviours both paths must agree on — add/update/remove backend sync and `maxExpectations` oldest-first eviction (an update NOT moving an entry to the tail) | `RequestMatchersReconcileParityTest`, which runs one set of behavioural assertions against BOTH a non-clustered and a clustered in-memory backend, so a future divergence between the siblings fails its `clustered=true` row. This parameterised parity check is the anti-drift guard that replaces the earlier unverified "applies to both" prose. |
+| Full cross-node replication / eviction on a real two-node cluster | `ClusteredTwoNodeTest` and `ClusteredExpectationPersistenceReloadTest` (`mockserver-state-infinispan`) |
 
 ### Expectation Reload When a Node Starts
 
