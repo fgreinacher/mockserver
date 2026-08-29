@@ -850,6 +850,10 @@
                         <exclude>**/JsonSchemaValidatorRemoteRefTest.java</exclude>
                         <!-- Constructs a real HttpState (mutates ServiceChaosRegistry / Metrics / CrossProtocolEventBus singletons) -->
                         <exclude>**/HttpStateReadinessTest.java</exclude>
+                        <!-- Constructs a real HttpState via a spy StateBackend registered on the StateBackendFactory
+                             (mutates ServiceChaosRegistry / TcpChaosRegistry / GrpcChaosRegistry / CrossProtocolEventBus
+                             singletons, Metrics, and the StateBackendFactory registry) -->
+                        <exclude>**/HttpStateClusteredListenerWiringTest.java</exclude>
                         <!-- Sets/clears mockserver.* JVM system properties to exercise the print-config effective-config diagnostic -->
                         <exclude>**/ConfigurationPropertiesEffectiveConfigGlobalStateTest.java</exclude>
                         <!-- Mutates mockserver.llmOptimisationMaxCalls / fixtureBodyRedactFields global config -->
@@ -1031,6 +1035,7 @@
                                 <include>**/InetAddressValidatorTest.java</include>
                                 <include>**/JsonSchemaValidatorRemoteRefTest.java</include>
                                 <include>**/HttpStateReadinessTest.java</include>
+                                <include>**/HttpStateClusteredListenerWiringTest.java</include>
                                 <include>**/ConfigurationPropertiesEffectiveConfigGlobalStateTest.java</include>
                                 <include>**/LlmOptimisationReportServiceTest.java</include>
                                 <include>**/LocaleInsensitiveNumberFormattingTest.java</include>
