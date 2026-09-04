@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Streaming responses (`httpSseResponse`, and streaming `httpLlmResponse` with `completion.streaming:true`)
+  no longer wrongly close the connection at end of stream. `finishStream` always closed by default —
+  `closeConnection` defaults to null and the old `null || true` test made "unset" mean "always close" — while
+  the response head unconditionally advertised `Connection: keep-alive`. So an HTTP/1.1 client that reused the
+  connection the response had promised it could keep got a `RemoteDisconnected` on its next request, and on
+  HTTP/2 (where every non-gRPC stream is multiplexed onto one connection channel) the `ctx.close()` emitted
+  GOAWAY and tore down the whole connection, killing sibling streams. The end-of-stream decision now mirrors
+  the non-streaming path: an explicit `closeConnection` still wins on HTTP/1.1, otherwise the request's
+  keep-alive intent decides and `alwaysCloseSocketConnections` still forces a close; an HTTP/2 request never
+  closes the shared parent connection (its terminal frame ends only that stream); and the `Connection` header
+  now reports the decision that is actually taken instead of always claiming keep-alive. (GitHub issue #2641).
+
+  Note: fully-interleaved *concurrent* HTTP/2 streaming remains a separate pre-existing limitation of the
+  single-connection HTTP/2 path, which routes bare content frames by a single current stream id.
 - Request bodies sent as `application/yaml`, `application/x-yaml` or `application/graphql` are no longer
   corrupted. None of those subtypes were in `MediaType.isString()`, so the body was stored as a `BinaryBody`
   and `getBodyAsString()` handed back **base64** — silently mangling every YAML specification and GraphQL SDL

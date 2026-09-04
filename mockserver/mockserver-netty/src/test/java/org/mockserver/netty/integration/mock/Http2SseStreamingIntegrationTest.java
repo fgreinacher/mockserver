@@ -14,6 +14,7 @@ import io.netty.handler.codec.http2.DefaultHttp2Headers;
 import io.netty.handler.codec.http2.DefaultHttp2HeadersFrame;
 import io.netty.handler.codec.http2.Http2DataFrame;
 import io.netty.handler.codec.http2.Http2FrameCodecBuilder;
+import io.netty.handler.codec.http2.Http2GoAwayFrame;
 import io.netty.handler.codec.http2.Http2Headers;
 import io.netty.handler.codec.http2.Http2HeadersFrame;
 import io.netty.handler.codec.http2.Http2MultiplexHandler;
@@ -32,9 +33,11 @@ import org.mockserver.netty.MockServer;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.is;
 import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.stop.Stop.stopQuietly;
 
@@ -109,6 +112,143 @@ public class Http2SseStreamingIntegrationTest {
     // HTTP/1.1 inbound raw socket). That is worth adding - it is the real-world path for streaming
     // LLM responses through the proxy over HTTP/2 - but it needs upstream-server scaffolding beyond
     // this change.
+
+    @Test
+    public void shouldKeepHttp2ConnectionOpenForSubsequentStreamAfterAStreamFinishes() throws Exception {
+        // GitHub issue #2641, symptom 2. For all non-gRPC HTTP/2 traffic MockServer multiplexes every
+        // stream onto ONE connection channel (HttpToHttp2ConnectionHandler; there are no per-stream
+        // child channels - see PortUnificationHandler and Http2StreamIds). The streaming handler used
+        // to call ctx.close() at end-of-stream, which on that shared channel emits GOAWAY and tears
+        // down the WHOLE connection - so a second request on the same connection was impossible.
+        //
+        // This drives two streaming SSE requests SEQUENTIALLY on a single h2c connection: the second
+        // stream is only opened after the first has fully completed. Before the fix the first stream's
+        // completion GOAWAYed the connection, so the second request received nothing; after the fix the
+        // connection survives (never closed for an HTTP/2 request, and the read is re-armed) and the
+        // second stream is served. (Fully-interleaved concurrent streaming over this non-multiplex path
+        // is a separate, pre-existing limitation - the codec routes bare content frames by a single
+        // current-stream-id - and is out of scope here; see the TODO in PortUnificationHandler.)
+        mockServerClient.upsert(
+            new Expectation(request().withPath("/http2_sse_reuse"))
+                .thenRespondWithSse(
+                    HttpSseResponse.sseResponse()
+                        .withEvents(
+                            SseEvent.sseEvent().withEvent("open").withData("stream_open"),
+                            SseEvent.sseEvent().withEvent("done").withData("stream_done")
+                        )
+                )
+        );
+
+        NioEventLoopGroup group = new NioEventLoopGroup();
+        AtomicBoolean goAwayReceived = new AtomicBoolean(false);
+        try {
+            Bootstrap bootstrap = new Bootstrap()
+                .group(group)
+                .channel(NioSocketChannel.class)
+                .handler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        ch.pipeline().addLast(Http2FrameCodecBuilder.forClient().build());
+                        ch.pipeline().addLast(new Http2MultiplexHandler(new ChannelInitializer<Channel>() {
+                            @Override
+                            protected void initChannel(Channel ch) {
+                                ch.pipeline().addLast(new ChannelInboundHandlerAdapter());
+                            }
+                        }));
+                        // connection-level frames (incl. GOAWAY) are fired past the multiplex handler
+                        ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+                            @Override
+                            public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                                if (msg instanceof Http2GoAwayFrame) {
+                                    goAwayReceived.set(true);
+                                }
+                                ReferenceCountUtil.release(msg);
+                            }
+                        });
+                    }
+                });
+
+            Channel parent = bootstrap.connect("localhost", mockServer.getLocalPort()).sync().channel();
+
+            // when - the first streaming request is opened and fully collected
+            String first = openStreamAndCollectBody(parent, "/http2_sse_reuse");
+            // then - it completed on its own stream and the shared connection was NOT torn down
+            assertThat("first stream body: <" + first + ">", first, containsString("data: stream_open"));
+            assertThat("first stream body: <" + first + ">", first, containsString("data: stream_done"));
+            assertThat("connection was GOAWAYed after the first stream finished", goAwayReceived.get(), is(false));
+
+            // when - a SECOND streaming request is opened on the SAME connection
+            String second = openStreamAndCollectBody(parent, "/http2_sse_reuse");
+            // then - it is served, proving the shared HTTP/2 connection survived the first stream.
+            // Before the fix the first stream's ctx.close() GOAWAYed the connection, so this was empty.
+            assertThat("second stream body: <" + second + ">", second, containsString("data: stream_open"));
+            assertThat("second stream body: <" + second + ">", second, containsString("data: stream_done"));
+            assertThat("connection was GOAWAYed before the second stream completed", goAwayReceived.get(), is(false));
+        } finally {
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Open one stream on an existing h2c parent connection, request {@code path}, and collect every
+     * DATA frame delivered to that stream, returning once the stream ends. Returns whatever was
+     * collected on timeout so a failure reads as "this stream received nothing".
+     */
+    private String openStreamAndCollectBody(Channel parent, String path) throws Exception {
+        StringBuilder collected = new StringBuilder();
+        CompletableFuture<String> bodyFuture = new CompletableFuture<>();
+        Http2StreamChannel streamChannel = new Http2StreamChannelBootstrap(parent)
+            .handler(new ChannelInboundHandlerAdapter() {
+                @Override
+                public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                    try {
+                        if (msg instanceof Http2DataFrame) {
+                            Http2DataFrame data = (Http2DataFrame) msg;
+                            synchronized (collected) {
+                                collected.append(data.content().toString(StandardCharsets.UTF_8));
+                            }
+                            if (data.isEndStream()) {
+                                bodyFuture.complete(collected.toString());
+                            }
+                        } else if (msg instanceof Http2HeadersFrame && ((Http2HeadersFrame) msg).isEndStream()) {
+                            bodyFuture.complete(collected.toString());
+                        }
+                    } finally {
+                        ReferenceCountUtil.release(msg);
+                    }
+                }
+
+                @Override
+                public void channelInactive(ChannelHandlerContext ctx) {
+                    synchronized (collected) {
+                        bodyFuture.complete(collected.toString());
+                    }
+                }
+
+                @Override
+                public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                    bodyFuture.completeExceptionally(cause);
+                }
+            })
+            .open()
+            .sync()
+            .getNow();
+
+        Http2Headers headers = new DefaultHttp2Headers()
+            .method(HttpMethod.GET.asciiName())
+            .scheme(HttpScheme.HTTP.name())
+            .authority("localhost:" + mockServer.getLocalPort())
+            .path(path);
+        streamChannel.writeAndFlush(new DefaultHttp2HeadersFrame(headers, true));
+
+        try {
+            return bodyFuture.get(10, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            synchronized (collected) {
+                return collected.toString();
+            }
+        }
+    }
 
     @Test
     public void shouldDeliverStaticResponseToRealHttp2Client() throws Exception {

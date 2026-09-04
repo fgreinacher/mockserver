@@ -78,24 +78,26 @@ flowchart TB
 
 `HttpSseResponseActionHandler` (`mockserver-core/src/main/java/org/mockserver/mock/action/http/HttpSseResponseActionHandler.java`) writes the SSE stream directly via Netty's `ChannelHandlerContext`. It:
 
-1. Writes HTTP response headers (`Content-Type: text/event-stream`, `Transfer-Encoding: chunked`, `Cache-Control: no-cache`, `Connection: keep-alive`) plus any custom headers from the action
+1. Writes HTTP response headers (`Content-Type: text/event-stream`, `Transfer-Encoding: chunked`, `Cache-Control: no-cache`) plus any custom headers from the action. The `Connection` header now reports the end-of-stream decision that is actually taken (`keep-alive` when the connection will be kept, `close` when it will be closed) rather than always claiming `keep-alive`
 2. Recursively schedules each event via `Scheduler`, using the per-event `Delay` if present or executing immediately if not
 3. Formats each event per the SSE specification — multi-line `data` values are split into multiple `data:` lines; `id`, `event`, and `retry` fields are written when non-null
-4. Writes `LastHttpContent.EMPTY_LAST_CONTENT` to terminate the chunked stream, then closes the channel if `closeConnection` is `true` (or null, which defaults to closing)
+4. Writes `LastHttpContent.EMPTY_LAST_CONTENT` to terminate the chunked stream, then resolves whether to close (see below). For an **HTTP/1.1** request it closes the channel only when the decision is to close, and otherwise re-arms the connection read so the client's next request is served. For an **HTTP/2** request the shared multiplexed connection is **never** closed — the terminal frame carries the request's stream id and ends only that stream, so closing the parent channel would GOAWAY every sibling stream (GitHub issue #2641)
 
-> **Known inconsistency — an absent `closeConnection` does not mean the same thing across the three
-> streaming actions.** SSE (`HttpSseResponseActionHandler`) and WebSocket
-> (`HttpWebSocketResponseActionHandler`) treat an absent value as **close**; gRPC streaming
-> (`GrpcStreamResponseActionHandler`) treats it as **don't close**. None of the schemas declares a
-> `default`, so a client that omits the field gets opposite behaviour depending on the action.
+The HTTP/1.1 close decision mirrors the non-streaming path (`NettyResponseWriter.writeAndCloseSocket`): an explicit `closeConnection` on the `httpSseResponse` wins; otherwise the request's own keep-alive intent decides (`request.isKeepAlive()`); and `alwaysCloseSocketConnections` forces a close regardless. An **absent** `closeConnection` therefore no longer means "always close" — it honours the client's keep-alive, so a streaming response no longer breaks a connection it advertised as reusable.
+
+> **Remaining inconsistency — an absent `closeConnection` still differs across the streaming actions.**
+> Since the issue #2641 fix, SSE (`HttpSseResponseActionHandler`) treats an absent value as
+> **keep-alive-aware** (close only if the request itself is not keep-alive, or `alwaysCloseSocketConnections`
+> is set). WebSocket (`HttpWebSocketResponseActionHandler`) still treats an absent value as **close**, and
+> gRPC streaming (`GrpcStreamResponseActionHandler`) as **don't close**. None of the schemas declares a
+> `default`.
 >
-> **Recommendation (deferred, not yet actioned): normalise all three to "absent = don't close".**
-> Closing is the surprising direction for an action whose whole purpose is to hold a stream open, and
-> gRPC already behaves that way. This is deliberately *not* bundled with the fixes that exposed it,
-> because it changes server behaviour for existing SSE/WebSocket users who rely on the current
-> default, so it needs its own change, review and prominent changelog entry. Deferring is safe
-> because the dashboard code generator now always emits `closeConnection` explicitly, so generated
-> snippets no longer depend on the default in either direction.
+> **Recommendation (deferred, not yet actioned): normalise WebSocket to match.** SSE and gRPC now both
+> hold the stream's connection open by default; only WebSocket still closes on an absent value. Aligning
+> WebSocket is deliberately *not* bundled here because it changes server behaviour for existing WebSocket
+> users who rely on the current default, so it needs its own change, review and prominent changelog entry.
+> Deferring is safe because the dashboard code generator always emits `closeConnection` explicitly, so
+> generated snippets do not depend on the default in either direction.
 
 Since T1.2, streaming payloads can be **templated**: setting an optional `templateType` (`VELOCITY`/`MUSTACHE`/`JAVASCRIPT`) on the `httpSseResponse` (or `httpWebSocketResponse`, or per-message on `grpcStreamResponse`) renders each event's `data` (each WebSocket text frame / each gRPC message `json`) as a response template against the triggering request via the shared `StreamTemplateRenderer` — same request/template context as `httpResponseTemplate` (`$!request.body`, `$jsonPath(...)`, built-in helpers, `faker`, `scenario`). Rendering is per event/message and opt-in; with no `templateType` payloads are emitted byte-for-byte unchanged. See *Templated streaming payloads* in [request-processing.md](request-processing.md).
 
@@ -115,7 +117,8 @@ sequenceDiagram
         Handler->>Client: SSE event chunk (id, event, retry, data lines)
     end
     Handler->>Client: LastHttpContent (terminates chunked transfer)
-    Handler->>Client: close connection (if closeConnection true or null)
+    Handler->>Client: HTTP/1.1 close only if the resolved decision is close, else keep-alive and re-arm read
+    Note over Handler,Client: HTTP/2 never closes the shared connection (ends only this stream)
 ```
 
 ### Serialization

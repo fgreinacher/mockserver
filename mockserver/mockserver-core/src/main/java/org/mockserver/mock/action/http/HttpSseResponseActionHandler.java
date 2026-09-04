@@ -24,11 +24,13 @@ public class HttpSseResponseActionHandler {
 
     private final MockServerLogger mockServerLogger;
     private final Scheduler scheduler;
+    private final Configuration configuration;
     private final StreamTemplateRenderer templateRenderer;
 
     public HttpSseResponseActionHandler(MockServerLogger mockServerLogger, Scheduler scheduler, Configuration configuration) {
         this.mockServerLogger = mockServerLogger;
         this.scheduler = scheduler;
+        this.configuration = configuration;
         this.templateRenderer = new StreamTemplateRenderer(mockServerLogger, configuration);
     }
 
@@ -57,7 +59,15 @@ public class HttpSseResponseActionHandler {
         }
         initialResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, defaultContentType);
         initialResponse.headers().set(HttpHeaderNames.CACHE_CONTROL, "no-cache");
-        initialResponse.headers().set(HttpHeaderNames.CONNECTION, "keep-alive");
+        // Make the Connection header tell the truth: it must reflect the same close/keep-alive
+        // decision the end of the stream will actually honour (see finishStream). Previously this
+        // was hard-coded to keep-alive while the stream always closed, so an HTTP/1.1 client that
+        // reused the promised-alive connection got a RemoteDisconnected on its next request. On
+        // HTTP/2 (streamId != null) the parent connection is never closed for a single stream, and
+        // the connection-specific Connection/Transfer-Encoding headers are stripped during the
+        // HTTP/1-to-HTTP/2 conversion anyway.
+        boolean willCloseHttp1Connection = request.getStreamId() == null && shouldCloseHttp1Connection(request, httpSseResponse);
+        initialResponse.headers().set(HttpHeaderNames.CONNECTION, willCloseHttp1Connection ? "close" : "keep-alive");
         initialResponse.headers().set(HttpHeaderNames.TRANSFER_ENCODING, "chunked");
 
         if (httpSseResponse.getHeaders() != null) {
@@ -81,13 +91,13 @@ public class HttpSseResponseActionHandler {
         if (events != null && !events.isEmpty()) {
             scheduleEvents(events, 0, ctx, httpSseResponse, request, format);
         } else {
-            finishStream(ctx, httpSseResponse);
+            finishStream(ctx, httpSseResponse, request);
         }
     }
 
     private void scheduleEvents(List<SseEvent> events, int index, ChannelHandlerContext ctx, HttpSseResponse httpSseResponse, org.mockserver.model.HttpRequest request, StreamingFormat format) {
         if (index >= events.size() || !ctx.channel().isActive()) {
-            finishStream(ctx, httpSseResponse);
+            finishStream(ctx, httpSseResponse, request);
             return;
         }
 
@@ -129,7 +139,7 @@ public class HttpSseResponseActionHandler {
                                     .setThrowable(future.cause())
                             );
                         }
-                        finishStream(ctx, httpSseResponse);
+                        finishStream(ctx, httpSseResponse, request);
                     }
                 });
             } catch (Exception e) {
@@ -144,7 +154,7 @@ public class HttpSseResponseActionHandler {
                             .setThrowable(e)
                     );
                 }
-                finishStream(ctx, httpSseResponse);
+                finishStream(ctx, httpSseResponse, request);
             }
         };
 
@@ -174,14 +184,57 @@ public class HttpSseResponseActionHandler {
             .withRetry(event.getRetry());
     }
 
-    private void finishStream(ChannelHandlerContext ctx, HttpSseResponse httpSseResponse) {
+    private void finishStream(ChannelHandlerContext ctx, HttpSseResponse httpSseResponse, org.mockserver.model.HttpRequest request) {
         if (ctx.channel().isActive()) {
             ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT).addListener(future -> {
-                if (httpSseResponse.getCloseConnection() == null || httpSseResponse.getCloseConnection()) {
+                // HTTP/2: the terminal LastHttpContent already carries the request's stream id
+                // (stamped on the head, propagated onto trailing content by the codec) and sends
+                // END_STREAM, closing THAT stream only. The parent channel here is the single
+                // multiplexed connection shared by every sibling stream (there are no per-stream
+                // child channels on this non-gRPC HTTP/2 path), so calling ctx.close() would emit
+                // GOAWAY and kill every concurrent in-flight stream. Never close the parent for an
+                // HTTP/2 request - and this holds even when closeConnection:true, because tearing
+                // down a shared connection to satisfy one expectation is never the right trade.
+                if (request.getStreamId() != null) {
+                    // Defensively re-assert read interest on the shared connection. AUTO_READ is
+                    // enabled on the server child channel (MockServer.childOption) so Netty normally
+                    // re-arms this itself; this is a no-op in that case and only matters if some
+                    // other handler on this connection has turned auto-read off.
+                    ctx.read();
+                    return;
+                }
+                if (shouldCloseHttp1Connection(request, httpSseResponse)) {
                     ctx.close();
+                } else {
+                    // Keep-alive: defensively re-assert read interest so the client's NEXT request
+                    // on this connection is read. AUTO_READ is enabled on the server child channel
+                    // (MockServer.childOption), so Netty already re-arms the read at
+                    // channelReadComplete and this is a no-op on the normal SSE path - verified by
+                    // removing it and seeing connection reuse still work. It is kept only to stay
+                    // correct if this response is written on a connection where another handler
+                    // (connection-delay, breakpoint, subscription) has disabled auto-read.
+                    ctx.read();
                 }
             });
         }
+    }
+
+    /**
+     * Resolve whether the HTTP/1.1 connection should be closed at end of stream, mirroring the
+     * keep-alive-aware decision the non-streaming path makes in
+     * {@code NettyResponseWriter.writeAndCloseSocket}. An explicit {@link HttpSseResponse#getCloseConnection()}
+     * wins (the SSE model's equivalent of {@code ConnectionOptions.closeSocket}); otherwise the
+     * request's keep-alive intent decides; and {@code alwaysCloseSocketConnections} forces a close
+     * regardless. Only meaningful for HTTP/1.1 - callers must not close the shared HTTP/2 parent.
+     */
+    private boolean shouldCloseHttp1Connection(org.mockserver.model.HttpRequest request, HttpSseResponse httpSseResponse) {
+        boolean closeChannel;
+        if (httpSseResponse.getCloseConnection() != null) {
+            closeChannel = httpSseResponse.getCloseConnection();
+        } else {
+            closeChannel = !(request.isKeepAlive() != null && request.isKeepAlive());
+        }
+        return closeChannel || configuration.alwaysCloseSocketConnections();
     }
 
     /**

@@ -11,6 +11,9 @@ import org.mockserver.llm.codec.BedrockEventStreamEncoder;
 import org.mockserver.netty.MockServer;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -581,6 +584,116 @@ public class LlmAgentLoopE2eTest {
         assertThat(rawResponse, containsString("text/event-stream"));
         assertThat(rawResponse, containsString("chat.completion.chunk"));
         assertThat(rawResponse, containsString("[DONE]"));
+    }
+
+    @Test
+    public void shouldKeepHttp1ConnectionAliveForStreamingLlmResponseByDefault() throws Exception {
+        // GitHub issue #2641 - the path the reporter actually hit. A streaming httpLlmResponse is
+        // served through HttpSseResponseActionHandler (HttpActionHandler builds the HttpSseResponse
+        // WITHOUT closeConnection), so it used to take the null -> always-close default and drop the
+        // HTTP/1.1 connection even though the response head promised keep-alive. A streaming client
+        // that reuses the connection (the norm for an OpenAI-style client) then failed on its next
+        // request. This proves the connection now survives by default.
+        llmMock("/v1/chat/completions/keepalive")
+            .withProvider(OPENAI)
+            .withModel("gpt-4o")
+            .respondingWith(completion()
+                .withText("Hello from a reusable stream")
+                .withStreaming(true))
+            .applyTo(mockServerClient);
+
+        String body = "{\"model\":\"gpt-4o\",\"stream\":true,"
+            + "\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}";
+
+        try (Socket socket = new Socket("localhost", mockServerPort)) {
+            socket.setSoTimeout(5000);
+            OutputStream output = socket.getOutputStream();
+            InputStream input = socket.getInputStream();
+
+            // when - a keep-alive client reads the whole first stream
+            writeKeepAlivePost(output, "/v1/chat/completions/keepalive", body);
+            String first = readOneChunkedResponse(input);
+
+            // then - the stream completed, and the Connection header told the truth (keep-alive)
+            assertThat(first, containsString("HTTP/1.1 200 OK"));
+            assertThat(first, containsString("text/event-stream"));
+            assertThat(first, containsString("connection: keep-alive"));
+            assertThat(first, containsString("chat.completion.chunk"));
+            assertThat(first, containsString("[DONE]"));
+
+            // when - a SECOND streaming request is sent on the SAME socket
+            writeKeepAlivePost(output, "/v1/chat/completions/keepalive", body);
+            String second = readOneChunkedResponse(input);
+
+            // then - it is served, proving the connection survived the first stream. Before the fix
+            // the first stream closed the socket, so this read hit EOF / RemoteDisconnected.
+            assertThat(second, containsString("HTTP/1.1 200 OK"));
+            assertThat(second, containsString("[DONE]"));
+        }
+    }
+
+    private void writeKeepAlivePost(OutputStream output, String path, String body) throws IOException {
+        byte[] bodyBytes = body != null ? body.getBytes(StandardCharsets.UTF_8) : new byte[0];
+        StringBuilder request = new StringBuilder();
+        request.append("POST ").append(path).append(" HTTP/1.1\r\n");
+        request.append("Host: localhost:").append(mockServerPort).append("\r\n");
+        request.append("Content-Type: application/json\r\n");
+        request.append("Connection: keep-alive\r\n");
+        request.append("Content-Length: ").append(bodyBytes.length).append("\r\n\r\n");
+        output.write(request.toString().getBytes(StandardCharsets.UTF_8));
+        if (bodyBytes.length > 0) {
+            output.write(bodyBytes);
+        }
+        output.flush();
+    }
+
+    /**
+     * Read exactly one HTTP/1.1 chunked response off a persistent socket without over-reading into
+     * the next response, so a second request can be issued on the SAME connection.
+     */
+    private String readOneChunkedResponse(InputStream in) throws IOException {
+        StringBuilder response = new StringBuilder();
+        String line;
+        while (!(line = readRawLine(in)).isEmpty()) {
+            response.append(line).append("\n");
+        }
+        response.append("\n");
+        while (true) {
+            String sizeLine = readRawLine(in);
+            int semicolon = sizeLine.indexOf(';');
+            String hex = (semicolon >= 0 ? sizeLine.substring(0, semicolon) : sizeLine).trim();
+            int size = Integer.parseInt(hex, 16);
+            if (size == 0) {
+                readRawLine(in); // trailing CRLF terminating the final (empty) chunk
+                break;
+            }
+            byte[] chunk = new byte[size];
+            int offset = 0;
+            while (offset < size) {
+                int read = in.read(chunk, offset, size - offset);
+                if (read == -1) {
+                    throw new EOFException("connection closed mid-chunk - the stream was not kept alive");
+                }
+                offset += read;
+            }
+            response.append(new String(chunk, StandardCharsets.UTF_8));
+            readRawLine(in); // trailing CRLF after the chunk data
+        }
+        return response.toString();
+    }
+
+    private String readRawLine(InputStream in) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        int c;
+        while ((c = in.read()) != -1) {
+            if (c == '\n') {
+                break;
+            }
+            if (c != '\r') {
+                buffer.write(c);
+            }
+        }
+        return buffer.toString(StandardCharsets.UTF_8.name());
     }
 
     @Test

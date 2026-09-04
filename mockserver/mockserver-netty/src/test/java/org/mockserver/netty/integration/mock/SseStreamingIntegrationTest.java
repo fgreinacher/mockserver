@@ -9,6 +9,10 @@ import org.mockserver.client.MockServerClient;
 import org.mockserver.netty.MockServer;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.Socket;
@@ -131,6 +135,127 @@ public class SseStreamingIntegrationTest {
             }
             output.flush();
             return IOUtils.toString(socket.getInputStream(), StandardCharsets.UTF_8);
+        }
+    }
+
+    /**
+     * Read exactly one HTTP/1.1 chunked response off a persistent socket without over-reading into
+     * the next response - so a second request can be sent on the SAME connection. The reader used by
+     * the other tests drains until EOF, which only works because those responses close the socket.
+     */
+    private String readOneChunkedResponse(InputStream in) throws IOException {
+        StringBuilder response = new StringBuilder();
+        String line;
+        boolean chunked = false;
+        int contentLength = -1;
+        while (!(line = readRawLine(in)).isEmpty()) {
+            response.append(line).append("\n");
+            String lower = line.toLowerCase();
+            if (lower.startsWith("transfer-encoding:") && lower.contains("chunked")) {
+                chunked = true;
+            } else if (lower.startsWith("content-length:")) {
+                contentLength = Integer.parseInt(line.substring(line.indexOf(':') + 1).trim());
+            }
+        }
+        response.append("\n");
+        if (!chunked) {
+            if (contentLength > 0) {
+                byte[] body = new byte[contentLength];
+                int offset = 0;
+                while (offset < contentLength) {
+                    int read = in.read(body, offset, contentLength - offset);
+                    if (read == -1) {
+                        throw new EOFException("connection closed before the fixed-length body was read");
+                    }
+                    offset += read;
+                }
+                response.append(new String(body, StandardCharsets.UTF_8));
+            }
+            return response.toString();
+        }
+        while (true) {
+            String sizeLine = readRawLine(in);
+            int semicolon = sizeLine.indexOf(';');
+            String hex = (semicolon >= 0 ? sizeLine.substring(0, semicolon) : sizeLine).trim();
+            int size = Integer.parseInt(hex, 16);
+            if (size == 0) {
+                readRawLine(in); // trailing CRLF terminating the final (empty) chunk
+                break;
+            }
+            byte[] chunk = new byte[size];
+            int offset = 0;
+            while (offset < size) {
+                int read = in.read(chunk, offset, size - offset);
+                if (read == -1) {
+                    throw new EOFException("connection closed mid-chunk - the stream was not kept alive");
+                }
+                offset += read;
+            }
+            response.append(new String(chunk, StandardCharsets.UTF_8));
+            readRawLine(in); // trailing CRLF after the chunk data
+        }
+        return response.toString();
+    }
+
+    private String readRawLine(InputStream in) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        int c;
+        while ((c = in.read()) != -1) {
+            if (c == '\n') {
+                break;
+            }
+            if (c != '\r') {
+                buffer.write(c);
+            }
+        }
+        return buffer.toString(StandardCharsets.UTF_8.name());
+    }
+
+    private void writeKeepAliveGet(OutputStream output, String path) throws IOException {
+        output.write(("GET " + path + " HTTP/1.1\r\n" +
+            "Host: localhost:" + mockServerPort + "\r\n" +
+            "Connection: keep-alive\r\n" +
+            "Content-Length: 0\r\n" +
+            "\r\n").getBytes(StandardCharsets.UTF_8));
+        output.flush();
+    }
+
+    @Test
+    public void shouldKeepHttp1ConnectionAliveForSseStreamAndAllowReuse() throws Exception {
+        // GitHub issue #2641. An SSE expectation with NO closeConnection (the buggy default that used
+        // to always close) must not drop the HTTP/1.1 connection it advertised as keep-alive.
+        createExpectation("{" +
+            "\"httpRequest\": {\"method\": \"GET\", \"path\": \"/keepalive-events\"}," +
+            "\"httpSseResponse\": {" +
+            "  \"statusCode\": 200," +
+            "  \"events\": [" +
+            "    {\"event\": \"message\", \"data\": \"first stream\", \"id\": \"1\"}" +
+            "  ]" +
+            "}" +
+            "}");
+
+        try (Socket socket = new Socket("localhost", mockServerPort)) {
+            socket.setSoTimeout(5000);
+            OutputStream output = socket.getOutputStream();
+            InputStream input = socket.getInputStream();
+
+            // when - a keep-alive client reads the whole first stream
+            writeKeepAliveGet(output, "/keepalive-events");
+            String first = readOneChunkedResponse(input);
+
+            // then - the stream completed and the Connection header told the truth (keep-alive)
+            assertThat(first, containsString("HTTP/1.1 200 OK"));
+            assertThat(first, containsString("connection: keep-alive"));
+            assertThat(first, containsString("data: first stream"));
+
+            // when - a SECOND request is sent on the SAME socket (the connection was NOT dropped)
+            writeKeepAliveGet(output, "/keepalive-events");
+            String second = readOneChunkedResponse(input);
+
+            // then - it is served, proving the connection survived the first stream. Before the fix
+            // finishStream always closed here, so this second read hit EOF / RemoteDisconnected.
+            assertThat(second, containsString("HTTP/1.1 200 OK"));
+            assertThat(second, containsString("data: first stream"));
         }
     }
 
