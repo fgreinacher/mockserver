@@ -1,5 +1,5 @@
-# Auto-merge Dependabot minor/patch PRs once EVERY check that actually exists on
-# the PR head has genuinely passed.
+# Auto-merge Dependabot minor/patch PRs — and within-major SECURITY fixes — once
+# EVERY check that actually exists on the PR head has genuinely passed.
 #
 # Why not GitHub native auto-merge? Native auto-merge waits only on the repo's
 # *configured* required-status-check list. In this repo Buildkite and Snyk are
@@ -69,7 +69,9 @@ jobs:
           DRY_RUN="${DISPATCH_DRY_RUN:-$DEFAULT_DRY_RUN}"
           ONLY_PR="${DISPATCH_PR:-}"
 
-          # ── Two accepted branch classes, both structural and forge-resistant ──
+          # ── Accepted PR classes, all forge-resistant ─────────────────────────
+          # Two are branch-structural (A, B); a third (C, defined further below)
+          # covers Dependabot SECURITY updates, which never land on an A/B branch.
           #
           # (A) GROUP_BRANCH_REGEX — a "-minor-and-patch" GROUP branch. The
           #     minor+patch groups configured in .github/dependabot.yml embed the
@@ -119,6 +121,52 @@ jobs:
           # so the regex is unambiguous shell and stays shellcheck-clean.
           DIGEST_TITLE_REGEX='bump [^ ]+ from .[0-9a-f]{7,}. to .[0-9a-f]{7,}.'
 
+          # ── (C) SECURITY updates — a title-parsed, EXPLICIT semver bound ──────
+          #
+          # Dependabot SECURITY updates match NEITHER branch class above: every
+          # `groups:` entry in .github/dependabot.yml omits `applies-to:`, which
+          # DEFAULTS TO `version-updates`, so a security fix is raised UNGROUPED
+          # (e.g. dependabot/npm_and_yarn/mockserver-ui/fflate-0.4.9) or inside
+          # GitHub's own auto-created `npm_and_yarn` security group — never on a
+          # `*-minor-and-patch-<sha>` branch. Left unhandled they sit open forever
+          # (confirmed live: #2640/#2645/#2646/#2647 were fully green yet unmerged).
+          #
+          # WHY NOT just add a security group named to match path A? Because path
+          # A's ENTIRE safety argument is structural major-exclusion via group
+          # membership, and a security group CANNOT reproduce it: GitHub's docs are
+          # explicit that "`update-types` only affects version updates, not security
+          # updates", so `update-types: [minor, patch]` is SILENTLY IGNORED on an
+          # `applies-to: security-updates` group. A security group whose name ended
+          # `-minor-and-patch` would therefore let a MAJOR security bump auto-merge
+          # under path A — exactly the failure Rule 6d of check-false-green-guards.sh
+          # exists to reject. So path C never relies on grouping; it derives its
+          # major-exclusion from an EXPLICIT semver comparison of the title versions.
+          #
+          # WHY the title parse is trustworthy: it is the SAME trust level as path
+          # B's DIGEST_TITLE_REGEX. The fork gate above has already proven the head
+          # branch lives in THIS repo, and the author gate has proven the author is
+          # dependabot[bot], so both the title AND the body are Dependabot-generated
+          # text on a base-repo branch — a PR author cannot forge either.
+          #
+          # VERSION_PAIR_REGEX matches Dependabot's one-dependency bump shape,
+          # "bump <name> from <X> to <Y>", where X and Y are DOTTED NUMERIC versions
+          # (at least one dot). Requiring dotted numerics is what separates a version
+          # bump from path B's digest bump: a digest title reads "from `<sha>` to
+          # `<sha>`" whose backticked hex tokens are not dotted numerics, so the two
+          # title shapes are mutually exclusive and neither can be mistaken for the
+          # other. A multi-dependency grouped security title ("bump the npm_and_yarn
+          # group across 3 directories with 5 updates") carries NO such pair, so it
+          # is refused — we will not range-check a title we cannot parse.
+          #
+          # SECURITY_BODY_MARKER is Dependabot's security-update footer, emitted
+          # ONLY on security PRs ("You can disable automated security fix PRs for
+          # this repo from the Security Alerts page"). It is absent from ordinary
+          # version-update PRs (verified against grouped version PRs #2628/#2630),
+          # so it is what distinguishes a security update from any other ungrouped
+          # PR that might otherwise reach path C's branch position.
+          VERSION_PAIR_REGEX='bump [^ ]+ from [0-9]+\.[0-9][0-9.]* to [0-9]+\.[0-9][0-9.]*'
+          SECURITY_BODY_MARKER='You can disable automated security fix PRs'
+
           log()    { printf '%s\n' "$*"; }
           refuse() { log "  REFUSE (#$1): $2"; }
 
@@ -140,6 +188,7 @@ jobs:
             head_repo="$(jq -r '.head.repo.full_name // ""' <<<"$prjson")"
             base_repo="$(jq -r '.base.repo.full_name // ""' <<<"$prjson")"
             title="$(jq -r '.title // ""' <<<"$prjson")"
+            body="$(jq -r '.body // ""' <<<"$prjson")"
 
             # Gate: author is Dependabot.
             if [ "$user" != "dependabot[bot]" ]; then
@@ -157,9 +206,13 @@ jobs:
             if [ -z "$head_repo" ] || [ "$head_repo" != "$base_repo" ]; then
               refuse "$pr" "head repo '$head_repo' != base '$base_repo' (fork/deleted)"; return 1
             fi
-            # Gate: branch is either (A) a minor/patch GROUP branch, or (B) a
-            # distroless DIGEST branch whose TITLE is also Dependabot's digest-bump
-            # shape. Majors and tag changes match neither (see the regexes above).
+            # Gate: the PR is accepted by exactly one of three paths — (A) a
+            # minor/patch GROUP branch, (B) a distroless DIGEST branch whose TITLE
+            # is also Dependabot's digest-bump shape, or (C) a SECURITY update whose
+            # title parses to a single within-major version bump. Majors and tag
+            # changes match none of them (see the regexes/comment above). Paths A and
+            # B are branch-structural; path C is decided from the body+title signals
+            # because security updates never land on an A/B-shaped branch.
             if printf '%s' "$head_ref" | grep -Eq "$GROUP_BRANCH_REGEX"; then
               : # (A) accepted — structural major-exclusion via group membership
             elif printf '%s' "$head_ref" | grep -Eq "$DIGEST_BRANCH_REGEX"; then
@@ -170,8 +223,45 @@ jobs:
               if ! printf '%s' "$title" | grep -Eq "$DIGEST_TITLE_REGEX"; then
                 refuse "$pr" "branch '$head_ref' looks like a digest bump but title '$title' is not a digest-bump title — fail closed"; return 1
               fi
+            elif printf '%s' "$body" | grep -qF "$SECURITY_BODY_MARKER"; then
+              # (C) Dependabot SECURITY update (body carries the security-fix footer).
+              # Accept ONLY a single within-major version bump, with the major bound
+              # computed EXPLICITLY here — grouping cannot supply it (see the big
+              # comment above: update-types is ignored for security groups).
+              #
+              # (C1) The title must contain EXACTLY ONE "bump <name> from <X> to <Y>"
+              #      dotted-version pair. Zero pairs = a multi-dependency grouped
+              #      security title we cannot range-check; more than one = an
+              #      unexpected shape. Either way, fail closed.
+              npairs="$(printf '%s' "$title" | grep -oE "$VERSION_PAIR_REGEX" | wc -l | tr -d '[:space:]')"
+              if [ "$npairs" != "1" ]; then
+                refuse "$pr" "security PR title '$title' has ${npairs} parseable version pair(s) (need exactly 1) — fail closed"; return 1
+              fi
+              sec_pair="$(printf '%s' "$title" | grep -oE "$VERSION_PAIR_REGEX" | head -1)"
+              sec_from="$(printf '%s' "$sec_pair" | sed -E 's/.* from ([0-9.]+) to ([0-9.]+)$/\1/')"
+              sec_to="$(printf '%s' "$sec_pair" | sed -E 's/.* from ([0-9.]+) to ([0-9.]+)$/\2/')"
+              # (C2) EXPLICIT semver major-exclusion. The major components must be
+              #      equal — this is the conjunct that keeps a major security bump
+              #      (foo 3.1.5 -> 4.0.0) out, standing in for the group membership
+              #      that path A relies on and a security group cannot provide.
+              from_major="${sec_from%%.*}"
+              to_major="${sec_to%%.*}"
+              if [ "$from_major" != "$to_major" ]; then
+                refuse "$pr" "security bump ${sec_from} -> ${sec_to} crosses a semver major (${from_major} -> ${to_major}) — fail closed"; return 1
+              fi
+              # (C3) 0.x special case: under npm/semver a 0.x MINOR bump is breaking
+              #      (0.4.8 -> 0.4.9 is safe, 0.4.x -> 0.5.0 is not), so when the
+              #      major is 0 the minor components must ALSO be equal.
+              if [ "$from_major" = "0" ]; then
+                from_rest="${sec_from#*.}"; from_minor="${from_rest%%.*}"
+                to_rest="${sec_to#*.}"; to_minor="${to_rest%%.*}"
+                if [ "$from_minor" != "$to_minor" ]; then
+                  refuse "$pr" "0.x security bump ${sec_from} -> ${sec_to} crosses a 0.x minor (${from_minor} -> ${to_minor}), which is breaking under semver — fail closed"; return 1
+                fi
+              fi
+              log "  (C) security update within-major: ${sec_from} -> ${sec_to} (accepted)"
             else
-              refuse "$pr" "branch '$head_ref' is neither a *-minor-and-patch group nor a distroless digest bump (major/tag/ungrouped)"; return 1
+              refuse "$pr" "branch '$head_ref' is neither a *-minor-and-patch group nor a distroless digest bump, and the PR is not a Dependabot security update (major/tag/ungrouped)"; return 1
             fi
 
             # Gate: mergeable. GitHub computes this asynchronously; retry while null.

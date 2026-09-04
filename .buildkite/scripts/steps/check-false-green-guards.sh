@@ -78,9 +78,9 @@
 #
 #   Rule 6 — the Dependabot auto-merge workflow's acceptance paths must stay
 #     narrow. .github/workflows/dependabot-auto-merge.yml merges Dependabot PRs
-#     with NO human in the loop; four load-bearing properties keep majors and
+#     with NO human in the loop; five load-bearing properties keep majors and
 #     version bumps out, and each is easy to "tidy away" in a later edit. This
-#     parses the three acceptance regexes out of the workflow and asserts:
+#     parses the acceptance regexes out of the workflow and asserts:
 #     (6a) DIGEST_BRANCH_REGEX stays anchored (^…$), confined to dependabot/
 #     docker/, keeps the literal /distroless/ segment, and ends in a hex-run
 #     floor of >=7 — the /distroless/ scope is load-bearing, not cosmetic:
@@ -92,13 +92,20 @@
 #     failing closed on mismatch (the two-signal AND cannot collapse to the
 #     branch alone); (6d) every group name in .github/dependabot.yml that path
 #     A's GROUP_BRANCH_REGEX accepts declares update-types ⊆ {minor,patch}, so a
-#     major can never ride a branch literally named *-minor-and-patch. Fails
-#     closed if the workflow is missing, a regex cannot be extracted, path B
-#     cannot be located, or no group is accepted by path A (an empty sweep is the
-#     specific shape this file exists to catch). NO allow-list by design — none
-#     of these four has a legitimate exemption (a group in a branch named
-#     minor-and-patch must never carry a major), so every violation is a real
-#     regression, not a case to wave through.
+#     major can never ride a branch literally named *-minor-and-patch; (6e) path C
+#     (Dependabot SECURITY updates) keeps its EXPLICIT semver major-exclusion —
+#     VERSION_PAIR_REGEX still requires DOTTED-NUMERIC (non-hex) from/to versions,
+#     and the path-C block still compares the major components and fails closed on
+#     a mismatch (plus the 0.x-minor special case). Grouping cannot supply this
+#     bound (GitHub ignores update-types for security groups), so if the major
+#     conjunct is deleted or the regex drifts, a major security bump would silently
+#     auto-merge. Fails closed if the workflow is missing, a regex cannot be
+#     extracted, path B or path C cannot be located, or no group is accepted by
+#     path A (an empty sweep is the specific shape this file exists to catch). NO
+#     allow-list by design — none of these five has a legitimate exemption (a group
+#     in a branch named minor-and-patch must never carry a major; a security PR must
+#     never auto-merge across a major), so every violation is a real regression, not
+#     a case to wave through.
 #
 # ALLOW-LISTS
 #
@@ -867,6 +874,126 @@ EOF
         errors=$(( errors + 1 ))
       fi
     fi
+  fi
+
+  # ── 6e: path C (SECURITY updates) keeps its EXPLICIT semver major-exclusion ───
+  # Path C has no group to lean on — GitHub ignores update-types for security
+  # groups — so its ONLY defence against a major security bump is the explicit
+  # major comparison of the title versions. Assert (1) VERSION_PAIR_REGEX and
+  # SECURITY_BODY_MARKER still exist; (2) VERSION_PAIR_REGEX still requires a
+  # DOTTED-NUMERIC (not hex, not wildcard) version on BOTH the from and to sides,
+  # so it can never drift into matching a digest sha or arbitrary text; and (3)
+  # EACH comparison — the major `!=` and the 0.x-minor `!=` — is present AND carries
+  # a live `return 1` inside THAT comparison's own `if … fi` (bound to that specific
+  # `if`, not merely somewhere in path C: C1's npairs `return 1` must not be able to
+  # cover a gutted major/minor refuse). Drop any of these and a major (or a breaking
+  # 0.x-minor) security bump would silently auto-merge.
+  #
+  # LIMITS. Like every rule here this is a TEXTUAL tripwire: it checks that each
+  # refuse is PRESENT and BOUND to its own comparison, not that it is REACHABLE or
+  # that the branch polarity is right. An `if false; then … return 1; fi` wrapper, or
+  # a swap of the refuse into an `else` arm, still reads as green. Both are
+  # conspicuous control-flow rewrites rather than the quiet deletion / "tidy-away"
+  # shape this rule exists to catch, and are left to diff review.
+  VER_PAIR_RE="$(r6_extract VERSION_PAIR_REGEX || true)"
+  SEC_MARKER="$(r6_extract SECURITY_BODY_MARKER || true)"
+  if [ -z "$VER_PAIR_RE" ]; then
+    echo "+++ :bangbang: Rule 6e: could not extract VERSION_PAIR_REGEX from ${WF} — path C's title parser moved or was renamed; failing closed" >&2
+    errors=$(( errors + 1 ))
+  fi
+  if [ -z "$SEC_MARKER" ]; then
+    echo "+++ :bangbang: Rule 6e: could not extract SECURITY_BODY_MARKER from ${WF} — path C's security signal moved or was renamed; failing closed" >&2
+    errors=$(( errors + 1 ))
+  fi
+
+  if [ -n "$VER_PAIR_RE" ]; then
+    r6e_ok=1
+    case "$VER_PAIR_RE" in
+      'bump '*) ;;
+      *) echo "+++ :bangbang: Rule 6e: VERSION_PAIR_REGEX ('${VER_PAIR_RE}') no longer starts with 'bump ' — it is no longer pinned to a Dependabot bump title" >&2; errors=$(( errors + 1 )); r6e_ok=0 ;;
+    esac
+    # Both sides of ' to ' must require a dotted-numeric version ('[0-9]+\.'); this
+    # is what keeps a version bump distinct from a digest sha (path B).
+    vp_from="${VER_PAIR_RE%% to *}"
+    vp_to="${VER_PAIR_RE#* to }"
+    if [ "$vp_from" = "$VER_PAIR_RE" ]; then
+      echo "+++ :bangbang: Rule 6e: VERSION_PAIR_REGEX ('${VER_PAIR_RE}') has no ' to ' separator — it cannot express a from/to version pair" >&2; errors=$(( errors + 1 )); r6e_ok=0
+    else
+      if ! printf '%s' "$vp_from" | grep -qF '[0-9]+\.'; then
+        echo "+++ :bangbang: Rule 6e: VERSION_PAIR_REGEX 'from' side has no dotted-numeric '[0-9]+\\.' version token — it could match a non-version (or a hex sha), letting path C parse a bogus major" >&2; errors=$(( errors + 1 )); r6e_ok=0
+      fi
+      if ! printf '%s' "$vp_to" | grep -qF '[0-9]+\.'; then
+        echo "+++ :bangbang: Rule 6e: VERSION_PAIR_REGEX 'to' side has no dotted-numeric '[0-9]+\\.' version token — it could match a non-version (or a hex sha), letting path C parse a bogus major" >&2; errors=$(( errors + 1 )); r6e_ok=0
+      fi
+    fi
+    # The version tokens must NOT admit hex letters — a hex-class token would let a
+    # digest sha satisfy the pair regex and collapse the C/B distinction.
+    if printf '%s' "$VER_PAIR_RE" | grep -qF '0-9a-f'; then
+      echo "+++ :bangbang: Rule 6e: VERSION_PAIR_REGEX ('${VER_PAIR_RE}') admits hex characters ([0-9a-f]) — a digest sha could then satisfy it and be treated as a version bump" >&2; errors=$(( errors + 1 )); r6e_ok=0
+    fi
+    [ "$r6e_ok" -eq 1 ] && echo "    :white_check_mark: VERSION_PAIR_REGEX: 'bump' title with dotted-numeric (non-hex) from/to versions"
+  fi
+
+  # Isolate path C — the `elif … SECURITY_BODY_MARKER … then` branch, up to the
+  # next `else`/`elif` at that level — as a coarse existence check for the path.
+  r6e_block="$(awk '
+    /elif .*SECURITY_BODY_MARKER.*then/ { inblk = 1; next }
+    inblk && /^[[:space:]]*else[[:space:]]*$/ { inblk = 0 }
+    inblk && /^[[:space:]]*elif[[:space:]]/ { inblk = 0 }
+    inblk { print }
+  ' "$WF")"
+
+  # Extract ONE comparison sub-block: the live `if [ … ]; then … fi` whose opening
+  # line starts with `if [` (never a comment) and contains ALL the given tokens,
+  # captured up to its first standalone `fi`. This BINDS the fail-closed assertion
+  # to the specific comparison, instead of asking "does a `return 1` exist anywhere
+  # in path C" — which C1's npairs `return 1` satisfies even when C2's/C3's refuse
+  # bodies have been gutted. Token-matching (index(), not a dynamic regex) sidesteps
+  # awk backslash-escape pitfalls with `$`/`[`/`!=`.
+  r6e_subblock() {  # $1 = space-separated tokens ALL required on the opening if-line
+    awk -v tokens="$1" '
+      function has_all(line,   n, i, arr) {
+        n = split(tokens, arr, " ")
+        for (i = 1; i <= n; i++) if (index(line, arr[i]) == 0) return 0
+        return 1
+      }
+      !inblk && $0 ~ /^[[:space:]]*if \[/ && has_all($0) { inblk = 1; print; next }
+      inblk { print; if ($0 ~ /^[[:space:]]*fi[[:space:]]*$/) exit }
+    ' "$WF"
+  }
+  # True only if the sub-block fails closed on a LIVE (non-comment) line — a comment
+  # mentioning `return 1` must not count.
+  r6e_fails_closed() { printf '%s\n' "$1" | grep -v '^[[:space:]]*#' | grep -q 'return 1'; }
+
+  if [ -z "$r6e_block" ]; then
+    echo "+++ :bangbang: Rule 6e: could not locate path C (the 'elif … SECURITY_BODY_MARKER … then' acceptance branch) in ${WF} — the acceptance structure changed; failing closed" >&2
+    errors=$(( errors + 1 ))
+  else
+    r6e_blk_ok=1
+    # (1) path C must still parse the title into a version pair (live line, not prose).
+    if ! printf '%s\n' "$r6e_block" | grep -v '^[[:space:]]*#' | grep -q 'VERSION_PAIR_REGEX'; then
+      echo "+++ :bangbang: Rule 6e: path C no longer references VERSION_PAIR_REGEX on a live line — it is no longer parsing the title into a version pair before accepting a security PR. Restore the title parse." >&2
+      errors=$(( errors + 1 )); r6e_blk_ok=0
+    fi
+    # (2) the MAJOR comparison must exist AND carry its own live `return 1`.
+    r6e_major_blk="$(r6e_subblock 'from_major != to_major')"
+    if [ -z "$r6e_major_blk" ]; then
+      echo "+++ :bangbang: Rule 6e: could not locate path C's major-comparison sub-block ('if [ \$from_major != \$to_major ]; then … fi') in ${WF} — the EXPLICIT major-exclusion conjunct is gone or was rewritten, so a MAJOR security bump could auto-merge. Restore the major comparison; failing closed." >&2
+      errors=$(( errors + 1 )); r6e_blk_ok=0
+    elif ! r6e_fails_closed "$r6e_major_blk"; then
+      echo "+++ :bangbang: Rule 6e: path C's major-comparison sub-block ('if [ \$from_major != \$to_major ]') no longer fails closed — it has no live 'return 1' inside its own if...fi, so a cross-MAJOR security bump would NOT be refused and would auto-merge to master unattended. Restore the refuse/return inside that if." >&2
+      errors=$(( errors + 1 )); r6e_blk_ok=0
+    fi
+    # (3) the 0.x-minor comparison must exist AND carry its own live `return 1`.
+    r6e_minor_blk="$(r6e_subblock 'from_minor != to_minor')"
+    if [ -z "$r6e_minor_blk" ]; then
+      echo "+++ :bangbang: Rule 6e: could not locate path C's 0.x-minor sub-block ('if [ \$from_minor != \$to_minor ]; then … fi') in ${WF} — the 0.x special case is gone or was rewritten, so a breaking 0.x MINOR security bump (e.g. 0.4.x -> 0.5.0) could auto-merge. Restore the 0-major minor check; failing closed." >&2
+      errors=$(( errors + 1 )); r6e_blk_ok=0
+    elif ! r6e_fails_closed "$r6e_minor_blk"; then
+      echo "+++ :bangbang: Rule 6e: path C's 0.x-minor sub-block ('if [ \$from_minor != \$to_minor ]') no longer fails closed — it has no live 'return 1' inside its own if...fi, so a breaking 0.x MINOR security bump (e.g. 0.4.x -> 0.5.0) would NOT be refused. Restore the refuse/return inside that if." >&2
+      errors=$(( errors + 1 )); r6e_blk_ok=0
+    fi
+    [ "$r6e_blk_ok" -eq 1 ] && echo "    :white_check_mark: path C: major and 0.x-minor comparisons each present and each fails closed (return 1 bound to its own check)"
   fi
 fi
 
