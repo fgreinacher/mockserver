@@ -4,6 +4,22 @@
 # region = "us-east-1"
 # domain = "mock-server.com"
 
+# Further domains to receive catch-all mail for. Each gets its own SES identity,
+# DKIM CNAMEs, MX and DMARC; they SHARE the rule set, receipt rule, S3 bucket,
+# Lambda and alarm.
+# ⚠️ A SECOND DOMAIN GOES HERE, NEVER IN A SECOND STACK.
+#    `aws_ses_active_receipt_rule_set` activates one rule set and DEACTIVATES any
+#    other in the same AWS account and region, so a separate stack for a second
+#    domain silently switches this one off. Both domains' Route 53 zones must be
+#    reachable by this provider — for learn-ice-hockey.com that holds, because it
+#    is in the same account.
+# additional_domains = ["learn-ice-hockey.com"]
+
+# Local part for the rewritten From, applied per receiving domain: "noreply"
+# gives noreply@mock-server.com for mail to that domain and
+# noreply@learn-ice-hockey.com for mail to the other.
+# from_local_part = "noreply"
+
 # Email addresses to forward inbound mail to
 # forward_to = ["jamesdbloom@gmail.com"]
 

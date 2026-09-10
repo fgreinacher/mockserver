@@ -1,6 +1,21 @@
 # SES Email Forwarding
 
-Terraform configuration for catch-all email forwarding on `mock-server.com`. All email sent to any address at the domain is forwarded to a configurable list of destination addresses (default: `jamesdbloom@gmail.com`).
+Terraform configuration for catch-all email forwarding on `mock-server.com` **and any further domains listed in `additional_domains`**.
+
+## ⚠️ One stack, many domains — never a second stack
+
+`aws_ses_active_receipt_rule_set` activates one receipt rule set and **deactivates any other active rule set in the same AWS account and region**. Standing up a separate copy of this stack for a second domain therefore **silently switches off forwarding for the first one**, with no error and no plan diff to warn you.
+
+This was nearly done on 10 September 2026: `learn-ice-hockey.com` lives in the **same account** (the `ice-hockey` and `mockserver-website` profiles resolve to one account) and SES receiving for `mock-server.com` is in `us-east-1`. A second stack would have taken `mock-server.com` email down.
+
+So a second domain goes in `additional_domains`. SES receipt rules accept a **list** of recipients, and a bare domain matches every address at it, so **one rule is the catch-all for all of them**. Shared: the rule set, the receipt rule, the S3 bucket, the Lambda, the alarm. Per domain: the SES identity, three DKIM CNAMEs, the MX and the DMARC record.
+
+⚠️ **The additional-domain resources are deliberately separate blocks rather than a `for_each` over all domains.** Converting the existing single-domain resources would change their Terraform addresses, and without `moved` blocks Terraform would destroy and recreate the live identity, its DKIM CNAMEs and the MX — breaking inbound mail and forcing DKIM re-verification, which can take up to 72 hours. The cost is five duplicated blocks; the benefit is that this change **cannot recreate anything that already exists**. If the duplication ever needs removing, do that migration on its own, with `moved` blocks, and nothing else in the same apply.
+
+## ⚠️ The From header follows the receiving domain
+
+SES will only send from a verified identity, so the forwarder rewrites `From`. With more than one domain a single fixed sender means mail to the second domain arrives appearing to come from the first — wrong for a published contact address. The Lambda now derives `${from_local_part}@<domain the mail arrived at>`, checked against the domains this stack verifies, and falls back to `from_address` for anything unrecognised. **Every receiving domain needs its identity ARN in the Lambda's IAM policy**; omitting one fails at send time, asynchronously, so the symptom is unforwarded mail and an alarm rather than a plan error.
+ All email sent to any address at the domain is forwarded to a configurable list of destination addresses (default: `jamesdbloom@gmail.com`).
 
 ## Architecture
 

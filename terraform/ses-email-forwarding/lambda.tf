@@ -24,6 +24,12 @@ resource "aws_lambda_function" "forwarder" {
       MAIL_KEY_PREFIX = "incoming/"
       FROM_ADDRESS    = var.from_address
       FORWARD_TO      = join(",", var.forward_to)
+      # The Lambda rewrites From to <local part>@<the domain the mail arrived at>,
+      # so forwarded mail for a second domain does not appear to come from the
+      # first. VERIFIED_DOMAINS is the allow-list it checks the recipient against
+      # before doing that — anything else falls back to FROM_ADDRESS.
+      FROM_LOCAL_PART  = var.from_local_part
+      VERIFIED_DOMAINS = join(",", concat([var.domain], var.additional_domains))
     }
   }
 
@@ -78,8 +84,15 @@ resource "aws_iam_role_policy" "forwarder" {
         Sid    = "SendForwardedEmail"
         Effect = "Allow"
         Action = "ses:SendRawEmail"
+        # ⚠️ EVERY receiving domain needs its own identity ARN here, not just
+        #    var.domain — the Lambda rewrites From to the domain the mail arrived
+        #    at, and SES refuses a send from an identity this role cannot use.
+        #    Omitting an additional domain fails at SEND time, in a Lambda invoked
+        #    asynchronously, so the symptom is silently unforwarded mail plus an
+        #    alarm — not a plan error.
         Resource = concat(
-          ["arn:aws:ses:${var.region}:${data.aws_caller_identity.current.account_id}:identity/${var.domain}"],
+          [for dom in concat([var.domain], var.additional_domains) :
+          "arn:aws:ses:${var.region}:${data.aws_caller_identity.current.account_id}:identity/${dom}"],
           [for addr in var.forward_to : "arn:aws:ses:${var.region}:${data.aws_caller_identity.current.account_id}:identity/${addr}"]
         )
       },

@@ -32,6 +32,37 @@ const ses = new SESClient();
 const MAIL_BUCKET = process.env.MAIL_BUCKET;
 const MAIL_KEY_PREFIX = process.env.MAIL_KEY_PREFIX || "";
 const FROM_ADDRESS = process.env.FROM_ADDRESS;
+const FROM_LOCAL_PART = process.env.FROM_LOCAL_PART || "noreply";
+const VERIFIED_DOMAINS = (process.env.VERIFIED_DOMAINS || "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+/**
+ * Pick the From address to rewrite to, based on the domain the mail ARRIVED at.
+ *
+ * ⚠️  WHY THIS IS NOT JUST FROM_ADDRESS. This stack is a catch-all for more than
+ *     one domain. With a single fixed sender, mail to an address at the second
+ *     domain arrives appearing to come from the FIRST one — which reads as a
+ *     misdirection to anyone who looks, and is exactly wrong for a published
+ *     contact address.
+ * ⚠️  SES REFUSES A SEND FROM AN UNVERIFIED IDENTITY, so the recipient's domain is
+ *     checked against VERIFIED_DOMAINS before it is used. Anything unrecognised —
+ *     including the case where SES gives us no recipients at all — falls back to
+ *     FROM_ADDRESS rather than constructing an address SES will reject. Failing
+ *     over to a working sender beats failing the forward.
+ */
+function senderFor(recipients) {
+  for (const r of recipients || []) {
+    const at = String(r).lastIndexOf("@");
+    if (at === -1) continue;
+    const domain = String(r).slice(at + 1).toLowerCase();
+    if (VERIFIED_DOMAINS.includes(domain)) {
+      return `${FROM_LOCAL_PART}@${domain}`;
+    }
+  }
+  return FROM_ADDRESS;
+}
 const FORWARD_TO = (process.env.FORWARD_TO || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 exports.handler = async (event) => {
@@ -52,7 +83,10 @@ exports.handler = async (event) => {
       const rawEmail = await s3Response.Body.transformToString("utf-8");
 
       // 2. Rewrite headers for forwarding
-      const rewrittenEmail = rewriteHeaders(rawEmail, messageId);
+      // SES reports every address this message was accepted for; the first one
+      // belonging to a domain we verify decides the From we rewrite to.
+      const fromAddress = senderFor(record.ses.receipt?.recipients);
+      const rewrittenEmail = rewriteHeaders(rawEmail, messageId, fromAddress);
 
       // 3. Send the rewritten email via SES
       await ses.send(
@@ -110,7 +144,7 @@ exports.handler = async (event) => {
  * We handle this by processing line-by-line and treating continuation lines
  * as part of the preceding header.
  */
-function rewriteHeaders(rawEmail, messageId) {
+function rewriteHeaders(rawEmail, messageId, fromAddress = FROM_ADDRESS) {
   // Split headers from body. The boundary is the first blank line (CRLF CRLF).
   // Some emails may use bare LF; normalise to CRLF first.
   const normalized = rawEmail.replace(/\r?\n/g, "\r\n");
@@ -153,13 +187,13 @@ function rewriteHeaders(rawEmail, messageId) {
       // the full address.
       const displayName = extractDisplayName(originalFrom);
       const label = displayName
-        ? `${displayName} via ${getDomain(FROM_ADDRESS)}`
+        ? `${displayName} via ${getDomain(fromAddress)}`
         : originalFrom
-          ? `${originalFrom} via ${getDomain(FROM_ADDRESS)}`
-          : `Unknown Sender via ${getDomain(FROM_ADDRESS)}`;
+          ? `${originalFrom} via ${getDomain(fromAddress)}`
+          : `Unknown Sender via ${getDomain(fromAddress)}`;
 
       // Quote the display name and set our verified address
-      h.raw = `From: "${escapeQuotes(label)}" <${FROM_ADDRESS}>`;
+      h.raw = `From: "${escapeQuotes(label)}" <${fromAddress}>`;
       break;
     }
   }
