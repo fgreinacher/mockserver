@@ -33,8 +33,10 @@
                 ObjectMapperFactory statically initialises schema serializers that reference
                 io.swagger.v3.oas.models, so swagger-core must remain on the classpath.
 
-                Consumers using strict version alignment (Maven Enforcer dependencyConvergence) should still
-                import org.mock-server:mockserver-bom, which pins every remaining transitive version.
+                Consumers using strict version alignment (Maven Enforcer dependencyConvergence) must manage the
+                remaining third-party transitive versions themselves (or import the upstream projects' own BOMs):
+                org.mock-server:mockserver-bom aligns only MockServer's own modules and deliberately does NOT pin
+                third-party versions, since doing so silently overrode consumers' own versions and scopes (#2684).
             -->
             <exclusions>
                 <!-- Velocity templating (server-side TemplateEngine only) -->

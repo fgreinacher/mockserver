@@ -38,14 +38,16 @@ sitemap:
         <tr><td>Deploy MockServer to a servlet container (mock mode)</td><td><code>mockserver-war</code></td></tr>
         <tr><td>Deploy MockServer to a servlet container (proxy mode)</td><td><code>mockserver-proxy-war</code></td></tr>
         <tr><td>Run MockServer from a single executable jar</td><td><code>mockserver-netty:jar-with-dependencies</code></td></tr>
-        <tr><td>Align all MockServer + transitive versions (plain artifacts)</td><td><code>mockserver-bom</code> (import)</td></tr>
+        <tr><td>Align all MockServer module versions</td><td><code>mockserver-bom</code> (import)</td></tr>
     </tbody>
 </table>
 
 <a id="mockserver_bom" class="anchor" href="#mockserver_bom">&nbsp;</a>
 <h3>mockserver-bom &mdash; Bill of Materials (version alignment)</h3>
 
-<p>If you use the <strong>plain</strong> (unshaded) artifacts and your build enforces a single version of every dependency &mdash; for example the Maven Enforcer <a target="_blank" href="https://maven.apache.org/enforcer/enforcer-rules/dependencyConvergence.html" rel="noopener noreferrer"><code>dependencyConvergence</code></a> rule &mdash; import <code>mockserver-bom</code>. It pins every MockServer module <em>and</em> every third-party dependency MockServer relies on to a single, mutually consistent version, so your dependency tree converges. (If you use the <code>-no-dependencies</code> form there is nothing to align, so the BOM is not needed.)</p>
+<p>Import <code>mockserver-bom</code> to keep the MockServer modules you use on one, mutually consistent version: declare any MockServer artifact without repeating its version. The BOM manages <strong>only</strong> MockServer's own <code>org.mock-server</code> modules &mdash; it does <strong>not</strong> pin the third-party libraries MockServer relies on internally (Jackson, Netty, Guava, Nimbus, &hellip;), so importing it never changes the versions <em>or</em> scopes your project resolves for those shared libraries. (If you use the <code>-no-dependencies</code> form there are no MockServer transitive dependencies to align, so the BOM is rarely needed.)</p>
+
+<p><strong>Strict version alignment.</strong> If your build enforces a single version of every dependency &mdash; for example the Maven Enforcer <a target="_blank" href="https://maven.apache.org/enforcer/enforcer-rules/dependencyConvergence.html" rel="noopener noreferrer"><code>dependencyConvergence</code></a> rule &mdash; importing <code>mockserver-bom</code> will <em>not</em> converge MockServer's third-party transitive versions for you (earlier releases did pin them, but that silently overrode consumers' own dependency versions and scopes, so it was removed). Manage those third-party versions yourself, or import each upstream project's own BOM.</p>
 
 <p>Maven &mdash; import the BOM in <code>dependencyManagement</code>, then declare MockServer artifacts without a version:</p>
 

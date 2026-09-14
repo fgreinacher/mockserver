@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chaos fault instead, which still aborts the whole TCP connection (that is its purpose, and it now does so
   properly rather than degrading into a single-stream reset). HTTP/1.1 and HTTP/3 behaviour is unchanged.
   (GitHub issue #2669).
+- **BREAKING: `mockserver-bom` now manages only MockServer's own `org.mock-server` modules — it no longer pins
+  the third-party libraries MockServer uses internally.** The published BOM previously baked in MockServer's
+  entire parent `dependencyManagement` (~190 third-party entries — Jackson, Netty, Guava, Nimbus, Velocity, and
+  more), four of them at `test` scope. Because a BOM's managed versions and scopes apply to whoever imports it,
+  this silently overrode a consumer's **own** versions *and* scopes for those shared libraries. For example, a
+  project that declared `com.nimbusds:oauth2-oidc-sdk` without a scope had it forced onto the **test** classpath
+  by MockServer's internal test-scoped pin, so the dependency disappeared from compile/runtime and the
+  consumer's production code failed to build against it (GitHub issue #2684). The published BOM now contains
+  only the MockServer module entries (24, down from 221), so importing it never changes any third-party version
+  or scope in your build. **What you need to do:** if you imported `mockserver-bom` to align MockServer's
+  *transitive* third-party versions — for instance to satisfy the Maven Enforcer `dependencyConvergence` rule —
+  those pins are gone and convergence errors may reappear; manage the affected third-party versions yourself in
+  your own `dependencyManagement`, or import each upstream project's own BOM. Aligning the MockServer modules
+  themselves is unchanged: keep importing the BOM and declare MockServer artifacts without a version.
+  (GitHub issue #2684).
 
 ### Fixed
 - A **SOCKS4a** client (for example `curl -x socks4a://…`) proxying through MockServer no longer hangs.

@@ -13,20 +13,32 @@
 
     <name>MockServer Bill of Materials (BOM)</name>
     <description>Bill of Materials for MockServer. Import this BOM into the dependencyManagement section
-        of a consuming project to pin every MockServer module — and every third-party dependency MockServer
-        relies on — to a single, mutually consistent version. This makes downstream builds reproducible and
-        satisfies strict version-alignment checks such as the Maven Enforcer dependencyConvergence rule, which
-        would otherwise flag the differing transitive versions that MockServer's own parent POM resolves
-        internally but does not export to consumers.
+        of a consuming project to align every MockServer module (mockserver-core, mockserver-netty,
+        mockserver-junit-jupiter, the Spring integrations, and the rest) to a single, mutually consistent
+        version, so you can declare any MockServer artifact without repeating its version.
+
+        This BOM manages ONLY MockServer's own org.mock-server artifacts. It deliberately does NOT pin the
+        third-party libraries MockServer depends on internally (Jackson, Netty, Guava, Nimbus, Velocity,
+        SLF4J, …), so importing it never changes the versions — or scopes — your project resolves for those
+        shared libraries. Manage third-party versions yourself, or import each upstream project's own BOM.
     </description>
     <url>https://www.mock-server.com</url>
 
     <!--
-        This module inherits the parent POM's <dependencyManagement>, which pins all of MockServer's
-        third-party transitive dependencies (Jackson, Guava, Velocity, Swagger, SLF4J, commons-*, etc.).
-        The flatten-maven-plugin below (flattenMode=bom, dependencyManagement=expand) resolves that inherited
-        management plus the MockServer module entries declared here into a single self-contained published POM,
-        so consumers who `import` this BOM receive every pin without needing the parent on their classpath.
+        This BOM publishes ONLY MockServer's own modules — the org.mock-server:* entries listed below.
+
+        This module inherits the parent POM's <dependencyManagement>, which pins MockServer's third-party
+        transitive dependencies (Jackson, Netty, Velocity, SLF4J, commons-*, etc.) for MockServer's OWN
+        internal build. Those inherited third-party pins MUST NOT leak into the published BOM: expanding them
+        would silently override a consumer's own versions AND scopes for those libraries whenever they import
+        this BOM (e.g. a test-scoped pin dragging a consumer's compile dependency onto the test classpath —
+        see GitHub issue #2684).
+
+        The flatten-maven-plugin below therefore uses dependencyManagement=extended_interpolate (NOT expand):
+        extended_interpolate takes the dependencyManagement from THIS module's raw POM — only the
+        org.mock-server entries declared here — and resolves their ${project.*} placeholders against the
+        effective model, WITHOUT expanding the inherited parent management. The published BOM thus pins every
+        MockServer module to ${project.version} and nothing else.
 
         The parent's own flatten-maven-plugin execution is declared with <inherited>false</inherited>, so it
         does not apply to this module; the execution below is this module's own copy.
@@ -159,9 +171,13 @@
 
     <build>
         <plugins>
-            <!-- Flatten this module's effective POM (inherited third-party pins + the module entries above)
-                 into a single self-contained BOM POM for publishing. The parent declares the same plugin with
-                 <inherited>false</inherited>, so this is an independent execution scoped to this module. -->
+            <!-- Flatten this module's POM into a self-contained BOM for publishing. dependencyManagement
+                 uses extended_interpolate (NOT expand): it keeps ONLY this module's own org.mock-server
+                 entries from the raw POM and resolves their ${project.version}/${project.groupId}
+                 placeholders, WITHOUT expanding the inherited parent third-party management — so the
+                 published BOM manages MockServer's own artifacts only (GitHub issue #2684). The parent
+                 declares the same plugin with <inherited>false</inherited>, so this is an independent
+                 execution scoped to this module. -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>flatten-maven-plugin</artifactId>
@@ -170,10 +186,10 @@
                 <configuration>
                     <flattenMode>bom</flattenMode>
                     <pomElements>
-                        <dependencyManagement>expand</dependencyManagement>
-                        <!-- dependencyManagement is expanded to concrete versions above, so the parent's
-                             build-internal properties (skipTests, compiler levels, plugin versions, etc.) are
-                             not needed in the published BOM — drop them to keep the consumed artifact clean. -->
+                        <dependencyManagement>extended_interpolate</dependencyManagement>
+                        <!-- the resolved dependencyManagement above needs none of the parent's
+                             build-internal properties (skipTests, compiler levels, plugin versions, etc.),
+                             so drop them to keep the consumed artifact clean. -->
                         <properties>remove</properties>
                     </pomElements>
                 </configuration>
@@ -190,6 +206,66 @@
                         <phase>clean</phase>
                         <goals>
                             <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Guard test for the published BOM (GitHub issue #2684): installs the just-flattened BOM into
+                 the local repository and runs a small consumer project against it. verify.groovy asserts the
+                 consumer keeps its OWN oauth2-oidc-sdk version and compile scope (not MockServer's
+                 test-scoped pin) and that EVERY managed entry in the published BOM is an org.mock-server
+                 artifact. This is the only thing that observes the module's public contract — nothing else
+                 in the reactor does, which is why a change elsewhere silently rewrote it. Mirrors the
+                 maven-invoker-plugin convention used by mockserver-netty. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-invoker-plugin</artifactId>
+                <version>3.10.1</version>
+                <configuration>
+                    <skipInvocation>${skipTests}</skipInvocation>
+                    <debug>false</debug>
+                    <streamLogs>false</streamLogs>
+                    <streamLogsOnFailures>true</streamLogsOnFailures>
+                    <showErrors>true</showErrors>
+                    <showVersion>true</showVersion>
+                    <disableReports>true</disableReports>
+                    <projectsDirectory>${basedir}/src/integration-tests/</projectsDirectory>
+                    <cloneProjectsTo>${project.build.directory}/integration-tests/</cloneProjectsTo>
+                    <reportsDirectory>${project.build.directory}</reportsDirectory>
+                    <cloneClean>true</cloneClean>
+                    <ignoreFailures>false</ignoreFailures>
+                    <filterProperties>
+                        <mockserver.version>${project.version}</mockserver.version>
+                    </filterProperties>
+                    <settingsFile>src/integration-tests/settings.xml</settingsFile>
+                    <!-- the post-build assertions live in verify.groovy (the plugin default is
+                         "postbuild"); goals per project come from each project's invoker.properties. -->
+                    <postBuildHookScript>verify</postBuildHookScript>
+                    <pomIncludes>
+                        <pomInclude>bom-**/pom.xml</pomInclude>
+                    </pomIncludes>
+                </configuration>
+                <!-- Groovy interpreter for the verify.groovy post-build hook. Without it the invoker
+                     plugin silently SKIPS the hook (no interpreter on its classpath) and the guard would
+                     pass vacuously. groovy-xml supplies XmlSlurper (a separate module in Groovy 4). -->
+                <dependencies>
+                    <dependency>
+                        <groupId>org.apache.groovy</groupId>
+                        <artifactId>groovy</artifactId>
+                        <version>4.0.31</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>org.apache.groovy</groupId>
+                        <artifactId>groovy-xml</artifactId>
+                        <version>4.0.31</version>
+                    </dependency>
+                </dependencies>
+                <executions>
+                    <execution>
+                        <id>integration-test</id>
+                        <goals>
+                            <goal>install</goal>
+                            <goal>run</goal>
                         </goals>
                     </execution>
                 </executions>

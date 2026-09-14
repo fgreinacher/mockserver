@@ -86,7 +86,7 @@ The project comprises 25 Maven modules:
 
 | Module | Packaging | Purpose |
 |--------|-----------|---------|
-| `mockserver-bom` | pom (flattened) | Bill of Materials — import to pin every MockServer module and third-party transitive to one converged version |
+| `mockserver-bom` | pom (flattened) | Bill of Materials — import to align MockServer's own modules to one version (org.mock-server artifacts only; no third-party pins) |
 | `mockserver-testing` | jar | Shared test utilities |
 | `mockserver-client-java` | jar | Java client API (`MockServerClient`) |
 | `mockserver-client-java-no-dependencies` | jar (shaded) | Client with all dependencies shaded |
@@ -114,9 +114,15 @@ The project comprises 25 Maven modules:
 
 ### Dependency management and the BOM
 
-MockServer pins all of its third-party transitive versions in the **parent POM's `<dependencyManagement>`**, and the reactor's own Enforcer `dependencyConvergence` rule guards that everything resolves to a single version. That management is, by design, **not inherited by downstream consumers** — so a consumer running the same Enforcer rule would see MockServer's transitive versions diverge.
+MockServer pins all of its third-party transitive versions in the **parent POM's `<dependencyManagement>`**, and the reactor's own Enforcer `dependencyConvergence` rule guards that everything resolves to a single version. That management is, by design, **not inherited by downstream consumers**.
 
-`mockserver-bom` closes that gap. It extends the parent POM (inheriting every third-party pin) and adds `dependencyManagement` entries for the published MockServer modules, then uses the `flatten-maven-plugin` (`flattenMode=bom`, `dependencyManagement=expand`) to publish a **self-contained** POM with all pins inlined and no parent reference. Consumers import it to get a converged tree:
+`mockserver-bom` exists so consumers can declare any MockServer module without repeating its version and keep them mutually consistent. It **manages only MockServer's own `org.mock-server` artifacts.** Although the module inherits the parent POM's `<dependencyManagement>` (its third-party pins), those pins **must not** leak into the published BOM: expanding them silently overrode a consumer's own third-party versions **and scopes** when they imported the BOM — e.g. MockServer's test-scoped `oauth2-oidc-sdk` pin dragging a consumer's compile dependency onto the test classpath, breaking their production build ([GitHub issue #2684](https://github.com/mock-server/mockserver/issues/2684)).
+
+To achieve this the `flatten-maven-plugin` (`flattenMode=bom`) uses **`dependencyManagement=extended_interpolate`** (not `expand`): `extended_interpolate` takes the `dependencyManagement` from this module's **raw** POM — only the hand-listed `org.mock-server` entries — and resolves their `${project.*}` placeholders against the effective model, **without** expanding the inherited parent management. The published, self-contained POM (no parent reference) therefore pins every MockServer module to `${project.version}` and nothing else. (`expand` and `resolve` would both re-inline the ~190 inherited third-party entries; `keep`/`interpolate` keep only our entries but leave `${project.version}` unresolved — `extended_interpolate` is the one handling that does both.)
+
+**Consumers that need their third-party tree to converge** (e.g. under the Enforcer `dependencyConvergence` rule) must manage those versions themselves, or import each upstream project's own BOM; the MockServer BOM no longer does it for them. A guard test (`mockserver-bom/src/integration-tests/`, run via `maven-invoker-plugin`) fails the build if the published BOM ever manages a non-`org.mock-server` artifact again, or if importing it changes a consumer's oauth2-oidc-sdk version or scope.
+
+Consumers import the BOM in `dependencyManagement`:
 
 ```xml
 <dependencyManagement>

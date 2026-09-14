@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>org.mock-server.integration-test</groupId>
+    <artifactId>bom-only-manages-mockserver-artifacts</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <!--
+        Guard for GitHub issue #2684: importing mockserver-bom must NOT hijack a consumer's own
+        third-party dependency scopes (or versions).
+
+        This project imports mockserver-bom and depends on com.nimbusds:oauth2-oidc-sdk with its own
+        version and NO scope, so the scope is taken from dependencyManagement. MockServer pins
+        oauth2-oidc-sdk to :test in its parent POM (correctly, for its own build).
+
+          * With the buggy BOM (dependencyManagement=expand) that test-scoped pin was baked into the
+            published BOM, so importing it dragged the consumer's oauth2-oidc-sdk onto the TEST
+            classpath — the dependency vanished from compile/runtime and the consumer's production code
+            failed to compile against it.
+          * With the fixed BOM the BOM manages only org.mock-server artifacts, so it supplies no scope
+            for oauth2-oidc-sdk and the dependency resolves at its default compile scope.
+
+        (A direct version is declared because Maven has no version to fall back on once the BOM stops
+        managing this artifact; the reproduced defect is the scope hijack, which is what made the
+        consumer's production code fail. verify.groovy also asserts, independently of any resolution
+        precedence, that the published BOM manages ONLY org.mock-server artifacts.)
+    -->
+
+    <properties>
+        <mockserver.version>@mockserver.version@</mockserver.version>
+        <oauth2.consumer.version>11.20</oauth2.consumer.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.mock-server</groupId>
+                <artifactId>mockserver-bom</artifactId>
+                <version>${mockserver.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- the consumer's own version; NO scope, so the scope comes from dependencyManagement.
+             The fixed BOM must not supply one (default compile); the buggy BOM supplied :test. -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>oauth2-oidc-sdk</artifactId>
+            <version>${oauth2.consumer.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-clean-plugin</artifactId>
+                <version>3.1.0</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
