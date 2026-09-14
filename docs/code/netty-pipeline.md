@@ -760,6 +760,35 @@ codec, and HTTP/1.1 has no flow control, which is why only large h2-through-`CON
 The default `ChannelInboundHandlerAdapter.channelReadComplete` already propagates — this invariant only
 matters when a handler overrides it.
 
+### Testing convention: an HTTP/2 test MUST use a response body larger than the flow-control window
+
+**Every HTTP/2 test MUST assert on a response (or forwarded) body that exceeds the 65,535-byte HTTP/2
+initial flow-control window — use at least 262,144 bytes (256 KB).** A body at or under one window is
+delivered in the peer's first window and never exercises the `WINDOW_UPDATE`-driven
+`writePendingBytes()` flush described above, so the test cannot observe the whole `channelReadComplete`
+family of defects (#2641, #2667, #2669, #2683). This is not a style preference — it is the single
+structural reason those four defects all shipped green: **every** HTTP/2 test used a sub-window body,
+including the one literally named `shouldForwardHttp2RequestWithLargeBodyViaConnectProxy` at 50,000
+bytes (15 KB short of the window). The failure mode is a silent hang, not a wrong answer, so a
+sub-window body makes the test *incapable of failing* while looking thorough.
+
+Corollaries, all of which are load-bearing and must not be quietly relaxed:
+
+| Rule | Why |
+|------|-----|
+| Body **> 65,535 bytes** (≥ 256 KB) | Crosses the per-stream window, the connection window, and many DATA frames — the only size that exercises the flush. Shrinking it restores the blind spot. |
+| Assert the full body arrives **within a bounded timeout** | The bug is a hang. The time bound (`@Test(timeout=…)` plus a per-request timeout) is the real assertion; a length/content check alone would hang forever, not fail. |
+| Assert the exchange actually used **HTTP/2** (not a silent HTTP/1.1 downgrade) | HTTP/1.1 has no flow control; a downgrade would pass for the wrong reason. |
+| A third-party client must be pinned to the **RFC-default window** | Some independent clients (e.g. `java.net.http.HttpClient`) default to a far larger receive window and pre-enlarge the connection window, so a large body fits in one window and the flush never runs. Pin it (for the JDK client, `-Djdk.httpclient.windowsize=65535` set before the client is built). |
+
+The independent-client conformance lock for this family is
+`mockserver-netty/.../integration/mock/Http2ThirdPartyClientConformanceIntegrationTest` (JDK
+`java.net.http.HttpClient`, a stack MockServer does not itself use), alongside the server-client
+regression tests in `HTTP2MockingIntegrationTest`, `H2cMockingMatrixIntegrationTest` and
+`NettyHttpsProxyHttp2IntegrationTest`. The mocked and forwarded responses served **through the HTTPS
+`CONNECT` proxy** are the cases that reproduce #2683 from a third-party client; direct h2 (`h2c` and
+TLS+ALPN) is the isolation control that stays green either way.
+
 ## WebSocket Proxy Passthrough
 
 MockServer can **proxy** a WebSocket connection through to a real upstream server, in addition to **mocking** one
