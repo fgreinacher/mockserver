@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Test port allocation can opt into a fixed port band instead of the OS ephemeral range.
+  `org.mockserver.socket.PortFactory` normally finds a free port with `bind(0)`, which draws from the same
+  ephemeral range (on macOS `net.inet.ip.portrange.hifirst`..`hilast`, typically 49152-65535) that every other
+  `bind(0)` on the machine uses — including unrelated applications, IDE helpers, and other JVMs. On a busy
+  developer machine that causes two kinds of test flake: a foreign process can occupy a number a test is about to
+  choose, and a test can momentarily connect to that foreign listener instead of the server under test. Setting
+  both `mockserver.testPortRangeStart` and `mockserver.testPortRangeEnd` (for example
+  `-Dmockserver.testPortRangeStart=20000 -Dmockserver.testPortRangeEnd=40000`) makes `PortFactory` choose ports by
+  explicitly binding inside that band — which the OS does not itself hand out to `bind(0)` — retrying past any
+  number already in use. Both properties are unset by default, so continuous integration and any machine that does
+  not set them keep the exact `bind(0)` behaviour as before. This affects only test port selection; it does not
+  change how MockServer binds its own ports at runtime (starting on port `0` and reading back the assigned port
+  remains the fully race-free option and is unchanged). In a surefire/failsafe fork the two properties must reach
+  the fork, e.g. via `-Dmockserver.testArgLine="-Dmockserver.testPortRangeStart=20000 -Dmockserver.testPortRangeEnd=40000"`.
+
 ### Changed
 - HTTP/2 now gives every request stream its own channel. MockServer's HTTP/2 server — both `h2` (over TLS) and
   cleartext `h2c` — now uses Netty's stream-multiplexing model for every connection, replacing the previous
