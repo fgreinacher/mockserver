@@ -1,12 +1,12 @@
 package org.mockserver.netty.integration.mock;
 
-import org.apache.commons.lang3.StringUtils;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.model.Protocol;
+import org.mockserver.test.Http2FlowControlBodies;
 import org.mockserver.testing.integration.mock.AbstractBasicMockingSameJVMIntegrationTest;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -59,7 +59,7 @@ public class HTTP2MockingIntegrationTest extends AbstractBasicMockingSameJVMInte
         // this passes both before and after the CONNECT-tunnel fix. Its job is isolation - a future
         // regression that reds here points at the shared h2 layer, whereas one that reds only the proxy
         // test points at the relay pipeline.
-        String largeBody = StringUtils.repeat("abcdefghij", 30000); // 300,000 bytes > 65,535-byte h2 window
+        String largeBody = Http2FlowControlBodies.body(Http2FlowControlBodies.Size.OVER_WINDOW, "direct-tls-alpn");
         mockServerClient
             .when(request().withPath(calculatePath("large_direct_h2")))
             .respond(response().withStatusCode(201).withBody(largeBody));

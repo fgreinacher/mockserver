@@ -4,6 +4,7 @@ import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.mockserver.test.Http2FlowControlBodies;
 import org.mockserver.client.MockServerClient;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.echo.http.EchoServer;
@@ -91,17 +92,14 @@ public class Http2ThirdPartyClientConformanceIntegrationTest {
     }
 
     /**
-     * A response body MUST exceed the HTTP/2 initial flow-control window (65,535 bytes) — crossing
-     * both the per-stream window and the connection window and spanning many DATA frames — or the
-     * whole response fits in the peer's first window and the {@code WINDOW_UPDATE}-driven
-     * {@code writePendingBytes()} flush is never exercised. That sub-window blind spot is exactly what
-     * hid #2641/#2667/#2669/#2683 for four releases (the test named "large body" was 50,000 bytes,
-     * 15 KB short of the window). 256 KB is the stated floor; 300,000 bytes clears it comfortably.
-     *
-     * <p><b>DO NOT SHRINK THIS.</b> A value at or below 65,535 silently restores the blind spot and
-     * makes the entire suite incapable of catching the regression it was built to lock.
+     * A response body MUST exceed the HTTP/2 initial flow-control window, or the whole response fits in
+     * the peer's first window and the {@code WINDOW_UPDATE}-driven {@code writePendingBytes()} flush is
+     * never exercised — the sub-window blind spot that hid #2641/#2667/#2669/#2683 for four releases.
+     * Sourced from {@link Http2FlowControlBodies.Size#OVER_WINDOW} so there is ONE definition of that
+     * threshold for the whole repository; that class guards the value at class load. Do not replace this
+     * with a local literal.
      */
-    private static final int LARGE_BODY_SIZE = 300_000;
+    private static final int LARGE_BODY_SIZE = Http2FlowControlBodies.Size.OVER_WINDOW.bytes();
 
     private static final Duration EXCHANGE_TIMEOUT = Duration.ofSeconds(20);
 
@@ -339,15 +337,11 @@ public class Http2ThirdPartyClientConformanceIntegrationTest {
     /**
      * Distinguishable, deterministic body of exactly {@link #LARGE_BODY_SIZE} bytes whose filler is
      * stamped throughout with {@code marker}, so a mis-routed or truncated body cannot equal the
-     * expected one anywhere along its length.
+     * expected one anywhere along its length. Delegates to the shared helper rather than repeating the
+     * generation here, so this suite and the rest of the HTTP/2 tests cannot drift apart.
      */
     private static String largeBody(String marker) {
-        String unit = "[" + marker + "]";
-        StringBuilder builder = new StringBuilder(LARGE_BODY_SIZE + unit.length());
-        while (builder.length() < LARGE_BODY_SIZE) {
-            builder.append(unit);
-        }
-        return builder.substring(0, LARGE_BODY_SIZE);
+        return Http2FlowControlBodies.body(Http2FlowControlBodies.Size.OVER_WINDOW, marker);
     }
 
     /**

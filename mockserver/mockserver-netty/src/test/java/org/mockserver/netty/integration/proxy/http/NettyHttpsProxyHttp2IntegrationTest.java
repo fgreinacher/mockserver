@@ -3,7 +3,6 @@ package org.mockserver.netty.integration.proxy.http;
 import com.google.common.collect.ImmutableList;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
-import org.apache.commons.lang3.StringUtils;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -18,6 +17,7 @@ import org.mockserver.model.Protocol;
 import org.mockserver.netty.MockServer;
 import org.mockserver.proxyconfiguration.ProxyConfiguration;
 import org.mockserver.scheduler.Scheduler;
+import org.mockserver.test.Http2FlowControlBodies;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -113,7 +113,7 @@ public class NettyHttpsProxyHttp2IntegrationTest {
         // at exactly one window (65,536 bytes) until the client timed out. The pre-fix behaviour is a HANG,
         // not a wrong body, so the time bound is the real assertion: sendViaConnectProxy's bounded
         // get(15, SECONDS) fails fast, with @Test(timeout = 30000) as the backstop.
-        String largeBody = StringUtils.repeat("abcdefghij", 30000); // 300,000 bytes > 65,535-byte h2 window
+        String largeBody = Http2FlowControlBodies.body(Http2FlowControlBodies.Size.OVER_WINDOW, "connect-proxy-mocked");
         mockServerClient
             .when(request().withPath("/large_mocked").withProtocol(Protocol.HTTP_2))
             .respond(response().withStatusCode(201).withBody(largeBody));
@@ -162,7 +162,7 @@ public class NettyHttpsProxyHttp2IntegrationTest {
         // or under one window fits in the first flush and never exercises the WINDOW_UPDATE-driven
         // writePendingBytes path this fix restores. The previous 50,000-byte body was a false-green - it
         // looked large but stayed 15 KB short of the window, so the forwarded path never crossed it.
-        String largeBody = StringUtils.repeat("abcdefghij", 30000); // 300,000 bytes > 65,535-byte h2 window
+        String largeBody = Http2FlowControlBodies.body(Http2FlowControlBodies.Size.OVER_WINDOW, "connect-proxy-forwarded");
 
         // when
         HttpResponse response = sendViaConnectProxy(

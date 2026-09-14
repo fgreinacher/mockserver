@@ -125,7 +125,8 @@ public class H2cMockingMatrixIntegrationTest {
         // the flow-control flush already works: this passes both before and after the CONNECT-tunnel fix.
         // Its job is isolation - a future regression that reds here points at the shared h2 layer, whereas
         // one that reds only the proxy test points at the relay pipeline.
-        String largeBody = org.apache.commons.lang3.StringUtils.repeat("abcdefghij", 30000); // 300,000 bytes > 65,535-byte h2 window
+        String largeBody = org.mockserver.test.Http2FlowControlBodies.body(
+            org.mockserver.test.Http2FlowControlBodies.Size.OVER_WINDOW, "direct-h2c");
         mockServerClient
             .when(request().withPath("/h2c_large_respond"))
             .respond(

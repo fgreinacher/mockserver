@@ -797,6 +797,15 @@ Corollaries, all of which are load-bearing and must not be quietly relaxed:
 | Assert the exchange actually used **HTTP/2** (not a silent HTTP/1.1 downgrade) | HTTP/1.1 has no flow control; a downgrade would pass for the wrong reason. |
 | A third-party client must be pinned to the **RFC-default window** | Some independent clients (e.g. `java.net.http.HttpClient`) default to a far larger receive window and pre-enlarge the connection window, so a large body fits in one window and the flush never runs. Pin it (for the JDK client, `-Djdk.httpclient.windowsize=65535` set before the client is built). |
 
+**Get the body from the shared helper, not a magic number.** `org.mockserver.test.Http2FlowControlBodies`
+(in `mockserver-testing`, so every module with HTTP/2 tests can reach it) offers named sizes —
+`SMALL` (~1 KB), `OVER_WINDOW` (256 KB) and `LARGE` (~1 MB) — and stamps the body throughout with a
+caller-supplied marker so a mis-routed or truncated body fails an *equality* assertion, not just a
+length check. Use `Http2FlowControlBodies.body(OVER_WINDOW, "some-marker")` for any real HTTP/2 body
+assertion: the author crosses the window without having to know this history, and the class's static
+initialiser fails the build if `OVER_WINDOW` is ever shrunk to at or below the 65,535-byte window, so
+the blind spot cannot be silently reintroduced by editing one number.
+
 The independent-client conformance lock for this family is
 `mockserver-netty/.../integration/mock/Http2ThirdPartyClientConformanceIntegrationTest` (JDK
 `java.net.http.HttpClient`, a stack MockServer does not itself use), alongside the server-client
