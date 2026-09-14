@@ -69,6 +69,108 @@ public class NettyHttpProxySOCKS4IntegrationTest {
         );
     }
 
+    /**
+     * SOCKS4a is the SOCKS4 extension where the client sends a destination <em>hostname</em> instead of an
+     * IPv4 literal, signalled by a sentinel destination IP of the form {@code 0.0.0.x} followed by the
+     * null-terminated hostname (this is what curl's {@code socks4a://} scheme sends). Previously MockServer
+     * echoed that hostname back into the SOCKS4 SUCCESS reply's {@code DSTIP} field, which Netty rejects
+     * because it must be an IPv4 literal — the resulting {@link IllegalArgumentException} was thrown while
+     * writing the reply, so the client never received one and hung forever (curl exit 28). The reply's
+     * {@code DSTIP}/{@code DSTPORT} are ignored by clients, so a SOCKS4a grant now carries {@code 0.0.0.0:0}.
+     */
+    @Test
+    public void shouldProxyRequestsUsingSocketViaSOCKS4aWithHostname() throws Exception {
+        proxyRequestsUsingSocketViaSOCKS4aWithHostname(
+            insecureEchoServer,
+            new Socket("localhost", mockServerPort)
+        );
+    }
+
+    @SuppressWarnings("ResultOfMethodCallIgnored")
+    private void proxyRequestsUsingSocketViaSOCKS4aWithHostname(EchoServer echoServer, Socket socket) throws Exception {
+        try {
+            // given
+            int echoServerPort = echoServer.getPort();
+            echoServer.clear();
+            // fail fast (rather than block forever) if the tunnel is never established / bytes never relayed
+            socket.setSoTimeout(15_000);
+            OutputStream outputStream = socket.getOutputStream();
+            InputStream inputStream = socket.getInputStream();
+
+            byte[] portBytes = {
+                (byte) ((echoServerPort >> 8) & 0xFF),
+                (byte) (echoServerPort & 0xFF)
+            };
+
+            // when - SOCKS4a CONNECT request: sentinel dst IP 0.0.0.1 then the null-terminated hostname
+            byte[] connectRequest = Bytes.concat(
+                new byte[]{
+                    (byte) 0x04,                                    // SOCKS4
+                    (byte) 0x01,                                    // command type CONNECT
+                },
+                portBytes,                                         // destination port
+                new byte[]{
+                    (byte) 0x00, (byte) 0x00, (byte) 0x00, (byte) 0x01, // SOCKS4a sentinel destination IP 0.0.0.1
+                    (byte) 0x00                                     // empty user id, null terminated
+                },
+                "localhost".getBytes(StandardCharsets.US_ASCII),   // destination hostname (SOCKS4a)
+                new byte[]{
+                    (byte) 0x00                                     // hostname null terminator
+                }
+            );
+            outputStream.write(connectRequest);
+            outputStream.flush();
+
+            // then - SOCKS4 CONNECT response (8 bytes): 0x00, status 0x5a (granted), then DSTPORT/DSTIP which
+            // are ignored by clients and, because the destination was a hostname rather than an IPv4 literal,
+            // are emitted as 0.0.0.0:0 (previously this reply was never sent and the client hung)
+            byte[] expectedResponse = {
+                (byte) 0x00,                                        // null version byte
+                (byte) 0x5a,                                        // request granted
+                (byte) 0x00, (byte) 0x00,                           // DSTPORT 0
+                (byte) 0x00, (byte) 0x00, (byte) 0x00, (byte) 0x00  // DSTIP 0.0.0.0
+            };
+            byte[] connectResponse = new byte[expectedResponse.length];
+            inputStream.read(connectResponse);
+            assertThat(Hex.encodeHexString(connectResponse), is(Hex.encodeHexString(expectedResponse)));
+
+            // when - a plain HTTP GET is written through the granted tunnel
+            outputStream.write(("" +
+                "GET /some_path HTTP/1.1\r\n" +
+                "Content-Length: 0\r\n" +
+                "\r\n"
+            ).getBytes(StandardCharsets.UTF_8));
+            outputStream.flush();
+
+            // then - the EchoServer relays a 200 back through the tunnel
+            byte[] echoServerResponse = new byte[125];
+            inputStream.read(echoServerResponse);
+            assertThat(new String(echoServerResponse, StandardCharsets.UTF_8), startsWith("" +
+                "HTTP/1.1 200 OK\r\n" +
+                "accept-encoding: gzip,deflate\r\n" +
+                "connection: keep-alive\r\n" +
+                "content-length: 0\r\n" +
+                "\r\n"
+            ));
+
+            // and - the EchoServer actually received the tunnelled request
+            assertThat(
+                echoServer
+                    .mockServerEventLog()
+                    .verify(verification()
+                        .withRequest(
+                            request()
+                                .withMethod("GET")
+                                .withPath("/some_path")
+                        ))
+                    .get(5, SECONDS),
+                is("")
+            );
+        } finally {
+            socket.close();
+        }
+    }
+
     @SuppressWarnings("ResultOfMethodCallIgnored")
     private void proxyRequestsUsingSocketViaSOCKS4(EchoServer echoServer, Socket socket) throws Exception {
         try {

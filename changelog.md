@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (GitHub issue #2669).
 
 ### Fixed
+- A **SOCKS4a** client (for example `curl -x socks4a://…`) proxying through MockServer no longer hangs.
+  SOCKS4a is the SOCKS4 extension where the client sends the destination as a **hostname** instead of an
+  IPv4 address. MockServer decoded the request correctly but then echoed that hostname back into the
+  `DSTIP` field of the SOCKS4 grant reply, which must be an IPv4 literal; the resulting error was thrown
+  while writing the reply, so the client never received one and blocked until it timed out (curl exit 28,
+  0 bytes) — for cleartext HTTP as well as for TLS. The reply's `DSTIP`/`DSTPORT` are ignored by clients,
+  so a SOCKS4a grant now carries `0.0.0.0:0`; a classic SOCKS4 request (IPv4 literal) still echoes its
+  destination back unchanged. Plain SOCKS4 and SOCKS5 (`socks5h://`) were unaffected.
 - An HTTPS request that negotiates HTTP/2 (ALPN `h2`) through MockServer's **SOCKS proxy** now works.
   Previously, using MockServer as a SOCKS4/SOCKS5 proxy for an `https://` request that upgraded to HTTP/2
   failed completely — the client received nothing (curl reported `CURLE_HTTP2`, 0 bytes) — because MockServer
