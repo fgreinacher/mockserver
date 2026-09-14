@@ -18,8 +18,10 @@ import org.mockserver.socket.PortFactory;
 import org.slf4j.event.Level;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -29,6 +31,7 @@ import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
+import static org.hamcrest.core.IsNull.nullValue;
 import static org.junit.Assert.assertTrue;
 import static org.mockserver.character.Character.NEW_LINE;
 import static org.mockserver.configuration.Configuration.configuration;
@@ -358,6 +361,46 @@ public class MainTest {
         } finally {
             Main.systemOut = originalPrintStream;
         }
+    }
+
+    /**
+     * A server that FAILS TO START (here, a failed port bind) must make the CLI report a non-zero exit
+     * code so a shell/CI caller can detect the failure. Before the fix, {@link Main.RunCommand#run()}
+     * caught the bind exception, logged it, showed usage and returned normally — so picocli returned 0
+     * and the process exited 0 despite the server never coming up. We hold a port with a plain
+     * {@link ServerSocket} (no TOCTOU window — the port is genuinely occupied) and then ask the CLI to
+     * bind that same port; the bind fails deep in {@code MockServer.createServerBootstrap} and the exit
+     * code must be 1.
+     */
+    @Test
+    public void shouldExitNonZeroWhenServerFailsToStart() throws IOException {
+        // given — hold a port so the CLI's bind attempt is guaranteed to fail
+        Main.lastStartedPorts = null;
+        try (ServerSocket occupied = new ServerSocket(0)) {
+            int takenPort = occupied.getLocalPort();
+
+            // when — ask the CLI to start MockServer on the already-bound port
+            Main.main("-serverPort", String.valueOf(takenPort));
+
+            // then — the failed bind surfaces as a non-zero exit code, and nothing reports as started
+            assertThat("Main.lastExitCode after a failed start", Main.lastExitCode, is(1));
+            assertThat("Main.getLastStartedPorts() after a failed start", Main.getLastStartedPorts(), is(nullValue()));
+        }
+    }
+
+    /**
+     * A validation / usage error (here, a non-numeric server port) is NOT a startup failure and must
+     * keep its documented exit code of 0 — the fix for a failed START must not change the exit code of
+     * the usage-error path (the {@code catch (IllegalArgumentException)} branch of
+     * {@link Main.RunCommand#run()}).
+     */
+    @Test
+    public void shouldExitZeroForInvalidServerPortUsageError() {
+        // when — an invalid (non-numeric) port is a usage error, handled and printed without a startup attempt
+        Main.main("-serverPort", "A");
+
+        // then — usage errors are exit code 0 (unchanged documented behaviour)
+        assertThat("Main.lastExitCode after a usage/validation error", Main.lastExitCode, is(0));
     }
 
 }

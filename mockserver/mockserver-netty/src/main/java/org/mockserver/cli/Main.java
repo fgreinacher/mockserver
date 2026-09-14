@@ -147,6 +147,16 @@ public class Main {
     static boolean exitOnNonZeroCode = true;
 
     /**
+     * The exit code produced by the most recent {@link #main(String...)} invocation (the value picocli's
+     * {@code execute()} resolved from a command's {@link CommandLine.IExitCodeGenerator} or an exception
+     * handler). In-process tests set {@link #exitOnNonZeroCode} to {@code false} so a non-zero command
+     * does not kill the test JVM, which also means {@link System#exit} never fires — so this field is the
+     * only in-process signal of the code a real shell/CI caller would have observed. Reset to 0 at the
+     * start of every {@link #main(String...)} call.
+     */
+    static volatile int lastExitCode = 0;
+
+    /**
      * Run the MockServer directly providing the arguments as specified below.
      *
      * @param arguments the entries are in pairs:
@@ -156,6 +166,7 @@ public class Main {
      *                  - "-logLevel"         followed by the log level
      */
     public static void main(String... arguments) {
+        lastExitCode = 0;
         try {
             // --print-config is a diagnostic that prints the effective configuration (each property's
             // resolved value and the source tier that supplied it) and exits, like --help/--version.
@@ -205,6 +216,7 @@ public class Main {
             // exit on 0. In-process tests disable the exit via exitOnNonZeroCode so a failure does not
             // kill the test JVM.
             int exitCode = cmd.execute(processedArgs);
+            lastExitCode = exitCode;
             if (exitCode != 0 && exitOnNonZeroCode) {
                 System.exit(exitCode);
             }
@@ -456,11 +468,22 @@ public class Main {
         description = "Start MockServer (default subcommand).",
         mixinStandardHelpOptions = true
     )
-    static class RunCommand implements Runnable {
+    static class RunCommand implements Runnable, CommandLine.IExitCodeGenerator {
 
         /** Set true after the server has actually started, so callers (e.g. UiCommand) can tell a
          *  successful start from a no-port/validation/startup failure that run() handled internally. */
         boolean started;
+
+        // Set to a non-zero value when the server fails to START (a failed port bind or any other
+        // startup exception caught below), so picocli returns it and a shell/CI caller gets a real
+        // failure signal instead of a false 0 from a server that never came up. A validation / no-port
+        // usage error deliberately leaves this at 0 to preserve the documented exit-code behaviour.
+        private int exitCode = 0;
+
+        @Override
+        public int getExitCode() {
+            return exitCode;
+        }
 
         @Option(names = {"-p", "--port"}, description = "Port(s) to listen on (comma-separated list, e.g. 1080,1081). Required unless set via the MOCKSERVER_SERVER_PORT environment variable, the mockserver.serverPort system property, or a properties file.")
         String port;
@@ -603,9 +626,13 @@ public class Main {
 
                 started = startServer(resolvedPort, resolvedProxyRemotePort, resolvedProxyRemoteHost, resolvedLogLevel);
             } catch (IllegalArgumentException e) {
-                // Already handled — validation errors printed and usage shown via startServer
+                // Already handled — validation errors printed and usage shown via startServer. This is a
+                // usage error, not a startup failure, so keep exitCode at 0 (unchanged documented behaviour).
                 showUsage(null);
             } catch (Throwable throwable) {
+                // A genuine startup failure (e.g. a failed port bind rethrown from MockServer.createServerBootstrap).
+                // Report a non-zero exit code so a shell/CI caller can detect that the server never started.
+                exitCode = 1;
                 MOCK_SERVER_LOGGER.logEvent(
                     new LogEntry()
                         .setType(SERVER_CONFIGURATION)
@@ -626,7 +653,7 @@ public class Main {
         description = "Start MockServer and open the dashboard UI in a browser.",
         mixinStandardHelpOptions = true
     )
-    static class UiCommand implements Runnable {
+    static class UiCommand implements Runnable, CommandLine.IExitCodeGenerator {
 
         @Option(names = {"-p", "--port"}, description = "Port(s) to listen on (comma-separated list). Defaults to 1080 if not specified.")
         String port;
@@ -640,10 +667,18 @@ public class Main {
         @Option(names = "--dev", description = "Enable developer-friendly defaults.")
         boolean dev;
 
+        // Delegate to RunCommand for the actual start; hold it so its startup exit code (non-zero on a
+        // failed bind) propagates to picocli instead of the subcommand silently reporting success.
+        private final RunCommand runCmd = new RunCommand();
+
+        @Override
+        public int getExitCode() {
+            return runCmd.getExitCode();
+        }
+
         @Override
         public void run() {
             String resolvedPort = isNotBlank(port) ? port : "1080";
-            RunCommand runCmd = new RunCommand();
             runCmd.port = resolvedPort;
             runCmd.logLevel = logLevel;
             runCmd.dev = dev;
@@ -668,7 +703,7 @@ public class Main {
         description = "Start MockServer in port-forwarding (proxy) mode.",
         mixinStandardHelpOptions = true
     )
-    static class ProxyCommand implements Runnable {
+    static class ProxyCommand implements Runnable, CommandLine.IExitCodeGenerator {
 
         @Option(names = "--to", required = true, description = "Forward unmatched requests to host[:port].")
         String to;
@@ -691,10 +726,18 @@ public class Main {
         @Option(names = "--validate-enforce", description = "When combined with --validate-openapi, block non-conformant traffic (400 for requests, 502 for responses).")
         boolean validateEnforce;
 
+        // Delegate to RunCommand for the actual start; hold it so its startup exit code (non-zero on a
+        // failed bind) propagates to picocli instead of the subcommand silently reporting success.
+        private final RunCommand runCmd = new RunCommand();
+
+        @Override
+        public int getExitCode() {
+            return runCmd.getExitCode();
+        }
+
         @Override
         public void run() {
             // Delegate to RunCommand logic by building equivalent args
-            RunCommand runCmd = new RunCommand();
             runCmd.port = port;
             runCmd.proxyTo = to;
             runCmd.logLevel = logLevel;
@@ -711,7 +754,7 @@ public class Main {
         description = "Start MockServer and initialize expectations from an OpenAPI spec.",
         mixinStandardHelpOptions = true
     )
-    static class OpenApiCommand implements Runnable {
+    static class OpenApiCommand implements Runnable, CommandLine.IExitCodeGenerator {
 
         @Parameters(index = "0", description = "OpenAPI spec URL or file path.")
         String specPath;
@@ -728,9 +771,17 @@ public class Main {
         @Option(names = "--dev", description = "Enable developer-friendly defaults.")
         boolean dev;
 
+        // Delegate to RunCommand for the actual start; hold it so its startup exit code (non-zero on a
+        // failed bind) propagates to picocli instead of the subcommand silently reporting success.
+        private final RunCommand runCmd = new RunCommand();
+
+        @Override
+        public int getExitCode() {
+            return runCmd.getExitCode();
+        }
+
         @Override
         public void run() {
-            RunCommand runCmd = new RunCommand();
             runCmd.port = port;
             runCmd.openapi = specPath;
             runCmd.logLevel = logLevel;
@@ -799,7 +850,7 @@ public class Main {
         description = "Start MockServer pre-loaded with a small set of example expectations and print a getting-started URL and sample curl.",
         mixinStandardHelpOptions = true
     )
-    static class DemoCommand implements Runnable {
+    static class DemoCommand implements Runnable, CommandLine.IExitCodeGenerator {
 
         @Option(names = {"-p", "--port"}, description = "Port(s) to listen on (comma-separated list). Defaults to 1080 if not specified.")
         String port;
@@ -813,10 +864,18 @@ public class Main {
         @Option(names = "--dev", description = "Enable developer-friendly defaults.")
         boolean dev;
 
+        // Delegate to RunCommand for the actual start; hold it so its startup exit code (non-zero on a
+        // failed bind) propagates to picocli instead of the subcommand silently reporting success.
+        private final RunCommand runCmd = new RunCommand();
+
+        @Override
+        public int getExitCode() {
+            return runCmd.getExitCode();
+        }
+
         @Override
         public void run() {
             String resolvedPort = isNotBlank(port) ? port : "1080";
-            RunCommand runCmd = new RunCommand();
             runCmd.port = resolvedPort;
             runCmd.logLevel = logLevel;
             runCmd.dev = dev;

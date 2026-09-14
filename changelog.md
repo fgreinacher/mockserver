@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0 bytes) — for cleartext HTTP as well as for TLS. The reply's `DSTIP`/`DSTPORT` are ignored by clients,
   so a SOCKS4a grant now carries `0.0.0.0:0`; a classic SOCKS4 request (IPv4 literal) still echoes its
   destination back unchanged. Plain SOCKS4 and SOCKS5 (`socks5h://`) were unaffected.
+- The command-line server now exits with a non-zero status code when it fails to start. Previously, if
+  MockServer could not start — most commonly because the requested port was already in use — the CLI logged
+  the error but still exited `0`, so a shell script or CI job that started MockServer got no failure signal
+  and carried on as though the server was up (typically failing later with a confusing connection error).
+  `mockserver run` / `-serverPort` (and the `ui`, `demo`, `proxy`, and `openapi` subcommands, which start a
+  server the same way) now exit `1` on a failed start. Usage errors that were already handled — an invalid or
+  missing port, an invalid host or log level — keep their existing exit code, so only the previously-silent
+  startup-failure case changes.
 - An HTTPS request that negotiates HTTP/2 (ALPN `h2`) through MockServer's **SOCKS proxy** now works.
   Previously, using MockServer as a SOCKS4/SOCKS5 proxy for an `https://` request that upgraded to HTTP/2
   failed completely — the client received nothing (curl reported `CURLE_HTTP2`, 0 bytes) — because MockServer
