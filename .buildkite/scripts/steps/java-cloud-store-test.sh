@@ -110,6 +110,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODULES="mockserver-blob-s3,mockserver-blob-gcs,mockserver-blob-azure"
 
+# Pre-pull the backing images (with retry + backoff) on the host daemon BEFORE
+# Maven runs, so a slow/throttled registry fails fast with a clear message
+# instead of surfacing ~5 minutes in as an opaque Testcontainers
+# RemoteDockerImage / ContainerFetchException timeout. The suites pull these
+# through the mounted socket, so warming the host cache here means they never
+# re-pull. Keep this list in sync with the *_IMAGE constants in the suites:
+#   quay.io/minio/minio            -> S3BlobStoreContractTest / S3ExpectationPersistenceReloadTest
+#   fsouza/fake-gcs-server         -> GcsBlobStoreContractTest / GcsBlobStoreRegistrarConfigWiringTest
+#   mcr.microsoft.com/.../azurite  -> AzureBlobStoreContractTest / AzureBlobStoreRegistrarConfigWiringTest
+"$SCRIPT_DIR/../lib/pre-pull-images.sh" \
+  quay.io/minio/minio:RELEASE.2024-11-07T00-52-20Z \
+  fsouza/fake-gcs-server:1.49.3 \
+  mcr.microsoft.com/azure-storage/azurite:3.36.0
+
 exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i mockserver/mockserver:maven \
   -w /build/mockserver \

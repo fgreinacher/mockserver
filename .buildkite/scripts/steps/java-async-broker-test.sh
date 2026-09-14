@@ -72,6 +72,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODULE="mockserver-async"
 
+# Pre-pull the broker images (with retry + backoff) on the host daemon BEFORE
+# Maven runs, so a slow/throttled registry fails fast with a clear message
+# instead of surfacing ~5 minutes in as an opaque Testcontainers
+# RemoteDockerImage / ContainerFetchException timeout. The suites pull these
+# through the mounted socket, so warming the host cache here means they never
+# re-pull. Keep this list in sync with the DockerImageName.parse(...) calls in
+# the *LiveBrokerIntegrationTest suites:
+#   confluentinc/cp-kafka  -> Kafka / KafkaAvro / KafkaSecurity / AsyncApiControlPlane
+#   rabbitmq:*-management  -> Amqp
+#   eclipse-mosquitto      -> Mqtt / Mqtt5 / MqttTls / MqttTlsHandshake
+"$SCRIPT_DIR/../lib/pre-pull-images.sh" \
+  confluentinc/cp-kafka:7.6.1 \
+  rabbitmq:3.13-management \
+  eclipse-mosquitto:2.0.22
+
 exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i mockserver/mockserver:maven \
   -w /build/mockserver \

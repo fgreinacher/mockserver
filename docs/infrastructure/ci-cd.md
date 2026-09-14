@@ -1104,6 +1104,33 @@ flowchart LR
 
 3. **Cache save** (pipeline step, `soft_fail: true`): `cache-save.sh <type>` tars the populated cache directory and uploads it to S3 with the same key. If the key already exists in S3 (cache hit on a previous build), the upload is skipped.
 
+### Container Image Pre-Pull
+
+The two Docker-gated Java steps — `:cloud: cloud blob-store contract tests` and
+`:envelope: asyncapi live-broker tests` — pre-pull their Testcontainers backing images via
+`.buildkite/scripts/lib/pre-pull-images.sh` before Maven runs.
+
+The reason is failure attribution, not speed. When MinIO moved to `quay.io` (Docker Hub stopped
+serving `minio/minio`) the pulls began stalling from the agents, and Testcontainers surfaced it
+about five minutes later as an opaque `ContainerFetchException` inside the suite. Pulling first
+means a registry problem fails the step in seconds, naming the image and the registry.
+
+| Step | Images |
+|------|--------|
+| cloud blob-store | `quay.io/minio/minio`, `fsouza/fake-gcs-server`, `mcr.microsoft.com/azure-storage/azurite` |
+| asyncapi live-broker | `confluentinc/cp-kafka`, `rabbitmq`, `eclipse-mosquitto` |
+
+The list is duplicated from the test sources; a new backing image must be added here too, or it
+reverts to the slow opaque failure. Testcontainers' Ryuk image is deliberately excluded — its tag is
+coupled to the Testcontainers version and would drift.
+
+The retry covers `docker pull` only. It must never be widened to wrap Maven: these steps exist
+partly to assert the suites actually ran, and a retry around the test invocation would turn a real
+failure green. An image already present locally is skipped rather than re-pulled, which mirrors
+Testcontainers' own pull-if-absent policy and keeps a registry outage from failing a build that
+would otherwise have run off the cache. On pull-request builds the pre-pull is skipped, matching
+`run-in-docker.sh`, which also `exit 0`s socket steps on PRs.
+
 ### Cache Types and Keys
 
 | Type | Lockfiles hashed | Container mount target |
