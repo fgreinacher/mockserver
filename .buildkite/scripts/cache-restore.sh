@@ -10,7 +10,7 @@
 # Usage:
 #   cache-restore.sh <cache-type>
 #
-# cache-type is one of: maven, npm, pip, bundler
+# cache-type is one of: maven, npm, pip, bundler, gradle
 #
 # The script:
 #   1. Computes a cache key from the relevant lockfile(s)
@@ -45,7 +45,7 @@ bail() { warn "$*"; exit 0; }
 # Validate inputs
 # ---------------------------------------------------------------------------
 case "$CACHE_TYPE" in
-  maven|npm|pip|bundler) ;;
+  maven|npm|pip|bundler|gradle) ;;
   *) bail "Unknown cache type '${CACHE_TYPE}' -- skipping restore" ;;
 esac
 
@@ -80,6 +80,22 @@ compute_key() {
         [[ -f "${CHECKOUT}/${d}/Gemfile" ]] && files+=("${CHECKOUT}/${d}/Gemfile")
         [[ -f "${CHECKOUT}/${d}/Gemfile.lock" ]] && files+=("${CHECKOUT}/${d}/Gemfile.lock")
       done
+      ;;
+    gradle)
+      # Key on the wrapper descriptors ONLY. Each gradle-wrapper.properties pins a
+      # distributionUrl (gradle-<ver>-bin.zip) and a distributionSha256Sum, so the
+      # key rotates exactly when a Gradle version is bumped -- which is precisely
+      # when a fresh distribution download is wanted -- and stays stable across
+      # ordinary dependency edits so the cached distribution (the expensive thing)
+      # persists build-to-build. A stale distribution can never silently win: the
+      # wrapper stores each distribution under a URL-derived subdir and re-validates
+      # it against distributionSha256Sum, re-downloading on any mismatch. Sorted for
+      # a deterministic key regardless of filesystem traversal order across agents.
+      while IFS= read -r -d '' f; do
+        files+=("$f")
+      done < <(find "${CHECKOUT}" -name 'gradle-wrapper.properties' \
+                 -not -path '*/node_modules/*' -not -path '*/.buildkite-cache/*' \
+                 -print0 2>/dev/null | sort -z)
       ;;
   esac
 

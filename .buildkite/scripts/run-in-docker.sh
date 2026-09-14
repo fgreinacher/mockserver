@@ -179,7 +179,21 @@ for cache_type in "${CACHE_TYPES[@]+"${CACHE_TYPES[@]}"}"; do
     maven)   DOCKER_ARGS+=(-v "${host_dir}:${HOME_DIR}/.m2/repository") ;;
     npm)     DOCKER_ARGS+=(-v "${host_dir}:${HOME_DIR}/.npm") ;;
     pip)     DOCKER_ARGS+=(-v "${host_dir}:${HOME_DIR}/.cache/pip") ;;
-    gradle)  DOCKER_ARGS+=(-v "${host_dir}:${HOME_DIR}/.gradle/caches") ;;
+    gradle)
+      # The Gradle wrapper stores TWO things under GRADLE_USER_HOME (~/.gradle):
+      # the resolved dependency cache in caches/, and -- crucially -- the
+      # downloaded Gradle DISTRIBUTION itself in wrapper/dists/. Mapping only
+      # caches/ (the previous behaviour) left the distribution un-cached, so every
+      # build re-downloaded gradle-<ver>-bin.zip from services.gradle.org -- the
+      # transient CDN stall that timed out the ~25-min reactor in build
+      # mockserver-java #2170. Mount BOTH, as sibling subdirs of the single
+      # .buildkite-cache/gradle tree so one restore/save tarball covers both. We
+      # deliberately do NOT mount ~/.gradle wholesale: it also holds daemon state,
+      # logs, and potentially credentials that must not be shared between builds.
+      mkdir -p "${host_dir}/caches" "${host_dir}/wrapper-dists" 2>/dev/null || true
+      DOCKER_ARGS+=(-v "${host_dir}/caches:${HOME_DIR}/.gradle/caches")
+      DOCKER_ARGS+=(-v "${host_dir}/wrapper-dists:${HOME_DIR}/.gradle/wrapper/dists")
+      ;;
     go)      DOCKER_ARGS+=(-v "${host_dir}:${HOME_DIR}/go/pkg/mod") ;;
     cargo)   DOCKER_ARGS+=(-v "${host_dir}:${HOME_DIR}/.cargo/registry") ;;
     nuget)   DOCKER_ARGS+=(-v "${host_dir}:${HOME_DIR}/.nuget/packages") ;;

@@ -9,7 +9,7 @@
 # Usage:
 #   cache-save.sh <cache-type>
 #
-# cache-type is one of: maven, npm, pip, bundler
+# cache-type is one of: maven, npm, pip, bundler, gradle
 #
 # The script:
 #   1. Checks if a workspace-local cache directory exists (populated by the
@@ -43,7 +43,7 @@ bail() { warn "$*"; exit 0; }
 # Validate inputs
 # ---------------------------------------------------------------------------
 case "$CACHE_TYPE" in
-  maven|npm|pip|bundler) ;;
+  maven|npm|pip|bundler|gradle) ;;
   *) bail "Unknown cache type '${CACHE_TYPE}' -- skipping save" ;;
 esac
 
@@ -76,6 +76,17 @@ compute_key() {
         [[ -f "${CHECKOUT}/${d}/Gemfile" ]] && files+=("${CHECKOUT}/${d}/Gemfile")
         [[ -f "${CHECKOUT}/${d}/Gemfile.lock" ]] && files+=("${CHECKOUT}/${d}/Gemfile.lock")
       done
+      ;;
+    gradle)
+      # Must match cache-restore.sh exactly: key on the wrapper descriptors only
+      # (distributionUrl + distributionSha256Sum), so the key rotates on a Gradle
+      # version bump and is otherwise stable, letting the cached distribution
+      # persist across builds. Sorted for a deterministic key across agents.
+      while IFS= read -r -d '' f; do
+        files+=("$f")
+      done < <(find "${CHECKOUT}" -name 'gradle-wrapper.properties' \
+                 -not -path '*/node_modules/*' -not -path '*/.buildkite-cache/*' \
+                 -print0 2>/dev/null | sort -z)
       ;;
   esac
 

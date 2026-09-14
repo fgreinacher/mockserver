@@ -1112,6 +1112,7 @@ flowchart LR
 | `npm` | `package-lock.json` + `package.json` from `mockserver-ui/`, `mockserver-client-node/`, `mockserver-node/` | `/root/.npm` |
 | `pip` | `pyproject.toml`, `setup.cfg`, `requirements.txt` from `mockserver-client-python/` | `/root/.cache/pip` |
 | `bundler` | `Gemfile` + `Gemfile.lock` from `mockserver-client-ruby/`, `jekyll-www.mock-server.com/` | `/usr/local/bundle/cache` |
+| `gradle` | All `gradle-wrapper.properties` files | `/root/.gradle/caches` and `/root/.gradle/wrapper/dists` |
 
 ### Fail-Safe Design
 
@@ -1129,6 +1130,17 @@ The previous caching attempt (reverted) broke builds by writing to `/var/cache` 
 The S3 bucket and IAM policy are defined in `terraform/buildkite-agents/dependency-cache.tf`, and `aws_iam_policy.dependency_cache` is **attached** to the `default` and `release` queues in `main.tf` — see the `managed_policy_arns` lists. The pipelines wire it up with `cache-restore.sh` / `cache-save.sh` steps, so the cache is live: the `maven`, `npm`, `pip` and `bundler` caches restore and save on the queues that own them.
 
 > **Note:** the header comment in `dependency-cache.tf` still describes the policy as "DETACHED / reverted" from an earlier iteration; that comment is stale — the policy is attached in `main.tf` today. Treat the `managed_policy_arns` attachments (and live AWS state) as authoritative.
+
+**Save ownership — `gradle`.** The `gradle` cache is *saved* only by the `mockserver-java` pipeline, and this is
+load-bearing rather than a convention. The key is a pure function of the content of **every**
+`gradle-wrapper.properties` in the checkout, with no pipeline dimension, so every pipeline computes the same key
+and shares one tarball — and `cache-save.sh` is first-write-wins. The two wrapper files pin different Gradle
+versions: the netty integration test uses 8.14, and `mockserver-jetbrains` uses 9.5.1. If a second pipeline were
+given `--cache gradle` and saved first, the stored tarball would hold only *its* distribution, and the
+`mockserver-java` reactor would restore a cache missing 8.14 and re-download it on every build — silently undoing
+the reason this cache exists. **Do not add `--cache gradle` to another pipeline without first giving the key a
+namespace dimension** (for example per-pipeline or per-Gradle-version), so the two cannot collide. The editors
+pipeline deliberately does not use it today for this reason.
 
 **Save ownership.** The `maven` cache is *saved* only by the `mockserver-java` and `mockserver-maven-plugin` pipelines (they build the full reactor, so their `~/.m2` is the canonical superset). The `python`, `ruby`, `node` and `ui` pipelines restore the `maven` cache **read-only** — they build only a jar subset, so letting them save would risk overwriting the full cache with a partial one under the same key.
 

@@ -4,6 +4,19 @@ steps:
     timeout_in_minutes: 10
     soft_fail: true
 
+  # Restore the Gradle distribution + dependency cache. The maven reactor runs a
+  # Gradle integration test (mockserver-netty-no-dependencies), whose wrapper
+  # otherwise re-downloads the ~130MB gradle-<ver>-bin.zip from services.gradle.org
+  # on every build -- the CDN stall that timed out the ~25-min reactor in build
+  # mockserver-java #2170. This pipeline OWNS the gradle cache SAVE (below): it is the
+  # always-run core build and the only pipeline whose reactor populates this
+  # distribution, so no other pipeline fights over the key. soft_fail so a cache miss
+  # / missing S3 creds never fails the build.
+  - label: ":s3: restore gradle cache"
+    command: ".buildkite/scripts/cache-restore.sh gradle"
+    timeout_in_minutes: 10
+    soft_fail: true
+
   - wait
 
   - label: ":lint-roller: opencode config"
@@ -204,6 +217,15 @@ steps:
 
   - label: ":s3: save maven cache"
     command: ".buildkite/scripts/cache-save.sh maven"
+    timeout_in_minutes: 15
+    soft_fail: true
+
+  # Save the Gradle distribution + dependency cache populated by the maven reactor's
+  # Gradle integration test. This pipeline is the sole owner of the gradle cache
+  # SAVE (see the restore step's note). soft_fail so a failed upload / missing S3
+  # creds never fails the build.
+  - label: ":s3: save gradle cache"
+    command: ".buildkite/scripts/cache-save.sh gradle"
     timeout_in_minutes: 15
     soft_fail: true
 
