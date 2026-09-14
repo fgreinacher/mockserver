@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (GitHub issue #2669).
 
 ### Fixed
+- HTTP/2 responses larger than the client's initial flow-control window no longer hang when fetched
+  through MockServer's HTTPS forward proxy (HTTP `CONNECT`). On the CONNECT-tunnel path several handlers
+  ahead of the HTTP/2 codec overrode Netty's `channelReadComplete` to only flush, without propagating the
+  event down the pipeline. Netty's HTTP/2 connection handler relies on `channelReadComplete` to flush
+  flow-control-pending writes (it is where a peer's `WINDOW_UPDATE` is acted on), so swallowing the event
+  stalled any h2 response bigger than the peer's initial window (65,535 bytes by default) at exactly one
+  window until the client timed out. Direct HTTP/2 (`h2c` and TLS+ALPN) and HTTP/1.1-through-`CONNECT`
+  were unaffected. The affected handlers now propagate the event. (GitHub issue #2683).
 - The S3 blob-store tests pull MinIO from quay.io instead of Docker Hub. `minio/minio` is no longer
   pullable from Docker Hub, which broke these tests — and therefore the build — with a container-fetch
   error unrelated to any code change. quay.io is MinIO's other official registry and serves the same

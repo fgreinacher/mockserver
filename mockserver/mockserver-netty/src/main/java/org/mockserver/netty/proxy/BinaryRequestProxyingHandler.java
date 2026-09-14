@@ -211,6 +211,10 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
     @Override
     public void channelReadComplete(ChannelHandlerContext ctx) {
         ctx.flush();
+        // a mid-pipeline handler that swallows channelReadComplete starves Netty's HTTP/2
+        // flow-control flush (Http2ConnectionHandler.channelReadComplete -> writePendingBytes),
+        // stalling any h2 response larger than the peer's initial window - so propagate the event
+        ctx.fireChannelReadComplete();
     }
 
     @Override

@@ -723,6 +723,43 @@ When the `http2Enabled` configuration property is `false`, `NettySslContextFacto
 `h2` via ALPN and `PortUnificationHandler` ignores the h2c cleartext preface, so every connection —
 direct or relayed — falls back to HTTP/1.1.
 
+### Invariant: a handler overriding `channelReadComplete` MUST propagate it
+
+**Any handler that overrides `channelReadComplete(ChannelHandlerContext)` MUST call
+`ctx.fireChannelReadComplete()`** (in addition to whatever it does, e.g. `ctx.flush()`). Netty's
+`Http2ConnectionHandler.channelReadComplete()` is where the codec flushes flow-control-pending writes
+— it acts on the `WINDOW_UPDATE` frames it just read by calling
+`encoder.flowController().writePendingBytes()`. A mid-pipeline handler that swallows the event starves
+that flush, so any HTTP/2 response larger than the peer's initial flow-control window (65,535 bytes by
+default) is delivered up to exactly one window and then **silently stalls** until the peer times out.
+
+```mermaid
+sequenceDiagram
+    participant Codec as Http2ConnectionHandler
+    participant Swallower as Handler overriding channelReadComplete
+    participant Tail
+
+    Note over Codec: reads client WINDOW_UPDATE (credits window)
+    Codec-->>Swallower: fireChannelReadComplete()
+    alt swallows the event (ctx.flush only)
+        Note over Swallower: event stops here
+        Note over Codec: writePendingBytes never runs -> queued DATA stalls at one window
+    else propagates (ctx.fireChannelReadComplete)
+        Swallower-->>Tail: fireChannelReadComplete()
+        Note over Codec: channelReadComplete -> writePendingBytes flushes the queued DATA
+    end
+```
+
+This bites specifically on the **CONNECT-tunnel** client-facing pipeline (#2683), because that pipeline
+retains MockServer's mock-serving handlers (`CallbackWebSocketServerHandler`,
+`DashboardWebSocketHandler`, `McpStreamableHttpHandler`, `PreserveHeadersNettyRemoves`,
+`HttpContentLengthRemover`, `TraceContextHandler`) *ahead of* the `HttpToHttp2ConnectionHandler`.
+Several of those handlers overrode `channelReadComplete` as `ctx.flush()` only, so the event never
+reached the h2 codec. Direct HTTP/2 (`h2c` and TLS+ALPN) does not retain those handlers ahead of the
+codec, and HTTP/1.1 has no flow control, which is why only large h2-through-`CONNECT` responses hung.
+The default `ChannelInboundHandlerAdapter.channelReadComplete` already propagates — this invariant only
+matters when a handler overrides it.
+
 ## WebSocket Proxy Passthrough
 
 MockServer can **proxy** a WebSocket connection through to a real upstream server, in addition to **mocking** one

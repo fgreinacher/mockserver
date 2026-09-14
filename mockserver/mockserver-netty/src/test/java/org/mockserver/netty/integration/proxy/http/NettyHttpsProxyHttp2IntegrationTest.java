@@ -104,6 +104,37 @@ public class NettyHttpsProxyHttp2IntegrationTest {
     }
 
     @Test(timeout = 30000)
+    public void shouldReturnLargeMockedResponseForHttp2RequestViaConnectProxy() throws Exception {
+        // given - a mocked response body far larger than the 65,535-byte HTTP/2 initial flow-control
+        // window (both the per-stream and the connection window), so the server MUST react to the
+        // client's WINDOW_UPDATE and flush the queued DATA frames to deliver it all. On the CONNECT-tunnel
+        // path a mock-serving handler ahead of the h2 codec used to swallow channelReadComplete, so
+        // Http2ConnectionHandler.channelReadComplete never ran writePendingBytes and the response stalled
+        // at exactly one window (65,536 bytes) until the client timed out. The pre-fix behaviour is a HANG,
+        // not a wrong body, so the time bound is the real assertion: sendViaConnectProxy's bounded
+        // get(15, SECONDS) fails fast, with @Test(timeout = 30000) as the backstop.
+        String largeBody = StringUtils.repeat("abcdefghij", 30000); // 300,000 bytes > 65,535-byte h2 window
+        mockServerClient
+            .when(request().withPath("/large_mocked").withProtocol(Protocol.HTTP_2))
+            .respond(response().withStatusCode(201).withBody(largeBody));
+
+        // when - fetched over HTTP/2 through MockServer's HTTPS CONNECT proxy
+        HttpResponse response = sendViaConnectProxy(
+            request()
+                .withMethod("GET")
+                .withPath("/large_mocked")
+                .withSecure(true)
+                .withProtocol(Protocol.HTTP_2)
+                .withHeader(HOST.toString(), "127.0.0.1:" + secureEchoServer.getPort())
+        );
+
+        // then - the entire body crossed the tunnel, proving the flow-control flush ran
+        assertThat(response.getStatusCode(), is(201));
+        assertThat(response.getBodyAsString().length(), is(largeBody.length()));
+        assertThat(response.getBodyAsString(), is(largeBody));
+    }
+
+    @Test(timeout = 30000)
     public void shouldForwardHttp2RequestViaConnectProxyToSecureTarget() throws Exception {
         // given - no expectation, so MockServer proxies the request through to the target echo server
 
@@ -126,8 +157,12 @@ public class NettyHttpsProxyHttp2IntegrationTest {
 
     @Test(timeout = 30000)
     public void shouldForwardHttp2RequestWithLargeBodyViaConnectProxy() throws Exception {
-        // given - a body large enough to span multiple HTTP/2 DATA frames in both directions
-        String largeBody = StringUtils.repeat("abcdefghij", 5000);
+        // given - a body that MUST exceed the 65,535-byte HTTP/2 initial flow-control window: the echoed
+        // response leg travels back to the client through the same CONNECT-tunnel pipeline, so anything at
+        // or under one window fits in the first flush and never exercises the WINDOW_UPDATE-driven
+        // writePendingBytes path this fix restores. The previous 50,000-byte body was a false-green - it
+        // looked large but stayed 15 KB short of the window, so the forwarded path never crossed it.
+        String largeBody = StringUtils.repeat("abcdefghij", 30000); // 300,000 bytes > 65,535-byte h2 window
 
         // when
         HttpResponse response = sendViaConnectProxy(

@@ -118,6 +118,32 @@ public class H2cMockingMatrixIntegrationTest {
     }
 
     @Test
+    public void shouldReceiveLargeRespondBodyOverH2c() throws Exception {
+        // given - a mocked body larger than the 65,535-byte HTTP/2 initial flow-control window, forcing
+        // the server to flush queued DATA frames in response to the client's WINDOW_UPDATE. On the DIRECT
+        // h2c path no mock-serving handler sits ahead of the h2 codec swallowing channelReadComplete, so
+        // the flow-control flush already works: this passes both before and after the CONNECT-tunnel fix.
+        // Its job is isolation - a future regression that reds here points at the shared h2 layer, whereas
+        // one that reds only the proxy test points at the relay pipeline.
+        String largeBody = org.apache.commons.lang3.StringUtils.repeat("abcdefghij", 30000); // 300,000 bytes > 65,535-byte h2 window
+        mockServerClient
+            .when(request().withPath("/h2c_large_respond"))
+            .respond(
+                response()
+                    .withStatusCode(201)
+                    .withBody(largeBody)
+            );
+
+        // when - a real prior-knowledge h2c client fetches the large body over cleartext HTTP/2
+        H2cResult result = sendH2cRequest("GET", "/h2c_large_respond", null);
+
+        // then - the full body arrived across multiple DATA frames on the client's own stream
+        assertThat("status over h2c: <" + result.status + ">", result.status, is("201"));
+        assertThat("body length over h2c: <" + result.body.length() + ">", result.body.length(), is(largeBody.length()));
+        assertThat("body received over h2c", result.body, is(largeBody));
+    }
+
+    @Test
     public void shouldReceiveCallbackBodyOverH2c() throws Exception {
         // given - a class callback that echoes the request body back
         mockServerClient
