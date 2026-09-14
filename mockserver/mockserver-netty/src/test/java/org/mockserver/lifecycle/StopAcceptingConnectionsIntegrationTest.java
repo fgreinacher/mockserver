@@ -12,7 +12,6 @@ import org.mockserver.httpclient.NettyHttpClient;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.netty.MockServer;
 import org.mockserver.scheduler.Scheduler;
-import org.mockserver.socket.PortFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -101,7 +100,9 @@ public class StopAcceptingConnectionsIntegrationTest {
         ConfigurationProperties.stopDrainMillis(30_000L);
         MockServer mockServer = new MockServer(
             configuration().useNativeTransport(false),
-            PortFactory.findFreePort()
+            // bind port 0 (OS-assigned) and read the real port back via getLocalPort() — this is
+            // race-free, unlike findFreePort() which picks a port that another bind can steal.
+            0
         );
         int port = mockServer.getLocalPort();
         MockServerClient mockServerClient = new MockServerClient("localhost", port);
@@ -195,7 +196,9 @@ public class StopAcceptingConnectionsIntegrationTest {
         // given
         MockServer mockServer = new MockServer(
             configuration().useNativeTransport(false),
-            PortFactory.findFreePort()
+            // bind port 0 (OS-assigned) and read the real port back via getLocalPort() — this is
+            // race-free, unlike findFreePort() which picks a port that another bind can steal.
+            0
         );
         int port = mockServer.getLocalPort();
 

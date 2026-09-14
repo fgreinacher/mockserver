@@ -21,7 +21,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntFunction;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -61,19 +63,66 @@ public class MainTest {
         Main.usageShown = false;
     }
 
+    /**
+     * Start MockServer in-process via {@link Main#main} on an OS-assigned ephemeral port — the given
+     * arguments MUST request port 0 — and return the actual bound port read back from
+     * {@link Main#getLastStartedPorts()}. Binding port 0 and reading the real port back removes the
+     * find-a-free-port-then-bind TOCTOU race entirely: {@code PortFactory.findFreePort()} binds and
+     * closes a socket on the same ephemeral pool every other {@code bind(0)} uses, so another bind in
+     * this shared test JVM (surefire reuses one fork) can steal the port before the server binds it.
+     * Binding port 0 chooses no port ahead of the bind, so nothing can race it. If the server fails
+     * to start, {@code getLastStartedPorts()} stays {@code null} and this fails loudly.
+     */
+    private static int startServerOnEphemeralPort(String... mainArgs) {
+        Main.lastStartedPorts = null;
+        Main.main(mainArgs);
+        List<Integer> ports = Main.getLastStartedPorts();
+        assertThat("MockServer failed to bind an ephemeral port (Main.getLastStartedPorts())",
+            ports != null && !ports.isEmpty(), is(true));
+        return ports.get(0);
+    }
+
+    /**
+     * Start MockServer in-process on a SPECIFIC requested port, retrying on a bind conflict with a
+     * fresh {@link PortFactory#findFreePort()} port. Used only where a concrete, known port carries
+     * meaning (here, to prove a CLI port overrides a system-property port), so port 0 cannot be used.
+     * The CLI swallows a failed bind — {@link Main.RunCommand#run()} logs it and shows usage without
+     * rethrowing — so the only visible signal is {@link Main#getLastStartedPorts()} staying
+     * {@code null}; on that signal we stop anything half-started and retry with a new port (max 3),
+     * failing loudly if every attempt fails so a genuine (non-bind) defect is never masked.
+     *
+     * @param argsForPort builds the {@code Main.main} arguments for a chosen port
+     * @return the requested port that was successfully bound
+     */
+    private static int startServerOnRequestedPortWithRetry(IntFunction<String[]> argsForPort) {
+        int port = -1;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            port = PortFactory.findFreePort();
+            Main.lastStartedPorts = null;
+            Main.main(argsForPort.apply(port));
+            List<Integer> ports = Main.getLastStartedPorts();
+            if (ports != null && !ports.isEmpty()) {
+                return port;
+            }
+            // The CLI swallowed a (probable) bind conflict; stop any half-started server and retry.
+            stopQuietly(new MockServerClient("127.0.0.1", port));
+        }
+        throw new AssertionError("MockServer failed to start on a requested port after 3 attempts (last port " + port + ")");
+    }
+
     @Test
     public void shouldStartMockServer() {
         // given
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         Level originalLogLevel = ConfigurationProperties.logLevel();
 
         try {
             // when
-            Main.main(
-                "-serverPort", String.valueOf(freePort),
+            final int freePort = startServerOnEphemeralPort(
+                "-serverPort", "0",
                 "-logLevel", "DEBUG"
             );
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             // then
             assertThat("mockServerClient.hasStarted",  mockServerClient.hasStarted(), is(true));
@@ -87,18 +136,18 @@ public class MainTest {
     @Test
     public void shouldStartMockServerWithRemotePortAndHost() {
         // given
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         try {
             EchoServer echoServer = new EchoServer(false);
             echoServer.withNextResponse(response("port_forwarded_response"));
 
             // when
-            Main.main(
-                "-serverPort", String.valueOf(freePort),
+            final int freePort = startServerOnEphemeralPort(
+                "-serverPort", "0",
                 "-proxyRemotePort", String.valueOf(echoServer.getPort()),
                 "-proxyRemoteHost", "127.0.0.1"
             );
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             final HttpResponse response = new NettyHttpClient(configuration(), new MockServerLogger(), clientEventLoopGroup, null, false)
                 .sendRequest(
                     request()
@@ -118,17 +167,17 @@ public class MainTest {
     @Test
     public void shouldStartMockServerWithRemotePort() {
         // given
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         try {
             EchoServer echoServer = new EchoServer(false);
             echoServer.withNextResponse(response("port_forwarded_response"));
 
             // when
-            Main.main(
-                "-serverPort", String.valueOf(freePort),
+            final int freePort = startServerOnEphemeralPort(
+                "-serverPort", "0",
                 "-proxyRemotePort", String.valueOf(echoServer.getPort())
             );
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             final HttpResponse response = new NettyHttpClient(configuration(), new MockServerLogger(), clientEventLoopGroup, null, false)
                 .sendRequest(
                     request()
@@ -147,13 +196,13 @@ public class MainTest {
 
     @Test
     public void shouldStartMockServerFromSystemProperty() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
-            System.setProperty("mockserver.serverPort", String.valueOf(freePort));
+            System.setProperty("mockserver.serverPort", "0");
 
-            Main.main();
+            final int freePort = startServerOnEphemeralPort();
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
         } finally {
@@ -164,14 +213,16 @@ public class MainTest {
 
     @Test
     public void shouldPreferCliArgOverSystemProperty() {
-        final int cliPort = PortFactory.findFreePort();
         final int sysPropPort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", cliPort);
+        MockServerClient mockServerClient = null;
 
         try {
             System.setProperty("mockserver.serverPort", String.valueOf(sysPropPort));
 
-            Main.main("-serverPort", String.valueOf(cliPort));
+            // This test needs a concrete CLI port (distinct from the system-property port) to prove
+            // the CLI arg wins, so it cannot use port 0. Bind it resiliently instead of racily.
+            final int cliPort = startServerOnRequestedPortWithRetry(port -> new String[]{"-serverPort", String.valueOf(port)});
+            mockServerClient = new MockServerClient("127.0.0.1", cliPort);
 
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
 
@@ -191,13 +242,13 @@ public class MainTest {
 
     @Test
     public void shouldStartMockServerFromPropertiesFile() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
-            ConfigurationProperties.PROPERTIES.setProperty("mockserver.serverPort", String.valueOf(freePort));
+            ConfigurationProperties.PROPERTIES.setProperty("mockserver.serverPort", "0");
 
-            Main.main();
+            final int freePort = startServerOnEphemeralPort();
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
         } finally {

@@ -6,7 +6,6 @@ import org.junit.Test;
 import org.mockserver.client.MockServerClient;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.netty.MockServer;
-import org.mockserver.socket.PortFactory;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -101,7 +100,7 @@ public class HttpParserLimitsIntegrationTest {
             .useNativeTransport(false)
             .maxHeaderSize(MAX_HEADER_SIZE)
             .maxInitialLineLength(MAX_INITIAL_LINE_LENGTH);
-        mockServer = new MockServer(configuration, PortFactory.findFreePort());
+        mockServer = new MockServer(configuration, 0);
         mockServerClient = new MockServerClient("localhost", mockServer.getLocalPort());
         // only matches when the marker header survives parsing
         mockServerClient

@@ -123,6 +123,20 @@ public class Main {
     static PrintStream systemOut = System.out;
     static boolean usageShown = false;
     /**
+     * The actual port(s) the most recent {@link #startServer} call bound the server to. When the
+     * server is started with a requested port of 0 the OS assigns an ephemeral port, so the
+     * requested value cannot be used to reach the server; this records the real listening port(s)
+     * so a caller (a CLI wrapper, or an in-process test) can discover them. {@code null} until a
+     * server has started in this JVM. See also {@link org.mockserver.mock.HttpState#getPort()},
+     * which is set to the first of these.
+     */
+    static volatile List<Integer> lastStartedPorts;
+
+    /** @return the actual port(s) bound by the most recent successful {@link #startServer} call, or {@code null} if none has started. */
+    static List<Integer> getLastStartedPorts() {
+        return lastStartedPorts;
+    }
+    /**
      * When true (the default for the real jar entry point), {@link #main(String...)} terminates the JVM
      * with a non-zero exit status when a command reports a failure (e.g. a failed {@code import}, a parse
      * error, or a startup exception) so that shell/CI callers can detect it. In-process tests that invoke
@@ -339,16 +353,25 @@ public class Main {
                 ConfigurationProperties.logLevel(parsedArguments.get(Arguments.logLevel.name()));
             }
             Integer[] localPorts = INTEGER_STRING_LIST_PARSER.toArray(parsedArguments.get(Arguments.serverPort.name()));
+            final MockServer mockServer;
             if (parsedArguments.containsKey(Arguments.proxyRemotePort.name())) {
                 String remoteHost = parsedArguments.get(Arguments.proxyRemoteHost.name());
                 if (isBlank(remoteHost)) {
                     remoteHost = "localhost";
                 }
-                new MockServer(Integer.parseInt(parsedArguments.get(Arguments.proxyRemotePort.name())), remoteHost, localPorts);
+                mockServer = new MockServer(Integer.parseInt(parsedArguments.get(Arguments.proxyRemotePort.name())), remoteHost, localPorts);
             } else {
-                new MockServer(localPorts);
+                mockServer = new MockServer(localPorts);
             }
-            setPort(localPorts);
+            // Record the ACTUAL bound port(s), not the requested value(s). Starting with a
+            // requested port of 0 asks the OS for an ephemeral port; recording the requested 0
+            // would leave a caller (a CLI user, or an in-process test) unable to discover the
+            // port the server is actually listening on. getLocalPorts() blocks until the ports
+            // are bound (the MockServer constructor already waits for binding), so this is the
+            // real listening port. For explicit non-zero ports the resolved value equals the
+            // requested value, so this is behaviour-preserving.
+            lastStartedPorts = mockServer.getLocalPorts();
+            setPort(lastStartedPorts);
 
             if (ConfigurationProperties.logLevel() != null) {
                 MOCK_SERVER_LOGGER.logEvent(
@@ -630,9 +653,11 @@ public class Main {
             // no-port, validation, and bind failures internally without re-throwing, so a failed
             // start must not produce a misleading "Dashboard UI: ..." line pointing at nothing.
             if (runCmd.started) {
-                Integer[] localPorts = INTEGER_STRING_LIST_PARSER.toArray(resolvedPort);
-                if (localPorts.length > 0) {
-                    openDashboard(localPorts[0]);
+                // Use the ACTUAL bound port, not the requested value, so `ui -p 0` prints a
+                // dashboard URL for the ephemeral port the server is really listening on.
+                List<Integer> boundPorts = getLastStartedPorts();
+                if (boundPorts != null && !boundPorts.isEmpty()) {
+                    openDashboard(boundPorts.get(0));
                 }
             }
         }
@@ -801,10 +826,12 @@ public class Main {
             // handles (and prints) no-port, validation, and bind failures internally, so a failed
             // start must not produce misleading "try this curl" guidance pointing at nothing.
             if (runCmd.started) {
-                Integer[] localPorts = INTEGER_STRING_LIST_PARSER.toArray(resolvedPort);
-                if (localPorts.length > 0) {
-                    seedDemoExpectations(localPorts[0]);
-                    printDemoInstructions(localPorts[0]);
+                // Use the ACTUAL bound port, not the requested value, so `demo -p 0` seeds and
+                // prints instructions for the ephemeral port the server is really listening on.
+                List<Integer> boundPorts = getLastStartedPorts();
+                if (boundPorts != null && !boundPorts.isEmpty()) {
+                    seedDemoExpectations(boundPorts.get(0));
+                    printDemoInstructions(boundPorts.get(0));
                 }
             }
         }

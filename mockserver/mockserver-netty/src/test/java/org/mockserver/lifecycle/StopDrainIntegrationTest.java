@@ -13,7 +13,6 @@ import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.netty.MockServer;
 import org.mockserver.scheduler.Scheduler;
-import org.mockserver.socket.PortFactory;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
@@ -71,7 +70,7 @@ public class StopDrainIntegrationTest {
 
     private MockServer newServer() {
         originalDrainMillis = ConfigurationProperties.stopDrainMillis();
-        return new MockServer(PortFactory.findFreePort());
+        return new MockServer(0);
     }
 
     @Test
@@ -446,7 +445,7 @@ public class StopDrainIntegrationTest {
         // given - a long static budget that must NOT be used, and a short instance budget that must
         originalDrainMillis = ConfigurationProperties.stopDrainMillis();
         ConfigurationProperties.stopDrainMillis(30_000L);
-        MockServer mockServer = new MockServer(configuration().stopDrainMillis(500L), PortFactory.findFreePort());
+        MockServer mockServer = new MockServer(configuration().stopDrainMillis(500L), 0);
 
         // and - a request that starts but never completes, so only the timeout can end the drain
         mockServer.requestProcessingStarted();
@@ -475,7 +474,7 @@ public class StopDrainIntegrationTest {
         // given - draining disabled in the static store but enabled on the instance
         originalDrainMillis = ConfigurationProperties.stopDrainMillis();
         ConfigurationProperties.stopDrainMillis(0L);
-        MockServer mockServer = new MockServer(configuration().stopDrainMillis(1_000L), PortFactory.findFreePort());
+        MockServer mockServer = new MockServer(configuration().stopDrainMillis(1_000L), 0);
 
         mockServer.requestProcessingStarted();
         assertThat(mockServer.getRequestsInFlight(), is(1));
@@ -501,7 +500,7 @@ public class StopDrainIntegrationTest {
         // given - the static store is the ONLY place the budget is set
         originalDrainMillis = ConfigurationProperties.stopDrainMillis();
         ConfigurationProperties.stopDrainMillis(500L);
-        MockServer mockServer = new MockServer(configuration(), PortFactory.findFreePort());
+        MockServer mockServer = new MockServer(configuration(), 0);
 
         mockServer.requestProcessingStarted();
         assertThat(mockServer.getRequestsInFlight(), is(1));

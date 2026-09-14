@@ -6,7 +6,6 @@ import org.junit.Test;
 import org.mockserver.client.MockServerClient;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.netty.MockServer;
-import org.mockserver.socket.PortFactory;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -101,7 +100,7 @@ public class MaxResponseBodySizeIntegrationTest {
             // the property under test — set on this server instance only, so the control-plane client's
             // own forward client keeps the product default and cannot mask the effect
             .maxResponseBodySize(MAX_RESPONSE_BODY_SIZE);
-        mockServer = new MockServer(configuration, PortFactory.findFreePort());
+        mockServer = new MockServer(configuration, 0);
         mockServerClient = new MockServerClient("localhost", mockServer.getLocalPort());
         mockServerClient
             .when(request().withPath("/upstream/.*"))

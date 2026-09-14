@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (GitHub issue #2669).
 
 ### Fixed
+- Starting the command-line server with port `0` now reports and uses the actual OS-assigned
+  ephemeral port instead of `0`. Previously `mockserver run -p 0` (or `-serverPort 0`) bound a real
+  ephemeral port but recorded the requested `0`, so the port a caller needs to reach the server was
+  not discoverable, and `ui -p 0` / `demo -p 0` printed a dashboard/getting-started URL pointing at
+  `localhost:0`. MockServer now records the real bound port after startup and uses it for the
+  dashboard and demo URLs. Starting on an explicit, non-zero port is unaffected.
 - HTTP/2 responses larger than the client's initial flow-control window no longer hang when fetched
   through MockServer's HTTPS forward proxy (HTTP `CONNECT`). On the CONNECT-tunnel path several handlers
   ahead of the HTTP/2 codec overrode Netty's `channelReadComplete` to only flush, without propagating the

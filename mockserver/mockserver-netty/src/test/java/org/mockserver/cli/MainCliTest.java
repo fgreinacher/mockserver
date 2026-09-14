@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
@@ -67,6 +68,25 @@ public class MainCliTest {
     @After
     public void clearUsageShown() {
         Main.usageShown = false;
+    }
+
+    /**
+     * Start MockServer in-process via {@link Main#main} on an OS-assigned ephemeral port — the given
+     * arguments MUST request port 0 — and return the actual bound port read back from
+     * {@link Main#getLastStartedPorts()}. Binding port 0 and reading the real port back removes the
+     * find-a-free-port-then-bind TOCTOU race entirely: {@code PortFactory.findFreePort()} binds and
+     * closes a socket on the same ephemeral pool every other {@code bind(0)} uses, so another bind in
+     * this shared test JVM (surefire reuses one fork) can steal the port before the server binds it.
+     * Binding port 0 chooses no port ahead of the bind, so nothing can race it. If the server fails
+     * to start, {@code getLastStartedPorts()} stays {@code null} and this fails loudly.
+     */
+    private static int startServerOnEphemeralPort(String... mainArgs) {
+        Main.lastStartedPorts = null;
+        Main.main(mainArgs);
+        List<Integer> ports = Main.getLastStartedPorts();
+        assertThat("MockServer failed to bind an ephemeral port (Main.getLastStartedPorts())",
+            ports != null && !ports.isEmpty(), is(true));
+        return ports.get(0);
     }
 
     // ---- Preprocessing (bare → run) ----
@@ -149,11 +169,11 @@ public class MainCliTest {
 
     @Test
     public void shouldStartWithNewPortFlag() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
         } finally {
             stopQuietly(mockServerClient);
@@ -162,11 +182,11 @@ public class MainCliTest {
 
     @Test
     public void shouldStartWithLongPortFlag() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
-            Main.main("run", "--port", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("run", "--port", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
         } finally {
             stopQuietly(mockServerClient);
@@ -176,11 +196,11 @@ public class MainCliTest {
     @Test
     public void shouldStartWithBarePortFlagNoSubcommand() {
         // "mockserver -p 1080" should work (bare → run)
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
-            Main.main("-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
         } finally {
             stopQuietly(mockServerClient);
@@ -189,12 +209,12 @@ public class MainCliTest {
 
     @Test
     public void shouldStartWithNewLogLevelFlag() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         Level originalLogLevel = ConfigurationProperties.logLevel();
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort), "-l", "WARN");
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0", "-l", "WARN");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("ConfigurationProperties.logLevel", ConfigurationProperties.logLevel().toString(), is("WARN"));
         } finally {
@@ -209,13 +229,13 @@ public class MainCliTest {
         // it in any source. An explicit value here (set via the setter, which is what
         // proxySetupLoggingConfigured() detects — the same guard branch that also honours a
         // mockserver.properties opt-out) must be preserved, not clobbered to true.
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         boolean originalProxySetupLogging = ConfigurationProperties.proxySetupLogging();
 
         try {
             ConfigurationProperties.proxySetupLogging(false); // explicit user opt-out
-            Main.main("run", "-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("explicit proxySetupLogging=false must be preserved by the standalone launcher",
                 ConfigurationProperties.proxySetupLogging(), is(false));
@@ -227,12 +247,12 @@ public class MainCliTest {
 
     @Test
     public void shouldStartWithLongLogLevelFlag() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         Level originalLogLevel = ConfigurationProperties.logLevel();
 
         try {
-            Main.main("run", "--port", String.valueOf(freePort), "--log-level", "DEBUG");
+            final int freePort = startServerOnEphemeralPort("run", "--port", "0", "--log-level", "DEBUG");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("ConfigurationProperties.logLevel", ConfigurationProperties.logLevel().toString(), is("DEBUG"));
         } finally {
@@ -393,13 +413,13 @@ public class MainCliTest {
 
     @Test
     public void shouldSetOpenApiPathViaRunSubcommand() throws IOException {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         String originalOpenApiPath = ConfigurationProperties.initializationOpenAPIPath();
         File tempSpec = tempFolder.newFile("test-spec.yaml");
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort), "--openapi", tempSpec.getAbsolutePath());
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0", "--openapi", tempSpec.getAbsolutePath());
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat(ConfigurationProperties.initializationOpenAPIPath(), is(tempSpec.getAbsolutePath()));
         } finally {
@@ -410,13 +430,13 @@ public class MainCliTest {
 
     @Test
     public void shouldSetInitPathViaRunSubcommand() throws IOException {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         String originalInitPath = ConfigurationProperties.initializationJsonPath();
         File tempInit = tempFolder.newFile("test-init.json");
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort), "--init", tempInit.getAbsolutePath());
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0", "--init", tempInit.getAbsolutePath());
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat(ConfigurationProperties.initializationJsonPath(), is(tempInit.getAbsolutePath()));
         } finally {
@@ -427,14 +447,14 @@ public class MainCliTest {
 
     @Test
     public void shouldSetPersistPathViaRunSubcommand() throws IOException {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         boolean originalPersist = ConfigurationProperties.persistExpectations();
         String originalPersistPath = ConfigurationProperties.persistedExpectationsPath();
         File tempPersist = tempFolder.newFile("test-persist.json");
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort), "--persist", tempPersist.getAbsolutePath());
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0", "--persist", tempPersist.getAbsolutePath());
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat(ConfigurationProperties.persistExpectations(), is(true));
             assertThat(ConfigurationProperties.persistedExpectationsPath(), is(tempPersist.getAbsolutePath()));
@@ -449,13 +469,13 @@ public class MainCliTest {
 
     @Test
     public void shouldSetOpenApiPathViaOpenApiSubcommand() throws IOException {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         String originalOpenApiPath = ConfigurationProperties.initializationOpenAPIPath();
         File tempSpec = tempFolder.newFile("test-spec-sub.yaml");
 
         try {
-            Main.main("openapi", tempSpec.getAbsolutePath(), "-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("openapi", tempSpec.getAbsolutePath(), "-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat(ConfigurationProperties.initializationOpenAPIPath(), is(tempSpec.getAbsolutePath()));
         } finally {
@@ -468,11 +488,11 @@ public class MainCliTest {
 
     @Test
     public void shouldStartWithLegacyServerPortViaNewParser() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
-            Main.main("-serverPort", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("-serverPort", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
         } finally {
             stopQuietly(mockServerClient);
@@ -481,12 +501,12 @@ public class MainCliTest {
 
     @Test
     public void shouldStartWithLegacyFlagsAndLogLevel() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         Level originalLogLevel = ConfigurationProperties.logLevel();
 
         try {
-            Main.main("-serverPort", String.valueOf(freePort), "-logLevel", "DEBUG");
+            final int freePort = startServerOnEphemeralPort("-serverPort", "0", "-logLevel", "DEBUG");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("ConfigurationProperties.logLevel", ConfigurationProperties.logLevel().toString(), is("DEBUG"));
         } finally {
@@ -499,10 +519,9 @@ public class MainCliTest {
 
     @Test
     public void shouldProxyToHttpsUrlInferringPort443ViaRunSubcommand() {
-        final int freePort = PortFactory.findFreePort();
         EchoServer echoServer = new EchoServer(false);
         echoServer.withNextResponse(response("proxied_via_https_scheme"));
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
             // Use the echo server port with an explicit port in the URL to verify proxy mode works,
@@ -512,8 +531,9 @@ public class MainCliTest {
             assertThat("port inferred from https scheme", parsed[1], is("443"));
 
             // Now test that the actual proxy mode works end-to-end with a real echo server
-            Main.main("run", "-p", String.valueOf(freePort),
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0",
                 "--proxy-to", "http://127.0.0.1:" + echoServer.getPort());
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             HttpResponse httpResponse = new NettyHttpClient(configuration(), new MockServerLogger(), clientEventLoopGroup, null, false)
                 .sendRequest(
@@ -529,14 +549,14 @@ public class MainCliTest {
 
     @Test
     public void shouldProxyToHttpsUrlViaProxySubcommand() {
-        final int freePort = PortFactory.findFreePort();
         EchoServer echoServer = new EchoServer(false);
         echoServer.withNextResponse(response("proxied_via_proxy_cmd"));
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
-            Main.main("proxy", "--to", "http://127.0.0.1:" + echoServer.getPort(),
-                "-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("proxy", "--to", "http://127.0.0.1:" + echoServer.getPort(),
+                "-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             HttpResponse httpResponse = new NettyHttpClient(configuration(), new MockServerLogger(), clientEventLoopGroup, null, false)
                 .sendRequest(
@@ -738,13 +758,13 @@ public class MainCliTest {
 
     @Test
     public void shouldSetValidateOpenApiViaRunSubcommand() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         String originalSpec = ConfigurationProperties.validateProxyOpenAPISpec();
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort),
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0",
                 "--validate-openapi", "https://petstore.swagger.io/v2/swagger.json");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("validateProxyOpenAPISpec should be set",
                 ConfigurationProperties.validateProxyOpenAPISpec(),
@@ -757,12 +777,12 @@ public class MainCliTest {
 
     @Test
     public void shouldSetValidateEnforceViaRunSubcommand() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         boolean originalEnforce = ConfigurationProperties.validateProxyEnforce();
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort), "--validate-enforce");
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0", "--validate-enforce");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("validateProxyEnforce should be true",
                 ConfigurationProperties.validateProxyEnforce(), is(true));
@@ -774,15 +794,15 @@ public class MainCliTest {
 
     @Test
     public void shouldSetBothValidateFlagsViaRunSubcommand() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         String originalSpec = ConfigurationProperties.validateProxyOpenAPISpec();
         boolean originalEnforce = ConfigurationProperties.validateProxyEnforce();
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort),
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0",
                 "--validate-openapi", "./petstore.yaml",
                 "--validate-enforce");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("validateProxyOpenAPISpec should be set",
                 ConfigurationProperties.validateProxyOpenAPISpec(), is("./petstore.yaml"));
@@ -797,18 +817,18 @@ public class MainCliTest {
 
     @Test
     public void shouldSetValidateFlagsViaProxySubcommand() {
-        final int freePort = PortFactory.findFreePort();
         EchoServer echoServer = new EchoServer(false);
         echoServer.withNextResponse(response("proxied_validate"));
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         String originalSpec = ConfigurationProperties.validateProxyOpenAPISpec();
         boolean originalEnforce = ConfigurationProperties.validateProxyEnforce();
 
         try {
-            Main.main("proxy", "--to", "http://127.0.0.1:" + echoServer.getPort(),
-                "-p", String.valueOf(freePort),
+            final int freePort = startServerOnEphemeralPort("proxy", "--to", "http://127.0.0.1:" + echoServer.getPort(),
+                "-p", "0",
                 "--validate-openapi", "https://petstore.swagger.io/v2/swagger.json",
                 "--validate-enforce");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("validateProxyOpenAPISpec should be set via proxy subcommand",
                 ConfigurationProperties.validateProxyOpenAPISpec(),
@@ -824,14 +844,14 @@ public class MainCliTest {
 
     @Test
     public void shouldNotSetValidateDefaultsWithoutFlags() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         // Reset to known defaults before the test
         ConfigurationProperties.validateProxyOpenAPISpec("");
         ConfigurationProperties.validateProxyEnforce(false);
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("validateProxyOpenAPISpec should be empty by default",
                 ConfigurationProperties.validateProxyOpenAPISpec(), is(""));
@@ -884,8 +904,7 @@ public class MainCliTest {
 
     @Test
     public void shouldApplyDevModeDefaults() throws Exception {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
             // Clear any explicitly-set maxLogEntries/maxExpectations (cache + system property) that a prior or
@@ -901,7 +920,8 @@ public class MainCliTest {
             cache.remove("mockserver.maxExpectations");
             System.clearProperty("mockserver.maxExpectations");
 
-            Main.main("run", "-p", String.valueOf(freePort), "--dev");
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0", "--dev");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("devMode should be enabled", ConfigurationProperties.devMode(), is(true));
@@ -1002,14 +1022,14 @@ public class MainCliTest {
 
     @Test
     public void shouldApplyDSystemPropertyFromCommandLine() {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         String key = "mockserver.someUnusedTestProperty";
         String originalValue = System.getProperty(key);
         try {
             System.clearProperty(key);
 
-            Main.main("run", "-p", String.valueOf(freePort), "-D" + key + "=hello");
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0", "-D" + key + "=hello");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("-D should set the system property", System.getProperty(key), is("hello"));
@@ -1043,8 +1063,7 @@ public class MainCliTest {
 
     @Test
     public void shouldStartUiAndPrintDashboardUrl() throws UnsupportedEncodingException {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         PrintStream originalOut = Main.systemOut;
         // Run headless so the dashboard URL is printed but no real browser is launched on the
         // developer's machine (this is exactly how `ui` degrades on a server/CI/SSH host).
@@ -1054,7 +1073,8 @@ public class MainCliTest {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             Main.systemOut = new PrintStream(baos, true, StandardCharsets.UTF_8.name());
 
-            Main.main("ui", "-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("ui", "-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             String output = new String(baos.toByteArray(), StandardCharsets.UTF_8);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
@@ -1144,12 +1164,12 @@ public class MainCliTest {
 
     @Test
     public void shouldImportExpectationsFromFileIntoRunningServer() throws IOException {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
             // Start a server to import into
-            Main.main("run", "-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
 
             // Write an expectations array JSON file (the persisted/export format)
@@ -1230,11 +1250,11 @@ public class MainCliTest {
         // Verify that without --dev, the devMode property is false.
         // We cannot reliably assert exact maxLogEntries/maxExpectations values because
         // the property cache is shared across test methods; instead we verify the flag.
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("devMode should be false by default", ConfigurationProperties.devMode(), is(false));
@@ -1263,16 +1283,16 @@ public class MainCliTest {
 
     @Test
     public void shouldEnableWatchInitializationJsonViaWatchFlag() throws IOException {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         boolean originalWatch = ConfigurationProperties.watchInitializationJson();
         String originalInit = ConfigurationProperties.initializationJsonPath();
         File initFile = tempFolder.newFile("watch-init-flag.json");
         java.nio.file.Files.write(initFile.toPath(), "[]".getBytes(StandardCharsets.UTF_8));
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort),
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0",
                 "--init", initFile.getAbsolutePath(), "--watch");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("--watch should enable watchInitializationJson",
                 ConfigurationProperties.watchInitializationJson(), is(true));
@@ -1285,8 +1305,7 @@ public class MainCliTest {
 
     @Test
     public void shouldLiveReloadExpectationsWhenWatchedFileChanges() throws Exception {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         boolean originalWatch = ConfigurationProperties.watchInitializationJson();
         String originalInit = ConfigurationProperties.initializationJsonPath();
         // The poll period is now a Configuration property resolved from the static
@@ -1298,8 +1317,11 @@ public class MainCliTest {
         java.nio.file.Files.write(initFile.toPath(), "[]".getBytes(StandardCharsets.UTF_8));
 
         try {
-            Main.main("run", "-p", String.valueOf(freePort),
+            final int freePort = startServerOnEphemeralPort("run", "-p", "0",
                 "--init", initFile.getAbsolutePath(), "--watch");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
+            // effectively-final alias so the Retries lambda below can reference the client
+            final MockServerClient client = mockServerClient;
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
             assertThat("no expectation before the watched file is updated",
                 mockServerClient.retrieveActiveExpectations(request().withPath("/watched")).length, is(0));
@@ -1317,7 +1339,7 @@ public class MainCliTest {
                     // best-effort nudge for the filesystem to flush the change
                 }
                 assertThat("watched-file change should live-reload the expectation",
-                    mockServerClient.retrieveActiveExpectations(request().withPath("/watched")).length, is(1));
+                    client.retrieveActiveExpectations(request().withPath("/watched")).length, is(1));
             }, 50, 1000, MILLISECONDS);
 
             HttpResponse httpResponse = new NettyHttpClient(configuration(), new MockServerLogger(), clientEventLoopGroup, null, false)
@@ -1361,14 +1383,14 @@ public class MainCliTest {
 
     @Test
     public void shouldStartDemoSeedExamplesAndPrintInstructions() throws Exception {
-        final int freePort = PortFactory.findFreePort();
-        MockServerClient mockServerClient = new MockServerClient("127.0.0.1", freePort);
+        MockServerClient mockServerClient = null;
         PrintStream originalOut = Main.systemOut;
         try {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             Main.systemOut = new PrintStream(baos, true, StandardCharsets.UTF_8.name());
 
-            Main.main("demo", "-p", String.valueOf(freePort));
+            final int freePort = startServerOnEphemeralPort("demo", "-p", "0");
+            mockServerClient = new MockServerClient("127.0.0.1", freePort);
 
             String output = new String(baos.toByteArray(), StandardCharsets.UTF_8);
             assertThat("mockServerClient.hasStarted", mockServerClient.hasStarted(), is(true));
