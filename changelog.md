@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (GitHub issue #2669).
 
 ### Fixed
+- An HTTPS request that negotiates HTTP/2 (ALPN `h2`) through MockServer's **SOCKS proxy** now works.
+  Previously, using MockServer as a SOCKS4/SOCKS5 proxy for an `https://` request that upgraded to HTTP/2
+  failed completely — the client received nothing (curl reported `CURLE_HTTP2`, 0 bytes) — because MockServer
+  provisioned its internal relay for HTTP/1.1 before the tunnelled TLS connection had negotiated its protocol,
+  so the forwarded HTTP/2 frames were unparseable. SOCKS over HTTP/1.1, SOCKS over cleartext, and the HTTP
+  `CONNECT` proxy over HTTP/2 were unaffected and continue to work. MockServer now terminates the tunnelled TLS
+  in the relay and waits for its ALPN result before wiring up the connection, exactly as the `CONNECT` proxy
+  already did. Note this applies to SOCKS targets whose port number ends in `443` (`443`, `8443`, `10443`, …),
+  which is how MockServer infers that a SOCKS tunnel will carry TLS — before the client sends its
+  `ClientHello` there is no other signal available. HTTP/2 through a SOCKS tunnel to TLS on a port that does
+  not end in `443` (for example `993` or `465`) is still provisioned as HTTP/1.1 and remains affected; use
+  the `CONNECT` proxy for those. (GitHub issue #2685).
 - Starting the command-line server with port `0` now reports and uses the actual OS-assigned
   ephemeral port instead of `0`. Previously `mockserver run -p 0` (or `-serverPort 0`) bound a real
   ephemeral port but recorded the requested `0`, so the port a caller needs to reach the server was

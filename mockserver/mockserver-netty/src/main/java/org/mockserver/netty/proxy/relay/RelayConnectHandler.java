@@ -22,6 +22,7 @@ import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.LoggingHandler;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.Protocol;
+import org.mockserver.netty.unification.PortUnificationHandler;
 import org.slf4j.event.Level;
 
 import java.net.InetSocketAddress;
@@ -90,6 +91,15 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
                                     ChannelPipeline pipelineToProxyClient = proxyClientCtx.channel().pipeline();
 
                                     if (isSslEnabledUpstream(proxyClientCtx.channel()) && pipelineToProxyClient.get(SslHandler.class) == null) {
+                                        // Terminate the proxy client's TLS here, in the relay, so we can read the
+                                        // ALPN-negotiated protocol from THIS handshake and provision the loopback to
+                                        // match (h2 vs HTTP/1.1). The CONNECT path already removed PortUnificationHandler
+                                        // upstream (switchToHttp), but the SOCKS path deliberately keeps it to detect the
+                                        // tunnelled protocol; left in place it would ALSO decode the client ClientHello
+                                        // (enableTls -> a second SniHandler) and race this SslHandler. Remove it so this is
+                                        // the sole TLS terminator, mirroring CONNECT (issue #2685). Null-safe: a no-op for
+                                        // the CONNECT path where it is already gone.
+                                        removeHandler(pipelineToProxyClient, PortUnificationHandler.class);
                                         SslHandler sslHandler = nettySslContextFactory(proxyClientCtx.channel()).createServerSslContext().newHandler(proxyClientCtx.alloc());
                                         pipelineToProxyClient.addLast(sslHandler);
 

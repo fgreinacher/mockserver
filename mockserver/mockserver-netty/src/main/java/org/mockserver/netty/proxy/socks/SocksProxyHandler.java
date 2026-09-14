@@ -16,7 +16,7 @@ import static org.mockserver.exception.ExceptionHandling.isSslOrDecoderFault;
 import static org.mockserver.exception.ExceptionHandling.sniDescription;
 import static org.mockserver.netty.HttpRequestHandler.setProxyingRequest;
 import static org.mockserver.netty.unification.PortUnificationHandler.disableSslDownstream;
-import static org.mockserver.netty.unification.PortUnificationHandler.enableSslDownstream;
+import static org.mockserver.netty.unification.PortUnificationHandler.enableSslUpstreamAndDownstream;
 
 @ChannelHandler.Sharable
 public abstract class SocksProxyHandler<T> extends SimpleChannelInboundHandler<T> {
@@ -38,7 +38,12 @@ public abstract class SocksProxyHandler<T> extends SimpleChannelInboundHandler<T
         if (String.valueOf(port).endsWith("80")) {
             disableSslDownstream(channel);
         } else if (String.valueOf(port).endsWith("443")) {
-            enableSslDownstream(channel);
+            // A 443 target means the client will negotiate TLS inside the SOCKS tunnel. Enable BOTH the
+            // upstream and downstream TLS flags (not just downstream) so the relay terminates that TLS
+            // itself and waits for its ALPN result before provisioning the loopback - the same path the
+            // CONNECT proxy takes. Setting only the downstream flag left the relay provisioning HTTP/1.1
+            // before ALPN was known, so an h2 request through the tunnel was mis-provisioned (issue #2685).
+            enableSslUpstreamAndDownstream(channel);
         }
 
         // add Subject Alternative Name for SSL certificate

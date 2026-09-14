@@ -719,6 +719,22 @@ Keeping the loopback's TLS layer and codec in agreement makes the relay a transp
 Before this was fixed, the loopback hard-wired an HTTP/1.1 codec while its TLS could negotiate
 `h2`, so HTTP/2 requests through the CONNECT proxy were never decoded and hung (#2260).
 
+**Reading the ALPN result requires the relay to own the proxy-client TLS.** `configurePipelines()`
+runs when the loopback's `PROXIED_RESPONSE_` reply arrives — for SOCKS that is *before* the client has
+sent its TLS `ClientHello`, so the ALPN protocol is not yet known at that moment. The relay therefore
+terminates the proxy-client TLS itself and defers `configurePipelines()` until that handshake completes:
+when `isSslEnabledUpstream(...)` is set (and no `SslHandler` is on the client pipeline yet), it removes
+the leftover `PortUnificationHandler`, installs a server `SslHandler`, and calls `configurePipelines()`
+from the handshake-completion listener with the negotiated ALPN protocol. The `CONNECT` proxy already
+reaches this branch because `HttpRequestHandler` sets both TLS flags and `switchToHttp` has removed the
+`PortUnificationHandler`. The **SOCKS** proxy now reaches it too: `SocksProxyHandler.forwardConnection`
+sets *both* the upstream and downstream TLS flags for a target port ending in `443` (`443`, `8443`,
+`10443`, … — the heuristic is `String.valueOf(port).endsWith("443")`), not only downstream, so a SOCKS
+tunnel carrying `h2` is provisioned from its real ALPN result instead of a hard-coded HTTP/1.1 codec
+(#2685). SOCKS tunnels to a TLS port whose number does *not* end in `443` (e.g. `993`, `465`, `9999`)
+still fall back to HTTP/1.1 provisioning — the port-suffix heuristic remains the only pre-handshake TLS
+signal available on the SOCKS path.
+
 When the `http2Enabled` configuration property is `false`, `NettySslContextFactory` never advertises
 `h2` via ALPN and `PortUnificationHandler` ignores the h2c cleartext preface, so every connection —
 direct or relayed — falls back to HTTP/1.1.
