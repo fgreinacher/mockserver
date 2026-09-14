@@ -19,6 +19,52 @@ The monorepo contains multiple projects with different build tools:
 
 CI builds are orchestrated by `.buildkite/scripts/generate-pipeline.sh` which selects pipelines based on changed files. See [CI/CD](../infrastructure/ci-cd.md) for details.
 
+## Local Development: Keep Tests Off the OS Ephemeral Port Range
+
+**If the test suite fails locally in ways that make no sense — a server that cannot bind, a
+response from software that is not MockServer — set a test port band before blaming the code.**
+
+```bash
+./mvnw verify -Dmockserver.testArgLine="-Dmockserver.testPortRangeStart=20000 -Dmockserver.testPortRangeEnd=40000"
+```
+
+### Why
+
+`PortFactory.findFreePort()` asks the OS for a free port by binding port 0, which draws from the
+ephemeral range (macOS `net.inet.ip.portrange.hifirst`..`hilast`, typically 49152-65535). Every other
+application on the machine draws from the same pool. On a developer laptop with IDEs, sync agents and
+corporate services running, a dozen or more foreign processes may be listening inside it. Two things
+then go wrong: a port chosen a moment ago is taken before the test binds it, and — worse — a test
+connects to whatever is already there and gets a reply from an unrelated program.
+
+Both have been observed here: a bind failure on a port adjacent to a running application, a
+`500 Server: Kestrel` from a .NET service answering a control-plane call, and a response body of
+`{"TYPE":"TIER1","VERSION":"1.0"}` — a string that appears nowhere in this repository or any of its
+dependencies.
+
+### What it measurably does
+
+Two full runs of `mockserver-core` + `mockserver-netty` on the same machine, same commit:
+
+| | without the band | with the band |
+|---|---|---|
+| Integration tests executed | 2199 | 2268 |
+| Bind failure (`Exception while binding ... to port 57002`) | yes | none |
+| Cascaded failures from the server that never started | 3 | none |
+
+The test count *rises* with the band because classes that previously died in `@BeforeClass` now run.
+
+### What it does not do
+
+It only helps where a port is chosen ahead of binding. Tests that start on port `0` and read the port
+back never call `PortFactory`, so the band cannot reach them — those are already immune to losing a
+port, and their occasional failures are a loaded machine rather than a stolen port. It covers TCP
+only; the HTTP/3 suites bind UDP and are unaffected.
+
+Both properties must be set, and they must reach the **forked test JVM** — hence `mockserver.testArgLine`
+above. Passing `-Dmockserver.testPortRangeStart=...` directly to Maven sets it in the Maven JVM, where
+`PortFactory` does not run, and silently does nothing. Leave them unset and behaviour is unchanged.
+
 ## Local Development Behind a Corporate TLS-Inspection Proxy
 
 **TL;DR — if dependency downloads fail locally with TLS/`certificate verify failed`/`unable to get local issuer certificate` errors, your machine is behind a TLS-inspection proxy and the toolchains don't trust the corporate root CA. Point each toolchain at a *combined* CA bundle (system roots + corporate root). This is configured ONLY in your user/shell environment — never in repo files or pipeline scripts. CI agents have no proxy, so pipelines are unaffected and must stay that way.**
