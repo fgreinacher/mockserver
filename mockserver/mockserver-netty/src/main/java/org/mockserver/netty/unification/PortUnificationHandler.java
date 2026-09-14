@@ -96,6 +96,11 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
     // (HTTP_ENABLED stays private: it is only ever read here, never on a child stream.)
     public static final AttributeKey<Boolean> TLS_ENABLED_UPSTREAM = AttributeKey.valueOf("TLS_ENABLED_UPSTREAM");
     public static final AttributeKey<Boolean> TLS_ENABLED_DOWNSTREAM = AttributeKey.valueOf("TLS_ENABLED_DOWNSTREAM");
+    // Marks a SOCKS tunnel whose carried protocol (TLS vs cleartext) is not yet known: a SOCKS client
+    // only sends its ClientHello AFTER it receives the SOCKS success reply, so at relay-wiring time there
+    // is no client byte to classify. When set, the relay defers the upstream/downstream TLS decision and
+    // classifies the first tunnelled bytes instead of guessing from the destination port (issue #2685).
+    public static final AttributeKey<Boolean> TLS_DETECTION_DEFERRED = AttributeKey.valueOf("TLS_DETECTION_DEFERRED");
     public static final AttributeKey<NettySslContextFactory> NETTY_SSL_CONTEXT_FACTORY = AttributeKey.valueOf("NETTY_SSL_CONTEXT_FACTORY");
     private static final AttributeKey<Boolean> HTTP_ENABLED = AttributeKey.valueOf("HTTP_ENABLED");
     public static final AttributeKey<Boolean> HTTP2_ENABLED = AttributeKey.valueOf("HTTP2_ENABLED");
@@ -145,12 +150,16 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
         }
     }
 
-    public static void enableSslDownstream(Channel channel) {
-        channel.attr(TLS_ENABLED_DOWNSTREAM).set(Boolean.TRUE);
+    public static void deferTlsDetection(Channel channel) {
+        channel.attr(TLS_DETECTION_DEFERRED).set(Boolean.TRUE);
     }
 
-    public static void disableSslDownstream(Channel channel) {
-        channel.attr(TLS_ENABLED_DOWNSTREAM).set(Boolean.FALSE);
+    public static boolean isTlsDetectionDeferred(Channel channel) {
+        return Boolean.TRUE.equals(channel.attr(TLS_DETECTION_DEFERRED).get());
+    }
+
+    public static void enableSslDownstream(Channel channel) {
+        channel.attr(TLS_ENABLED_DOWNSTREAM).set(Boolean.TRUE);
     }
 
     public static boolean isSslEnabledDownstream(Channel channel) {

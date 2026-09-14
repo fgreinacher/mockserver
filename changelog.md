@@ -87,11 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the forwarded HTTP/2 frames were unparseable. SOCKS over HTTP/1.1, SOCKS over cleartext, and the HTTP
   `CONNECT` proxy over HTTP/2 were unaffected and continue to work. MockServer now terminates the tunnelled TLS
   in the relay and waits for its ALPN result before wiring up the connection, exactly as the `CONNECT` proxy
-  already did. Note this applies to SOCKS targets whose port number ends in `443` (`443`, `8443`, `10443`, …),
-  which is how MockServer infers that a SOCKS tunnel will carry TLS — before the client sends its
-  `ClientHello` there is no other signal available. HTTP/2 through a SOCKS tunnel to TLS on a port that does
-  not end in `443` (for example `993` or `465`) is still provisioned as HTTP/1.1 and remains affected; use
-  the `CONNECT` proxy for those. (GitHub issue #2685).
+  already did. This works on **any port**: rather than guessing from the destination port number (the earlier
+  fix inferred TLS only for ports ending in `443`, so `h2` to a TLS port such as `993`, `465`, or `9999` was
+  still mis-provisioned as HTTP/1.1), MockServer now classifies the first bytes the client sends through the
+  tunnel — a TLS record versus a cleartext HTTP request — and provisions the connection to match. As a result,
+  HTTP/2 over TLS through a SOCKS tunnel succeeds on any port, and a cleartext tunnel to a port that happens to
+  end in `443` is no longer mistaken for TLS. (GitHub issue #2685).
 - Starting the command-line server with port `0` now reports and uses the actual OS-assigned
   ephemeral port instead of `0`. Previously `mockserver run -p 0` (or `-serverPort 0`) bound a real
   ephemeral port but recorded the requested `0`, so the port a caller needs to reach the server was

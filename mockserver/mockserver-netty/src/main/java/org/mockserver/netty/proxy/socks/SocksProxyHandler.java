@@ -15,8 +15,7 @@ import static org.mockserver.exception.ExceptionHandling.connectionClosedExcepti
 import static org.mockserver.exception.ExceptionHandling.isSslOrDecoderFault;
 import static org.mockserver.exception.ExceptionHandling.sniDescription;
 import static org.mockserver.netty.HttpRequestHandler.setProxyingRequest;
-import static org.mockserver.netty.unification.PortUnificationHandler.disableSslDownstream;
-import static org.mockserver.netty.unification.PortUnificationHandler.enableSslUpstreamAndDownstream;
+import static org.mockserver.netty.unification.PortUnificationHandler.deferTlsDetection;
 
 @ChannelHandler.Sharable
 public abstract class SocksProxyHandler<T> extends SimpleChannelInboundHandler<T> {
@@ -35,16 +34,13 @@ public abstract class SocksProxyHandler<T> extends SimpleChannelInboundHandler<T
     protected void forwardConnection(final ChannelHandlerContext ctx, ChannelHandler forwarder, final String addr, int port) {
         Channel channel = ctx.channel();
         setProxyingRequest(ctx, Boolean.TRUE);
-        if (String.valueOf(port).endsWith("80")) {
-            disableSslDownstream(channel);
-        } else if (String.valueOf(port).endsWith("443")) {
-            // A 443 target means the client will negotiate TLS inside the SOCKS tunnel. Enable BOTH the
-            // upstream and downstream TLS flags (not just downstream) so the relay terminates that TLS
-            // itself and waits for its ALPN result before provisioning the loopback - the same path the
-            // CONNECT proxy takes. Setting only the downstream flag left the relay provisioning HTTP/1.1
-            // before ALPN was known, so an h2 request through the tunnel was mis-provisioned (issue #2685).
-            enableSslUpstreamAndDownstream(channel);
-        }
+        // The destination port is the only signal available here, before the client's ClientHello, and it
+        // is wrong in both directions: TLS is routinely served on ports that do not end in 443 (8080-style
+        // custom ports) and cleartext can be served on a 443-suffix port. Rather than guess, mark the
+        // tunnel for byte-driven detection: the relay classifies the first tunnelled bytes (TLS record vs
+        // cleartext HTTP) after the SOCKS reply is sent, and provisions the loopback to match - reading the
+        // real ALPN result for TLS. This removes the non-443 gap left by the port heuristic (issue #2685).
+        deferTlsDetection(channel);
 
         // add Subject Alternative Name for SSL certificate
         if (isNotBlank(addr)) {

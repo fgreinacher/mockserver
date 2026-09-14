@@ -722,18 +722,26 @@ Before this was fixed, the loopback hard-wired an HTTP/1.1 codec while its TLS c
 **Reading the ALPN result requires the relay to own the proxy-client TLS.** `configurePipelines()`
 runs when the loopback's `PROXIED_RESPONSE_` reply arrives — for SOCKS that is *before* the client has
 sent its TLS `ClientHello`, so the ALPN protocol is not yet known at that moment. The relay therefore
-terminates the proxy-client TLS itself and defers `configurePipelines()` until that handshake completes:
-when `isSslEnabledUpstream(...)` is set (and no `SslHandler` is on the client pipeline yet), it removes
-the leftover `PortUnificationHandler`, installs a server `SslHandler`, and calls `configurePipelines()`
-from the handshake-completion listener with the negotiated ALPN protocol. The `CONNECT` proxy already
-reaches this branch because `HttpRequestHandler` sets both TLS flags and `switchToHttp` has removed the
-`PortUnificationHandler`. The **SOCKS** proxy now reaches it too: `SocksProxyHandler.forwardConnection`
-sets *both* the upstream and downstream TLS flags for a target port ending in `443` (`443`, `8443`,
-`10443`, … — the heuristic is `String.valueOf(port).endsWith("443")`), not only downstream, so a SOCKS
-tunnel carrying `h2` is provisioned from its real ALPN result instead of a hard-coded HTTP/1.1 codec
-(#2685). SOCKS tunnels to a TLS port whose number does *not* end in `443` (e.g. `993`, `465`, `9999`)
-still fall back to HTTP/1.1 provisioning — the port-suffix heuristic remains the only pre-handshake TLS
-signal available on the SOCKS path.
+terminates the proxy-client TLS itself and defers `configurePipelines()` until that handshake completes.
+The shared logic lives in `terminateClientTlsThenConfigure(...)`: it removes the leftover
+`PortUnificationHandler`, installs a server `SslHandler`, and calls `configurePipelines()` from the
+handshake-completion listener with the negotiated ALPN protocol. The `CONNECT` proxy reaches it directly
+— `HttpRequestHandler` sets both TLS flags and `switchToHttp` has removed the `PortUnificationHandler`,
+so the relay's `isSslEnabledUpstream(...)` branch runs it.
+
+The **SOCKS** proxy cannot know the tunnelled protocol at that moment — the client sends its `ClientHello`
+only *after* the SOCKS success reply — so it does **not** guess from the destination port. Instead
+`SocksProxyHandler.forwardConnection` marks the tunnel with `deferTlsDetection(...)` (an explicit,
+SOCKS-only flag, so the `CONNECT` path is untouched), and the relay classifies the first tunnelled bytes.
+When the SOCKS reply has been written, the relay removes the leftover byte-driven handlers (the
+`PortUnificationHandler` — which would otherwise re-detect TLS and race a second `SniHandler` — and the
+spent SOCKS command decoder) and installs a one-shot `RelayTlsDetectionHandler` (a `ByteToMessageDecoder`
+mirroring Netty's `OptionalSslHandler`). On the first ≥5 bytes it calls `SslHandler.isEncrypted(...)`: a
+TLS record routes into `terminateClientTlsThenConfigure(...)` (the same ALPN-deferred branch the `CONNECT`
+proxy uses), while cleartext provisions HTTP/1.1 directly. The detector then removes itself, handing its
+buffered bytes to the handler it installed. Because the decision is byte-driven, `h2` over TLS through a
+SOCKS tunnel works on **any** port (not only `443`/`8443`/`10443`), and a cleartext tunnel to a
+`443`-suffix port is no longer mistaken for TLS (#2685).
 
 When the `http2Enabled` configuration property is `false`, `NettySslContextFactory` never advertises
 `h2` via ALPN and `PortUnificationHandler` ignores the h2c cleartext preface, so every connection —

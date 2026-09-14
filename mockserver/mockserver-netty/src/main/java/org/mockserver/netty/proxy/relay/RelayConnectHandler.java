@@ -5,6 +5,9 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
+import io.netty.handler.codec.ByteToMessageDecoder;
+import io.netty.handler.codec.socksx.v4.Socks4ServerDecoder;
+import io.netty.handler.codec.socksx.v5.Socks5CommandRequestDecoder;
 import org.mockserver.socket.NettyTransport;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContentDecompressor;
@@ -27,6 +30,7 @@ import org.slf4j.event.Level;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.mockserver.exception.ExceptionHandling.connectionClosedException;
 import static org.mockserver.exception.ExceptionHandling.isSslOrDecoderFault;
@@ -90,42 +94,20 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
                                     // downstream (to proxy client)
                                     ChannelPipeline pipelineToProxyClient = proxyClientCtx.channel().pipeline();
 
-                                    if (isSslEnabledUpstream(proxyClientCtx.channel()) && pipelineToProxyClient.get(SslHandler.class) == null) {
-                                        // Terminate the proxy client's TLS here, in the relay, so we can read the
-                                        // ALPN-negotiated protocol from THIS handshake and provision the loopback to
-                                        // match (h2 vs HTTP/1.1). The CONNECT path already removed PortUnificationHandler
-                                        // upstream (switchToHttp), but the SOCKS path deliberately keeps it to detect the
-                                        // tunnelled protocol; left in place it would ALSO decode the client ClientHello
-                                        // (enableTls -> a second SniHandler) and race this SslHandler. Remove it so this is
-                                        // the sole TLS terminator, mirroring CONNECT (issue #2685). Null-safe: a no-op for
-                                        // the CONNECT path where it is already gone.
+                                    if (isTlsDetectionDeferred(proxyClientCtx.channel())) {
+                                        // SOCKS path: the tunnelled protocol was unknown at wiring time (the client's
+                                        // ClientHello only arrives after this SOCKS reply). Remove the byte-driven
+                                        // handlers the SOCKS setup left in the proxy-client pipeline so nothing races the
+                                        // probe: the leftover PortUnificationHandler would re-detect TLS and install a
+                                        // second SniHandler (the #2685 failure), and the spent SOCKS command decoder would
+                                        // otherwise wrap the first bytes. Then classify the first tunnelled bytes and
+                                        // provision the loopback to match - reading the real ALPN result for TLS - instead
+                                        // of guessing from the destination port (issue #2685).
                                         removeHandler(pipelineToProxyClient, PortUnificationHandler.class);
-                                        SslHandler sslHandler = nettySslContextFactory(proxyClientCtx.channel()).createServerSslContext().newHandler(proxyClientCtx.alloc());
-                                        pipelineToProxyClient.addLast(sslHandler);
-
-                                        sslHandler.handshakeFuture().addListener(handshakeFuture -> {
-                                            if (handshakeFuture.isSuccess()) {
-                                                Protocol negotiated = getALPNProtocol(mockServerLogger, proxyClientCtx);
-                                                if (negotiated == null) {
-                                                    String alpn = sslHandler.applicationProtocol();
-                                                    if (alpn != null && alpn.equalsIgnoreCase(ApplicationProtocolNames.HTTP_2)) {
-                                                        negotiated = Protocol.HTTP_2;
-                                                    }
-                                                }
-                                                boolean http2EnabledDownstream = HTTP_2.equals(negotiated);
-                                                configurePipelines(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, proxyClientCtx, http2EnabledDownstream);
-                                            } else {
-                                                if (mockServerLogger.isEnabledForInstance(TRACE)) {
-                                                    mockServerLogger.logEvent(
-                                                        new LogEntry()
-                                                            .setLogLevel(Level.TRACE)
-                                                            .setMessageFormat("SSL handshake failed, defaulting to HTTP/1.1")
-                                                            .setThrowable(handshakeFuture.cause())
-                                                    );
-                                                }
-                                                configurePipelines(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, proxyClientCtx, false);
-                                            }
-                                        });
+                                        removeSocksCommandDecoders(pipelineToProxyClient);
+                                        pipelineToProxyClient.addLast(new RelayTlsDetectionHandler(mockServerCtx));
+                                    } else if (isSslEnabledUpstream(proxyClientCtx.channel()) && pipelineToProxyClient.get(SslHandler.class) == null) {
+                                        terminateClientTlsThenConfigure(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, proxyClientCtx);
                                     } else {
                                         boolean http2EnabledDownstream = false;
                                         configurePipelines(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, proxyClientCtx, http2EnabledDownstream);
@@ -201,6 +183,94 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
     protected void removeHandler(ChannelPipeline pipeline, ChannelHandler channelHandler) {
         if (pipeline.toMap().containsValue(channelHandler)) {
             pipeline.remove(channelHandler);
+        }
+    }
+
+    /**
+     * Terminate the proxy client's TLS here, in the relay, so the ALPN-negotiated protocol can be read from
+     * THIS handshake and the loopback provisioned to match (h2 vs HTTP/1.1) - the path the CONNECT proxy
+     * takes. The leftover PortUnificationHandler is removed first (null-safe no-op if already gone) so this
+     * SslHandler is the sole TLS terminator rather than racing a second SniHandler (issue #2685). The
+     * SslHandler is added last: on the CONNECT path the client's ClientHello arrives fresh, and on the SOCKS
+     * path {@link RelayTlsDetectionHandler} forwards the buffered ClientHello to it when it removes itself.
+     */
+    private void terminateClientTlsThenConfigure(ChannelPipeline pipelineToMockServer, ChannelPipeline pipelineToProxyClient,
+                                                 ChannelHandlerContext mockServerCtx, ChannelHandlerContext proxyClientCtx) {
+        removeHandler(pipelineToProxyClient, PortUnificationHandler.class);
+        SslHandler sslHandler = nettySslContextFactory(proxyClientCtx.channel()).createServerSslContext().newHandler(proxyClientCtx.alloc());
+        pipelineToProxyClient.addLast(sslHandler);
+
+        sslHandler.handshakeFuture().addListener(handshakeFuture -> {
+            if (handshakeFuture.isSuccess()) {
+                Protocol negotiated = getALPNProtocol(mockServerLogger, proxyClientCtx);
+                if (negotiated == null) {
+                    String alpn = sslHandler.applicationProtocol();
+                    if (alpn != null && alpn.equalsIgnoreCase(ApplicationProtocolNames.HTTP_2)) {
+                        negotiated = Protocol.HTTP_2;
+                    }
+                }
+                boolean http2EnabledDownstream = HTTP_2.equals(negotiated);
+                configurePipelines(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, proxyClientCtx, http2EnabledDownstream);
+            } else {
+                if (mockServerLogger.isEnabledForInstance(TRACE)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.TRACE)
+                            .setMessageFormat("SSL handshake failed, defaulting to HTTP/1.1")
+                            .setThrowable(handshakeFuture.cause())
+                    );
+                }
+                configurePipelines(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, proxyClientCtx, false);
+            }
+        });
+    }
+
+    private void removeSocksCommandDecoders(ChannelPipeline pipeline) {
+        // the SOCKS command decoder is spent once the CONNECT command has been read; in its terminal state it
+        // merely forwards raw bytes, but removing it keeps the TLS probe as the first byte-driven handler.
+        removeHandler(pipeline, Socks5CommandRequestDecoder.class);
+        removeHandler(pipeline, Socks4ServerDecoder.class);
+    }
+
+    /**
+     * One-shot probe for the SOCKS relay, mirroring Netty's {@code OptionalSslHandler}: it classifies the
+     * first tunnelled bytes as a TLS record or cleartext HTTP and provisions the loopback accordingly, then
+     * removes itself so the buffered bytes flow on to the handler it installed. A SOCKS client sends nothing
+     * until it has received the SOCKS success reply, so this - not the destination port - is the earliest
+     * trustworthy signal of the tunnelled protocol (issue #2685). Never {@code @Sharable}: a fresh instance
+     * per tunnel, as a {@link ByteToMessageDecoder} requires.
+     */
+    private final class RelayTlsDetectionHandler extends ByteToMessageDecoder {
+
+        // a TLS record opens with a 5-byte header (content type + version + length); SslHandler.isEncrypted
+        // needs at least that to classify, and every cleartext HTTP request line is longer still.
+        private static final int TLS_RECORD_HEADER_LENGTH = 5;
+
+        private final ChannelHandlerContext mockServerCtx;
+
+        private RelayTlsDetectionHandler(ChannelHandlerContext mockServerCtx) {
+            this.mockServerCtx = mockServerCtx;
+        }
+
+        @Override
+        protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out) {
+            if (in.readableBytes() < TLS_RECORD_HEADER_LENGTH) {
+                return;
+            }
+            ChannelPipeline pipelineToProxyClient = ctx.pipeline();
+            ChannelPipeline pipelineToMockServer = mockServerCtx.channel().pipeline();
+            if (SslHandler.isEncrypted(in)) {
+                // the client is speaking TLS: terminate it and read its ALPN. terminateClientTlsThenConfigure
+                // adds the SslHandler after this decoder; removing this decoder forwards the buffered
+                // ClientHello to it (ByteToMessageDecoder hands its unread cumulation to the next handler).
+                enableSslUpstreamAndDownstream(ctx.channel());
+                terminateClientTlsThenConfigure(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, ctx);
+            } else {
+                // the client is speaking cleartext: provision HTTP/1.1, leaving downstream TLS disabled. The
+                // codecs are added after this decoder; removing it forwards the buffered request bytes to them.
+                configurePipelines(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, ctx, false);
+            }
+            pipelineToProxyClient.remove(this);
         }
     }
 

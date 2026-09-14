@@ -90,6 +90,12 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
 
     private static final String FAKE_HOST = "mocked.example.test";
     private static final int TLS_PORT = 443;
+    /**
+     * A TLS target port that does NOT end in {@code 443}. Before the byte-driven detection fix the SOCKS
+     * relay guessed the tunnel protocol from the destination port ({@code endsWith("443")} → TLS), so an
+     * {@code h2} tunnel to this port was mis-provisioned as HTTP/1.1 and the client received nothing.
+     */
+    private static final int NON_STANDARD_TLS_PORT = 9999;
 
     private static MockServer mockServer;
     private static MockServerClient mockServerClient;
@@ -126,10 +132,55 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
         Result result = sendViaSocksTlsHttp2(
             SocksVersion.SOCKS5,
             InetSocketAddress.createUnresolved(FAKE_HOST, TLS_PORT),
-            FAKE_HOST);
+            FAKE_HOST,
+            TLS_PORT);
 
         assertThat("status over socks5+tls+h2: <" + result.status + ">", result.status, is("201"));
         assertThat("body over socks5+tls+h2: <" + result.body + ">", result.body, is("hello"));
+        mockServerClient.verify(request().withPath("/hello"));
+    }
+
+    /**
+     * The remaining #2685 gap: SOCKS5 + TLS + ALPN-negotiated HTTP/2 to a TLS target on a port that does
+     * NOT end in {@code 443} (here {@value #NON_STANDARD_TLS_PORT}). The old port-suffix heuristic guessed
+     * HTTP/1.1 for such ports, so the client received nothing (curl {@code CURLE_HTTP2}); byte-driven TLS
+     * detection now terminates the tunnelled TLS in the relay and reads its ALPN, so {@code h2} works on any
+     * port. Red on the port-heuristic code, green after the byte-detection fix.
+     */
+    @Test(timeout = 30000)
+    public void shouldServeMockedResponseOverSocks5TlsHttp2NonStandardPort() throws Exception {
+        givenHelloExpectation();
+
+        Result result = sendViaSocksTlsHttp2(
+            SocksVersion.SOCKS5,
+            InetSocketAddress.createUnresolved(FAKE_HOST, NON_STANDARD_TLS_PORT),
+            FAKE_HOST,
+            NON_STANDARD_TLS_PORT);
+
+        assertThat("status over socks5+tls+h2 (:" + NON_STANDARD_TLS_PORT + "): <" + result.status + ">", result.status, is("201"));
+        assertThat("body over socks5+tls+h2 (:" + NON_STANDARD_TLS_PORT + "): <" + result.body + ">", result.body, is("hello"));
+        mockServerClient.verify(request().withPath("/hello"));
+    }
+
+    /**
+     * The other direction of the old heuristic's error: cleartext HTTP/1.1 through a SOCKS5 tunnel to a port
+     * that ends in {@code 443}. The heuristic assumed TLS for any {@code 443}-suffix port, so it tried to
+     * terminate a TLS handshake on a connection the client was speaking plaintext on — the client received
+     * nothing. Byte-driven detection classifies the first tunnelled bytes as cleartext and provisions
+     * HTTP/1.1, so the mocked response is returned. Red on the port-heuristic code, green after the fix.
+     */
+    @Test(timeout = 30000)
+    public void shouldServeMockedResponseOverSocks5CleartextToTlsSuffixPort() throws Exception {
+        givenHelloExpectation();
+
+        Result result = sendViaSocksCleartextHttp11(
+            SocksVersion.SOCKS5,
+            InetSocketAddress.createUnresolved(FAKE_HOST, TLS_PORT),
+            FAKE_HOST,
+            TLS_PORT);
+
+        assertThat("status over socks5 cleartext (:" + TLS_PORT + "): <" + result.status + ">", result.status, is("201"));
+        assertThat("body over socks5 cleartext (:" + TLS_PORT + "): <" + result.body + ">", result.body, is("hello"));
         mockServerClient.verify(request().withPath("/hello"));
     }
 
@@ -147,7 +198,8 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
         Result result = sendViaSocksTlsHttp11(
             SocksVersion.SOCKS5,
             InetSocketAddress.createUnresolved(FAKE_HOST, TLS_PORT),
-            FAKE_HOST);
+            FAKE_HOST,
+            TLS_PORT);
 
         assertThat("status over socks5+tls+h1.1: <" + result.status + ">", result.status, is("201"));
         assertThat("body over socks5+tls+h1.1: <" + result.body + ">", result.body, is("hello"));
@@ -171,7 +223,8 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
         Result result = sendViaSocksTlsHttp2(
             SocksVersion.SOCKS4,
             new InetSocketAddress("127.0.0.1", TLS_PORT),
-            null);
+            null,
+            TLS_PORT);
 
         assertThat("status over socks4+tls+h2: <" + result.status + ">", result.status, is("201"));
         assertThat("body over socks4+tls+h2: <" + result.body + ">", result.body, is("hello"));
@@ -226,7 +279,7 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
      * connection close, or the {@code @Test} timeout, so a dropped body reports {@code ""} rather than an
      * opaque hang.
      */
-    private Result sendViaSocksTlsHttp2(SocksVersion version, SocketAddress target, String sniHost) throws Exception {
+    private Result sendViaSocksTlsHttp2(SocksVersion version, SocketAddress target, String sniHost, int targetPort) throws Exception {
         NioEventLoopGroup group = new NioEventLoopGroup();
         try {
             Result result = new Result();
@@ -245,7 +298,7 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ch.pipeline().addLast(socksProxyHandler(version, proxyAddress));
-                        ch.pipeline().addLast(sslHandler(sslContext, ch, sniHost));
+                        ch.pipeline().addLast(sslHandler(sslContext, ch, sniHost, targetPort));
                         ch.pipeline().addLast(Http2FrameCodecBuilder.forClient().build());
                         ch.pipeline().addLast(new Http2MultiplexHandler(new ChannelInitializer<Channel>() {
                             @Override
@@ -305,7 +358,7 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
             Http2Headers headers = new DefaultHttp2Headers()
                 .method(HttpMethod.GET.asciiName())
                 .scheme(HttpScheme.HTTPS.name())
-                .authority((sniHost != null ? sniHost : "127.0.0.1") + ":" + TLS_PORT)
+                .authority((sniHost != null ? sniHost : "127.0.0.1") + ":" + targetPort)
                 .path("/hello");
             streamChannel.writeAndFlush(new DefaultHttp2HeadersFrame(headers, true));
 
@@ -320,7 +373,7 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
      * collect the aggregated response. Completes on the response, connection close, or the {@code @Test}
      * timeout.
      */
-    private Result sendViaSocksTlsHttp11(SocksVersion version, SocketAddress target, String sniHost) throws Exception {
+    private Result sendViaSocksTlsHttp11(SocksVersion version, SocketAddress target, String sniHost, int targetPort) throws Exception {
         NioEventLoopGroup group = new NioEventLoopGroup();
         try {
             Result result = new Result();
@@ -337,7 +390,7 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ch.pipeline().addLast(socksProxyHandler(version, proxyAddress));
-                        ch.pipeline().addLast(sslHandler(sslContext, ch, sniHost));
+                        ch.pipeline().addLast(sslHandler(sslContext, ch, sniHost, targetPort));
                         ch.pipeline().addLast(new HttpClientCodec());
                         ch.pipeline().addLast(new HttpObjectAggregator(65536));
                         ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
@@ -370,7 +423,7 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
 
             Channel channel = bootstrap.connect(target).sync().channel();
 
-            String authority = (sniHost != null ? sniHost : "127.0.0.1") + ":" + TLS_PORT;
+            String authority = (sniHost != null ? sniHost : "127.0.0.1") + ":" + targetPort;
             FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/hello");
             request.headers().set(HttpHeaderNames.HOST, authority);
             channel.writeAndFlush(request);
@@ -381,10 +434,74 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
         }
     }
 
-    private static ChannelHandler sslHandler(SslContext sslContext, SocketChannel ch, String sniHost) {
+    /**
+     * Send a single cleartext (no TLS) HTTP/1.1 request through MockServer's SOCKS proxy and collect the
+     * aggregated response. Used to prove a cleartext tunnel to a {@code 443}-suffix port is no longer
+     * mis-classified as TLS.
+     */
+    private Result sendViaSocksCleartextHttp11(SocksVersion version, SocketAddress target, String sniHost, int targetPort) throws Exception {
+        NioEventLoopGroup group = new NioEventLoopGroup();
+        try {
+            Result result = new Result();
+            CompletableFuture<Result> future = new CompletableFuture<>();
+
+            InetSocketAddress proxyAddress = new InetSocketAddress("127.0.0.1", mockServer.getLocalPort());
+
+            Bootstrap bootstrap = new Bootstrap()
+                .group(group)
+                .channel(NioSocketChannel.class)
+                .resolver(NoopAddressResolverGroup.INSTANCE)
+                .handler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        ch.pipeline().addLast(socksProxyHandler(version, proxyAddress));
+                        ch.pipeline().addLast(new HttpClientCodec());
+                        ch.pipeline().addLast(new HttpObjectAggregator(65536));
+                        ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+                            @Override
+                            public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                                try {
+                                    if (msg instanceof FullHttpResponse) {
+                                        FullHttpResponse response = (FullHttpResponse) msg;
+                                        result.status = String.valueOf(response.status().code());
+                                        result.body = response.content().toString(StandardCharsets.UTF_8);
+                                        future.complete(result);
+                                    }
+                                } finally {
+                                    ReferenceCountUtil.release(msg);
+                                }
+                            }
+
+                            @Override
+                            public void channelInactive(ChannelHandlerContext ctx) {
+                                future.complete(result);
+                            }
+
+                            @Override
+                            public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                                future.completeExceptionally(cause);
+                            }
+                        });
+                    }
+                });
+
+            Channel channel = bootstrap.connect(target).sync().channel();
+
+            String authority = (sniHost != null ? sniHost : "127.0.0.1") + ":" + targetPort;
+            FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/hello");
+            request.headers().set(HttpHeaderNames.HOST, authority);
+            channel.writeAndFlush(request);
+
+            return future.get(20, TimeUnit.SECONDS);
+        } finally {
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
+        }
+    }
+
+    private static ChannelHandler sslHandler(SslContext sslContext, SocketChannel ch, String sniHost, int targetPort) {
         // Send SNI only for a real hostname; an IPv4 literal (the SOCKS4 case) is not a valid SNI name.
         return sniHost != null
-            ? sslContext.newHandler(ch.alloc(), sniHost, TLS_PORT)
+            ? sslContext.newHandler(ch.alloc(), sniHost, targetPort)
             : sslContext.newHandler(ch.alloc());
     }
 }
