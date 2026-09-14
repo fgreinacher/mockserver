@@ -906,15 +906,31 @@ public class MainCliTest {
     public void shouldApplyDevModeDefaults() throws Exception {
         MockServerClient mockServerClient = null;
 
+        java.lang.reflect.Field cacheField = ConfigurationProperties.class.getDeclaredField("propertyCache");
+        cacheField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, String> cache = (java.util.Map<String, String>) cacheField.get(null);
+
+        // Capture the pre-test value (system property AND resolved-cache entry) of every key this test
+        // mutates, so the finally block can restore EXACTLY what was there. This is critical for
+        // maxLogEntries: the shared surefire fork sets mockserver.maxLogEntries=1000 (see the mockserver
+        // root pom) to keep each MockServerEventLog's disruptor ring buffer tiny — every server started
+        // after this test reads that value. The previous finally recomputed a heap-based maxLogEntries
+        // (min(heap/8, 100000)) and wrote it back instead of restoring the captured 1000, leaking a value
+        // up to 100000 into the shared static config; later servers then pre-allocated a
+        // nextPowerOfTwo(100000)=131072-entry ring buffer each, and the resulting GC pressure
+        // intermittently timed out or emptied responses in whichever CLI tests ran afterwards.
+        String origMaxLogEntriesProp = System.getProperty("mockserver.maxLogEntries");
+        String origMaxLogEntriesCache = cache.get("mockserver.maxLogEntries");
+        String origMaxExpectationsProp = System.getProperty("mockserver.maxExpectations");
+        String origMaxExpectationsCache = cache.get("mockserver.maxExpectations");
+        String origDevModeProp = System.getProperty("mockserver.devMode");
+        String origDevModeCache = cache.get("mockserver.devMode");
+
         try {
-            // Clear any explicitly-set maxLogEntries/maxExpectations (cache + system property) that a prior or
-            // parallel test may have leaked into the shared static ConfigurationProperties state. Dev mode only
-            // applies its defaults to properties the user has NOT explicitly set, so a leaked value would make
-            // the assertions below non-deterministic.
-            java.lang.reflect.Field cacheField = ConfigurationProperties.class.getDeclaredField("propertyCache");
-            cacheField.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            java.util.Map<String, String> cache = (java.util.Map<String, String>) cacheField.get(null);
+            // Dev mode only applies its defaults to properties the user has NOT explicitly set, so a leaked
+            // value would make the assertions below non-deterministic — clear both keys (cache + system
+            // property) first.
             cache.remove("mockserver.maxLogEntries");
             System.clearProperty("mockserver.maxLogEntries");
             cache.remove("mockserver.maxExpectations");
@@ -930,15 +946,33 @@ public class MainCliTest {
             assertThat("maxExpectations should be dev default (1000)",
                 ConfigurationProperties.maxExpectations(), is(1000));
         } finally {
-            // Restore production defaults
-            ConfigurationProperties.devMode(false);
-            // Force maxLogEntries and maxExpectations back to a heap-based value
-            // by setting them to a known large value (the static cache persists across tests)
-            int heapBasedMaxLogEntries = Math.min((int) (ConfigurationProperties.heapAvailableInKB() / 8), 100000);
-            int heapBasedMaxExpectations = Math.min((int) (ConfigurationProperties.heapAvailableInKB() / 10), 15000);
-            ConfigurationProperties.maxLogEntries(heapBasedMaxLogEntries);
-            ConfigurationProperties.maxExpectations(heapBasedMaxExpectations);
+            // Restore EXACTLY the pre-test state (system property + resolved-cache entry) for every key
+            // mutated above, so nothing — least of all the shared maxLogEntries test cap — leaks into
+            // later tests in this reused surefire fork.
+            restoreProperty(cache, "mockserver.devMode", origDevModeProp, origDevModeCache);
+            restoreProperty(cache, "mockserver.maxLogEntries", origMaxLogEntriesProp, origMaxLogEntriesCache);
+            restoreProperty(cache, "mockserver.maxExpectations", origMaxExpectationsProp, origMaxExpectationsCache);
             stopQuietly(mockServerClient);
+        }
+    }
+
+    /**
+     * Restore a single {@code mockserver.*} property to a previously-captured state in BOTH tiers these
+     * CLI tests touch — the JVM system property and {@link ConfigurationProperties}' internal
+     * resolved-value cache — so a test that mutates global configuration leaves no residue for the next
+     * test in the reused surefire fork. A {@code null} captured value means "was absent" and is restored
+     * by clearing that tier.
+     */
+    private static void restoreProperty(java.util.Map<String, String> cache, String key, String originalSystemProperty, String originalCacheEntry) {
+        if (originalSystemProperty != null) {
+            System.setProperty(key, originalSystemProperty);
+        } else {
+            System.clearProperty(key);
+        }
+        if (originalCacheEntry != null) {
+            cache.put(key, originalCacheEntry);
+        } else {
+            cache.remove(key);
         }
     }
 
