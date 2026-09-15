@@ -4,16 +4,16 @@ steps:
     timeout_in_minutes: 10
     soft_fail: true
 
-  # Restore the Gradle distribution + dependency cache. The maven reactor runs a
-  # Gradle integration test (mockserver-netty-no-dependencies), whose wrapper
-  # otherwise re-downloads the ~130MB gradle-<ver>-bin.zip from services.gradle.org
-  # on every build -- the CDN stall that timed out the ~25-min reactor in build
-  # mockserver-java #2170. This pipeline OWNS the gradle cache SAVE (below): it is the
-  # always-run core build and the only pipeline whose reactor populates this
-  # distribution, so no other pipeline fights over the key. soft_fail so a cache miss
-  # / missing S3 creds never fails the build.
+  # Restore the Gradle distribution + dependency cache under the "java" scope. The
+  # maven reactor runs a Gradle integration test (mockserver-netty-no-dependencies),
+  # whose wrapper otherwise re-downloads the ~130MB gradle-<ver>-bin.zip from
+  # services.gradle.org on every build -- the CDN stall that timed out the ~25-min
+  # reactor in build mockserver-java #2170. The "java" scope namespaces the S3 object
+  # (gradle/java/<key>) so this pipeline's 8.14 distribution can never collide with
+  # the editors pipeline's 9.5.1 (gradle/editors/<key>) -- both save independently.
+  # soft_fail so a cache miss / missing S3 creds never fails the build.
   - label: ":s3: restore gradle cache"
-    command: ".buildkite/scripts/cache-restore.sh gradle"
+    command: ".buildkite/scripts/cache-restore.sh gradle java"
     timeout_in_minutes: 10
     soft_fail: true
 
@@ -221,11 +221,12 @@ steps:
     soft_fail: true
 
   # Save the Gradle distribution + dependency cache populated by the maven reactor's
-  # Gradle integration test. This pipeline is the sole owner of the gradle cache
-  # SAVE (see the restore step's note). soft_fail so a failed upload / missing S3
-  # creds never fails the build.
+  # Gradle integration test, under the "java" scope. This pipeline OWNS the SAVE for
+  # the gradle/java namespace only; the editors pipeline owns gradle/editors, and the
+  # two no longer share a key (see the restore step's note). soft_fail so a failed
+  # upload / missing S3 creds never fails the build.
   - label: ":s3: save gradle cache"
-    command: ".buildkite/scripts/cache-save.sh gradle"
+    command: ".buildkite/scripts/cache-save.sh gradle java"
     timeout_in_minutes: 15
     soft_fail: true
 

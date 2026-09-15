@@ -1158,16 +1158,29 @@ The S3 bucket and IAM policy are defined in `terraform/buildkite-agents/dependen
 
 > **Note:** the header comment in `dependency-cache.tf` still describes the policy as "DETACHED / reverted" from an earlier iteration; that comment is stale — the policy is attached in `main.tf` today. Treat the `managed_policy_arns` attachments (and live AWS state) as authoritative.
 
-**Save ownership — `gradle`.** The `gradle` cache is *saved* only by the `mockserver-java` pipeline, and this is
-load-bearing rather than a convention. The key is a pure function of the content of **every**
-`gradle-wrapper.properties` in the checkout, with no pipeline dimension, so every pipeline computes the same key
-and shares one tarball — and `cache-save.sh` is first-write-wins. The two wrapper files pin different Gradle
-versions: the netty integration test uses 8.14, and `mockserver-jetbrains` uses 9.5.1. If a second pipeline were
-given `--cache gradle` and saved first, the stored tarball would hold only *its* distribution, and the
-`mockserver-java` reactor would restore a cache missing 8.14 and re-download it on every build — silently undoing
-the reason this cache exists. **Do not add `--cache gradle` to another pipeline without first giving the key a
-namespace dimension** (for example per-pipeline or per-Gradle-version), so the two cannot collide. The editors
-pipeline deliberately does not use it today for this reason.
+**Save ownership — `gradle` (namespaced by scope).** The `gradle` cache carries a **scope** dimension — a second
+positional argument to `cache-restore.sh` / `cache-save.sh` that prefixes the S3 object as
+`gradle/<scope>/<key>.tar.gz` instead of `gradle/<key>.tar.gz`. The `<key>` itself is still a pure hash of the
+content of **every** `gradle-wrapper.properties` in the checkout (so it rotates on any Gradle version bump and is
+otherwise stable), but the scope keeps two pipelines from sharing one object. This exists because the two wrapper
+files pin different Gradle versions — the netty integration test uses 8.14, `mockserver-jetbrains` uses 9.5.1 — and
+`cache-save.sh` is first-write-wins: without a scope both pipelines computed the same key, so whichever saved first
+stored only *its* distribution and left the other re-downloading on every build. Each pipeline now owns exactly one
+scope and saves independently: **`mockserver-java` owns `gradle/java`** (saved after the maven reactor's Gradle
+integration test) and **`mockserver-editors` owns `gradle/editors`** (saved after the JetBrains steps). `gradle`
+therefore **requires** a scope: `cache-restore.sh gradle` with no scope fails closed (soft no-op, never a build
+failure) rather than serve a colliding object, and scope must match between restore and save. To add a **third**
+gradle consumer, give it its own scope (e.g. `cache-restore.sh gradle <name>` + a matching save) — never reuse
+another pipeline's. The other cache types (`maven`/`npm`/`pip`/`bundler`) take no scope and are unchanged.
+
+*Not covered for editors:* the caches persisted for `gradle/editors` are the Gradle **distribution**
+(`~/.gradle/wrapper/dists`) and the Gradle **dependency cache** (`~/.gradle/caches` — Kotlin, Gson, and the resolved
+IntelliJ Platform SDK the plugin compiles against). The Plugin Verifier's *recommended-IDE* downloads are **not**
+covered: with `intellijPlatformIdesCacheEnabled` defaulting to `false`, the IntelliJ Platform Gradle Plugin 2.x
+downloads them under the ephemeral project dir (`.intellijPlatform/ides`, discarded with the `/tmp/jb` build copy)
+or `~/.cache/pluginVerifier`, neither of which is a `GRADLE_USER_HOME` subdir. Caching those multi-GB IDEs would
+mean enabling that flag and redirecting `intellijPlatformIdesCache` under a mounted dir (plus larger tarballs and
+the save/restore timeout budget that implies) — a deliberate follow-up, not part of this cache.
 
 **Save ownership.** The `maven` cache is *saved* only by the `mockserver-java` and `mockserver-maven-plugin` pipelines (they build the full reactor, so their `~/.m2` is the canonical superset). The `python`, `ruby`, `node` and `ui` pipelines restore the `maven` cache **read-only** — they build only a jar subset, so letting them save would risk overwriting the full cache with a partial one under the same key.
 

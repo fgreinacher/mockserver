@@ -8,13 +8,20 @@
 # no-op (exit 0) and a diagnostic message.
 #
 # Usage:
-#   cache-restore.sh <cache-type>
+#   cache-restore.sh <cache-type> [scope]
 #
 # cache-type is one of: maven, npm, pip, bundler, gradle
 #
+# scope is an OPTIONAL namespace dimension on the S3 key so that two pipelines
+# sharing a cache-type but NOT a cache payload cannot collide. When given, the
+# object lives at <cache-type>/<scope>/<key>.tar.gz instead of
+# <cache-type>/<key>.tar.gz. See the "namespace / scope" note below for why
+# gradle in particular requires one. Existing callers that pass no scope
+# (maven/npm/pip/bundler) are byte-for-byte unaffected.
+#
 # The script:
 #   1. Computes a cache key from the relevant lockfile(s)
-#   2. Downloads <bucket>/<cache-type>/<key>.tar.gz from S3
+#   2. Downloads <bucket>/<cache-type>[/<scope>]/<key>.tar.gz from S3
 #   3. Extracts it into a workspace-local directory that run-in-docker.sh
 #      will volume-mount into the build container
 #
@@ -27,6 +34,7 @@ set -uo pipefail
 # NOTE: set -e is intentionally OMITTED -- we handle every error inline.
 
 CACHE_TYPE="${1:-}"
+SCOPE="${2:-}"
 BUCKET="${BUILDKITE_PLUGIN_S3_CACHE_BUCKET:-mockserver-ci-dependency-cache}"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-eu-west-2}}"
 CHECKOUT="${BUILDKITE_BUILD_CHECKOUT_PATH:-.}"
@@ -48,6 +56,29 @@ case "$CACHE_TYPE" in
   maven|npm|pip|bundler|gradle) ;;
   *) bail "Unknown cache type '${CACHE_TYPE}' -- skipping restore" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# Namespace / scope
+# ---------------------------------------------------------------------------
+# The cache key is a pure function of lockfile CONTENT and carries no pipeline
+# dimension, so two pipelines with identical lockfiles compute the same key and
+# share one S3 object. That is correct for a superset cache (maven) but WRONG
+# for gradle: the two gradle-wrapper.properties in the repo pin DIFFERENT Gradle
+# versions (netty 8.14, jetbrains 9.5.1), so each pipeline's tarball holds only
+# its own distribution. A <scope> adds that missing dimension:
+#   <cache-type>/<scope>/<key>.tar.gz   (scoped)   vs
+#   <cache-type>/<key>.tar.gz           (unscoped, legacy default)
+# Restore and save MUST use the same scope for the object to line up.
+if [[ -n "$SCOPE" && ! "$SCOPE" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  bail "Invalid scope '${SCOPE}' (allowed: letters, digits, . _ -) -- skipping restore"
+fi
+# gradle REQUIRES a scope. Without one every gradle consumer would share a
+# first-write-wins key and clobber each other's distribution -- the exact defect
+# this dimension exists to prevent -- so we fail CLOSED (soft no-op, never a
+# build failure) rather than serve a colliding object.
+if [[ "$CACHE_TYPE" == "gradle" && -z "$SCOPE" ]]; then
+  bail "gradle cache requires a scope (e.g. 'gradle java') to avoid cross-pipeline collisions -- skipping restore"
+fi
 
 # ---------------------------------------------------------------------------
 # Compute cache key from lockfiles
@@ -117,10 +148,17 @@ if [[ -z "$CACHE_KEY" ]]; then
   bail "No lockfiles found for cache type '${CACHE_TYPE}' -- nothing to restore"
 fi
 
-S3_KEY="${CACHE_TYPE}/${CACHE_KEY}.tar.gz"
+# Scope namespaces the S3 object only; the workspace-local dir (and therefore
+# run-in-docker.sh's mount target) stays keyed on cache-type, since only one
+# consumer runs per build.
+if [[ -n "$SCOPE" ]]; then
+  S3_KEY="${CACHE_TYPE}/${SCOPE}/${CACHE_KEY}.tar.gz"
+else
+  S3_KEY="${CACHE_TYPE}/${CACHE_KEY}.tar.gz"
+fi
 LOCAL_DIR="${CACHE_BASE}/${CACHE_TYPE}"
 
-log "Cache key: ${CACHE_KEY:0:16}..."
+log "Cache key: ${CACHE_KEY:0:16}...${SCOPE:+ (scope: ${SCOPE})}"
 log "S3 path: s3://${BUCKET}/${S3_KEY}"
 log "Local dir: ${LOCAL_DIR}"
 

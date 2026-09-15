@@ -21,9 +21,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # world-writable so the (non-root) agent can git-clean it on the next checkout despite
 # being created by root. The verifier's exit code is preserved so a real finding still
 # reddens the build.
+#
+# --cache gradle mounts the persisted Gradle distribution (~/.gradle/wrapper/dists) and
+# dependency cache (~/.gradle/caches -- the resolved IntelliJ Platform SDK, Kotlin, Gson)
+# under the "editors" scope. NOTE: the Plugin Verifier's RECOMMENDED-IDE downloads are
+# NOT covered by this mount: with intellijPlatformIdesCacheEnabled defaulting to false,
+# the 2.x plugin downloads them under the ephemeral project dir (.intellijPlatform/ides,
+# thrown away with the /tmp/jb copy) or ~/.cache/pluginVerifier, neither of which is a
+# GRADLE_USER_HOME subdir -- so this step still re-downloads the recommended IDE set each
+# run. Caching those multi-GB IDEs is a deliberate follow-up (see docs/infrastructure/ci-cd.md).
+# GRADLE_USER_HOME stays at /root/.gradle regardless of the /tmp/jb working dir.
 "$SCRIPT_DIR/../run-in-docker.sh" \
   -i eclipse-temurin:17-jdk \
   -w /build \
+  --cache gradle \
   -- bash -ec '
     cp -a mockserver-jetbrains /tmp/jb
     cd /tmp/jb

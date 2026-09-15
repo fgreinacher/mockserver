@@ -7,9 +7,15 @@
 # permission errors, or any other failure results in a clean no-op (exit 0).
 #
 # Usage:
-#   cache-save.sh <cache-type>
+#   cache-save.sh <cache-type> [scope]
 #
 # cache-type is one of: maven, npm, pip, bundler, gradle
+#
+# scope is an OPTIONAL namespace dimension on the S3 key (see cache-restore.sh
+# for the full rationale). It MUST match the scope the corresponding restore
+# used, or the saved object and the restore lookup will not line up. gradle
+# requires a scope; callers that pass none (maven/npm/pip/bundler) are
+# unaffected.
 #
 # The script:
 #   1. Checks if a workspace-local cache directory exists (populated by the
@@ -27,6 +33,7 @@ set -uo pipefail
 # NOTE: set -e is intentionally OMITTED.
 
 CACHE_TYPE="${1:-}"
+SCOPE="${2:-}"
 BUCKET="${BUILDKITE_PLUGIN_S3_CACHE_BUCKET:-mockserver-ci-dependency-cache}"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-eu-west-2}}"
 CHECKOUT="${BUILDKITE_BUILD_CHECKOUT_PATH:-.}"
@@ -46,6 +53,20 @@ case "$CACHE_TYPE" in
   maven|npm|pip|bundler|gradle) ;;
   *) bail "Unknown cache type '${CACHE_TYPE}' -- skipping save" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# Namespace / scope (must mirror cache-restore.sh exactly)
+# ---------------------------------------------------------------------------
+# See cache-restore.sh for the full rationale. Save is FIRST-WRITE-WINS per S3
+# key, so an unscoped gradle save would let whichever pipeline runs first pin
+# the shared object to its own distribution and starve the others -- hence the
+# scope, and hence gradle failing closed when it is missing.
+if [[ -n "$SCOPE" && ! "$SCOPE" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  bail "Invalid scope '${SCOPE}' (allowed: letters, digits, . _ -) -- skipping save"
+fi
+if [[ "$CACHE_TYPE" == "gradle" && -z "$SCOPE" ]]; then
+  bail "gradle cache requires a scope (e.g. 'gradle java') to avoid cross-pipeline collisions -- skipping save"
+fi
 
 # ---------------------------------------------------------------------------
 # Compute cache key (same algorithm as cache-restore.sh)
@@ -107,10 +128,14 @@ if [[ -z "$CACHE_KEY" ]]; then
   bail "No lockfiles found for cache type '${CACHE_TYPE}' -- nothing to save"
 fi
 
-S3_KEY="${CACHE_TYPE}/${CACHE_KEY}.tar.gz"
+if [[ -n "$SCOPE" ]]; then
+  S3_KEY="${CACHE_TYPE}/${SCOPE}/${CACHE_KEY}.tar.gz"
+else
+  S3_KEY="${CACHE_TYPE}/${CACHE_KEY}.tar.gz"
+fi
 LOCAL_DIR="${CACHE_BASE}/${CACHE_TYPE}"
 
-log "Cache key: ${CACHE_KEY:0:16}..."
+log "Cache key: ${CACHE_KEY:0:16}...${SCOPE:+ (scope: ${SCOPE})}"
 log "S3 path: s3://${BUCKET}/${S3_KEY}"
 
 # ---------------------------------------------------------------------------
