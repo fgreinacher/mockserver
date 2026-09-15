@@ -111,6 +111,20 @@ export RELEASE_VERSION NEXT_VERSION OLD_VERSION RELEASE_TYPE CREATE_VERSIONED_SI
 
 require_release_inputs
 
+# Clear the Dependabot release-in-flight gate if the release ABORTS. finalize.sh
+# clears it on the happy path; this trap covers a mid-release failure/abort in a
+# single-process local run so dependency auto-merge is not left paused. (In CI
+# each stage is a separate step with no wrapping process, so a mid-release abort
+# there is caught by the workflow's max-age backstop instead.) No-op in dry-run.
+release_gate_abort_trap() {
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    log_error "release aborted (exit $rc) — clearing Dependabot release-in-flight gate"
+    release_gate clear || true
+  fi
+}
+trap release_gate_abort_trap EXIT
+
 log_step "Release $RELEASE_VERSION (dry-run=$DRY_RUN, type=$RELEASE_TYPE)"
 log_info "  next     = $NEXT_VERSION"
 log_info "  previous = $OLD_VERSION"

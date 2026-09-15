@@ -56,6 +56,7 @@ if ! is_dry_run \
    && ! poms_contain_version "$REPO_ROOT" "$RELEASE_VERSION" \
    && poms_contain_version "$REPO_ROOT" "$NEXT_VERSION"; then
   log_info "pom.xml already at $NEXT_VERSION — finalize previously applied; skipping bump, SNAPSHOT deploy and commit (idempotent no-op)"
+  release_gate clear
   log_info "Finalize complete"
   exit 0
 fi
@@ -93,5 +94,8 @@ fi
 git_commit_and_push "release: set next development version $NEXT_VERSION" \
   mockserver/ \
   examples/java/pom.xml
+
+# Release finished cleanly — release the Dependabot auto-merge hold.
+release_gate clear
 
 log_info "Finalize complete"

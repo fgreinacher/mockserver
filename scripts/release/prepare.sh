@@ -70,6 +70,12 @@ log_info "  Current:  $CURRENT_VERSION"
 log_info "  Type:     $RELEASE_TYPE"
 log_info "  Versioned site: $CREATE_VERSIONED_SITE"
 
+# Hold Dependabot auto-merge for the duration of this release cut. Best-effort:
+# never fails the release, and shouts loudly if the flag cannot be written.
+# Placed after validation (which is read-only) so a trivial input error does not
+# strand a flag, and before any master mutation so the hold covers the whole cut.
+release_gate set
+
 log_info "Updating pom.xml versions from $CURRENT_VERSION to $RELEASE_VERSION"
 if is_dry_run; then
   log_dry "would: update Maven pom.xml files"

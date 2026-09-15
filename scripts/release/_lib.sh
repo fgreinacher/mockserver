@@ -609,6 +609,62 @@ clear_git_push_credentials() {
   git -C "$REPO_ROOT" config --unset "http.https://github.com/.extraheader" 2>/dev/null || true
 }
 
+# -----------------------------------------------------------------------------
+# Dependabot release-in-flight gate
+#
+# .github/scripts/dependabot-release-gate.sh is the ONLY writer of the
+# RELEASE_IN_PROGRESS repository variable that the Dependabot auto-merge
+# workflow reads to stand down while a release is cutting. We invoke it here.
+# It is best-effort and NEVER fails the release: it exits 0 and shouts loudly
+# (a stdout+stderr INERT block, plus a red Buildkite annotation) if it cannot
+# write, so an inert gate is impossible to miss but never aborts a release.
+# No-op in dry-run: no secret is loaded and nothing is written.
+# -----------------------------------------------------------------------------
+DEPENDABOT_RELEASE_GATE="$REPO_ROOT/.github/scripts/dependabot-release-gate.sh"
+
+# release_gate <set|clear>
+release_gate() {
+  local action="$1"
+  if is_dry_run; then
+    log_dry "would: dependabot release gate '$action' (RELEASE_IN_PROGRESS)"
+    return 0
+  fi
+  if [[ ! -x "$DEPENDABOT_RELEASE_GATE" ]]; then
+    log_error "dependabot release gate script missing or not executable ($DEPENDABOT_RELEASE_GATE) — skipping '$action'"
+    return 0
+  fi
+  # Load the release PAT with xtrace suppressed so the token cannot leak to a
+  # log (mirrors load_secret / assume_website_role).
+  local xtrace_state token
+  xtrace_state=$(shopt -po xtrace 2>/dev/null || true)
+  set +x
+  token=$(load_secret "mockserver-release/github-token" "token" 2>/dev/null || echo "")
+  eval "$xtrace_state"
+  if [[ -z "$token" || "$token" == "null" ]]; then
+    log_error "could not load mockserver-release/github-token — skipping release gate '$action' (gate not $action)"
+    return 0
+  fi
+  log_info "Dependabot release gate: $action RELEASE_IN_PROGRESS (containerised gh via $GH_IMAGE)"
+  # Run `gh` inside the pinned GH_IMAGE via the in_docker convention (as
+  # components/github.sh does) — the release-queue AMI installs no host `gh`, so
+  # the gate would otherwise be permanently inert. in_docker is a shell
+  # function, so export it for the child gate script to resolve GATE_GH_CMD.
+  #
+  # Token handling: the gate script decides and annotates on the HOST; only the
+  # gh call is delegated into Docker. The token reaches the container through the
+  # GH_TOKEN *environment* variable via docker's `-e GH_TOKEN` passthrough
+  # (run-in-docker.sh forwards and REDACTS `-e` values), so — unlike a value-form
+  # `-e GH_TOKEN=…` — it never appears on any argv. GH_TOKEN is exported into the
+  # child's environment below and inherited all the way down to `docker run`.
+  # The gate script never returns non-zero, but tolerate it defensively so it
+  # can never abort the release.
+  export -f in_docker
+  GH_TOKEN="$token" \
+  GATE_GH_CMD="in_docker $GH_IMAGE -e GH_TOKEN --" \
+    "$DEPENDABOT_RELEASE_GATE" "$action" || true
+  unset token
+}
+
 git_commit_and_push() {
   local message="$1"; shift
   local -a paths=("$@")

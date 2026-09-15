@@ -21,6 +21,25 @@
 #   * No secrets.* — the API token comes from the job-scoped github.token context.
 #   * No third-party actions, so nothing to be compromised or SHA-drift.
 #   * Fails closed on every ambiguity (see the DECISION MATRIX in the run step).
+#
+# RELEASE-IN-FLIGHT GATE (see docs/infrastructure/ci-cd.md):
+#   Unattended merges STAND DOWN while a release is cutting from master — a
+#   release ships whatever master happens to be at that moment, so a bump that
+#   auto-merges mid-release lands in the release unreviewed (this happened: six
+#   distroless digest bumps auto-merged a few hours before 8.0.0 was cut and
+#   shipped inside it). The gate reads the repository variable RELEASE_IN_PROGRESS
+#   via the `vars` context — NO API call, NO token, NO new permission, so unlike a
+#   Buildkite query the signal is structurally un-"unreadable". The release
+#   pipeline sets it (epoch seconds) at `prepare` and clears it at `finalize`; a
+#   built-in max-age backstop (default 12h, override via vars.RELEASE_GATE_MAX_AGE_HOURS)
+#   auto-expires a flag a FAILED release left stranded, so a half-finished release
+#   cannot pause dependency updates forever. The gate only ever PREVENTS a merge —
+#   it never relaxes any check above — and every hold is logged AND surfaced as an
+#   idempotent PR comment. A manual workflow_dispatch run can set
+#   `ignore_release_gate: true` to force through a genuinely urgent bump. Security
+#   updates are gated too, deliberately (see docs): a security bump in an
+#   unreviewed release carries the same risk, and the hold lasts only until the
+#   release ends (the next 3-hourly sweep re-evaluates and merges it).
 name: Dependabot auto-merge
 
 on:
@@ -39,6 +58,10 @@ on:
         description: 'Optional single PR number to evaluate (else sweep all open).'
         type: string
         required: false
+      ignore_release_gate:
+        description: 'Bypass the release-in-flight gate (force merges during a release — use only for an urgent bump).'
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -56,6 +79,14 @@ jobs:
       # Manual-dispatch overrides (empty on the schedule path).
       DISPATCH_DRY_RUN: ${{ github.event.inputs.dry_run }}
       DISPATCH_PR: ${{ github.event.inputs.pr }}
+      DISPATCH_IGNORE_RELEASE_GATE: ${{ github.event.inputs.ignore_release_gate }}
+      # Release-in-flight signal — read from the `vars` context (repository
+      # variables), so there is NO API call and NO token: an empty string means
+      # "unset / no release". Set to release-start epoch-seconds by the release
+      # pipeline's `prepare` stage and cleared at `finalize`. See the header.
+      RELEASE_IN_PROGRESS: ${{ vars.RELEASE_IN_PROGRESS }}
+      # Optional operator tuning of the stranded-flag backstop; blank ⇒ default 12h.
+      RELEASE_GATE_MAX_AGE_HOURS: ${{ vars.RELEASE_GATE_MAX_AGE_HOURS }}
       # LIVE ON THE SCHEDULE: the scheduled sweep actually merges eligible PRs.
       # The workflow_dispatch `dry_run` input still defaults to true, so a MANUAL
       # run is a safe dry-run probe unless the operator explicitly sets it false.
@@ -169,6 +200,41 @@ jobs:
 
           log()    { printf '%s\n' "$*"; }
           refuse() { log "  REFUSE (#$1): $2"; }
+
+          # Hold an OTHERWISE-ELIGIBLE PR because a release is in flight. Never
+          # merges. Logs, and posts an idempotent PR comment so the hold is visible
+          # (never silent). The comment carries a marker keyed to the release token
+          # (the RELEASE_IN_PROGRESS value), so repeated 3-hourly sweeps within the
+          # SAME release episode comment exactly once, while a later release (new
+          # token) comments afresh. A dry-run only logs — it mutates nothing.
+          hold_pr() {
+            hpr="$1"; htoken="$2"; hreason="$3"
+            log "  HELD (#$hpr): release in flight — NOT merging ($hreason)"
+            if [ "$DRY_RUN" = "true" ]; then
+              log "    DRY-RUN: would post a release-hold comment on #$hpr"; return 0
+            fi
+            # Digits only in the marker so a non-epoch flag value can never carry
+            # a "-->" that would malform the HTML comment and defeat idempotency
+            # (the writer only ever sets epoch seconds; this guards the theoretical
+            # manually-set garbage value). Same sanitised marker is used to post
+            # and to match, so idempotency is preserved.
+            htoken_marker="$(printf '%s' "$htoken" | tr -cd '0-9')"
+            marker="<!-- dependabot-release-gate:${htoken_marker} -->"
+            existing="$(gh api "repos/$REPO/issues/$hpr/comments?per_page=100" --jq '.[].body' 2>/dev/null || true)"
+            if printf '%s' "$existing" | grep -qF "$marker"; then
+              log "    (release-hold comment already present for this episode — not re-posting)"; return 0
+            fi
+            body="$(printf '%s\n%s\n\n%s\n\n%s' \
+              "$marker" \
+              "🚧 **Auto-merge paused — a MockServer release is in progress.**" \
+              "This dependency PR is fully green and would normally have auto-merged, but the release-in-flight gate is holding it so the bump does not ship unreviewed inside a release cut from \`master\`. No action needed: it auto-merges on the next scheduled sweep once the release finishes." \
+              "_Gate: the \`RELEASE_IN_PROGRESS\` repository variable. It self-expires as a backstop if a release fails without clearing it. To force this through, re-run the \`Dependabot auto-merge\` workflow with \`ignore_release_gate: true\`._")"
+            if gh pr comment "$hpr" --repo "$REPO" --body "$body" >/dev/null 2>&1; then
+              log "    posted release-hold comment on #$hpr"
+            else
+              log "    could not post release-hold comment on #$hpr (continuing; the HOLD is still enforced)"
+            fi
+          }
 
           # Evaluate one PR. Returns 0 only if it merged (or would in dry-run).
           # Never exits the process — a single bad PR must not abort the sweep.
@@ -339,6 +405,14 @@ jobs:
 
             log "  ELIGIBLE: $success success + $((n_total - success)) non-blocking, 0 problems"
 
+            # RELEASE-IN-FLIGHT GATE. Applied ONLY here, to a PR that has already
+            # passed every check above — the gate can only ever PREVENT a merge, it
+            # never enables one, so it cannot weaken the check aggregation. gate_held
+            # / gate_reason / gate_token are computed once before the sweep.
+            if [ "$gate_held" = "true" ]; then
+              hold_pr "$pr" "$gate_token" "$gate_reason"; return 1
+            fi
+
             if [ "$DRY_RUN" = "true" ]; then
               log "  DRY-RUN: would squash-merge PR #$pr"; return 0
             fi
@@ -352,6 +426,56 @@ jobs:
             refuse "$pr" "gh pr merge failed (GitHub refused) — left for inspection"; return 1
           }
 
+          # ── RELEASE-IN-FLIGHT GATE: compute state ONCE for the whole sweep ────
+          # Decision matrix (fail direction is chosen per case, never silent):
+          #   override set (ignore_release_gate=true) → CLEAR (log it)
+          #   flag unset (empty)                      → CLEAR (no release)
+          #   flag = epoch, age in [0, max)           → HELD  (release in progress)
+          #   flag = epoch, age ≥ max                 → CLEAR (STRANDED flag — a
+          #                                             failed release; log LOUDLY so
+          #                                             the stale variable gets cleared)
+          #   flag = epoch, age < 0 (future/skew)     → HELD  (fail closed)
+          #   flag present but NOT an epoch           → HELD  (fail closed; a garbage
+          #                                             flag is an operator error to
+          #                                             surface, not to ignore)
+          # Reading is via the `vars` context (env above), so there is no API/token
+          # to be "down": the only residual ambiguity is a malformed VALUE, handled
+          # above. Holding costs at most one 3-hourly sweep of delay per PR; merging
+          # into a release is the expensive failure — so ambiguity holds.
+          IGNORE_GATE="${DISPATCH_IGNORE_RELEASE_GATE:-false}"
+          GATE_MAX_AGE_HOURS="${RELEASE_GATE_MAX_AGE_HOURS:-12}"
+          case "$GATE_MAX_AGE_HOURS" in ''|*[!0-9]*) GATE_MAX_AGE_HOURS=12 ;; esac
+          [ "$GATE_MAX_AGE_HOURS" -eq 0 ] 2>/dev/null && GATE_MAX_AGE_HOURS=12
+          RELEASE_FLAG="${RELEASE_IN_PROGRESS:-}"
+          gate_held=false; gate_reason=""; gate_token="none"
+          if [ "$IGNORE_GATE" = "true" ]; then
+            log "RELEASE GATE: OVERRIDDEN (ignore_release_gate=true) — proceeding despite any release flag"
+          elif [ -z "$RELEASE_FLAG" ]; then
+            log "RELEASE GATE: clear (RELEASE_IN_PROGRESS unset) — proceeding"
+          else
+            gate_token="$RELEASE_FLAG"
+            if printf '%s' "$RELEASE_FLAG" | grep -Eq '^[0-9]{9,}$'; then
+              now="$(date -u +%s)"
+              age=$(( now - RELEASE_FLAG ))
+              max=$(( GATE_MAX_AGE_HOURS * 3600 ))
+              if [ "$age" -lt 0 ]; then
+                gate_held=true
+                gate_reason="RELEASE_IN_PROGRESS is in the future (age=${age}s; clock skew or a bad value) — fail closed"
+                log "RELEASE GATE: HELD — $gate_reason"
+              elif [ "$age" -ge "$max" ]; then
+                log "RELEASE GATE: STRANDED FLAG — RELEASE_IN_PROGRESS age ${age}s >= ${max}s (${GATE_MAX_AGE_HOURS}h backstop); a release likely FAILED without clearing it. PROCEEDING and requesting the variable be cleared."
+              else
+                gate_held=true
+                gate_reason="release in progress (RELEASE_IN_PROGRESS age ${age}s < ${max}s backstop)"
+                log "RELEASE GATE: HELD — $gate_reason. Eligible PRs will be reported and left unmerged."
+              fi
+            else
+              gate_held=true
+              gate_reason="RELEASE_IN_PROGRESS is set but not an epoch timestamp ('$RELEASE_FLAG') — fail closed; clear or fix the variable"
+              log "RELEASE GATE: HELD — $gate_reason"
+            fi
+          fi
+
           # Build the candidate list.
           candidates=()
           if [ -n "$ONLY_PR" ]; then
@@ -363,7 +487,7 @@ jobs:
             while IFS= read -r n; do [ -n "$n" ] && candidates+=("$n"); done <<<"$list"
           fi
 
-          log "DRY_RUN=$DRY_RUN  candidates=${#candidates[@]}"
+          log "DRY_RUN=$DRY_RUN  release_gate_held=$gate_held  candidates=${#candidates[@]}"
           for pr in "${candidates[@]}"; do
             evaluate_pr "$pr" || true
           done
