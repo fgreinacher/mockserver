@@ -19,6 +19,7 @@ import org.mockserver.async.subscribe.RecordedMessage;
 import org.mockserver.async.AsyncApiMockOrchestrator;
 import org.mockserver.async.MessageExampleGenerator;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -52,7 +53,7 @@ public class KafkaLiveBrokerIntegrationTest {
             () -> org.testcontainers.DockerClientFactory.instance().isDockerAvailable());
         Assume.assumeTrue("Docker is not available — skipping Kafka integration tests", dockerAvailable);
 
-        kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
+        kafka = new KafkaContainer(DockerImageName.parse(TestContainerImages.CP_KAFKA).asCompatibleSubstituteFor(TestContainerImages.publicRepository("cp-kafka")));
         kafka.start();
     }
 

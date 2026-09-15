@@ -8,6 +8,7 @@ import org.mockserver.state.Blob;
 import org.mockserver.state.BlobStore;
 import org.mockserver.state.contract.BlobStoreContract;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.HttpWaitStrategy;
@@ -44,8 +45,10 @@ public class S3BlobStoreContractTest extends BlobStoreContract {
     // not exist"), which broke this suite on master with ContainerFetchException. quay.io is MinIO's
     // other official registry and serves this exact tag - same manifest digest
     // sha256:ac591851803a79aee64bc37f66d77c56b0a4b6e12d9e5356380f4105510f2332 - so the image under
-    // test is unchanged.
-    private static final String MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2024-11-07T00-52-20Z";
+    // test is unchanged. Name/tag are the single source of truth in
+    // test-container-images.properties; TestContainerImages routes it through the ECR
+    // pull-through cache in CI (MOCKSERVER_TEST_IMAGE_REGISTRY) and leaves it public otherwise.
+    private static final String MINIO_IMAGE = TestContainerImages.MINIO;
     private static final String ACCESS_KEY = "minioadmin";
     private static final String SECRET_KEY = "minioadmin";
     private static final String TEST_BUCKET = "mockserver-test";

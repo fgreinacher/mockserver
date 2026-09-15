@@ -221,13 +221,15 @@ rate 1 min"]
 | Resource | Purpose |
 |----------|---------|
 | ECR Public Repository (`mockserver`) | Public Docker image registry at `public.ecr.aws/mockserver/mockserver` — avoids Docker Hub rate limits for AWS-based CI/CD |
+| ECR Pull-Through Cache rules (`docker-hub`, `quay`) | Private regional cache (eu-west-2) for the Testcontainers backing images. CI pulls in-region; the upstreams (Docker Hub, quay.io) are contacted only on a first miss. **`mcr.microsoft.com` is NOT supported by ECR pull-through** (`UnsupportedUpstreamRegistryException`), so azurite pulls direct from Microsoft — the host pre-pull is its only guard. Applied 2026 (agent stack now elastic-ci-stack v6.71.3). Auto-created cache repos get AES256 + a 30-day expiry via a repository creation template |
 
 #### Secrets
 
 | Resource | Type | Purpose |
 |----------|------|---------|
 | SSM Parameter | SecureString | Buildkite agent registration token |
-| Secrets Manager Secret (`mockserver-build/dockerhub`) | JSON | Docker Hub credentials for CI image push |
+| Secrets Manager Secret (`mockserver-build/dockerhub`) | JSON | Docker Hub credentials for CI image push (JSON keys `username`/`token`) |
+| Secrets Manager Secret (`ecr-pullthroughcache/dockerhub`) | JSON | Docker Hub credentials for the ECR pull-through cache. Separate secret because ECR mandates the `ecr-pullthroughcache/` name prefix and JSON keys `username`/`accessToken` — the push secret above cannot be reused. Value set out of band |
 | Secrets Manager Secret (`mockserver-build/buildkite-api-token`) | String | Buildkite API token for Terraform pipeline management |
 
 #### CloudWatch Log Groups (eu-west-2)
@@ -261,10 +263,11 @@ Policies are scoped per queue — each agent role receives only the secrets and 
 | IAM Policy (`buildkite-read-build-secrets-release`) | Allows release-queue agents to read buildkite-api-token + sonatype + pypi + rubygems from Secrets Manager | release |
 | IAM Policy (`buildkite-read-release-secrets`) | Allows release agents to read GPG, GitHub, npm, SwaggerHub, website-role secrets + cross-account sts:AssumeRole | release |
 | IAM Policy (`buildkite-ecr-public-push`) | Allows agents to push Docker images to ECR Public | default, release |
+| IAM Policy (`buildkite-ecr-pull-through`) | Allows agents to pull CI Testcontainers images through the ECR pull-through cache and trigger first-miss imports (scoped to the `docker-hub/*` and `quay/*` cache repos; no `mcr/*` — mcr.microsoft.com is not a supported upstream) | default, release |
 | IAM Policy (`buildkite-dependency-cache`) | Allows agents to read/write the CI dependency cache S3 bucket — DETACHED (runtime wiring reverted; re-attach when cache integrity is implemented) | none |
 | IAM Policy (`buildkite-perf-results`) | Allows perf-queue agents to Get/Put/List objects in `mockserver-ci-perf-results` | perf |
 | IAM Policy (`buildkite-release-website-tfstate`) | Allows release agents to read/write website Terraform state and lock file | release |
-| Service-linked roles | AutoScaling, EC2Spot, Organizations, SSO, Support, TrustedAdvisor, ResourceExplorer | account |
+| Service-linked roles | AutoScaling, EC2Spot, Organizations, SSO, Support, TrustedAdvisor, ResourceExplorer, ECR Pull-Through Cache (`AWSServiceRoleForECRPullThroughCache` — reads the upstream credential secret + creates cache repos; managed in `ecr-pull-through-cache.tf`, import if it already exists) | account |
 
 #### Security
 
@@ -356,6 +359,7 @@ terraform/
     ├── backend.tf           # S3 remote state configuration
     ├── build-secrets.tf     # Docker Hub secret + Buildkite agent IAM policy
     ├── ecr-public.tf        # ECR Public repository + push IAM policy
+    ├── ecr-pull-through-cache.tf # ECR pull-through cache rules (docker-hub/quay; mcr unsupported) + credential secret + agent IAM
     ├── variables.tf         # Input variables
     ├── outputs.tf           # Outputs (ASG name, VPC ID, dashboard URL)
     ├── versions.tf          # Terraform + provider versions

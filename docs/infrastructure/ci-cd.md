@@ -1120,9 +1120,13 @@ means a registry problem fails the step in seconds, naming the image and the reg
 | cloud blob-store | `quay.io/minio/minio`, `fsouza/fake-gcs-server`, `mcr.microsoft.com/azure-storage/azurite` |
 | asyncapi live-broker | `confluentinc/cp-kafka`, `rabbitmq`, `eclipse-mosquitto` |
 
-The list is duplicated from the test sources; a new backing image must be added here too, or it
-reverts to the slow opaque failure. Testcontainers' Ryuk image is deliberately excluded — its tag is
-coupled to the Testcontainers version and would drift.
+The image names and tags are **no longer duplicated**. They live once, in
+`mockserver/mockserver-testing/src/main/resources/org/mockserver/test/test-container-images.properties`,
+read both by the suites (via `org.mockserver.test.TestContainerImages`) and by the pre-pull call
+sites (via `.buildkite/scripts/lib/test-images.sh`), so the pre-pull list and the `*_IMAGE`
+constants can no longer drift. To bump a tag or add a backing image, edit that one file.
+Testcontainers' Ryuk image is deliberately excluded — its tag is coupled to the Testcontainers
+version and would drift.
 
 The retry covers `docker pull` only. It must never be widened to wrap Maven: these steps exist
 partly to assert the suites actually ran, and a retry around the test invocation would turn a real
@@ -1130,6 +1134,68 @@ failure green. An image already present locally is skipped rather than re-pulled
 Testcontainers' own pull-if-absent policy and keeps a registry outage from failing a build that
 would otherwise have run off the cache. On pull-request builds the pre-pull is skipped, matching
 `run-in-docker.sh`, which also `exit 0`s socket steps on PRs.
+
+### ECR Pull-Through Cache (durable fix)
+
+The pre-pull makes a registry outage fail fast and clearly, but a cold scale-to-zero agent still
+depends on quay.io, Docker Hub and mcr.microsoft.com being reachable and un-throttled — that is what
+failed the cloud step 2 of 3 builds. The durable fix is a regional **ECR pull-through cache** in the
+`mockserver-build` account (`terraform/buildkite-agents/ecr-pull-through-cache.tf`): CI pulls
+in-region from ECR, and ECR contacts each upstream only on a first cache miss.
+
+```mermaid
+flowchart LR
+    STEP["cloud / async step\n(host agent)"] --> LOGIN["ecr-pull-through-login.sh\n(opt-in: MOCKSERVER_ECR_PULL_THROUGH)"]
+    LOGIN -->|"sets MOCKSERVER_TEST_IMAGE_REGISTRY"| RESOLVE["test-images.sh\nresolve_test_image"]
+    RESOLVE --> PREPULL["pre-pull-images.sh\ndocker pull <ecr>/..."]
+    PREPULL --> ECR["ECR pull-through cache\n(docker-hub, quay)"]
+    ECR -->|"first miss only"| UPSTREAM["Docker Hub / quay.io"]
+    ECR -->|"cache hit"| DAEMON["host daemon cache"]
+    PREPULL -->|"azurite: mcr not cacheable"| MCR["mcr.microsoft.com\n(direct, uncached)"]
+    MCR --> DAEMON
+    RESOLVE -.->|"same env into container"| SUITE["Testcontainers suites\n(TestContainerImages)"]
+    SUITE --> DAEMON
+```
+
+**Image indirection (why, and how it stays off by default).** Both the pre-pull and the suites
+resolve image names through an optional registry prefix, `MOCKSERVER_TEST_IMAGE_REGISTRY`:
+
+- **Unset** (the default — local developers, and forks that have no ECR access): the public names
+  are used verbatim, so those environments are completely unaffected.
+- **Set** to the account's ECR host: names are rewritten to the pull-through cache repositories, e.g.
+  `quay.io/minio/minio` → `<registry>/quay/minio/minio`, `fsouza/fake-gcs-server` →
+  `<registry>/docker-hub/fsouza/fake-gcs-server`, and the Docker Hub *official* image `rabbitmq` →
+  `<registry>/docker-hub/library/rabbitmq`. **`mcr.microsoft.com/...` (azurite) is the exception: it
+  is passed through UNCHANGED** even when the registry is set, because ECR pull-through cache does not
+  support `mcr.microsoft.com` as an upstream (see below) — azurite always pulls direct from Microsoft.
+
+The two cached ECR repository prefixes (`docker-hub`, `quay`) — plus the `mcr.microsoft.com`
+passthrough — are a contract shared by the Terraform pull-through rules, `resolve_test_image` in
+`test-images.sh`, and `TestContainerImages.toEcr` (locked by the Docker-free unit test
+`TestContainerImagesTest`, which asserts both the rewrites and the mcr passthrough). Any *other*
+unmapped host is rejected, so a new registry cannot be silently mis-cached. The host must reference the
+same name the suite will, because Testcontainers' pull-if-absent policy checks the cache by the exact
+name it is asked for — so `ecr-pull-through-login.sh` logs the host daemon in to ECR, sets the env var,
+and the step passes that same var into the `run-in-docker` container.
+
+`ecr-pull-through-login.sh` is **opt-in and fail-safe**: it does nothing unless
+`MOCKSERVER_ECR_PULL_THROUGH=true`, and on any problem (no opt-in, PR build, no `aws`/`docker`, no
+credentials, login failure) it leaves the env var unset and the step falls back to the public
+registries. This is why the code half of the change is safe to ship *before* the Terraform is applied.
+
+Docker Hub pull-through requires upstream credentials, and ECR requires them in a Secrets Manager
+secret whose name begins `ecr-pullthroughcache/` with JSON `{"username","accessToken"}` — the existing
+`mockserver-build/dockerhub` secret cannot be reused (wrong name prefix and wrong JSON key), so a
+dedicated `ecr-pullthroughcache/dockerhub` secret is provisioned (value set out of band). quay.io is
+pulled anonymously and needs no credential.
+
+**`mcr.microsoft.com` is NOT supported by ECR pull-through cache.** Creating the rule fails with
+`UnsupportedUpstreamRegistryException` (the supported upstreams are ECR Public, Docker Hub, quay.io,
+registry.k8s.io, ghcr.io, GitLab, and Azure ACR — not the public Microsoft container registry). So
+**azurite continues to pull direct from `mcr.microsoft.com` and stays dependent on that registry's
+availability** — the host pre-pull from `489d6e705` remains its only guard. Only MinIO (quay.io) and
+the Docker Hub images (fake-gcs-server, cp-kafka, rabbitmq, eclipse-mosquitto) are actually cached. See
+`docs/infrastructure/aws-infrastructure.md` for the resources and IAM.
 
 ### Cache Types and Keys
 

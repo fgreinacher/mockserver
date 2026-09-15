@@ -9,6 +9,7 @@ import org.junit.Test;
 import org.mockserver.async.publish.MqttMessagePublisher;
 import org.mockserver.async.security.MqttSecurity;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.Transferable;
@@ -79,7 +80,7 @@ public class MqttTlsLiveBrokerIntegrationTest {
             DockerAvailability.isAvailable(
                 () -> org.testcontainers.DockerClientFactory.instance().isDockerAvailable()));
 
-        mosquitto = new GenericContainer<>(DockerImageName.parse("eclipse-mosquitto:2.0.22"))
+        mosquitto = new GenericContainer<>(DockerImageName.parse(TestContainerImages.ECLIPSE_MOSQUITTO))
             .withExposedPorts(MQTT_PORT)
             .withCopyToContainer(Transferable.of(MOSQUITTO_CONF), "/mosquitto/config/mosquitto.conf")
             .withCommand("sh", "-c", STARTUP_COMMAND)

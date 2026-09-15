@@ -27,6 +27,7 @@ locals {
     perf_results                      = "arn:aws:iam::${local.account_id}:policy/${aws_iam_policy.perf_results.name}"
     release_website_tfstate           = "arn:aws:iam::${local.account_id}:policy/${aws_iam_policy.release_website_tfstate.name}"
     dependency_cache                  = "arn:aws:iam::${local.account_id}:policy/${aws_iam_policy.dependency_cache.name}"
+    ecr_pull_through                  = "arn:aws:iam::${local.account_id}:policy/${aws_iam_policy.ecr_pull_through.name}"
     imds_hardening                    = "arn:aws:iam::${local.account_id}:policy/${aws_iam_policy.imds_hardening.name}"
     binaries_publish                  = "arn:aws:iam::${local.account_id}:policy/${aws_iam_policy.binaries_publish.name}"
   }
@@ -56,6 +57,7 @@ module "buildkite_stack" {
     local.policy_arn.read_build_secrets_default,
     local.policy_arn.read_dockerhub_secret,
     local.policy_arn.ecr_public_push,                   # snapshot Docker push (java-docker-push-snapshot.sh) runs on default queue
+    local.policy_arn.ecr_pull_through,                  # pull CI Testcontainers images via the ECR pull-through cache (cloud/async Docker-gated steps)
     local.policy_arn.dependency_cache,                  # read/write the CI dependency cache (Maven/npm/pip/Bundler builds)
     local.policy_arn.read_buildkite_api_token_readonly, # change detection (generate-pipeline.sh -> last-successful-commit.sh)
     local.policy_arn.imds_hardening,                    # fetch the boot script + lower own IMDS hop limit
@@ -143,6 +145,7 @@ module "buildkite_release_stack" {
     local.policy_arn.read_release_secrets,
     local.policy_arn.read_dockerhub_release_secret, # release queue reads ONLY the release Docker Hub token
     local.policy_arn.ecr_public_push,
+    local.policy_arn.ecr_pull_through, # pull CI Testcontainers images via the ECR pull-through cache
     local.policy_arn.release_website_tfstate,
     local.policy_arn.dependency_cache, # read/write the CI dependency cache (Maven/npm/pip/Bundler builds)
     local.policy_arn.imds_hardening,

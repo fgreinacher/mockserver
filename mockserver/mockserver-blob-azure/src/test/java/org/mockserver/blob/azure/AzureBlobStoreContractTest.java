@@ -9,6 +9,7 @@ import org.junit.BeforeClass;
 import org.mockserver.state.BlobStore;
 import org.mockserver.state.contract.BlobStoreContract;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -23,7 +24,7 @@ import java.util.UUID;
  */
 public class AzureBlobStoreContractTest extends BlobStoreContract {
 
-    private static final String AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.36.0";
+    private static final String AZURITE_IMAGE = TestContainerImages.AZURITE;
     private static final String TEST_CONTAINER_NAME = "mockserver-test";
 
     // Azurite well-known development credentials

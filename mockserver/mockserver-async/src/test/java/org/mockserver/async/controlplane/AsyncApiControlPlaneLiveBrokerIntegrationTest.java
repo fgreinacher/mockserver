@@ -14,6 +14,7 @@ import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -62,7 +63,7 @@ public class AsyncApiControlPlaneLiveBrokerIntegrationTest {
             DockerAvailability.isAvailable(
                 () -> org.testcontainers.DockerClientFactory.instance().isDockerAvailable()));
 
-        kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
+        kafka = new KafkaContainer(DockerImageName.parse(TestContainerImages.CP_KAFKA).asCompatibleSubstituteFor(TestContainerImages.publicRepository("cp-kafka")));
         kafka.start();
     }
 

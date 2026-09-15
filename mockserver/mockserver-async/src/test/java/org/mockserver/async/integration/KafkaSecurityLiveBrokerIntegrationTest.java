@@ -13,6 +13,7 @@ import org.junit.Test;
 import org.mockserver.async.publish.KafkaMessagePublisher;
 import org.mockserver.async.security.KafkaSecurity;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -69,7 +70,7 @@ public class KafkaSecurityLiveBrokerIntegrationTest {
         // Turn the external client listener (PLAINTEXT, the one getBootstrapServers() points at)
         // into a SASL_PLAINTEXT/PLAIN listener. The inter-broker BROKER listener stays PLAINTEXT so
         // no broker-to-broker or broker-to-ZooKeeper SASL is needed.
-        kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"))
+        kafka = new KafkaContainer(DockerImageName.parse(TestContainerImages.CP_KAFKA).asCompatibleSubstituteFor(TestContainerImages.publicRepository("cp-kafka")))
             .withEnv("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "BROKER:PLAINTEXT,PLAINTEXT:SASL_PLAINTEXT")
             .withEnv("KAFKA_SASL_ENABLED_MECHANISMS", "PLAIN")
             .withEnv("KAFKA_LISTENER_NAME_PLAINTEXT_SASL_ENABLED_MECHANISMS", "PLAIN")

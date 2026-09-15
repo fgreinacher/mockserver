@@ -72,20 +72,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODULE="mockserver-async"
 
+# Image names are the single source of truth in test-container-images.properties,
+# resolved via test-images.sh (so the pre-pull list can no longer drift from the
+# suites' DockerImageName.parse(...) calls — both read the same file).
+# ecr-pull-through-login.sh optionally logs the host daemon in to the ECR
+# pull-through cache and sets MOCKSERVER_TEST_IMAGE_REGISTRY; when unset (default,
+# forks, cache not yet applied) test_image resolves the public names unchanged.
+#   cp-kafka           -> Kafka / KafkaAvro / KafkaSecurity / AsyncApiControlPlane
+#   rabbitmq           -> Amqp
+#   eclipse-mosquitto  -> Mqtt / Mqtt5 / MqttTls / MqttTlsHandshake
+source "$SCRIPT_DIR/../lib/test-images.sh"
+source "$SCRIPT_DIR/../lib/ecr-pull-through-login.sh"
+
 # Pre-pull the broker images (with retry + backoff) on the host daemon BEFORE
 # Maven runs, so a slow/throttled registry fails fast with a clear message
 # instead of surfacing ~5 minutes in as an opaque Testcontainers
 # RemoteDockerImage / ContainerFetchException timeout. The suites pull these
 # through the mounted socket, so warming the host cache here means they never
-# re-pull. Keep this list in sync with the DockerImageName.parse(...) calls in
-# the *LiveBrokerIntegrationTest suites:
-#   confluentinc/cp-kafka  -> Kafka / KafkaAvro / KafkaSecurity / AsyncApiControlPlane
-#   rabbitmq:*-management  -> Amqp
-#   eclipse-mosquitto      -> Mqtt / Mqtt5 / MqttTls / MqttTlsHandshake
+# re-pull.
 "$SCRIPT_DIR/../lib/pre-pull-images.sh" \
-  confluentinc/cp-kafka:7.6.1 \
-  rabbitmq:3.13-management \
-  eclipse-mosquitto:2.0.22
+  "$(test_image cp-kafka)" \
+  "$(test_image rabbitmq)" \
+  "$(test_image eclipse-mosquitto)"
+
+# Pass the resolved registry into the container so the Testcontainers suites ask
+# for the SAME image names the host just warmed (see TestContainerImages). Empty
+# when the pull-through cache is not enabled — the suites then use public names.
+IMAGE_REGISTRY_ENV=()
+if [[ -n "${MOCKSERVER_TEST_IMAGE_REGISTRY:-}" ]]; then
+  IMAGE_REGISTRY_ENV=(-e "MOCKSERVER_TEST_IMAGE_REGISTRY=${MOCKSERVER_TEST_IMAGE_REGISTRY}")
+fi
 
 exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i mockserver/mockserver:maven \
@@ -94,6 +110,7 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
   --cache maven \
   --docker-socket \
   -e TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false \
+  "${IMAGE_REGISTRY_ENV[@]+"${IMAGE_REGISTRY_ENV[@]}"}" \
   -- bash -ec "
     # Build the module's dependencies without running their tests — the main
     # build step already covers those, and this step must stay scoped to the

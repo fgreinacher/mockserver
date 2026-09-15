@@ -110,19 +110,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODULES="mockserver-blob-s3,mockserver-blob-gcs,mockserver-blob-azure"
 
+# Image names are the single source of truth in test-container-images.properties,
+# resolved via test-images.sh (so the pre-pull list can no longer drift from the
+# suites' *_IMAGE constants — both read the same file). ecr-pull-through-login.sh
+# optionally logs the host daemon in to the ECR pull-through cache and sets
+# MOCKSERVER_TEST_IMAGE_REGISTRY; when unset (default, forks, cache not yet
+# applied) test_image resolves the public names and behaviour is unchanged.
+#   minio            -> S3BlobStoreContractTest / S3ExpectationPersistenceReloadTest
+#   fake-gcs-server  -> GcsBlobStoreContractTest / GcsBlobStoreRegistrarConfigWiringTest
+#   azurite          -> AzureBlobStoreContractTest / AzureBlobStoreRegistrarConfigWiringTest
+source "$SCRIPT_DIR/../lib/test-images.sh"
+source "$SCRIPT_DIR/../lib/ecr-pull-through-login.sh"
+
 # Pre-pull the backing images (with retry + backoff) on the host daemon BEFORE
 # Maven runs, so a slow/throttled registry fails fast with a clear message
 # instead of surfacing ~5 minutes in as an opaque Testcontainers
 # RemoteDockerImage / ContainerFetchException timeout. The suites pull these
 # through the mounted socket, so warming the host cache here means they never
-# re-pull. Keep this list in sync with the *_IMAGE constants in the suites:
-#   quay.io/minio/minio            -> S3BlobStoreContractTest / S3ExpectationPersistenceReloadTest
-#   fsouza/fake-gcs-server         -> GcsBlobStoreContractTest / GcsBlobStoreRegistrarConfigWiringTest
-#   mcr.microsoft.com/.../azurite  -> AzureBlobStoreContractTest / AzureBlobStoreRegistrarConfigWiringTest
+# re-pull.
 "$SCRIPT_DIR/../lib/pre-pull-images.sh" \
-  quay.io/minio/minio:RELEASE.2024-11-07T00-52-20Z \
-  fsouza/fake-gcs-server:1.49.3 \
-  mcr.microsoft.com/azure-storage/azurite:3.36.0
+  "$(test_image minio)" \
+  "$(test_image fake-gcs-server)" \
+  "$(test_image azurite)"
+
+# Pass the resolved registry into the container so the Testcontainers suites ask
+# for the SAME image names the host just warmed (see TestContainerImages). Empty
+# when the pull-through cache is not enabled — the suites then use public names.
+IMAGE_REGISTRY_ENV=()
+if [[ -n "${MOCKSERVER_TEST_IMAGE_REGISTRY:-}" ]]; then
+  IMAGE_REGISTRY_ENV=(-e "MOCKSERVER_TEST_IMAGE_REGISTRY=${MOCKSERVER_TEST_IMAGE_REGISTRY}")
+fi
 
 exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i mockserver/mockserver:maven \
@@ -131,6 +148,7 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
   --cache maven \
   --docker-socket \
   -e TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false \
+  "${IMAGE_REGISTRY_ENV[@]+"${IMAGE_REGISTRY_ENV[@]}"}" \
   -- bash -ec "
     # Build the modules' dependencies without running their tests — the main
     # build step already covers those, and this step must stay scoped to the

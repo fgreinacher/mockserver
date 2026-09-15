@@ -10,6 +10,7 @@ import org.junit.BeforeClass;
 import org.mockserver.state.BlobStore;
 import org.mockserver.state.contract.BlobStoreContract;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.HttpWaitStrategy;
@@ -24,7 +25,7 @@ import java.util.UUID;
  */
 public class GcsBlobStoreContractTest extends BlobStoreContract {
 
-    private static final String FAKE_GCS_IMAGE = "fsouza/fake-gcs-server:1.49.3";
+    private static final String FAKE_GCS_IMAGE = TestContainerImages.FAKE_GCS_SERVER;
     private static final String TEST_BUCKET = "mockserver-test";
 
     @SuppressWarnings("resource")

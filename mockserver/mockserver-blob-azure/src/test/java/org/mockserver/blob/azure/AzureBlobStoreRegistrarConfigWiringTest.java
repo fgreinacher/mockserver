@@ -11,6 +11,7 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.state.Blob;
 import org.mockserver.state.BlobKeys;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -48,7 +49,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class AzureBlobStoreRegistrarConfigWiringTest {
 
-    private static final String AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.36.0";
+    private static final String AZURITE_IMAGE = TestContainerImages.AZURITE;
 
     // Azurite well-known development credentials
     private static final String ACCOUNT_NAME = "devstoreaccount1";

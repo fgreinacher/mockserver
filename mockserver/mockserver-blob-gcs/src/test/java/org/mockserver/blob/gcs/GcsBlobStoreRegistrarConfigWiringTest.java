@@ -14,6 +14,7 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.state.Blob;
 import org.mockserver.state.BlobKeys;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.HttpWaitStrategy;
@@ -53,7 +54,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class GcsBlobStoreRegistrarConfigWiringTest {
 
-    private static final String FAKE_GCS_IMAGE = "fsouza/fake-gcs-server:1.49.3";
+    private static final String FAKE_GCS_IMAGE = TestContainerImages.FAKE_GCS_SERVER;
 
     @SuppressWarnings("resource")
     private static GenericContainer<?> gcsContainer;

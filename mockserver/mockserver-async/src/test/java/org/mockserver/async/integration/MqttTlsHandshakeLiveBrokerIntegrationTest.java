@@ -23,6 +23,7 @@ import org.junit.Test;
 import org.mockserver.async.publish.MqttMessagePublisher;
 import org.mockserver.async.security.MqttSecurity;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -142,7 +143,7 @@ public class MqttTlsHandshakeLiveBrokerIntegrationTest {
         unrelatedCaCertificate = generateSelfSignedCa(unrelatedCaKeyPair, "Unrelated Test CA");
 
         // --- Boot Mosquitto with a real TLS listener; mount the PEM material ---
-        mosquitto = new GenericContainer<>(DockerImageName.parse("eclipse-mosquitto:2.0.22"))
+        mosquitto = new GenericContainer<>(DockerImageName.parse(TestContainerImages.ECLIPSE_MOSQUITTO))
             .withExposedPorts(MQTT_TLS_PORT)
             .withCopyToContainer(Transferable.of(MOSQUITTO_CONF), "/mosquitto/config/mosquitto.conf")
             .withCopyToContainer(Transferable.of(toPem(brokerCaCertificate)), "/mosquitto/config/ca.crt")

@@ -43,6 +43,11 @@ output "dependency_cache_bucket" {
   value       = aws_s3_bucket.dependency_cache.id
 }
 
+output "ecr_pull_through_cache_registry" {
+  description = "ECR registry host that CI resolves Testcontainers images through (set MOCKSERVER_TEST_IMAGE_REGISTRY to this). Contains the account id, so exposed only as an output."
+  value       = "${local.account_id}.dkr.ecr.${var.region}.amazonaws.com"
+}
+
 output "perf_auto_scaling_group_name" {
   description = "Name of the perf agent ASG"
   value       = module.buildkite_perf_stack.auto_scaling_group_name

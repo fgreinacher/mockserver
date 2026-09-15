@@ -10,6 +10,7 @@ import org.mockserver.integration.ClientAndServer;
 import org.mockserver.socket.PortFactory;
 import org.mockserver.state.StateBackendFactory;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.HttpWaitStrategy;
@@ -55,8 +56,9 @@ public class S3ExpectationPersistenceReloadTest {
     // not exist"), which broke this suite on master with ContainerFetchException. quay.io is MinIO's
     // other official registry and serves this exact tag - same manifest digest
     // sha256:ac591851803a79aee64bc37f66d77c56b0a4b6e12d9e5356380f4105510f2332 - so the image under
-    // test is unchanged.
-    private static final String MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2024-11-07T00-52-20Z";
+    // test is unchanged. Single source of truth: test-container-images.properties, routed through the
+    // ECR pull-through cache in CI by TestContainerImages when MOCKSERVER_TEST_IMAGE_REGISTRY is set.
+    private static final String MINIO_IMAGE = TestContainerImages.MINIO;
     private static final String ACCESS_KEY = "minioadmin";
     private static final String SECRET_KEY = "minioadmin";
     private static final String TEST_BUCKET = "mockserver-reload-test";

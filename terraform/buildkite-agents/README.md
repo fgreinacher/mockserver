@@ -69,6 +69,8 @@ buildkite-agents/
 ├── monitoring.tf            # CloudWatch alarms, SNS notifications, dashboard
 ├── backend.tf               # S3 remote state configuration
 ├── build-secrets.tf         # Docker Hub secret + Buildkite agent IAM policy
+├── ecr-public.tf            # ECR Public repository + push IAM policy
+├── ecr-pull-through-cache.tf # ECR pull-through cache (docker-hub/quay; mcr unsupported) + credential secret + agent IAM
 ├── perf-results.tf          # S3 bucket (mockserver-ci-perf-results) + IAM policy for perf queue
 ├── variables.tf             # Input variables
 ├── outputs.tf               # Outputs (ASG name, VPC ID, dashboard URL, perf queue outputs)

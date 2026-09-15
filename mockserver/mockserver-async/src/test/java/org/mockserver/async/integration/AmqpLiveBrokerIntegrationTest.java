@@ -20,6 +20,7 @@ import org.mockserver.async.publish.AmqpMessagePublisher;
 import org.mockserver.async.subscribe.AmqpMessageSubscriber;
 import org.mockserver.async.subscribe.RecordedMessage;
 import org.mockserver.test.DockerAvailability;
+import org.mockserver.test.TestContainerImages;
 import org.testcontainers.containers.RabbitMQContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -51,7 +52,7 @@ public class AmqpLiveBrokerIntegrationTest {
             () -> org.testcontainers.DockerClientFactory.instance().isDockerAvailable());
         Assume.assumeTrue("Docker is not available — skipping AMQP integration tests", dockerAvailable);
 
-        rabbit = new RabbitMQContainer(DockerImageName.parse("rabbitmq:3.13-management"));
+        rabbit = new RabbitMQContainer(DockerImageName.parse(TestContainerImages.RABBITMQ).asCompatibleSubstituteFor(TestContainerImages.publicRepository("rabbitmq")));
         rabbit.start();
         amqpUri = rabbit.getAmqpUrl();
     }
