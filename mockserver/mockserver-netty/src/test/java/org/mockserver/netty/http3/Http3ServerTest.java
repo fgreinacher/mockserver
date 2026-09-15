@@ -18,6 +18,7 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicSslContextBuilder;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import org.junit.After;
 import org.junit.Assume;
 import org.junit.Before;
@@ -398,8 +399,15 @@ public class Http3ServerTest {
         }
         clientGroup = new NioEventLoopGroup(1);
 
+        // QuicSslContextBuilder.forClient() defaults its endpoint identification algorithm to "HTTPS",
+        // and the QUIC codec (netty-codec-quic 4.2.18+) rejects a plain javax.net.ssl.TrustManager in
+        // that mode, requiring an X509ExtendedTrustManager. InsecureTrustManagerFactory.INSTANCE is
+        // Netty's ready-made trust-all factory whose manager IS an X509ExtendedTrustManager, so it
+        // keeps this in-JVM test client's trust-all intent while satisfying the extended-verification
+        // requirement. TEST-ONLY: this trusts the test server's ephemeral self-signed QUIC certificate
+        // on loopback and has no effect on MockServer's runtime TLS trust.
         QuicSslContext clientSslContext = QuicSslContextBuilder.forClient()
-            .trustManager(trustAllManager())
+            .trustManager(InsecureTrustManagerFactory.INSTANCE)
             .applicationProtocols(Http3.supportedApplicationProtocols())
             .build();
 

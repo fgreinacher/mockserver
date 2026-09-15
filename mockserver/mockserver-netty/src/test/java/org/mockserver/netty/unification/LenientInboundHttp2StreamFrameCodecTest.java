@@ -80,8 +80,15 @@ public class LenientInboundHttp2StreamFrameCodecTest {
         // given - the lenient inbound codec, exactly as installed on the multiplex re-aggregating chain
         EmbeddedChannel channel = new EmbeddedChannel(new LenientInboundHttp2StreamFrameCodec());
 
-        // DefaultHttp2Headers validates only names, never values, so the malformed value goes in verbatim
-        Http2Headers headers = new DefaultHttp2Headers()
+        // Build the inbound headers with validation disabled (new DefaultHttp2Headers(false)) so the
+        // 0x7F value can be injected verbatim, exactly as the real lenient inbound path delivers it:
+        // the shared-connection decoder sets InboundHttp2ToHttpAdapterBuilder.validateHttpHeaders(false),
+        // and MockServer's frame codec decodes inbound headers without value validation, so a 0x7F value
+        // reaches this codec intact. The no-arg DefaultHttp2Headers() enables validation, and as of
+        // netty-codec-http2 4.2.18 that validation now rejects 0x7F values (earlier versions validated
+        // only names) — that would fail here at construction time, before the codec under test even runs,
+        // testing DefaultHttp2Headers' own validator rather than the codec's inbound leniency.
+        Http2Headers headers = new DefaultHttp2Headers(false)
             .method("GET")
             .scheme("http")
             .authority("localhost")
