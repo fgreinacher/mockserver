@@ -109,6 +109,39 @@ else
   RUBY_README="$REPO_ROOT/mockserver-client-ruby/README.md"
   [[ -f "$RUBY_README" ]] && sed_i "s/$OLD_VERSION/$RELEASE_VERSION/g" "$RUBY_README"
 
+  # Bump the pinned Testcontainers image tag in Java test source. The general
+  # find-and-replace below deliberately excludes *.java (blanket-rewriting version
+  # strings in Java source is dangerous), so this one legitimate Java version
+  # reference is handled here with a PRECISE, field-targeted sed — it matches ONLY
+  # the "mockserver/mockserver:mockserver-<version>" image tag, never an arbitrary
+  # version-shaped token elsewhere in the file. This is the pin that
+  # MockServerContainerIntegrationTest starts and that PinnedImageVersionTest
+  # asserts stays in major.minor lockstep with the project version; before this was
+  # automated the pin drifted at the 8.0.0 release (a 7.6.0 image against an 8.0
+  # client) and broke master. Keep the pin on one line in this exact tag form.
+  TESTCONTAINERS_PIN="$REPO_ROOT/mockserver/mockserver-testcontainers/src/test/java/org/mockserver/testcontainers/TestcontainersImages.java"
+  # Fail loudly rather than silently doing nothing. A renamed file or a reformatted
+  # literal would make the sed a no-op that neither errors nor logs, which is how the
+  # pin drifted in the first place: the instruction to bump it lived only in a comment.
+  # PinnedImageVersionTest would still catch it, but not until the next CI run AFTER
+  # the release had shipped. Checking here moves the failure back into the release.
+  if [[ ! -f "$TESTCONTAINERS_PIN" ]]; then
+    log_error "Testcontainers image pin not found at $TESTCONTAINERS_PIN — it was moved or renamed; update this step"
+    exit 1
+  fi
+  if ! grep -qE "mockserver/mockserver:mockserver-[0-9]+\.[0-9]+\.[0-9]+" "$TESTCONTAINERS_PIN"; then
+    log_error "Testcontainers image pin in $TESTCONTAINERS_PIN is not in the expected mockserver/mockserver:mockserver-<version> form — cannot bump it safely"
+    exit 1
+  fi
+  sed_i -E \
+    "s#(mockserver/mockserver:mockserver-)[0-9]+\.[0-9]+\.[0-9]+([^0-9\"][^\"]*)?\"#\1${RELEASE_VERSION}\2\"#g" \
+    "$TESTCONTAINERS_PIN"
+  if ! grep -qF "mockserver/mockserver:mockserver-${RELEASE_VERSION}" "$TESTCONTAINERS_PIN"; then
+    log_error "Testcontainers image pin was not rewritten to ${RELEASE_VERSION} in $TESTCONTAINERS_PIN"
+    exit 1
+  fi
+  log_info "Testcontainers image pin set to mockserver/mockserver:mockserver-${RELEASE_VERSION}"
+
   # General find-and-replace across docs (excluding changelog, target, etc.)
   OLD_PAT=$(escape_sed "$OLD_VERSION"); NEW_REP=$(escape_sed "$RELEASE_VERSION")
   OLD_API_PAT=$(escape_sed "$OLD_API_VERSION"); NEW_API=$(escape_sed "$API_VERSION")
@@ -184,6 +217,10 @@ else
   [[ -f mockserver-client-python/pyproject.toml ]] && UPDATED_PATHS+=(mockserver-client-python/pyproject.toml)
   [[ -f mockserver-client-ruby/lib/mockserver/version.rb ]] && UPDATED_PATHS+=(mockserver-client-ruby/lib/mockserver/version.rb)
   [[ -f mockserver-client-ruby/README.md ]]        && UPDATED_PATHS+=(mockserver-client-ruby/README.md)
+  # Pinned Testcontainers image tag (bumped by the precise sed above; *.java is
+  # excluded from the general find-and-replace, so it must be staged explicitly).
+  TESTCONTAINERS_PIN_REL="mockserver/mockserver-testcontainers/src/test/java/org/mockserver/testcontainers/TestcontainersImages.java"
+  [[ -f "$TESTCONTAINERS_PIN_REL" ]]               && UPDATED_PATHS+=("$TESTCONTAINERS_PIN_REL")
   # General find-and-replace touched docs across the repo. Stage only the
   # files that the find/replace loop above actually edited — NEVER a catch-all
   # `git diff --name-only` which would stage unrelated pre-existing changes

@@ -59,4 +59,25 @@
         </dependency>
     </dependencies>
 
+    <build>
+        <plugins>
+            <!--
+                Expose the project version to Surefire (the parent only exposes it to Failsafe) so
+                the Docker-free PinnedImageVersionTest can assert that the pinned
+                mockserver/mockserver image's major.minor matches the project version. This entry
+                MERGES with the inherited Surefire systemPropertyVariables; it does not replace the
+                parent configuration.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <project.version>${project.version}</project.version>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
 </project>

@@ -44,12 +44,17 @@ class MockServerContainerIntegrationTest {
             // Pin an explicit released image rather than the mutable :latest tag. A :latest pin
             // makes this test's outcome depend on whatever was last pushed to Docker Hub, so it can
             // go red with no change in this repo, and it bakes in an unbounded client-vs-server skew
-            // (a 7.6.1-SNAPSHOT client on the classpath against an arbitrary server). mockserver-7.6.0
-            // is the latest released version — one patch behind the client here — using the exact
-            // tag format MockServerContainer.resolveDefaultImage() derives for a real client release
-            // (mockserver/mockserver:mockserver-<version>), so it stays self-consistent as the
-            // project moves forward. Bump this on each release in lockstep with the project version.
-            org.testcontainers.utility.DockerImageName.parse("mockserver/mockserver:mockserver-7.6.0")
+            // (an arbitrary SNAPSHOT client on the classpath against an arbitrary server). The pin
+            // is the latest released version — the client here is one patch ahead (this repo is on
+            // <released>.<n+1>-SNAPSHOT) so their major.minor match, which is all MockServerClient
+            // requires. It uses the exact tag format MockServerContainer.resolveDefaultImage()
+            // derives for a real client release (mockserver/mockserver:mockserver-<version>), so it
+            // stays self-consistent as the project moves forward. The pin lives in one place
+            // (TestcontainersImages.PINNED_MOCKSERVER_IMAGE); it is bumped on each release in
+            // lockstep with the project version — automatically by the release tooling and enforced
+            // by PinnedImageVersionTest so a stale major.minor fails fast instead of surfacing as a
+            // client-vs-server version exception 10s into container start.
+            org.testcontainers.utility.DockerImageName.parse(TestcontainersImages.PINNED_MOCKSERVER_IMAGE)
         )) {
             container.start();
 
