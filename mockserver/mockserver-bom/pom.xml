@@ -241,23 +241,49 @@
                     <!-- the post-build assertions live in verify.groovy (the plugin default is
                          "postbuild"); goals per project come from each project's invoker.properties. -->
                     <postBuildHookScript>verify</postBuildHookScript>
+                    <!-- List each invoker project EXPLICITLY (not a bom-** wildcard). The fail-closed marker
+                         check below (maven-enforcer requireFilesExist) can only assert literal marker paths —
+                         the rule has no glob support — so the set of projects run here and the set of markers
+                         asserted there must be kept 1:1 BY HAND. A wildcard would silently admit a new project
+                         whose hook could skip unnoticed — exactly the false green this guard exists to kill.
+                         When you add a bom-* invoker project, add BOTH: a <pomInclude> here AND its
+                         target/bom-guard-executed.marker <file> in the enforcer execution below. -->
                     <pomIncludes>
-                        <pomInclude>bom-**/pom.xml</pomInclude>
+                        <pomInclude>bom-only-manages-mockserver-artifacts/pom.xml</pomInclude>
                     </pomIncludes>
                 </configuration>
-                <!-- Groovy interpreter for the verify.groovy post-build hook. Without it the invoker
-                     plugin silently SKIPS the hook (no interpreter on its classpath) and the guard would
-                     pass vacuously. groovy-xml supplies XmlSlurper (a separate module in Groovy 4). -->
+                <!-- Pin the Groovy version used to run the verify.groovy post-build hook. maven-invoker-plugin
+                     already bundles org.apache.groovy:groovy / groovy-json / groovy-xml at runtime (via its
+                     groovy-bom import, defaulting to the plugin's own groovyVersion — 4.0.31 for 3.10.1), so
+                     these entries do not PROVIDE the interpreter, they OVERRIDE its version — which is exactly
+                     what Dependabot bumps. groovy-xml carries XmlSlurper (a separate module since Groovy 4).
+                     groovy-json is pinned too: the plugin bundles it at runtime as well, so overriding only
+                     groovy + groovy-xml would leave a Groovy-4 groovy-json mixed onto a Groovy-5 core, and
+                     Dependabot would not track the undeclared module — keep all three on the same version.
+
+                     NOTE: because the interpreter is bundled, dropping these entries reverts to the plugin's
+                     default Groovy rather than removing the interpreter — it does NOT by itself silence the
+                     hook. The hook IS silently skipped, though, whenever the plugin finds no script matching
+                     <postBuildHookScript>verify</postBuildHookScript> (a renamed/removed verify.groovy), or if
+                     a future plugin version stops bundling the interpreter. Any such silent skip would let the
+                     #2684 guard pass vacuously; the maven-enforcer requireFilesExist execution below fails
+                     closed on it (verify.groovy writes a proof-of-execution marker as its last act, and the
+                     enforcer asserts that marker exists after the invoker run). -->
                 <dependencies>
                     <dependency>
                         <groupId>org.apache.groovy</groupId>
                         <artifactId>groovy</artifactId>
-                        <version>4.0.31</version>
+                        <version>5.1.2</version>
                     </dependency>
                     <dependency>
                         <groupId>org.apache.groovy</groupId>
                         <artifactId>groovy-xml</artifactId>
-                        <version>4.0.31</version>
+                        <version>5.1.2</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>org.apache.groovy</groupId>
+                        <artifactId>groovy-json</artifactId>
+                        <version>5.1.2</version>
                     </dependency>
                 </dependencies>
                 <executions>
@@ -267,6 +293,67 @@
                             <goal>install</goal>
                             <goal>run</goal>
                         </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Fail closed when the #2684 guard did not actually run.
+                 maven-invoker-plugin SILENTLY SKIPS its post-build hook when it finds no script matching
+                 <postBuildHookScript>verify</postBuildHookScript> (a renamed or removed verify.groovy), and
+                 would also skip if a future plugin version stopped putting a Groovy interpreter on its
+                 classpath. A silent skip means the verify.groovy assertions never execute, yet the invoker
+                 run (and the build) still go GREEN: the guard stops guarding and nothing notices. This is the
+                 same class of false green that .buildkite/scripts/steps/assert-suite-ran.sh removes for
+                 Docker-gated suites.
+
+                 verify.groovy writes a proof-of-execution marker under the invoker project's own build
+                 output as its LAST act (only a hook that ran to completion can create it), and this
+                 execution asserts that marker exists after the invoker run. The check is deliberately
+                 maven-enforcer (requireFilesExist) and NOT Groovy: if it depended on the Groovy interpreter,
+                 the very breakage it is meant to catch (a broken/absent interpreter) would take out the
+                 check along with the hook, defeating the purpose. Enforcer is already on this build (the
+                 inherited dependencyConvergence execution), so this adds no new plugin.
+
+                 Staleness: the marker lives under the invoker project's target/, which the invoker goal's
+                 own `clean` (invoker.properties: `clean dependency:list ...`) wipes at the start of every
+                 run, and the whole clone is recreated each run (cloneClean=true). A leftover marker from an
+                 earlier run therefore cannot make a skipped hook look successful.
+
+                 Bound to `verify` so it runs after invoker:run (integration-test phase). Skipped in lockstep
+                 with the invoker via ${skipTests}, so `-DskipTests` does not turn this into a false failure. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <!-- version inherited from the parent POM (currently 3.6.3) -->
+                <executions>
+                    <execution>
+                        <id>assert-bom-guard-executed</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${skipTests}</skip>
+                            <!-- combine.self="override" so the parent POM's plugin-level
+                                 <rules><dependencyConvergence/></rules> does NOT merge into this execution.
+                                 Without it this execution runs BOTH rules, so a convergence failure would be
+                                 misattributed to the guard. (combine.children="override" is not enough here —
+                                 the child rule element name differs, so the recessive dependencyConvergence
+                                 survives; combine.self replaces the whole <rules> element.) dependencyConvergence
+                                 still runs in its own inherited `enforce` execution at the `validate` phase. -->
+                            <rules combine.self="override">
+                                <requireFilesExist>
+                                    <!-- One <file> per invoker project listed in <pomIncludes> above, kept 1:1
+                                         BY HAND (requireFilesExist takes literal paths, not globs). Add a bom-*
+                                         invoker project => add its marker here too, or that project's guard can
+                                         skip unnoticed. Each path is <clone>/target/bom-guard-executed.marker,
+                                         where <clone> = cloneProjectsTo/<invoker-project-dir>. -->
+                                    <files>
+                                        <file>${project.build.directory}/integration-tests/bom-only-manages-mockserver-artifacts/target/bom-guard-executed.marker</file>
+                                    </files>
+                                    <message>The #2684 BOM guard did not execute: verify.groovy never wrote its proof-of-execution marker (expected at target/integration-tests/bom-only-manages-mockserver-artifacts/target/bom-guard-executed.marker). The maven-invoker-plugin post-build hook was SILENTLY SKIPPED — most likely because no script matches &lt;postBuildHookScript&gt;verify&lt;/postBuildHookScript&gt; (verify.groovy renamed, moved or deleted), or because a Groovy interpreter is no longer on the invoker plugin's classpath (see its groovy / groovy-xml dependencies). Because the hook did not run, this build proves NOTHING about the published mockserver-bom (that it manages only org.mock-server artifacts and does not hijack a consumer's oauth2-oidc-sdk scope/version). Fix the hook/interpreter wiring in mockserver-bom/pom.xml and re-run `mvn verify`; check the invoker build log under target/integration-tests/ for the skip.</message>
+                                </requireFilesExist>
+                            </rules>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>

@@ -41,4 +41,17 @@ assert foreign.isEmpty() :
         "the published mockserver-bom must manage ONLY org.mock-server artifacts (#2684), " +
         "but it also manages: ${foreign}"
 
+// --- Proof of execution: fail-closed marker (see this project's pom.xml) ---
+// Written as the LAST act, so its presence can only be explained by this hook having run to
+// completion (every assertion above passed). The maven-enforcer requireFilesExist execution in
+// pom.xml asserts this marker exists after the invoker run; if the invoker plugin ever SILENTLY
+// SKIPS this hook (no Groovy interpreter on its classpath, or a hook-filename mismatch), the marker
+// is absent and the build fails LOUDLY instead of passing vacuously. The marker lives under the
+// invoker project's target/, which the invoker goal's own `clean` wipes at the start of every run,
+// so a stale marker from an earlier run cannot satisfy the check.
+File markerDir = new File(basedir, 'target')
+markerDir.mkdirs()
+File marker = new File(markerDir, 'bom-guard-executed.marker')
+marker.text = "verify.groovy (#2684 BOM guard) completed at ${new Date()} for project ${basedir.name}\n"
+
 return true
