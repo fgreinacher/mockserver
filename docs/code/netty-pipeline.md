@@ -720,25 +720,26 @@ Before this was fixed, the loopback hard-wired an HTTP/1.1 codec while its TLS c
 `h2`, so HTTP/2 requests through the CONNECT proxy were never decoded and hung (#2260).
 
 **Reading the ALPN result requires the relay to own the proxy-client TLS.** `configurePipelines()`
-runs when the loopback's `PROXIED_RESPONSE_` reply arrives — for SOCKS that is *before* the client has
-sent its TLS `ClientHello`, so the ALPN protocol is not yet known at that moment. The relay therefore
-terminates the proxy-client TLS itself and defers `configurePipelines()` until that handshake completes.
-The shared logic lives in `terminateClientTlsThenConfigure(...)`: it removes the leftover
-`PortUnificationHandler`, installs a server `SslHandler`, and calls `configurePipelines()` from the
-handshake-completion listener with the negotiated ALPN protocol. The `CONNECT` proxy reaches it directly
-— `HttpRequestHandler` sets both TLS flags and `switchToHttp` has removed the `PortUnificationHandler`,
-so the relay's `isSslEnabledUpstream(...)` branch runs it.
+runs when the loopback's `PROXIED_RESPONSE_` reply arrives — and for **both** the `CONNECT` and SOCKS
+proxies that is *before* the client has sent its TLS `ClientHello` (a client sends nothing on the tunnel
+until it has received the `CONNECT` `200`/SOCKS success reply), so the ALPN protocol is not yet known at
+that moment. The relay therefore terminates the proxy-client TLS itself and defers `configurePipelines()`
+until that handshake completes. The shared logic lives in `terminateClientTlsThenConfigure(...)`: it
+removes any leftover `PortUnificationHandler`, installs a server `SslHandler`, and calls
+`configurePipelines()` from the handshake-completion listener with the negotiated ALPN protocol.
 
-The **SOCKS** proxy cannot know the tunnelled protocol at that moment — the client sends its `ClientHello`
-only *after* the SOCKS success reply — so it does **not** guess from the destination port. Instead
-`SocksProxyHandler.forwardConnection` marks the tunnel with `deferTlsDetection(...)` (an explicit,
-SOCKS-only flag, so the `CONNECT` path is untouched), and the relay classifies the first tunnelled bytes.
-When the SOCKS reply has been written, the relay removes the leftover byte-driven handlers (the
-`PortUnificationHandler` — which would otherwise re-detect TLS and race a second `SniHandler` — and the
-spent SOCKS command decoder) and installs a one-shot `RelayTlsDetectionHandler` (a `ByteToMessageDecoder`
-mirroring Netty's `OptionalSslHandler`). On the first ≥5 bytes it calls `SslHandler.isEncrypted(...)`. A
-TLS record routes into `terminateClientTlsThenConfigure(...)` (the same ALPN-deferred branch the `CONNECT`
-proxy uses). Otherwise the cleartext bytes are sniffed for the HTTP/2 cleartext connection preface
+Neither proxy can know the tunnelled protocol at that moment — the client sends its `ClientHello`, its
+h2c prior-knowledge preface, or a plaintext HTTP/1.1 request only *after* the reply — so **neither guesses**
+(not from the destination port, and not by assuming TLS). Both mark the tunnel with `deferTlsDetection(...)`
+— `SocksProxyHandler.forwardConnection` for SOCKS, `HttpRequestHandler`'s `CONNECT` branch for `CONNECT`
+(which previously assumed TLS and installed an `SslHandler` up front, downgrading a cleartext `h2c` tunnel
+to HTTP/1.1 and breaking a plaintext HTTP/1.1 tunnel outright — #2683) — and the relay classifies the first
+tunnelled bytes. When the reply has been written, the relay removes the leftover byte-driven handlers (the
+`PortUnificationHandler` — which would otherwise re-detect TLS and race a second `SniHandler` — and, on the
+SOCKS path, the spent SOCKS command decoder) and installs a one-shot `RelayTlsDetectionHandler` (a
+`ByteToMessageDecoder` mirroring Netty's `OptionalSslHandler`). On the first ≥5 bytes it calls
+`SslHandler.isEncrypted(...)`. A TLS record routes into `terminateClientTlsThenConfigure(...)` (so `h2` vs
+HTTP/1.1 is read from the tunnelled ALPN). Otherwise the cleartext bytes are sniffed for the HTTP/2 cleartext connection preface
 (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`) via `PortUnificationHandler.isPartialOrCompleteH2cPreface(...)` — the
 **single source of truth** for the preface constant, shared with `PortUnificationHandler.isH2cPreface(...)`
 so the two never drift. The preface is 24 bytes and can arrive in several reads, so while the buffered bytes
@@ -747,13 +748,14 @@ reserved `PRI * HTTP/2.0` request line can begin one. A complete preface provisi
 both relay legs** (`configurePipelines(..., http2EnabledDownstream=true)` with downstream TLS left disabled);
 MockServer's own `PortUnificationHandler` re-detects the forwarded preface as `h2c` on the loopback, so both
 legs agree. Any other cleartext provisions HTTP/1.1. The detector then removes itself, handing its buffered
-bytes to the handler it installed. Because the decision is byte-driven, `h2` over TLS through a SOCKS tunnel
-works on **any** port (not only `443`/`8443`/`10443`), a cleartext tunnel to a `443`-suffix port is no longer
-mistaken for TLS, and cleartext `h2c` prior-knowledge through the tunnel is served over HTTP/2 rather than
-mis-provisioned as HTTP/1.1 (#2685).
+bytes to the handler it installed. Because the decision is byte-driven and shared by both proxies, `h2` over
+TLS through a SOCKS tunnel works on **any** port (not only `443`/`8443`/`10443`), a cleartext tunnel to a
+`443`-suffix port is no longer mistaken for TLS (#2685), and cleartext `h2c` prior-knowledge — as well as
+plaintext HTTP/1.1 — through the **`CONNECT`** tunnel is now served correctly rather than downgraded or
+dropped by the old assume-TLS path (#2683).
 
 When the `http2Enabled` configuration property is `false`, `NettySslContextFactory` never advertises
-`h2` via ALPN and `PortUnificationHandler` ignores the h2c cleartext preface; the SOCKS relay detector is
+`h2` via ALPN and `PortUnificationHandler` ignores the h2c cleartext preface; the relay detector is
 gated on the same flag, so it too ignores the preface. Every connection — direct or relayed — then falls
 back to HTTP/1.1.
 

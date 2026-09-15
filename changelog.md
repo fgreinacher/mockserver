@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 ### Fixed
+- HTTP/2 cleartext (h2c) with prior knowledge now works through the HTTP `CONNECT` forward proxy. A client
+  that establishes a `CONNECT` tunnel and then speaks cleartext HTTP/2 (sending the `PRI * HTTP/2.0` connection
+  preface, with no TLS and no HTTP/1.1 Upgrade) was previously downgraded to HTTP/1.1 and received no response,
+  because the proxy assumed every `CONNECT` tunnel was TLS and installed a TLS terminator before the client had
+  sent a byte. The `CONNECT` path now defers the protocol decision and classifies the first tunnelled bytes —
+  the same byte-driven detection the SOCKS proxy already used — so TLS tunnels (with ALPN-negotiated `h2` or
+  HTTP/1.1), cleartext h2c prior-knowledge tunnels, and plaintext HTTP/1.1 tunnels are each handled from what
+  the client actually sends. This also fixes plaintext HTTP/1.1 through `CONNECT`, which the assume-TLS path
+  had broken as well (#2683).
 
 ## [8.0.0] - 2026-09-15
 

@@ -47,7 +47,7 @@ import static org.mockserver.metrics.Metrics.Name.REQUESTS_RECEIVED_COUNT;
 import static org.mockserver.mock.HttpState.PATH_PREFIX;
 import static org.mockserver.model.HttpResponse.response;
 import static org.mockserver.model.PortBinding.portBinding;
-import static org.mockserver.netty.unification.PortUnificationHandler.enableSslUpstreamAndDownstream;
+import static org.mockserver.netty.unification.PortUnificationHandler.deferTlsDetection;
 import static org.mockserver.netty.unification.PortUnificationHandler.isSslEnabledUpstream;
 
 /**
@@ -481,11 +481,22 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                         );
                     } else {
                         setProxyingRequest(ctx, Boolean.TRUE);
-                        // assume SSL for CONNECT request
-                        enableSslUpstreamAndDownstream(ctx.channel());
+                        // The tunnelled protocol is unknown here: the client sends its ClientHello (TLS),
+                        // its h2c prior-knowledge preface, or a plaintext HTTP/1.1 request only AFTER it
+                        // receives the CONNECT 200 reply. Previously MockServer assumed TLS for every CONNECT
+                        // and installed an SslHandler up front, which fed a cleartext tunnel's first bytes to a
+                        // TLS terminator: the handshake failed, so cleartext h2c prior-knowledge was downgraded
+                        // to HTTP/1.1 (its preface then unparseable) and plaintext HTTP/1.1 failed outright.
+                        // Instead defer the TLS decision and let the relay classify the first tunnelled bytes -
+                        // the same byte-driven detection the SOCKS path uses (issue #2685) - so TLS+ALPN
+                        // (h2/http1.1), cleartext h2c, and cleartext HTTP/1.1 are each provisioned from what the
+                        // client actually speaks rather than from a guess.
+                        deferTlsDetection(ctx.channel());
                         String[] hostParts = HttpRequest.splitHostPort(request.getPath().getValue());
                         String connectHost = hostParts[0];
-                        int port = hostParts.length > 1 ? Integer.parseInt(hostParts[1]) : isSslEnabledUpstream(ctx.channel()) ? 443 : 80;
+                        // CONNECT is historically an HTTPS tunnel, so a port-less CONNECT target keeps the
+                        // long-standing 443 default; byte-driven detection still decides the actual protocol.
+                        int port = hostParts.length > 1 ? Integer.parseInt(hostParts[1]) : 443;
                         if (isNotBlank(connectHost)) {
                             server.getScheduler().submit(() -> configuration.addSubjectAlternativeName(connectHost));
                         }
