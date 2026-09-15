@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+## [8.0.0] - 2026-09-15
+
+### Added
 - Test port allocation can opt into a fixed port band instead of the OS ephemeral range.
   `org.mockserver.socket.PortFactory` normally finds a free port with `bind(0)`, which draws from the same
   ephemeral range (on macOS `net.inet.ip.portrange.hifirst`..`hilast`, typically 49152-65535) that every other

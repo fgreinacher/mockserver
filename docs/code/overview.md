@@ -224,7 +224,7 @@ Current dependency baseline:
 
 | Dependency | Version |
 |-----------|---------|
-| Spring Framework | 7.6.x |
+| Spring Framework | 8.0.x |
 | Jakarta EE | 10 |
 | Tomcat Embed | 11.x |
 | Jetty | 12.x |
