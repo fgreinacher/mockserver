@@ -81,10 +81,20 @@ describe('AgentRunGraph', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Show graph' }));
     await waitFor(() => expect(mermaidInitialize).toHaveBeenCalled());
-    const initArg = mermaidInitialize.mock.calls[0]?.[0] as { theme: string; startOnLoad: boolean };
+    const initArg = mermaidInitialize.mock.calls[0]?.[0] as {
+      theme: string;
+      startOnLoad: boolean;
+      securityLevel: string;
+    };
     // The default store theme is 'dark' in jsdom (no stored preference / no matchMedia).
     expect(initArg.startOnLoad).toBe(false);
     expect(initArg.theme).toBe('dark');
+    // The rendered SVG is injected via dangerouslySetInnerHTML, so we pin
+    // securityLevel: 'strict'. THIS assertion is the specific guard against someone
+    // quietly relaxing that level — it is the only test that pins the value.
+    // (mermaidRenderContract.test.ts separately proves the injected SVG is inert for
+    // hostile content end-to-end, but does not by itself prove 'strict' is required.)
+    expect(initArg.securityLevel).toBe('strict');
   });
 
   it('falls back to the Mermaid source when rendering fails', async () => {

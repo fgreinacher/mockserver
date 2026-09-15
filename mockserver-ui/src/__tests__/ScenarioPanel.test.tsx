@@ -150,6 +150,14 @@ describe('ScenarioPanel — state-machine diagram (UI3)', () => {
     expect(source).toContain('class paid current');
     expect(source).not.toContain('<br');
 
+    // The rendered SVG is injected via dangerouslySetInnerHTML, so we pin
+    // securityLevel: 'strict'. THIS assertion is the specific guard against someone
+    // quietly relaxing that level — it is the only test that pins the value.
+    // (mermaidRenderContract.test.ts separately proves the injected SVG is inert for
+    // hostile content end-to-end, but does not by itself prove 'strict' is required.)
+    const initArg = mermaidInitialize.mock.calls[0]?.[0] as { securityLevel: string };
+    expect(initArg.securityLevel).toBe('strict');
+
     // The mocked SVG is injected into the DOM.
     const container = await screen.findByTestId('scenario-state-graph-svg');
     expect(container.querySelector('svg')).not.toBeNull();
