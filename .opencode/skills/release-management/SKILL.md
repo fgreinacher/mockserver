@@ -23,7 +23,14 @@ Inspect these sources every time:
 - `docs/operations/release-process.md` — operator-facing release guidance
 - Git tags matching `mockserver-X.Y.Z` — latest numeric release is the authoritative `old-version`
 
-If AWS access is available, also verify the required secrets exist and contain the expected keys without printing secret values.
+If AWS access is available, also probe the required publishing credentials for
+**liveness** — not mere presence — with
+`scripts/release/check-release-credentials.sh` (read-only; never prints secret
+values). Presence is not validity: MockServer 8.0.0 half-published because a
+three-month-old npm token still *existed* (the old presence check passed) but
+could no longer authenticate, so `npm publish` failed with 401 after the version
+bumps had already been pushed. The probe calls each registry's own identity /
+whoami / login-token endpoint and reports per-credential validity.
 
 ## Version Recommendation Rules
 
@@ -70,17 +77,48 @@ Validate each of these before declaring the release ready:
    - PyPI
    - RubyGems
    - GitHub Release
-5. Required secrets are present:
-   - `mockserver-build/sonatype`
-   - `mockserver-build/dockerhub`
-   - `mockserver-build/pypi`
-   - `mockserver-build/rubygems`
-   - `mockserver-release/gpg-key`
-   - `mockserver-release/github-token`
-   - `mockserver-release/totp-seed`
-   - `mockserver-release/npm-token`
-   - `mockserver-release/swaggerhub`
-   - `mockserver-release/website-role`
+5. Required publishing credentials pass the **liveness probe**, not just a
+   presence check. Run `scripts/release/check-release-credentials.sh` (read-only)
+   and require a clean result for every credential a *non-soft-fail* release step
+   publishes with. The probe classifies each into one of:
+   - **VALID** — authenticated successfully against the registry's own endpoint.
+   - **VALID(SHAPE)** — well-formed and usable as far as can be checked, but the
+     registry exposes no read-only identity endpoint, so liveness cannot be fully
+     proven (PyPI token, RubyGems push-scoped key, TOTP seed).
+   - **REJECTED** — present but the registry refused it (the 8.0.0 npm case). A
+     release readiness = **fail**.
+   - **DENIED** — authenticated, but the credential lacks a capability the
+     release needs (e.g. a GitHub PAT that can read the repo but not push). For
+     a required credential this is a **fail**; for an advisory capability (the
+     Actions-variables check) it is a non-blocking warning. Note a GHCR token
+     without `write:packages` surfaces as **REJECTED**, not DENIED — for a
+     required credential both are a fail, so the verdict is the same.
+   - **MALFORMED / ABSENT** — present but missing a field, or not configured.
+     A release readiness = **fail**.
+   - **INDETERMINATE** — the probe could not run (no AWS session, tool missing,
+     caller not trusted). Report this as its own outcome — **never as pass** — and
+     resolve it before releasing. (Reporting "secrets: pass" from a probe that
+     silently failed is exactly the mistake an expired SSO token once caused.)
+
+   Required (a bad credential turns the release red): `mockserver-build/sonatype`,
+   `mockserver-release/gpg-key`, `mockserver-release/npm-token`,
+   `mockserver-release/github-token`, `mockserver-release/dockerhub` (the release
+   copy — **not** `mockserver-build/dockerhub`, which is only the SNAPSHOT-push
+   credential), `mockserver-release/ghcr-token`, `mockserver-release/cosign-key`,
+   `mockserver-build/pypi`, `mockserver-build/rubygems`,
+   `mockserver-release/website-role`, `mockserver-release/totp-seed`.
+
+   Advisory only (soft-fail channels — reported but never block the release):
+   `mockserver-build/postman-api-key`, `mockserver-release/swaggerhub`,
+   `mockserver-release/crates`, `mockserver-release/nuget`,
+   `mockserver-release/vsce`, `mockserver-release/ovsx`,
+   `mockserver-release/jetbrains`, `mockserver-release/mcp-dns-key`,
+   `mockserver-release/dashboard-analytics`,
+   `mockserver-release/winget-github-token`, `mockserver-release/sdkman-vendor`,
+   `mockserver-release/chocolatey-api-key`, and the GitHub PAT's
+   **Actions-variables** capability (a `DENIED` here only affects the Dependabot
+   release-in-flight gate, not publication; fix by adding "Variables: read and
+   write" to the fine-grained PAT).
 
 ## Output Format
 
@@ -103,7 +141,14 @@ Return a concise release-preparation report with these sections:
 
 - `changelog`: pass/fail with reason
 - `version state`: pass/fail with current snapshot version
-- `secrets`: pass/fail with missing items, if any
+- `credentials`: the per-credential liveness result from
+  `scripts/release/check-release-credentials.sh` — report each required
+  credential's outcome (VALID / VALID(SHAPE) / REJECTED / MALFORMED / ABSENT /
+  INDETERMINATE), not a single "secrets: pass". Overall = **fail** if any
+  required credential is REJECTED / MALFORMED / ABSENT; **inconclusive** (resolve
+  before releasing) if any required credential is INDETERMINATE; **pass** only
+  when every required credential is VALID or VALID(SHAPE). Note any advisory
+  (soft-fail) credential that is not VALID, but it does not change the verdict.
 - `pipeline coverage`: pass/fail with any remaining gaps
 
 ### Manual Follow-up
