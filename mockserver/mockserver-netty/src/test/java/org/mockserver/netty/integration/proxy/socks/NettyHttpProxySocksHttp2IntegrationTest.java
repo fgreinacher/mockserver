@@ -96,6 +96,12 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
      * {@code h2} tunnel to this port was mis-provisioned as HTTP/1.1 and the client received nothing.
      */
     private static final int NON_STANDARD_TLS_PORT = 9999;
+    /**
+     * A cleartext (non-TLS) destination port, used by the h2c prior-knowledge case so the target looks like an
+     * ordinary {@code http://} endpoint. Detection is byte-driven, so the exact port is immaterial - the
+     * request is mocked via the self-loopback regardless.
+     */
+    private static final int CLEARTEXT_PORT = 80;
 
     private static MockServer mockServer;
     private static MockServerClient mockServerClient;
@@ -203,6 +209,32 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
 
         assertThat("status over socks5+tls+h1.1: <" + result.status + ">", result.status, is("201"));
         assertThat("body over socks5+tls+h1.1: <" + result.body + ">", result.body, is("hello"));
+        mockServerClient.verify(request().withPath("/hello"));
+    }
+
+    /**
+     * The #2685 follow-up: cleartext HTTP/2 with prior knowledge (h2c, no TLS) through a SOCKS5 tunnel. The
+     * client speaks h2c directly - it sends the connection preface {@code PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n}
+     * followed by HTTP/2 frames, with no TLS and no HTTP/1.1 Upgrade. Before this fix the byte-driven detector
+     * saw no TLS record and provisioned the tunnel as HTTP/1.1, so the {@code HttpServerCodec} could not parse
+     * the preface and the client received nothing. The detector now also sniffs for the h2c preface and
+     * provisions cleartext HTTP/2 on both relay legs; MockServer's own {@code PortUnificationHandler} re-detects
+     * the forwarded preface as h2c on the loopback, so both legs agree. Red on the pre-follow-up code, green
+     * after it. Uses a cleartext port (80) handed to the proxy unresolved (SOCKS5h); the request is mocked via
+     * the self-loopback so nothing needs to listen there.
+     */
+    @Test(timeout = 30000)
+    public void shouldServeMockedResponseOverSocks5CleartextHttp2PriorKnowledge() throws Exception {
+        givenHelloExpectation();
+
+        Result result = sendViaSocksCleartextHttp2(
+            SocksVersion.SOCKS5,
+            InetSocketAddress.createUnresolved(FAKE_HOST, CLEARTEXT_PORT),
+            FAKE_HOST,
+            CLEARTEXT_PORT);
+
+        assertThat("status over socks5 cleartext h2c: <" + result.status + ">", result.status, is("201"));
+        assertThat("body over socks5 cleartext h2c: <" + result.body + ">", result.body, is("hello"));
         mockServerClient.verify(request().withPath("/hello"));
     }
 
@@ -491,6 +523,101 @@ public class NettyHttpProxySocksHttp2IntegrationTest {
             FullHttpRequest request = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/hello");
             request.headers().set(HttpHeaderNames.HOST, authority);
             channel.writeAndFlush(request);
+
+            return future.get(20, TimeUnit.SECONDS);
+        } finally {
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Send a single cleartext HTTP/2 request with prior knowledge (h2c, no TLS) through MockServer's SOCKS
+     * proxy on a dedicated stream, and collect what the client receives on THAT stream. The Netty client
+     * emits the h2c connection preface before any frame, so this is a genuine prior-knowledge tunnel, not an
+     * HTTP/1.1 Upgrade. Completes on end-of-stream, connection close, or the {@code @Test} timeout, so a
+     * dropped body reports {@code ""} rather than an opaque hang.
+     */
+    private Result sendViaSocksCleartextHttp2(SocksVersion version, SocketAddress target, String authorityHost, int targetPort) throws Exception {
+        NioEventLoopGroup group = new NioEventLoopGroup();
+        try {
+            Result result = new Result();
+            StringBuilder collected = new StringBuilder();
+            CompletableFuture<Result> future = new CompletableFuture<>();
+
+            InetSocketAddress proxyAddress = new InetSocketAddress("127.0.0.1", mockServer.getLocalPort());
+
+            Bootstrap bootstrap = new Bootstrap()
+                .group(group)
+                .channel(NioSocketChannel.class)
+                // do NOT resolve the target host locally - hand it to the SOCKS proxy (SOCKS5h)
+                .resolver(NoopAddressResolverGroup.INSTANCE)
+                .handler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        ch.pipeline().addLast(socksProxyHandler(version, proxyAddress));
+                        // no SslHandler - cleartext h2c prior knowledge
+                        ch.pipeline().addLast(Http2FrameCodecBuilder.forClient().build());
+                        ch.pipeline().addLast(new Http2MultiplexHandler(new ChannelInitializer<Channel>() {
+                            @Override
+                            protected void initChannel(Channel ch) {
+                                ch.pipeline().addLast(new ChannelInboundHandlerAdapter());
+                            }
+                        }));
+                    }
+                });
+
+            Channel parent = bootstrap.connect(target).sync().channel();
+
+            Http2StreamChannel streamChannel = new Http2StreamChannelBootstrap(parent)
+                .handler(new ChannelInboundHandlerAdapter() {
+                    @Override
+                    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                        try {
+                            if (msg instanceof Http2HeadersFrame) {
+                                Http2HeadersFrame headersFrame = (Http2HeadersFrame) msg;
+                                if (headersFrame.headers().status() != null) {
+                                    result.status = headersFrame.headers().status().toString();
+                                }
+                                if (headersFrame.isEndStream()) {
+                                    complete();
+                                }
+                            } else if (msg instanceof Http2DataFrame) {
+                                Http2DataFrame data = (Http2DataFrame) msg;
+                                collected.append(data.content().toString(StandardCharsets.UTF_8));
+                                if (data.isEndStream()) {
+                                    complete();
+                                }
+                            }
+                        } finally {
+                            ReferenceCountUtil.release(msg);
+                        }
+                    }
+
+                    @Override
+                    public void channelInactive(ChannelHandlerContext ctx) {
+                        complete();
+                    }
+
+                    @Override
+                    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                        future.completeExceptionally(cause);
+                    }
+
+                    private void complete() {
+                        result.body = collected.toString();
+                        future.complete(result);
+                    }
+                })
+                .open()
+                .sync()
+                .getNow();
+
+            Http2Headers headers = new DefaultHttp2Headers()
+                .method(HttpMethod.GET.asciiName())
+                .scheme(HttpScheme.HTTP.name())
+                .authority((authorityHost != null ? authorityHost : "127.0.0.1") + ":" + targetPort)
+                .path("/hello");
+            streamChannel.writeAndFlush(new DefaultHttp2HeadersFrame(headers, true));
 
             return future.get(20, TimeUnit.SECONDS);
         } finally {

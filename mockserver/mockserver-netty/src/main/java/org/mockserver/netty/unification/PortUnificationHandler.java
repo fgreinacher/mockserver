@@ -330,14 +330,36 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
             method.startsWith("CONNECT ");
     }
 
-    private static final String H2C_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    // The HTTP/2 cleartext (h2c) connection preface, the fixed 24 bytes an h2c prior-knowledge client sends
+    // before any frame (RFC 9113 section 3.4). This is the single source of truth for the wire constant:
+    // RelayConnectHandler's SOCKS-tunnel detector sniffs for the same preface via isPartialOrCompleteH2cPreface.
+    public static final String H2C_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    public static final int H2C_PREFACE_LENGTH = H2C_PREFACE.length();
 
     private boolean isH2cPreface(ByteBuf msg) {
-        if (actualReadableBytes() < H2C_PREFACE.length()) {
+        if (actualReadableBytes() < H2C_PREFACE_LENGTH) {
             return false;
         }
-        String prefix = msg.toString(msg.readerIndex(), H2C_PREFACE.length(), StandardCharsets.US_ASCII);
+        String prefix = msg.toString(msg.readerIndex(), H2C_PREFACE_LENGTH, StandardCharsets.US_ASCII);
         return H2C_PREFACE.equals(prefix);
+    }
+
+    /**
+     * Whether the {@code readableBytes} at {@code buf}'s reader index are still a viable prefix of the h2c
+     * connection preface - {@code true} while they match the preface (whether the full 24 bytes have arrived
+     * yet or not), {@code false} as soon as they diverge from it. Reads absolutely, leaving the reader index
+     * untouched so a caller decoder consumes nothing. A caller that also needs the preface to be complete
+     * compares {@code readableBytes} against {@link #H2C_PREFACE_LENGTH}. Used by the SOCKS relay's one-shot
+     * detector, which must tell an h2c prior-knowledge tunnel from an HTTP/1.1 one before either has been
+     * fully buffered, without re-declaring the preface bytes.
+     */
+    public static boolean isPartialOrCompleteH2cPreface(ByteBuf buf, int readableBytes) {
+        int compareLength = Math.min(readableBytes, H2C_PREFACE_LENGTH);
+        if (compareLength <= 0) {
+            return false;
+        }
+        String prefix = buf.toString(buf.readerIndex(), compareLength, StandardCharsets.US_ASCII);
+        return H2C_PREFACE.startsWith(prefix);
     }
 
     private void switchToH2c(ChannelHandlerContext ctx, ByteBuf msg) {

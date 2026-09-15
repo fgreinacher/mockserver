@@ -736,16 +736,26 @@ SOCKS-only flag, so the `CONNECT` path is untouched), and the relay classifies t
 When the SOCKS reply has been written, the relay removes the leftover byte-driven handlers (the
 `PortUnificationHandler` — which would otherwise re-detect TLS and race a second `SniHandler` — and the
 spent SOCKS command decoder) and installs a one-shot `RelayTlsDetectionHandler` (a `ByteToMessageDecoder`
-mirroring Netty's `OptionalSslHandler`). On the first ≥5 bytes it calls `SslHandler.isEncrypted(...)`: a
+mirroring Netty's `OptionalSslHandler`). On the first ≥5 bytes it calls `SslHandler.isEncrypted(...)`. A
 TLS record routes into `terminateClientTlsThenConfigure(...)` (the same ALPN-deferred branch the `CONNECT`
-proxy uses), while cleartext provisions HTTP/1.1 directly. The detector then removes itself, handing its
-buffered bytes to the handler it installed. Because the decision is byte-driven, `h2` over TLS through a
-SOCKS tunnel works on **any** port (not only `443`/`8443`/`10443`), and a cleartext tunnel to a
-`443`-suffix port is no longer mistaken for TLS (#2685).
+proxy uses). Otherwise the cleartext bytes are sniffed for the HTTP/2 cleartext connection preface
+(`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`) via `PortUnificationHandler.isPartialOrCompleteH2cPreface(...)` — the
+**single source of truth** for the preface constant, shared with `PortUnificationHandler.isH2cPreface(...)`
+so the two never drift. The preface is 24 bytes and can arrive in several reads, so while the buffered bytes
+are still a viable prefix of it the detector waits (reading nothing) for the rest before deciding; only the
+reserved `PRI * HTTP/2.0` request line can begin one. A complete preface provisions **cleartext HTTP/2 on
+both relay legs** (`configurePipelines(..., http2EnabledDownstream=true)` with downstream TLS left disabled);
+MockServer's own `PortUnificationHandler` re-detects the forwarded preface as `h2c` on the loopback, so both
+legs agree. Any other cleartext provisions HTTP/1.1. The detector then removes itself, handing its buffered
+bytes to the handler it installed. Because the decision is byte-driven, `h2` over TLS through a SOCKS tunnel
+works on **any** port (not only `443`/`8443`/`10443`), a cleartext tunnel to a `443`-suffix port is no longer
+mistaken for TLS, and cleartext `h2c` prior-knowledge through the tunnel is served over HTTP/2 rather than
+mis-provisioned as HTTP/1.1 (#2685).
 
 When the `http2Enabled` configuration property is `false`, `NettySslContextFactory` never advertises
-`h2` via ALPN and `PortUnificationHandler` ignores the h2c cleartext preface, so every connection —
-direct or relayed — falls back to HTTP/1.1.
+`h2` via ALPN and `PortUnificationHandler` ignores the h2c cleartext preface; the SOCKS relay detector is
+gated on the same flag, so it too ignores the preface. Every connection — direct or relayed — then falls
+back to HTTP/1.1.
 
 ### Invariant: a handler overriding `channelReadComplete` MUST propagate it
 

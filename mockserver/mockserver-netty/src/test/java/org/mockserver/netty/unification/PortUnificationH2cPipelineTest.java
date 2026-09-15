@@ -35,6 +35,10 @@ import static org.mockserver.configuration.Configuration.configuration;
  */
 public class PortUnificationH2cPipelineTest {
 
+    // Deliberately a literal, NOT PortUnificationHandler.H2C_PREFACE. This test feeds the preface in
+    // and asserts the pipeline switches to h2c; if it read the same constant the production code
+    // reads, a corrupted constant would make the test write the wrong bytes AND expect the wrong
+    // bytes, and it would still pass. The literal is what pins the implementation to RFC 9113.
     private static final String H2C_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
     /**

@@ -234,16 +234,24 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
 
     /**
      * One-shot probe for the SOCKS relay, mirroring Netty's {@code OptionalSslHandler}: it classifies the
-     * first tunnelled bytes as a TLS record or cleartext HTTP and provisions the loopback accordingly, then
-     * removes itself so the buffered bytes flow on to the handler it installed. A SOCKS client sends nothing
-     * until it has received the SOCKS success reply, so this - not the destination port - is the earliest
-     * trustworthy signal of the tunnelled protocol (issue #2685). Never {@code @Sharable}: a fresh instance
-     * per tunnel, as a {@link ByteToMessageDecoder} requires.
+     * first tunnelled bytes and provisions the loopback accordingly, then removes itself so the buffered
+     * bytes flow on to the handler it installed. A SOCKS client sends nothing until it has received the SOCKS
+     * success reply, so this - not the destination port - is the earliest trustworthy signal of the tunnelled
+     * protocol (issue #2685). Three outcomes:
+     * <ul>
+     *   <li>a TLS record -&gt; terminate the tunnelled TLS here and read its ALPN (the branch the {@code CONNECT}
+     *       proxy also takes), so {@code h2} over TLS is provisioned when the client negotiated it;</li>
+     *   <li>the cleartext h2c prior-knowledge preface -&gt; provision cleartext HTTP/2 on both legs (issue #2685
+     *       follow-up), which MockServer's own {@link PortUnificationHandler} re-detects as h2c on the loopback,
+     *       so both legs agree;</li>
+     *   <li>any other cleartext -&gt; provision HTTP/1.1.</li>
+     * </ul>
+     * Never {@code @Sharable}: a fresh instance per tunnel, as a {@link ByteToMessageDecoder} requires.
      */
     private final class RelayTlsDetectionHandler extends ByteToMessageDecoder {
 
         // a TLS record opens with a 5-byte header (content type + version + length); SslHandler.isEncrypted
-        // needs at least that to classify, and every cleartext HTTP request line is longer still.
+        // needs at least that to classify, and the shortest thing that could be an h2c preface starts here too.
         private static final int TLS_RECORD_HEADER_LENGTH = 5;
 
         private final ChannelHandlerContext mockServerCtx;
@@ -266,9 +274,22 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
                 enableSslUpstreamAndDownstream(ctx.channel());
                 terminateClientTlsThenConfigure(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, ctx);
             } else {
-                // the client is speaking cleartext: provision HTTP/1.1, leaving downstream TLS disabled. The
-                // codecs are added after this decoder; removing it forwards the buffered request bytes to them.
-                configurePipelines(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, ctx, false);
+                // the client is speaking cleartext: tell an h2c prior-knowledge preface from an HTTP/1.1
+                // request. The preface is 24 bytes and can arrive in several small reads, so while the
+                // buffered bytes are still a viable prefix of it wait (reading nothing) for the rest before
+                // deciding - only an actual preface starts with the reserved "PRI * HTTP/2.0" line. When the
+                // preface is complete, provision cleartext HTTP/2 on both legs (downstream TLS stays disabled);
+                // MockServer's own PortUnificationHandler re-detects the forwarded preface as h2c on the
+                // loopback, so both legs agree. Any other cleartext provisions HTTP/1.1. Gated on http2Enabled
+                // to match PortUnificationHandler, which ignores the h2c preface when HTTP/2 is disabled - so
+                // the two legs never disagree.
+                boolean stillPossibleH2c = configuration.http2Enabled()
+                    && isPartialOrCompleteH2cPreface(in, in.readableBytes());
+                if (stillPossibleH2c && in.readableBytes() < H2C_PREFACE_LENGTH) {
+                    return;
+                }
+                // the codecs are added after this decoder; removing it forwards the buffered request bytes.
+                configurePipelines(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, ctx, stillPossibleH2c);
             }
             pipelineToProxyClient.remove(this);
         }

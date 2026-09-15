@@ -92,7 +92,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still mis-provisioned as HTTP/1.1), MockServer now classifies the first bytes the client sends through the
   tunnel — a TLS record versus a cleartext HTTP request — and provisions the connection to match. As a result,
   HTTP/2 over TLS through a SOCKS tunnel succeeds on any port, and a cleartext tunnel to a port that happens to
-  end in `443` is no longer mistaken for TLS. (GitHub issue #2685).
+  end in `443` is no longer mistaken for TLS. **Cleartext HTTP/2 with prior knowledge (`h2c`) through a SOCKS
+  tunnel now works too** — the last case left as HTTP/1.1 by the earlier fixes. The same first-bytes
+  classification now also recognises the HTTP/2 connection preface (`PRI * HTTP/2.0…`) after ruling out a TLS
+  record, and provisions cleartext HTTP/2 on both relay legs so the mocked response is served over `h2c`
+  (a curl `--http2-prior-knowledge` request through a `socks5h://` proxy, for example); anything that is not a
+  preface is still provisioned as HTTP/1.1, and when HTTP/2 is disabled (`http2Enabled=false`) the preface is
+  ignored and the tunnel falls back to HTTP/1.1, exactly as MockServer's own listener does. The HTTP `CONNECT`
+  proxy is unchanged, so cleartext HTTP/2 with prior knowledge through `CONNECT` is still served as HTTP/1.1 —
+  that was never a working case and is unaffected either way. (GitHub issue #2685).
 - Starting the command-line server with port `0` now reports and uses the actual OS-assigned
   ephemeral port instead of `0`. Previously `mockserver run -p 0` (or `-serverPort 0`) bound a real
   ephemeral port but recorded the requested `0`, so the port a caller needs to reach the server was
