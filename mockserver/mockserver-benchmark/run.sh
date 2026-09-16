@@ -12,8 +12,11 @@
 # useful column for the Part-A allocation work is gc.alloc.rate.norm
 # (bytes allocated per op) from `-prof gc`.
 #
-# Requires mockserver-core to be installed locally first:
-#   (cd .. && mvn -o -pl mockserver-core install -DskipTests)
+# Requires mockserver-netty AND its upstream reactor deps installed locally first:
+#   (cd .. && mvn -o -pl mockserver-netty -am install -DskipTests)
+# The benchmark module depends on core AND netty (since #2669), and -am builds a
+# module's upstream only -- installing core alone leaves netty unresolvable and
+# the `mvn compile` below fails.
 #
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -20,7 +20,9 @@
 #   JMH_ARGS_SCALING    JMH iteration/fork/time args (default: -f 1 -wi 3 -i 5 -r 2 -w 2)
 #   SCALING_RESULT_PATH output contract file (default: <repo-root>/perf-scaling.json)
 #
-# Requires JDK 17+, Maven and jq. Builds mockserver-core itself (same prep as run.sh).
+# Requires JDK 17+, Maven and jq. Builds mockserver-netty plus its upstream
+# reactor deps -- the benchmark module depends on BOTH core and netty, and -am
+# builds a module's upstream only, so targeting core alone leaves netty missing.
 #
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,11 +37,19 @@ SCALING_RESULT_PATH="${SCALING_RESULT_PATH:-${REPO_ROOT}/perf-scaling.json}"
 RAW_MATCHING="${DIR}/target/jmh-scaling-matching.json"
 RAW_INDEX="${DIR}/target/jmh-scaling-index.json"
 
-echo "--- building mockserver-core + JMH benchmark module"
-# Install the module under test (and its deps), then compile the benchmark so JMH's
+echo "--- building mockserver-netty + its upstream reactor deps"
+# Install mockserver-netty AND its upstream (-am), then compile the benchmark so JMH's
 # annotation processor regenerates META-INF/BenchmarkList, and resolve the classpath.
+# The -am set covers BOTH org.mock-server module deps the benchmark declares
+# (mockserver-core AND mockserver-netty). Installing only mockserver-core here (the
+# original) fails: the very next "mvn compile" compiles ALL benchmark sources, some of
+# which import mockserver-netty, so mockserver-netty must be in the local repo. We do
+# NOT use "-pl mockserver-benchmark": the benchmark module is deliberately absent from
+# the parent <modules> (its JMH annotation processor must not enter the default build),
+# so Maven cannot select it as a reactor project ("Could not find the selected project
+# in the reactor"). The install target must therefore name an in-reactor module.
 ( cd "${REPO_ROOT}/mockserver" \
-  && mvn -q -pl mockserver-core -am install -DskipTests -Djacoco.skip=true -Dcheckstyle.skip=true )
+  && mvn -q -pl mockserver-netty -am install -DskipTests -Djacoco.skip=true -Dcheckstyle.skip=true )
 mvn -q compile dependency:build-classpath -Dmdep.outputFile=target/classpath.txt -Djacoco.skip=true
 
 CP="target/classes:$(cat target/classpath.txt)"

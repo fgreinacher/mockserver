@@ -11,7 +11,8 @@ set -euo pipefail
 # Emits perf-microbench.json {microbench: {<matcherType>_<count>: {...}}} as a
 # Buildkite artifact; perf-test-compare.sh merges it into the run result.
 #
-# Heavy (builds mockserver-core + forks a JVM per param), so it runs only in the
+# Heavy (builds mockserver-netty + its upstream reactor deps — the set the benchmark
+# module compiles against — then forks a JVM per param), so it runs only in the
 # scheduled/manual perf pipeline on the dedicated box. Tune JMH via JMH_ARGS.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +26,22 @@ JMH_ARGS="${JMH_ARGS:--f 1 -wi 3 -i 5 -r 2 -w 2 -p matcherType=EXACT,REGEX,JSON_
 RESULT_RAW="mockserver/mockserver-benchmark/target/jmh-result.json"
 OUT_JSON="$REPO_ROOT/perf-microbench.json"
 
-echo "--- building mockserver-core + JMH benchmark, then running MatchingBenchmark"
+# Make a failure of THIS step less silent. perf-test-compare.sh owns the Buildkite
+# annotation and the PERF_NOTIFY_WEBHOOK, but it runs only AFTER this step passes
+# (it sits behind the `wait: ~` in perf-test-guard.sh). So when this backstop dies
+# — as it did silently from 2026-09-12, when a reactor-target/pom drift stopped the
+# benchmark deps resolving — the ONLY signal is a red square nobody watches. Emit a
+# failure annotation ourselves so a broken backstop is visible on the build itself.
+annotate_on_failure() {
+  local ec=$?
+  if [ "$ec" -ne 0 ] && command -v buildkite-agent >/dev/null 2>&1; then
+    printf '%s\n' ":x: **Perf micro-benchmark backstop FAILED** (exit ${ec}) — the JMH MatchingBenchmark produced NO signal for this run. This is a harness/build failure (e.g. the benchmark reactor did not build/resolve), NOT a measured regression. See this step's log." \
+      | buildkite-agent annotate --style error --context perf-microbench || true
+  fi
+}
+trap annotate_on_failure EXIT
+
+echo "--- building mockserver-netty + upstream (the benchmark's compile deps), then running MatchingBenchmark"
 # shellcheck disable=SC2016
 "$SCRIPT_DIR/../run-in-docker.sh" \
   -i "$MAVEN_IMAGE" \
@@ -36,7 +52,19 @@ echo "--- building mockserver-core + JMH benchmark, then running MatchingBenchma
   -- -c '
     set -euo pipefail
     cd /build/mockserver                       # the Maven reactor root (pom.xml lives here, not /build)
-    mvn -q -pl mockserver-core -am install -DskipTests -Djacoco.skip=true -Dcheckstyle.skip=true
+    # Install mockserver-netty AND its upstream (-am). That set covers BOTH org.mock-server
+    # module dependencies the benchmark declares (mockserver-benchmark/pom.xml depends on
+    # mockserver-core AND mockserver-netty), which is why targeting only mockserver-core
+    # here silently broke the step from 2026-09-12 (issue #2669 added the netty dep).
+    # This mirrors the sibling perf-test-h2multiplex.sh. We deliberately do NOT use
+    # -pl mockserver-benchmark: the benchmark module is intentionally absent from the
+    # parent <modules> (its JMH annotation processor must not enter the default build),
+    # so -pl mockserver-benchmark fails with "Could not find the selected project in the
+    # reactor". The target must therefore name an in-reactor module. If the benchmark ever
+    # gains an org.mock-server dependency OUTSIDE the upstream of mockserver-netty, the
+    # mvn compile below fails to resolve it and the annotate_on_failure trap surfaces that
+    # LOUDLY as a red build instead of the silent red square this step became.
+    mvn -q -pl mockserver-netty -am install -DskipTests -Djacoco.skip=true -Dcheckstyle.skip=true
     cd mockserver-benchmark
     mvn -q compile dependency:build-classpath -Dmdep.outputFile=target/classpath.txt -Djacoco.skip=true
     CP="target/classes:$(cat target/classpath.txt)"
@@ -71,7 +99,7 @@ fi
 # Second JMH backstop: run-scaling.sh runs MatchingBenchmark (scan cost GROWS with
 # expectationCount) + CandidateIndexBenchmark (SCAN grows, INDEX stays flat) over a
 # FIXED param sweep and emits perf-scaling.json {scaling:{matching,candidate_index}}.
-# It rebuilds mockserver-core + the benchmark module itself (same prep as above) and
+# It rebuilds mockserver-netty + its upstream reactor deps (same prep as above) and
 # uploads its own artifact when buildkite-agent is present. Bounded by JMH_ARGS_SCALING
 # (consistent with the microbench iteration budget above) so it stays inside the step
 # timeout; the sweep crosses MANY param combos, so a JVM-fork is spawned per combo.
