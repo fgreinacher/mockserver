@@ -88,9 +88,6 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
                                 .addListener((ChannelFutureListener) channelFuture -> {
                                     removeCodecSupport(proxyClientCtx);
 
-                                    // upstream (to MockServer)
-                                    ChannelPipeline pipelineToMockServer = mockServerCtx.channel().pipeline();
-
                                     // downstream (to proxy client)
                                     ChannelPipeline pipelineToProxyClient = proxyClientCtx.channel().pipeline();
 
@@ -106,11 +103,31 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
                                         removeHandler(pipelineToProxyClient, PortUnificationHandler.class);
                                         removeSocksCommandDecoders(pipelineToProxyClient);
                                         pipelineToProxyClient.addLast(new RelayTlsDetectionHandler(mockServerCtx));
-                                    } else if (isSslEnabledUpstream(proxyClientCtx.channel()) && pipelineToProxyClient.get(SslHandler.class) == null) {
-                                        terminateClientTlsThenConfigure(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, proxyClientCtx);
                                     } else {
-                                        boolean http2EnabledDownstream = false;
-                                        configurePipelines(pipelineToMockServer, pipelineToProxyClient, mockServerCtx, proxyClientCtx, http2EnabledDownstream);
+                                        // Unreachable by construction. Every RelayConnectHandler subclass is installed on
+                                        // exactly two paths - HttpRequestHandler CONNECT and SocksProxyHandler.forwardConnection
+                                        // (SOCKS) - and both call PortUnificationHandler.deferTlsDetection(channel) before wiring
+                                        // this handler, so the branch above always runs and the tunnelled protocol is classified
+                                        // from the first tunnelled bytes (TLS+ALPN h2/http1.1, cleartext h2c, or plaintext HTTP/1.1).
+                                        // Reaching here means a NEW caller installed this handler without deferring detection first.
+                                        // This used to fall through to an HTTP/1.1-only tunnel, which silently dropped TLS+ALPN HTTP/2
+                                        // and cleartext h2c - the exact silent-downgrade class behind #2641/#2667/#2669/#2683. Log
+                                        // loudly and tear the tunnel down deterministically. A bare throw here would NOT do that: this
+                                        // runs inside a ChannelFutureListener, whose exceptions Netty's DefaultPromise catches and only
+                                        // logs at WARN - it neither fires exceptionCaught nor closes the channel - so the codecs already
+                                        // stripped above and the success reply already sent would leave the tunnel half-configured (the
+                                        // client hangs and the loopback channel leaks). Closing both legs turns that hang into a prompt
+                                        // connection close, so the missing deferTlsDetection(...) call is fixed rather than shipped.
+                                        mockServerLogger.logEvent(
+                                            new LogEntry()
+                                                .setLogLevel(Level.ERROR)
+                                                .setMessageFormat("RelayConnectHandler reached tunnel setup with TLS detection NOT deferred; "
+                                                    + "the caller that installed this handler must call PortUnificationHandler.deferTlsDetection(channel) "
+                                                    + "first (as HttpRequestHandler CONNECT and SocksProxyHandler.forwardConnection do). Closing the tunnel "
+                                                    + "rather than silently provisioning an HTTP/1.1-only relay that would drop HTTP/2.")
+                                        );
+                                        proxyClientCtx.close();
+                                        mockServerCtx.close();
                                     }
                                 });
                         } finally {
