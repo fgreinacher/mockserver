@@ -121,9 +121,10 @@ steps:
     agents:
       queue: "perf"
   - wait: ~
-  # No soft_fail: compare.sh is notify-only and exits 0 for a detected regression
-  # (annotation only). A NON-zero exit therefore means the tooling itself broke
-  # (e.g. missing artifact, jq error) and SHOULD surface as a red build.
+  # No soft_fail: compare.sh exits non-zero when a GATING metric regresses (that
+  # red build IS the regression notification) OR when the tooling itself broke
+  # (e.g. missing artifact, jq error). A flagged NOTIFY-ONLY metric annotates but
+  # exits 0. soft_fail here would swallow the gating signal, so it must stay off.
   - label: ":bar_chart: perf regression — persist + compare baseline"
     command: ".buildkite/scripts/steps/perf-test-compare.sh"
     timeout_in_minutes: 10

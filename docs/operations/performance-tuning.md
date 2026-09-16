@@ -174,11 +174,13 @@ The compare step applies a **rolling median + MAD** baseline over the last N=10 
 | Growth slope (p95 latency ratio) | Higher is worse; absolute floor 2.0 (latency is noisier; a #2329-class signal is ~hundreds×) — rolling median+MAD stays the sensitive gate | 10% |
 | Error rate | Higher is worse; absolute floor 0.005 | — |
 
-The pipeline is **notify-only**: the compare step always exits 0 (`soft_fail: true` as belt-and-braces). It never fails the build. A flagged regression appears as a Buildkite annotation table on the run. An optional webhook notification fires when `PERF_NOTIFY_WEBHOOK` is set.
+The pipeline uses **per-metric gating**. A flagged regression on a **gating** metric fails the build (the compare step exits non-zero — and there is no `soft_fail`, so the build goes red). A flagged regression on a **notify-only** metric is reported just as loudly in the annotation but does not change the exit code. The failing build **is** the regression notification — there is no separate webhook or channel.
+
+Only metrics with a derived, trustworthy budget gate today: the **JMH micro-benchmark** metrics (`*.time_per_op`, `*.alloc_bytes_per_op` — deterministic, hardware-independent) and **`forward.error_rate`** (a discriminating pass/fail guard, not a tuned threshold). Every other metric — all k6 latency percentiles, the growth ratios, `peak_achieved_rps` and `live_set_bytes` — runs notify-only. A notify-only metric graduates to gating once it has ≥ 10 clean runs of history and a budget derived from them; the repo owner decides each promotion. See [performance-programme.md item 1](../plans/performance-programme.md).
 
 ### Reading the annotation table
 
-The annotation shows one row per flagged metric with columns: metric key, baseline (median), head value, change %, and threshold. A metric not listed passed. The "baseline warming up" annotation appears when fewer than 5 prior runs exist on the branch — this is expected when the pipeline is first deployed or after the S3 history is pruned.
+The annotation shows one row per compared metric with columns: metric key, head value, baseline (median), threshold, **Gate** (`gating` or `notify-only`), and Status. Status is `:red_circle: REGRESSION (fails build)` for a flagged gating metric, `:warning: flagged (informational)` for a flagged notify-only metric, `:new: new` for a metric with no baseline yet, and `:white_check_mark: ok` otherwise. The "baseline warming up" annotation appears when fewer than 5 prior runs exist on the branch — this is expected when the pipeline is first deployed or after the S3 history is pruned.
 
 ### Re-baselining
 

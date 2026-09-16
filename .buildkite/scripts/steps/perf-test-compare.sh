@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Persist + baseline-compare step (perf queue). NOTIFY-ONLY: it annotates and
-# (optionally) notifies on a regression but NEVER fails the build (these run
-# post-merge on master, not as a PR gate).
+# Persist + baseline-compare step (perf queue). Runs post-merge on master, not as
+# a PR gate. PER-METRIC GATING: a flagged regression on a metric marked
+# `gating:true` fails the build (non-zero exit); a flagged regression on a
+# `gating:false` metric is reported exactly as loudly in the annotation but does
+# NOT change the exit code (informational-pending-history). This is the
+# regression notification: a failing pipeline IS the alert (no webhook / channel).
 #
 # Flow:
 #   1. gather this run's result.json (+ perf-microbench.json) and merge them
@@ -11,7 +14,14 @@ set -euo pipefail
 #   3. pull the last N PRIOR runs; if < MIN_BASELINE, annotate "warming up"
 #   4. per metric: rolling baseline = median + MAD; flag a regression when the
 #      head value crosses max(median + 3·1.4826·MAD, percent-floor / abs-floor)
-#   5. post a Buildkite annotation table; exit 0 regardless
+#   5. post a Buildkite annotation table; exit non-zero iff a GATING metric flagged
+#
+# Only metrics with a derived, trustworthy budget start gating (JMH micro-benchmark
+# time/alloc per op, and forward.error_rate — a discriminating pass/fail guard).
+# Every other metric (k6 latency percentiles, growth ratios, peak_achieved_rps,
+# live_set_bytes) runs notify-only until it has >=10 clean runs of history and a
+# budget derived from them — a gate that fires on noise gets switched off, which is
+# the failure mode this design avoids. See docs/plans/performance-programme.md item 1.
 #
 # Robust stats (median/MAD, not mean/stddev) so a single noisy run doesn't move
 # the baseline. Latency/CPU/heap/alloc: higher = worse. Throughput: lower = worse.
@@ -168,11 +178,18 @@ def fabs: if . < 0 then -. else . end;
 def median: sort | length as $n | if $n==0 then null elif ($n%2==1) then .[($n/2|floor)] else (.[$n/2-1]+.[$n/2])/2 end;
 def mad($m): map((. - $m)|fabs) | median;
 
-# Flat list of comparable metrics for one run object.
+# Flat list of comparable metrics for one run object. Each carries `gating`:
+# true  -> a flagged regression FAILS the build (non-zero exit).
+# false -> a flagged regression is reported just as loudly but is informational
+#          only (notify-only until it earns a budget from >=10 clean runs).
+# Only metrics with a derived, trustworthy budget gate today; see the header.
 def metrics:
   ((.behaviours // {}) | to_entries[] | .key as $k | .value as $v |
-    ( {name:($k+".p95_ms"),        value:$v.p95_ms,        dir:"up",   min_pct:0.10, floor:null},
-      {name:($k+".p99_ms"),        value:$v.p99_ms,        dir:"up",   min_pct:0.10, floor:null},
+    # k6 latency percentiles: notify-only. The percentiles were only just fixed
+    # (4ce6ae27b measures the server, not k6 scenario-start) so they have zero
+    # clean runs of history behind them — gating now would fire on noise.
+    ( {name:($k+".p95_ms"),        value:$v.p95_ms,        dir:"up",   min_pct:0.10, floor:null,  gating:false},
+      {name:($k+".p99_ms"),        value:$v.p99_ms,        dir:"up",   min_pct:0.10, floor:null,  gating:false},
       # throughput_rps is DELIBERATELY not budgeted (but still recorded, with
       # offered_rps + dropped_iterations + delivery_ratio alongside it). It is
       # count(COMPLETED)/duration, and k6 drops iterations when its VU pool cannot
@@ -180,41 +197,50 @@ def metrics:
       # VU-starved) and must not carry a budget until the 4-11% shortfall seen in
       # real runs is understood. peak_achieved_rps (below) is the budgeted ceiling
       # signal; the delivery ratio is surfaced in the annotation instead.
-      {name:($k+".error_rate"),    value:$v.error_rate,    dir:"up",   min_pct:0,    floor:0.005} ) ),
+      # Per-behaviour error_rate: notify-only (its 0.005 floor is not yet
+      # history-derived; only forward.error_rate gates today).
+      {name:($k+".error_rate"),    value:$v.error_rate,    dir:"up",   min_pct:0,    floor:0.005, gating:false} ) ),
   ((.growth // {}) |
     ( # CPU/heap at constant load should hold ~1.0 → tight absolute floor.
       # Latency is noisier (GC/warmup) so its floor has headroom; the rolling
       # median+MAD remains the sensitive gate for an INTRODUCED regression. Both
       # are far below a #2329-class signal (CPU saturation / latency ~hundreds×).
-      {name:"growth.cpu_ratio",  value:(.cpu_pct.ratio),         dir:"up", min_pct:0.10, floor:1.30},
-      {name:"growth.heap_ratio", value:(.heap_used_bytes.ratio), dir:"up", min_pct:0.10, floor:1.30},
+      # Growth ratios stay notify-only until 10 clean runs establish their variance.
+      {name:"growth.cpu_ratio",  value:(.cpu_pct.ratio),         dir:"up", min_pct:0.10, floor:1.30, gating:false},
+      {name:"growth.heap_ratio", value:(.heap_used_bytes.ratio), dir:"up", min_pct:0.10, floor:1.30, gating:false},
       # A ratio detects a SLOPE; an absolute detects a STEP. A leak that plateaus
       # at the ring cap gives ratio ~1.0 while the live set is permanently doubled,
       # and an elevated first-window floor (warm-up garbage) inflates the ratio
       # denominator and hides a real leak. So budget the absolute live-set floor
-      # (min heap over the last 60 s) too, on the rolling median+MAD.
-      {name:"growth.live_set_bytes", value:(.heap_used_bytes.min_last_window), dir:"up", min_pct:0.10, floor:null},
-      {name:"growth.p95_ratio",  value:(.p95_ms.ratio),          dir:"up", min_pct:0.10, floor:2.0} ) ),
+      # (min heap over the last 60 s) too, on the rolling median+MAD. Notify-only.
+      {name:"growth.live_set_bytes", value:(.heap_used_bytes.min_last_window), dir:"up", min_pct:0.10, floor:null, gating:false},
+      {name:"growth.p95_ratio",  value:(.p95_ms.ratio),          dir:"up", min_pct:0.10, floor:2.0,  gating:false} ) ),
   ((.microbench // {}) | to_entries[] | .key as $k | .value as $v |
-    ( {name:($k+".time_per_op"),       value:$v.time_per_op,       dir:"up", min_pct:0.05, floor:null},
-      {name:($k+".alloc_bytes_per_op"),value:$v.alloc_bytes_per_op,dir:"up", min_pct:0.05, floor:null} ) ),
+    # JMH micro-benchmarks GATE: deterministic and hardware-independent (forked
+    # JVM, steady-state, low run-to-run noise), the strongest signal in the repo.
+    # alloc_bytes_per_op especially is essentially noise-free. Tight 5% floor.
+    ( {name:($k+".time_per_op"),       value:$v.time_per_op,       dir:"up", min_pct:0.05, floor:null, gating:true},
+      {name:($k+".alloc_bytes_per_op"),value:$v.alloc_bytes_per_op,dir:"up", min_pct:0.05, floor:null, gating:true} ) ),
   # peak_achieved_rps: max achieved throughput across sweep rungs where the k6
   # CLIENT was sound (CPU headroom, no dropped iterations, low errors) — derived in
   # perf-test-run.sh. CONTINUOUS (moves proportionally with the real ceiling, e.g.
   # 36,324 at 48,000 offered), so a 15% relative floor is meaningful. The down
   # branch honours min_pct. saturation_rps (the knee) is ladder-QUANTISED — its
   # smallest move is a factor of two — so it is recorded but NOT budgeted here.
-  ( {name:"peak_achieved_rps", value:(.peak_achieved_rps), dir:"down", min_pct:0.15, floor:null} ),
-  # forward.error_rate: the forward connection-pool guard (forward.js). ~0 with
-  # pooling on (the default); spikes if pooling regresses and the SUT exhausts
-  # ephemeral ports. Absolute floor 0.01 mirrors the k6 threshold in forward.js.
-  ( {name:"forward.error_rate", value:((.forward_guard // {}).error_rate), dir:"up", min_pct:0, floor:0.01} );
+  # Notify-only: proportional to client provisioning, no clean history yet.
+  ( {name:"peak_achieved_rps", value:(.peak_achieved_rps), dir:"down", min_pct:0.15, floor:null, gating:false} ),
+  # forward.error_rate GATES: the forward connection-pool guard (forward.js). ~0
+  # with pooling on (the default); spikes if pooling regresses and the SUT exhausts
+  # ephemeral ports. Absolute floor 0.01 mirrors the k6 threshold in forward.js —
+  # a discriminating pass/fail guard (pool works vs it does not), not a tuned
+  # threshold that needs history to calibrate, so it is safe to gate from day one.
+  ( {name:"forward.error_rate", value:((.forward_guard // {}).error_rate), dir:"up", min_pct:0, floor:0.01, gating:true} );
 
 ($baseline | map([metrics]) | add | map(select(.value != null)) | group_by(.name)
   | map({key:.[0].name, value:[.[].value]}) | from_entries) as $bmap
 | [ ([ . | metrics ][] | select(.value != null)) as $m
     | ($bmap[$m.name] // []) as $bv
-    | if ($bv|length) < 1 then {name:$m.name, head:$m.value, status:"no-baseline"}
+    | if ($bv|length) < 1 then {name:$m.name, head:$m.value, gating:$m.gating, status:"no-baseline"}
       else
         ($bv|median) as $med
         | (($bv|mad($med)) * 1.4826) as $sigma
@@ -222,13 +248,15 @@ def metrics:
             then (if $m.floor!=null then ([$med + 3*$sigma, $m.floor]|max)
                   else ([$med + 3*$sigma, $med*(1+$m.min_pct)]|max) end) as $th
                  | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
-                    regression: ($m.value > $th)}
+                    gating:$m.gating, regression: ($m.value > $th)}
             else (if $m.floor!=null then ([$med - 3*$sigma, $m.floor]|min)
                   else ([$med - 3*$sigma, $med*(1-$m.min_pct)]|min) end) as $th
                  | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
-                    regression: ($m.value < $th)} end)
+                    gating:$m.gating, regression: ($m.value < $th)} end)
       end ] as $rows
 | { count: ([$rows[]|select(.regression==true)]|length),
+    gating_count: ([$rows[]|select(.regression==true and .gating==true)]|length),
+    nongating_count: ([$rows[]|select(.regression==true and .gating!=true)]|length),
     rows: $rows }
 '
 RESULT_CMP="$(jq -n \
@@ -237,12 +265,19 @@ RESULT_CMP="$(jq -n \
   '($baselineFile[0]) as $baseline | ($runFile[0]) | '"$COMPARE")"
 
 COUNT="$(printf '%s' "$RESULT_CMP" | jq -r '.count')"
+GATING_COUNT="$(printf '%s' "$RESULT_CMP" | jq -r '.gating_count')"
+NONGATING_COUNT="$(printf '%s' "$RESULT_CMP" | jq -r '.nongating_count')"
 
 # --- 5. render annotation -----------------------------------------------------
+# The Status column distinguishes the two kinds of flagged regression:
+#   :red_circle: REGRESSION (fails build)  -> a GATING metric crossed its budget
+#   :warning: flagged (informational)      -> a non-gating metric crossed its budget
+# and the Gate column states, for every row, whether it can fail the build — so a
+# reader sees at a glance which flags are build-failing and which are pending-history.
 TABLE="$(printf '%s' "$RESULT_CMP" | jq -r '
-  "| Metric | Head | Baseline | Threshold | Status |\n|---|---:|---:|---:|:--|",
+  "| Metric | Head | Baseline | Threshold | Gate | Status |\n|---|---:|---:|---:|:--|:--|",
   (.rows[] |
-    "| \(.name) | \(.head // "n/a") | \(.baseline // "n/a" | if type=="number" then (.*1000|round)/1000 else . end) | \(.threshold // "n/a" | if type=="number" then (.*1000|round)/1000 else . end) | \(if .status=="no-baseline" then ":new: new" elif .regression then ":warning: REGRESSION" else ":white_check_mark: ok" end) |")')"
+    "| \(.name) | \(.head // "n/a") | \(.baseline // "n/a" | if type=="number" then (.*1000|round)/1000 else . end) | \(.threshold // "n/a" | if type=="number" then (.*1000|round)/1000 else . end) | \(if .gating==true then "gating" else "notify-only" end) | \(if .status=="no-baseline" then ":new: new" elif .regression then (if .gating==true then ":red_circle: REGRESSION (fails build)" else ":warning: flagged (informational)" end) else ":white_check_mark: ok" end) |")')"
 
 # Context appended to the table: which sweep rungs were excluded (and why) so an
 # excluded top rung cannot masquerade as a server ceiling, and the per-behaviour
@@ -270,18 +305,36 @@ EXTRA="${EXTRA}
 ${PROVENANCE}${PRECFG_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD)"
-if [ "$COUNT" -gt 0 ]; then
-  annotate "warning" ":chart_with_downwards_trend: **${COUNT} performance regression(s) detected** — ${HEADER}
+# Legend folded into every flagged annotation so a reader knows why the build did
+# (or did not) go red, and how a notify-only metric graduates to gating.
+LEGEND="_Gating metrics_ (JMH \`*.time_per_op\` / \`*.alloc_bytes_per_op\`, \`forward.error_rate\`) **fail the build** when flagged. _Notify-only_ metrics are reported just as loudly but do NOT fail the build — they graduate to gating once they have >=10 clean runs of history and a budget derived from them (see docs/plans/performance-programme.md item 1)."
+
+# Exit non-zero ONLY when at least one GATING metric is flagged — that non-zero
+# exit is the regression notification (the pipeline goes red). A non-gating flag
+# leaves the exit code at 0. Every other exit path above (invalid run, missing
+# artifact, warming up) is unchanged and still exits 0.
+EXIT_CODE=0
+if [ "$GATING_COUNT" -gt 0 ]; then
+  EXIT_CODE=1
+  NONGATING_NOTE=""
+  if [ "$NONGATING_COUNT" -gt 0 ]; then
+    NONGATING_NOTE=" (plus ${NONGATING_COUNT} notify-only metric(s) flagged — informational, see table)"
+  fi
+  annotate "error" ":red_circle: **${GATING_COUNT} build-failing performance regression(s)** — ${HEADER}${NONGATING_NOTE}
 
 ${TABLE}
 ${EXTRA}
 
-_Notify-only: this does not fail the build. Investigate the flagged metric(s) against recent commits._"
-  # Optional notification hook (Slack/email webhook) — no-op if PERF_NOTIFY_WEBHOOK unset.
-  if [ -n "${PERF_NOTIFY_WEBHOOK:-}" ]; then
-    curl -sS -X POST "$PERF_NOTIFY_WEBHOOK" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg t "$COUNT perf regression(s) on $BRANCH ($COMMIT)" --arg u "${BUILDKITE_BUILD_URL:-}" '{text: ($t + " " + $u)}')" >/dev/null 2>&1 || true
-  fi
+**This build FAILS**: a gating metric crossed its budget. Investigate the \`:red_circle:\`-marked metric(s) against recent commits.
+${LEGEND}"
+elif [ "$COUNT" -gt 0 ]; then
+  annotate "warning" ":chart_with_downwards_trend: **${COUNT} performance regression(s) flagged — all notify-only, build NOT failed** — ${HEADER}
+
+${TABLE}
+${EXTRA}
+
+_No gating metric was flagged, so this does not fail the build. Investigate the flagged metric(s) against recent commits._
+${LEGEND}"
 else
   annotate "success" ":white_check_mark: **No performance regressions** — ${HEADER}
 
@@ -289,4 +342,4 @@ ${TABLE}
 ${EXTRA}"
 fi
 
-exit 0
+exit "$EXIT_CODE"

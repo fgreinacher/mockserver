@@ -27,7 +27,7 @@ RESULT_RAW="mockserver/mockserver-benchmark/target/jmh-result.json"
 OUT_JSON="$REPO_ROOT/perf-microbench.json"
 
 # Make a failure of THIS step less silent. perf-test-compare.sh owns the Buildkite
-# annotation and the PERF_NOTIFY_WEBHOOK, but it runs only AFTER this step passes
+# regression annotation, but it runs only AFTER this step passes
 # (it sits behind the `wait: ~` in perf-test-guard.sh). So when this backstop dies
 # — as it did silently from 2026-09-12, when a reactor-target/pom drift stopped the
 # benchmark deps resolving — the ONLY signal is a red square nobody watches. Emit a

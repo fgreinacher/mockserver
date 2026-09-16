@@ -6,8 +6,9 @@ read-only audit that checked the first audit's load-bearing claims against the c
 against the repo's own stored results. Two of those claims were wrong; see
 [Corrections to the first audit](#corrections-to-the-first-audit).
 
-Tier 1 items **2, 3, 4, 5, 6 and 7 are being implemented now**. Item 1 is not, and it should
-have been first. Everything else is unstarted.
+Tier 1 items **2, 3, 4, 5, 6 and 7 are being implemented now**. **Item 1 has landed** — a
+detected regression on a gating metric now fails the build, which is the notification (no
+webhook or channel; see item 1). Everything else is unstarted.
 
 Per repo convention, the change that finishes this work **deletes this file in the same
 commit** — it is written to be consumed and removed, not to persist. The parts that deserve
@@ -129,7 +130,7 @@ inferences. This revision re-checked the load-bearing ones.
 | `-Xshare:auto` means a broken archive degrades silently | `docker/Dockerfile:164` and `docker/local/Dockerfile:102` pass `-XX:SharedArchiveFile` with no `-Xshare:on`. The Dockerfile comment at line 161 *states this outcome explicitly* — the repo already knows, and ships it anyway. The build check is `ls -l /mockserver.jsa` (line 120). **Now also measured — see Finding 4** |
 | `nioEventLoopThreadCount` is a fixed 5; `actionHandlerThreadCount` is `max(5, availableProcessors)` | `ConfigurationProperties.java:2223-2237`. Note `availableProcessors()` **is** cgroup-aware on modern JVMs, so the "sizes off the whole machine" gloss is right for a bare JVM and wrong for a CPU-limited container. The laptop profile is the bare-JVM case, so the concern stands where it matters |
 | Published figures were taken at `logLevel=ERROR` while the shipped default is `INFO` | `perf-test-run.sh:85` and `perf-test-load.sh:32` set `MOCKSERVER_LOG_LEVEL=ERROR`; `ConfigurationProperties.java:52` `DEFAULT_LOG_LEVEL = "INFO"`. The run **also** sets `MOCKSERVER_DISABLE_SYSTEM_OUT=true`, a second non-default the first audit missed |
-| `PERF_NOTIFY_WEBHOOK` is a silent no-op | `perf-test-compare.sh` guards the `curl` on `[ -n "${PERF_NOTIFY_WEBHOOK:-}" ]` with no else branch. Not set in any terraform file |
+| `PERF_NOTIFY_WEBHOOK` is a silent no-op (at audit time) | `perf-test-compare.sh` guarded the `curl` on `[ -n "${PERF_NOTIFY_WEBHOOK:-}" ]` with no else branch. Not set in any terraform file. **Since removed by item 1** — the webhook is gone; a gating regression now fails the build instead |
 | The compare step never reads `.sweep` or `.h2_multiplex` | Confirmed in the `metrics` jq: it reads `.behaviours`, `.growth`, `.microbench` only |
 | A new behaviour key is picked up by compare with zero script changes | Confirmed: `metrics` does `(.behaviours // {}) \| to_entries[]`. Item 9a's design is sound |
 | The `perf` queue is a single on-demand `c5.4xlarge`, max 1, scale to zero | `terraform/buildkite-agents/variables.tf:79-94` |
@@ -195,7 +196,7 @@ That produced a recommendation that reads as a PR gate and is not one. The topol
 | `pipeline-java.yml`, **no `if:`** | Yes | Yes | Path-filtered: `mockserver/`, `mockserver-ui/`, `test-fixtures/` |
 | `pipeline-java.yml`, `if: build.branch == 'master'` | No | Blocks the **master build** post-merge | **Source-agnostic** — every master build |
 | `pipeline-container-tests.yml` | Yes | Yes, via the orchestrator | Path-filtered: `container_integration_tests/`, `docker/` |
-| `pipeline-perf-test.yml` | No | No — notify-only, schedule/UI triggered | Commit-guarded daily |
+| `pipeline-perf-test.yml` | No | No — not a PR gate; schedule/UI triggered. Its own build fails on a *gating* regression (item 1), but that is the daily build, not the PR | Commit-guarded daily |
 
 Two consequences the rest of this document depends on:
 
@@ -224,7 +225,8 @@ flowchart TD
     Http2StreamChannelBenchmark"]
     cmp["perf-test-compare.sh
     median plus MAD vs last 10 runs
-    reads behaviours, growth, microbench only"]
+    reads behaviours, growth, microbench only
+    per-metric gating: fails build on a gating metric"]
   end
   subgraph gate["Real pass or fail gate"]
     load["perf-test-load.sh
@@ -258,15 +260,16 @@ flowchart TD
   guard --> h2 --> cmp
   cmp --> s3["S3 bucket mockserver-ci-perf-results"]
   cmp --> ann["Buildkite annotation"]
-  cmp -.->|"PERF_NOTIFY_WEBHOOK
-  configured nowhere"| nobody["no one"]
+  cmp -->|"a gating metric regresses"| redbuild["build fails = the notification
+  (item 1, landed)"]
   s3 -.->|"no path exists"| site["website performance.html
   static snapshot from 2026-06-24"]
 ```
 
-The two dotted edges are the point of the diagram. A detected regression today reaches a
-build annotation and stops. Measured numbers reach S3 and stop. The `never` box is the part
-the first audit left out.
+A regression on a **gating** metric now fails the build (the solid `redbuild` edge —
+item 1), and that red build is the notification. A regression on a notify-only metric still
+reaches only the annotation, as does every measured number that reaches S3 and stops (the
+remaining dotted edge). The `never` box is the part the first audit left out.
 
 ## Coverage map
 
@@ -519,26 +522,64 @@ provenance line all assume a run records what it was. It does not.
 `instance_type`; the annotation names the version and log level; and a deliberately
 unobtainable value makes the step fail rather than write an empty string.
 
-#### 1. Make the daily result reach a human — **NOT STARTED, and it should have been first**
+#### 1. Make a detected regression fail the build — **LANDED**
 
 *Serves: all. Cost: hours.*
 
-`perf-test-compare.sh` annotates the build and then calls an **optional
-`PERF_NOTIFY_WEBHOOK` that is configured nowhere** — not in `terraform/buildkite-agents/`,
-not in `terraform/buildkite-pipelines/`, nowhere. A detected regression today notifies
-nobody.
+**Decision (owner):** do **not** add a notification channel, a webhook, or a named owner
+to read it. A failing pipeline is itself the notification, and the owner checks the pipeline
+regularly. That reasoning is sound — but its premise was **false**, which is why this item
+existed. `perf-test-compare.sh` annotated a detected regression as a *warning*, printed
+"_Notify-only: this does not fail the build_", and `exit 0`d — so a 20% throughput
+regression produced a **green** build. The pipeline only went red for *harness* failures.
+Checking the pipeline therefore caught harness breakage and missed the thing the check
+exists to detect. (The old `PERF_NOTIFY_WEBHOOK` was an *optional* hook configured nowhere —
+not in `terraform/buildkite-agents/`, not in `terraform/buildkite-pipelines/`, nowhere — so
+it notified nobody either. It has been removed: a configured-nowhere hook that looks like a
+notification path is what made this confusing.)
 
-- Provision the webhook through the existing Secrets Manager pattern and expose it to the
-  `perf` queue.
-- Make its absence **loud**: when the webhook is unset and a regression is detected, the
-  annotation must say "this regression notified nobody" rather than silently skipping.
-- **Signal lands:** a maintainer channel. **Who acts:** the perf owner, same day.
+**What landed:** the compare step now **exits non-zero when a *gating* metric regresses**,
+which makes "the pipeline fails and that is my notification" actually true, and removes the
+need for a webhook, a channel, or an owner reading it.
 
-**Done when:** an injected fake regression produces a message in the channel, **and**
-unsetting the secret produces the explicit "notified nobody" annotation. Both halves
-demonstrated once.
+- **Per-metric gating, not a global flip.** Each metric in the compare `metrics()` jq carries
+  an explicit `gating: true|false`. A flagged **gating** metric fails the build (non-zero
+  exit); a flagged **notify-only** metric is reported *exactly as loudly* in the annotation
+  but does not change the exit code. The annotation's Gate + Status columns distinguish the
+  two at a glance (`:red_circle: REGRESSION (fails build)` vs `:warning: flagged
+  (informational)`).
+- **Only metrics with a derived, trustworthy budget gate today:** the JMH micro-benchmark
+  metrics (`*.time_per_op`, `*.alloc_bytes_per_op`) and `forward.error_rate` (a discriminating
+  pass/fail guard, not a tuned threshold). **Everything else starts notify-only** — every k6 latency
+  percentile (only just fixed in `4ce6ae27b`, so zero clean runs of history), every growth
+  ratio, `peak_achieved_rps`, and `live_set_bytes`. Gating those now would fire on noise, and
+  a gate that cries wolf gets switched off — the failure mode this whole document warns
+  about.
+- **`time_per_op` is the weaker of the two JMH signals, and gates anyway — deliberately.**
+  `alloc_bytes_per_op` counts allocations, so it is genuinely noise-free. `time_per_op` is
+  wall-clock and the micro-benchmark runs `-f 1`, so inter-fork JIT variance is never sampled
+  and the observed dispersion is understated (item 15c raises the fork count). The gate is
+  self-calibrating rather than a fixed budget — a rolling `median + 3 x 1.4826 x MAD` with a
+  5% floor over the last >= 5 runs — so it adapts to real cross-run spread rather than
+  enforcing a number picked in advance. The residual risk is sparse history: the backstop was
+  dark 2026-09-12 to 2026-09-16, so with only a few points the MAD degenerates toward zero and
+  the 5% floor binds against single-fork timing noise. That is the most plausible false red
+  here. It is bounded: this is the daily build, not a PR or release gate, and reversing it is
+  a one-line `gating: false` flip. Re-assess once 15c has landed and ten clean runs exist.
+- **Promotion path (explicit).** A notify-only metric becomes gating once it has **≥ 10 clean
+  runs of history** and a budget **derived from that history** (per the acceptance criteria
+  and open question 9). Flip its `gating` flag to `true` in the same change that records the
+  derived budget. **Who decides:** the repo owner, from the stored S3 history.
+- **Fail-closed paths unchanged.** The invalid-run refusal, the missing-artifact path, the
+  warming-up (< `MIN_BASELINE`) path, and the `forward_guard` infra-error notice all still
+  `exit 0` exactly as before — the non-zero exit is reserved for a flagged gating metric.
+- **No `soft_fail` on the compare step**, so the non-zero exit actually reddens the build
+  (`perf-test-guard.sh`).
 
-Until this exists, every item below is optional reading.
+**Done when:** DONE. Proven against local fixtures for all four cases (no regression → exit
+0; a notify-only metric flagged → exit 0 with the informational annotation; a gating metric
+flagged → non-zero; both together → non-zero, distinguished in the table), plus the
+invalid-run and warming-up paths still exiting 0.
 
 ### Tier 1 — cheap, high value
 
@@ -1031,7 +1072,8 @@ benchmark (20a).
 ```mermaid
 flowchart LR
   i0["0. self-describing results"]
-  i1["1. notification reaches a human"]
+  i1["1. fail build on gating regression
+  LANDED 2026-09-16"]
   f3["Finding 3 diagnosis
   DONE 2026-09-16 (fixed)"]
   done["2,3,4,5,6,7,7b LANDED"]
@@ -1067,8 +1109,11 @@ flowchart LR
 
 1. **Item 0** — the `config` block. Half a day. Everything that compares, ratchets or
    publishes depends on it.
-2. **Item 1** — the webhook. Hours. It is the only item that makes any other item matter, and
-   nobody is doing it.
+2. ~~**Item 1** — the webhook.~~ **DONE (2026-09-16).** No webhook: the decision was that a
+   failing pipeline is the notification. The compare step now fails the build on a *gating*
+   metric (JMH alloc/time, `forward.error_rate`); everything else stays notify-only until it
+   earns a budget. It was the only item that made any other item matter — a green build on a
+   real regression — and it now holds.
 3. ~~**Finding 3 diagnosis.**~~ **DONE (2026-09-16).** Diagnosed as a client-side
    VU-allocation connection storm and fixed in `regression.js` (stagger + equal VU pool +
    warm-every-path + settle exclusion), verified to still catch a real slowdown. This
@@ -1180,7 +1225,11 @@ usually skipped.
 1. **The measurement exists** — a named field in a named artefact, with a stated unit and
    method.
 2. **It has history** — at least 10 runs for daily measurements, 8 for weekly, before any
-   budget is attached. Notify-only until then, no exceptions.
+   budget is attached. Notify-only until then, no exceptions. **This is exactly the line item
+   1 enforces mechanically:** a metric carries `gating: false` in the compare `metrics()` jq
+   until it has that history and a budget derived from it, at which point the owner flips it to
+   `gating: true`. Only the JMH allocation/time metrics and `forward.error_rate` gate today;
+   everything else is notify-only awaiting its ten runs.
 3. **It has been demonstrated capable of failing** — a specific, recorded negative control.
    Not "the step exists and is green", but "on this date, with this deliberate change, this
    check went red, and here is the evidence."
@@ -1192,7 +1241,7 @@ inference, and this programme has been burned by exactly that inference once.
 | Item | Negative control that must be executed and recorded |
 |---|---|
 | 0. self-describing results | Mangle the IMDS response; the step fails rather than writing `""` |
-| 1. notification | Inject a fake regression; a message arrives. Then unset the secret; the annotation says "notified nobody" |
+| 1. fail-on-regression | **Done** — a flagged gating metric exits non-zero (red build); a flagged notify-only metric exits 0 with the informational annotation; the invalid-run and warming-up paths still exit 0. All four cases proven against fixtures |
 | 2. sweep | **Done** — a synthetic degraded value flags; 36,324 reported where saturation would report 16,000 |
 | 3. `forward.js` | **Done** — pooling disabled gave error rate 0.997, k6 exit 99 |
 | 4. AppCDS | **Done** — zero-byte and garbage archives both fail, through different JVM code paths; `-Xshare:auto` serves 200 with the same garbage |
@@ -1217,18 +1266,23 @@ ranges** — the same plausibility rule demanded of producers, applied to the wa
 
 ## Who does what
 
-No owner was named for the notification channel, and the whole control loop otherwise
-terminates in an empty room. A rota is the wrong prescription for a small project: a rota
+There is deliberately **no notification channel** (item 1): a regression on a gating metric
+fails the build, and a red pipeline the owner already checks is the signal — no room to
+terminate in, and no channel to leave unread. What still needs an owner is **judgement**:
+which flagged metric is fixed, bisected or accepted, and when a notify-only metric has earned
+promotion to gating. A rota is the wrong prescription for that on a small project: a rota
 with one person fails the first time that person is on holiday, and one with three is a
 fiction.
 
 **What this needs is one named role and three mechanisms that do not need a human watching.**
 
 - **Perf owner — one named person, named in `perf-budgets.json`.** Owns the budget file,
-  reviews every ratchet PR and budget change, reads the daily notification, and decides
-  whether a flagged metric is fixed, bisected or recorded as accepted. **Not a rota**, because
-  rotating destroys the only thing that makes it work: continuity of judgement about what the
-  numbers normally look like. A few minutes most days; an hour when something moves.
+  reviews every ratchet PR and budget change, and decides whether a flagged metric is fixed,
+  bisected or recorded as accepted — and **which notify-only metrics have earned promotion to
+  gating** (≥ 10 clean runs plus a history-derived budget; see item 1). The signal reaches
+  them as a red build, not a message to read. **Not a rota**, because rotating destroys the
+  only thing that makes it work: continuity of judgement about what the numbers normally look
+  like. A few minutes most days; an hour when something moves.
 - **Per-measurement owner, recorded beside each budget.** Whoever landed a measurement owns
   its noise. If it flaps, the owner either fixes it or **demotes it to informational — a
   legitimate, recorded outcome, not a failure**. This is what stops the known pattern of a
@@ -1315,7 +1369,9 @@ The discriminator is **determinism, not importance**.
   build immediately post-merge. The **allocation budget** can block a PR as an unconditional
   step in `pipeline-java.yml` — but note that pipeline is itself orchestrator-path-filtered,
   so a JDK or base-image change reaches it only via the daily run. **Neither gate replaces the
-  daily run**, which is the only always-runs backstop either has.
+  daily run**, which is the only always-runs backstop either has — and the daily run now has
+  teeth of its own: a regression on a *gating* metric fails it (item 1), so a slowdown that
+  reaches only the daily is no longer a green build.
 - **The release gate is where teeth belong.** Fail preflight when the newest successful perf
   run is older than the release candidate's merge base, when any budget is in an unaccepted
   flagged state, or when the newest run's `validity` is false. One S3 query and one JSON read,
@@ -1340,8 +1396,12 @@ stops covering** — and if the answer is "the likely ones", do not move it.
 
 - The JMH backstop produced **no signal from 2026-09-12 to 2026-09-16** and nobody noticed;
   the only symptom was a red square on a notify-only build.
-- `PERF_NOTIFY_WEBHOOK` is referenced by the compare step and **configured nowhere**, so the
-  notification path has never fired.
+- `PERF_NOTIFY_WEBHOOK` was referenced by the compare step and **configured nowhere**, so the
+  notification path never fired. *(Historical: still a valid illustration of the decay mode —
+  a hook that looks like a notification path but is wired to nothing — but no longer a live
+  gap. Item 1 removed the webhook and replaced it with a build that fails on a gating
+  regression, so the notification is now the red pipeline itself, which cannot be
+  "configured nowhere".)*
 - A CI cache reported success while storing nothing (`1490c5ad4`).
 - `agent.instance_type` has been the empty string in every stored run because `curl -s` exits
   zero on an empty body — a field that exists, is populated, and is **silently wrong**, for
@@ -1366,8 +1426,8 @@ not presence.
 3. **Validate the measurement before trusting it.** Generalise the inject harness's discipline
    to every harness. **A number that has not been validated is not evidence — and an assertion
    that has never been false is not a validation.**
-4. **Every step annotates its own failure.** The compare step owns the annotation and the
-   webhook and runs only *after* the `wait`, so a dead producer silently produces nothing.
+4. **Every step annotates its own failure.** The compare step owns the annotation and runs
+   only *after* the `wait`, so a dead producer silently produces nothing.
    `perf-test-microbench.sh` gained a trap for this reason; copy it to the others.
 
 **Acceptance test for this whole section: deliberately break one producer and confirm the
