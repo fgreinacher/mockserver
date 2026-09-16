@@ -15,6 +15,7 @@ import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Exposes JVM runtime metrics (heap / non-heap memory, threads, GC) as
@@ -38,6 +39,16 @@ public class JvmMetricsCollector implements MultiCollector {
     private static final String THREADS_DAEMON = "jvm_threads_daemon";
     private static final String GC_COUNT = "jvm_gc_collection_count";
     private static final String GC_SECONDS = "jvm_gc_collection_seconds_sum";
+    // Info-style gauge (constant 1, meaning carried by labels) exposing what the
+    // RUNNING JVM actually is — the JDK build and the garbage collector(s) in use.
+    // Neither is derivable from any other metric here, yet both are exactly the
+    // configuration a stored perf run must record about itself (a run measured
+    // under ZGC+8GB must be distinguishable from one under G1). Resolving them from
+    // the live process (MX beans + system properties) is the only faithful source:
+    // a second JVM launched from the same image can pick a different ergonomic GC
+    // because it does not inherit the entrypoint's heap sizing. Mirrors
+    // {@link BuildInfoCollector}'s label-carried-value pattern.
+    private static final String RUNTIME_INFO = "jvm_runtime_info";
 
     @Override
     public MetricSnapshots collect() {
@@ -67,7 +78,33 @@ public class JvmMetricsCollector implements MultiCollector {
         snapshots.add(simpleGauge(GC_COUNT, "Total number of GC collections across all collectors", gcCount));
         snapshots.add(simpleGauge(GC_SECONDS, "Total GC time across all collectors in seconds", gcTimeMillis / 1000.0));
 
+        snapshots.add(runtimeInfoGauge());
+
         return new MetricSnapshots(snapshots);
+    }
+
+    private static GaugeSnapshot runtimeInfoGauge() {
+        String gc = ManagementFactory.getGarbageCollectorMXBeans().stream()
+            .map(GarbageCollectorMXBean::getName)
+            .collect(Collectors.joining(","));
+        return GaugeSnapshot.builder()
+            .name(RUNTIME_INFO)
+            .help("Running JVM build and garbage-collector information (value always 1; meaning is in the labels)")
+            .dataPoint(GaugeDataPointSnapshot.builder()
+                .value(1)
+                .labels(Labels.of(
+                    "gc", label(gc),
+                    "java_runtime_version", label(System.getProperty("java.runtime.version")),
+                    "java_vendor", label(System.getProperty("java.vendor")),
+                    "java_version", label(System.getProperty("java.version")),
+                    "vm_name", label(System.getProperty("java.vm.name"))
+                ))
+                .build())
+            .build();
+    }
+
+    private static String label(String value) {
+        return (value != null && !value.isEmpty()) ? value : "unknown";
     }
 
     private static GaugeSnapshot areaGauge(String name, String help, long heapValue, long nonHeapValue) {
@@ -92,7 +129,7 @@ public class JvmMetricsCollector implements MultiCollector {
         return Arrays.asList(
             MEMORY_USED, MEMORY_COMMITTED, MEMORY_MAX,
             THREADS_CURRENT, THREADS_DAEMON,
-            GC_COUNT, GC_SECONDS
+            GC_COUNT, GC_SECONDS, RUNTIME_INFO
         );
     }
 }

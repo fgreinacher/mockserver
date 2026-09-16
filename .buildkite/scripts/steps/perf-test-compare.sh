@@ -138,6 +138,29 @@ fi
 # --- 4. compare (median + MAD) ------------------------------------------------
 jq -s '.' "$BASE_DIR"/*.json > "$WORK/baseline.json"
 
+# Honest history (item: handle the existing history honestly). Every run stored
+# before the self-describing-result change has no `config` block (schema_version
+# < 2) and an unusable instance_type, so we CANNOT confirm it was configured like
+# this run (same JVM/GC/heap/log-level/hardware). Do NOT silently fold such runs
+# into the rolling baseline as though comparable — count them so the annotation can
+# flag that the comparison spans a configuration boundary. No backfill is attempted.
+PRE_CONFIG_COUNT="$(jq '[ .[] | select((.config == null) or ((.schema_version // 1) < 2)) ] | length' "$WORK/baseline.json")"
+
+# Compact provenance line from THIS run's config block — the version/JDK/GC/heap/
+# log-level/hardware the figures were produced under (what the website provenance
+# line and the hardware-invalidation rule both need a run to carry).
+PROVENANCE="$(jq -r '
+  (.config // null) as $c
+  | if $c == null then "_No config block on this run (schema_version \(.schema_version // 1) — pre self-describing)._"
+    else "**Run config** — MockServer \($c.mockserver_version // "?") · JDK \($c.jdk // "?") · GC \($c.gc // "?") · heap_max \((((($c.heap_max_bytes // 0)) / 1048576) | floor)) MiB · log_level \($c.log_level // "?") · disable_system_out \($c.disable_system_out // "?") · instance \(.agent.instance_type // "?") · image \($c.image_digest // "?")"
+    end' "$RESULT" 2>/dev/null || echo "")"
+PRECFG_NOTE=""
+if [ "${PRE_CONFIG_COUNT:-0}" -gt 0 ]; then
+  PRECFG_NOTE="
+
+:warning: **${PRE_CONFIG_COUNT} of ${BASE_COUNT} baseline run(s) predate the self-describing result (no \`config\` block).** Those runs cannot be confirmed to share this run's JVM / GC / heap / log level / hardware, so the comparison above crosses a configuration boundary — weigh flagged metrics accordingly and re-derive the baseline once ${BASELINE_N} config-bearing runs exist."
+fi
+
 # jq program (single-quoted on purpose — $vars are jq vars, not shell).
 # shellcheck disable=SC2016
 COMPARE='
@@ -239,6 +262,12 @@ EXTRA="$(jq -r '
     + (if ($dr|length) > 0 then "\n\n**Delivery ratio** (throughput/offered; a shortfall with dropped>0 is a CLIENT/VU limit, not a server regression):\n" + ($dr|join("\n")) else "" end)
     + $fginfra)
 ' "$RESULT" 2>/dev/null || echo "")"
+
+# Fold the provenance line and the pre-config-baseline warning into the body so
+# both the regression and the clean annotation carry them.
+EXTRA="${EXTRA}
+
+${PROVENANCE}${PRECFG_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD)"
 if [ "$COUNT" -gt 0 ]; then

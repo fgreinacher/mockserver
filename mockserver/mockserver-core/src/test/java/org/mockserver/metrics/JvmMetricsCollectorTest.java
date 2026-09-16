@@ -34,9 +34,30 @@ public class JvmMetricsCollectorTest {
     }
 
     @Test
+    public void exposesRuntimeInfoWithGcAndJdkLabels() {
+        MetricSnapshots snapshots = new JvmMetricsCollector().collect();
+
+        GaugeSnapshot info = gauge(snapshots, "jvm_runtime_info");
+        assertThat(info, notNullValue());
+        // info-style gauge: a single data point whose value is a constant 1, with
+        // the meaning carried entirely by the labels (matches BuildInfoCollector).
+        assertThat(info.getDataPoints().size(), is(1));
+        assertThat(info.getDataPoints().get(0).getValue(), is(1.0));
+
+        // gc names the collector(s) actually in use (e.g. "G1 Young Generation,..."),
+        // java_runtime_version is the JDK build — both non-empty for the running JVM.
+        assertThat(info.getDataPoints().get(0).getLabels().get("gc"), notNullValue());
+        assertThat(info.getDataPoints().get(0).getLabels().get("gc").isEmpty(), is(false));
+        assertThat(info.getDataPoints().get(0).getLabels().get("java_runtime_version"), notNullValue());
+        assertThat(info.getDataPoints().get(0).getLabels().get("java_runtime_version").isEmpty(), is(false));
+        assertThat(info.getDataPoints().get(0).getLabels().get("java_version"), notNullValue());
+        assertThat(info.getDataPoints().get(0).getLabels().get("vm_name"), notNullValue());
+    }
+
+    @Test
     public void listsItsPrometheusNames() {
         assertThat(new JvmMetricsCollector().getPrometheusNames(), hasItems(
-            "jvm_memory_used_bytes", "jvm_threads_current", "jvm_gc_collection_count"));
+            "jvm_memory_used_bytes", "jvm_threads_current", "jvm_gc_collection_count", "jvm_runtime_info"));
     }
 
     private static GaugeSnapshot gauge(MetricSnapshots snapshots, String name) {

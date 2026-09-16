@@ -168,6 +168,134 @@ wait_ready "$SERVER"
 SERVER_METRICS="$(docker port "$SERVER" 1080/tcp 2>/dev/null | head -1)"
 SERVER_METRICS_URL="http://${SERVER_METRICS:-127.0.0.1:1080}/mockserver/metrics"
 
+# --- self-describing config block (make a result record what it WAS) -----------
+# The comparison machinery, budget ratchet, hardware-invalidation rule and the
+# website provenance line all assume a stored run records HOW it was configured.
+# Resolve that from the RUNNING JVM (its own metrics endpoint) and the ACTUAL
+# container (docker inspect) — never by echoing the shell variables that were only
+# MEANT to set it. Each field is marked `observed` (read back from the live
+# process/container) or `declared` (a shell value we could not verify against the
+# process). A MANDATORY value that cannot be recorded FAILS the step HERE, early —
+# not silently written as a placeholder. The instance_type:"" bug is the worked
+# example: a field that exists, is populated, and is WRONG survives review, which
+# is worse than an absent field. Runs before the long measurement phases so an
+# unrecordable config wastes seconds, not the whole 45-minute run.
+CONFIG_METRICS=""
+for _ in $(seq 1 15); do
+  CONFIG_METRICS="$(curl -sf --max-time 4 "$SERVER_METRICS_URL" 2>/dev/null || true)"
+  if [ -n "$CONFIG_METRICS" ] && printf '%s' "$CONFIG_METRICS" | grep -q '^mock_server_build_info'; then break; fi
+  sleep 2
+done
+
+# Extract one label's value from a Prometheus info-gauge line (labels are quoted,
+# so a comma/space inside a value — e.g. the GC list or the VM name — is safe).
+# The label name is anchored to its preceding `{` or `,` delimiter so a query for
+# `version` does NOT match inside `major_minor_version` (that substring match would
+# silently record the wrong value — precisely the populated-but-wrong trap).
+# The trailing `|| true` matters: a no-match here must yield the EMPTY string and
+# succeed, so the fail-closed guard below can report *which* field is unrecordable.
+# Without it, `set -euo pipefail` would abort the whole step on the failing grep
+# (an accidental fail-closed with no diagnostic), turning the guard into dead code.
+metric_label() { # metric_name label_name   (reads global CONFIG_METRICS)
+  printf '%s' "$CONFIG_METRICS" | grep -oE "^$1\{[^}]*\}" | head -1 \
+    | grep -oE "[{,]$2=\"[^\"]*\"" | head -1 | sed -E 's/^[{,][^=]*="//; s/"$//' || true
+}
+# Resolved max heap in bytes from the RUNNING JVM (reflects the entrypoint's
+# -Xmx / MaxRAMPercentage + the container memory limit — the actual heap, not the
+# flag that implies it). Normalised to an integer (the client may emit 1.6E9).
+metric_heap_max() {
+  printf '%s' "$CONFIG_METRICS" \
+    | awk -F'} ' '/^jvm_memory_max_bytes\{area="heap"\}/{print $2}' | head -1 \
+    | awk '{printf "%d", $1+0}' || true
+}
+# One env var as the SUT container ACTUALLY received it (empty if unset).
+container_env() { # VAR_NAME
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$SERVER" 2>/dev/null \
+    | awk -F= -v k="$1" '$1==k{sub("^[^=]*=",""); print; exit}' || true
+}
+
+MS_VERSION="$(metric_label mock_server_build_info version)"
+MS_GIT_HASH="$(metric_label mock_server_build_info git_hash)"
+JDK_BUILD="$(metric_label jvm_runtime_info java_runtime_version)"
+JAVA_VENDOR="$(metric_label jvm_runtime_info java_vendor)"
+VM_NAME="$(metric_label jvm_runtime_info vm_name)"
+GC_IN_USE="$(metric_label jvm_runtime_info gc)"
+HEAP_MAX_BYTES="$(metric_heap_max)"
+# The immutable content id the SUT image actually resolved to (RepoDigest), or the
+# local image id when built without a digest (locally-built image).
+IMAGE_DIGEST="$(docker inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Image}}{{end}}' "$SERVER" 2>/dev/null || true)"
+# Log level + system-out suppression are BOTH non-defaults every CI perf run sets,
+# and neither was ever recorded. Read them off the container that ran (observed);
+# only if absent there fall back to the shell env we exported (declared).
+LOG_LEVEL_VAL="$(container_env MOCKSERVER_LOG_LEVEL)"; LOG_LEVEL_SRC="observed"
+[ -n "$LOG_LEVEL_VAL" ] || { LOG_LEVEL_VAL="${MOCKSERVER_LOG_LEVEL:-}"; LOG_LEVEL_SRC="declared"; }
+DISABLE_SYSOUT_VAL="$(container_env MOCKSERVER_DISABLE_SYSTEM_OUT)"; DISABLE_SYSOUT_SRC="observed"
+[ -n "$DISABLE_SYSOUT_VAL" ] || { DISABLE_SYSOUT_VAL="${MOCKSERVER_DISABLE_SYSTEM_OUT:-}"; DISABLE_SYSOUT_SRC="declared"; }
+# JAVA_TOOL_OPTIONS is legitimately absent when PERF_SERVER_JAVA_OPTS is unset — an
+# empty OBSERVED value here is a true fact (no JVM opts), not a masked placeholder.
+JAVA_TOOL_OPTS_VAL="$(container_env JAVA_TOOL_OPTIONS)"
+# k6 image digest is pinned in the K6_IMAGE ref itself (…@sha256:…).
+K6_IMAGE_DIGEST="$(printf '%s' "$K6_IMAGE" | sed -nE 's/.*@(sha256:[0-9a-f]+)$/\1/p')"
+# k6 container CPU allocation (cores * 100%) from its cpuset pin.
+K6_CFG_CORES="$(k6_core_count "${K6_CPUS:-}")"; K6_CFG_PIN_PCT=$((K6_CFG_CORES * 100))
+
+# Fail closed: an unrecordable MANDATORY value must abort the step, not become a
+# placeholder that outlives review. GC + JDK come from jvm_runtime_info, which a
+# MockServer image built before that metric shipped will not expose — that is a
+# genuine "cannot record what this run was" and is meant to fail here.
+CONFIG_ERRORS=()
+[ -n "$MS_VERSION" ]        || CONFIG_ERRORS+=("mockserver version (mock_server_build_info{version}) not readable from ${SERVER_METRICS_URL}")
+[ -n "$IMAGE_DIGEST" ]      || CONFIG_ERRORS+=("image digest not resolvable via 'docker inspect ${SERVER}'")
+[ -n "$JDK_BUILD" ]        || CONFIG_ERRORS+=("JDK build (jvm_runtime_info{java_runtime_version}) not readable — image predates the jvm_runtime_info metric?")
+[ -n "$GC_IN_USE" ]        || CONFIG_ERRORS+=("GC in use (jvm_runtime_info{gc}) not readable — image predates the jvm_runtime_info metric?")
+awk -v v="$HEAP_MAX_BYTES" 'BEGIN{exit !(v+0>0)}' || CONFIG_ERRORS+=("resolved heap (jvm_memory_max_bytes{area=\"heap\"}) not a positive value: '${HEAP_MAX_BYTES}'")
+[ -n "$LOG_LEVEL_VAL" ]     || CONFIG_ERRORS+=("MOCKSERVER_LOG_LEVEL not recordable (neither container env nor shell)")
+[ -n "$DISABLE_SYSOUT_VAL" ] || CONFIG_ERRORS+=("MOCKSERVER_DISABLE_SYSTEM_OUT not recordable (neither container env nor shell)")
+if [ "${#CONFIG_ERRORS[@]}" -gt 0 ]; then
+  echo "ERROR: run configuration is not fully recordable — refusing to emit a result that misrepresents what it measured:" >&2
+  printf '  - %s\n' "${CONFIG_ERRORS[@]}" >&2
+  echo "(A populated-but-wrong config field survives review; an absent one does not — see the instance_type:\"\" bug.)" >&2
+  exit 1
+fi
+
+CONFIG_JSON="$(jq -n \
+  --arg version "$MS_VERSION" --arg git_hash "$MS_GIT_HASH" \
+  --arg image "$MOCKSERVER_IMAGE" --arg image_digest "$IMAGE_DIGEST" \
+  --arg jdk "$JDK_BUILD" --arg java_vendor "$JAVA_VENDOR" --arg vm_name "$VM_NAME" \
+  --arg gc "$GC_IN_USE" --arg heap_max "$HEAP_MAX_BYTES" \
+  --arg log_level "$LOG_LEVEL_VAL" --arg log_level_src "$LOG_LEVEL_SRC" \
+  --arg disable_sysout "$DISABLE_SYSOUT_VAL" --arg disable_sysout_src "$DISABLE_SYSOUT_SRC" \
+  --arg jto "$JAVA_TOOL_OPTS_VAL" --arg psjo "${PERF_SERVER_JAVA_OPTS:-}" \
+  --arg k6_image "$K6_IMAGE" --arg k6_digest "$K6_IMAGE_DIGEST" \
+  --arg server_cpus "${SERVER_CPUS:-none}" --arg upstream_cpus "${UPSTREAM_CPUS:-none}" --arg k6_cpus "${K6_CPUS:-none}" \
+  --argjson k6_pin_pct "$K6_CFG_PIN_PCT" \
+  '{
+    mockserver_version: $version,
+    mockserver_git_hash: (if $git_hash=="" then null else $git_hash end),
+    image: $image,
+    image_digest: $image_digest,
+    jdk: $jdk, java_vendor: $java_vendor, vm_name: $vm_name,
+    gc: $gc,
+    heap_max_bytes: ($heap_max|tonumber),
+    log_level: $log_level,
+    disable_system_out: $disable_sysout,
+    java_tool_options: $jto,
+    perf_server_java_opts: $psjo,
+    k6_image: $k6_image,
+    k6_image_digest: (if $k6_digest=="" then null else $k6_digest end),
+    cpusets: { server: $server_cpus, upstream: $upstream_cpus, k6: $k6_cpus },
+    k6_cpu_pin_pct: $k6_pin_pct,
+    sources: {
+      mockserver_version:"observed", mockserver_git_hash:"observed",
+      image_digest:"observed", jdk:"observed", java_vendor:"observed", vm_name:"observed",
+      gc:"observed", heap_max_bytes:"observed",
+      log_level:$log_level_src, disable_system_out:$disable_sysout_src,
+      java_tool_options:"observed", perf_server_java_opts:"declared",
+      k6_image_digest:"observed", cpusets:"declared", k6_cpu_pin_pct:"declared"
+    }
+  }')"
+echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} (schema_version=2)"
+
 echo "--- seeding upstream /simple (forward target)"
 docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -X PUT \
   "http://${UPSTREAM}:1080/mockserver/expectation" -H 'Content-Type: application/json' \
@@ -491,15 +619,21 @@ jq -n \
   --argjson forward "$FORWARD_JSON" \
   --arg forward_exit "$FORWARD_EXIT" \
   --argjson validity "$VALIDITY_JSON" \
+  --argjson config "$CONFIG_JSON" \
   --arg cpu_start "$CPU_START" --arg cpu_end "$CPU_END" --arg cpu_peak "$CPU_PEAK" --arg cpu_ratio "$CPU_RATIO" \
   --arg heap_start "$HEAP_START" --arg heap_end "$HEAP_END" --arg heap_peak "$HEAP_PEAK" --arg heap_ratio "$HEAP_RATIO" \
   --arg heap_min_first "$HEAP_MIN_FIRST" --arg heap_min_last "$HEAP_MIN_LAST" \
   --arg gc_delta "$GC_DELTA" --arg threads_peak "$THREADS_PEAK" \
   '{
-    schema_version: 1,
+    # schema_version 2: a `config` block now records what the run WAS (JVM/JDK/GC,
+    # resolved heap, log level, image digest, k6 pin) so runs are only ever compared
+    # when configured alike. A stored run with schema_version 1 has no config block
+    # and predates this guarantee — perf-test-compare.sh annotates that boundary.
+    schema_version: 2,
     commit: $commit, branch: $branch, timestamp_utc: $ts,
     build_number: $build_number, build_url: $build_url,
     agent: { instance_type: $instance_type, queue: "perf", server_cpus: $server_cpus, k6_cpus: $k6_cpus },
+    config: $config,
     mockserver_image: $image,
     behaviours: (($http[0].behaviours // {}) + ($https[0].behaviours // {})),
     growth: {

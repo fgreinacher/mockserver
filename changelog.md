@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- New `jvm_runtime_info` metric on the Prometheus endpoint (`/mockserver/metrics`), an info-style gauge
+  whose labels name the running JVM and the garbage collector(s) actually in use: `gc`, `java_version`,
+  `java_runtime_version`, `java_vendor` and `vm_name`. The value is always `1` — the information is in the
+  labels, matching the existing `mock_server_build_info` metric. This lets a scrape record which JVM and GC
+  produced a given set of measurements, which could not previously be determined from the metrics endpoint.
 
 ### Changed
 

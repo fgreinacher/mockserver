@@ -141,10 +141,13 @@ This mirrors the *newer* metrics (`mock_server_slow_requests`, `mock_server_forw
 | `jvm_threads_daemon` | — | Daemon thread count |
 | `jvm_gc_collection_count` | — | Total GC collections across all collectors |
 | `jvm_gc_collection_seconds_sum` | — | Total GC time across all collectors (seconds) |
+| `jvm_runtime_info` | `gc`, `java_version`, `java_runtime_version`, `java_vendor`, `vm_name` | Info-style gauge (constant `1`; meaning is in the labels) naming the running JVM's build and the garbage collector(s) actually in use. Mirrors `mock_server_build_info`. |
 
 These let Grafana and the dashboard Metrics view chart heap/GC/thread behaviour alongside the request and action counters.
 
 > **Perf-regression sampler dependency:** `perf-test-run.sh` (the performance regression pipeline's run step) scrapes `/mockserver/metrics` every 5 seconds during a growth run and reads exactly these three series by name: `jvm_memory_used_bytes{area="heap"}`, `jvm_gc_collection_seconds_sum`, and `jvm_threads_current`. If these metric names change, `perf-test-run.sh` must be updated in the same commit.
+>
+> **Self-describing perf result dependency:** the same step, immediately after the server is ready, reads `mock_server_build_info{version}`, `jvm_runtime_info{gc,java_runtime_version,java_vendor,vm_name}` and `jvm_memory_max_bytes{area="heap"}` to build the `config` block of its result JSON (schema_version 2) — the resolved heap, GC and JDK the run actually used. `jvm_runtime_info` in particular exists so a stored run records its GC and JDK build faithfully; a MockServer image predating this metric makes the config unrecordable and the perf run **fails closed** rather than emitting a placeholder. If these metric names or labels change, update `perf-test-run.sh`'s config gathering in the same commit.
 
 ### Request Latency Histogram
 
