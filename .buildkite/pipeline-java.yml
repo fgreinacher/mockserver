@@ -118,6 +118,11 @@ steps:
   # otherwise turn an unusable socket into a green build of zero tests.
   - label: ":cloud: cloud blob-store contract tests"
     command: ".buildkite/scripts/steps/java-cloud-store-test.sh"
+    env:
+      # ECR pull-through cache for Testcontainers images (docker-hub + quay
+      # upstreams). Unset or non-"true" falls back to the public registries,
+      # so removing this line is a complete rollback -- no Terraform apply.
+      MOCKSERVER_ECR_PULL_THROUGH: "true"
     timeout_in_minutes: 30
     retry:
       automatic:
@@ -136,6 +141,11 @@ steps:
   # no longer pass as a pass. ~75s of real broker tests locally.
   - label: ":envelope: asyncapi live-broker tests"
     command: ".buildkite/scripts/steps/java-async-broker-test.sh"
+    env:
+      # ECR pull-through cache for Testcontainers images (docker-hub + quay
+      # upstreams). Unset or non-"true" falls back to the public registries,
+      # so removing this line is a complete rollback -- no Terraform apply.
+      MOCKSERVER_ECR_PULL_THROUGH: "true"
     timeout_in_minutes: 30
     retry:
       automatic:
