@@ -6,8 +6,11 @@ steps:
   # this 9.5.1 distribution can never collide with the java pipeline's 8.14
   # (gradle/java/<key>) -- the collision that kept this pipeline off the cache until the
   # key gained a namespace dimension. soft_fail so a cache miss / missing S3 creds never
-  # fails the build. (NOTE: the Plugin Verifier's recommended-IDE downloads are NOT
-  # covered -- see jetbrains-verify.sh and docs/infrastructure/ci-cd.md.)
+  # fails the build. (NOTE: this cache currently persists NOTHING -- restore, verify and
+  # save are separate jobs and `git clean -ffxdq` wipes the workspace-local
+  # .buildkite-cache between them, so save no-ops and restore always 404-misses; see
+  # jetbrains-verify.sh and docs/infrastructure/ci-cd.md. The recommended-IDE downloads
+  # DO live under ~/.gradle/caches, so they would be covered if the cache persisted.)
   - label: ":s3: restore gradle cache"
     command: ".buildkite/scripts/cache-restore.sh gradle editors"
     timeout_in_minutes: 10

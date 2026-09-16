@@ -22,14 +22,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # being created by root. The verifier's exit code is preserved so a real finding still
 # reddens the build.
 #
-# --cache gradle mounts the persisted Gradle distribution (~/.gradle/wrapper/dists) and
-# dependency cache (~/.gradle/caches -- the resolved IntelliJ Platform SDK, Kotlin, Gson)
-# under the "editors" scope. NOTE: the Plugin Verifier's RECOMMENDED-IDE downloads are
-# NOT covered by this mount: with intellijPlatformIdesCacheEnabled defaulting to false,
-# the 2.x plugin downloads them under the ephemeral project dir (.intellijPlatform/ides,
-# thrown away with the /tmp/jb copy) or ~/.cache/pluginVerifier, neither of which is a
-# GRADLE_USER_HOME subdir -- so this step still re-downloads the recommended IDE set each
-# run. Caching those multi-GB IDEs is a deliberate follow-up (see docs/infrastructure/ci-cd.md).
+# --cache gradle mounts .buildkite-cache/gradle/{caches,wrapper-dists} at
+# ~/.gradle/{caches,wrapper/dists}. With `ides { recommended() }` the Plugin Verifier's
+# IDEs are resolved as ORDINARY Gradle dependencies and extracted UNDER ~/.gradle/caches
+# (CI logs read every IDE from /root/.gradle/caches/9.5.1/transforms/<hash>/transformed/
+# idea*-<ver>) -- i.e. INSIDE GRADLE_USER_HOME, so they sit on this mount alongside the
+# Gradle distribution and the resolved SDK/Kotlin/Gson. intellijPlatformIdesCache /
+# intellijPlatformIdesCacheEnabled do NOT apply to recommended() and change nothing here.
+# recommended() currently resolves to 7 IDEs: a verify downloads ~4.18 GB and leaves
+# ~28 GB extracted in ~/.gradle/caches (~10-20 GB compressed).
+#
+# WARNING: this cache currently persists NOTHING. Restore, verify and save are three
+# SEPARATE Buildkite jobs; each job's "Preparing working directory" runs `git clean
+# -ffxdq`, which deletes the workspace-local .buildkite-cache between jobs (and the jobs
+# can land on different ephemeral agents with no shared filesystem). So the save step
+# finds no directory and no-ops, and every restore is a 404 miss -- confirmed run after
+# run in mockserver-editors #523-#525 (and identically for maven in mockserver-java).
 # GRADLE_USER_HOME stays at /root/.gradle regardless of the /tmp/jb working dir.
 "$SCRIPT_DIR/../run-in-docker.sh" \
   -i eclipse-temurin:17-jdk \
