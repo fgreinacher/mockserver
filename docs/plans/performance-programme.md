@@ -1,33 +1,56 @@
 # Performance Programme
 
-**Status: deferred plan.** Written 2026-09-16 against `master` at `b98d18f0c`. Nobody is
-working on this. Per repo convention, the change that finishes this work **deletes this
-file in the same commit** — it is written to be consumed and removed, not to persist. The
-parts that deserve to outlive it are named in [What survives this
-plan](#what-survives-this-plan) at the end; move those before deleting.
+**Status: active plan, partially in flight.** Originally written 2026-09-16 against `master`
+at `b98d18f0c`. **Revised 2026-09-16 against `master` at `a984a8c3a`** after a second
+read-only audit that checked the first audit's load-bearing claims against the code and
+against the repo's own stored results. Two of those claims were wrong; see
+[Corrections to the first audit](#corrections-to-the-first-audit).
+
+Tier 1 items **2, 3, 4, 5, 6 and 7 are being implemented now**. Item 1 is not, and it should
+have been first. Everything else is unstarted.
+
+Per repo convention, the change that finishes this work **deletes this file in the same
+commit** — it is written to be consumed and removed, not to persist. The parts that deserve
+to outlive it are named in [What survives this plan](#what-survives-this-plan) at the end;
+move those before deleting.
 
 ## Bottom line
 
-MockServer's performance harness is better than its reputation and narrower than its
-claims. It measures **one dimension well — response latency on the local-match hot path —
-in one deployment profile**, a six-core pinned central server, and it measures that
-continuously and honestly. Almost everything else is either measured once and published,
-or never measured at all.
+MockServer's performance harness is better than its reputation, narrower than its claims,
+and **less trustworthy than the first audit concluded**. It measures one dimension in one
+deployment profile continuously — response latency on the local-match hot path, on a
+six-core pinned central server. Almost everything else is either measured once and
+published, or never measured at all. And the one signal the first audit called good has a
+four-orders-of-magnitude internal contradiction in the repo's own published data that
+nobody has explained.
 
-Three things a reader needs before anything else:
+Five things a reader needs before anything else:
 
-1. **Proxying is effectively unmeasured**, despite being half of what MockServer is. The
+1. **The daily latency signal is not trustworthy as published.** The committed
+   `perf-result.json` that backs the website records, from a single run, a sweep p95 of
+   **0.279 ms at 16,000 req/s** and a regression-scenario p95 of **1,014 ms at 200 req/s**.
+   Both cannot describe the same server. One of them is measuring the rig. See
+   [Finding 3](#finding-3-the-daily-latency-percentiles-and-the-sweep-disagree-by-four-orders-of-magnitude).
+2. **Proxying is effectively unmeasured**, despite being half of what MockServer is. The
    daily run measures a forward *action* at 200 req/s. `HttpConnectHandler`, the SOCKS
    handlers, the relay handlers, transparent proxying, binary proxying and the HTTP/2
    relay have never been benchmarked at any rate by any harness.
-2. **The laptop / per-test-method profile has no measurement at all** — no startup check in
-   CI, no idle memory floor, no parallel-instance behaviour.
-3. **Several checks that look like gates cannot fail for the reason they claim.** The one
-   real pass/fail load gate runs at 300 req/s against a server measured at ~32,000 req/s.
+3. **The laptop / per-test-method profile has no measurement at all** — and the profile's
+   dominant code path is not the one the proposed startup measurement covers. Users run
+   MockServer **in-JVM** via `MockServerExtension` and `ClientAndServer.startClientAndServer`,
+   not via `docker run`.
+4. **Several checks that look like gates cannot fail for the reason they claim.** The one
+   real pass/fail load gate runs at 300 req/s against a server measured at ~32,000 req/s,
+   on the Spot `default` queue.
+5. **The run metadata cannot support the provenance the programme depends on.** The
+   published run records `"instance_type": ""`, and the result schema has no field for heap,
+   GC, JVM options or log level. Several proposed mechanisms — the hardware-invalidation
+   rule, the ratchet, the website provenance line — cannot be built until that is fixed.
 
 The infrastructure needed to fix most of this already exists and is well built. This
-programme is mostly about **pointing existing harnesses at unmeasured things** and
-**closing the loop back to the website**, not new infrastructure.
+programme is mostly about **pointing existing harnesses at unmeasured things**, **making the
+existing measurements say what they are**, and **closing the loop back to the website** —
+not new infrastructure.
 
 ## The mandate this serves
 
@@ -43,8 +66,13 @@ From the repo owner, verbatim:
 >
 > The plan should include consideration of how we can **maintain the goals, re-assess, and
 > constantly improve** in the face of other changes flowing into the project.
+>
+> I want to make sure any performance improvements are **fully tested to confirm they work
+> correctly**.
 
-That is **six dimensions** across **three deployment profiles**:
+That is **six dimensions** across **three deployment profiles**, plus a correctness
+obligation that has its own section
+([Proving a performance change is still correct](#proving-a-performance-change-is-still-correct)).
 
 | | Dimension |
 |---|---|
@@ -61,6 +89,17 @@ That is **six dimensions** across **three deployment profiles**:
 | **C** | Heavily loaded central deployment serving many pipelines and consumers. Long-lived, saturated |
 | **P** | Inside someone else's performance test — either serving load, or generating it via Load Scenarios |
 
+**On the scope of "request/response handling".** The first audit read D2 narrowly, as the
+local-match hot path, and explicitly deferred HTTP/3, LLM mocking, async messaging, WASM
+rules and the dashboard. That was defensible as a first cut and is **no longer defensible as
+a final one**. The owner asked for MockServer to behave well in a heavily loaded central
+deployment; a central deployment is precisely where a customer streams SSE from a mocked
+LLM, where the dashboard is left open on someone's second monitor, where state is clustered
+across instances, and where a hundred pipelines each hold a TLS connection. Those are
+request/response handling. See [Feature surfaces the first audit
+excluded](#feature-surfaces-the-first-audit-excluded), which adds five of them to the
+programme and names the five it deliberately leaves out.
+
 ## How to read the numbers in this document
 
 **Every figure below is dated and version-stamped.** That is deliberate: the whole failure
@@ -68,7 +107,96 @@ mode this programme addresses is figures going stale silently. If you are readin
 months later, treat any undated number as untrustworthy and any dated number as history,
 not as current state. Re-measure before you rely on it.
 
-Analysis date: **2026-09-16**, `master` at `b98d18f0c`.
+Analysis date: **2026-09-16**, `master` at `a984a8c3a`. Where a claim below could not be
+verified by reading code or stored results, it is marked **unverified** rather than dropped,
+because an unverified claim someone can go and check is more useful than a silent gap.
+
+## Corrections to the first audit
+
+The first audit was written from a read-only pass over harnesses, scripts, stored results
+and the website. It measured nothing, so its claims about what a harness *does* were
+inferences. This revision re-checked the load-bearing ones.
+
+**Verified correct, no change:**
+
+| Claim | How verified |
+|---|---|
+| The CI sweep ladder stops at 16,000 | `perf-test-run.sh:162` sets `K6_SWEEP_RATES` default `500,1000,2000,4000,8000,16000` |
+| `forward.js` is in no step and no lint list | `perf-test-lint.sh` inspects `smoke, load, stress, soak, regression, growth, sweep`. No pipeline step references `forward.js` |
+| `-Xshare:auto` means a broken archive degrades silently | `docker/Dockerfile:164` and `docker/local/Dockerfile:102` pass `-XX:SharedArchiveFile` with no `-Xshare:on`. The Dockerfile comment at line 161 *states this outcome explicitly* — the repo already knows, and ships it anyway. The build check is `ls -l /mockserver.jsa` (line 120). **Now also measured — see Finding 4** |
+| `nioEventLoopThreadCount` is a fixed 5; `actionHandlerThreadCount` is `max(5, availableProcessors)` | `ConfigurationProperties.java:2223-2237`. Note `availableProcessors()` **is** cgroup-aware on modern JVMs, so the "sizes off the whole machine" gloss is right for a bare JVM and wrong for a CPU-limited container. The laptop profile is the bare-JVM case, so the concern stands where it matters |
+| Published figures were taken at `logLevel=ERROR` while the shipped default is `INFO` | `perf-test-run.sh:85` and `perf-test-load.sh:32` set `MOCKSERVER_LOG_LEVEL=ERROR`; `ConfigurationProperties.java:52` `DEFAULT_LOG_LEVEL = "INFO"`. The run **also** sets `MOCKSERVER_DISABLE_SYSTEM_OUT=true`, a second non-default the first audit missed |
+| `PERF_NOTIFY_WEBHOOK` is a silent no-op | `perf-test-compare.sh` guards the `curl` on `[ -n "${PERF_NOTIFY_WEBHOOK:-}" ]` with no else branch. Not set in any terraform file |
+| The compare step never reads `.sweep` or `.h2_multiplex` | Confirmed in the `metrics` jq: it reads `.behaviours`, `.growth`, `.microbench` only |
+| A new behaviour key is picked up by compare with zero script changes | Confirmed: `metrics` does `(.behaviours // {}) \| to_entries[]`. Item 9a's design is sound |
+| The `perf` queue is a single on-demand `c5.4xlarge`, max 1, scale to zero | `terraform/buildkite-agents/variables.tf:79-94` |
+
+**Wrong, and the correction matters:**
+
+1. **`throughput_rps` is not arithmetically pinned.** The first audit said the value is
+   "~200 by construction" and the metric "structurally cannot fail". The arithmetic is as
+   described — `count / durationSec` from a `constant-arrival-rate` executor — but `count`
+   is *completed* requests, and k6 drops iterations when its VU pool cannot keep up. The
+   repo's own published run records `throughput_rps` of **191.8, 183.8, 191.8, 191.3,
+   186.1, 177.7, 185.9, 185.3** across the eight behaviours. `forward_https_h2` at 177.7 is
+   **below** the 180 that a 10-percent `dir:"down"` rule would trip against a nominal 200.
+   So the metric moves, has moved, and is already losing 4 to 11 percent of offered load at
+   200 req/s.
+
+   The correct diagnosis is worse than the original one, not better: `throughput_rps` is an
+   **unlabelled dropped-iteration counter** presented as a throughput measurement. It cannot
+   distinguish "the server got slower" from "k6 ran out of VUs", and the run records
+   `dropped_iterations` nowhere. **This changes item 5**: the answer is not to delete the
+   metric, it is to record what it is actually detecting.
+
+2. **`regression.js` is not "the one genuinely good continuous signal".** Its p95 and p99 in
+   the published run are between 1,012 ms and 2,154 ms, at 200 req/s per behaviour. See
+   [Finding 3](#finding-3-the-daily-latency-percentiles-and-the-sweep-disagree-by-four-orders-of-magnitude).
+   Until that is explained, the strongest continuous signal in the repo is the JMH
+   `alloc_bytes_per_op` backstop, not the k6 latency percentiles.
+
+**Could not verify:**
+
+- **That the published run used ZGC with an 8 GB heap.** The result schema records
+  `agent.instance_type`, `agent.queue`, the cpusets and the image. It does **not** record
+  heap, GC, `JAVA_TOOL_OPTIONS`, `PERF_SERVER_JAVA_OPTS` or log level. The claim may be true
+  from build logs; it is not recoverable from the artefact. That gap is itself a finding —
+  it is [item 0](#0-make-a-result-self-describing-before-anything-compares-them).
+- **What causes the 1-second regression p95.** Candidates are listed under Finding 3. A
+  read-only audit cannot settle it; one run settles it.
+- **Whether `alloc_bytes_per_op` really is agent-independent.** Still open, still one cheap
+  experiment.
+
+### What actually runs pre-merge
+
+The first audit asserted merge-blocking for a check without checking where its step is wired.
+That produced a recommendation that reads as a PR gate and is not one. The topology, verified
+2026-09-16, so nobody has to infer it again:
+
+- **Exactly one pipeline has `trigger = "code"`**: the orchestrator, `.buildkite/pipeline.yml`.
+  Every other entry in `terraform/buildkite-pipelines/pipelines.tf` is `trigger = "none"`, and
+  the `provider_settings` block derives `build_branches`, `build_pull_requests` and
+  `publish_commit_status` from that flag — so no other pipeline builds a PR directly or
+  reports a commit status of its own.
+- The orchestrator's `generate-pipeline.sh` dispatches sub-pipelines by changed path, passing
+  the **PR branch**, and `trigger-pipeline.sh` polls each triggered build to completion — so a
+  sub-pipeline failure **does** fail the PR.
+
+| Where a step lives | Runs pre-merge? | Blocks the PR? | Covers which changes |
+|---|---|---|---|
+| `pipeline-java.yml`, **no `if:`** | Yes | Yes | Path-filtered: `mockserver/`, `mockserver-ui/`, `test-fixtures/` |
+| `pipeline-java.yml`, `if: build.branch == 'master'` | No | Blocks the **master build** post-merge | **Source-agnostic** — every master build |
+| `pipeline-container-tests.yml` | Yes | Yes, via the orchestrator | Path-filtered: `container_integration_tests/`, `docker/` |
+| `pipeline-perf-test.yml` | No | No — notify-only, schedule/UI triggered | Commit-guarded daily |
+
+Two consequences the rest of this document depends on:
+
+1. **"Merge-blocking" is a property of wiring, not of a check.** Any gating claim in this plan
+   must name the pipeline file, the step label and the branch condition. That is now an
+   acceptance criterion.
+2. **Pre-merge does not imply broader.** Every pre-merge path in this repo is path-filtered by
+   the orchestrator; the master-gated steps are the only source-agnostic ones. See the gating
+   rule in [Feedback latency](#feedback-latency-what-should-block-a-merge).
 
 ## The model: what the measurement system is today
 
@@ -79,15 +207,16 @@ flowchart TD
     dispatches only if master moved"]
     run["perf-test-run.sh
     regression.js http + https_h2
-    sweep.js ladder
+    sweep.js ladder capped at 16000
     growth.js + resource sampler"]
     micro["perf-test-microbench.sh
-    MatchingBenchmark JMH
+    MatchingBenchmark JMH, one fork
     CandidateIndexBenchmark scaling"]
     h2["perf-test-h2multiplex.sh
     Http2StreamChannelBenchmark"]
     cmp["perf-test-compare.sh
-    median plus MAD vs last 10 runs"]
+    median plus MAD vs last 10 runs
+    reads behaviours, growth, microbench only"]
   end
   subgraph gate["Real pass or fail gate"]
     load["perf-test-load.sh
@@ -99,12 +228,22 @@ flowchart TD
     injection ceiling, per-core, scaling"]
   end
   subgraph dark["Exists but never executes"]
-    fwd["k6/forward.js"]
+    fwd["k6/forward.js
+    not even linted"]
     soak["k6/soak.js"]
     stress["k6/stress.js"]
     startup["scripts/perf/bench_startup.py"]
     jmhdark["InboundDecode, MetricsIncrement,
     OpenApiValidation, LocalCallbackDispatch"]
+  end
+  subgraph never["Features with a request-path cost, never measured"]
+    feat["HTTP/3 QUIC transport
+    LLM SSE streaming physics
+    WASM rule interpreter
+    Infinispan clustered state
+    dashboard WebSocket fan-out
+    TLS and mTLS handshake
+    OpenAPI request validation"]
   end
   guard --> run --> cmp
   guard --> micro --> cmp
@@ -118,7 +257,8 @@ flowchart TD
 ```
 
 The two dotted edges are the point of the diagram. A detected regression today reaches a
-build annotation and stops. Measured numbers reach S3 and stop.
+build annotation and stops. Measured numbers reach S3 and stop. The `never` box is the part
+the first audit left out.
 
 ## Coverage map
 
@@ -126,646 +266,1167 @@ Status vocabulary: **continuous** = runs on a schedule and is compared; **once**
 by hand at a point in time and never since; **dark** = the code exists but nothing runs it;
 **none** = never measured.
 
-| Dim | Profile | Status | What exists | Harness | Cadence | Threshold |
-|---|---|---|---|---|---|---|
-| D1 Scale | L | none | — | — | — | — |
-| D1 | C | continuous but truncated | Knee curve, ladder capped at 16,000 rps in CI (`K6_SWEEP_RATES` default in `perf-test-run.sh` is `500,1000,2000,4000,8000,16000`) — below saturation, so the ceiling cannot move the number | `k6/sweep.js` | daily | **none** — `perf-test-compare.sh` deliberately does not read `.sweep` |
-| D1 | C | once | Published knee: p50 0.19 ms to ~32,000 rps, saturation ~36,000 rps on 6 pinned cores. **Measured 2026-06-24, perf build #64, commit `15f4dcf50`, pre-8.0.0** | manual `sweep.js` run with a longer ladder | one-off | — |
-| D1 | C | none | Connection-count ceiling; max concurrent connections; keep-alive pool limits | — | — | — |
-| D1 | C | continuous | HTTP/2 streams per connection, N = 1, 10, 100 over one h2c connection | `Http2StreamChannelBenchmark` | daily | **none by design** — the script states variance on real agents is unknown so a threshold would be guessing. Correct judgement; do not override it blindly |
-| D1 | P | opt-in | Injection ceiling, per-core sweep C = 1,2,4,8, aggregate scaling N = 1 to 6 | `stack/inject/run-inject.sh` with an Envoy sink | opt-in (`PERF_INJECT=true` or `[perf-inject]`) | none — recorded |
-| D1 | all | none | req/s **per core for the serving path**. The per-core curve that exists measures the *injector*, not the server | — | — | — |
-| D2 Req/resp | L | none | — | — | — | — |
-| D2 | C | continuous | p50/p95/p99 and error rate for `match`, `forward`, `template`, `large` over HTTP and HTTPS+H2 at a fixed 200 rps | `k6/regression.js` | daily | median + MAD over last 10 runs, 10 percent floor. **This is the one genuinely good continuous signal** |
-| D2 | C | continuous | p95 < 25 ms, p99 < 100 ms, errors < 1 percent at **300 rps** | `k6/load.js` via `perf-test-load.sh` | daily and manual | real gate, but see trustworthiness — roughly 100x headroom, and on the Spot `default` queue |
-| D2 | C | continuous | Matcher time/op and `gc.alloc.rate.norm` bytes/op, 100 expectations, matcher types EXACT/REGEX/JSON_BODY, `logLevel=INFO` | `MatchingBenchmark` (JMH) | daily | median + MAD, 5 percent floor. **The strongest absolute backstop in the repo** |
-| D2 | C | continuous | Matcher scan versus candidate-index scaling over n | `CandidateIndexBenchmark` via `run-scaling.sh` | daily | none — recorded |
-| D2 | C | dark | Inbound decode allocation; metrics counter contention; OpenAPI validation cache; local-callback dispatch hop | four JMH benchmarks in `mockserver-benchmark` | never run | — |
-| D2 | P | dark | Stress past the knee; sustained soak | `k6/stress.js`, `k6/soak.js` | **lint-only — `k6 inspect` parses them, nothing ever runs them** | — |
-| **D3 Proxy** | all | continuous (partial) | Forward **action** latency at 200 rps to a dedicated upstream container | `k6/regression.js` op `forward` | daily | median + MAD |
-| **D3** | C | **dark** | Forward connection-pool exhaustion guard at 1,500 rps — the documented guard for `mockserver.forwardConnectionPoolEnabled` | `k6/forward.js` | **never run, and not even in `perf-test-lint.sh`'s inspect list** | its thresholds never execute |
-| **D3** | all | **none** | CONNECT tunnel; SOCKS4/5; transparent proxy; binary proxying; HTTP/2 relay; upstream-proxy chaining; proxy MITM TLS cost | — | — | — |
-| D4 CPU | L | none | Idle-instance CPU floor | — | — | — |
-| D4 | C | continuous | CPU percent start/end/peak/ratio from `docker stats` every 5 s during a 6-minute growth run | sampler in `perf-test-run.sh` | daily | ratio versus median + MAD, absolute floor 1.30 |
-| D4 | P | opt-in | Injector CPU percent at ceiling; `rps_per_core` | inject harness | opt-in | none |
-| D4 Memory | L | none | Per-instance RSS; idle heap floor; whether the documented `-Xmx512m` sidecar recipe actually works | — | — | the 512 MB recipe on the website is **prose only, never measured** |
-| D4 | C | continuous (weak) | Heap used start/end/peak/ratio, GC seconds delta, peak thread count over 6 minutes at 800 rps | sampler plus `growth.js` | daily | heap ratio versus median + MAD, floor 1.30 |
-| D4 | C | unit-only | Ring-buffer bound: `maxLogEntries`, `CircularConcurrentLinkedDeque` eviction, byte bound | JUnit (`MockServerEventLogEvictionTest`, `CircularConcurrentLinkedDequeTest`, `HeapAvailableSizingTest`) | every build | **the bound is enforced in unit tests; it has never been demonstrated in a live process under sustained load**, which is the claim the docs make |
-| D4 | C | none | Long-running steady state over hours | `soak.js` exists, never runs | — | — |
-| D4 | C | **none** | **Per-connection memory after the 8.0.0 HTTP/2 multiplex change** | — | — | see [the 8.0.0 warning](#finding-2-the-800-http2-multiplex-change-is-unverified) |
-| D5 Startup | L | **once** | `docker run` to ready 855 ms then **566 ms** with AppCDS; fat jar 919 to 804 ms; first-request warmup 230 ms to 5–11 ms; JDK 25 Leyden `-aot` about 580 ms. **Measured 2026-07-02 on 7.3.1-SNAPSHOT, arm64 Mac, median of 5 cold launches** | `scripts/perf/bench_startup.py`, `gap_probe.py`, `warmup_probe.py` | **by hand, once. No CI step invokes these** | — |
-| D5 | L | ineffective | Whether the AppCDS archive is actually mapped at runtime | `docker/Dockerfile` does `ls -l /mockserver.jsa` — existence only — and the entrypoint uses `-Xshare:auto` | image build | **cannot fail.** An unusable archive logs a warning and starts normally, silently giving back the measured 34 percent win |
-| D5 | C, P | none | Startup under a cold registry or in a cluster | — | — | — |
-| D6 Floor | L | none | Minimum viable heap; idle thread count. Note `nioEventLoopThreadCount` defaults to a **fixed 5** and `actionHandlerThreadCount` to `max(5, availableProcessors)` — designed and documented, never measured | — | — | — |
-| D6 | L | none | N parallel instances on one host: port pressure, aggregate threads, aggregate RSS, GC interference | — | — | — |
+| Dim | Profile | Status | What exists | Cadence | Threshold |
+|---|---|---|---|---|---|
+| D1 Scale | L | none | — | — | — |
+| D1 | C | continuous | Knee ladder. **Extended to 64,000 in `19686f9f1`** — it previously stopped at 16,000, below saturation, so the ceiling could not move the number | daily | `peak_achieved_rps`, `dir:"down"`, validity-gated |
+| D1 | C | once | Published knee: p50 0.19 ms at 32,000 offered / 31,751 achieved; peak achieved 36,324 at 48,000 offered, where p50 had already risen to 23.1 ms. **2026-06-24, build #64, commit `15f4dcf50`, pre-8.0.0, instance type not recorded** | one-off | — |
+| D1 | C | none | Connection-count ceiling; keep-alive pool limits; max concurrent connections | — | — |
+| D1 | C | continuous | HTTP/2 streams per connection, N = 1, 10, 100 over one h2c connection | daily | **none by design** — variance unknown; a threshold would be guessing |
+| D1 | P | opt-in | Injection ceiling, per-core sweep, aggregate scaling N = 1 to 6 | opt-in | none |
+| D1 | all | none | req/s **per core for the serving path** — the per-core curve that exists measures the *injector* | — | — |
+| D2 Req/resp | L | none | — | — | — |
+| D2 | C | continuous, **suspect** | p50/p95/p99 per behaviour over HTTP and HTTPS+H2 at 200 rps | daily | median + MAD, 10% floor. **Published p95 is ~1 s — see Finding 3 before trusting it** |
+| D2 | C | continuous | p95 < 25 ms, p99 < 100 ms at **300 rps** against a server measured near 32,000 | daily | real gate, ~100x headroom, on the Spot `default` queue |
+| D2 | C | continuous | Matcher time/op and `gc.alloc.rate.norm`, **one JMH fork** | daily | median + MAD, 5% floor — the strongest absolute backstop |
+| D2 | C | dark | Inbound decode allocation; metrics contention; OpenAPI validation cache; callback dispatch hop | never run | — |
+| D2 | C | none | **Template engine cost by engine** — the `template` op exercises Velocity only | — | — |
+| D2 | C | none | **TLS and mTLS handshake cost** — connections are reused per VU, so handshake is amortised out of every number | — | — |
+| D2 | C | **continuous** | **ByteBuf leak detection at `paranoid`, gated at `verify`** — landed `a1158a104`. Found a production leak on its first run | every `mockserver-netty` build | **fails the module**; `-Dmockserver.failOnNettyLeak=false` downgrades |
+| D2 | P | dark | Stress past the knee; sustained soak | **lint-only — nothing runs them** | — |
+| **D3 Proxy** | all | continuous (partial) | Forward **action** latency at 200 rps | daily | median + MAD |
+| **D3** | C | **continuous** | Forward connection-pool exhaustion at 1,500 rps. **Wired in `19686f9f1`** — it had never executed and was not even linted | daily | `forward_guard.error_rate`; infra failure now announces itself |
+| **D3** | all | **none** | CONNECT tunnel; SOCKS4/5; transparent proxy; binary proxying; HTTP/2 relay; upstream-proxy chaining; proxy MITM TLS | — | — |
+| D4 CPU | L | none | Idle-instance CPU floor | — | — |
+| D4 | C | continuous | CPU start/end/peak/ratio over a 6-minute growth run | daily | ratio vs median + MAD, floor 1.30 |
+| D4 Memory | L | none | Per-instance RSS; idle heap floor; whether the documented `-Xmx512m` sidecar recipe works | — | the 512 MB recipe is **prose only, never measured** |
+| D4 | C | continuous | **Live-set floor ratio AND absolute `live_set_bytes`**, SUT bounded to 2g so GC cycles. Landed `19686f9f1` | daily | ratio floor 1.30; absolute budgeted |
+| D4 | C | unit-only | Ring-buffer bound | every build | **asserted in unit tests; never demonstrated in a live process under load** |
+| D4 | C | none | Long-running steady state over hours | — | — |
+| D4 | C | **none** | **Per-connection memory after the 8.0.0 HTTP/2 multiplex change** | — | see Finding 2 |
+| D4 | C | **none** | **Event-log verification query cost at high log occupancy** — the central-deployment pattern, unmeasured at any occupancy | — | — |
+| D5 Startup | L | **once** | Docker 855 ms to **566 ms** with AppCDS; fat jar 919 to 804 ms; first-request warmup 230 ms to 5-11 ms; `-aot` about 580 ms. **2026-07-02, 7.3.1-SNAPSHOT, arm64 Mac, median of 5** | **by hand, once** | — |
+| D5 | L | **none** | **In-JVM start via `ClientAndServer.startClientAndServer`** — what `MockServerExtension` actually does, and what a laptop user pays per test class | — | — |
+| D5 | L | **continuous** | Whether the AppCDS archive actually maps. Landed `bb3c41246`. **Silent degradation confirmed by experiment 2026-09-16** — corrupted archive, container healthy, `bad magic number` and nothing else | every master build, post-merge | **boolean, blocking** — not a PR gate, deliberately |
+| D5 | C | **none** | Startup with a large `initializationJsonPath` — a central deployment boots from one | — | — |
+| D6 Floor | L | none | Minimum viable heap; idle thread count. `nioEventLoopThreadCount` is a **fixed 5**; `actionHandlerThreadCount` is `max(5, cores)` | — | **designed and documented, never measured** |
+| D6 | L | none | N parallel instances: port pressure, aggregate threads, aggregate RSS, GC interference | — | — |
+| D6 | L | **none** | **Dev mode.** `mockserver.devMode` exists specifically for this profile and nobody knows what it saves | — | — |
+| **NEW D2, D4** | C, P | **none** | **LLM / SSE streaming.** Per-token delays are scheduled onto a `max(5, cores)` pool with `CallerRunsPolicy` — under saturation the caller runs the task, and the caller is an event loop | — | — |
+| **NEW D1, D2** | C | **none** | **HTTP/3 / QUIC** — a full second transport with different physics | — | — |
+| **NEW D1, D2, D4** | C | **none** | **Clustered state** (`StateBackend`, Infinispan) — the feature built for the exact profile the owner named | — | — |
+| **NEW D2** | C | **none** | **WASM rule bodies** — a per-request interpreter on the matching path when used | — | — |
+| **NEW D2, D4** | C | **none** | **Dashboard WebSocket fan-out** while serving traffic | — | — |
 
-## Trustworthiness of what exists
+## Trustworthiness: which numbers would catch a regression tomorrow
 
-Distinguish three grades: **measured continuously** (runs and is compared), **measured once
-and published** (a historical fact, not a current one), and **asserted in prose** (a claim
-with no measurement behind it). Then ask the sharper question: *could this check pass while
-the thing it measures had regressed?*
+Three grades: **measured continuously** (runs and is compared), **measured once and
+published** (a historical fact, not a current one), and **asserted in prose**. Then the
+sharper question: *could this check pass while the thing it measures had regressed?*
 
-| Check | Last taken | Version | Would a regression be caught tomorrow? |
-|---|---|---|---|
-| `regression.js` latency percentiles | continuous (daily) | snapshot | **Yes, probably.** Median + MAD over 10 runs with a 10 percent floor is sound. Caveat: notify-only, and the notification path is broken (see below) |
-| `regression.js` `throughput_rps` | continuous | snapshot | **No — structurally cannot fail.** `handleSummary` computes `count / durationSec` where `count` comes from a `constant-arrival-rate` executor pinned at 200 rps. The value is ~200 by construction; the `dir:"down"`, 10 percent rule can only fire below 180 rps. It looks like throughput-regression detection and is not |
-| `MatchingBenchmark` micro-benchmark | continuous — **but silently dark 2026-09-12 to 2026-09-16** | snapshot | **Yes, now.** JMH is low-noise and `gc.alloc.rate.norm` is a real absolute backstop. Before `b98d18f0c` the only signal that it had stopped producing numbers was a red square nobody watched |
-| `load.js` CI gate | continuous | snapshot | **Barely.** 300 rps against a server measured at ~32,000 rps; a p95 gate of 25 ms against a measured p50 of 0.19 ms. A 50x throughput regression passes. It also runs on `queue: default` (Spot, mixed instance types) rather than the pinned `perf` queue, so its noise floor is worse than its sensitivity |
-| `sweep.js` knee curve | continuous, **truncated** | snapshot | **No.** The CI ladder stops at 16,000 rps where the server is comfortable — the 2026-06-24 data shows 16,000 offered giving 16,000.1 achieved at p50 0.159 ms. Saturation is never approached, and there is no baseline comparison at all |
-| `sweep.js` — was the client the bottleneck? | — | — | **Unknown and unasserted.** `perf-test-run.sh` samples `docker stats` on the **server** only, and only during the growth phase. No k6-container CPU sample, no VU-starvation check from `dropped_iterations`, no connection-reuse assertion at the top of the ladder. **The published "about 36,000 req/s on six cores" is therefore not proven to be MockServer's ceiling rather than a six-core k6's.** The inject harness applies exactly this discipline — Envoy headroom, `reqs_per_connection >= REUSE_MIN`, `throttled ~ 0`. The serving sweep does not |
-| `growth.js` heap ratio | continuous | snapshot | **Weakly.** It is last instantaneous `jvm_memory_used_bytes` divided by first instantaneous, sampled every 5 s — a point on the GC saw-tooth, not the live set (`JvmMetricsCollector` exposes no post-GC live-set metric). The container starts with **no `--memory`**, so on the 32 GB `c5.4xlarge` `MaxRAMPercentage=75` yields roughly a 24 GB heap where GC barely cycles. Six minutes is not a soak. It would catch an issue-#2329-class cliff; it would not catch a 100-bytes-per-request leak |
-| `growth.js` latency slope | continuous | snapshot | **Yes for its stated purpose.** It is validated against issue #2329, and 800 rps for 6 minutes overfills the 100k ring roughly 2.9 times |
-| Ring-buffer bound | every build, unit level | HEAD | The **bound** is enforced. Its behaviour **under sustained load in a live process** is asserted in prose, never demonstrated |
-| `Http2StreamChannelBenchmark` | continuous | snapshot | **No, by explicit and correct design** — recorded to S3, no threshold |
-| Inject ceiling / per-core / scaling | opt-in | snapshot | Not a regression signal; a research instrument. Its self-validation discipline is the best in the repo and should be generalised |
-| Published website figures | **2026-06-24, build #64** | **pre-8.0.0** | **No.** See finding 1 |
-| Published *methodology* claims | — | — | `performance.html` tells readers that **soak** and **stress** are part of how MockServer is tested. Neither script has ever been executed by CI. That is a customer-facing claim the pipeline does not support |
-| Startup figures | **2026-07-02, once, by hand** | **7.3.1-SNAPSHOT** | **No.** No CI step runs `scripts/perf/`, and `-Xshare:auto` makes a broken AppCDS archive a warning rather than a failure |
+| Check | Would a regression be caught? |
+|---|---|
+| `regression.js` latency percentiles | **Unknown, and that is the problem.** Median + MAD over 10 runs with a 10% floor is a sound *method*. But the published p95 is 1,014 ms against a sweep p95 of 0.279 ms at 80x the rate. If the percentile is dominated by a rig artefact, the budget tracks the rig. **Resolve Finding 3 before attaching a budget** |
+| `regression.js` `throughput_rps` | **It fires for the wrong reason.** A dropped-iteration counter in disguise: it falls when k6's VU pool cannot keep up, conflating server slowdown with client starvation. Published values 177.7 to 191.8 against a nominal 200. Now labelled with `offered_rps` and a delivery ratio, and deliberately **un-budgeted** until the shortfall is explained (`19686f9f1`) |
+| `MatchingBenchmark` | **Yes for allocation, weakly for time.** `gc.alloc.rate.norm` is a real absolute backstop. `time_per_op` runs `-f 1` — a **single JMH fork** — so inter-fork JIT variance is never sampled and the measured dispersion understates the real one. It was also **silently dark 2026-09-12 to 2026-09-16** |
+| `load.js` CI gate | **Barely.** 300 rps against a server measured near 32,000; a p95 gate of 25 ms against a sweep p50 of 0.19 ms. A 50x throughput regression passes. It runs on the Spot `default` queue, so its noise floor is worse than its sensitivity |
+| `sweep.js` knee | **Now yes, previously no.** The ladder reached only 16,000 where the server is comfortable. Extended to 64,000 with `peak_achieved_rps` budgeted (`19686f9f1`) |
+| `sweep.js` — was the **client** the bottleneck? | **Now asserted, previously unknown.** k6's own CPU and dropped iterations are captured per rung and a compromised rung is excluded and named. Before this, the published "~36,000 req/s on six cores" was not proven to be MockServer's ceiling rather than a six-core k6's |
+| `growth.js` heap | **Now yes, previously weakly.** Was last-instantaneous over first-instantaneous — a point on the GC saw-tooth — with the SUT unbounded on a 32 GB box where GC barely cycled. Now the live-set floor plus a budgeted absolute, bounded to 2g (`19686f9f1`) |
+| Ring-buffer bound | The **bound** is enforced in unit tests. Its behaviour **under sustained load in a live process** is asserted in prose, never demonstrated |
+| ByteBuf leaks | **Yes, newly.** Paranoid detection gated at `verify` (`a1158a104`). Configured nowhere before, so Netty ran at ~1% sampling and gated nothing |
+| `Http2StreamChannelBenchmark` | **No, by explicit and correct design** — recorded, no threshold, because run-to-run variance is unknown |
+| Run provenance | **Insufficient to compare runs at all.** Every stored run carries `"instance_type": ""` — `curl -s` exits zero on an empty body so the fallback never fired. Fixed in `19686f9f1`; the rest of the `config` block is item 0. No heap, GC, JVM-options or log-level field exists |
+| Published website figures | **No.** `perf-test-compare.sh` writes to S3 and stops. Nothing regenerates the committed chart data |
+| Published *methodology* claims | The page states soak and stress are part of how MockServer is tested. **Neither has ever been executed by CI** |
+| Startup figures | **No.** No CI step runs `scripts/perf/` |
 
 ### Finding 1: the published figures are a stale customer-facing claim
 
-`jekyll-www.mock-server.com/mock_server/performance.html` asserts, in prose and in a
-results table and in its FAQ schema, that a single six-core instance holds sub-millisecond
-median latency to 32,000 req/s and saturates near 36,000 req/s.
+`performance.html` asserts that a single six-core instance holds sub-millisecond median
+latency to 32,000 req/s and saturates near 36,000. The backing data records
+`timestamp_utc: 2026-06-24T23:12:13Z`, `build_number: 64`, `commit: 15f4dcf50`,
+`agent.instance_type: ""` — **the hardware is not recorded** — and predates 8.0.0.
 
-Those numbers come from `jekyll-www.mock-server.com/images/perf-charts/data/perf-result.json`,
-whose own metadata records:
+Three caveats the page does not state:
 
-- `timestamp_utc: 2026-06-24T23:12:13Z`
-- `build_number: 64`
-- `commit: 15f4dcf509101bf3dd4440357db52c7902d88f34`
-- **pre-8.0.0** — before the HTTP/2 multiplex migration
+- The run is believed to have used **ZGC with an 8 GB heap**, not the default configuration.
+  **Unverified** — the schema has no field for it, so the claim cannot be checked from the
+  artefact. That is item 0.
+- Every CI perf run sets `MOCKSERVER_LOG_LEVEL=ERROR` **and** `MOCKSERVER_DISABLE_SYSTEM_OUT=true`.
+  The shipped default log level is `INFO`, and the site's own tuning guidance says INFO-level
+  per-matcher diagnostics are "the single largest matching-path allocation". The headline
+  figures are **not default-configuration figures**, and the page does not say so.
+- **Never publish a throughput ceiling without the latency measured at it.** The headline
+  "saturates near 36,000" is the peak *achieved* rung — and the curve turns over above it:
 
-Two further caveats the page does not state:
+  | Offered | Achieved | p50 | p95 |
+  |---:|---:|---:|---:|
+  | 16,000 | 16,000.1 | 0.159 ms | 0.279 ms |
+  | 32,000 | 31,751.2 | 0.194 ms | 4.14 ms |
+  | 48,000 | **36,323.8** | **23.119 ms** | **125.136 ms** |
+  | 64,000 | 30,870.7 | 97.355 ms | 170.664 ms |
+  | 80,000 | 33,040.9 | 112.646 ms | 181.170 ms |
 
-- The run used **ZGC with an 8 GB heap**, which is not the default configuration.
-- Every CI perf run, including the one that produced these figures, sets
-  `MOCKSERVER_LOG_LEVEL=ERROR`. **The shipped default is `INFO`**
-  (`ConfigurationProperties.java:52`, `DEFAULT_LOG_LEVEL = "INFO"`). The site's own tuning
-  guidance says INFO-level per-matcher diagnostics are "the single largest matching-path
-  allocation" when many expectations are registered. So the headline figures are not
-  default-configuration figures, and the page does not say so. The page's phrase "full
-  request logging enabled (the default)" is defensible about *request recording* into the
-  event log, which is on — but it reads as though log level is default, and it is not.
-
-**Nothing refreshes the page.** `perf-test-compare.sh` persists each run to
-`s3://mockserver-ci-perf-results/runs/<branch>/...` and stops. There is no code path
-anywhere that regenerates the committed chart data or the site tables. The page will keep
-drifting for as long as nobody notices. What would keep it honest is in
-[item 14](#14-close-the-loop-from-s3-back-to-the-website).
+  At the published peak, p50 has risen 119x and p95 30x against the rung below, and 64,000
+  offered returns **less** than 48,000 did. 36,324 req/s is the top of an overload curve on
+  the way down, not a healthy operating ceiling. A reader sizing a deployment from it will
+  provision for 36,000 and get 23 ms medians. Publish `healthy_ceiling_rps` — highest rung
+  where achieved is within 5% of offered **and** latency stays within a stated multiple of
+  the flat part, which on this data is **32,000 at p50 0.194 ms** — with `peak_achieved_rps`
+  beside it, explicitly labelled as degraded.
 
 ### Finding 2: the 8.0.0 HTTP/2 multiplex change is unverified
 
-`changelog.md` for 8.0.0 records, about issue #2669:
+The 8.0.0 changelog records, about issue #2669:
 
 > Users driving very large numbers of concurrent streams over a single connection may notice
 > different memory and throughput characteristics, since each stream now has its own
 > lightweight channel.
 
-That is an explicit, self-declared change to per-connection memory and throughput, in the
-exact area that matters most to the **central deployment profile** — many consumers, many
-concurrent streams, long-lived connections. **Nothing has been re-measured since.** The
-`Http2StreamChannelBenchmark` added alongside it sweeps streams-per-connection but has no
-memory axis and no threshold, and the published figures predate the change entirely.
+An explicit, self-declared change to per-connection memory and throughput, in the area that
+matters most to the central-deployment profile. **Nothing has been re-measured since.** The
+benchmark added alongside it sweeps streams-per-connection but has no memory axis and no
+threshold, and the published figures predate the change entirely. This is the single most
+concrete reason to re-baseline.
 
-This is the single most concrete reason to re-baseline before anything else.
+### Finding 3: the daily latency percentiles and the sweep disagree by four orders of magnitude
+
+From **one artefact**, build #64:
+
+| Source, same run | Offered | p50 | p95 | p99 |
+|---|---:|---:|---:|---:|
+| `sweep` rung | 16,000 rps | 0.159 ms | 0.279 ms | 0.501 ms |
+| `growth` probe | 20 rps | — | 0.204 ms | — |
+| `behaviours.match_http` | 200 rps | 0.475 ms | **1,014.2 ms** | **1,240.0 ms** |
+| `behaviours.forward_https_h2` | 200 rps | 1.297 ms | **1,487.6 ms** | **2,154.1 ms** |
+
+A server serving 16,000 req/s at p95 0.279 ms cannot also serve 200 req/s at p95 1,014 ms.
+Every behaviour shows it, on both transports, with `error_rate: 0`. Medians are fine; only
+the tail is pathological. The same run's `throughput_rps` is 4-11% short of the offered 200,
+consistent with a VU pool tied up.
+
+Candidates, unverified, in rough order of prior probability: k6 VU starvation at scenario
+start (all four scenarios use `preAllocatedVUs: 20`, `maxVUs: 200`, and start simultaneously
+at `startTime: 30s`; a ~1 s mode is suspiciously close to a one-second scheduling quantum);
+contention between the four scenarios plus warmup inside one k6 process on six cores; a real
+server-side tail visible only at low concurrency; or a percentile-computation artefact.
+
+**What this blocks.** Three things rest on `regression.js` being sound: its p95/p99 are the
+proposed D2 budget metrics, item 9a proposes cloning its scenario shape for proxying, and the
+first audit called it the one good continuous signal. If the tail is a rig artefact, all
+three inherit it. **Resolving it costs one run and precedes attaching any latency budget.**
+Vary `K6_REG_PRE_VUS` and see whether the tail moves with it; run one behaviour alone versus
+all four to separate starvation from contention.
+
+### Finding 4: the AppCDS degradation is measured, not inferred
+
+On **2026-09-16**, with a deliberately corrupted `/mockserver.jsa` bind-mounted over the real
+one, the container **served `/mockserver/status` 200 while logging only `bad magic number`**.
+The 34% startup win is given back silently. Item 4 now detects this on every master build.
+This moved from an inference about flag semantics to an experiment, and it is the pattern
+worth copying: the plan's other flag-derived claims deserve the same treatment.
 
 ## The programme
 
-Ordered by value divided by cost. Each item is independently actionable.
+Ordered by value divided by cost. Items marked **[landed]** are on `master`; the commit is
+named so a reader can see what was actually done versus what was planned.
 
-### Tier 1 — cheap, high value, days not weeks
+### Tier 0 — must precede or accompany everything else
 
-#### 1. Make the daily result reach a human
+#### 0. Make a result self-describing before anything compares them
 
-*Serves: all dimensions, all profiles. Cost: hours. Where: daily pipeline.*
+*Serves: all. Cost: half a day. **Blocks items 2, 7, 11, 19 and the whole Sustaining section.***
+
+The comparison machinery, the ratchet, the hardware-invalidation rule and the website
+provenance line all assume a run records what it was. It does not.
+
+- **The `instance_type` bug is fixed** (`19686f9f1`): `curl -s` exits zero on an empty body,
+  so the `||` fallback never fired and `""` was written into permanent history for months.
+  A field that exists, is populated, and is wrong survives review in a way an absent field
+  does not.
+- **Add a `config` block** (`schema_version: 2`): MockServer version and image digest, log
+  level, `DISABLE_SYSTEM_OUT`, the **resolved** heap and GC, JVM options, JDK build, k6 image
+  digest, cpusets, and the k6 container's CPU allocation. Resolve from the **running JVM**
+  where possible rather than echoing the environment variables meant to set it — record what
+  the run was, not what someone intended. Mark declared-versus-observed values distinctly.
+- **Fail the step when a value cannot be recorded**, rather than writing a placeholder.
+- **Do not silently compare across the boundary.** Annotate when a baseline window contains
+  runs without a `config` block. Do not backfill history.
+
+**Done when:** a run's JSON carries a populated `config` block and a non-empty
+`instance_type`; the annotation names the version and log level; and a deliberately
+unobtainable value makes the step fail rather than write an empty string.
+
+#### 1. Make the daily result reach a human — **NOT STARTED, and it should have been first**
+
+*Serves: all. Cost: hours.*
 
 `perf-test-compare.sh` annotates the build and then calls an **optional
-`PERF_NOTIFY_WEBHOOK` that is configured nowhere** — not in
-`terraform/buildkite-agents/`, not in `terraform/buildkite-pipelines/`, nowhere. A detected
-regression today notifies nobody.
+`PERF_NOTIFY_WEBHOOK` that is configured nowhere** — not in `terraform/buildkite-agents/`,
+not in `terraform/buildkite-pipelines/`, nowhere. A detected regression today notifies
+nobody.
 
-- Provision the webhook URL through the existing AWS Secrets Manager pattern used for the
-  Buildkite API tokens (`terraform/buildkite-agents/build-secrets.tf`) and expose it to the
+- Provision the webhook through the existing Secrets Manager pattern and expose it to the
   `perf` queue.
-- Make its absence **loud**: when `PERF_NOTIFY_WEBHOOK` is unset and a regression is
-  detected, the annotation must say so explicitly — "this regression notified nobody" —
-  rather than silently skipping the `curl`.
-- **Signal lands:** a maintainer channel. **Who acts:** the maintainer on rota reads it the
-  same day and either bisects, or files a follow-up, or records it as accepted in the
-  budgets file (see Sustaining the goals).
+- Make its absence **loud**: when the webhook is unset and a regression is detected, the
+  annotation must say "this regression notified nobody" rather than silently skipping.
+- **Signal lands:** a maintainer channel. **Who acts:** the perf owner, same day.
 
-Until this exists, every other item is optional reading.
+**Done when:** an injected fake regression produces a message in the channel, **and**
+unsetting the secret produces the explicit "notified nobody" annotation. Both halves
+demonstrated once.
 
-#### 2. Extend the CI sweep past the knee, and prove the client is not the bottleneck
+Until this exists, every item below is optional reading.
 
-*Serves: D1, D2 / profile C. Cost: 1–2 days. Where: daily pipeline. **Highest value single change.***
+### Tier 1 — cheap, high value
 
-- Raise `K6_SWEEP_RATES` in `perf-test-run.sh` to the published ladder
-  (`...16000,32000,48000,64000`) so saturation is actually reached. Adds roughly 4 minutes
-  to a 45-minute step.
-- Per rung, additionally record: `docker stats` CPU for the **k6** container, and k6's
-  `dropped_iterations`.
-- Adopt the inject harness's rule: a rung where the client is above about 85 percent of its
-  pin, or `dropped_iterations` is non-zero, is **flagged and excluded** from the derived
-  ceiling rather than reported. A ceiling is only a ceiling if the client had headroom.
-- Derive `saturation_rps` = highest rung where `achieved >= 0.95 * offered` **and** the
-  validity checks pass. Add it to `perf-test-compare.sh`'s `metrics` function with
-  `dir:"down"` and a 15 percent floor.
+#### 2. Extend the sweep past the knee, and prove the client was not the bottleneck — **[landed `19686f9f1`]**
 
-This converts the headline customer-facing number from unverified prose into a tracked
-metric.
+The ladder now reaches 64,000. Per rung, k6's own CPU and `dropped_iterations` are captured,
+and a rung where the client was pinned or starved is **excluded and named** rather than
+reported. The budgeted metric is **`peak_achieved_rps`**, not `saturation_rps`.
 
-#### 3. Wire up `forward.js`, or delete it
+**Two corrections made during implementation, worth preserving:**
 
-*Serves: D3 / profiles C, P. Cost: hours.*
+- `saturation_rps` as originally specified is **ladder-quantised** — on the published data its
+  only neighbours are 16,000 and 32,000. A metric whose smallest possible move is a factor of
+  two cannot carry a 15% floor. `peak_achieved_rps` is continuous and moves with the ceiling.
+- `perf-test-compare.sh` applied `$m.floor` **only in the `dir:"up"` branch**, so a
+  `dir:"down"` floor was **silently ignored**. Fixed symmetrically, with the up branch left
+  byte-identical. Without this the item would have shipped a threshold that could not fire —
+  the exact defect the programme exists to remove, built into the programme.
 
-`k6/forward.js` is documented in `mockserver-performance-test/k6/README.md` as the
-regression guard for `mockserver.forwardConnectionPoolEnabled`, complete with instructions
-for demonstrating it failing. It has **never executed**, and it is **missing from
-`perf-test-lint.sh`'s inspect list** (which covers `smoke, load, stress, soak, regression,
-growth, sweep` — not `forward`). We ship a guard that guards nothing.
+Validity-exclusion is bidirectional: if the k6 container degrades, top rungs are excluded,
+`peak_achieved_rps` falls, and a **client** problem reports as a **server** regression. The
+annotation names which rungs were excluded and why, so an operator can tell them apart.
 
-- Add `k6/forward.js` to the lint list — a one-word fix.
-- Add a step to `perf-test-run.sh` running it against the dedicated upstream container that
-  is already started for `regression.js`.
-- Its existing `http_req_failed` threshold is a genuinely discriminating gate: with pooling
-  off, the host exhausts ephemeral ports and the error rate spikes.
+#### 3. Wire up `forward.js` — **[landed `19686f9f1`]**
 
-#### 4. Gate AppCDS being *used*, not merely present
+The repo's only written proxy guard had **never executed** and was not in the lint list. Now
+both. Its failure modes are distinguished: an unreachable upstream announces that the guard
+did not run, rather than passing unnoticed because its metric row is absent — a guard that
+has never run quietly not running again is the failure this closes.
 
-*Serves: D5 / profile L. Cost: hours. Where: container-tests pipeline, merge-blocking.*
+#### 4. Gate AppCDS being *used*, not merely present — **[landed `bb3c41246`]**
 
-The image entrypoint uses `-XX:SharedArchiveFile=/mockserver.jsa` with the JVM default
-`-Xshare:auto`, so a missing, corrupt, bind-mounted-away or arch-mismatched archive logs a
-warning and starts normally — silently giving back the measured 34 percent startup win. The
-build only checks the file exists (`ls -l /mockserver.jsa`).
+*Where: the master-gated container-integration suite. **Post-merge-on-master blocking** — a considered decision, not an accepted limitation.*
 
-- Add a container test following the `container_integration_tests/docker_compose_jvm_options`
-  pattern that runs the image with `-Xlog:cds` (or probes with `-Xshare:on`) and asserts the
-  archive maps.
-- This is a **boolean**, not a wall-clock measurement, so it cannot be flaky. It can and
-  should block a merge.
+Silent degradation confirmed by experiment (Finding 4). The check forces `-Xshare:on` via
+`JAVA_TOOL_OPTIONS` over the real entrypoint so an unusable archive aborts JVM init, and
+additionally asserts the `-Xlog:cds` line naming `/mockserver.jsa` — because dropping the
+`SharedArchiveFile` flag still boots cleanly on the base archive, so readiness alone would
+not catch it. Both halves are load-bearing.
 
-#### 5. Fix or remove `throughput_rps`
+**Implementation trap:** a naive `docker run --entrypoint java ... -version` probe
+**false-fails on a healthy archive** — it maps the archive then rejects it with a CDS *shared
+class paths mismatch*, because the probe lacks the classpath the archive was trained with.
+Reuse the real entrypoint; override only the share mode.
 
-*Serves: D2 / profile C. Cost: hours.*
+**On placement — the counter-argument, because the next reader's instinct will be to move it
+earlier.** The pre-merge `container-tests` pipeline is path-filtered on
+`container_integration_tests/**` and `docker/**`; the master-gated suite is
+**source-agnostic** and runs on every master build. The archive can stop mapping from
+origins those paths do not cover — a JDK base-image digest bump, a jlink module-set change,
+a core change that shifts the training run's class set. Moving it earlier buys **earlier
+detection of a narrower set of causes** and loses the likeliest ones. Tenanting the
+pre-merge slot also means re-importing the `docker/Dockerfile` build, which drags in the
+AppCDS training stage (it boots a server and polls up to 240 x 0.5 s) — precisely the
+heavyweight tenant that was pulled from that slot for turning it red.
 
-It is arithmetically unfalsifiable (see trustworthiness table). Either drop it from the
-compared metrics or replace it with `saturation_rps` from item 2. A permanently-green row in
-the annotation table trains readers to trust the table.
+#### 5. Say what `throughput_rps` actually measures — **[landed `19686f9f1`]**
 
-#### 6. Measure growth against a realistic heap, and measure the live set
+The original specification said this metric was arithmetically unfalsifiable and should be
+deleted. **That was wrong on both counts.** The published run records 177.7 to 191.8 against
+a nominal 200, and one value already sits below its own trip line. It is a **dropped-iteration
+counter in disguise**, conflating server slowdown with client starvation. It is now kept and
+labelled — `offered_rps`, `dropped_iterations` and a delivery ratio in the annotation — and
+deliberately **un-budgeted** until the 4-11% shortfall is explained. That investigation is
+the same one as Finding 3.
 
-*Serves: D4 / profile C. Cost: 1 day.*
+#### 6. Measure growth against a realistic heap and against the live set — **[landed `19686f9f1`]**
 
-- Start the SUT in `perf-test-run.sh` with an explicit `--memory=2g`, matching the
-  documented central-deployment guidance, so GC actually cycles and the live set is
-  observable. Today it runs unbounded on a 32 GB box.
-- Change the heap metric from instantaneous end-over-start to **the minimum
-  `jvm_memory_used_bytes` over the last 60 s divided by the minimum over the first 60 s**.
-  The saw-tooth floor approximates the live set with no new metric, no forced GC, and far
-  less noise than a point sample.
-- Keep the 1.30 absolute floor.
+The SUT ran unbounded on a 32 GB box, so `MaxRAMPercentage=75` gave roughly a 24 GB heap in
+which GC barely cycled and a slow leak was invisible. Now bounded to 2g, with the heap metric
+changed from a point on the GC saw-tooth to the **live-set floor** — and a **budgeted
+absolute** alongside the ratio, because a ratio has a gameable denominator: a leak that
+plateaus at the ring cap gives a ratio near 1.0 while the live set is permanently doubled.
 
-#### 7. Add validity blocks to every measurement
+#### 7. Add validity blocks to every measurement — **[landed `19686f9f1`]**
 
-*Serves: all. Cost: 1–2 days.*
+Every result carries a `validity` block and compare **refuses to baseline** a run whose block
+is absent or false — absent is treated as invalid rather than defaulting to valid, and the
+refusal happens before the S3 persist.
 
-Generalise the inject harness's discipline: every result JSON gains a `validity` object
-recording the assertions that were checked and whether they held (client headroom, no
-dropped iterations, connections reused, no throttling, non-null metrics within plausible
-absolute ranges). `perf-test-compare.sh` **refuses to baseline** a run whose `validity` block
-is absent or false, and annotates that as an error rather than silently comparing garbage.
+**The rule that makes this worth anything:** no assertion enters the validity block until it
+has been **observed to evaluate false at least once**, with the provocation recorded as a
+comment beside it. An assertion that has never been false is an assumption wearing a check's
+clothing. Five checks, each carrying its provocation.
+
+One of those checks was itself a false green on first draft: `resource_samples_present` keyed
+on **row count**, so a growth phase where `docker stats` worked but the metrics endpoint was
+unreachable produced CPU-only rows, collapsed the heap floor to 0, and would have baselined
+`live_set_bytes = 0` — which, as a `dir:"up"` metric, never exceeds its threshold. It would
+have silently dragged the rolling median down for every future run. Now gated on
+`HEAP_MIN_LAST > 0`.
+
+#### 7b. Netty ByteBuf leak detection — **[landed `a1158a104`]**
+
+*Serves: D2, D4 / all profiles. Not in the original plan; added because the correctness section demanded it and no mechanism existed.*
+
+Leak detection was configured **nowhere** in the tree, so Netty ran at its default ~1%
+sampling and gated nothing. Now `paranoid`, with a gate failing `mockserver-netty` at
+`verify`.
+
+**The obvious implementation does not work.** A JUnit `RunListener` that throws on leak
+detected four leaks, threw 88 times, and **surefire still reported SUCCESS** — it catches
+listener exceptions and downgrades them to warnings. The gate is therefore a file that
+outlives the fork, checked by Maven. Anyone tempted to simplify it back to a listener will
+reintroduce a gate that does not gate.
+
+It found a **real production bug on its first run**: `ProxyAuthenticationValidator` allocated
+two unreleased buffers per proxy-authenticated request. Unpooled heap, so GC reclaimed them
+rather than exhausting an arena — which is why nothing noticed. Eight further sites were test
+hygiene. `PortUnificationHandler` was deliberately left alone: `ReplayingDecoder` owns the
+message and `SniHandler` releases its cumulation on close, which a real socket always does
+and an `EmbeddedChannel` never did. Changing production to satisfy a harness would have been
+the wrong repair.
+
+Cost: about **10%** on the unit phase — cheap enough to leave on every run rather than
+relegating to a nightly.
 
 ### Tier 2 — moderate cost, closes named mandate gaps
 
 #### 8. Laptop profile: startup and footprint
 
-*Serves: D5, D6, D4-floor / profile L. Cost: 2–3 days, mostly plumbing. Where: daily, on the pinned `perf` queue.*
+*Serves: D5, D6 / profile L. Cost: 3-4 days. Where: daily, pinned `perf` queue.*
 
-- **What:** `docker run` to first successful `/mockserver/status`, reported as **median and
-  p90 of 9 cold launches**; plus RSS and thread count of a fully idle instance 30 s after
-  ready, at `--memory=256m`, `512m` and `1g`. The 512 MB figure directly tests the recipe
-  the website currently recommends on no evidence.
-- **How:** promote `scripts/perf/bench_startup.py` into a CI step — it already does exactly
-  this and already emits a median/min/max table plus a per-run CSV.
-- **Anti-flake:** pinned on-demand box only, never Spot. Discard the first launch (cold page
-  cache), as the harness README already advises. Compare median-of-9 through the existing
-  median + MAD machinery. Never gate on a single launch.
-- **Threshold:** notify-only for the first 10 runs to establish the MAD, then `dir:"up"`
-  with a 25 percent floor.
+- **8a.** `docker run` to first successful `/mockserver/status`, as the **median of 9
+  measured launches after discarding one warm-up launch** — ten total. Plus RSS and thread
+  count of a fully idle instance 30 s after ready, at `--memory=256m`, `512m` and `1g`. The
+  512 MB figure directly tests the recipe the website recommends on no evidence.
+- **8b. The in-JVM path — the number the mandate actually asks for.** `MockServerExtension`
+  calls `ClientAndServer.startClientAndServer(ports)`; there is no container. A user running
+  500 test classes pays the in-JVM start cost 500 times and the `docker run` cost zero times.
+  `bench_startup.py` has no variant for it. This is also the cheapest of the three to measure.
+- **8c. Startup with a large expectation file** — `initializationJsonPath` at 0, 1,000 and
+  10,000 expectations. Serves profile C as well as L.
+- **8d. Compressed image size as a deterministic counter.** A median-of-9 with a pre-pulled
+  image cannot see image growth, which is the laptop user's real first-run pain. Free, exact,
+  gateable on any queue.
 
-#### 9. Proxy-path benchmarks
+**Anti-flake:** pinned on-demand box only, never Spot; discard the first launch (cold page
+cache); compare through the existing median + MAD machinery; never gate on a single launch.
+Notify-only for 10 runs to establish the MAD, then `dir:"up"` with a 25% floor. Note a 25%
+floor on a 566 ms baseline is a 141 ms dead band — wide enough to hide most real regressions
+while catching a total AppCDS loss, so it is a backstop, not the signal.
 
-*Serves: D3 / all profiles. Cost: 9a about 2 days; 9b and 9c about a week. **The largest genuinely uncovered area the owner named explicitly.***
+#### 9. Proxy-path benchmarks — **the largest genuinely uncovered area the mandate names**
 
-- **9a (k6, cheap, do first):** a `proxy.js` scenario driving MockServer **in proxy mode**
-  rather than as a mock — absolute-URI HTTP forwarding, and a `CONNECT` tunnel carrying
-  HTTPS, both to the upstream container that already exists in the run. Reuse
-  `regression.js`'s shape (constant arrival rate, `op:` tags, the same `handleSummary` JSON
-  contract) so `perf-test-compare.sh` picks the behaviours up with **zero** changes to the
-  compare script. Threshold: median + MAD, same as every other behaviour. Daily.
+*Serves: D3 / all profiles. Cost: 9a about 2 days; 9b and 9c about a week.*
+
+- **9a (k6, do first):** a `proxy.js` scenario driving MockServer **in proxy mode** rather
+  than as a mock — absolute-URI forwarding, and a `CONNECT` tunnel carrying HTTPS, both to
+  the upstream container the run already starts. Reuse `regression.js`'s shape so compare
+  picks the behaviours up with **zero** script changes (verified: the `metrics` jq iterates
+  `.behaviours | to_entries[]`).
+  **Do not start 9a until Finding 3 is resolved.** Cloning `regression.js`'s shape clones
+  whatever produces its 1-second tail, and a proxy p95 budget built on a rig artefact is
+  worse than no budget.
 - **9b:** a SOCKS5 rung. k6 supports an HTTP proxy but not SOCKS, so this needs a small
-  driver or a SOCKS-aware sidecar. If that proves awkward, downgrade to a JMH benchmark of
-  `Socks5ProxyHandler` plus `SocksConnectHandler` handshake cost.
-- **9c (JMH):** a relay benchmark over `UpstreamProxyRelayHandler` and
-  `DownstreamProxyRelayHandler` measuring bytes/s and allocation per relayed KB — the relay
-  is byte-copy dominated and nothing like matching. Daily, with the same absolute
-  `alloc_bytes_per_op` backstop as `MatchingBenchmark`.
+  driver or a SOCKS-aware sidecar; if awkward, downgrade to a JMH benchmark of the handshake
+  handlers rather than skipping the dimension.
+- **9c (JMH):** a relay benchmark measuring bytes/s and allocation per relayed KB. The relay
+  is byte-copy dominated and nothing like matching, so the matcher backstop says nothing
+  about it.
 
-Note for whoever picks this up: **`ForwardPathBenchmark` is misleadingly named.** It
-benchmarks the *load generator's* outbound render path
-(`LoadScenarioOrchestrator.RunningScenario.render`), not proxying. Do not assume proxying is
-covered because that file exists.
+**Naming trap:** `ForwardPathBenchmark` does **not** benchmark proxying — it measures the
+*load generator's* outbound render path. Do not assume proxying is covered because that file
+exists.
 
 #### 10. Turn on the soak — weekly, not daily
 
-*Serves: D4 / profile C. Cost: 1–2 days to wire; the run itself costs CI money, hence weekly.*
+*Serves: D4 / profile C. Cost: 1-2 days to wire.*
 
-`k6/soak.js` already exists with p99-drift and error-rate thresholds and sensible defaults
-(`K6_SOAK_RATE=200`, `K6_SOAK_DURATION=30m`). Add a second
-`buildkite_pipeline_schedule` in `terraform/buildkite-pipelines/pipelines.tf` alongside
-`perf_regression_daily`, running it on the `perf` queue weekly at 2–4 hours with a bounded
-`--memory`, sampling the same CSV the growth phase uses.
+`soak.js` exists with p99-drift and error-rate thresholds and has never run. Add a weekly
+schedule on the `perf` queue at 2 hours with a bounded `--memory`.
 
-- **Metrics:** live-set floor slope over the full run (item 6's method), and GC seconds per
-  million requests.
-- **Threshold:** notify-only initially; promote to an absolute floor once about 8 weeks of
-  variance are known.
+- **Schedule it out of the daily's slot.** The queue is `max_size = 1`; a 2-hour soak
+  starting at 04:00 UTC blocks that day's regression run entirely.
+- **10b — event-log verification cost as the log fills.** Issue `verify` and
+  `retrieveRecordedRequests` at a low fixed rate throughout and record latency against log
+  occupancy. This is the central-deployment pattern — pipelines assert — and a query against
+  a full 100k ring is where an O(n) regression bites hardest. One extra scenario inside a run
+  that is already happening.
+- Notify-only until about 8 weekly runs of variance exist. That is **two months** to a usable
+  budget; plan for it.
 - This is what finally **demonstrates** the ring-buffer bound under load rather than
   asserting it.
 
-#### 11. Re-measure the 8.0.0 HTTP/2 multiplex cost, with a memory axis
+#### 11. Re-measure the 8.0.0 multiplex cost, with a memory axis
 
-*Serves: D1, D4 / profile C. Cost: 2–3 days. Where: daily (the step already runs).*
+*Serves: D1, D4 / profile C. Cost: 2-3 days.*
 
-`Http2StreamChannelBenchmark` already sweeps N = 1, 10, 100 streams over one connection. Add
-a **connections** axis (N connections by M streams) and record heap delta per established
-connection — precisely what the changelog warned had changed. Keep it notify-only until
-variance is known; that existing judgement in the script is correct.
+Add a **connections** axis (N connections x M streams) to the existing streams-per-connection
+sweep and record heap delta per established connection — precisely what the changelog warned
+had changed. Keep it notify-only until variance is known.
 
-### Tier 3 — expensive, research-shaped. Mark clearly and schedule deliberately.
+**Done when** a `bytes_per_connection` figure exists for 1x1, 10x10 and 100x10, dated, and is
+compared against a **pre-8.0.0 build** once. The comparison is the entire point; a new number
+with nothing to compare it to does not answer the changelog's warning.
 
-#### 12. N parallel instances on one host — **research**
+#### 12. LLM and SSE streaming under concurrency — **new**
 
-*Serves: all six dimensions / profile L. Cost: 1–2 weeks. Where: occasional deep run, opt-in like `PERF_INJECT`.*
+*Serves: D2, D4, D1 / profiles C, P. Cost: 3-4 days.*
 
-The real question behind "per test method on a user's laptop across lots of parallel tests".
-Launch N in {1, 4, 8, 16, 32} instances on one box, each with a small `--memory`, and
-measure aggregate RSS, aggregate thread count, ephemeral-port consumption, per-instance
-startup degradation, and per-instance p95 under light load.
+**Why this is in scope rather than a future feature.** Per-token delays are scheduled onto a
+pool sized `actionHandlerThreadCount()` with a `CallerRunsPolicy`. At the default 50
+tokens/second, every concurrent stream generates 50 scheduled tasks per second; 100 streams
+is 5,000 tasks/second onto a 6-thread pool. When it saturates, `CallerRunsPolicy` means **the
+calling thread runs the task** — and the calling thread is a Netty event loop. A streaming
+feature that degrades by blocking event loops degrades everything else with it.
 
-Two facts make this likely to find something: `nioEventLoopThreadCount` is a **fixed 5**,
-not CPU-derived, and `actionHandlerThreadCount` is `max(5, availableProcessors)` — so every
-instance sizes its action pool off the *whole machine*, and total threads grow linearly with
-N regardless of how idle each instance is.
+Streaming is also the one feature whose **correctness claim is a latency claim**: the
+implementation promises cumulative timing accuracy by carrying sub-millisecond remainders
+forward. True for one stream in a unit test, untested for a thousand. A timing-fidelity
+feature with no timing measurement is exactly the shape this programme exists to find.
 
-Reuse the `stack/inject` compose-profile pattern (`--profile n1/n2/n4/n6`), which already
-solves multi-instance orchestration and per-instance attribution via the `run_id` label.
-Expected output: a published sizing table, and quite possibly a recommendation to make those
-defaults container-aware.
+Measure: **inter-token delay error** (the distribution of actual minus requested — a fidelity
+metric, not a throughput one), heap per open stream, a **deterministic** `CallerRunsPolicy`
+task counter, and the p95 of a concurrent plain `match` request while streams run — the
+within-run A/B showing whether streaming steals the hot path.
 
-#### 13. req/s per core for the serving path — **research**
+#### 13. Clustered state under load — **new**
 
-*Serves: D1, D4 / profile C. Cost: about a week plus a roughly 60-minute CI run. Opt-in, not daily.*
+*Serves: D1, D2, D4 / profile C. Cost: about a week.*
 
-Mirror `run-inject.sh`'s `percore` phase for serving: pin the SUT to C in {1, 2, 4, 8, 16}
-cores, run the extended ladder at each C, record `saturation_rps` and `rps_per_core`. The
-Envoy-headroom and reuse-assertion discipline transfers directly. Publish as a sizing curve.
+The `StateBackend` SPI and the Infinispan backend are built for exactly the deployment the
+owner named, and move expectation reads and event-log writes onto a network. No number exists
+for what that costs.
 
-#### 14. Close the loop from S3 back to the website
+Run `regression.js` unchanged against the in-memory backend and a two-node cluster **in the
+same run**; the in-memory arm is the control and the metric is the **ratio**. That is the
+within-run A/B pattern `CandidateIndexBenchmark` already establishes as the repo's gold
+standard, and it cancels almost all environmental noise. Reuse the clustered-libs jars the
+container-tests pipeline already builds rather than inventing a second build.
 
-*Serves: honesty of the customer-facing claim. Cost: 2–3 days. Where: tail of the daily run, non-gating.*
+#### 14. TLS and mTLS handshake cost — **new**
 
-Add a final, notify-only, **non-gating** step that, on `master` only and only when the run's
-`validity` block passed, regenerates
-`jekyll-www.mock-server.com/images/perf-charts/data/*.json` and the PNGs via the existing
-`render_perf_charts.py`, and **opens a pull request** — deliberately not a direct commit,
-because the figures are a customer-facing claim and a human should look at a 20 percent
-swing before it ships.
+*Serves: D2, D4 / profiles C, L. Cost: 1-2 days, sharing item 9a's run.*
 
-- **Trigger rule:** open the PR only when the committed figure is more than 30 days old
-  **or** has moved by more than 10 percent, so it does not open a PR every day.
-- The `lastmod` on `performance.html` then tracks reality, and a stale page becomes an open
-  PR rather than invisible rot.
-- The same PR must carry the **provenance line**: version, date, core count, heap, GC, and
-  **log level**.
+The https_h2 run reuses connections per VU, so handshake cost is amortised to near zero and
+appears in no measured number. A central deployment pays a handshake per short-lived CI
+consumer; the laptop profile pays one per test class. Measure handshakes/second, CPU and
+allocation per handshake, across TLS 1.3 server-only and mTLS, plus an arm with the native
+provider absent — the Dockerfile carries a documented fallback that nothing exercises under
+load.
 
-#### 15. Connection-scaling ceiling — **research, lowest priority**
+#### 15. Cheap feature arms on measurements that already run — **near-free**
 
-*Serves: D1 / profile C.*
+*Cost: 1-2 days for all four.*
+
+- **15a.** `template` exercises **Velocity only**. Add Mustache and JavaScript ops — three
+  lines of expectation seeding, and compare picks them up with no script change. The
+  JavaScript engine carries a warm-up cost nobody has quantified.
+- **15b.** Promote the four dark JMH benchmarks to the daily microbench step. They are
+  written, unrun, and bit-rotting toward the same silent death `MatchingBenchmark` had. The
+  OpenAPI one already has cached-versus-per-request arms — a within-run A/B, ready to go.
+  **This also fixes the biggest weakness of the allocation backstop** (item 16).
+- **15c.** Raise the JMH fork count to 2 for `time_per_op`. `-f 1` never samples inter-fork
+  JIT variance, so the measured MAD understates the real dispersion and any derived budget is
+  tighter than the data supports. **Land this before deriving any timing budget.**
+- **15d.** A body-size axis on `large`: 4 KB, 1 MB, 10 MB, plus one file-backed body.
+
+#### 16. Widen the allocation backstop, and wire it where it runs pre-merge
+
+*Cost: folded into 15b plus half a day.*
+
+Running `alloc_bytes_per_op` per merge is the right instinct — it is the one signal cheap and
+deterministic enough to attribute to a single commit. Two things must be true first, and
+neither is today.
+
+**Its coverage does not support the claim.** `MatchingBenchmark` measures **matching only**.
+It does not touch Netty decode, response serialisation, the event-log write, or the response
+writer. An allocation regression that moves bytes *out of* the matcher and *into* decode
+shows up as an **improvement**. A gate satisfiable by moving cost somewhere it cannot see is
+a false green by construction. Promote the decode benchmark and add a response-write one, and
+give the metric an **absolute committed budget**, not a rolling median — a rolling median over
+per-merge history absorbs exactly the slow drift the gate exists to catch.
+
+**"Per merge" is a property of wiring, not of the check.** An unconditional step in
+`pipeline-java.yml` runs pre-merge and blocks the PR; a step carrying
+`if: build.branch == 'master'` does not. Add it unconditionally, before the `wait` preceding
+the master-gated block. Do not put it in the container-integration suite and do not add a
+branch condition "for safety" — either choice silently converts a pre-merge gate into a
+post-merge one and nobody is told. Note the java pipeline is itself orchestrator-path-filtered,
+so a JDK or base-image change that moves allocation reaches it only via the daily run.
+
+### Tier 3 — research-shaped, schedule deliberately
+
+#### 17. N parallel instances on one host — **research, 1-2 weeks**
+
+The real question behind "per test method on a laptop across lots of parallel tests". Launch
+N in {1, 4, 8, 16, 32} and measure aggregate RSS, thread count, ephemeral-port consumption,
+per-instance startup degradation, and per-instance p95 under light load.
+
+**Run it two ways, because the profile has two shapes.** N containers: `availableProcessors()`
+is cgroup-aware, so each sizes its pool off its own limit. N **in-JVM** instances in one test
+JVM — the `MockServerExtension` case users actually hit — has no cgroup, so every instance
+sizes off the whole machine. On a 10-core laptop, 32 instances is 32 x (5 event-loop + 10
+action-handler) = **480 threads in one JVM** before any callback pool.
+
+**Also measure the store-sizing order dependence.** `maxLogEntries` and `maxExpectations`
+derive from free heap *at the moment of the call*, so in one JVM the first instance sizes off
+a mostly-empty heap and the thirtieth off a full one — identical instances get different
+capacities depending on test order. A plausible source of "flaky only on CI" reports, never
+looked at. **And measure `devMode`** as the control arm: it exists for this profile and
+nobody knows what it saves. If it saves a lot, the JUnit integrations should probably default
+to it — a shippable outcome rather than a table.
+
+#### 18. req/s per core for the serving path — **research, about a week**
+
+Pin the SUT to C in {1, 2, 4, 8, 16} cores and run the ladder at each, recording
+`peak_achieved_rps`, `healthy_ceiling_rps` and `rps_per_core`. **Prerequisite easy to miss:**
+at C = 16 the SUT wants more cores than the client has. On a 16 vCPU box you cannot pin 16 to
+the server and still have a k6. Either the top rung moves to a second box or the curve stops
+at C = 8 and says so.
+
+#### 19. Close the loop from S3 back to the website
+
+*Cost: 2-3 days. Where: tail of the daily run, non-gating.*
+
+Regenerate the chart data and **open a pull request** — deliberately not a direct commit,
+because the figures are a customer-facing claim and a human should look at a 20% swing before
+it ships. Trigger only when the committed figure is more than 30 days old **or** has moved
+more than 10%, so it does not open a PR every day. A stale page then becomes an open PR
+rather than invisible rot. Requires item 0 for the provenance line, and Finding 3 resolved
+before republishing any percentile. **Publish `healthy_ceiling_rps` with its latency, not
+`peak_achieved_rps` alone** — see Finding 1.
+
+#### 20. HTTP/3 and QUIC — **research**
+
+- **20a (do this):** a JMH benchmark of the HTTP/3 request bridge, compared **in the same
+  run** against the HTTP/2 equivalent. In-process, deterministic, no driver needed, and it
+  answers "is the QUIC path allocating an order of magnitude more per request" — the question
+  a central deployment needs answered.
+- **20b (defer):** an end-to-end HTTP/3 throughput ladder. There is no HTTP/3 client in k6, so
+  this needs a purpose-built driver — most of the cost and most of the risk. Only worth it
+  once 20a shows something, or a user reports a problem.
+
+#### 21. Connection-scaling ceiling — **research, lowest priority**
 
 Maximum concurrent established connections before latency degrades, separately for HTTP/1.1
-keep-alive, HTTP/2 and TLS (TLS session state is the interesting axis). k6 is not well
-suited to holding tens of thousands of idle connections; this likely needs a purpose-built
-driver. Schedule after items 1–14.
+keep-alive, HTTP/2 and TLS (session state is the interesting axis). k6 is not suited to
+holding tens of thousands of idle connections; likely a purpose-built driver. Schedule after
+everything above.
+
+## Proving a performance change is still correct
+
+**A performance PR whose only evidence is a faster number must not merge.** The benchmark is
+the *motivation* for a change, never the verification of it.
+
+This is the more dangerous half of the programme, and the reason is structural: an
+optimisation is a behaviour change that **arrives with a success signal already attached**. A
+feature change lands with no green light and attracts scrutiny until it earns one. An
+optimisation lands with a chart showing it worked, and attention stops there.
+
+The repo has already paid for this at scale. `Http2FlowControlBodies` records it in its own
+javadoc: **four HTTP/2 defects — #2641, #2667, #2669, #2683 — all shipped while every HTTP/2
+test was green**, for one structural reason. Every test used a body smaller than the
+65,535-byte flow-control window, including one named
+`shouldForwardHttp2RequestWithLargeBodyViaConnectProxy` at 50,000 bytes. The failure mode was
+a silent hang, not a wrong answer.
+
+### The evidence standard
+
+Three things must hold. The second is the one that gets skipped.
+
+**1. The full integration suite passes — not the unit suite.** `mvn test` **excludes**
+integration tests here: surefire carries `<exclude>**/*IntegrationTest.java</exclude>`
+(`mockserver/pom.xml:1622`) and failsafe picks them up separately (`:1654`). For
+`mockserver-netty` that is roughly **1,219 tests under `test` against 2,275 under `verify`**
+(2026-09-16). A perf change verified with `mvn test` has skipped nearly half the tests and
+essentially all of the ones that drive a real socket. **"Tests pass" is not a claim; "`mvn
+verify` passes on `mockserver-netty`" is.**
+
+**2. A differential check: identical inputs produce identical outputs through the old and new
+path.** Not "the tests still pass" — "the output is the same". Compare byte-for-byte: response
+bytes, header order, status, trailers, observable frame boundaries, the serialised event-log
+entry. This is the only evidence that catches drift nobody anticipated. Where a true A/B is
+impractical, pin a golden corpus before the change and diff after.
+
+**3. The correctness test is shown capable of catching the break.** Invert the repo's
+standing discipline: the fix *is* the optimisation, so **deliberately introduce the hazard**
+— skip an invalidation, drop a `release()`, reuse a buffer without clearing, remove the type
+guard — and confirm something goes red.
+
+### Hazard classes
+
+Each has occurred in this repo.
+
+| # | Hazard | Why it evades a benchmark | Required evidence |
+|---|---|---|---|
+| 1 | **Reuse and pooling** | Cross-request contamination needs concurrency; throughput is indifferent to *whose* bytes came back. **A security failure, not only a correctness one** | Concurrency test with **distinguishable per-request payloads** asserting zero cross-talk, at real concurrency |
+| 2 | **Caching** | A cache is fastest and most wrong when it never invalidates. Hit-path tests get faster; staleness is invisible | The **invalidation path** tested — mutate the underlying thing, assert the cached view updates. A cache tested only for hits is a bug with a benchmark attached |
+| 3 | **Reference counting** | A leak shows as growth over hours; a double-release as corruption under load | The suite run with leak detection at `paranoid` — **now wired and gated** (`a1158a104`), which found a shipped bug on its first run |
+| 4 | **Laziness and init order** | A cold start is single-threaded; the race needs concurrent first use. The **dynamic CA race** presented as a ~10% launcher flake and was a *shipped TLS race* | **Concurrent** first-use, repeated. Treat an intermittent failure introduced by a lazy-init change as a shipped race until proven otherwise |
+| 5 | **Concurrency and pool changes** | A deadlock under recursion is invisible to a load generator that never recurses | The **deadlock argument stated in the PR**, plus a test under contention. `localCallbackExecutor` is deliberately unbounded because a bounded pool self-deadlocks on a blocking loopback callback — the javadoc is all that stands between the next optimiser and that bug |
+| 6 | **Topology changes** | Handlers attached to the wrong thing still forward traffic; throughput is unaffected | Assertions on the **type**, and both parent and child cases. The #2669 lesson: guard on `Http2StreamChannel` **type**, not `parent() != null` — on an HTTP/1.1 socket `parent()` is the server *listening* socket, so such a guard **shuts the whole server down on the first concurrent stream**. It looks right and benchmarks clean on one connection |
+
+A seventh, live in this document: **init-order changes alter heap-derived capacities.**
+`maxLogEntries` and `maxExpectations` derive from free heap at call time, so an optimisation
+that moves *when* initialisation happens changes store sizes without touching store code.
+Assert the derived capacities, not just behaviour that happens to fit inside them.
+
+### The benchmark-shaped correctness loss
+
+An optimisation can be **correct on the benchmark's inputs and wrong on real ones**, because
+benchmark fixtures are chosen for convenience and stability — the two properties that make
+them unrepresentative:
+
+- **Sub-window bodies hid the flush family** for four releases.
+- **All-ASCII fixtures hid a double-encoding defect.**
+- **A 7-byte payload left frame-length bytes zero**, indistinguishable from default init.
+- **2026-09-16, in this very programme:** a new assertion pinning the proxy-auth encoder
+  against its predecessor **passed against a deliberately wrong encoder**, because the ASCII
+  test credential's base64 contained no `+` or `/` — the only two characters where the
+  standard and URL-safe alphabets differ. The fixture could not distinguish the two encoders
+  it existed to distinguish. Only the degrade test found it.
+
+So the corpus must be **adversarial in exactly the dimensions the change touches**. Buffering
+or flushing: cross buffer and flow-control boundaries (`Http2FlowControlBodies.Size.OVER_WINDOW`
+exists for this and fails the build if shrunk to the window). Encoding: non-ASCII, and the
+characters where alphabets differ. Framing: empty, one-byte, boundary-minus-one, boundary,
+boundary-plus-one, maximal. And **the error paths** — an optimisation that skips work on
+success frequently skips cleanup on failure.
+
+State in the PR which dimensions the change touches and which corpus arms cover them. If the
+answer is "the existing fixtures", that is the answer that produced four shipped HTTP/2
+defects.
+
+### Where this plugs into the gate chain
+
+| Evidence | Where | Why there |
+|---|---|---|
+| `mvn verify` on affected modules | **Per merge, blocks the PR** | The baseline, and the only thing that makes "tests pass" mean anything |
+| Leak detection at `paranoid` | **Per merge**, gated at `verify` on `mockserver-netty` | Deterministic; a leak found a week later is a bisect across a week |
+| Allocation-per-op budget | **Per merge** (item 16), unconditional step | Cheap, deterministic, attributes to one commit |
+| **Differential corpus** | **Required in the landing PR as evidence**, not per-merge CI | Too slow for every merge, and meaningful only against the specific old path being replaced — which exists only in that PR |
+| **Negative control** | **Required in the landing PR** | Nobody can automate "prove this test can fail"; it is a one-time act per change, and it is the act that converts a test into evidence |
+| Adversarial corpus arms | **Required in the landing PR** | Which dimensions matter depends on what the change touches; no CI step can infer that |
+| Deadlock argument (class 5) | **Required in the PR description** | An argument, not a test. Writing it down stops the next person undoing it |
+| Hazard-class identification; type assertions; invalidation paths | **Review checklist** | Judgement, not automation. Cheap to ask, expensive to omit |
+| Does the win survive contact | **Daily perf run**, after merge | The *last* step, not the first |
+
+**Two rules, stated so they are not re-argued:**
+
+1. **A performance PR states its hazard classes.** If the author cannot name which of the six
+   the change belongs to, it has not been understood well enough to merge. Belonging to none
+   is legitimate and common — say so, and that is the end of it.
+2. **The benchmark result belongs in the PR body under a heading saying it is motivation, not
+   verification.** The failure this prevents is not that people lie about testing; it is that
+   a green chart *feels* like completion.
+
+## Feature surfaces the first audit excluded
+
+The first audit deferred HTTP/3, LLM mocking, async messaging, WASM rules and the dashboard
+as "out of the mandate's framing". That was not defensible — the framing is a *deployment
+profile*, not a feature list, and all five run inside the profile it names. But measuring all
+of them is not defensible either; this programme already has more wall-clock measurements
+queued than one serialised box can carry.
+
+**Added**, with rationale above: LLM/SSE streaming (item 12), clustered state (13), TLS
+handshake (14), four near-free feature arms (15), and HTTP/3 scoped down to an in-process
+benchmark (20a).
+
+**Deliberately excluded, with reasons**, so nobody re-litigates:
+
+- **AsyncAPI broker mocking.** The transport is a broker the user supplies, so end-to-end cost
+  is dominated by the broker client and is not attributable to MockServer. No existing harness
+  shape to reuse. **Revisit when a user reports a problem**, or when a broker-independent
+  in-process benchmark becomes cheap.
+- **WASM rule bodies** as a *continuous* measurement — included in the **quarterly deep
+  review** as a JMH benchmark only. A WASM body is opt-in per expectation and on no default
+  path, so a regression there cannot affect a user who is not using it.
+- **OpenTelemetry export** as a separate item — folded into a **once-per-release
+  optional-feature ledger** (on versus off, same run, same load). Off by default, so it cannot
+  regress the default path.
+- **Dashboard WebSocket fan-out** as standalone — folded into item 12's within-run A/B:
+  measure serving p95 with 0, 1 and 10 connected dashboards during a run already happening.
+  The classic "the observability tool destroys the thing it observes" risk deserves one
+  number, not a harness.
+- **Expectation persistence as an ongoing write cost.** Its startup half is covered by 8c,
+  which is where the user-visible cost is.
+- **gRPC streaming.** It shares the HTTP/2 stream machinery item 11 already measures, so item
+  11 is the cheaper first look. Add a gRPC arm only if item 11 finds something.
+
+## Sequencing
+
+```mermaid
+flowchart LR
+  i0["0. self-describing results"]
+  i1["1. notification reaches a human"]
+  f3["Finding 3 diagnosis
+  one run"]
+  done["2,3,4,5,6,7,7b LANDED"]
+  budgets["perf-budgets.json
+  committed absolute floors"]
+  i15["15. cheap feature arms"]
+  i16["16. widen allocation backstop"]
+  i8["8. laptop startup and footprint"]
+  i9["9a. proxy and CONNECT"]
+  i14["14. TLS handshake"]
+  i10["10. weekly soak plus verify cost"]
+  i11["11. h2 memory axis"]
+  i12["12. LLM SSE streaming"]
+  i13["13. clustered state"]
+  i19["19. loop back to the website"]
+  rel["release preflight gate"]
+  i0 --> i19
+  i0 --> budgets
+  f3 --> i9
+  f3 --> budgets
+  i1 --> budgets
+  budgets --> i16
+  i15 --> i16
+  done --> i10
+  i9 --> i14
+  i9 --> i12
+  i12 --> i13
+  budgets --> rel
+  i16 --> rel
+```
+
+### The first fortnight
+
+1. **Item 0** — the `config` block. Half a day. Everything that compares, ratchets or
+   publishes depends on it.
+2. **Item 1** — the webhook. Hours. It is the only item that makes any other item matter, and
+   nobody is doing it.
+3. **Finding 3 diagnosis.** One run plus an afternoon. It gates the D2 latency budgets, item
+   5's resolution and item 9a's design. Doing it now costs one run; doing it after 9a costs
+   re-deriving two behaviours' budgets.
+4. **Item 15c** — JMH fork count. One line, and it changes the dispersion every future timing
+   budget is derived from, so it must land before any budget is derived.
+
+### The first quarter
+
+- **Weeks 3-4:** `perf-budgets.json` extracted, existing floors migrated unchanged, the file's
+  last-changed commit named in the annotation. Items 15a, 15b, 15d. The baseline-freshness
+  assertion in `pipeline-infra.yml`.
+- **Weeks 5-7:** item 8. Item 9a with item 14 sharing its containers and run. Item 16 once 15b
+  has landed.
+- **Weeks 8-10:** item 10 scheduled out of the daily's slot. Item 11. Start the eight-week soak
+  window — it will not produce a budget inside the quarter, and that is fine as long as the
+  clock starts.
+- **Weeks 11-13:** item 12. Item 19 once item 0 has enough history for a meaningful provenance
+  line. The release-preflight gate — highest leverage in the programme, needing only the budget
+  file and one S3 query.
+- **Deferred past the quarter:** 13, 17, 18, 20, 21.
+
+**First budget attachable:** `peak_achieved_rps`, about three weeks after landing (10 daily
+runs). **Last:** item 10's soak metrics, about ten weeks after landing. Nothing here produces
+a tight control loop inside a month, and a plan implying otherwise is lying about the
+statistics.
+
+## Cost
+
+**Every figure is an estimate from reading configuration, not a measurement** — which makes
+step zero of this section "measure how long the current daily chain actually occupies the
+box", because nobody has.
+
+The `perf` queue is one on-demand `c5.4xlarge`, `min_size = 0`, `max_size = 1`. List price is
+about **USD 0.68/hour**; confirm before quoting. Storage and boot add perhaps 20%.
+
+| Workload | Box-min each | Per month | Box-hours | USD |
+|---|---:|---:|---:|---:|
+| Today's daily chain — **unmeasured, estimated** | ~60 | 30 | 30 | ~20 |
+| Item 2, extended sweep with 30 s steps above 16k | +4 | 30 | 2 | ~1.4 |
+| Item 3, `forward.js` | +3 | 30 | 1.5 | ~1.0 |
+| Item 6, bounded heap | +0 | 30 | 0 | 0 |
+| Item 8, startup matrix | +18 | 30 | 9 | ~6.1 |
+| Items 9a + 14 sharing one run | +8 | 30 | 4 | ~2.7 |
+| Item 11, connections x streams | +8 | 30 | 4 | ~2.7 |
+| Item 12, streaming | +10 | 30 | 5 | ~3.4 |
+| Item 15, all four arms | +5 | 30 | 2.5 | ~1.7 |
+| Item 10, 2-hour weekly soak | +120 | 4 | 8 | ~5.4 |
+| Items 17, 18 research, occasional | +90 | 1 | 1.5 | ~1.0 |
+| **Total** | | | **~68** | **~USD 45** |
+
+Per-merge JMH runs on the `default` Spot queue and is dominated by the Maven build, not the
+benchmark — **under USD 2/month**.
+
+**The conclusion changes the ordering, and not as the open question assumed:**
+
+- **Money is not the constraint.** The whole programme lands around USD 45-60/month on a box
+  costing USD 20 today. Do not sequence this around dollars.
+- **Serialisation is the constraint.** `max_size = 1`. At ~68 box-hours the box is busy about
+  9% of the time — comfortable until a 2-hour soak occupies a contiguous block and any daily
+  run behind it waits. **Item 10 must be scheduled into a slot the daily does not use**, and
+  that should be stated in terraform next to the schedule so the next person does not undo it.
+- **Share runs rather than adding steps.** 9a and 14 use the same containers. 12 and the
+  dashboard A/B share a run. 15's arms attach to runs that already happen. Item 8 is the only
+  genuinely additive step, because launching a container ten times is inherently serial.
+
+## Cadence: is daily right at all?
+
+Daily was inherited, not chosen. It deserves an argument, because the box serialises and
+"daily" is a strange unit for a project whose merges arrive in bursts.
+
+**Against daily.** A daily run bundles every merge in a 24-hour window, so a flagged
+regression starts as a bisect across everything that landed — precisely how performance work
+gets abandoned. On a quiet week it measures the same commit repeatedly. The commit guard
+already recognises this: it dispatches only if master moved, so "daily" is really "at most
+once per day, if something changed".
+
+**For daily, which wins.** The repo chose **median plus MAD over the last ten runs**. That
+method needs run density. At a per-release cadence — perhaps monthly — ten runs is most of a
+year, and a budget derived from a window that wide is derived from a different codebase and
+probably different hardware. **The statistical method the repo already committed to requires
+a cadence faster than the release cadence.** A second reason: a daily wall-clock run is the
+only way to learn the *noise* of a new measurement, and every item here runs notify-only for
+ten runs before getting a budget. Ten days is tolerable; ten releases is not.
+
+**So: keep daily, but stop pretending one cadence fits everything.**
+
+| Trigger | What runs | Why |
+|---|---|---|
+| **Per merge to master** | Allocation per op, deterministic counters — thread count, class-load count, image size | Cheap, hardware-independent, collapses the bisect surface to one commit. **This is where attribution is solved, not by changing the wall-clock cadence** |
+| **Daily, commit-gated** | Everything wall-clock | The median-plus-MAD method needs the density; the commit guard already suppresses no-op days |
+| **Weekly** | Soak | Too long to serialise daily; its metric is a slope needing hours |
+| **Per release, and per significant change** | The deep research set, the optional-feature ledger, the quarterly profile diff — **plus the release-preflight gate**, where teeth belong | These answer sizing questions, not regression questions. A sizing curve goes stale when the architecture changes, and a release is a good proxy |
+
+**"Significant change" concretely**, so it is not a judgement call every time: a JDK or Netty
+bump, a change under `mockserver-netty/.../netty/` or `mockserver-core/.../mock/` exceeding
+some size, a change to any default in `ConfigurationProperties`, or a changelog entry
+mentioning memory or throughput — the 8.0.0 multiplex entry being the worked example of one
+that should have triggered a deep run and did not.
+
+**Honest summary: daily is right for the trend line and wrong for attribution, and the fix for
+attribution is per-merge deterministic counters, not a different clock.**
+
+## Acceptance criteria
+
+Every item's definition of done has the same three parts, and the third is the one that is
+usually skipped.
+
+1. **The measurement exists** — a named field in a named artefact, with a stated unit and
+   method.
+2. **It has history** — at least 10 runs for daily measurements, 8 for weekly, before any
+   budget is attached. Notify-only until then, no exceptions.
+3. **It has been demonstrated capable of failing** — a specific, recorded negative control.
+   Not "the step exists and is green", but "on this date, with this deliberate change, this
+   check went red, and here is the evidence."
+
+A fourth, added after the pipeline-gating error: **a gating claim names the pipeline file, the
+step label and the branch condition.** "Merge-blocking" asserted without those three is an
+inference, and this programme has been burned by exactly that inference once.
+
+| Item | Negative control that must be executed and recorded |
+|---|---|
+| 0. self-describing results | Mangle the IMDS response; the step fails rather than writing `""` |
+| 1. notification | Inject a fake regression; a message arrives. Then unset the secret; the annotation says "notified nobody" |
+| 2. sweep | **Done** — a synthetic degraded value flags; 36,324 reported where saturation would report 16,000 |
+| 3. `forward.js` | **Done** — pooling disabled gave error rate 0.997, k6 exit 99 |
+| 4. AppCDS | **Done** — zero-byte and garbage archives both fail, through different JVM code paths; `-Xshare:auto` serves 200 with the same garbage |
+| 5. `throughput_rps` | **Done** — live `dropped_iterations` 3-10 and delivery ratios 0.9985-0.999 recorded |
+| 6. live set | **Done** — flags at 950 MB against a ~705 MB baseline |
+| 7. validity | **Done** — `valid:false` and an absent block both refuse; zero-heap now refused rather than baselined |
+| 7b. leak detection | **Done** — 50 deliberately leaked buffers fail the build; the same leak is invisible on unmodified master |
+| 8. startup | Disable the AppCDS archive; the median-of-9 crosses its threshold |
+| 9a. proxy | Disable forward pooling; the CONNECT behaviour moves |
+| 10. soak | Reduce `maxLogEntries` so the ring never fills; the verification-query metric flattens, proving it is sensitive to occupancy |
+| 11. h2 memory | Compare against a pre-8.0.0 build; the per-connection figure differs or provably does not |
+| 12. streaming | 1,000 streams against a 2-core SUT; the `CallerRunsPolicy` counter becomes non-zero, or a recorded negative result says it does not |
+| 13. clustered state | Kill a cluster member mid-run; the behaviour is recorded |
+| 14. TLS | Force the JDK provider instead of the native one; the handshake rate moves |
+| 16. allocation gate | Add `new byte[64]` to the decode path; the gate trips **on a pull request**, not on master |
+| Baseline freshness | Make a producer emit structurally-valid but empty output; the check fails on **content**, not merely on object age |
+
+That last row is the one to read twice. A freshness assertion that checks an object's
+timestamp passes forever against a producer writing valid empty JSON every day. **It must
+assert the newest object contains the expected keys with non-null values in plausible
+ranges** — the same plausibility rule demanded of producers, applied to the watchdog itself.
+
+## Who does what
+
+No owner was named for the notification channel, and the whole control loop otherwise
+terminates in an empty room. A rota is the wrong prescription for a small project: a rota
+with one person fails the first time that person is on holiday, and one with three is a
+fiction.
+
+**What this needs is one named role and three mechanisms that do not need a human watching.**
+
+- **Perf owner — one named person, named in `perf-budgets.json`.** Owns the budget file,
+  reviews every ratchet PR and budget change, reads the daily notification, and decides
+  whether a flagged metric is fixed, bisected or recorded as accepted. **Not a rota**, because
+  rotating destroys the only thing that makes it work: continuity of judgement about what the
+  numbers normally look like. A few minutes most days; an hour when something moves.
+- **Per-measurement owner, recorded beside each budget.** Whoever landed a measurement owns
+  its noise. If it flaps, the owner either fixes it or **demotes it to informational — a
+  legitimate, recorded outcome, not a failure**. This is what stops the known pattern of a
+  flaky gate being ignored, then deleted.
+- **Mechanism 1: the release-preflight gate needs no human.** The most important
+  organisational point here. If the owner is away three weeks, notifications pile up unread —
+  and the release still cannot ship with a stale baseline or an unaccepted flagged
+  regression, because the gate reads the budget file and S3 and fails on its own. **Design the
+  loop so neglect is caught at the release boundary rather than assumed not to happen.**
+- **Mechanism 2: the freshness assertion lives in a different pipeline.** A watchdog inside
+  the system it watches dies with it. `pipeline-infra.yml`, not the perf pipeline.
+- **Mechanism 3: the annual break-a-producer drill.** Same calendar slot as the quarterly
+  review, so it is not a separate thing to remember.
+
+**What deliberately has no owner:** the research items. They are scheduled work, not standing
+duties, and pretending otherwise creates a backlog that guilts people rather than a queue
+that gets picked from.
 
 ## Sustaining the goals
 
-This half determines whether the other half still means anything in six months. Measurement
-that is not maintained becomes measurement theatre. Every mechanism below states **what
-fires, when, and who sees it.**
-
 ### Budgets that ratchet
 
-The repo's established preference is **never-regress on both small and large cases, with
-thresholds derived empirically rather than picked.** Apply it here.
+The repo's preference is **never-regress on both small and large cases, with thresholds
+derived empirically rather than picked.**
 
 **Where budgets live.** Today all absolute floors are hardcoded inside
-`perf-test-compare.sh`'s jq program (`min_pct: 0.10`, `floor: 1.30`, and so on). Move them
-to a committed, reviewed `perf-budgets.json` at the repo root or under
-`mockserver-performance-test/`. This matters more than it looks:
+`perf-test-compare.sh`'s jq. Move them to a committed, reviewed `perf-budgets.json`:
 
-- A **committed** budget file cannot be quietly loosened — loosening it is a diff in a pull
-  request that a human reviews, with a required justification in the commit message.
-- The **rolling S3 median + MAD** then does only what it is good at: absorbing run-to-run
-  noise. It can no longer normalise a slow real regression away over ten runs, because the
-  committed absolute floor does not move unless someone changes it.
-- The compare annotation names the budget file's last-changed commit, so a silent loosening
-  is visible in the output, not just in git history.
+- A **committed** budget cannot be quietly loosened — loosening is a reviewed diff with a
+  required justification.
+- The **rolling median + MAD** then does only what it is good at: absorbing noise. It can no
+  longer normalise a slow real regression away over ten runs, because the committed floor does
+  not move unless someone changes it.
+- The annotation names the budget file's last-changed commit, so a silent loosening is visible
+  in the output, not just in git history.
 
-**How a budget is set initially.** Never picked. Run the measurement notify-only for at
-least 10 successful runs (the existing `PERF_MIN_BASELINE` of 5 is the current floor; use 10
-for anything new), take the median and MAD, and set the budget at
-`median + 3 * 1.4826 * MAD`, floored at a minimum sensible percentage move so a
-freakishly quiet window does not produce an impossibly tight budget. Record the window in
-the budget file so a future reader knows what it was derived from.
+**How a budget is set.** Never picked. Run notify-only for at least 10 successful runs, take
+the median and MAD, set the budget at `median + 3 * 1.4826 * MAD`, floored at a minimum
+sensible percentage so a freakishly quiet window does not produce an impossibly tight budget.
+Record the window — **including the `instance_type` and `config` of every run in it**, which
+item 0 makes possible and which is currently impossible.
 
 **How a budget tightens — the ratchet.** A budget that only ever loosens is not a control.
-When an improvement lands, the win must be locked in or it will be quietly given back.
 
-- **What fires:** after each successful daily run, if the head value has beaten the current
-  budget by more than 20 percent for **5 consecutive runs**, the compare step opens a pull
-  request tightening that budget to the new `median + 3 * 1.4826 * MAD`.
-- **When:** daily, but at most one ratchet PR per metric per fortnight, so it does not spam.
-- **Who sees it:** the maintainer reviewing the PR. Merging it is the act of accepting the
-  improvement as the new normal; declining it with a reason is also a legitimate answer
-  (for instance, if the improvement is known to be workload-specific).
-- Ratcheting is **automated as a proposal and manual as a decision.** Never auto-merge a
-  budget change in either direction.
+- **What fires:** after each successful daily run, if the head value has beaten the budget by
+  more than 20% for **5 consecutive runs**, the compare step opens a PR tightening it.
+- **When:** daily, at most one ratchet PR per metric per fortnight.
+- **Guard against ratcheting on a rig improvement.** Only ratchet when `instance_type` and the
+  `config` block are **identical across all five runs**. Otherwise a faster k6 image or a new
+  agent generation permanently tightens a budget the server never earned, and every subsequent
+  hardware change reads as a regression.
+- **Who sees it:** the perf owner. Merging accepts the improvement as the new normal;
+  declining with a reason is also legitimate.
+- **Automated as a proposal, manual as a decision.** Never auto-merge a budget change in
+  either direction.
 
-**Proposed budget set** — one per dimension per profile, with the metric that carries it:
-
-| Dim | Profile | Budget metric | Initial basis |
-|---|---|---|---|
-| D1 | C | `saturation_rps` (item 2), validity-gated | derive from 10 runs after item 2 lands |
-| D2 | C | `match_http` p95, p99; `MatchingBenchmark` `time_per_op` | already collected; migrate existing floors |
-| D2 | C, all | `MatchingBenchmark` `alloc_bytes_per_op` — **the deterministic one** | already collected; tightest budget in the set |
-| D3 | C | proxy `op:connect` and `op:forward` p95, p99 (item 9a) | derive after item 9a |
-| D3 | C | `forward.js` error rate (item 3) | already specified in the script |
-| D4 growth | C | live-set floor slope over soak (items 6, 10) | derive after 8 weekly runs |
-| D4 efficiency | C | CPU percent at a fixed reference rate | already collected |
-| D5 | L | `docker run` to ready, median of 9 (item 8) | derive from 10 runs |
-| D6 | L | idle RSS and thread count at `--memory=512m` (item 8) | derive from 10 runs |
-| D6 | L | AppCDS mapped — boolean (item 4) | no derivation needed; it is true or false |
-
-**Small and large cases both.** Follow `CandidateIndexBenchmark`'s example, which sweeps
-n in {1, 2, 5} *and* {100, 1000, 5000} precisely so a large-case optimisation cannot
-regress the small case unnoticed. Every new budget should have a small-input and a
-large-input arm where the dimension admits one: small and large bodies, few and many
-expectations, one and many connections, one and many parallel instances.
+**Small and large arms both.** `CandidateIndexBenchmark` sweeps n in {1, 2, 5} *and*
+{100, 1000, 5000} precisely so a large-case optimisation cannot regress the small case
+unnoticed. Every new budget should have both arms where the dimension admits one.
 
 ### Feedback latency: what should block a merge
 
-Today: **daily, notify-only, never a merge gate.** Honestly assessed, daily is too slow for
-some of this and exactly right for the rest. A regression found a day later must be bisected
-against everything that merged in between, and that is precisely how performance work gets
-abandoned.
+The discriminator is **determinism, not importance**.
 
-The discriminator is **determinism, not importance**:
-
-| Signal | Noise | Recommended cadence |
+| Signal | Noise | Cadence |
 |---|---|---|
-| `gc.alloc.rate.norm` (bytes/op) from JMH | **Essentially deterministic** — an allocation count, hardware-independent, unaffected by a noisy neighbour | **Per merge to master**, on any queue, notifying immediately. This is the one signal cheap and stable enough to attribute to a single commit |
-| JMH `time_per_op` | low but hardware-sensitive | Daily, pinned queue |
-| Class-load count to readiness, thread count, connection count | deterministic counters | Per merge, cheap |
-| AppCDS mapped (boolean) | none | **Merge-blocking** on the container-tests pipeline |
-| k6 latency percentiles | wall-clock, moderate | Daily, pinned queue |
-| k6 saturation / knee | wall-clock, high | Daily, pinned queue, validity-gated |
-| Soak live-set slope | long wall-clock | Weekly |
-| Per-core, N-instance, connection ceiling | very high | Occasional deep run |
+| `gc.alloc.rate.norm` | **Essentially deterministic** — an allocation count, hardware-independent | **Per merge to master**, *once item 16 widens its coverage* |
+| JMH `time_per_op` | low but hardware-sensitive; **understated today at `-f 1`** | Daily, pinned queue, two forks |
+| Deterministic counters — threads, class-loads, connections, image size, `CallerRunsPolicy` | none to low | Per merge, cheap |
+| AppCDS mapped (boolean) | none | **Blocks the master build immediately post-merge** — a considered placement, not a limitation |
+| ByteBuf leaks (boolean) | none | **Per merge**, gated at `verify` |
+| k6 latency percentiles, knee | wall-clock | Daily, pinned queue, validity-gated |
+| SSE inter-token delay error | wall-clock but *distributional*, so more robust than a single percentile | Daily |
+| Soak slope, verification cost | long wall-clock | Weekly |
+| Per-core, N-instance, connection ceiling, HTTP/3 end-to-end | very high | Occasional deep run |
 
-**Recommendation on merge gating — deliberately narrow:**
+**Recommendation — deliberately narrow:**
 
-- **Nothing wall-clock blocks a pull request.** The `perf` queue is max-one-instance and
-  scale-to-zero by design (`terraform/buildkite-agents/variables.tf`); making it a PR gate
-  would serialise every merge behind a 45-minute run, and a wall-clock PR gate on shared
-  agents is how a flaky gate gets born, ignored, and then deleted.
-- **Two things do block.** The AppCDS-mapped boolean (item 4), because it is deterministic
-  and catches a silent 34 percent loss. And the **allocation-per-op budget**, run per merge
-  to master and notifying on the commit that moved it — blocking is arguable here, but even
-  as notify-only it collapses the bisect surface from a day of merges to a single commit,
-  which is the real win.
-- **The release gate is where teeth belong.** Extend `release-preflight-pipeline.yml` to
-  fail when (a) the newest successful perf run in S3 is older than the release candidate's
-  merge base, or (b) any budget is currently in a flagged-regression state that has not been
-  explicitly accepted in `perf-budgets.json`. That costs one S3 query and one JSON read, and
-  it is where "we shipped a 2x slowdown" actually gets caught. This is the single highest-
-  leverage gate in the whole programme.
+- **Nothing wall-clock blocks a pull request.** The queue is max-one-instance and
+  scale-to-zero; a PR gate would serialise every merge behind a 45-minute run, and a
+  wall-clock PR gate on shared agents is how a flaky gate gets born, ignored, then deleted.
+- **Three things block, at different points, and the differences are deliberate.** The
+  **leak gate** and **`mvn verify`** block the PR. The **AppCDS boolean** blocks the master
+  build immediately post-merge. The **allocation budget** can block a PR as an unconditional
+  step in `pipeline-java.yml` — but note that pipeline is itself orchestrator-path-filtered,
+  so a JDK or base-image change reaches it only via the daily run. **Neither gate replaces the
+  daily run**, which is the only always-runs backstop either has.
+- **The release gate is where teeth belong.** Fail preflight when the newest successful perf
+  run is older than the release candidate's merge base, when any budget is in an unaccepted
+  flagged state, or when the newest run's `validity` is false. One S3 query and one JSON read,
+  and it is where "we shipped a 2x slowdown" actually gets caught.
+
+**Standing rule: earlier is not automatically better.** A pre-merge gate that is path-filtered
+may cover **fewer causes** than a post-merge gate that always runs:
+
+- For a **defect gate** — catching a mistake in the change under review — earlier wins, because
+  the cause is by definition inside the changed paths.
+- For a **decay detector** — catching something that stops working for reasons unrelated to any
+  one change — **always-runs usually beats runs-earlier**, because the causes are exactly the
+  ones path filters miss.
+
+The AppCDS check is a decay detector. So is baseline freshness. So is most of this programme.
+**Anywhere this plan recommends moving a check earlier, it must say which causes that move
+stops covering** — and if the answer is "the likely ones", do not move it.
 
 ### Keeping the system itself alive
 
-**Treat this as its own risk, not a footnote.** The evidence that controls decay silently in
-this repo is direct and recent:
+**Its own risk, not a footnote.** The evidence that controls decay silently here is direct:
 
 - The JMH backstop produced **no signal from 2026-09-12 to 2026-09-16** and nobody noticed;
-  the only symptom was a red square on a notify-only build. Fixed in `b98d18f0c`, which
-  added a failure annotation — the right instinct, applied to one step.
-- `PERF_NOTIFY_WEBHOOK` is referenced by `perf-test-compare.sh` and **configured nowhere**,
-  so the notification path has never fired.
-- A CI cache in this repo reported success while storing nothing (recorded in `1490c5ad4`).
+  the only symptom was a red square on a notify-only build.
+- `PERF_NOTIFY_WEBHOOK` is referenced by the compare step and **configured nowhere**, so the
+  notification path has never fired.
+- A CI cache reported success while storing nothing (`1490c5ad4`).
+- `agent.instance_type` has been the empty string in every stored run because `curl -s` exits
+  zero on an empty body — a field that exists, is populated, and is **silently wrong**, for
+  months.
+- The pre-merge container slot is empty because `docker-build-verify.sh` was **un-wired after
+  it turned the pipeline red and blocked PRs** — a control removed rather than repaired, and
+  the reason item 4 has no cheap pre-merge home.
 
-The general failure mode is that **a control that stops working goes quiet rather than
-loud**. Design against it explicitly. Green is not the same as measuring.
+The general failure mode: **a control that stops working goes quiet rather than loud.** Green
+is not the same as measuring. **And a populated field is not the same as a correct one** —
+that is the `instance_type` lesson, and why every plausibility assertion must check *values*,
+not presence.
 
-Four mechanisms:
+1. **Baseline freshness assertion, owned by a different pipeline.** Fails if the newest object
+   is older than 7 days **or if its expected keys are absent, null, or implausible**. Age alone
+   is gameable by a producer writing valid empty JSON. On the `trigger` queue, in
+   `pipeline-infra.yml` — **a check that lives inside the system it monitors dies with it.**
+2. **Plausibility assertions, not exit codes.** Every producing step asserts a *plausible
+   non-empty result*: keys present, non-null, within sane absolute ranges; `instance_type`
+   matching a known pattern; sample log non-empty. Promote the existing empty-sample-log
+   warning to a hard failure.
+3. **Validate the measurement before trusting it.** Generalise the inject harness's discipline
+   to every harness. **A number that has not been validated is not evidence — and an assertion
+   that has never been false is not a validation.**
+4. **Every step annotates its own failure.** The compare step owns the annotation and the
+   webhook and runs only *after* the `wait`, so a dead producer silently produces nothing.
+   `perf-test-microbench.sh` gained a trap for this reason; copy it to the others.
 
-1. **Baseline freshness assertion, owned by a different pipeline.**
-   *What fires:* a cheap daily check that queries
-   `s3://mockserver-ci-perf-results/runs/master/` and fails if the newest object is older
-   than 7 days. *When:* daily, on the `trigger` queue (seconds, pennies). *Where:* put it in
-   **`pipeline-infra.yml`, not the perf pipeline** — a check that lives inside the system it
-   monitors dies with it. *Who sees it:* the same maintainer channel as item 1.
-2. **Plausibility assertions, not exit codes.** Every producing step must assert its output
-   is a *plausible non-empty result*, not merely that the process exited zero: all expected
-   keys present, non-null, within sane absolute ranges (p50 between 0.01 ms and 100 ms;
-   achieved throughput within 50 to 200 percent of offered; `alloc_bytes_per_op` strictly
-   greater than zero; sample log non-empty). `perf-test-run.sh` already warns when the
-   resource sample log is empty — promote that from a warning to a hard failure, and apply
-   the pattern everywhere.
-3. **Validate the measurement before trusting it** (item 7). The inject harness already does
-   this properly — it excludes a ceiling point that failed the connection-reuse assertion
-   rather than reporting a churn-corrupted number. Generalise that to every harness:
-   client headroom, no dropped iterations, connections reused, no throttling. A number that
-   has not been validated is not evidence.
-4. **Every step annotates its own failure.** `b98d18f0c` gave `perf-test-microbench.sh` an
-   `annotate_on_failure` trap because the compare step — which owns annotations and the
-   webhook — runs only *after* it, behind a `wait: ~`, so a dead producer silently produces
-   nothing. Copy that trap into `perf-test-run.sh`, `perf-test-h2multiplex.sh` and
-   `perf-test-inject.sh`. Anything that breaks must make noise.
-
-A useful acceptance test for this whole section: **deliberately break one producer and
-confirm the system says so within 24 hours.** Do that once when the programme lands, and
-again annually. If the answer is "nothing happened", the controls are theatre.
+**Acceptance test for this whole section: deliberately break one producer and confirm the
+system says so within 24 hours.** Once when the programme lands, once a year after. If the
+answer is "nothing happened", the controls are theatre.
 
 ### Re-baselining and drift
 
-Baselines legitimately move: a deliberate trade-off, a JDK or dependency bump, new CI
-hardware. The risk is that an intentional move becomes indistinguishable from a regression
-somebody rubber-stamped.
-
-- **The rolling S3 median handles noise only.** It has a 10-run window, so a slow drift of 3
-  percent per run is absorbed invisibly. That is why absolute budgets must live in the
-  committed `perf-budgets.json` and not in the rolling window.
-- **An intentional move is a reviewed commit.** Changing a budget requires editing
-  `perf-budgets.json` with a commit message stating: the date, the metric, the old and new
-  values, the cause (for example "Temurin 25.0.2 bump, matcher `time_per_op` +6 percent,
-  accepted"), and who approved. No other mechanism may change a budget.
-- **Hardware changes invalidate history, loudly.** `perf-test-run.sh` already records
-  `agent.instance_type` and the cpusets in every result. Make `perf-test-compare.sh`
-  **refuse to compare** across a differing `instance_type` and annotate "baseline invalidated
-  by hardware change — re-derive" rather than silently comparing incomparable runs. Changing
-  `perf_instance_types` in `terraform/buildkite-agents/variables.tf` should therefore be a
-  deliberate act with a known cost.
-- **Accepted regressions are recorded, not forgotten.** An accepted move goes into
-  `perf-budgets.json` with its reason. A flagged regression that is neither fixed nor
-  recorded stays flagged, and the release-preflight gate keeps failing until somebody
-  decides. That is the mechanism that stops rubber-stamping: the only way to silence a
-  regression is to write down why.
+- **The rolling median handles noise only.** A 10-run window absorbs a 3%-per-run drift
+  invisibly. That is why absolute budgets live in the committed file.
+- **An intentional move is a reviewed commit** — date, metric, old and new values, cause, who
+  approved. No other mechanism may change a budget.
+- **Hardware changes invalidate history, loudly.** Make compare **refuse to compare** across a
+  differing `instance_type` and annotate "baseline invalidated — re-derive". **This cannot be
+  implemented before item 0**, because every stored run currently has `""` and a rule
+  comparing empty strings compares everything to everything.
+- **Configuration changes invalidate history too.** Extend the rule to the `config` block. The
+  2026-06-24 figures are the worked example: `logLevel=ERROR`, `DISABLE_SYSTEM_OUT=true`,
+  possibly ZGC on an 8 GB heap, and nothing recorded it.
+- **Accepted regressions are recorded, not forgotten.** A flagged regression that is neither
+  fixed nor recorded stays flagged, and the release gate keeps failing until somebody decides.
+  **The only way to silence a regression is to write down why.**
 
 ### Handling noise without disabling the control
 
-This repo has already abandoned a change over wall-clock flakiness on CI. A flaky gate gets
-ignored, then removed, which is strictly worse than not having the gate. **State these as
-standing rules for anything added under this programme:**
-
-1. **Wall-clock measurements run only on the pinned `perf` queue** — single fixed instance
-   type, 100 percent on-demand, max one instance, scale to zero. Never on Spot, never on the
-   mixed-instance `default` queue. *(Note that `perf-test-load.sh` currently violates this —
-   it runs on `queue: default`. Either move it to `perf` or accept it as informational.)*
-2. **Never gate on a single sample.** Median of at least 5 for load-shaped measurements, at
-   least 9 for startup. Report the dispersion alongside the median so a widening spread is
-   itself visible.
-3. **Prefer within-run comparison where the question allows it.** `CandidateIndexBenchmark`
-   comparing SCAN and INDEX arms in the same JVM on the same run is the gold standard: it
-   cancels almost all environmental noise. Any A-versus-B question should be posed this way.
-4. **Prefer deterministic counters over wall-clock** wherever the question can be reframed:
-   allocation bytes per op, GC count, class-load count, thread count, connection count,
-   requests per connection. These can gate on noisy hardware; wall-clock cannot.
-5. **Anything that cannot meet rules 1 to 4 is informational, labelled as such, and never
-   gating.** `Http2StreamChannelBenchmark` already does this correctly and explicitly — copy
-   its reasoning, including its written justification for *not* setting a threshold yet.
-6. **Validity gating beats threshold loosening.** When a measurement is noisy because the
-   rig was compromised (client saturated, iterations dropped, connections churning), exclude
-   the point. Do not widen the threshold until noise fits inside it — that is how a gate
-   becomes unable to fail.
+1. **Wall-clock runs only on the pinned `perf` queue.** Never Spot, never the mixed-instance
+   `default` queue. *(`perf-test-load.sh` currently violates this.)*
+2. **Never gate on a single sample.** Median of at least 5 for load-shaped, 9 for startup.
+   Report dispersion so a widening spread is itself visible. **If the MAD exceeds 15% of the
+   median, the measurement is informational, not gating** — stated in the annotation so the
+   decision is made by data rather than by whoever is annoyed that day.
+3. **Prefer within-run comparison.** `CandidateIndexBenchmark` comparing arms in the same JVM
+   on the same run is the gold standard; items 13, 14, 15b and the dashboard A/B are shaped
+   this way deliberately.
+4. **Prefer deterministic counters over wall-clock** wherever the question can be reframed.
+   These can gate on noisy hardware; wall-clock cannot.
+5. **Prefer a distribution over a single percentile** where the question is fidelity rather
+   than speed — item 12's delay-error distribution has a known correct value (zero) rather
+   than a baseline.
+6. **Anything that cannot meet 1-5 is informational, labelled, never gating.**
+7. **Validity gating beats threshold loosening.** When a measurement is noisy because the rig
+   was compromised, exclude the point. **Do not widen the threshold until noise fits inside
+   it — that is how a gate becomes unable to fail.**
 
 ### Continuous improvement, not only defence
 
-Catching regressions keeps performance from getting worse. The owner asked for **constantly
-improve**, which needs a separate mechanism that surfaces opportunities.
-
 - **Quarterly deep review.** A JFR or async-profiler wall-clock **and** allocation profile of
-  the four measured behaviours plus at least one proxy path, diffed against the previous
-  quarter's profile. Output: the top ten allocation sites and top ten CPU frames, committed
-  to a dated reference page so the trend is visible. *What fires:* a calendar item, not CI.
-  *Who sees it:* whoever does the quarter's performance work. Also run it **before every
-  major release**, which is when a re-baseline is needed anyway.
-- **Run the dark benchmarks in the deep review.** `InboundDecodeBenchmark`,
-  `MetricsIncrementBenchmark`, `OpenApiValidationBenchmark` and
-  `LocalCallbackDispatchBenchmark` all exist and none of them ever run. They are a
-  ready-made "where does the time and allocation go" ledger. Running them quarterly costs
-  almost nothing and keeps them from bit-rotting into the same silent death the
-  `MatchingBenchmark` had.
-- **The ratchet is itself an improvement mechanism.** Every tightening PR is a recorded win.
-  Reviewing the ratchet history at the quarterly review answers "did we actually get faster
-  this quarter" with evidence rather than impression.
-- **Re-read this coverage map annually.** New features add new hot paths — HTTP/3, LLM
-  mocking, WASM rules, async messaging all exist in the tree and none is in the coverage map
-  above. The map should be a living artefact (see What survives this plan), revisited when a
-  major feature lands and at each major release.
+  the measured behaviours plus at least one proxy and one streaming path, diffed against the
+  previous quarter. Output the top ten allocation sites and CPU frames to a dated page so the
+  trend is visible. Also run it **before every major release**.
+- **Run the remaining dark benchmarks there** — the WASM interpreter, the optional-feature
+  ledger — the ones that do not justify daily cost but should not bit-rot.
+- **The ratchet is itself an improvement mechanism.** Every tightening PR is a recorded win;
+  reviewing that history answers "did we actually get faster this quarter" with evidence.
+- **Re-read the coverage map when a major feature lands and at each major release.** The first
+  audit deferred five feature surfaces to "the first annual re-read"; three months later two
+  were in Tier 2. **Tie the re-read to the release, not the calendar.**
 
 ## Open questions and risks
 
-1. **Is the published 36,000 req/s knee real, or is it k6's ceiling?** Unresolved. Nothing in
-   the sweep proves the client had headroom. Item 2 answers it; until then, treat the
-   published saturation figure as unverified.
-2. **What did 8.0.0's HTTP/2 multiplex change actually cost per connection?** Unknown, and
-   self-declared as changed. Item 11 answers it. Highest-value unknown for the central
-   profile.
-3. **Does the documented `-Xmx512m` sidecar configuration actually work under load?** Never
-   tested. Item 8 answers it. If it does not, the website is recommending a configuration
-   that OOMs.
-4. **Should the perf figures be measured at `logLevel=INFO` (the shipped default) or `ERROR`
-   (what CI uses)?** Unresolved and consequential — the site's own guidance says the
-   difference is the largest matching-path allocation. Two defensible answers: measure both
-   and publish both, or measure the default and publish that. Either is better than the
-   current silent mismatch. Decide before item 14 refreshes the site.
-5. **Cost.** The `perf` queue is on-demand `c5.4xlarge`, max one instance, scale to zero.
-   Adding a weekly multi-hour soak, a longer daily sweep and a startup matrix all consume
-   that single serialised box. Estimate the monthly cost before landing items 2, 8 and 10
-   together; they may need to share a run rather than each adding a step.
-6. **Per-merge JMH conflicts with scale-to-zero.** Running the allocation backstop per merge
-   to master means either accepting it on the `default` queue (fine for allocation counts,
-   which are hardware-independent — this is the recommended answer) or contending for the
-   single perf box. Confirm the allocation figures really are agent-independent before
-   relying on it; that is one cheap experiment.
-7. **Flakiness risk remains real.** Items 2, 8, 10, 12 and 13 are all wall-clock. The
-   standing rules above are the mitigation, but the honest position is that any one of them
-   could still produce an unstable signal on first contact. **Land each one notify-only
-   first, observe 10 runs, and only then attach a budget.** Never ship a new wall-clock gate
-   with a threshold on day one.
-8. **This plan does not cover HTTP/3, LLM mocking, async messaging, WASM rules, or the
-   dashboard UI.** They are out of the mandate's framing as written, but they are hot paths
-   that exist. Flag at the first annual re-read.
+1. **Why is `regression.js`'s p95 a thousand times the sweep's, in the same run?** The newest
+   and most consequential unknown. It gates every D2 latency budget and item 9a's design. One
+   run answers it. **Do it first.**
+2. **Is the published 36,000 req/s knee real, or is it k6's ceiling?** The client is pinned to
+   six cores — the same count as the server. Item 2 now asserts client headroom; until a run
+   with it lands, treat the published figure as unverified.
+3. **What did the 8.0.0 multiplex change cost per connection?** Unknown, self-declared as
+   changed. Item 11, but only if compared against a pre-8.0.0 build.
+4. **Does the documented `-Xmx512m` sidecar configuration actually work under load?** Never
+   tested. If it does not, the website recommends a configuration that OOMs.
+5. **`logLevel=INFO` (shipped default) or `ERROR` (what CI uses)?** Measuring the default makes
+   the numbers representative but breaks comparability with the entire stored baseline.
+   Recommendation: keep `ERROR` for the tracked baseline, **add** an `INFO` rung for the
+   published figure, label both. Decide before item 19 refreshes the site.
+6. **Cost is not the constraint; the serialised box is.** One estimate unverified: nobody has
+   measured how long the daily chain occupies it. Every row of the cost table depends on it.
+7. **Is `alloc_bytes_per_op` really agent-independent?** One cheap experiment: same commit,
+   five runs on each queue. Item 16 depends on the answer.
+8. **Are the heap-derived store defaults order-dependent in a shared JVM?** Item 17 answers it.
+   If true, it is both a performance finding and a flakiness finding.
+9. **Flakiness risk remains real.** Items 8, 9, 10, 12, 13, 14, 17 and 18 are all wall-clock.
+   **Land each notify-only first, observe 10 runs, and only then attach a budget.** Never ship
+   a new wall-clock gate with a threshold on day one.
+10. **The programme is larger than one person can land in a quarter.** Stated plainly rather
+    than hidden in the ordering. The first fortnight and quarter are scoped to be achievable;
+    Tier 3 explicitly is not.
 
 ## What to publish versus what to gate internally
 
-**Published and kept current** on `performance.html`, each figure carrying **version, date,
-core count, heap, GC and log level**:
+**Published and kept current**, each figure carrying **version, date, core count, heap, GC and
+log level** — none of which the schema records today:
 
-- The throughput-latency knee curve, with `saturation_rps` and the client-headroom evidence
-  alongside it.
-- Per-behaviour p50/p95/p99 for match, forward, template, large, over HTTP and HTTP/2.
-- Matcher scaling, scan versus index — already good, keep it.
-- **New:** proxy-path latency (forward and CONNECT tunnel); startup medians per artifact
-  (Docker, fat jar, `-aot`); and a laptop sizing table (heap floor, idle RSS, thread count,
-  safe parallel instance count per GB).
+- The knee curve, with **`healthy_ceiling_rps` as the headline** and `peak_achieved_rps` beside
+  it labelled as degraded, with the latency measured at each. Never a ceiling without its
+  latency.
+- Per-behaviour percentiles — **once Finding 3 is resolved.** Do not publish a percentile
+  nobody can explain, and do not keep publishing only the flattering half of an artefact.
+- Matcher scaling, scan versus index — already good.
+- **New:** proxy-path latency; startup medians per artifact including in-JVM, and compressed
+  image size; a laptop sizing table; TLS and mTLS handshake rates; and SSE streaming fidelity
+  at concurrency, which is a differentiating claim nobody else publishes.
 
-**Correct one published claim while you are there.** The "How MockServer is performance
-tested" section lists **soak** and **stress** as part of the ladder. Neither has ever
-executed. Either wire them up (item 10 does soak) or remove the claim. Do not leave both.
+**Correct two published claims while you are there.** The page lists **soak** and **stress**
+as part of how MockServer is tested; neither has ever executed. And it implies the figures are
+default-configuration figures; they are not.
 
-**Gated internally, never published:** JMH absolute backstops (`time_per_op`,
-`alloc_bytes_per_op`), the growth and soak live-set slope, the forward-pool error-rate
-guard, the AppCDS-mapped boolean, the startup median-of-9, and the baseline freshness
-assertion. These are regression detectors, tuned for sensitivity rather than defensibility,
-and publishing them would invite arguments about numbers that exist only to move.
+**Gated internally, never published:** the JMH absolute backstops, the growth and soak
+live-set slope and absolute, the event-log verification cost, the forward-pool guard, the
+AppCDS boolean, the leak gate, the `CallerRunsPolicy` counter, the startup median-of-9, and
+the baseline freshness assertion. These are regression detectors tuned for sensitivity rather
+than defensibility; publishing them invites arguments about numbers that exist only to move.
 
 ## What survives this plan
 
-This file gets deleted by the change that completes the work. Three pieces of analysis
-deserve to persist; move them before deleting, or they vanish with it.
+This file is deleted by the change that completes the work. Four pieces deserve to persist;
+move them before deleting.
 
-1. **A corrected account of what each harness actually measures, and which ones run.**
-   *Destination: a new `docs/code/performance-measurement.md`*, sitting alongside
-   `docs/code/memory-management.md`, `docs/code/startup-performance.md` and
-   `docs/code/metrics.md`. Must state plainly: which k6 scripts CI executes and which it only
-   lints; that `ForwardPathBenchmark` measures the load generator's render path and **not**
-   proxying; which JMH benchmarks run daily and which are dark; and that the inject harness
-   answers "how much load can MockServer generate", not "how fast does it serve".
-2. **The dating and provenance rule.** *Destination: `docs/code/startup-performance.md`*
-   already half-states this ("absolute numbers are machine-specific; only compare runs from
-   the same machine and session"). Extend it into a general rule the whole `docs/` tree
-   follows: every performance figure carries its date, version, hardware and configuration,
-   or it is not a figure.
-3. **The corrections to the harness READMEs.** *Destinations:
-   `mockserver-performance-test/README.md` and `mockserver-performance-test/k6/README.md`.*
-   The k6 README currently describes `forward.js` as a regression guard in the present tense;
-   it does not run and is not linted. Either fix the code (item 3) or fix the sentence — but
-   the README must not keep claiming a guard the pipeline does not execute.
+1. **A corrected account of what each harness measures, and which ones run.** *Destination: a
+   new `docs/code/performance-measurement.md`.* Must state plainly: which k6 scripts CI
+   executes and which it only lints; that `ForwardPathBenchmark` measures the load generator's
+   render path and **not** proxying; which JMH benchmarks run daily and which are dark; that
+   the inject harness answers "how much load can MockServer generate", not "how fast does it
+   serve"; and that `throughput_rps` is a delivery ratio against a fixed offered rate, not a
+   throughput ceiling.
+2. **The dating and provenance rule.** *Destination: `docs/code/startup-performance.md`*, which
+   already half-states it. Every performance figure carries its date, version, hardware and
+   configuration, or it is not a figure. **Add the corollary this audit learned the hard way:
+   a populated field is not a correct one.**
+3. **The corrections to the harness READMEs.** The k6 README described `forward.js` as a
+   regression guard in the present tense while it never ran. Item 3 fixed the code; the README
+   must not keep claiming guards the pipeline does not execute.
+4. **The hazard-class table and the evidence standard** from
+   [Proving a performance change is still correct](#proving-a-performance-change-is-still-correct).
+   *Destination: alongside (1), or its own `docs/code/optimisation-safety.md` cross-linked from
+   `docs/code/netty-pipeline.md`*, whose HTTP/2 testing convention is the worked example the
+   whole section generalises.
 
-Everything else here — the coverage map, the programme, the budgets — is scaffolding for the
+Everything else here — the programme, the sequencing, the budgets — is scaffolding for the
 work and goes when the work is done.
