@@ -87,6 +87,13 @@ function sweepThresholds() {
     t[`http_req_duration{rate:${rate}}`] = ['p(50)>=0', 'p(90)>=0', 'p(95)>=0', 'p(99)>=0', 'p(99.9)>=0'];
     t[`http_req_failed{rate:${rate}}`] = ['rate>=0'];
     t[`http_reqs{rate:${rate}}`] = ['count>=0'];
+    // dropped_iterations is k6's own "the client could not launch this iteration
+    // on time" counter (VU-starved / arrival-rate not met). Materialise it per
+    // rung (scenario tag rate_<rate>) so handleSummary can report whether the
+    // CLIENT fell behind at each offered rate — a rung with drops is one where
+    // k6, not MockServer, ran out of headroom, so its achieved throughput is a
+    // client ceiling and must be EXCLUDED from the derived saturation point.
+    t[`dropped_iterations{scenario:rate_${rate}}`] = ['count>=0'];
   }
   return t;
 }
@@ -127,6 +134,7 @@ export function handleSummary(data) {
     const dur = data.metrics[`http_req_duration{rate:${rate}}`];
     const failed = data.metrics[`http_req_failed{rate:${rate}}`];
     const reqs = data.metrics[`http_reqs{rate:${rate}}`];
+    const dropped = data.metrics[`dropped_iterations{scenario:rate_${rate}}`];
     const count = reqs && reqs.values ? reqs.values.count : 0;
     const v = dur && dur.values ? dur.values : {};
     points.push({
@@ -138,6 +146,10 @@ export function handleSummary(data) {
       p99_ms: round(v['p(99)']),
       p999_ms: round(v['p(99.9)']),
       error_rate: failed && failed.values ? round(failed.values.rate, 5) : 0,
+      // Client-side drop count for this rung: > 0 means k6 could not keep up
+      // with the offered arrival rate (VU starvation), so achieved_rps is bounded
+      // by the CLIENT and this rung is not a valid server-ceiling candidate.
+      dropped_iterations: dropped && dropped.values ? round(dropped.values.count, 0) : 0,
     });
   }
   const out = { proto: SWEEP.proto, points };

@@ -55,8 +55,21 @@
 //        mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar \
 //        -serverPort 1080 ...
 //
-import { CONFIG, FORWARD_LOAD, LIMITS } from './lib/config.js';
+import { CONFIG, FORWARD_LOAD, LIMITS, env } from './lib/config.js';
 import { seedForward, resetMockServer, getForward } from './lib/expectations.js';
+
+// Where handleSummary writes the machine-readable guard result (mapped to a file
+// by k6). perf-test-run.sh reads this to fold the forward-pool guard verdict into
+// the run's result.json; defaults to a local filename for an ad-hoc run.
+const FORWARD_RESULT_PATH = env('K6_FORWARD_RESULT_PATH', 'forward-result.json');
+
+function round(v, dp = 5) {
+  if (v === undefined || v === null || Number.isNaN(v)) {
+    return null;
+  }
+  const f = 10 ** dp;
+  return Math.round(v * f) / f;
+}
 
 export const options = {
   insecureSkipTLSVerify: CONFIG.insecureSkipTLSVerify,
@@ -103,4 +116,31 @@ export function forward() {
 
 export function teardown() {
   resetMockServer();
+}
+
+// Emit the machine-readable guard verdict consumed by perf-test-run.sh:
+//   error_rate   — forward-path failure fraction at peak (the pool-regression signal)
+//   threshold    — the error-rate gate (K6_MAX_ERROR_RATE); breaching it trips the guard
+//   peak_rps     — the ladder peak the guard drove to
+//   passed       — error_rate stayed under the threshold (pooled ≈ 0; unpooled ≫ 0)
+// The k6 process ALSO exits non-zero on a breach (the threshold is aborting), so
+// the run step captures both this verdict and the exit code.
+export function handleSummary(data) {
+  const failedOp = data.metrics['http_req_failed{op:forward}'];
+  const failedAll = data.metrics.http_req_failed;
+  const errorRate =
+    failedOp && failedOp.values ? failedOp.values.rate : failedAll && failedAll.values ? failedAll.values.rate : null;
+  const out = {
+    forward_guard: {
+      peak_rps: FORWARD_LOAD.peakRate,
+      error_rate: round(errorRate),
+      threshold: LIMITS.errorRate,
+      passed: errorRate !== null ? errorRate < LIMITS.errorRate : null,
+    },
+  };
+  const json = JSON.stringify(out, null, 2);
+  const result = {};
+  result[FORWARD_RESULT_PATH] = json;
+  result.stdout = `\nforward guard result:\n${json}\n`;
+  return result;
 }

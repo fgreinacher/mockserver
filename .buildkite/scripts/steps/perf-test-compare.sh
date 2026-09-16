@@ -82,6 +82,29 @@ COMMIT="$(jq -r '.commit // "unknown"' "$RESULT")"
 TS="$(jq -r '.timestamp_utc // "unknown"' "$RESULT")"
 KEY="runs/${BRANCH}/${TS//:/-}__${COMMIT:0:10}.json"
 
+# --- 1b. validity gate (item: refuse to baseline a compromised measurement) ---
+# The run's own `validity` block records whether the measurement RIG was sound
+# (client had CPU headroom, k6 dropped no iterations, resource samples captured,
+# latency metrics present). Baselining an invalid run would poison the rolling
+# median with garbage, so REFUSE: annotate an error, and do NOT persist to the
+# history and do NOT compare. Notify-only overall (exit 0), but loud. A run
+# produced by perf-test-run.sh always carries the block; an ABSENT block (older
+# producer or a truncated run) is treated as invalid on purpose.
+VALID="$(jq -r '.validity.valid // "absent"' "$RESULT")"
+if [ "$VALID" != "true" ]; then
+  FAILED_CHECKS="$(jq -r '
+    (.validity.checks // []) | map(select(.ok != true))
+    | if length == 0 then "- (no validity block present in this run)"
+      else map("- **\(.name)**: \(.detail)") | join("\n") end' "$RESULT")"
+  annotate "error" ":no_entry: **Perf run INVALID — not baselined** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+This run's \`validity\` block is absent or false, so it was **not persisted to the baseline history and not compared** — a compromised measurement must not poison the rolling median (the inject harness's discipline: exclude a bad point, don't report it).
+
+Failing checks:
+${FAILED_CHECKS}"
+  exit 0
+fi
+
 # --- 2. persist this run to S3 (history) --------------------------------------
 HAVE_AWS=false
 if command -v aws >/dev/null 2>&1 && [ -z "${PERF_BASELINE_DIR:-}" ]; then
@@ -127,7 +150,13 @@ def metrics:
   ((.behaviours // {}) | to_entries[] | .key as $k | .value as $v |
     ( {name:($k+".p95_ms"),        value:$v.p95_ms,        dir:"up",   min_pct:0.10, floor:null},
       {name:($k+".p99_ms"),        value:$v.p99_ms,        dir:"up",   min_pct:0.10, floor:null},
-      {name:($k+".throughput_rps"),value:$v.throughput_rps,dir:"down", min_pct:0.10, floor:null},
+      # throughput_rps is DELIBERATELY not budgeted (but still recorded, with
+      # offered_rps + dropped_iterations + delivery_ratio alongside it). It is
+      # count(COMPLETED)/duration, and k6 drops iterations when its VU pool cannot
+      # keep up — so a shortfall below offered is AMBIGUOUS (server slower vs client
+      # VU-starved) and must not carry a budget until the 4-11% shortfall seen in
+      # real runs is understood. peak_achieved_rps (below) is the budgeted ceiling
+      # signal; the delivery ratio is surfaced in the annotation instead.
       {name:($k+".error_rate"),    value:$v.error_rate,    dir:"up",   min_pct:0,    floor:0.005} ) ),
   ((.growth // {}) |
     ( # CPU/heap at constant load should hold ~1.0 → tight absolute floor.
@@ -136,10 +165,27 @@ def metrics:
       # are far below a #2329-class signal (CPU saturation / latency ~hundreds×).
       {name:"growth.cpu_ratio",  value:(.cpu_pct.ratio),         dir:"up", min_pct:0.10, floor:1.30},
       {name:"growth.heap_ratio", value:(.heap_used_bytes.ratio), dir:"up", min_pct:0.10, floor:1.30},
+      # A ratio detects a SLOPE; an absolute detects a STEP. A leak that plateaus
+      # at the ring cap gives ratio ~1.0 while the live set is permanently doubled,
+      # and an elevated first-window floor (warm-up garbage) inflates the ratio
+      # denominator and hides a real leak. So budget the absolute live-set floor
+      # (min heap over the last 60 s) too, on the rolling median+MAD.
+      {name:"growth.live_set_bytes", value:(.heap_used_bytes.min_last_window), dir:"up", min_pct:0.10, floor:null},
       {name:"growth.p95_ratio",  value:(.p95_ms.ratio),          dir:"up", min_pct:0.10, floor:2.0} ) ),
   ((.microbench // {}) | to_entries[] | .key as $k | .value as $v |
     ( {name:($k+".time_per_op"),       value:$v.time_per_op,       dir:"up", min_pct:0.05, floor:null},
-      {name:($k+".alloc_bytes_per_op"),value:$v.alloc_bytes_per_op,dir:"up", min_pct:0.05, floor:null} ) );
+      {name:($k+".alloc_bytes_per_op"),value:$v.alloc_bytes_per_op,dir:"up", min_pct:0.05, floor:null} ) ),
+  # peak_achieved_rps: max achieved throughput across sweep rungs where the k6
+  # CLIENT was sound (CPU headroom, no dropped iterations, low errors) — derived in
+  # perf-test-run.sh. CONTINUOUS (moves proportionally with the real ceiling, e.g.
+  # 36,324 at 48,000 offered), so a 15% relative floor is meaningful. The down
+  # branch honours min_pct. saturation_rps (the knee) is ladder-QUANTISED — its
+  # smallest move is a factor of two — so it is recorded but NOT budgeted here.
+  ( {name:"peak_achieved_rps", value:(.peak_achieved_rps), dir:"down", min_pct:0.15, floor:null} ),
+  # forward.error_rate: the forward connection-pool guard (forward.js). ~0 with
+  # pooling on (the default); spikes if pooling regresses and the SUT exhausts
+  # ephemeral ports. Absolute floor 0.01 mirrors the k6 threshold in forward.js.
+  ( {name:"forward.error_rate", value:((.forward_guard // {}).error_rate), dir:"up", min_pct:0, floor:0.01} );
 
 ($baseline | map([metrics]) | add | map(select(.value != null)) | group_by(.name)
   | map({key:.[0].name, value:[.[].value]}) | from_entries) as $bmap
@@ -154,7 +200,8 @@ def metrics:
                   else ([$med + 3*$sigma, $med*(1+$m.min_pct)]|max) end) as $th
                  | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
                     regression: ($m.value > $th)}
-            else ([$med - 3*$sigma, $med*(1-$m.min_pct)]|min) as $th
+            else (if $m.floor!=null then ([$med - 3*$sigma, $m.floor]|min)
+                  else ([$med - 3*$sigma, $med*(1-$m.min_pct)]|min) end) as $th
                  | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
                     regression: ($m.value < $th)} end)
       end ] as $rows
@@ -174,11 +221,31 @@ TABLE="$(printf '%s' "$RESULT_CMP" | jq -r '
   (.rows[] |
     "| \(.name) | \(.head // "n/a") | \(.baseline // "n/a" | if type=="number" then (.*1000|round)/1000 else . end) | \(.threshold // "n/a" | if type=="number" then (.*1000|round)/1000 else . end) | \(if .status=="no-baseline" then ":new: new" elif .regression then ":warning: REGRESSION" else ":white_check_mark: ok" end) |")')"
 
+# Context appended to the table: which sweep rungs were excluded (and why) so an
+# excluded top rung cannot masquerade as a server ceiling, and the per-behaviour
+# delivery ratio so a throughput shortfall with dropped_iterations>0 reads as a
+# CLIENT limit rather than a server regression.
+EXTRA="$(jq -r '
+  ([ (.saturation.excluded // [])[]
+     | "- offered \(.offered_rps) rps: EXCLUDED — \(.reason)" ]) as $ex
+  | ([ ((.behaviours // {}) | to_entries[])
+       | select(.value.delivery_ratio != null)
+       | "- \(.key): \(.value.throughput_rps)/\(.value.offered_rps) rps (ratio \(.value.delivery_ratio), dropped \(.value.dropped_iterations // 0))" ]) as $dr
+  | ((.forward_guard // {}) as $fg
+     | if $fg.status == "infra_error"
+       then "\n\n:warning: **Forward-pool guard did NOT run this build** (k6 exit \($fg.k6_exit), no error_rate — upstream/container infra error, not a pool breach). The forward.error_rate row is therefore ABSENT, so the pool-exhaustion regression was NOT checked this run — investigate before trusting it."
+       else "" end) as $fginfra
+  | ((if ($ex|length) > 0 then "\n**Sweep rungs excluded (k6 client not sound — not a server ceiling):**\n" + ($ex|join("\n")) else "" end)
+    + (if ($dr|length) > 0 then "\n\n**Delivery ratio** (throughput/offered; a shortfall with dropped>0 is a CLIENT/VU limit, not a server regression):\n" + ($dr|join("\n")) else "" end)
+    + $fginfra)
+' "$RESULT" 2>/dev/null || echo "")"
+
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD)"
 if [ "$COUNT" -gt 0 ]; then
   annotate "warning" ":chart_with_downwards_trend: **${COUNT} performance regression(s) detected** — ${HEADER}
 
 ${TABLE}
+${EXTRA}
 
 _Notify-only: this does not fail the build. Investigate the flagged metric(s) against recent commits._"
   # Optional notification hook (Slack/email webhook) — no-op if PERF_NOTIFY_WEBHOOK unset.
@@ -189,7 +256,8 @@ _Notify-only: this does not fail the build. Investigate the flagged metric(s) ag
 else
   annotate "success" ":white_check_mark: **No performance regressions** — ${HEADER}
 
-${TABLE}"
+${TABLE}
+${EXTRA}"
 fi
 
 exit 0

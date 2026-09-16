@@ -59,6 +59,13 @@ function regressionThresholds(ops) {
     t[`http_req_duration{op:${op}}`] = ['p(50)>=0', 'p(95)>=0', 'p(99)>=0'];
     t[`http_req_failed{op:${op}}`] = ['rate>=0'];
     t[`http_reqs{op:${op}}`] = ['count>=0'];
+    // throughput_rps = completed/duration is NOT pinned to the offered rate: k6
+    // drops iterations when its VU pool cannot launch them on time, so a low
+    // number is ambiguous — the server got slower OR the client ran out of VUs.
+    // Materialise the per-scenario dropped_iterations counter (scenario name ==
+    // the op) so handleSummary can report it alongside offered_rps and make that
+    // ambiguity legible instead of hidden inside throughput_rps.
+    t[`dropped_iterations{scenario:${op}}`] = ['count>=0'];
   }
   return t;
 }
@@ -147,11 +154,22 @@ export function handleSummary(data) {
       continue;
     }
     const count = reqs && reqs.values ? reqs.values.count : 0;
+    const dropped = data.metrics[`dropped_iterations{scenario:${op}}`];
+    const droppedCount = dropped && dropped.values ? dropped.values.count : 0;
+    const throughput = round(durationSec > 0 ? count / durationSec : 0);
     behaviours[`${op}_${proto}`] = {
       p50_ms: round(dur.values['p(50)'] !== undefined ? dur.values['p(50)'] : dur.values.med),
       p95_ms: round(dur.values['p(95)']),
       p99_ms: round(dur.values['p(99)']),
-      throughput_rps: round(durationSec > 0 ? count / durationSec : 0),
+      throughput_rps: throughput,
+      // offered_rps + dropped_iterations make throughput_rps legible: a shortfall
+      // of throughput below offered with dropped_iterations > 0 is a CLIENT (VU)
+      // limit, not a server regression. delivery_ratio = achieved/offered is the
+      // at-a-glance figure surfaced in the annotation. throughput_rps is recorded
+      // but NOT budgeted (perf-test-compare.sh) until the shortfall is understood.
+      offered_rps: REGRESSION.rate,
+      dropped_iterations: round(droppedCount, 0),
+      delivery_ratio: round(REGRESSION.rate > 0 ? throughput / REGRESSION.rate : null, 4),
       error_rate: failed && failed.values ? round(failed.values.rate, 5) : 0,
     };
   }
