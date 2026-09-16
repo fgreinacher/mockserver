@@ -726,6 +726,7 @@ function run_all_tests() {
       test "docker_compose_with_server_port_from_custom_properties_file"
       test "docker_compose_with_mtls"
       test "docker_compose_jvm_options"
+      test "docker_compose_appcds_archive_mapped"
       test "docker_compose_libs_classpath"
       test "docker_compose_graceful_shutdown"
       test "docker_compose_metrics"

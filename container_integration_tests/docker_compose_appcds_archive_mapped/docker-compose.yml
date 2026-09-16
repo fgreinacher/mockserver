@@ -1,0 +1,25 @@
+services:
+  mockserver:
+    image: mockserver/mockserver:integration_testing
+    # Force -Xshare:on so an unusable AppCDS archive ABORTS JVM initialisation
+    # instead of silently degrading. The image ENTRYPOINT ships the JVM default
+    # -Xshare:auto, under which a missing / corrupt / bind-mounted-away / arch-
+    # mismatched /mockserver.jsa only logs a warning and starts normally — giving
+    # back the measured ~34% startup win with nothing failing. The entrypoint
+    # sets NO explicit -Xshare, so -Xshare:on from JAVA_TOOL_OPTIONS is
+    # unopposed -- note a prepended option LOSES to a later command-line flag,
+    # so this works because the flag is absent, not because prepending wins. If
+    # the entrypoint ever gains an explicit -Xshare:auto the readiness half of
+    # this gate goes dark and only the -Xlog:cds assertion below still fires.
+    # The entrypoint keeps -XX:SharedArchiveFile=/mockserver.jsa and the
+    # exact -cp the archive was trained with (a bare probe without that classpath
+    # would false-fail on a CDS "shared class paths mismatch"). -Xlog:cds prints
+    # the archive-map lines to stderr so the test can additionally confirm the
+    # dynamic /mockserver.jsa archive itself mapped, not merely the base archive.
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xshare:on -Xlog:cds=info:stderr"
+  client:
+    image: mockserver/mockserver:integration_testing_client_curl
+    command:
+      - "sleep"
+      - "86400"
