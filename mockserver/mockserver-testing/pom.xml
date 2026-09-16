@@ -29,6 +29,20 @@
             <artifactId>hamcrest</artifactId>
             <scope>compile</scope>
         </dependency>
+        <!-- Netty, provided: used only by the ByteBuf leak-detection helpers
+             (FailOnLeakResourceLeakDetector). Every
+             consuming module already brings Netty on its own test classpath, so this is
+             marked provided to avoid imposing it transitively. -->
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-buffer</artifactId>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 
 </project>

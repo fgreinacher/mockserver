@@ -1,9 +1,7 @@
 package org.mockserver.netty.integration.proxy.http;
 
-import io.netty.buffer.Unpooled;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.handler.codec.base64.Base64;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -90,7 +88,7 @@ public class HttpProxyChainedIntegrationTest {
                         .withPath("/target")
                         .withSecure(true)
                         .withHeader(HOST.toString(), "www.mock-server.com")
-                        .withHeader(PROXY_AUTHORIZATION.toString(), "Basic " + Base64.encode(Unpooled.copiedBuffer(username + ':' + password, StandardCharsets.UTF_8), false).toString(StandardCharsets.US_ASCII)),
+                        .withHeader(PROXY_AUTHORIZATION.toString(), "Basic " + java.util.Base64.getEncoder().encodeToString((username + ':' + password).getBytes(StandardCharsets.UTF_8))),
                     new InetSocketAddress(proxyClientAndServer.getLocalPort())
                 )
                 .get(10, timeoutUnits());

@@ -45,6 +45,25 @@ public class ProxyAuthenticationValidatorTest {
     }
 
     @Test
+    public void shouldEncodeCredentialIdenticallyToRfc4648Base64() {
+        // validCredential() is built by the production method, so shouldAcceptExactlyMatchingCredential
+        // would still pass if the encoding drifted. Pin it against an independent encoder instead: this
+        // is an auth path, where a changed encoding silently changes who is authenticated.
+        //
+        // The credential below is deliberately chosen so its base64 contains BOTH '+' and '/', the only
+        // two characters where the standard alphabet differs from the URL-safe one. With ASCII
+        // credentials the two encoders agree, so this assertion would pass against either and prove
+        // nothing -- verified by swapping the production call to getUrlEncoder(), which this fixture
+        // catches and an ASCII one does not.
+        String distinguishing = "u\u03FF";
+        String distinguishingPassword = "p\u0080";
+        assertThat(ProxyAuthenticationValidator.expectedProxyAuthorizationHeaderValue(distinguishing, distinguishingPassword),
+            is("Basic " + encode(distinguishing + ":" + distinguishingPassword)));
+
+        assertThat(validCredential(), is("Basic " + encode(USERNAME + ":" + PASSWORD)));
+    }
+
+    @Test
     public void shouldRejectCaseMutatedCredential() {
         // base64 is case-SENSITIVE: flipping the case of the encoded token yields a DIFFERENT credential
         // and must be rejected. Under the old equalsIgnoreCase comparison this returned true, losing

@@ -1,10 +1,9 @@
 package org.mockserver.authentication;
 
-import io.netty.handler.codec.base64.Base64;
-import io.netty.buffer.Unpooled;
 import org.mockserver.model.HttpRequest;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.PROXY_AUTHORIZATION;
@@ -47,9 +46,11 @@ public final class ProxyAuthenticationValidator {
      * The {@code Proxy-Authorization} header value the configured credentials require.
      */
     public static String expectedProxyAuthorizationHeaderValue(String username, String password) {
-        return "Basic " + Base64
-            .encode(Unpooled.copiedBuffer(username + ':' + password, StandardCharsets.UTF_8), false)
-            .toString(StandardCharsets.US_ASCII);
+        // java.util.Base64.getEncoder() is byte-for-byte equivalent to Netty's
+        // Base64.encode(buffer, false) here: standard alphabet, padded, no line wrapping. Using it
+        // avoids allocating two unpooled Netty ByteBufs (the copiedBuffer input and the encoded
+        // output) that were never released on every proxy-authenticated request.
+        return "Basic " + Base64.getEncoder().encodeToString((username + ':' + password).getBytes(StandardCharsets.UTF_8));
     }
 
     /**

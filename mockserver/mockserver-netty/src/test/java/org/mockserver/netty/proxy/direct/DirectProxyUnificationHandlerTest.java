@@ -11,6 +11,7 @@ import io.netty.handler.codec.socks.SocksInitRequestDecoder;
 import io.netty.handler.codec.socks.SocksMessageEncoder;
 import io.netty.handler.ssl.SslHandler;
 import org.apache.commons.codec.binary.Hex;
+import org.junit.After;
 import org.junit.Test;
 import org.mockserver.lifecycle.LifeCycle;
 import org.mockserver.logging.MockServerLogger;
@@ -31,10 +32,23 @@ import static org.slf4j.event.Level.TRACE;
 
 public class DirectProxyUnificationHandlerTest {
 
+    private EmbeddedChannel embeddedChannel;
+
+    @After
+    public void releaseChannel() {
+        // Release any ByteBuf still held by the pipeline (e.g. a ByteToMessageDecoder cumulation such
+        // as SniHandler's, which a real socket channel would free on close but an EmbeddedChannel does
+        // not until finished). Without this the paranoid leak detector reports the un-closed channel's
+        // retained buffers as leaks.
+        if (embeddedChannel != null) {
+            embeddedChannel.finishAndReleaseAll();
+        }
+    }
+
     @Test
     public void shouldSwitchToSsl() {
         // given
-        EmbeddedChannel embeddedChannel = new EmbeddedChannel(new MockServerUnificationInitializer(configuration(), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
+        embeddedChannel = new EmbeddedChannel(new MockServerUnificationInitializer(configuration(), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
 
         // and - no SSL handler
         assertThat(embeddedChannel.pipeline().get(SslHandler.class), is(nullValue()));
@@ -68,7 +82,7 @@ public class DirectProxyUnificationHandlerTest {
     @Test
     public void shouldSwitchToSOCKS() {
         // given - embedded channel
-        EmbeddedChannel embeddedChannel = new EmbeddedChannel(new MockServerUnificationInitializer(configuration(), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
+        embeddedChannel = new EmbeddedChannel(new MockServerUnificationInitializer(configuration(), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
 
         // and - no SOCKS handlers
         assertThat(embeddedChannel.pipeline().get(Socks5ProxyHandler.class), is(nullValue()));
@@ -84,11 +98,14 @@ public class DirectProxyUnificationHandlerTest {
         }));
 
 
-        // then - INIT response
-        assertThat(ByteBufUtil.hexDump((ByteBuf) embeddedChannel.readOutbound()), is(Hex.encodeHexString(new byte[]{
+        // then - INIT response (release the dequeued outbound buffer after asserting on its content -
+        // readOutbound() hands ownership to the caller, so finishAndReleaseAll cannot free it)
+        ByteBuf initResponse = embeddedChannel.readOutbound();
+        assertThat(ByteBufUtil.hexDump(initResponse), is(Hex.encodeHexString(new byte[]{
             (byte) 0x05,                                        // SOCKS5
             (byte) 0x00,                                        // NO_AUTH
         })));
+        initResponse.release();
 
         // and then - should add SOCKS handlers first
         if (MockServerLogger.isEnabled(TRACE)) {
@@ -114,7 +131,7 @@ public class DirectProxyUnificationHandlerTest {
     @Test
     public void shouldSwitchToHttp() {
         // given
-        EmbeddedChannel embeddedChannel = new EmbeddedChannel();
+        embeddedChannel = new EmbeddedChannel();
         embeddedChannel.pipeline().addLast(new MockServerUnificationInitializer(configuration(), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
 
         // and - no HTTP handlers
@@ -162,7 +179,7 @@ public class DirectProxyUnificationHandlerTest {
     @Test
     public void shouldSwitchToHttpForNonStandardMethodWhenAssumeAllRequestsAreHttp() {
         // given - assumeAllRequestsAreHttp enabled so unrecognised methods fall through to HTTP
-        EmbeddedChannel embeddedChannel = new EmbeddedChannel();
+        embeddedChannel = new EmbeddedChannel();
         embeddedChannel.pipeline().addLast(new MockServerUnificationInitializer(configuration().assumeAllRequestsAreHttp(true), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
 
         // and - no HTTP handlers
@@ -210,7 +227,7 @@ public class DirectProxyUnificationHandlerTest {
     @Test
     public void shouldNotSwitchToHttpForNonStandardMethodWhenAssumeAllRequestsAreHttpDisabled() {
         // given - assumeAllRequestsAreHttp disabled (the default) so unrecognised methods are treated as binary
-        EmbeddedChannel embeddedChannel = new EmbeddedChannel();
+        embeddedChannel = new EmbeddedChannel();
         embeddedChannel.pipeline().addLast(new MockServerUnificationInitializer(configuration().assumeAllRequestsAreHttp(false), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
 
         // and - no HTTP handlers
@@ -226,7 +243,7 @@ public class DirectProxyUnificationHandlerTest {
     @Test
     public void shouldSupportUnknownProtocol() {
         // given
-        EmbeddedChannel embeddedChannel = new EmbeddedChannel(new MockServerUnificationInitializer(configuration(), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
+        embeddedChannel = new EmbeddedChannel(new MockServerUnificationInitializer(configuration(), mock(LifeCycle.class), new HttpState(configuration(), new MockServerLogger(), mock(Scheduler.class)), mock(HttpActionHandler.class), null));
 
         // and - channel open
         assertThat(embeddedChannel.isOpen(), is(true));

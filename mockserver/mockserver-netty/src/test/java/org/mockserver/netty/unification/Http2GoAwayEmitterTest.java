@@ -7,6 +7,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http2.Http2ConnectionHandler;
 import io.netty.handler.codec.http2.Http2FrameCodec;
 import io.netty.handler.codec.http2.Http2FrameCodecBuilder;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.Test;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -127,24 +128,32 @@ public class Http2GoAwayEmitterTest {
      * scans rather than assuming GOAWAY is the only/first frame.
      */
     private static boolean outboundContainsGoAwayFrame(EmbeddedChannel channel) {
+        boolean found = false;
         Object outbound;
+        // Drain the whole outbound queue, releasing every message: readOutbound() dequeues and hands
+        // ownership to us, so these buffers are NOT freed by the test's later finishAndReleaseAll().
         while ((outbound = channel.readOutbound()) != null) {
-            if (outbound instanceof ByteBuf) {
-                ByteBuf buf = ((ByteBuf) outbound).duplicate();
-                while (buf.readableBytes() >= FRAME_HEADER_LENGTH) {
-                    int length = buf.readUnsignedMedium();
-                    int type = buf.readUnsignedByte();
-                    buf.skipBytes(1 + 4); // flags + stream id
-                    if (type == GOAWAY_FRAME_TYPE) {
-                        return true;
+            try {
+                if (!found && outbound instanceof ByteBuf) {
+                    ByteBuf buf = ((ByteBuf) outbound).duplicate();
+                    while (buf.readableBytes() >= FRAME_HEADER_LENGTH) {
+                        int length = buf.readUnsignedMedium();
+                        int type = buf.readUnsignedByte();
+                        buf.skipBytes(1 + 4); // flags + stream id
+                        if (type == GOAWAY_FRAME_TYPE) {
+                            found = true;
+                            break;
+                        }
+                        if (buf.readableBytes() < length) {
+                            break;
+                        }
+                        buf.skipBytes(length);
                     }
-                    if (buf.readableBytes() < length) {
-                        break;
-                    }
-                    buf.skipBytes(length);
                 }
+            } finally {
+                ReferenceCountUtil.release(outbound);
             }
         }
-        return false;
+        return found;
     }
 }

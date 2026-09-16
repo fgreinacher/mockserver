@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 ### Fixed
+- Forward-proxy authentication no longer allocates a per-request memory buffer that was never released. Every
+  proxy-authenticated request built its expected `Proxy-Authorization` value with Netty buffers that were left
+  for the garbage collector instead of being freed, producing steady per-request garbage on a hot path. The
+  value is now computed with the JDK Base64 encoder, which is byte-for-byte identical to the previous encoding,
+  so authentication behaviour is unchanged.
 - HTTP/2 cleartext (h2c) with prior knowledge now works through the HTTP `CONNECT` forward proxy. A client
   that establishes a `CONNECT` tunnel and then speaks cleartext HTTP/2 (sending the `PRI * HTTP/2.0` connection
   preface, with no TLS and no HTTP/1.1 Upgrade) was previously downgraded to HTTP/1.1 and received no response,

@@ -1003,6 +1003,29 @@ The `isSslOrDecoderFault` predicate is wired into the `exceptionCaught` handler 
 
 This means genuine SSL negotiation failures (e.g., client sends plain HTTP to a TLS port, or a non-TLS client probes a TLS port) surface at WARN and are visible in logs, while normal connection teardowns remain silent. `ExceptionHandling.isSslOrDecoderFault` mirrors the predicate already in `connectionClosedException` but as a positive match so callers can route specifically to WARN rather than silently drop.
 
+## ByteBuf Leak Detection in Tests
+
+**`mockserver-netty`'s test JVMs run Netty's leak detector at `paranoid` and fail the build if any `ByteBuf` is allocated and never released.** The whole serving/proxy hot path is reference-counted `ByteBuf`s; an unreleased buffer is a slow production memory leak and a double-release is corruption under load — neither is visible to a functional assertion or a throughput benchmark. Netty's default level (`simple`) samples ~1% of allocations, which is useless as a gate.
+
+```mermaid
+flowchart LR
+    A["surefire / failsafe fork\n-Dio.netty.leakDetection.level=paranoid\n-Dio.netty.customResourceLeakDetector=...FailOnLeakResourceLeakDetector"] --> B["FailOnLeakResourceLeakDetector\ncounts each leak, still logs it,\nwrites one file per leak to\ntarget/netty-leaks/leak-<pid>.txt"]
+    B --> C["antrun check-netty-leaks (verify phase)\nfails the build if that dir has any non-empty file"]
+    C -->|"-Dmockserver.failOnNettyLeak=false"| D["downgrade to a warning\n(detection/logging/recording stay on)"]
+```
+
+| Piece | Location | Role |
+|-------|----------|------|
+| `paranoid` + custom detector | `mockserver-netty/pom.xml` → `${mockserver.testArgLine}` (appended to both surefire and failsafe argLine via the parent pom's reserved hook, so it never touches the jacoco `@{argLine}` token) | Track every allocation; route leaks to the recorder |
+| `FailOnLeakResourceLeakDetector` | `mockserver-testing/.../test/FailOnLeakResourceLeakDetector.java` | Counts + records each leak, still logs via `super`, writes one file per leak under `${mockserver.leakReportDir}`, and registers a JVM shutdown hook that GCs + polls so late leaks surface before the fork exits |
+| `check-netty-leaks` / `clean-netty-leaks` | `mockserver-netty/pom.xml` (maven-antrun-plugin) | Empties the report dir before tests (`process-test-classes`); fails the build at `verify` if any leak file is non-empty, unless `-Dmockserver.failOnNettyLeak=false` |
+
+**Why a file, not a thrown exception.** Throwing from a JUnit `RunListener` does *not* fail surefire — the exception is caught and reported as a listener warning (verified: an 88-leak run still went green that way). Netty also logs a leak at ERROR on an arbitrary thread long after the causing test, so scanning stdout is unreliable. A file that outlives the fork, checked by Maven, is the robust gate.
+
+**What it cannot catch.** Netty reports a leak only once the leaked object has been GC-collected *and* a later `track()` polls the reference queue. A buffer leaked so late that it is never collected before the JVM exits, or reported on a background thread after the shutdown-hook flush, will not reach the file — only Netty's ERROR `LEAK:` log remains for that tail case.
+
+**Cost.** Measured on `mockserver-netty`'s unit phase: `paranoid` adds ~10% (207 s → 228 s), which is cheap enough for every run. Extending the same three-line property block to other pipeline-driving modules (`mockserver-core`, `mockserver-integration-testing`) is a follow-up, gated on triaging the pre-existing leaks the detector already surfaces (predominantly `EmbeddedChannel` tests that never call `finishAndReleaseAll()`).
+
 ## Class Reference
 
 | Class | File | Role |

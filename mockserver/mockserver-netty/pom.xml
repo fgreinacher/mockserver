@@ -15,6 +15,22 @@
     <properties>
         <module.name>org.mockserver.netty</module.name>
         <maven-invoker-parallel-threads>2</maven-invoker-parallel-threads>
+        <!-- ByteBuf leak detection for this module's test JVMs. This module's tests drive
+             real Netty pipelines and sockets, so an unreleased ByteBuf here is exactly the
+             kind of reference-counting bug that never shows up in a functional test.
+             `paranoid` tracks EVERY allocation (rather than the ~1% `simple` default), the
+             custom detector records each leak to a file under target/, and the antrun
+             `check-netty-leaks` execution below FAILS the build if any leak was recorded
+             (unless -Dmockserver.failOnNettyLeak=false). This value is appended to the
+             surefire AND failsafe argLine via the parent pom's reserved
+             ${mockserver.testArgLine} hook, so it does NOT touch the jacoco @{argLine}
+             late-binding token. -->
+        <mockserver.leakReportDir>${project.build.directory}/netty-leaks</mockserver.leakReportDir>
+        <mockserver.testArgLine>-Dio.netty.leakDetection.level=paranoid -Dio.netty.customResourceLeakDetector=org.mockserver.test.FailOnLeakResourceLeakDetector -Dmockserver.leakReportDir=${mockserver.leakReportDir}</mockserver.testArgLine>
+        <!-- Set to false to downgrade a detected leak from a build failure to a warning
+             (e.g. while pre-existing leaks are being triaged). Detection/logging/recording
+             stay on regardless. -->
+        <mockserver.failOnNettyLeak>true</mockserver.failOnNettyLeak>
     </properties>
 
     <dependencies>
@@ -303,6 +319,69 @@
                             <!-- never fail the build if this is the only execution targeted (e.g. a
                                  developer running -Dtest pointed elsewhere) -->
                             <failIfNoTests>false</failIfNoTests>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- ByteBuf leak gate. The custom detector (org.mockserver.test.FailOnLeakResourceLeakDetector,
+                 installed via ${mockserver.testArgLine}) writes one file per leak to
+                 ${mockserver.leakReportDir}. This plugin (a) empties that directory before the tests run,
+                 and (b) after the whole lifecycle FAILS the build if any leak was recorded. A file-based
+                 gate is used deliberately: throwing from a JUnit RunListener does NOT fail surefire (the
+                 exception is caught and reported as a listener warning), and a leak is logged at ERROR on
+                 an arbitrary thread long after the causing test, so scanning stdout is unreliable. Set
+                 -Dmockserver.failOnNettyLeak=false to downgrade the gate to a warning while pre-existing
+                 leaks are triaged (detection, logging and recording stay on). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <!-- start each build with an empty leak directory so a prior run's report cannot
+                         cause a false failure (target/ is also removed by `mvn clean`). Runs before the
+                         surefire `test` phase; the detector recreates the directory in each fork. -->
+                    <execution>
+                        <id>clean-netty-leaks</id>
+                        <phase>process-test-classes</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <delete dir="${mockserver.leakReportDir}" quiet="true"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                    <!-- after surefire (test) AND failsafe (integration-test) have run, fail if any
+                         non-empty leak file exists. Bound to verify so it covers both phases. -->
+                    <execution>
+                        <id>check-netty-leaks</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <fileset id="netty.leak.files" dir="${mockserver.leakReportDir}" erroronmissingdir="false">
+                                    <size value="0" when="more"/>
+                                </fileset>
+                                <resourcecount property="netty.leak.file.count" refid="netty.leak.files"/>
+                                <concat>
+                                    <fileset dir="${mockserver.leakReportDir}" erroronmissingdir="false">
+                                        <size value="0" when="more"/>
+                                    </fileset>
+                                </concat>
+                                <fail message="Netty ByteBuf leak(s) detected during the mockserver-netty test run - a reference-counted buffer was allocated and never released (see the LEAK records above and ${mockserver.leakReportDir}). This is a real memory-leak / double-release hazard. To downgrade this gate to a warning while triaging pre-existing leaks, pass -Dmockserver.failOnNettyLeak=false.">
+                                    <condition>
+                                        <and>
+                                            <istrue value="${mockserver.failOnNettyLeak}"/>
+                                            <not>
+                                                <equals arg1="${netty.leak.file.count}" arg2="0"/>
+                                            </not>
+                                        </and>
+                                    </condition>
+                                </fail>
+                            </target>
                         </configuration>
                     </execution>
                 </executions>
