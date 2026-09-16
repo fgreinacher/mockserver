@@ -217,12 +217,23 @@ scripts/release/
     └── tc-php.sh                 # Testcontainers module -> Packagist (subtree-split mirror)
 
 .buildkite/scripts/
-├── release-runner.sh             # Buildkite adapter (meta-data → env vars)
-└── release-verify-totp.sh        # Buildkite-only TOTP gate
+├── release-runner.sh             # Buildkite adapter (meta-data → env vars);
+│                                 # `check-credentials` dispatches the gate below
+├── release-verify-totp.sh        # Buildkite-only TOTP gate
+└── steps/
+    └── check-release-credentials.sh  # preflight credential-gate wrapper
+                                       # (annotates + fails the build)
 
-.buildkite/release-pipeline.yml   # flat list of steps; each step is one
-                                  # release-runner.sh invocation
+.buildkite/release-pipeline.yml          # flat list of steps; each step is one
+                                         # release-runner.sh invocation
+.buildkite/release-preflight-pipeline.yml # host-tool preflight + credential gate
 ```
+
+`scripts/release/check-release-credentials.sh` probes every required publishing
+credential for **liveness** (not mere presence) and runs automatically as a hard,
+non-`soft_fail` gate in the preflight pipeline on the release queue — see
+[Release Preflight Credential Gate](../infrastructure/ci-cd.md#release-preflight-credential-gate).
+It is also worth running by hand before a release.
 
 ### SwaggerHub versioning convention
 
@@ -241,6 +252,11 @@ Uploading under the full patch version (e.g. `7.0.0`) rather than `7.0.x` leaves
 ```bash
 # 1. Verify your machine has the required host tools.
 ./scripts/release/preflight.sh
+
+# 1b. (needs AWS access) Probe every required publishing credential for liveness,
+#     not mere presence. Read-only; never prints secret values. This is the same
+#     check the preflight pipeline runs automatically on the release queue.
+./scripts/release/check-release-credentials.sh
 
 # 2. Run the entire pipeline in dry-run mode. Builds everything, but skips
 #    every external write (npm publish, twine upload, S3 sync, gh release

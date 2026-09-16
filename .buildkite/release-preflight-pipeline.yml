@@ -7,6 +7,18 @@ steps:
         agents:
           queue: "release"
 
+      # Credential liveness GATE — MUST run on the release queue: it is the only
+      # queue holding the mockserver-release/* grants, so it is the only place
+      # every required credential (including website-role, which probes to VALID
+      # from here and INDETERMINATE anywhere else) can actually be proven. A red
+      # build here means a dead/rotated/under-scoped publishing credential — the
+      # exact failure that half-published 8.0.0. Deliberately NOT soft_fail.
+      - label: ":closed_lock_with_key: Release credential liveness gate (release queue)"
+        command: ".buildkite/scripts/release-runner.sh check-credentials"
+        timeout_in_minutes: 10
+        agents:
+          queue: "release"
+
       - label: ":mag: Preflight (default queue)"
         command: ".buildkite/scripts/release-runner.sh preflight"
         timeout_in_minutes: 5

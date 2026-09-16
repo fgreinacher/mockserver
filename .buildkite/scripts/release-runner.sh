@@ -23,6 +23,19 @@ STAGE="$1"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# ---- Preflight credential gate: dispatch BEFORE the release-stage plumbing --
+# The release credential liveness probe is a preflight GATE, not a release
+# stage: it translates no meta-data and writes no cross-step outputs, and —
+# being CI-agnostic — it REJECTS the --execute/--dry-run flag every publishing
+# stage takes (exit 64). So it must not go through the generic stage dispatch
+# below (which would append that flag and fail the gate for the wrong reason).
+# Hand it straight to its Buildkite step wrapper, which runs the probe with no
+# such flag, annotates a failure, and exits with the probe's own status. `exec`
+# so the wrapper's exit code becomes this runner's exit code.
+if [[ "$STAGE" == "check-credentials" ]]; then
+  exec "$REPO_ROOT/.buildkite/scripts/steps/check-release-credentials.sh"
+fi
+
 # ---- Translate Buildkite meta-data into env vars --------------------------
 get_meta() { buildkite-agent meta-data get "$1" 2>/dev/null || echo ""; }
 set_meta() { buildkite-agent meta-data set "$1" "$2"; }

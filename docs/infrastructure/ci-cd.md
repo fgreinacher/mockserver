@@ -488,6 +488,26 @@ linux/amd64 + linux/arm64"]
 
 The ECR repository URI is resolved at runtime via `aws ecr-public describe-repositories` rather than hardcoded — the registry alias is AWS-assigned and must not be hardcoded (`scripts/release/components/docker.sh`).
 
+### Release Preflight Credential Gate
+
+**A dead or under-scoped publishing credential fails the release *before* it starts, not half-way through.** The release preflight pipeline (`.buildkite/release-preflight-pipeline.yml`) runs `scripts/release/check-release-credentials.sh` as a hard gate on the **release queue**, dispatched by `.buildkite/scripts/release-runner.sh check-credentials`. This closes the gap that half-published 8.0.0: an npm token that still *existed* (the old presence check passed) but could no longer authenticate, so `npm publish` 401'd after the version bumps had already been pushed.
+
+**Release queue only — this is load-bearing, not incidental.** The release queue is the only queue whose agents carry the `mockserver-release/*` grants (`read_release_secrets` / `read_build_secrets_release` / `read_dockerhub_release_secret`, attached to the release stack alone in `terraform/buildkite-agents/main.tf`), so it is the only place every required credential can actually be read and proven. In particular `website-role` probes to VALID only from here (the release agent's instance role is trusted to `sts:AssumeRole`); from any other identity the assume is denied and the probe correctly reports INDETERMINATE — which would make the gate exit 2 every time off-queue.
+
+The gate propagates the probe's exit code verbatim and is **not `soft_fail`** (a credential gate that cannot fail the build is decoration):
+
+| Probe exit | Meaning | Gate |
+|-----------|---------|------|
+| 0 | every required credential VALID / VALID(SHAPE) | **pass** |
+| 1 | a required credential REJECTED / MALFORMED / ABSENT | **fail** |
+| 2 | a required credential INDETERMINATE (could not be proven) | **fail** (fail-closed — an unprovable credential is not a green one) |
+| 3 | no usable AWS session | **fail** — on the release queue the instance role should always yield a session, so this means the agent's own AWS identity (IMDS / instance role) is broken and nothing could be probed |
+| 64 | bad probe arguments | **fail** — a wiring bug, never a credential problem |
+
+On any non-zero exit the wrapper (`.buildkite/scripts/steps/check-release-credentials.sh`) posts a Buildkite **error annotation** naming the failing credential(s) and their outcome (parsed from the probe's own table), so a red build says *which* credential and *which* outcome rather than "script failed".
+
+**Why the probe is not dispatched like a release stage.** The probe is CI-agnostic and takes only `--required-only` / `--self-test`; it rejects any other argument with exit 64 (so a typo can never silently no-op into a false green). `release-runner.sh` hands every ordinary release *stage* a `--execute` / `--dry-run` flag — which the probe would reject — so `release-runner.sh` has a dedicated `check-credentials` case that `exec`s the step wrapper *without* those flags, leaving the probe's strict argument contract untouched. Running the probe by hand before a release (`scripts/release/check-release-credentials.sh`) remains useful and works identically off-CI.
+
 ### Release Pipeline Security
 
 #### File-based secrets (no `-e` in docker run)

@@ -32,6 +32,17 @@ could no longer authenticate, so `npm publish` failed with 401 after the version
 bumps had already been pushed. The probe calls each registry's own identity /
 whoami / login-token endpoint and reports per-credential validity.
 
+This same probe now also runs **automatically** as a hard gate in the release
+preflight pipeline (`.buildkite/release-preflight-pipeline.yml`), on the
+**release queue** — the only queue holding the `mockserver-release/*` grants, so
+the only place `website-role` and the other release credentials can actually be
+proven (dispatched via `release-runner.sh check-credentials`). That gate fails
+the preflight build on any REJECTED / MALFORMED / ABSENT (exit 1) **or**
+INDETERMINATE (exit 2) required credential, and is deliberately not `soft_fail`.
+Running it **by hand before you start a release is still worthwhile** — it is the
+fastest way to catch a dead or rotated credential without waiting for (or holding
+up) a preflight build, and it works the same off-CI.
+
 ## Version Recommendation Rules
 
 Recommend the next release from the latest numeric `mockserver-X.Y.Z` tag, not from the current `-SNAPSHOT` alone.
@@ -78,9 +89,12 @@ Validate each of these before declaring the release ready:
    - RubyGems
    - GitHub Release
 5. Required publishing credentials pass the **liveness probe**, not just a
-   presence check. Run `scripts/release/check-release-credentials.sh` (read-only)
-   and require a clean result for every credential a *non-soft-fail* release step
-   publishes with. The probe classifies each into one of:
+   presence check. This is enforced automatically by the credential gate in the
+   release preflight pipeline `.buildkite/release-preflight-pipeline.yml` (release queue), and you can run
+   `scripts/release/check-release-credentials.sh` (read-only) by hand for the
+   same result before starting a release. Require a clean result for every
+   credential a *non-soft-fail* release step publishes with. The probe classifies
+   each into one of:
    - **VALID** — authenticated successfully against the registry's own endpoint.
    - **VALID(SHAPE)** — well-formed and usable as far as can be checked, but the
      registry exposes no read-only identity endpoint, so liveness cannot be fully
