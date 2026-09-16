@@ -13,7 +13,7 @@
 
 import http from 'k6/http';
 import { check, fail } from 'k6';
-import { CONFIG, FORWARD } from './config.js';
+import { CONFIG, FORWARD, REGRESSION } from './config.js';
 
 // The 4 seeded expectations — byte-for-byte the same shapes as the legacy
 // expectations.json so recorded baselines remain comparable.
@@ -132,10 +132,17 @@ export function resetMockServer() {
 // perf-test-run.sh) for the forward behaviour to return 200.
 export function seedRegression() {
   const host = FORWARD.forwardSelf ? '127.0.0.1:1080' : FORWARD.upstreamHost;
+  // Self-test hook: when K6_REG_MATCH_DELAY_MS > 0, add a fixed server-side delay
+  // to the /simple (match) response so a run proves the measured percentiles
+  // still move with a REAL server slowdown. Off by default (delay omitted).
+  const simpleResponse = { statusCode: 200, body: 'some simple response' };
+  if (REGRESSION.matchDelayMs > 0) {
+    simpleResponse.delay = { timeUnit: 'MILLISECONDS', value: REGRESSION.matchDelayMs };
+  }
   const expectations = [
     {
       httpRequest: { path: '/simple' },
-      httpResponse: { statusCode: 200, body: 'some simple response' },
+      httpResponse: simpleResponse,
       times: { unlimited: true },
     },
     TEMPLATE_EXPECTATION,
@@ -195,17 +202,17 @@ export function getSimple(extraTags) {
   return res;
 }
 
-export function getForward() {
+export function getForward(extraTags) {
   const res = http.get(`${CONFIG.baseUrl}/forward`, {
     headers: CONFIG.keepAliveHeaders,
-    tags: { op: 'forward', name: 'GET /forward' },
+    tags: { op: 'forward', name: 'GET /forward', ...(extraTags || {}) },
   });
   check(res, { 'forward: 200': (r) => r.status === 200 });
   return res;
 }
 
-export function postLargeBody() {
-  const res = http.post(`${CONFIG.baseUrl}/large`, LARGE_BODY, jsonParams({ op: 'large', name: 'POST /large' }));
+export function postLargeBody(extraTags) {
+  const res = http.post(`${CONFIG.baseUrl}/large`, LARGE_BODY, jsonParams({ op: 'large', name: 'POST /large', ...(extraTags || {}) }));
   check(res, { 'large: 200': (r) => r.status === 200 });
   return res;
 }
@@ -219,10 +226,10 @@ export function getRegex() {
   return res;
 }
 
-export function getTemplated() {
+export function getTemplated(extraTags) {
   const res = http.get(`${CONFIG.baseUrl}/template`, {
     headers: CONFIG.keepAliveHeaders,
-    tags: { op: 'template', name: 'GET /template' },
+    tags: { op: 'template', name: 'GET /template', ...(extraTags || {}) },
   });
   check(res, { 'template: 200': (r) => r.status === 200 });
   return res;

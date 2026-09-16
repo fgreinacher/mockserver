@@ -20,16 +20,19 @@ MockServer's performance harness is better than its reputation, narrower than it
 and **less trustworthy than the first audit concluded**. It measures one dimension in one
 deployment profile continuously — response latency on the local-match hot path, on a
 six-core pinned central server. Almost everything else is either measured once and
-published, or never measured at all. And the one signal the first audit called good has a
-four-orders-of-magnitude internal contradiction in the repo's own published data that
-nobody has explained.
+published, or never measured at all. The one signal the first audit called good had a
+four-orders-of-magnitude internal contradiction in the repo's own published data; that has
+now been **diagnosed and fixed** — it was a client-side rig artefact (see Finding 3).
 
 Five things a reader needs before anything else:
 
-1. **The daily latency signal is not trustworthy as published.** The committed
-   `perf-result.json` that backs the website records, from a single run, a sweep p95 of
-   **0.279 ms at 16,000 req/s** and a regression-scenario p95 of **1,014 ms at 200 req/s**.
-   Both cannot describe the same server. One of them is measuring the rig. See
+1. **The daily latency signal was measuring the rig, not the server — now fixed
+   (2026-09-16).** The committed `perf-result.json` recorded, from a single run, a sweep p95
+   of **0.279 ms at 16,000 req/s** and a regression-scenario p95 of **1,014 ms at 200 req/s**;
+   both could not describe the same server. Finding 3 shows the regression tail was a
+   client-side VU-allocation connection storm and fixes `regression.js` (stagger + a fixed
+   equal VU pool + warm-every-path + a settle exclusion), verified to still catch a real
+   slowdown. See
    [Finding 3](#finding-3-the-daily-latency-percentiles-and-the-sweep-disagree-by-four-orders-of-magnitude).
 2. **Proxying is effectively unmeasured**, despite being half of what MockServer is. The
    daily run measures a forward *action* at 200 req/s. `HttpConnectHandler`, the SOCKS
@@ -146,14 +149,19 @@ inferences. This revision re-checked the load-bearing ones.
    The correct diagnosis is worse than the original one, not better: `throughput_rps` is an
    **unlabelled dropped-iteration counter** presented as a throughput measurement. It cannot
    distinguish "the server got slower" from "k6 ran out of VUs", and the run records
-   `dropped_iterations` nowhere. **This changes item 5**: the answer is not to delete the
-   metric, it is to record what it is actually detecting.
+   `dropped_iterations` nowhere. **This changed item 5**: the answer was not to delete the
+   metric, it was to record what it is actually detecting — done in `19686f9f1`, and the
+   shortfall it was detecting is now **explained and fixed** (Finding 3, 2026-09-16): the same
+   tied-up VU pool that produced the latency tail. After the harness fix the light-path
+   `delivery_ratio` reads ~1.00 with zero `dropped_iterations`.
 
-2. **`regression.js` is not "the one genuinely good continuous signal".** Its p95 and p99 in
-   the published run are between 1,012 ms and 2,154 ms, at 200 req/s per behaviour. See
+2. **`regression.js` is now a trustworthy continuous signal (fixed 2026-09-16).** In the
+   published run its p95/p99 were between 1,012 ms and 2,154 ms at 200 req/s per behaviour —
+   a client-side rig artefact, now diagnosed and fixed (light-path p99 collapses from
+   ~1,900-3,000 ms to single-digit/low-double-digit ms, drops to zero). See
    [Finding 3](#finding-3-the-daily-latency-percentiles-and-the-sweep-disagree-by-four-orders-of-magnitude).
-   Until that is explained, the strongest continuous signal in the repo is the JMH
-   `alloc_bytes_per_op` backstop, not the k6 latency percentiles.
+   The JMH `alloc_bytes_per_op` backstop remains the strongest *absolute* signal; the k6
+   latency percentiles are now sound as a *relative* change detector.
 
 **Could not verify:**
 
@@ -162,8 +170,8 @@ inferences. This revision re-checked the load-bearing ones.
   heap, GC, `JAVA_TOOL_OPTIONS`, `PERF_SERVER_JAVA_OPTS` or log level. The claim may be true
   from build logs; it is not recoverable from the artefact. That gap is itself a finding —
   it is [item 0](#0-make-a-result-self-describing-before-anything-compares-them).
-- **What causes the 1-second regression p95.** Candidates are listed under Finding 3. A
-  read-only audit cannot settle it; one run settles it.
+- ~~**What causes the 1-second regression p95.**~~ **Settled (2026-09-16):** a client-side
+  VU-allocation connection storm — see Finding 3 for the diagnosis, fix and evidence.
 - **Whether `alloc_bytes_per_op` really is agent-independent.** Still open, still one cheap
   experiment.
 
@@ -276,7 +284,7 @@ by hand at a point in time and never since; **dark** = the code exists but nothi
 | D1 | P | opt-in | Injection ceiling, per-core sweep, aggregate scaling N = 1 to 6 | opt-in | none |
 | D1 | all | none | req/s **per core for the serving path** — the per-core curve that exists measures the *injector* | — | — |
 | D2 Req/resp | L | none | — | — | — |
-| D2 | C | continuous, **suspect** | p50/p95/p99 per behaviour over HTTP and HTTPS+H2 at 200 rps | daily | median + MAD, 10% floor. **Published p95 is ~1 s — see Finding 3 before trusting it** |
+| D2 | C | continuous, **sound (Finding 3 fixed 2026-09-16)** | p50/p95/p99 per behaviour over HTTP and HTTPS+H2 at 200 rps | daily | median + MAD, 10% floor. The old ~1 s p95 was a client rig artefact, now fixed (stagger + equal VU pool + warm-every-path + settle exclusion); attach the budget notify-only for 10 runs first per open question 9 |
 | D2 | C | continuous | p95 < 25 ms, p99 < 100 ms at **300 rps** against a server measured near 32,000 | daily | real gate, ~100x headroom, on the Spot `default` queue |
 | D2 | C | continuous | Matcher time/op and `gc.alloc.rate.norm`, **one JMH fork** | daily | median + MAD, 5% floor — the strongest absolute backstop |
 | D2 | C | dark | Inbound decode allocation; metrics contention; OpenAPI validation cache; callback dispatch hop | never run | — |
@@ -316,8 +324,8 @@ sharper question: *could this check pass while the thing it measures had regress
 
 | Check | Would a regression be caught? |
 |---|---|
-| `regression.js` latency percentiles | **Unknown, and that is the problem.** Median + MAD over 10 runs with a 10% floor is a sound *method*. But the published p95 is 1,014 ms against a sweep p95 of 0.279 ms at 80x the rate. If the percentile is dominated by a rig artefact, the budget tracks the rig. **Resolve Finding 3 before attaching a budget** |
-| `regression.js` `throughput_rps` | **It fires for the wrong reason.** A dropped-iteration counter in disguise: it falls when k6's VU pool cannot keep up, conflating server slowdown with client starvation. Published values 177.7 to 191.8 against a nominal 200. Now labelled with `offered_rps` and a delivery ratio, and deliberately **un-budgeted** until the shortfall is explained (`19686f9f1`) |
+| `regression.js` latency percentiles | **Now trustworthy (Finding 3 fixed 2026-09-16).** Median + MAD over 10 runs with a 10% floor is a sound *method*; the published p95 of 1,014 ms was a client-side VU-allocation connection storm, not the server. Fixed (stagger + equal `preAllocatedVUs==maxVUs` + warm-every-path + settle exclusion), and verified to still move with a real +25 ms server delay so the exclusion does not hide regressions. Safe to budget — notify-only for 10 runs first (open question 9) |
+| `regression.js` `throughput_rps` | **It fired for the wrong reason — now understood.** A dropped-iteration counter in disguise: it fell when k6's VU pool was tied up, conflating server slowdown with client starvation. Published values 177.7 to 191.8 against a nominal 200. Labelled with `offered_rps` and a delivery ratio (`19686f9f1`); the shortfall it detected is the **same** tied-up pool as the latency tail, now fixed (Finding 3) — post-fix light-path `delivery_ratio` reads ~1.00. Keep it un-budgeted (it is a client-health gate, not a server throughput measure — use the sweep for peak throughput) |
 | `MatchingBenchmark` | **Yes for allocation, weakly for time.** `gc.alloc.rate.norm` is a real absolute backstop. `time_per_op` runs `-f 1` — a **single JMH fork** — so inter-fork JIT variance is never sampled and the measured dispersion understates the real one. It was also **silently dark 2026-09-12 to 2026-09-16** |
 | `load.js` CI gate | **Barely.** 300 rps against a server measured near 32,000; a p95 gate of 25 ms against a sweep p50 of 0.19 ms. A 50x throughput regression passes. It runs on the Spot `default` queue, so its noise floor is worse than its sensitivity |
 | `sweep.js` knee | **Now yes, previously no.** The ladder reached only 16,000 where the server is comfortable. Extended to 64,000 with `peak_achieved_rps` budgeted (`19686f9f1`) |
@@ -382,6 +390,68 @@ concrete reason to re-baseline.
 
 ### Finding 3: the daily latency percentiles and the sweep disagree by four orders of magnitude
 
+> **RESOLVED — 2026-09-16.** The `regression.js` tail was a **client-side rig
+> artefact**, not server latency, and the harness has been fixed so the measured
+> percentiles describe the server.
+>
+> **Mechanism.** The four `constant-arrival-rate` scenarios all started
+> simultaneously at `startTime: 30s` with a mid-run allocation ramp
+> (`preAllocatedVUs: 20` → `maxVUs: 200`). When the warmup-to-measured
+> discontinuity made the first cohort run long, all four scenarios allocated VUs
+> at once; **each new VU opens a fresh connection**, and the connection storm on
+> the six-core SUT slowed requests further, piling up more iterations and
+> allocating still more VUs — a feedback loop that overshot then settled,
+> producing a multi-second p95/p99 while p50 stayed sub-ms and `error_rate` stayed
+> 0. The 4-11% `throughput_rps`/`delivery_ratio` shortfall was the **same** tied-up
+> VU pool, not a second problem. A secondary bug compounded it: the warmup
+> scenario touched `/simple`, `/template` and `/forward` but **never `/large`**, so
+> the heaviest path (4 KB JSON `ONLY_MATCHING_FIELDS` match) was JIT-cold at
+> measurement start.
+>
+> **Fix** (`mockserver-performance-test/k6/regression.js` + `lib/config.js` +
+> `lib/expectations.js`), four coordinated levers, none discarding steady-state
+> data:
+> 1. **Stagger** the four scenario starts (`K6_REG_STAGGER`, default 5 s) so their
+>    allocation/connection transients do not superimpose.
+> 2. **Equalise** `preAllocatedVUs == maxVUs` (default 50) so the executor can
+>    **never** allocate mid-run — the ramp *was* the storm. Reproduction showed the
+>    tail *grows* with pool size (200 was catastrophic; a large pool is a bigger
+>    connection storm), so the fix is a modest **equal** pool, not a large one —
+>    the opposite of the first guess, because a fast isolated CI core tolerates a
+>    big pool that a contended core does not.
+> 3. **Warm every path**, including the previously-omitted `/large`.
+> 4. **Exclude a settle window** (`K6_REG_SETTLE`, default 10 s) from the measured
+>    percentiles — load still runs during it (the transient is traversed, not
+>    skipped); only the known start artefact is dropped. The excluded count is
+>    reported per behaviour as `settle_excluded`, and `dropped_iterations` still
+>    counts the whole scenario, so the exclusion is auditable and cannot silently
+>    hide client starvation.
+>
+> **Evidence** (local, SUT pinned to 6 cores, upstream 1, k6 6; 200 rps/behaviour;
+> `match` behaviour, the cleanest signal):
+>
+> | | HTTP p50/p95/p99 (ms) | drops | delivery | H2 p50/p95/p99 (ms) | drops | delivery |
+> |---|---|---:|---:|---|---:|---:|
+> | before (master) | 0.15 / 2.5 / **1922** | 426 | 0.956 | 0.25 / 6.6 / **3048** | 690 | 0.937 |
+> | after (fixed) | 0.16 / 1.4 / **4.5** | **0** | **1.00** | 0.23 / 2.5 / **10.0** | **0** | **1.01** |
+>
+> **The fix does not hide a real slowdown.** With a genuine +25 ms server delay
+> injected on the match response (`K6_REG_MATCH_DELAY_MS=25`, a self-test knob),
+> the measured `match` percentiles moved to **25.4 / 28.4 / 34.0 ms** (HTTP) and
+> **25.4 / 28.0 / 32.8 ms** (H2) — the delay shows up in full, so the settle
+> exclusion was not tuned until nothing is measured.
+>
+> **What remains unproven.** Local heavy-path magnitudes (`template`, `large`, and
+> under load `forward`) still show run-to-run drops and sub-second tails on this
+> contended laptop — macOS does not isolate the pinned cpusets, the 1-core upstream
+> competes, and a 60 s window makes the transient a larger fraction than CI's 2 m.
+> The diagnosing agent predicted this ("local slow cohort 1-5%, absolute magnitudes
+> differ"; CI's slow cohort exceeds 5% so the artefact lands on p95 there, on p99
+> locally). The mechanism and the light-path clean-up are decisive; the heavy-path
+> clean-up should be confirmed on the isolated CI box on the first run.
+
+The original diagnosis, kept as the record of what was learned:
+
 From **one artefact**, build #64:
 
 | Source, same run | Offered | p50 | p95 | p99 |
@@ -402,12 +472,13 @@ at `startTime: 30s`; a ~1 s mode is suspiciously close to a one-second schedulin
 contention between the four scenarios plus warmup inside one k6 process on six cores; a real
 server-side tail visible only at low concurrency; or a percentile-computation artefact.
 
-**What this blocks.** Three things rest on `regression.js` being sound: its p95/p99 are the
-proposed D2 budget metrics, item 9a proposes cloning its scenario shape for proxying, and the
-first audit called it the one good continuous signal. If the tail is a rig artefact, all
-three inherit it. **Resolving it costs one run and precedes attaching any latency budget.**
-Vary `K6_REG_PRE_VUS` and see whether the tail moves with it; run one behaviour alone versus
-all four to separate starvation from contention.
+**What this blocked (now unblocked).** Three things rested on `regression.js` being sound: its
+p95/p99 are the proposed D2 budget metrics, item 9a proposes cloning its scenario shape for
+proxying, and the first audit called it the one good continuous signal. The tail *was* a rig
+artefact — so with the fix above, the harness now measures the server, and those three no
+longer inherit a rig artefact. The diagnostic that settled it was exactly the one predicted:
+the tail moved with `K6_REG_PRE_VUS` (and *grew* with the pool), and a uniform +25 ms server
+delay showed up in full — starvation/contention, not a server tail, on the light paths.
 
 ### Finding 4: the AppCDS degradation is measured, not inferred
 
@@ -620,9 +691,13 @@ while catching a total AppCDS loss, so it is a backstop, not the signal.
   the upstream container the run already starts. Reuse `regression.js`'s shape so compare
   picks the behaviours up with **zero** script changes (verified: the `metrics` jq iterates
   `.behaviours | to_entries[]`).
-  **Do not start 9a until Finding 3 is resolved.** Cloning `regression.js`'s shape clones
-  whatever produces its 1-second tail, and a proxy p95 budget built on a rig artefact is
-  worse than no budget.
+  **Clone the FIXED `regression.js` shape (post-2026-09-16), never the pre-fix shape from an
+  older commit.** Finding 3 is resolved, so 9a is unblocked — but the thing that made cloning
+  dangerous (the 1-second tail) lived *in the scenario shape*: simultaneous `startTime`, a
+  `preAllocatedVUs`→`maxVUs` ramp, and no settle window. The current shape fixes that (staggered
+  starts, `preAllocatedVUs == maxVUs`, warm-every-path, a `K6_REG_SETTLE` exclusion, and the
+  `settle_excluded`/`delivery_ratio` guards). Carry **all** of those into `proxy.js`; do not
+  copy the four-orders-of-magnitude bug back in by starting from a pre-fix revision.
 - **9b:** a SOCKS5 rung. k6 supports an HTTP proxy but not SOCKS, so this needs a small
   driver or a SOCKS-aware sidecar; if awkward, downgrade to a JMH benchmark of the handshake
   handlers rather than skipping the dimension.
@@ -789,9 +864,10 @@ Regenerate the chart data and **open a pull request** — deliberately not a dir
 because the figures are a customer-facing claim and a human should look at a 20% swing before
 it ships. Trigger only when the committed figure is more than 30 days old **or** has moved
 more than 10%, so it does not open a PR every day. A stale page then becomes an open PR
-rather than invisible rot. Requires item 0 for the provenance line, and Finding 3 resolved
-before republishing any percentile. **Publish `healthy_ceiling_rps` with its latency, not
-`peak_achieved_rps` alone** — see Finding 1.
+rather than invisible rot. Requires item 0 for the provenance line. Finding 3 is now resolved
+(2026-09-16), so per-behaviour percentiles are publishable — but publish figures from the
+**fixed** `regression.js` only, never the pre-fix rig-artefact numbers. **Publish
+`healthy_ceiling_rps` with its latency, not `peak_achieved_rps` alone** — see Finding 1.
 
 #### 20. HTTP/3 and QUIC — **research**
 
@@ -957,7 +1033,7 @@ flowchart LR
   i0["0. self-describing results"]
   i1["1. notification reaches a human"]
   f3["Finding 3 diagnosis
-  one run"]
+  DONE 2026-09-16 (fixed)"]
   done["2,3,4,5,6,7,7b LANDED"]
   budgets["perf-budgets.json
   committed absolute floors"]
@@ -993,9 +1069,10 @@ flowchart LR
    publishes depends on it.
 2. **Item 1** — the webhook. Hours. It is the only item that makes any other item matter, and
    nobody is doing it.
-3. **Finding 3 diagnosis.** One run plus an afternoon. It gates the D2 latency budgets, item
-   5's resolution and item 9a's design. Doing it now costs one run; doing it after 9a costs
-   re-deriving two behaviours' budgets.
+3. ~~**Finding 3 diagnosis.**~~ **DONE (2026-09-16).** Diagnosed as a client-side
+   VU-allocation connection storm and fixed in `regression.js` (stagger + equal VU pool +
+   warm-every-path + settle exclusion), verified to still catch a real slowdown. This
+   unblocks the D2 latency budgets, item 5's resolution and item 9a's design.
 4. **Item 15c** — JMH fork count. One line, and it changes the dispersion every future timing
    budget is derived from, so it must land before any budget is derived.
 
@@ -1351,9 +1428,14 @@ answer is "nothing happened", the controls are theatre.
 
 ## Open questions and risks
 
-1. **Why is `regression.js`'s p95 a thousand times the sweep's, in the same run?** The newest
-   and most consequential unknown. It gates every D2 latency budget and item 9a's design. One
-   run answers it. **Do it first.**
+1. ~~**Why is `regression.js`'s p95 a thousand times the sweep's, in the same run?**~~
+   **ANSWERED and FIXED (2026-09-16).** A client-side VU-allocation connection storm: four
+   `constant-arrival-rate` scenarios starting simultaneously with a `preAllocatedVUs`→`maxVUs`
+   ramp, each new VU opening a connection, on a core-limited SUT — a feedback loop that
+   overshoots then settles. Fixed with staggered starts, an equal (fixed) VU pool, warming
+   every path (the `/large` path had been left cold), and a settle-window exclusion; verified
+   to still move with a real +25 ms server delay. See Finding 3. This unblocked every D2
+   latency budget and item 9a's design.
 2. **Is the published 36,000 req/s knee real, or is it k6's ceiling?** The client is pinned to
    six cores — the same count as the server. Item 2 now asserts client headroom; until a run
    with it lands, treat the published figure as unverified.
@@ -1386,8 +1468,10 @@ log level** — none of which the schema records today:
 - The knee curve, with **`healthy_ceiling_rps` as the headline** and `peak_achieved_rps` beside
   it labelled as degraded, with the latency measured at each. Never a ceiling without its
   latency.
-- Per-behaviour percentiles — **once Finding 3 is resolved.** Do not publish a percentile
-  nobody can explain, and do not keep publishing only the flattering half of an artefact.
+- Per-behaviour percentiles — **now publishable (Finding 3 resolved 2026-09-16).** The tail
+  everyone could not explain is explained and fixed; publish only figures from the **fixed**
+  `regression.js`, and never again publish only the flattering half of an artefact — the
+  `settle_excluded` / `delivery_ratio` fields make the whole run legible.
 - Matcher scaling, scan versus index — already good.
 - **New:** proxy-path latency; startup medians per artifact including in-JVM, and compressed
   image size; a laptop sizing table; TLS and mTLS handshake rates; and SSE streaming fidelity

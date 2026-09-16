@@ -143,10 +143,45 @@ export function baseThresholds() {
 // measured window; only the measured window feeds the result JSON.
 export const REGRESSION = {
   rate: num('K6_REG_RATE', 200), // offered req/s PER behaviour
-  duration: env('K6_REG_DURATION', '2m'), // measured window
-  warmup: env('K6_REG_WARMUP', '30s'), // pre-measurement warmup window
-  preAllocatedVUs: num('K6_REG_PRE_VUS', 20),
-  maxVUs: num('K6_REG_MAX_VUS', 200),
+  duration: env('K6_REG_DURATION', '2m'), // measured window (per behaviour)
+  warmup: env('K6_REG_WARMUP', '30s'), // pre-measurement server warmup window
+  // preAllocatedVUs == maxVUs ON PURPOSE. The whole VU pool is created before the
+  // run, and because there is NO headroom above it, the constant-arrival-rate
+  // executor can NEVER allocate a VU mid-measurement. Mid-run allocation was the
+  // Finding 3 feedback loop: a cold/contended request piles up iterations, k6
+  // ramps preAllocatedVUs -> maxVUs, EACH new VU opens a fresh connection, the
+  // connection storm slows the core-limited server further, which piles up more
+  // iterations — a ~1 s (to multi-second) tail that MORE VUs only worsen.
+  // Equalising the two forbids that ramp: the pool is fixed, so the connection
+  // count is bounded and stable, and if a transient ever exceeds it k6 DROPS
+  // iterations (counted, and surfaced by the delivery_ratio guard) instead of
+  // manufacturing a storm. 200 rps at sub-ms latency needs ~1 VU by Little's law,
+  // so 50 is almost entirely transient headroom for the JIT-cold first cohort.
+  // It is a RAISE of the old preAllocatedVUs (20 -> 50) and, more importantly, a
+  // LOWERING of maxVUs (200 -> 50) to remove the ramp — reproductions showed the
+  // tail GROWS with pool size (a larger fixed pool = more concurrent connections
+  // hammering the core-limited SUT), so the fix is a modest EQUAL pool, not a
+  // large one. See docs/plans/performance-programme.md Finding 3. Keep
+  // K6_REG_PRE_VUS and K6_REG_MAX_VUS equal if overriding.
+  preAllocatedVUs: num('K6_REG_PRE_VUS', 50),
+  maxVUs: num('K6_REG_MAX_VUS', 50),
+  // The four measured scenarios start staggered by this gap (op index x stagger)
+  // so their VU-allocation / connection-open transients do NOT superimpose into
+  // one connection storm on the shared, core-limited SUT (Finding 3 root cause).
+  stagger: env('K6_REG_STAGGER', '5s'),
+  // Per-scenario settle window at the start of the measured window whose requests
+  // are tagged op:<op>_settle and thus EXCLUDED from the measured latency
+  // percentiles. Load still runs during it (the server is exercised and any
+  // residual transient is genuinely traversed), so this discards only the known
+  // client-side start artefact, not real steady-state latency. dropped_iterations
+  // still counts the WHOLE scenario, so client starvation is never hidden.
+  settle: env('K6_REG_SETTLE', '10s'),
+  // Self-test knob (default 0 = off, production behaviour unchanged): when >0, a
+  // fixed response delay (ms) is seeded onto the /simple (match) response so a
+  // run can PROVE the measured percentiles still track a real server slowdown
+  // (the medians and tail must move by ~this delay). Used by the sensitivity
+  // check that guards against the settle exclusion silently hiding regressions.
+  matchDelayMs: num('K6_REG_MATCH_DELAY_MS', 0),
   // Transport label recorded in the result key (<op>_<proto>). Defaults from the
   // BASE_URL scheme; HTTPS auto-negotiates HTTP/2 with MockServer via ALPN, so
   // the https run is labelled https_h2 unless K6_HTTP2=false.
