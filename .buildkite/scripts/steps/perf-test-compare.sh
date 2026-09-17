@@ -78,6 +78,37 @@ This fails the build deliberately (fail-closed): the floors could not be read."
   exit 1
 fi
 
+# The checks above validate that the file is READABLE. They say nothing about the
+# property the compare below actually leans on: that each budget's numbers are
+# NUMBERS and its direction is one this script branches on. A quoted `floor`
+# makes `[$med + 3*$sigma, $floor] | max` return the STRING (jq sorts every string
+# above every number), so the threshold becomes a string and `$value > $threshold`
+# is false forever — the gate reports green and can never fire again. A missing or
+# misspelled `dir` silently takes the bigger-is-better branch. Both are false
+# all-clears reachable from a one-character edit, so validate the schema, and
+# prove the validator still rejects them on every run rather than trusting it.
+source "$SCRIPT_DIR/../lib/perf-budgets-validate.sh"
+if ! SELF_TEST_OUT="$(bash "$SCRIPT_DIR/../lib/perf-budgets-validate.sh" --self-test 2>&1)"; then
+  annotate "error" ":no_entry: **Perf budget validator SELF-TEST FAILED — cannot trust the gate** — the schema check that keeps a mistyped budget from silently disabling a floor does not itself work.
+
+\`\`\`
+${SELF_TEST_OUT}
+\`\`\`
+
+This fails the build deliberately (fail-closed): a guard that cannot prove it rejects a bad budget must not be relied on to have accepted a good one."
+  exit 1
+fi
+if ! BUDGET_SCHEMA_PROBLEMS="$(validate_perf_budgets "$BUDGETS_FILE")"; then
+  annotate "error" ":no_entry: **Perf budget file has INVALID entries — cannot compare** — \`${BUDGETS_FILE}\`.
+
+\`\`\`
+${BUDGET_SCHEMA_PROBLEMS}
+\`\`\`
+
+This fails the build deliberately (fail-closed). A quoted number or an unrecognised \`dir\` does not error in jq — it silently turns the budget off, which is a false all-clear rather than a visible failure."
+  exit 1
+fi
+
 # Name the budget file's last-changed commit in the annotation so a silent
 # loosening is visible in the build output, not only in git history. If git
 # metadata is unavailable (not a checkout) or the file is uncommitted, we CANNOT
@@ -588,20 +619,44 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
         else
           ($bv|median) as $med
           | (($bv|mad($med)) * 1.4826) as $sigma
-          | (if $m.dir=="up"
-              then (if $m.floor!=null then ([$med + 3*$sigma, $m.floor]|max)
+          # A floor is only usable as a floor if it is a NUMBER. jq orders every
+          # string above every number, so a quoted floor would win the `max` and
+          # turn the threshold into a string that no value can ever exceed. The
+          # budget file is schema-checked before this runs; this guard is the
+          # second line, because a predicate can be reached by a path that did
+          # not come through that check. Same for the head value and the metric
+          # direction: a non-numeric head or an unrecognised dir is reported as a
+          # hard error, never silently compared.
+          | (($m.floor != null) and (($m.floor|type) == "number")) as $hasFloor
+          | if (($m.value|type) != "number") then
+              {name:$m.name, head:$m.value, gating:$m.gating, status:"not-numeric",
+               regression:true}
+            elif ($m.dir != "up" and $m.dir != "down") then
+              {name:$m.name, head:$m.value, gating:$m.gating, status:"bad-direction",
+               regression:true}
+            elif (($m.floor != null) and (($m.floor|type) != "number")) then
+              {name:$m.name, head:$m.value, gating:$m.gating, status:"bad-floor",
+               regression:true}
+            else
+            (if $m.dir=="up"
+              then (if $hasFloor then ([$med + 3*$sigma, $m.floor]|max)
                     else ([$med + 3*$sigma, $med*(1+$m.min_pct)]|max) end) as $th
                    | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
                       gating:$m.gating, regression: ($m.value > $th)}
-              else (if $m.floor!=null then ([$med - 3*$sigma, $m.floor]|min)
+              else (if $hasFloor then ([$med - 3*$sigma, $m.floor]|min)
                     else ([$med - 3*$sigma, $med*(1-$m.min_pct)]|min) end) as $th
                    | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
                       gating:$m.gating, regression: ($m.value < $th)} end)
+            end
         end ] as $rows
     | ($meta + { missing: [],
         count: ([$rows[]|select(.regression==true)]|length),
-        gating_count: ([$rows[]|select(.regression==true and .gating==true)]|length),
-        nongating_count: ([$rows[]|select(.regression==true and .gating!=true)]|length),
+        # A row whose budget or head value is malformed cannot be judged, so it
+        # counts as GATING regardless of the gating flag on that metric: an
+        # unjudgeable metric must never be reported as "notify-only ok".
+        schema_error_count: ([$rows[]|select(.status=="not-numeric" or .status=="bad-direction" or .status=="bad-floor")]|length),
+        gating_count: ([$rows[]|select((.regression==true and .gating==true) or .status=="not-numeric" or .status=="bad-direction" or .status=="bad-floor")]|length),
+        nongating_count: ([$rows[]|select(.regression==true and .gating!=true and (.status|IN("not-numeric","bad-direction","bad-floor")|not))]|length),
         rows: $rows })
   end
 '

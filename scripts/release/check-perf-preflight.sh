@@ -357,6 +357,35 @@ if [[ ! -f "$BUDGETS_FILE" ]] || ! jq -e '.budgets' "$BUDGETS_FILE" >/dev/null 2
   exit 2
 fi
 
+# Exists-and-parses says the file is READABLE, not that it means what it says.
+# This gate derives its entire blocking set from `gating:true` (see EXPECTED_GATING
+# below), so a hand-edit typo of that key name -- `gatng` -- does not error: the
+# entry validates, `.gating` reads null, and that metric quietly stops blocking the
+# release. Likewise a quoted `floor` would be compared by jq as a string and accept
+# any value at all. Share the same schema check the daily and per-merge gates use,
+# so all three consumers of this file reject the same family of silent disables.
+BUDGET_VALIDATOR="$REPO_ROOT/.buildkite/scripts/lib/perf-budgets-validate.sh"
+if [[ ! -f "$BUDGET_VALIDATOR" ]]; then
+  err "INDETERMINATE: budget schema validator not found: $BUDGET_VALIDATOR"
+  err "Cannot confirm the budget file means what it says, so this fails closed."
+  exit 2
+fi
+# shellcheck source=/dev/null
+source "$BUDGET_VALIDATOR"
+if ! VALIDATOR_SELF_TEST="$(bash "$BUDGET_VALIDATOR" --self-test 2>&1)"; then
+  err "INDETERMINATE: the budget schema validator fails its own self-test, so it cannot"
+  err "be trusted to have accepted this budget file:"
+  printf '%s\n' "$VALIDATOR_SELF_TEST" | sed 's/^/    /' >&2
+  exit 2
+fi
+if ! BUDGET_SCHEMA_PROBLEMS="$(validate_perf_budgets "$BUDGETS_FILE")"; then
+  err "INDETERMINATE: budget file has invalid entries: $BUDGETS_FILE"
+  printf '%s\n' "$BUDGET_SCHEMA_PROBLEMS" | sed 's/^/    /' >&2
+  err "A quoted number or a misspelled key does not error in jq -- it silently reverts"
+  err "that budget to its default, which for \`gating\` means it stops blocking releases."
+  exit 2
+fi
+
 # Pre-validate the acceptance file BEFORE it is fed to the grader. It is a
 # hand-maintained JSON file, so an empty file, a trailing comma, or a typo is
 # entirely plausible — and a malformed file handed to jq via --argjson would abort

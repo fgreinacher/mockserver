@@ -196,6 +196,7 @@ The rolling baseline is self-healing: as runs accumulate, old outlier runs age o
 | `.buildkite/scripts/steps/perf-test-run.sh` | k6 run + background sampler + result assembly (`perf` queue) |
 | `.buildkite/scripts/steps/perf-test-microbench.sh` | JMH microbench + JSON reshape (`perf` queue) |
 | `.buildkite/scripts/steps/perf-test-compare.sh` | S3 persistence + median+MAD compare + annotation (`perf` queue) |
+| `.buildkite/scripts/lib/perf-budgets-validate.sh` | Schema check for `perf-budgets.json`, shared by the compare and allocation gates. Both gates decide with jq comparisons, and jq orders *every string above every number* — so a quoted `floor` makes the comparison true regardless of value and silently switches the budget off. The validator rejects a non-numeric `floor`/`min_pct`, an unrecognised `dir`, and any unknown or missing key — a typo of `gating` would otherwise pass every value check while quietly turning a build-failing metric into a notify-only one. It carries a `--self-test` the gates run on every build, so the guard proves it still rejects those shapes rather than being trusted |
 | `mockserver-performance-test/k6/regression.js` | k6 regression scenarios (4 behaviours × HTTP+HTTPS/H2, warmup) |
 | `mockserver-performance-test/k6/growth.js` | k6 growth/slope scenarios (sustained fill + window probes) |
 | `s3://mockserver-ci-perf-results/` | Historical run storage (see [AWS Infrastructure](../infrastructure/aws-infrastructure.md)) |

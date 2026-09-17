@@ -47,6 +47,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+source "$SCRIPT_DIR/../lib/perf-budgets-validate.sh"
+
 MAVEN_IMAGE="${MAVEN_IMAGE:-mockserver/mockserver:maven}"
 BUDGETS_FILE="${PERF_BUDGETS_FILE:-$REPO_ROOT/mockserver-performance-test/perf-budgets.json}"
 
@@ -56,12 +58,12 @@ BUDGETS_FILE="${PERF_BUDGETS_FILE:-$REPO_ROOT/mockserver-performance-test/perf-b
 # -p only to the benchmarks that declare it, so passing all six yields one row per
 # class = 3 rows. EVERY param a benchmark declares must be pinned here: an unpinned
 # param is expanded over all its values, which multiplies that class's row count and
-# trips the EXPECTED_ROWS assertion below -- fail-closed, but it blocks every merge
-# until the pin is added. declareBodyCharset is pinned to `false` deliberately: the
-# committed ResponseWriteBenchmark floor was derived from the implicit-charset shape,
-# so gating the explicit-charset arm instead would compare a different workload
-# against a floor that never described it. The explicit arm is measured by
-# perf-test-microbench.sh, where both arms are reported.
+# breaks the EXPECTED_ROWS assertion below (fail-closed, but a red build rather than
+# a measurement). declareBodyCharset is pinned to `false` deliberately: the committed
+# ResponseWriteBenchmark floor was derived from the implicit-charset shape, so gating
+# the explicit-charset arm instead would compare a different workload against a floor
+# that never described it. The explicit arm is measured by perf-test-microbench.sh,
+# where both arms are reported.
 JMH_INCLUDE="${PERF_ALLOC_INCLUDE:-org\.mockserver\.benchmark\.(MatchingBenchmark|InboundDecodeBenchmark|ResponseWriteBenchmark)\.}"
 JMH_ARGS="${PERF_ALLOC_JMH_ARGS:--bm avgt -prof gc -f 1 -wi 3 -i 5 -r 1 -w 1 -p matcherType=EXACT -p expectationCount=100 -p logLevel=INFO -p bodySize=16384 -p responseSize=16384 -p declareBodyCharset=false}"
 
@@ -95,6 +97,23 @@ evaluate() {
     echo "ERROR: perf-budgets.json missing: $BUDGETS_FILE (fail-closed: a missing budget must never mean 'no floor')" >&2
     return 1
   fi
+  # Existence is not readability and readability is not usability. `$alloc <= $floor`
+  # below is decided by TYPE before value when the operands differ: jq sorts every
+  # string above every number, so a floor of "5000" makes the comparison true for
+  # any allocation whatsoever and this blocking gate silently passes everything.
+  # Validate the schema, and prove on every run that the validator still rejects
+  # that shape -- a guard nobody degrades is just more code that looks like a check.
+  if ! SELF_TEST_OUT="$(bash "$SCRIPT_DIR/../lib/perf-budgets-validate.sh" --self-test 2>&1)"; then
+    echo "ERROR: perf-budgets validator self-test FAILED -- the schema check that keeps a mistyped budget from disabling a floor does not itself work:" >&2
+    echo "$SELF_TEST_OUT" >&2
+    return 1
+  fi
+  local schema_problems
+  if ! schema_problems="$(validate_perf_budgets "$BUDGETS_FILE")"; then
+    echo "ERROR: perf-budgets.json has invalid entries (fail-closed -- a quoted number does not error in jq, it silently turns the budget off):" >&2
+    echo "$schema_problems" | sed 's/^/  /' >&2
+    return 1
+  fi
 
   # Reshape JMH rows -> one record per benchmark class with its measured bytes/op,
   # its budget key, floor and verdict. jq -e sets exit status from the last value:
@@ -119,9 +138,13 @@ evaluate() {
               provisional: ($budget.provisional == true),
               # fail-closed: a row with no bytes/op reading (gc profiler absent) or
               # no committed floor cannot be judged, so it is a HARD failure.
-              measured: ($alloc != null),
-              haveFloor: ($budget != null and $floor != null),
-              ok: ($alloc != null and $budget != null and $floor != null and ($alloc <= $floor))
+              measured: (($alloc | type) == "number"),
+              # A floor is only a floor if it is a NUMBER; a quoted one would make
+              # every comparison below unconditionally true. The budget file is
+              # schema-checked before this runs -- this is the second line, because
+              # a predicate can be reached by a path that skipped that check.
+              haveFloor: ($budget != null and ($floor | type) == "number"),
+              ok: (($alloc | type) == "number" and $budget != null and ($floor | type) == "number" and ($alloc <= $floor))
             }
         ] as $rows
       | {
