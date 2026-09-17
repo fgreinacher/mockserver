@@ -805,4 +805,86 @@ public class CircularPriorityQueueTest {
         assertThat(evicted, is(empty()));
     }
 
+    // The following tests pin the O(1) size-counter invariant introduced to stop
+    // evictExcess() calling the O(n) ConcurrentLinkedQueue.size() on every add (which made
+    // bulk expectation loading O(n^2)). size() must stay EXACTLY in step with the elements
+    // actually held, across adds, removes, no-op removes and eviction.
+
+    @Test
+    public void shouldReportSizeAccuratelyAcrossAddsAndRemovesWithoutEviction() {
+        // given - a bound far larger than the working set, so nothing is ever evicted
+        CircularPriorityQueue<String, SortableExpectationId, SortableExpectationId> queue = new CircularPriorityQueue<>(
+            1000, EXPECTATION_SORTABLE_PRIORITY_COMPARATOR, id -> id, id -> id.id);
+
+        // when / then - size tracks each mutation exactly
+        assertThat(queue.size(), is(0));
+        queue.add(new SortableExpectationId("1", 0, 0));
+        queue.add(new SortableExpectationId("2", 0, 0));
+        queue.add(new SortableExpectationId("3", 0, 0));
+        assertThat(queue.size(), is(3));
+
+        queue.remove(new SortableExpectationId("2", 0, 0));
+        assertThat(queue.size(), is(2));
+
+        // removing an element that is not present must NOT change the count
+        queue.remove(new SortableExpectationId("does-not-exist", 0, 0));
+        assertThat(queue.size(), is(2));
+
+        // removing the same element twice must decrement only once
+        queue.remove(new SortableExpectationId("1", 0, 0));
+        queue.remove(new SortableExpectationId("1", 0, 0));
+        assertThat(queue.size(), is(1));
+
+        queue.add(new SortableExpectationId("4", 0, 0));
+        assertThat(queue.size(), is(2));
+    }
+
+    @Test
+    public void shouldReportSizeAccuratelyAfterEviction() {
+        // given
+        CircularPriorityQueue<String, SortableExpectationId, SortableExpectationId> queue = new CircularPriorityQueue<>(
+            3, EXPECTATION_SORTABLE_PRIORITY_COMPARATOR, id -> id, id -> id.id);
+
+        // when - overflow the bound
+        for (int i = 1; i <= 10; i++) {
+            queue.add(new SortableExpectationId(String.valueOf(i), 0, 0));
+        }
+
+        // then - size never exceeds the bound and matches the live contents
+        assertThat(queue.size(), is(3));
+        assertThat(queue.toSortedList().size(), is(3));
+        assertThat(queue.isEmpty(), is(false));
+    }
+
+    @Test
+    public void shouldPreserveSortOrderAcrossLargeNoEvictionBatch() {
+        // given - a large bound so the whole batch loads without eviction (the initializer shape)
+        int n = 5000;
+        CircularPriorityQueue<String, Expectation, SortableExpectationId> queue = new CircularPriorityQueue<>(
+            n + 1, EXPECTATION_SORTABLE_PRIORITY_COMPARATOR, Expectation::getSortableId, Expectation::getId);
+        long base = System.currentTimeMillis();
+
+        // when - add in a deliberately scrambled order, with mixed priorities, all distinct created times
+        List<Expectation> expected = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            // priority cycles 0..4, created strictly increases with i so the global order is well-defined
+            Expectation expectation = when(request("/path-" + i), i % 5).withCreated(base + i).withId("id-" + i);
+            expected.add(expectation);
+        }
+        // insert scrambled (odd indices first, then even) to prove insertion order does not leak into sort order
+        for (int i = 1; i < n; i += 2) {
+            queue.add(expected.get(i));
+        }
+        for (int i = 0; i < n; i += 2) {
+            queue.add(expected.get(i));
+        }
+
+        // then - size is exact and the sorted view matches the comparator applied to all elements,
+        // independent of the scrambled insertion order
+        assertThat(queue.size(), is(n));
+        List<Expectation> expectedSorted = new ArrayList<>(expected);
+        expectedSorted.sort((a, b) -> EXPECTATION_SORTABLE_PRIORITY_COMPARATOR.compare(a.getSortableId(), b.getSortableId()));
+        assertThat(queue.toSortedList(), is(expectedSorted));
+    }
+
 }

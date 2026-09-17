@@ -5,6 +5,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -46,6 +47,13 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
     // an in-place replaceValue leaves that slot untouched (which is the
     // desired semantics — eviction order follows original insertion time).
     private final ConcurrentLinkedQueue<K> insertionOrderQueue = new ConcurrentLinkedQueue<>();
+    // Explicit O(1) element count for insertionOrderQueue. ConcurrentLinkedQueue.size()
+    // is documented as an O(n) traversal ("NOT a constant-time operation"), and evictExcess()
+    // evaluates it on EVERY add() — even when nothing is evicted — which made bulk expectation
+    // loading O(n^2) (a 10k-expectation initializer paid a ~50M-node walk in aggregate). This
+    // counter is mutated only under the single-writer contract (add / evictExcess / remove),
+    // read lock-free by size(), and kept exactly in step with insertionOrderQueue.
+    private final AtomicInteger queueSize = new AtomicInteger(0);
     private final ConcurrentMap<K, V> byKey = new ConcurrentHashMap<>();
     // Cached snapshot of the sorted list; nulled on every mutation so toSortedList()
     // rebuilds lazily. volatile ensures the null write is visible to all threads
@@ -101,8 +109,17 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
      * queue consistent and fire the eviction listener identically.
      */
     private void evictExcess() {
-        while (insertionOrderQueue.size() > maxSize) {
+        // queueSize.get() is O(1) — using insertionOrderQueue.size() here (an O(n) walk) made
+        // this loop O(n) on every add() and therefore bulk loading O(n^2).
+        while (queueSize.get() > maxSize) {
             K keyToRemove = insertionOrderQueue.poll();
+            if (keyToRemove == null) {
+                // Queue emptied out from under the counter — cannot happen under the single-writer
+                // contract, but bail rather than spin so a precondition violation can never hang.
+                queueSize.set(insertionOrderQueue.size());
+                break;
+            }
+            queueSize.decrementAndGet();
             // Resolve the live value via byKey, remove it, then update the
             // skip-list and fire the eviction listener. Under the single-
             // writer contract byKey.remove is non-null here (the key was
@@ -137,6 +154,7 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
             byKey.put(key, element);
             sortOrderSkipList.add(skipListKeyFunction.apply(element));
             insertionOrderQueue.offer(key);
+            queueSize.incrementAndGet();
             evictExcess();
             sortedCache = null;
         }
@@ -171,7 +189,9 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
     public boolean remove(V element) {
         if (element != null) {
             K key = mapKeyFunction.apply(element);
-            insertionOrderQueue.remove(key);
+            if (insertionOrderQueue.remove(key)) {
+                queueSize.decrementAndGet();
+            }
             byKey.remove(key);
             boolean removed = sortOrderSkipList.remove(skipListKeyFunction.apply(element));
             sortedCache = null;
@@ -182,7 +202,9 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
     }
 
     public int size() {
-        return insertionOrderQueue.size();
+        // O(1): the explicit counter, kept in step with insertionOrderQueue under the
+        // single-writer contract. insertionOrderQueue.size() would be an O(n) traversal.
+        return queueSize.get();
     }
 
     public Stream<V> stream() {

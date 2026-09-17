@@ -216,7 +216,10 @@ public class ExpectationInitializerLoader {
                                 .setArguments(initializationJsonPath)
                         );
                     }
-                    List<String> expectationIds = new ArrayList<>();
+                    // HashSet, not a List: this is a membership check on every deserialised
+                    // expectation, so a List.contains() would be O(n) per item and O(n^2) over the
+                    // file — a latent cost that grows with large initializer fixtures.
+                    Set<String> expectationIds = new HashSet<>();
                     try {
                         String jsonExpectations = FileReader.readFileFromClassPathOrPath(initializationJsonPath);
                         if (isNotBlank(jsonExpectations)) {
