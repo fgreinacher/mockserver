@@ -12,6 +12,8 @@ validated with numbers, not guesses. These scripts produced the evidence in
 | `bench_startup.py` | Launch→port-bind and launch→ready medians across a matrix of launch variants (JVM flags, jars, Docker images) | Comparing image/flag/JDK variants; regression-checking a startup change |
 | `gap_probe.py` | Splits port-bind from readiness: times the first N sequential requests after the TCP port opens | Diagnosing first-request latency (lazy classloading vs bind cost) |
 | `warmup_probe.py` | First-request latency 600 ms after port-open, `startupWarmup` on vs off | Validating the `startupWarmup` feature end-to-end |
+| `bench_laptop.py` | Laptop-profile startup + footprint (programme item 8): docker launch→ready median-of-9, idle RSS + thread count at `--memory` 256m/512m/1g, the in-JVM start cost, `initializationJsonPath` scaling, and compressed image size. Emits a `laptop` result block. | The laptop / central-deploy profile: measuring first-run footprint and the per-test in-JVM start cost |
+| `InJvmStartupBench.java` | The **in-JVM** start cost — `ClientAndServer.startClientAndServer(...)` inside one JVM, cold first launch vs warm steady-state median. Delegated to by `bench_laptop.py`. | The number `MockServerExtension` users pay per test class (item 8b) |
 
 ## Usage
 
@@ -26,7 +28,31 @@ python3 scripts/perf/gap_probe.py <path-to-jar-with-dependencies>
 
 # startupWarmup on/off validation:
 python3 scripts/perf/warmup_probe.py <path-to-jar-with-dependencies>
+
+# Laptop profile (item 8) — all four sub-items, emitting a `laptop` result block:
+python3 scripts/perf/bench_laptop.py all \
+  --jar mockserver/mockserver-netty/target/mockserver-netty-<version>-jar-with-dependencies.jar \
+  --image mockserver/mockserver:<tag> --out laptop-result.json
+# Individual sub-items: ready | footprint | initscale | imagesize | readiness-demo
+# The in-JVM cost on its own (item 8b):
+java -cp <jar-with-dependencies> scripts/perf/InJvmStartupBench.java --warmups 1 --runs 9
 ```
+
+## The `laptop` result block and its budgets (item 8)
+
+`bench_laptop.py all` emits `{ "laptop": { <variant>: { <metric>: value } } }` — the same
+`{variant: {metric}}` shape as `behaviours` in a perf run result, so `perf-test-compare.sh`
+consumes it non-gating once its `metrics` function extracts a `laptop.*` clause **and**
+`mockserver-performance-test/perf-budgets.json` carries the five wildcard budget keys:
+`laptop.*.ready_ms`, `laptop.*.cold_ready_ms`, `laptop.*.rss_mb`, `laptop.*.threads`,
+`laptop.*.compressed_bytes` (all `dir:"up"`, `min_pct:0.25`, `floor:null`, no `gating` →
+notify-only until ≥10 runs of MAD accrue). The compare step **fails closed** on any emitted
+metric with no budget key, so the budget entries must land (a reviewed `perf-budgets.json`
+diff) **before** the producer emits the block, or the daily run goes red.
+
+Readiness is `PUT /mockserver/status` == 200, never an open TCP port — MockServer accepts a
+connection and then resets it during initialisation. `bench_laptop.py readiness-demo` prints
+the gap between the two probes so the difference is visible, not asserted.
 
 `bench_startup.py` writes a raw per-run CSV next to the variants file and
 prints a median/min/max table. Docker-kind variants measure from `docker run`

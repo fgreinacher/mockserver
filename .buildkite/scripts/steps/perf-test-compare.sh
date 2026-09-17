@@ -202,6 +202,40 @@ Writing this run to \`s3://${BUCKET}/${KEY}\` failed, so it was **not stored in 
   fi
 fi
 
+# --- 2b. laptop profile PRESENCE assertion (item 8) ---------------------------
+# Two axes, exactly as 15b separated them: laptop VALUES stay notify-only, but
+# laptop PRESENCE is loud. `laptop_attempted:true` means the producer tried to
+# measure the profile; if `.laptop` is then empty or missing a docker sub-item, the
+# measurement failed wholesale (renamed image, docker/create error, producer
+# traceback) and would otherwise vanish as a green build — compare is head-driven,
+# so zero laptop metrics trip nothing. Unlike microbench_extra (whose drift is caught
+# upstream by perf-test-microbench.sh asserting an exact row count), the laptop
+# producer only warns to stderr, so THIS is the equivalent catch. The docker
+# sub-items have NO JDK dependency, so their absence is unambiguously a rig failure
+# and safe to RED on. Runs AFTER the S3 persist above, so a laptop failure never
+# costs the k6 result its place in the baseline history. A run with no
+# `laptop_attempted` (profile disabled, or an older producer) is exempt.
+LAPTOP_INJVM_NOTE=""
+if [ "$(jq -r '.laptop_attempted // false' "$RESULT")" = "true" ]; then
+  MISSING_DOCKER="$(jq -r '(["docker_ready","mem_256m","mem_512m","mem_1g","image"] - ((.laptop // {}) | keys)) | join(", ")' "$RESULT")"
+  if [ -n "$MISSING_DOCKER" ]; then
+    annotate "error" ":no_entry: **Laptop profile FAILED to produce — build FAILED** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+The run set \`laptop_attempted: true\` but its \`.laptop\` block is missing docker sub-item(s): **${MISSING_DOCKER}**. These have no JDK dependency, so their absence means the laptop measurement (\`bench_laptop.py all\`) failed wholesale — a renamed image, a \`docker create\`/\`docker run\` error, or a producer traceback. Compare is head-driven, so a missing block would otherwise emit zero laptop metrics and pass GREEN with no signal — the false green this gate exists to stop (the programme's thesis: a failing pipeline IS the alert). The run itself was still persisted to the baseline history above, so the k6 result is not lost. Notify-only laptop VALUES are unaffected — this gate is about PRESENCE, not regression."
+    exit 1
+  fi
+  # in-JVM sub-items (injvm/init_*) additionally need a JDK + the image-extracted
+  # jar, so they are best-effort: surface their absence VISIBLY in the annotation
+  # (a stderr note nobody reads is not surfacing it), but do NOT fail the build.
+  MISSING_INJVM="$(jq -r '(["injvm","init_0","init_1000","init_10000"] - ((.laptop // {}) | keys)) | join(", ")' "$RESULT")"
+  if [ -n "$MISSING_INJVM" ]; then
+    LAPTOP_INJVM_NOTE="
+
+:information_source: **Laptop in-JVM sub-items skipped this run** — \`${MISSING_INJVM}\` absent. \`bench_laptop.py\` skips 8b/8c when a JDK or the image-extracted jar is unavailable on the perf agent; the docker sub-items were present, so this is a best-effort skip, not a failure — but the in-JVM start figure (what a MockServerExtension suite pays per test class) is missing this run."
+    echo "$LAPTOP_INJVM_NOTE"
+  fi
+fi
+
 # --- 3. pull the last N PRIOR runs --------------------------------------------
 BASE_DIR="$WORK/baseline"; mkdir -p "$BASE_DIR"
 if [ -n "${PERF_BASELINE_DIR:-}" ]; then
@@ -221,7 +255,7 @@ BASE_COUNT="$(find "$BASE_DIR" -name '*.json' | wc -l | tr -d ' ')"
 echo "--- baseline: $BASE_COUNT prior run(s) (min $MIN_BASELINE, window $BASELINE_N)"
 
 if [ "$BASE_COUNT" -lt "$MIN_BASELINE" ]; then
-  annotate "info" ":hourglass_flowing_sand: **Perf baseline warming up** — ${BASE_COUNT}/${MIN_BASELINE} runs collected. Persisted this run (\`${COMMIT:0:10}\`); regression comparison starts once ${MIN_BASELINE} runs exist."
+  annotate "info" ":hourglass_flowing_sand: **Perf baseline warming up** — ${BASE_COUNT}/${MIN_BASELINE} runs collected. Persisted this run (\`${COMMIT:0:10}\`); regression comparison starts once ${MIN_BASELINE} runs exist.${LAPTOP_INJVM_NOTE}"
   exit 0
 fi
 
@@ -299,6 +333,27 @@ def metrics:
     # count (EXTRA_EXPECTED) and fails the step on a partial vanish.
     ( {name:($k+".time_per_op"),        value:$v.time_per_op,        bkey:"microbench_extra.*.time_per_op"},
       {name:($k+".alloc_bytes_per_op"), value:$v.alloc_bytes_per_op, bkey:"microbench_extra.*.alloc_bytes_per_op"} ) ),
+  ((.laptop // {}) | to_entries[] | .key as $k | .value as $v |
+    # Laptop startup / footprint profile (item 8), keyed by variant: docker_ready,
+    # injvm, mem_256m/512m/1g, init_0/1000/10000, image. Each variant carries only the
+    # subset of these metrics it measures; the others are null and drop out via the
+    # `select(.value != null)` in $headmetrics (e.g. docker_ready emits no rss_mb,
+    # image emits only compressed_bytes). dir:"up" throughout — a slower start, larger
+    # idle RSS, more threads, or a bigger image are all worse. NOTIFY-ONLY: the
+    # laptop.*.<metric> budgets omit `gating`, so a flag annotates but NEVER fails the
+    # build. Their 0.25 min_pct is a WIDE dead band on a laptop-startup baseline — a
+    # backstop against a gross loss (AppCDS/warmup), not a fine regression signal. It
+    # flags informationally once >=1 prior point exists (laptop.* takes the `else`
+    # branch below, $minreq=1, subject to the global BASE_COUNT >= MIN_BASELINE warm-up)
+    # and never fails the build. laptop.* rides that `else` (full baseline) branch like
+    # growth/peak — not the fingerprint-filtered microbench/behaviours buckets — because these metrics have
+    # no methodology fingerprint of their own and are deliberately NOT keyed on the image
+    # digest (which changes every snapshot rebuild — the reset trap the k6 unit avoided).
+    ( {name:($k+".ready_ms"),         value:$v.ready_ms,         bkey:"laptop.*.ready_ms"},
+      {name:($k+".cold_ready_ms"),    value:$v.cold_ready_ms,    bkey:"laptop.*.cold_ready_ms"},
+      {name:($k+".rss_mb"),           value:$v.rss_mb,           bkey:"laptop.*.rss_mb"},
+      {name:($k+".threads"),          value:$v.threads,          bkey:"laptop.*.threads"},
+      {name:($k+".compressed_bytes"), value:$v.compressed_bytes, bkey:"laptop.*.compressed_bytes"} ) ),
   # peak_achieved_rps: max achieved throughput across sweep rungs where the k6
   # CLIENT was sound. CONTINUOUS, so a relative floor is meaningful. saturation_rps
   # (the knee) is ladder-QUANTISED, so it is recorded but NOT budgeted here.
@@ -510,7 +565,7 @@ EXTRA="$(jq -r '
 # carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}"
+${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did

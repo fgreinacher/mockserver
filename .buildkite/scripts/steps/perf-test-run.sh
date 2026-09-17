@@ -569,6 +569,56 @@ if [ "$FORWARD_EXIT" -ne 0 ]; then
 fi
 FORWARD_JSON="$(cat "$OUT_DIR/forward.json" 2>/dev/null || echo '{}')"
 
+# --- item 8: laptop startup + footprint profile (notify-only) -----------------
+# Runs LAST, after every k6 phase, so the box is quiet: the docker sub-items (8a
+# ready-median-of-9, idle RSS + threads at --memory 256m/512m/1g, 8d compressed
+# image size) launch their own throwaway containers and need only docker + the SUT
+# image. The in-JVM sub-items (8b/8c) — the number a MockServerExtension suite
+# actually pays per test class, and init-file scaling — need a shaded jar and a
+# JDK; the jar is docker-cp'd out of the SUT image (path fixed by the Dockerfile)
+# and bench_laptop.py SKIPS 8b/8c loudly if a jar or `java` is unavailable (e.g. a
+# JRE-only agent). Emits a `laptop` block merged into result.json; every metric is
+# notify-only (laptop.*.<metric> budgets omit `gating`). NON-FATAL by construction:
+# the SUT ($SERVER) is still running-but-idle here, so its per-container cgroup RSS
+# never pollutes a laptop container's own `docker stats` reading, and a laptop
+# measurement failure must never lose the k6/growth result the run exists for.
+LAPTOP_JSON='{}'
+# Record INTENT separately from success (the 15b two-axis split): `laptop_attempted`
+# says the producer tried to measure the profile this run, so compare can tell
+# "attempted and failed wholesale" (an empty/incomplete `.laptop` → RED) apart from
+# "profile disabled" (never attempted → silent). Without it, `laptop: {}` means both.
+LAPTOP_ATTEMPTED=false
+if [ "${PERF_LAPTOP_PROFILE:-true}" = "true" ]; then
+  LAPTOP_ATTEMPTED=true
+  LAPTOP_JAR="${PERF_LAPTOP_JAR:-}"
+  if [ -z "$LAPTOP_JAR" ]; then
+    _lc="$(docker create "$MOCKSERVER_IMAGE" 2>/dev/null || true)"
+    if [ -n "$_lc" ]; then
+      docker cp "$_lc:/mockserver-netty-jar-with-dependencies.jar" \
+        "$OUT_DIR/mockserver.jar" >/dev/null 2>&1 && LAPTOP_JAR="$OUT_DIR/mockserver.jar"
+      docker rm "$_lc" >/dev/null 2>&1 || true
+    fi
+  fi
+  echo "--- item 8 laptop profile (settle ${PERF_LAPTOP_SETTLE:-30}s; jar=${LAPTOP_JAR:-none})"
+  # DELIBERATELY NOT an add_check: laptop.* is notify-only, so a laptop-measurement
+  # failure must NOT flip .validity.valid false and make compare refuse the whole k6
+  # run. On failure the run simply carries no `laptop` block (compare iterates head
+  # metrics, so an absent block emits zero laptop metrics — no missing-budget trip).
+  if python3 "$REPO_ROOT/scripts/perf/bench_laptop.py" all \
+        --jar "$LAPTOP_JAR" --image "$MOCKSERVER_IMAGE" \
+        --port "${PERF_LAPTOP_PORT:-23080}" --warmups 1 --runs 9 \
+        --settle "${PERF_LAPTOP_SETTLE:-30}" --out "$OUT_DIR/laptop.json"; then
+    LAPTOP_JSON="$(cat "$OUT_DIR/laptop.json" 2>/dev/null || echo '{}')"
+    # Guard the result-assembly jq: an empty/partial/invalid laptop file must never
+    # make `--argjson laptop` fail and lose the whole result. Fall back to {} if the
+    # emitted block is not valid JSON.
+    jq -e . >/dev/null 2>&1 <<<"$LAPTOP_JSON" || LAPTOP_JSON='{}'
+    echo "--- laptop block: $(jq -c '.laptop | keys' <<<"$LAPTOP_JSON" 2>/dev/null)"
+  else
+    echo "WARNING: laptop profile measurement failed — result carries no laptop block this run (notify-only, does not gate)" >&2
+  fi
+fi
+
 # --- derive resource slope ratios from the sample log -------------------------
 # start = first non-empty sample, end = last, peak = max. ratio = end/start.
 # PROVOCATION (observed false): with the metrics port unreachable the sampler
@@ -674,6 +724,8 @@ jq -n \
   --arg forward_exit "$FORWARD_EXIT" \
   --argjson validity "$VALIDITY_JSON" \
   --argjson config "$CONFIG_JSON" \
+  --argjson laptop "$LAPTOP_JSON" \
+  --argjson laptop_attempted "$LAPTOP_ATTEMPTED" \
   --arg cpu_start "$CPU_START" --arg cpu_end "$CPU_END" --arg cpu_peak "$CPU_PEAK" --arg cpu_ratio "$CPU_RATIO" \
   --arg heap_start "$HEAP_START" --arg heap_end "$HEAP_END" --arg heap_peak "$HEAP_PEAK" --arg heap_ratio "$HEAP_RATIO" \
   --arg heap_min_first "$HEAP_MIN_FIRST" --arg heap_min_last "$HEAP_MIN_LAST" \
@@ -720,7 +772,14 @@ jq -n \
         if ($forward_exit|tonumber) == 0 then "passed"
         elif ($forward.forward_guard.error_rate) == null then "infra_error"
         else "breached" end) }),
-    validity: $validity
+    validity: $validity,
+    # Item 8 laptop startup/footprint profile (notify-only). `{}` when the profile
+    # was disabled or its measurement failed; compare iterates head metrics, so an
+    # empty object simply emits zero laptop.* metrics (no missing-budget trip). The
+    # separate `laptop_attempted` flag lets compare RED a wholesale failure (attempted
+    # but empty/docker-incomplete) instead of mistaking it for a disabled profile.
+    laptop: ($laptop.laptop // {}),
+    laptop_attempted: $laptop_attempted
   }' > "$RESULT_JSON"
 
 echo "--- result.json"

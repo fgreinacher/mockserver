@@ -225,6 +225,8 @@ The measurement harness lives in `scripts/perf/`. See `scripts/perf/README.md` f
 | `bench_startup.py` | Launch→port-bind and launch→ready medians across a variant matrix (JVM flags, jars, Docker images) | Comparing image/flag/JDK variants; validating a startup change |
 | `gap_probe.py` | Port-bind to readiness split: times the first N sequential requests after TCP port opens | Diagnosing first-request latency vs bind cost |
 | `warmup_probe.py` | First-request latency at 600 ms after port-open, `startupWarmup` on vs off | Validating the `startupWarmup` feature end-to-end |
+| `bench_laptop.py` | Laptop / central-deploy profile (performance-programme item 8): docker launch→ready median-of-9, idle RSS + thread count at `--memory` 256m/512m/1g, the in-JVM start cost, `initializationJsonPath` scaling, and compressed image size. Emits a `laptop` result block the daily `perf-test-compare.sh` consumes notify-only | Measuring first-run footprint and the per-test in-JVM start cost |
+| `InJvmStartupBench.java` | The in-JVM start cost — `ClientAndServer.startClientAndServer(...)` cold-first vs warm-steady-state, the number a `MockServerExtension` suite pays per test class (item 8b). Delegated to by `bench_laptop.py` | Costing the in-JVM start a container benchmark cannot see |
 | `startup-variants.json` | Variant definitions consumed by `bench_startup.py` | Edit to add new JVM flags, Docker images, or JDK versions |
 
 ```bash
