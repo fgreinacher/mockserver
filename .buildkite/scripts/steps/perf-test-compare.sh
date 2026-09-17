@@ -371,6 +371,34 @@ def metrics:
       {name:($k+".cpu_ms_per_handshake"),  value:$v.cpu_ms_per_handshake,  bkey:"tls_handshake.*.cpu_ms_per_handshake"},
       {name:($k+".alloc_kb_per_handshake"),value:$v.alloc_kb_per_handshake,bkey:"tls_handshake.*.alloc_kb_per_handshake"},
       {name:($k+".error_rate"),            value:$v.error_rate,            bkey:"tls_handshake.*.error_rate"} ) ),
+  # item 12 — LLM/SSE streaming under concurrency. The .streaming block is a FLAT
+  # object (not per-arm), so a CURATED subset of its scalars is budgeted here with
+  # EXACT bkeys (like peak_achieved_rps / forward.error_rate, not the wildcard arm
+  # families). All NON-GATING (their perf-budgets.json entries omit gating) and
+  # unfiltered by the k6 fingerprint (they are not .behaviours), riding the
+  # full-baseline else-branch like tls_handshake. A skipped streaming profile
+  # leaves every value null, and nulls drop out of $headmetrics — so a skip emits
+  # zero streaming metrics rather than a fail-closed missing-budget error. The four
+  # item-12 measurements distilled to comparable scalars:
+  #   match_*_p95_ms + match_p95_ratio  — the within-run hot-path A/B (#4): does a
+  #     concurrent match p95 inflate while streams run (ratio dir up = worse).
+  #   intertoken_error_*_p95/p99_ms + _ratio — the fidelity distribution (#1): the
+  #     idle run is the client-jitter FLOOR, the load run the server drift, ratio
+  #     = load/idle (dir up = worse). The p99 is the headline (the tail, not mean).
+  #   heap_bytes_per_stream — heap per open stream (#2), an upper bound (dir up).
+  #   *_error_rate — delivery soundness (a broken arm measured nothing).
+  # The item-12 CallerRunsPolicy counter (#3) is deliberately ABSENT — MockServer
+  # exposes none and it does not fire under load (see the run step / report).
+  ( {name:"streaming.match_baseline_p95_ms",        value:((.streaming // {}).match_baseline_p95_ms),        bkey:"streaming.match_baseline_p95_ms"},
+    {name:"streaming.match_under_stream_p95_ms",     value:((.streaming // {}).match_under_stream_p95_ms),     bkey:"streaming.match_under_stream_p95_ms"},
+    {name:"streaming.match_p95_ratio",               value:((.streaming // {}).match_p95_ratio),               bkey:"streaming.match_p95_ratio"},
+    {name:"streaming.match_under_stream_error_rate", value:((.streaming // {}).match_under_stream_error_rate), bkey:"streaming.match_under_stream_error_rate"},
+    {name:"streaming.stream_error_rate",             value:((.streaming // {}).stream_error_rate),             bkey:"streaming.stream_error_rate"},
+    {name:"streaming.intertoken_error_idle_p95_ms",  value:((.streaming // {}).intertoken_error_idle_p95_ms),  bkey:"streaming.intertoken_error_idle_p95_ms"},
+    {name:"streaming.intertoken_error_load_p95_ms",  value:((.streaming // {}).intertoken_error_load_p95_ms),  bkey:"streaming.intertoken_error_load_p95_ms"},
+    {name:"streaming.intertoken_error_load_p99_ms",  value:((.streaming // {}).intertoken_error_load_p99_ms),  bkey:"streaming.intertoken_error_load_p99_ms"},
+    {name:"streaming.intertoken_error_p95_ratio",    value:((.streaming // {}).intertoken_error_p95_ratio),    bkey:"streaming.intertoken_error_p95_ratio"},
+    {name:"streaming.heap_bytes_per_stream",         value:((.streaming // {}).heap_bytes_per_stream),         bkey:"streaming.heap_bytes_per_stream"} ),
   # peak_achieved_rps: max achieved throughput across sweep rungs where the k6
   # CLIENT was sound. CONTINUOUS, so a relative floor is meaningful. saturation_rps
   # (the knee) is ladder-QUANTISED, so it is recorded but NOT budgeted here.
@@ -577,12 +605,24 @@ EXTRA="$(jq -r '
     + $fginfra)
 ' "$RESULT" 2>/dev/null || echo "")"
 
+# item 12 — surface the streaming caveats in the RENDERED annotation, not only in
+# source comments (the reviewer's MINOR): heap_bytes_per_stream is an UPPER BOUND
+# dominated by log-ring retention, and the match A/B + absolute drift are measured
+# against a deliberately-constrained SUT (a relative tripwire near the scheduler
+# knee, not an absolute figure). Emitted only when a streaming row is present.
+STREAM_NOTE=""
+if printf '%s' "$RESULT_CMP" | jq -e '[.rows[]?.name | select(startswith("streaming."))] | length > 0' >/dev/null 2>&1; then
+  STREAM_NOTE="
+
+:information_source: **Streaming (item 12) metric notes:** \`streaming.heap_bytes_per_stream\` is an **upper bound** — it includes the streamed response bodies retained in the event-log ring, not just per-connection state. \`streaming.match_*_p95_ms\` / \`match_p95_ratio\` and the absolute \`intertoken_error_*\` are measured against a **deliberately CPU-/thread-constrained** SUT so the scheduler sits near its knee: they are RELATIVE tripwires (a regression pushes the ratio up), not absolute production figures. The idle-vs-load \`intertoken_error_p95_ratio\` normalises against the client-jitter floor, so it stays meaningful regardless of saturation."
+fi
+
 # Fold the provenance line, the pre-config-baseline warning, and the microbench +
 # k6 baseline-reset notes into the body so every annotation (regression or clean)
 # carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}"
+${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did

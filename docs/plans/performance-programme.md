@@ -313,7 +313,7 @@ by hand at a point in time and never since; **dark** = the code exists but nothi
 | D6 Floor | L | none | Minimum viable heap; idle thread count. `nioEventLoopThreadCount` is a **fixed 5**; `actionHandlerThreadCount` is `max(5, cores)` | — | **designed and documented, never measured** |
 | D6 | L | none | N parallel instances: port pressure, aggregate threads, aggregate RSS, GC interference | — | — |
 | D6 | L | **none** | **Dev mode.** `mockserver.devMode` exists specifically for this profile and nobody knows what it saves | — | — |
-| **NEW D2, D4** | C, P | **none** | **LLM / SSE streaming.** Per-token delays are scheduled onto a `max(5, cores)` pool with `CallerRunsPolicy` — under saturation the caller runs the task, and the caller is an event loop | — | — |
+| **NEW D2, D4** | C, P | **none** | **LLM / SSE streaming.** Per-token delays are scheduled onto a `max(5, cores)` pool; under saturation scheduler-thread starvation delays per-token emission (fidelity drift) and the `writeAndFlush` each task hands off loads the shared event loops a concurrent `match` uses (see item 12 — the original `CallerRunsPolicy`-on-the-event-loop claim was measured wrong) | — | — |
 | **NEW D1, D2** | C | **none** | **HTTP/3 / QUIC** — a full second transport with different physics | — | — |
 | **NEW D1, D2, D4** | C | **none** | **Clustered state** (`StateBackend`, Infinispan) — the feature built for the exact profile the owner named | — | — |
 | **NEW D2** | C | **none** | **WASM rule bodies** — a per-request interpreter on the matching path when used | — | — |
@@ -787,16 +787,59 @@ had changed. Keep it notify-only until variance is known.
 compared against a **pre-8.0.0 build** once. The comparison is the entire point; a new number
 with nothing to compare it to does not answer the changelog's warning.
 
+**Shipped 2026-09-17:** `org.mockserver.benchmark.Http2ConnectionMemoryBenchmark` (+ `run-h2-connection-memory.sh`)
+adds the connections axis (N connections x M in-flight streams; shapes 1x1/10x10/100x10) and records
+`bytes_per_connection` as (loaded heap - baseline heap) / N with the event log CLEARED before each sample so
+the delta is connection + stream child-channel state, not logged bodies. Four self-test gates fail loudly
+(exit 2) rather than publish a number over nothing: distinct-connection count, `C*S` streams established
+(impossible on fewer than `ceil(C*S/100)` connections given `MAX_CONCURRENT_STREAMS=100` — an independent
+proof the axis is real), event-log-empty-at-sample, and a plausible-magnitude floor/ceiling. The step
+`perf-test-h2multiplex.sh` runs it alongside the throughput sweep and merges both into `perf-h2-multiplex.json`,
+which `perf-test-compare.sh` persists into the S3 run history (a dated trend). The
+`h2_connection_memory.*.bytes_per_connection` budget key is committed NOTIFY-ONLY and DORMANT (the daily
+compare's metrics jq does not yet read `.h2_connection_memory`, so it cannot perturb the fail-closed
+missing-budget rule; wiring it is a one-line clause in that k6/compare-owned script). **The pre-8.0.0
+comparison (the whole point) was run once** via `run-h2-connection-memory-compare.sh` (same external client,
+diff server-container RSS): pre-multiplex 7.6.0 vs first-multiplex 8.0.0, `-m 512m`, 3 repeats, median.
+At the 100x10 shape (the only one RSS resolves with low spread, ~4-6%): **271,581 -> 338,690 bytes/connection,
++24.7%** (~+67 KB/connection, roughly the cost of the 10 concurrent stream child-channels the multiplex
+design adds). 1x1 (below RSS 0.1 MiB granularity) and 10x10 (spreads overlap) show no resolvable difference.
+The changelog's warning is thus CONFIRMED and quantified: per-connection memory rose modestly (~25% at
+100x10), not the ~2.7x a naive un-warmed measurement first suggested (fixed by warming the h2 path before the
+idle baseline so first-traffic JVM warm-up is not mis-charged to the connections). The trustworthy quantity is
+the cross-version DELTA (identical client + identical warm-up on both images cancel everything else); the
+absolute `bytes_per_connection` is a marginal cost beyond a ~100-stream-warm process (the warm-up pre-grows
+the Netty pooled arena) and, in-process, whole-JVM heap — both are order-of-magnitude/trend signals, not pure
+per-connection costs. The in-process harness also warms the h2 path before the first shape's baseline (the
+same correction), which removed a ~108 KB one-time upward bias from the 1x1 figure; its residual spread is
+GC-read granularity at single-connection scale, so the low-noise 100x10 (spread ~1%) is the figure to trust.
+
 #### 12. LLM and SSE streaming under concurrency — **new**
 
 *Serves: D2, D4, D1 / profiles C, P. Cost: 3-4 days.*
 
 **Why this is in scope rather than a future feature.** Per-token delays are scheduled onto a
-pool sized `actionHandlerThreadCount()` with a `CallerRunsPolicy`. At the default 50
-tokens/second, every concurrent stream generates 50 scheduled tasks per second; 100 streams
-is 5,000 tasks/second onto a 6-thread pool. When it saturates, `CallerRunsPolicy` means **the
-calling thread runs the task** — and the calling thread is a Netty event loop. A streaming
-feature that degrades by blocking event loops degrades everything else with it.
+pool sized `actionHandlerThreadCount()` (default `max(5, cores)`) — verified:
+`Scheduler.java:82-86` builds `new ScheduledThreadPoolExecutor(actionHandlerThreadCount(), …,
+CallerRunsPolicy)`, and `HttpSseResponseActionHandler.java:135,167-168` schedules each event's
+delay there, chained per stream (the next event is scheduled only from the current write's
+success listener). At the default 50 tokens/second every concurrent stream generates 50
+scheduled tasks per second; 100 streams is 5,000 tasks/second onto that pool.
+
+**Mechanism corrected (2026-09-17, from measurement — the original claim below was wrong).**
+The original text said saturation makes `CallerRunsPolicy` run the task on the calling event
+loop. It does **not**: a `ScheduledThreadPoolExecutor`'s `DelayedWorkQueue` is **unbounded**, so
+its rejection handler (`CallerRunsPolicy`) fires only at executor **shutdown**, never from load —
+a `CallerRunsPolicy` counter reads ~0 under load, and MockServer exposes none anyway (so metric
+#3 below is recorded as a documented absence, not fabricated). The real degradation, both
+observed on a constrained SUT (1 CPU / 2 scheduler threads): (1) **scheduler-thread starvation** —
+when the small pool cannot service the due `writeEvent` tasks on time, per-token emission runs
+LATE, so inter-token timing drifts (the p99 error went 5 ms → 57 ms, max → 103 ms while the
+median stayed on time — a fat TAIL, so it must be reported as a distribution, never a mean); and
+(2) **shared event-loop write pressure** — each `writeEvent`'s `ctx.writeAndFlush` enqueues onto a
+Netty event loop, so heavy streaming loads the very loops a concurrent `match` uses (its p95 went
+1.5 ms → 40.7 ms, a 27× within-run A/B ratio, under sustained load at saturation). So streaming
+**does** degrade the hot path — via event-loop write pressure, not via `CallerRunsPolicy`.
 
 Streaming is also the one feature whose **correctness claim is a latency claim**: the
 implementation promises cumulative timing accuracy by carrying sub-millisecond remainders
@@ -804,9 +847,16 @@ forward. True for one stream in a unit test, untested for a thousand. A timing-f
 feature with no timing measurement is exactly the shape this programme exists to find.
 
 Measure: **inter-token delay error** (the distribution of actual minus requested — a fidelity
-metric, not a throughput one), heap per open stream, a **deterministic** `CallerRunsPolicy`
-task counter, and the p95 of a concurrent plain `match` request while streams run — the
-within-run A/B showing whether streaming steals the hot path.
+metric, not a throughput one), heap per open stream, the p95 of a concurrent plain `match`
+request while streams run (the within-run A/B showing whether streaming steals the hot path),
+and — where MockServer instruments them — scheduler-saturation counters. A deterministic
+`CallerRunsPolicy` counter was the original intent, but per the correction above it cannot move
+under load; the meaningful deterministic saturation signal would be a **scheduler queue-depth**
+or **task-lag** gauge (neither exists today). **Shipped 2026-09-17:** `streaming.js` sustains the
+concurrency and drives the match A/B against a dedicated constrained SUT; a single-threaded SSE
+reader (`k6/tools/sse-fidelity-reader.py`) times inter-token gaps idle (client-jitter floor /
+positive control) then under load; `perf-test-run.sh` samples heap-per-open-stream. All
+`streaming.*` budgets are notify-only.
 
 #### 13. Clustered state under load — **new**
 
@@ -1270,7 +1320,7 @@ inference, and this programme has been burned by exactly that inference once.
 | 9a. proxy | Disable forward pooling; the CONNECT behaviour moves |
 | 10. soak | Reduce `maxLogEntries` so the ring never fills; the verification-query metric flattens, proving it is sensitive to occupancy |
 | 11. h2 memory | Compare against a pre-8.0.0 build; the per-connection figure differs or provably does not |
-| 12. streaming | 1,000 streams against a 2-core SUT; the `CallerRunsPolicy` counter becomes non-zero, or a recorded negative result says it does not |
+| 12. streaming | Concurrent streams against a **deliberately constrained** SUT (few CPUs / a small action-handler pool) drive the scheduler near its knee; the recorded negative control is that the match-A/B p95 ratio and the inter-token error tail move under load and return to ~1.0 / the idle floor without it. (NOT a `CallerRunsPolicy` counter — it cannot move under load; see item 12.) |
 | 13. clustered state | Kill a cluster member mid-run; the behaviour is recorded |
 | 14. TLS | Force the JDK provider instead of the native one; the handshake rate moves |
 | 16. allocation gate | Add `new byte[64]` to the decode path; the gate trips **on a pull request**, not on master |
@@ -1368,7 +1418,7 @@ The discriminator is **determinism, not importance**.
 |---|---|---|
 | `gc.alloc.rate.norm` | **Essentially deterministic** — an allocation count, hardware-independent | **Per merge to master**, *once item 16 widens its coverage* |
 | JMH `time_per_op` | low but hardware-sensitive; **understated today at `-f 1`** | Daily, pinned queue, two forks |
-| Deterministic counters — threads, class-loads, connections, image size, `CallerRunsPolicy` | none to low | Per merge, cheap |
+| Deterministic counters — threads, class-loads, connections, image size | none to low | Per merge, cheap |
 | AppCDS mapped (boolean) | none | **Blocks the master build immediately post-merge** — a considered placement, not a limitation |
 | ByteBuf leaks (boolean) | none | **Per merge**, gated at `verify` |
 | k6 latency percentiles, knee | wall-clock | Daily, pinned queue, validity-gated |
@@ -1560,7 +1610,7 @@ default-configuration figures; they are not.
 
 **Gated internally, never published:** the JMH absolute backstops, the growth and soak
 live-set slope and absolute, the event-log verification cost, the forward-pool guard, the
-AppCDS boolean, the leak gate, the `CallerRunsPolicy` counter, the startup median-of-9, and
+AppCDS boolean, the leak gate, the streaming match-A/B ratio, the startup median-of-9, and
 the baseline freshness assertion. These are regression detectors tuned for sensitivity rather
 than defensibility; publishing them invites arguments about numbers that exist only to move.
 

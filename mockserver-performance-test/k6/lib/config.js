@@ -439,4 +439,107 @@ export const PROXY = {
   resultPath: env('K6_PROXY_RESULT_PATH', 'proxy-result.json'),
 };
 
+// LLM/SSE streaming-under-concurrency scenario tunables (streaming.js —
+// performance-programme item 12). MockServer streams an httpSseResponse by
+// scheduling each event's per-token delay onto the SHARED action-handler pool
+// (Scheduler: a ScheduledThreadPoolExecutor sized actionHandlerThreadCount()).
+// The concern the plan raises is that many concurrent streams flood that small
+// pool with delayed writeEvent tasks; when the pool cannot service them on time
+// the per-token timing DRIFTS (a fidelity loss, because the streaming feature's
+// correctness claim IS a timing claim) and the writeAndFlush each task hands to
+// a Netty event loop adds event-loop pressure that a concurrent plain `match`
+// pays for. This scenario drives that concurrency and measures the fallout.
+//
+// WHAT THIS FILE MEASURES vs WHAT THE RUN STEP MEASURES. k6 cannot read an SSE
+// body incrementally (http.get buffers the whole response), so k6 here does two
+// things it CAN do honestly: (1) SUSTAIN the concurrency — a constant-VUs arm
+// where each VU holds one long-lived GET /stream open, so ~concurrency streams
+// are always in flight; and (2) the within-run match A/B (item 12's 4th metric)
+// — a fixed-rate `match` arm measured FIRST alone (baseline) and then AGAIN
+// while the streams run (under load), so the p95 ratio shows whether streaming
+// steals the hot path. The two fidelity/retention metrics k6 cannot see are
+// taken server-side by perf-test-run.sh: inter-token delay error via a dedicated
+// single-stream timing reader (tools/sse-fidelity-reader.py) run idle THEN under
+// this load (the idle run is the client-jitter FLOOR / positive control that
+// proves the error growth is the server, not the reader), and heap-per-open-
+// stream via the metrics-endpoint heap FLOOR sampled with the streams open minus
+// an idle baseline.
+//
+// MEASURED-WINDOW HYGIENE — cloned from the FIXED regression.js shape (Finding 3,
+// post-2026-09-16): staggered scenario starts, preAllocatedVUs == maxVUs (no
+// mid-run allocation) on the fixed-rate arms, a settle exclusion tagged
+// op:<op>_settle, MIN_TAIL_SAMPLES tail suppression, and the heavy/warm load-time
+// contract. The STREAMING arm is `heavy` (no warm): warming it at the ~warmup
+// rate would open thousands of long-lived streams at once (a connection + log
+// storm), so it is deliberately not warmed — it is the load, not a measured-
+// latency arm, and its cold first cohort lands in the excluded settle window.
+//
+// RETAINED-HEAP ARITHMETIC (the OOM shape the programme hit: long-lived streams +
+// recorded bodies). Every matched stream request is recorded in MockServer's
+// count-bounded event-log ring (maxLogEntries entries, holding the request + the
+// response action, whose events list is the streamed body). An entry lives for
+// residence ≈ maxLogEntries / total_offered_rps seconds — which LENGTHENS as
+// total rps falls, so a low stream-start rate does NOT help retention, it hurts.
+// On the 2 GB CI SUT maxLogEntries = min(heapKB/8, 100000) = 100000. Stream-start
+// rate = concurrency / stream_duration_s where stream_duration_s ≈ tokens ×
+// delay: at the defaults (concurrency 100, tokens 200, delay 20 ms ⇒ 4 s/stream)
+// that is 25 streams/s; with the match arm at 200 rps total_rps ≈ 225, residence
+// ≈ 100000/225 ≈ 444 s (the ring does not fill inside the window). Retained
+// streaming bytes ≈ stream_start_rate × min(residence, window_s) × tokens ×
+// bytesPerToken. At the defaults over a ~90 s window: 25 × 90 × 200 × ~30 B ≈
+// 13.5 MB, plus match entries ≈ 200 × 90 × ~200 B ≈ 3.6 MB — negligible against
+// the 1.5 GB heap. bytesPerToken is kept tiny on purpose (a short "t<idx>" data
+// field); RAISE concurrency/tokens/delay only with the product above re-checked
+// against PERF_SERVER_MEMORY, exactly as regression.js's large_* arms.
+export const STREAMING = {
+  // The SSE endpoint (seeded by expectations.js with `tokens` events each carrying
+  // a DETERMINISTIC per-event delay — no jitter — so inter-token delay error is a
+  // clean actual-minus-requested, not confounded by a random physics jitter term).
+  streamPath: env('K6_STREAM_PATH', '/stream'),
+  matchPath: env('K6_STREAM_MATCH_PATH', '/simple'),
+  // tokens/events per stream, and the per-event delay (ms). delay=20 ⇒ 50 tokens/s,
+  // the LLM streaming default the plan calls out. stream_duration ≈ tokens × delay.
+  tokens: num('K6_STREAM_TOKENS', 200),
+  delayMs: num('K6_STREAM_DELAY_MS', 20),
+  // Concurrency: the number of streams held open simultaneously == the constant-VUs
+  // pool of the streaming arm (each VU holds exactly one open GET /stream). This is
+  // the knob that floods the scheduler pool. The bare-`k6 run` default is 100 (a
+  // light, safe local default); the CI run step (perf-test-run.sh) OVERRIDES it to
+  // 300 and drives it against a DEDICATED SUT with BOTH pools constrained (action-
+  // handler + event-loop) on 1 CPU so the scheduler sits past its knee — otherwise
+  // on a many-core SUT the pool
+  // (actionHandlerThreadCount = max(5, cores)) never saturates and the match A/B +
+  // absolute inter-token drift cannot move (they read ~1.0 / the client-jitter
+  // floor every run, a tripwire placed where nothing happens). The match A/B and
+  // absolute drift are therefore RELATIVE tripwires against that constrained SUT,
+  // not absolute production figures; heap_bytes_per_stream and the idle-vs-load
+  // inter-token ratio normalise against a floor so they stay meaningful unsaturated.
+  concurrency: num('K6_STREAM_CONCURRENCY', 100),
+  // The concurrent plain-match arm (the within-run A/B). Offered at a FIXED rate,
+  // measured once alone (match_baseline) then again during the stream load
+  // (match_under_stream). Its p95 ratio is item 12's "steals the hot path" metric.
+  matchRate: num('K6_STREAM_MATCH_RATE', 200),
+  // preAllocatedVUs == maxVUs for the FIXED-RATE match arms (Finding-3 invariant).
+  // The streaming arm is constant-VUs (its VU count IS the concurrency), so it has
+  // no ramp to forbid. 200 rps at sub-ms match latency needs ~1 VU (Little's law),
+  // so 50 is transient headroom.
+  matchPreAllocatedVUs: num('K6_STREAM_MATCH_PRE_VUS', 50),
+  matchMaxVUs: num('K6_STREAM_MATCH_MAX_VUS', 50),
+  // Per-phase durations. The baseline match phase runs alone first; then the stream
+  // load + under-stream match phase overlap. Kept modest so the run fits the perf
+  // slot alongside the other phases; the server-side reader/heap sampling windows
+  // (perf-test-run.sh) live INSIDE the stream-load window.
+  matchBaselineDuration: env('K6_STREAM_MATCH_BASELINE_DURATION', '45s'),
+  loadDuration: env('K6_STREAM_LOAD_DURATION', '90s'),
+  warmup: env('K6_STREAM_WARMUP', '20s'),
+  settle: env('K6_STREAM_SETTLE', '10s'),
+  // Self-test knob (default 0 = off): a fixed server-side delay (ms) added to the
+  // /simple match response so a run can PROVE the match percentiles still track a
+  // real slowdown (degrade-and-confirm-red positive control for the match A/B).
+  matchDelayMs: num('K6_STREAM_MATCH_DELAY_MS', 0),
+  // Transport label folded into the result key. Fixed 'stream' (one transport).
+  proto: env('PROTO_STREAM', 'stream'),
+  resultPath: env('K6_STREAM_RESULT_PATH', 'streaming-result.json'),
+};
+
 export { env, num, bool };

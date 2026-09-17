@@ -40,6 +40,14 @@ RUN_ID="${BUILDKITE_BUILD_ID:-local}-$$"
 NETWORK="mockserver-perf-${RUN_ID}"
 SERVER="mockserver-perf-${RUN_ID}"
 UPSTREAM="mockserver-upstream-${RUN_ID}"
+# item 12 — the background k6 that drives the streaming concurrency load, and a
+# DEDICATED, deliberately CONSTRAINED SUT it drives (low CPU + a small
+# action-handler pool) so the scheduler saturates at a modest, DETERMINISTIC
+# concurrency regardless of the agent's core count — otherwise on the pinned
+# 6-core CI SUT the match A/B never leaves ~1.0 and the tripwire is placed where
+# nothing happens (see the streaming phase's header for the full rationale).
+STREAM_K6="mockserver-perf-k6-stream-${RUN_ID}"
+STREAM_SUT="mockserver-perf-stream-sut-${RUN_ID}"
 SAMPLE_INTERVAL="${PERF_SAMPLE_INTERVAL:-5}"
 # Hard memory bound for the SUT (item: measure growth against a realistic heap).
 # Unbounded on a 32 GB box, MaxRAMPercentage=75 yields a ~24 GB heap that barely
@@ -85,7 +93,7 @@ cleanup() {
   [ -n "${HS_CPU_PID:-}" ] && kill "$HS_CPU_PID" >/dev/null 2>&1 || true
   # The item 14 handshake SUTs (deterministic names from RUN_ID) — removed here too
   # so an early exit before the proxy block's own cleanup never leaks them.
-  docker rm -f "$SERVER" "$UPSTREAM" "$SWEEP_K6" \
+  docker rm -f "$SERVER" "$UPSTREAM" "$SWEEP_K6" "$STREAM_K6" "$STREAM_SUT" \
     "mockserver-mtls-${RUN_ID}" "mockserver-jdk-${RUN_ID}" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
   [ -n "${FILE_BODY_DIR:-}" ] && rm -rf "$FILE_BODY_DIR" >/dev/null 2>&1 || true
@@ -851,6 +859,149 @@ if [ "${PERF_LAPTOP_PROFILE:-true}" = "true" ]; then
   fi
 fi
 
+# --- item 12: LLM/SSE streaming under concurrency -----------------------------
+# Drive STREAMING.concurrency concurrent SSE streams (streaming.js, constant-vus)
+# while measuring the four item-12 metrics. Two of them k6 CANNOT see (it buffers
+# SSE), so they are taken server-side HERE, aligned to k6's phase timeline:
+#   - inter-token delay error: a tiny single-threaded reader
+#     (tools/sse-fidelity-reader.py) times consecutive `data:` lines. Run IDLE (the
+#     match_baseline phase, no streams open — the client-jitter FLOOR / positive
+#     control) and again UNDER LOAD (the stream-load phase). The idle floor proves
+#     any error growth is the SERVER (scheduler-thread starvation delaying the
+#     per-token writeEvent tasks), not the reader — the reader is identical and
+#     unloaded in both. Reported as a DISTRIBUTION (p50/p95/p99), never a mean:
+#     the failure mode is a fat TAIL while the median stays on time.
+#   - heap per open stream: the heap FLOOR (min jvm_memory_used_bytes{area=heap}
+#     over a window, the post-GC saw-tooth valley) with the streams open, minus the
+#     idle floor, over the concurrency. INCLUDES the streaming log-ring retention
+#     (bounded small by config.js STREAMING's arithmetic), so it is an upper bound
+#     on per-connection state, which the report states plainly.
+# The other two (match-p95 A/B, stream delivery) come from k6's own result. item
+# 12's CallerRunsPolicy counter is NOT emitted: MockServer exposes none, and the
+# policy does not fire under load (ScheduledThreadPoolExecutor's DelayedWorkQueue
+# is unbounded, so CallerRunsPolicy fires only at shutdown — see the report).
+# BEST-EFFORT / NON-FATAL like the proxy/laptop profiles: a failure defaults the
+# block to {} and never costs the k6/growth result its baseline place.
+STREAMING_JSON='{}'
+if [ "${PERF_STREAMING:-true}" = "true" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    S_WARMUP="${K6_STREAM_WARMUP:-20s}"; S_BASE="${K6_STREAM_MATCH_BASELINE_DURATION:-45s}"
+    S_LOAD="${K6_STREAM_LOAD_DURATION:-90s}"; S_SETTLE="${K6_STREAM_SETTLE:-10s}"
+    # Default concurrency 300 (not config.js's light-local 100): at delay 20 ms
+    # against the dedicated 1-CPU / 2-scheduler-thread / 2-event-loop-thread SUT
+    # below, that is reliably past the knee — the match A/B ratio measured 8.0x and
+    # 3.9x across repeats (always well above ~1.0), where 200 still occasionally
+    # dipped to ~1.6x (near-knee variance). RETENTION at 300/20ms: stream ≈ 4 s,
+    # start rate ≈ 75/s, over a 90 s window ≈ 6750 streams × 200 events × ~30 B ≈
+    # 40 MB — bounded well under the 1 GB SUT heap.
+    S_CONC="${K6_STREAM_CONCURRENCY:-300}"; S_DELAY="${K6_STREAM_DELAY_MS:-20}"; S_PATH="${K6_STREAM_PATH:-/stream}"
+    sw="$(to_secs "$S_WARMUP")"; sb="$(to_secs "$S_BASE")"; sl="$(to_secs "$S_LOAD")"; sst="$(to_secs "$S_SETTLE")"
+    STREAM_LOAD_START=$(( sw + sb ))
+    READER="$REPO_ROOT/mockserver-performance-test/k6/tools/sse-fidelity-reader.py"
+    # --- dedicated, deliberately-constrained streaming SUT ---------------------
+    # WHY a separate SUT and not the shared 6-core $SERVER: on the pinned CI box
+    # actionHandlerThreadCount = max(5, 6) = 6, and 200 concurrent streams at 50
+    # tokens/s is ~10k trivial writeEvent tasks/s — nowhere near that pool's knee,
+    # so match_p95_ratio reads ~1.0 and the tripwire measures nothing (the MAJOR
+    # review finding). A dedicated SUT with a SMALL action-handler pool (default 2)
+    # and a low CPU quota (default 1) puts the knee at a modest, DETERMINISTIC
+    # concurrency independent of the agent size, so a real scheduling regression
+    # moves the number. The scheduler (per-token delay) path is what this exercises;
+    # a bounded --memory makes the heap-floor measurement meaningful (it GCs).
+    # Constrain BOTH pools: the action-handler pool is where per-token delays queue
+    # (fidelity), and the event-loop pool is what a concurrent match shares (the
+    # A/B). Leaving the event loops at the default 5 let them absorb the streaming
+    # writeAndFlush pressure, so the match A/B stayed flaky near ~1x (measured).
+    STREAM_SUT_CPUS="${PERF_STREAM_SUT_CPUS:-1}"
+    STREAM_SUT_THREADS="${PERF_STREAM_SUT_THREADS:-2}"
+    STREAM_SUT_EVENTLOOP_THREADS="${PERF_STREAM_SUT_EVENTLOOP_THREADS:-2}"
+    STREAM_SUT_MEMORY="${PERF_STREAM_SUT_MEMORY:-1g}"
+    echo "--- streaming SUT (dedicated, constrained: cpus=${STREAM_SUT_CPUS}, action-handler-threads=${STREAM_SUT_THREADS}, event-loop-threads=${STREAM_SUT_EVENTLOOP_THREADS}, mem=${STREAM_SUT_MEMORY})"
+    docker run -d --rm --name "$STREAM_SUT" --network "$NETWORK" --network-alias "mockserver-stream" \
+      --cpus "$STREAM_SUT_CPUS" --memory "$STREAM_SUT_MEMORY" -p 127.0.0.1::1080 \
+      -e MOCKSERVER_LOG_LEVEL=ERROR -e MOCKSERVER_DISABLE_SYSTEM_OUT=true -e MOCKSERVER_METRICS_ENABLED=true \
+      -e "MOCKSERVER_ACTION_HANDLER_THREAD_COUNT=$STREAM_SUT_THREADS" \
+      -e "MOCKSERVER_NIO_EVENT_LOOP_THREAD_COUNT=$STREAM_SUT_EVENTLOOP_THREADS" \
+      "$MOCKSERVER_IMAGE" -serverPort 1080 >/dev/null 2>&1 \
+      || echo "WARNING: could not start dedicated streaming SUT — no streaming block this run (notify-only)" >&2
+    wait_ready "$STREAM_SUT" || echo "WARNING: dedicated streaming SUT not ready" >&2
+    # The reader + heap sampler hit the dedicated SUT's HOST-published port (serves
+    # /stream AND /mockserver/metrics), so they run on the agent with no extra
+    # container CPU and never touch the shared $SERVER's numbers.
+    STREAM_HOSTPORT="$(docker port "$STREAM_SUT" 1080/tcp 2>/dev/null | head -1)"
+    R_HOST="${STREAM_HOSTPORT%%:*}"; R_PORT="${STREAM_HOSTPORT##*:}"
+    [ -n "$R_HOST" ] || R_HOST="127.0.0.1"
+    STREAM_METRICS_URL="http://${STREAM_HOSTPORT:-127.0.0.1:1080}/mockserver/metrics"
+    # Heap FLOOR: min of N ~1s heap samples. %d avoids the E-notation some images
+    # emit (jq --argjson could not parse "1.1E8"); floor tracks the live set far
+    # better than an instantaneous sample on the GC saw-tooth.
+    stream_heap_floor() {
+      local n="$1" i
+      for i in $(seq 1 "$n"); do
+        curl -s --max-time 4 "$STREAM_METRICS_URL" 2>/dev/null \
+          | awk -F' ' '/^jvm_memory_used_bytes\{area="heap"\}/{print $2}'
+        sleep 1
+      done | awk 'NF{v=$1+0; if(m==""||v<m)m=v} END{if(m=="")print "";else printf "%d",m}'
+    }
+    echo "--- streaming.js (item 12: LLM/SSE under concurrency=${S_CONC}, delay=${S_DELAY}ms, dedicated constrained SUT)"
+    # shellcheck disable=SC2046
+    docker run -d --rm --name "$STREAM_K6" --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+      -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" -v "$OUT_DIR:/out" \
+      -e "BASE_URL=http://mockserver-stream:1080" \
+      -e "K6_STREAM_CONCURRENCY=$S_CONC" \
+      -e "K6_STREAM_RESULT_PATH=/out/streaming.json" \
+      ${K6_STREAM_WARMUP:+-e K6_STREAM_WARMUP="$K6_STREAM_WARMUP"} \
+      ${K6_STREAM_MATCH_BASELINE_DURATION:+-e K6_STREAM_MATCH_BASELINE_DURATION="$K6_STREAM_MATCH_BASELINE_DURATION"} \
+      ${K6_STREAM_LOAD_DURATION:+-e K6_STREAM_LOAD_DURATION="$K6_STREAM_LOAD_DURATION"} \
+      ${K6_STREAM_SETTLE:+-e K6_STREAM_SETTLE="$K6_STREAM_SETTLE"} \
+      ${K6_STREAM_TOKENS:+-e K6_STREAM_TOKENS="$K6_STREAM_TOKENS"} \
+      ${K6_STREAM_DELAY_MS:+-e K6_STREAM_DELAY_MS="$K6_STREAM_DELAY_MS"} \
+      ${K6_STREAM_MATCH_RATE:+-e K6_STREAM_MATCH_RATE="$K6_STREAM_MATCH_RATE"} \
+      "$K6_IMAGE" run /k6/streaming.js >/dev/null 2>&1 \
+      || echo "WARNING: could not launch streaming.js — no streaming block this run (notify-only)" >&2
+    ST0="$(date -u +%s)"
+    stream_sleep_until() { local target="$1" now; now=$(( $(date -u +%s) - ST0 )); [ "$target" -gt "$now" ] && sleep $(( target - now )) || true; }
+    # IDLE control: inside the match_baseline phase, before any stream opens.
+    stream_sleep_until $(( sw + 3 ))
+    STREAM_HEAP_IDLE="$(stream_heap_floor 5)"
+    python3 "$READER" --host "$R_HOST" --port "$R_PORT" --path "$S_PATH" \
+      --delay-ms "$S_DELAY" --streams 3 --max-tokens 60 --label idle \
+      --out "$OUT_DIR/fidelity-idle.json" || echo "WARNING: idle fidelity reader failed" >&2
+    # UNDER LOAD: after the stream-load phase start + its settle window.
+    stream_sleep_until $(( STREAM_LOAD_START + sst + 3 ))
+    STREAM_HEAP_LOAD="$(stream_heap_floor 6)"
+    python3 "$READER" --host "$R_HOST" --port "$R_PORT" --path "$S_PATH" \
+      --delay-ms "$S_DELAY" --streams 3 --max-tokens 60 --label load \
+      --out "$OUT_DIR/fidelity-load.json" || echo "WARNING: load fidelity reader failed" >&2
+    # Wait for the background k6 to finish writing its result.
+    while docker ps --format '{{.Names}}' | grep -q "^${STREAM_K6}$"; do sleep 2; done
+    K6_STREAM_OUT="$(cat "$OUT_DIR/streaming.json" 2>/dev/null || echo '{}')"; jq -e . >/dev/null 2>&1 <<<"$K6_STREAM_OUT" || K6_STREAM_OUT='{}'
+    FID_IDLE="$(cat "$OUT_DIR/fidelity-idle.json" 2>/dev/null || echo '{}')"; jq -e . >/dev/null 2>&1 <<<"$FID_IDLE" || FID_IDLE='{}'
+    FID_LOAD="$(cat "$OUT_DIR/fidelity-load.json" 2>/dev/null || echo '{}')"; jq -e . >/dev/null 2>&1 <<<"$FID_LOAD" || FID_LOAD='{}'
+    HEAP_PER_STREAM="$(awk -v a="${STREAM_HEAP_IDLE:-}" -v b="${STREAM_HEAP_LOAD:-}" -v n="$S_CONC" 'BEGIN{ if(a!=""&&b!=""&&n+0>0&&(b-a)>0) printf "%.1f",(b-a)/n; else print "null" }')"
+    STREAMING_JSON="$(jq -c \
+      --argjson fi "$FID_IDLE" --argjson fl "$FID_LOAD" \
+      --argjson hi "${STREAM_HEAP_IDLE:-null}" --argjson hl "${STREAM_HEAP_LOAD:-null}" \
+      --argjson hps "${HEAP_PER_STREAM:-null}" '
+      (.streaming // {}) as $s | $s + {
+        intertoken_error_idle_p50_ms: ($fi.error_p50_ms // null),
+        intertoken_error_idle_p95_ms: ($fi.error_p95_ms // null),
+        intertoken_error_idle_p99_ms: ($fi.error_p99_ms // null),
+        intertoken_error_load_p50_ms: ($fl.error_p50_ms // null),
+        intertoken_error_load_p95_ms: ($fl.error_p95_ms // null),
+        intertoken_error_load_p99_ms: ($fl.error_p99_ms // null),
+        intertoken_error_p95_ratio: (if (($fi.error_p95_ms // 0) > 0 and $fl.error_p95_ms != null) then (($fl.error_p95_ms / $fi.error_p95_ms) * 1000 | round) / 1000 else null end),
+        intertoken_reader_streams_idle: ($fi.streams_ok // null),
+        intertoken_reader_streams_load: ($fl.streams_ok // null),
+        heap_idle_floor_bytes: $hi, heap_streaming_floor_bytes: $hl, heap_bytes_per_stream: $hps
+      }' <<<"$K6_STREAM_OUT")"
+    jq -e . >/dev/null 2>&1 <<<"$STREAMING_JSON" || STREAMING_JSON='{}'
+    echo "--- streaming: $(jq -c '{match_p95_ratio, match_under_stream_p95_ms, intertoken_error_load_p99_ms, heap_bytes_per_stream}' <<<"$STREAMING_JSON" 2>/dev/null)"
+  else
+    echo "WARNING: python3 not on the agent — streaming fidelity/heap metrics skipped (notify-only, no streaming block)" >&2
+  fi
+fi
+
 # --- derive resource slope ratios from the sample log -------------------------
 # start = first non-empty sample, end = last, peak = max. ratio = end/start.
 # PROVOCATION (observed false): with the metrics port unreachable the sampler
@@ -934,6 +1085,24 @@ if awk -v v="$HEAP_MIN_LAST" 'BEGIN{exit !(v+0>0)}'; then
 else
   add_check "growth_heap_sampled" false "no heap samples during growth (/mockserver/metrics unreachable?) — live-set floor is 0, growth.live_set_bytes would poison the baseline as a zero"
 fi
+# item 12 — streaming presence. Only asserted when the profile was ATTEMPTED
+# (PERF_STREAMING on AND python3 present); a deliberately-skipped profile is not a
+# validity failure. When attempted, the match A/B ratio must be present — a null
+# ratio means the streaming run produced no comparable latency and the .streaming
+# metrics would baseline as nulls/zeros.
+if [ "${PERF_STREAMING:-true}" = "true" ] && command -v python3 >/dev/null 2>&1; then
+  # $STREAMING_JSON is the FLAT block (its top-level keys are match_p95_ratio etc.
+  # — it was built as `(.streaming // {}) as $s | $s + {…}`, already unwrapped), so
+  # query match_p95_ratio at the TOP level, NOT `.streaming.match_p95_ratio`. The
+  # sibling regression check reads `.behaviours` because it queries the k6 result
+  # FILE (top level {proto, behaviours}); this reads the assembled block — same
+  # idiom, different shape.
+  if jq -e '(.match_p95_ratio != null)' <<<"$STREAMING_JSON" >/dev/null 2>&1; then
+    add_check "streaming_metrics_present" true "streaming match A/B present (ratio=$(jq -r '.match_p95_ratio' <<<"$STREAMING_JSON" 2>/dev/null))"
+  else
+    add_check "streaming_metrics_present" false "streaming profile attempted but match_p95_ratio is null — streaming.js produced no comparable match latency this run"
+  fi
+fi
 if [ "${#VALIDITY_CHECKS[@]}" -gt 0 ]; then
   VALIDITY_JSON="$(printf '%s\n' "${VALIDITY_CHECKS[@]}" | jq -sc '{valid: (map(.ok) | all), checks: .}')"
 else
@@ -956,6 +1125,7 @@ jq -n \
   --arg forward_exit "$FORWARD_EXIT" \
   --argjson proxyfwd "$PROXY_FWD_JSON" \
   --argjson handshake "$HANDSHAKE_JSON" \
+  --argjson streaming "$STREAMING_JSON" \
   --argjson validity "$VALIDITY_JSON" \
   --argjson config "$CONFIG_JSON" \
   --argjson laptop "$LAPTOP_JSON" \
@@ -991,6 +1161,11 @@ jq -n \
     # per-SUT CPU/alloc augmentation above). NOT part of .behaviours, so it does not
     # touch the k6 fingerprint; compare reads it as its own non-gating metric family.
     tls_handshake: ($handshake.tls_handshake // {}),
+    # item 12 — LLM/SSE streaming under concurrency: the match-p95 A/B, the
+    # server-side inter-token delay-error distribution (idle vs load) and heap per
+    # open stream. NOT part of .behaviours, so it does not touch the k6 fingerprint;
+    # compare reads a CURATED subset as its own non-gating metric family.
+    streaming: $streaming,
     growth: {
       duration_s: ($growth.duration_s // null),
       p95_ms: ($growth.p95_ms // null),

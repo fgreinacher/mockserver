@@ -171,6 +171,24 @@
 
     "premerge_alloc.MatchingBenchmark.alloc_bytes_per_op":      { "dir": "up", "min_pct": 0, "floor": 1850000, "gating": true, "provisional": true },
     "premerge_alloc.InboundDecodeBenchmark.alloc_bytes_per_op": { "dir": "up", "min_pct": 0, "floor": 47000,   "gating": true, "provisional": true },
-    "premerge_alloc.ResponseWriteBenchmark.alloc_bytes_per_op": { "dir": "up", "min_pct": 0, "floor": 46000,   "gating": true, "provisional": true }
+    "premerge_alloc.ResponseWriteBenchmark.alloc_bytes_per_op": { "dir": "up", "min_pct": 0, "floor": 46000,   "gating": true, "provisional": true },
+    "_comment_streaming": [
+      "Item 12 (LLM/SSE streaming). NON-GATING: no history exists yet, and the two",
+      "absolute/A-B metrics are measured against a DELIBERATELY CPU- and thread-",
+      "constrained SUT so the measurement sits near the knee where a regression shows.",
+      "They are therefore RELATIVE tripwires, not absolute production figures.",
+      "heap_bytes_per_stream is an UPPER bound - it includes streamed bodies still",
+      "retained in the count-bounded event-log ring, not just per-stream state."
+    ],
+    "streaming.match_baseline_p95_ms":         { "dir": "up", "min_pct": 0.25, "floor": null },
+    "streaming.match_under_stream_p95_ms":     { "dir": "up", "min_pct": 0.25, "floor": null },
+    "streaming.match_p95_ratio":               { "dir": "up", "min_pct": 0.25, "floor": null },
+    "streaming.match_under_stream_error_rate": { "dir": "up", "min_pct": 0,    "floor": 0.01 },
+    "streaming.stream_error_rate":             { "dir": "up", "min_pct": 0,    "floor": 0.01 },
+    "streaming.intertoken_error_idle_p95_ms":  { "dir": "up", "min_pct": 0.5,  "floor": null },
+    "streaming.intertoken_error_load_p95_ms":  { "dir": "up", "min_pct": 0.5,  "floor": null },
+    "streaming.intertoken_error_load_p99_ms":  { "dir": "up", "min_pct": 0.5,  "floor": null },
+    "streaming.intertoken_error_p95_ratio":    { "dir": "up", "min_pct": 0.5,  "floor": null },
+    "streaming.heap_bytes_per_stream":         { "dir": "up", "min_pct": 0.5,  "floor": null }
   }
 }

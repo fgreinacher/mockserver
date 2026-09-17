@@ -14,7 +14,7 @@
 import http from 'k6/http';
 import { check, fail } from 'k6';
 import { SharedArray } from 'k6/data';
-import { CONFIG, FORWARD, REGRESSION, PROXY } from './config.js';
+import { CONFIG, FORWARD, REGRESSION, PROXY, STREAMING } from './config.js';
 
 // The 4 seeded expectations — byte-for-byte the same shapes as the legacy
 // expectations.json so recorded baselines remain comparable.
@@ -191,6 +191,95 @@ export function forwardExpectation(host) {
     },
     times: { unlimited: true },
   };
+}
+
+// --- item 12: LLM/SSE streaming under concurrency ----------------------------
+//
+// Build an httpSseResponse expectation whose `events` each carry a DETERMINISTIC
+// per-event delay (no streaming-physics jitter), so the server's inter-token
+// timing is a clean actual-minus-requested measurement. Each event's `data` is a
+// short "t<idx>" token kept small ON PURPOSE — the whole events list is retained
+// per matched request in the count-bounded event-log ring, so bytesPerToken
+// drives the retained-heap arithmetic documented in config.js STREAMING.
+//
+// Every event including the first carries the delay so the reader's inter-arrival
+// gaps between CONSECUTIVE data lines are all governed by the same requested
+// delay (the reader discards the first gap, which also absorbs connection/TTFB
+// overhead — see tools/sse-fidelity-reader.py).
+export function streamingSseExpectation(path, tokens, delayMs) {
+  const events = [];
+  for (let i = 0; i < tokens; i += 1) {
+    events.push({ data: `t${i}`, delay: { timeUnit: 'MILLISECONDS', value: delayMs } });
+  }
+  return {
+    httpRequest: { path },
+    httpSseResponse: { statusCode: 200, events },
+    times: { unlimited: true },
+  };
+}
+
+// Seed the streaming.js expectations: the SSE stream (item 12's load) and the
+// plain /simple match used by the within-run A/B. When K6_STREAM_MATCH_DELAY_MS
+// > 0 a fixed server-side delay is added to the match response so a run can prove
+// the match percentiles still move with a REAL slowdown (positive control).
+export function seedStreaming() {
+  const matchResponse = { statusCode: 200, body: 'some simple response' };
+  if (STREAMING.matchDelayMs > 0) {
+    matchResponse.delay = { timeUnit: 'MILLISECONDS', value: STREAMING.matchDelayMs };
+  }
+  const expectations = [
+    { httpRequest: { path: STREAMING.matchPath }, httpResponse: matchResponse, times: { unlimited: true } },
+    streamingSseExpectation(STREAMING.streamPath, STREAMING.tokens, STREAMING.delayMs),
+  ];
+  const res = http.put(`${CONFIG.controlPlane}/expectation`, JSON.stringify(expectations), jsonParams());
+  if (res.status !== 201 && res.status !== 200) {
+    fail(`failed to seed streaming expectations: HTTP ${res.status} ${res.body}`);
+  }
+  return res;
+}
+
+// Fail-loud probe of the streaming arms (streaming.js setup()). Both the SSE
+// stream and the match path must answer before a run baselines their numbers —
+// a stream that 404s would otherwise record a silent 100%-error load arm and a
+// heap/fidelity measurement of NOTHING.
+export function verifyStreamingArms() {
+  const m = http.get(`${CONFIG.baseUrl}${STREAMING.matchPath}`, { headers: CONFIG.keepAliveHeaders });
+  if (m.status !== 200) {
+    fail(`streaming match arm: GET ${STREAMING.matchPath} returned HTTP ${m.status} — the SUT is not seeded. Body: ${m.body}`);
+  }
+  // The SSE stream returns the whole (delayed) body to k6's buffering client, so
+  // this probe also blocks for ~tokens×delay ms; keep tokens modest. A 200 with a
+  // text/event-stream content-type confirms the streaming action is wired.
+  const s = http.get(`${CONFIG.baseUrl}${STREAMING.streamPath}`, { headers: CONFIG.keepAliveHeaders });
+  if (s.status !== 200) {
+    fail(`streaming arm: GET ${STREAMING.streamPath} returned HTTP ${s.status} — the httpSseResponse expectation is not serving. Body: ${s.body}`);
+  }
+}
+
+// Actions (tagged so k6 reports per-operation).
+export function getStream(extraTags) {
+  // A VU calling this blocks for the whole (delayed) stream, so a constant-VUs pool
+  // of N holds ~N streams open — the concurrency knob. No `check` on the body: the
+  // measurement of interest is server-side (heap/fidelity), and a status check adds
+  // no value while the VU is occupied for seconds per iteration.
+  const res = http.get(`${CONFIG.baseUrl}${STREAMING.streamPath}`, {
+    headers: CONFIG.keepAliveHeaders,
+    tags: { op: 'stream', name: `GET ${STREAMING.streamPath} (SSE)`, ...(extraTags || {}) },
+    // The response body is discarded (responseType none) so k6 does not retain the
+    // whole streamed body per VU — the client-side memory footprint of holding N
+    // concurrent streams open must not itself become the bottleneck.
+    responseType: 'none',
+  });
+  return res;
+}
+
+export function getStreamMatch(op, extraTags) {
+  const res = http.get(`${CONFIG.baseUrl}${STREAMING.matchPath}`, {
+    headers: CONFIG.keepAliveHeaders,
+    tags: { op, name: `GET ${STREAMING.matchPath}`, ...(extraTags || {}) },
+  });
+  check(res, { [`${op}: 200`]: (r) => r.status === 200 });
+  return res;
 }
 
 function jsonParams(extraTags) {
