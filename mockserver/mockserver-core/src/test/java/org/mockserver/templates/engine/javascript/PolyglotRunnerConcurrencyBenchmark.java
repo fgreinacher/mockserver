@@ -121,10 +121,68 @@ public final class PolyglotRunnerConcurrencyBenchmark {
         latency("OLD", PolyglotRunnerConcurrencyBenchmark::renderOld, 1000);
         latency("NEW", PolyglotRunnerConcurrencyBenchmark::renderNew, 1000);
 
-        System.out.println("\n=== contagion: " + renderLoad + " JS renders saturate a " + poolSize
-            + "-thread pool; 200 unrelated probe tasks are submitted into the same pool and we measure how long they wait ===");
+        System.out.println("\n=== contagion (render-cost fix only): " + renderLoad + " JS renders saturate a " + poolSize
+            + "-thread pool; 200 unrelated probe tasks are submitted into the SAME pool and we measure how long they wait ===");
         contagion("OLD", PolyglotRunnerConcurrencyBenchmark::renderOld, poolSize, renderLoad, 200);
         contagion("NEW", PolyglotRunnerConcurrencyBenchmark::renderNew, poolSize, renderLoad, 200);
+
+        System.out.println("\n=== pool isolation (the scheduleTemplateAction fix): " + renderLoad + " JS renders saturate a "
+            + poolSize + "-thread DEDICATED template pool; 200 unrelated probe tasks run on a SEPARATE shared pool ===");
+        System.out.println("SHARED   -> renders and probes share ONE pool (pre-fix dispatch): probes wait behind renders");
+        contagion("SHARED", PolyglotRunnerConcurrencyBenchmark::renderNew, poolSize, renderLoad, 200);
+        System.out.println("ISOLATED -> renders on a dedicated pool, probes on a separate shared pool (post-fix dispatch)");
+        contagionIsolated("ISOL", PolyglotRunnerConcurrencyBenchmark::renderNew, poolSize, renderLoad, 200);
+    }
+
+    /**
+     * Post-fix shape: the slow renders saturate a DEDICATED render pool (standing in for the bounded
+     * {@code templateActionExecutor}) while the unrelated probes are submitted onto a SEPARATE shared pool
+     * (standing in for the scheduler pool that plain match/forward dispatch uses). Because the two pools are
+     * disjoint, the probes never queue behind a render, so their wait stays low no matter how badly the
+     * render pool is saturated — the contagion is gone. Compare its probe-wait tail against {@link #contagion}
+     * (SHARED) run with the same parameters.
+     */
+    private static void contagionIsolated(String label, Runnable render, int poolSize, int renderLoad, int probes) throws Exception {
+        ExecutorService renderPool = Executors.newFixedThreadPool(poolSize);
+        ExecutorService sharedPool = Executors.newFixedThreadPool(poolSize);
+        try {
+            CountDownLatch startGate = new CountDownLatch(1);
+            List<Future<?>> renders = new ArrayList<>(renderLoad);
+            List<Future<Long>> probeWaits = new ArrayList<>(probes);
+            long[] probeSubmit = new long[probes];
+            int probeEvery = Math.max(1, renderLoad / probes);
+            int probeIdx = 0;
+            long wallStart = System.nanoTime();
+            for (int i = 0; i < renderLoad; i++) {
+                renders.add(renderPool.submit(() -> {
+                    await(startGate);
+                    render.run();
+                }));
+                if (i % probeEvery == 0 && probeIdx < probes) {
+                    final int p = probeIdx++;
+                    probeSubmit[p] = System.nanoTime();
+                    probeWaits.add(sharedPool.submit(() -> System.nanoTime() - probeSubmit[p]));
+                }
+            }
+            startGate.countDown();
+            for (Future<?> f : renders) {
+                f.get();
+            }
+            long renderWall = System.nanoTime() - wallStart;
+
+            int n = probeWaits.size();
+            long[] wait = new long[n];
+            for (int i = 0; i < n; i++) {
+                wait[i] = probeWaits.get(i).get();
+            }
+            Arrays.sort(wait);
+            System.out.printf("%-4s unrelated-probe wait: p50=%.2fms  p99=%.2fms  max=%.2fms   |  %d renders drained in %.0fms  render-throughput=%.0f/s%n",
+                label, ms(wait[(int) (n * 0.50)]), ms(wait[(int) (n * 0.99)]), ms(wait[n - 1]),
+                renderLoad, renderWall / 1_000_000.0, renderLoad / (renderWall / 1_000_000_000.0));
+        } finally {
+            renderPool.shutdownNow();
+            sharedPool.shutdownNow();
+        }
     }
 
     private static void latency(String label, Runnable render, int iterations) {

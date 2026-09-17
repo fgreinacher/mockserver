@@ -553,7 +553,12 @@ public class HttpActionHandler {
                     dispatchMockResponseWithBreakpoint(request, action, synchronous, responseWriter, expectation.getHttpRequest(), expectationPostProcessor, effectiveChaos, capturedMatchCount, ctx, rateLimit,
                         req -> getHttpResponseActionHandler().handle(selectedResponse, req, expectation.getHttpRequest())), expectationPostProcessor), synchronous);
             }
-            case RESPONSE_TEMPLATE -> scheduler.schedule(() -> handleAnyException(request, responseWriter, synchronous, action, () ->
+            // RESPONSE_TEMPLATE rendering is a synchronous, CPU-bound computation. Dispatch via
+            // scheduleTemplateAction so it runs on the dedicated BOUNDED template pool in asynchronous mode
+            // (never inline on the worker event loop, never on the shared scheduler pool) and inline in
+            // synchronous mode — isolating a burst of slow renders from unrelated match/forward traffic. The
+            // breakpoint/chaos/rate-limit wrapping and the action delay are unchanged.
+            case RESPONSE_TEMPLATE -> scheduler.scheduleTemplateAction(() -> handleAnyException(request, responseWriter, synchronous, action, () ->
                 dispatchMockResponseWithBreakpoint(request, action, synchronous, responseWriter, expectation.getHttpRequest(), expectationPostProcessor, effectiveChaos, capturedMatchCount, ctx, rateLimit,
                     req -> getHttpResponseTemplateActionHandler().handle((HttpTemplate) action, req)), expectationPostProcessor), synchronous, actionDelay);
             // RESPONSE_CLASS_CALLBACK is always a LOCAL (in-JVM, reflection-invoked) callback whose user
@@ -578,7 +583,12 @@ public class HttpActionHandler {
                 dispatchForwardWithBreakpoint(request, action, synchronous, responseWriter, expectationPostProcessor, forwardChaos, capturedMatchCount, ctx, rateLimit,
                     req -> getHttpForwardActionHandler().handle((HttpForward) action, req));
             }, expectationPostProcessor), synchronous, combineWithGlobalDelay(actionDelay));
-            case FORWARD_TEMPLATE -> scheduler.schedule(() -> handleAnyException(request, responseWriter, synchronous, action, () -> {
+            // FORWARD_TEMPLATE rendering is a synchronous, CPU-bound computation (the subsequent forward
+            // itself is already asynchronous). Dispatch via scheduleTemplateAction so the render runs on the
+            // dedicated BOUNDED template pool in asynchronous mode (never inline on the worker event loop,
+            // never on the shared scheduler pool) and inline in synchronous mode. Wrapping and the action
+            // delay are unchanged.
+            case FORWARD_TEMPLATE -> scheduler.scheduleTemplateAction(() -> handleAnyException(request, responseWriter, synchronous, action, () -> {
                 if (blockIfLlmCostBudgetExceeded(request, action, responseWriter, expectationPostProcessor)) {
                     return;
                 }

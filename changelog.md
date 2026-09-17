@@ -40,6 +40,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request. JavaScript templates remain interpreter-only on a stock (non-GraalVM) JVM, so absolute throughput
   is still bounded — the fix removes the catastrophic, contagious slowdown, it does not make JavaScript
   templating fast.
+- Response and forward **template rendering** (Velocity, Mustache and JavaScript) now runs on a dedicated
+  bounded thread pool instead of the shared action-dispatch resource. Even after the shared-engine fix above
+  made each render cheaper, a burst of concurrent templated requests still collapsed *every* workload on the
+  server together — plain matches, forwarding and other templates alike — because rendering is a synchronous,
+  CPU-bound step that was dispatched inline on the Netty worker event loop (no delay) or on the small shared
+  scheduler pool (with a delay), so a slow render monopolised a resource every request type depends on. Template
+  actions are now dispatched onto their own fixed-size pool (sized like the action-handler pool,
+  `max(5, availableProcessors)`), so when renders saturate it they queue only among themselves and the event
+  loop and scheduler pool stay free to serve unrelated traffic. Configured response delays are still honoured
+  exactly, and WAR/servlet (synchronous) deployments still render inline. Templated responses now behave like
+  the other asynchronous actions (object callbacks, forwards): ordering for a single in-flight request per
+  connection is unchanged, but two pipelined HTTP/1.1 requests on one connection are no longer serialised
+  against each other (HTTP/2 is unaffected, having never guaranteed cross-stream ordering). In a
+  local harness that saturates a small pool with slow renders, the time an unrelated request waited fell from
+  ~1s to effectively zero. This isolates template cost; it does **not** by itself make a heavy templating
+  workload green — a separate, independent limit (large response bodies retained in the event log exhausting the
+  heap) is being addressed in the performance harness, and freeing the dispatch pool can admit more body
+  throughput, so that memory limit may be reached sooner rather than later.
 - Unusual request header values (a leading space, an embedded DEL `0x7F`, other control characters) are still
   accepted, matched and recorded byte-for-byte on the HTTP/2 multiplex server path. MockServer deliberately
   records malformed traffic so users can test how their own clients behave. The multiplex frame decoder

@@ -40,6 +40,35 @@ public class Scheduler {
     // Null in synchronous mode (callbacks then run inline, preserving WAR/servlet blocking semantics).
     private final ExecutorService localCallbackExecutor;
 
+    // Dedicated, BOUNDED executor used solely to run RESPONSE_TEMPLATE / FORWARD_TEMPLATE rendering off the
+    // server worker event loop and off the shared scheduler pool. Template rendering (Velocity/Mustache/
+    // JavaScript) is a synchronous, CPU-bound computation that can take tens of milliseconds. Dispatched
+    // through the ordinary Scheduler.schedule path it ran INLINE on the Netty worker event-loop thread when
+    // there was no delay (see schedule(): zero delay => run() on the calling thread), or on the bounded
+    // shared scheduler pool when a delay was configured. Either way a burst of slow renders monopolised a
+    // resource shared with every other action type and stalled unrelated plain-match/forward traffic — the
+    // single simultaneous all-arm collapse seen in the live incident. Giving templates their own pool
+    // isolates that cost: when renders saturate this pool they queue among THEMSELVES, so the worker event
+    // loop and the scheduler pool stay free to serve everything else.
+    //
+    // BOUNDED, unlike the unbounded localCallbackExecutor. That pool is unbounded to defeat a self-deadlock:
+    // a local callback may make a BLOCKING loopback call back to this same server and recursively trigger
+    // another local callback, so an inner callback must always obtain a fresh thread. Template rendering does
+    // NONE of that — it is a self-contained computation with no loopback and no recursion — so the reason to
+    // go unbounded simply does not apply here. For CPU-bound work an unbounded pool is actively worse: it
+    // would spawn more concurrent render threads than cores (pure context-switch thrash) and, on a
+    // memory-constrained SUT, each extra thread's stack brings the separately-diagnosed response-body
+    // retention OOM SOONER rather than later. A fixed pool sized like the scheduler pool
+    // (actionHandlerThreadCount() = max(5, cores)) gives full CPU parallelism with a fixed memory ceiling.
+    // The task QUEUE is unbounded so a render task is never rejected back onto the worker event loop; it only
+    // ever holds one pending closure per queued render. Each retains the inbound HttpRequest (body included),
+    // the action, the response writer and the channel context until drained — so a sustained arrival rate above
+    // render capacity grows this queue in proportion to in-flight requests. The large RENDERED body is produced
+    // by the task and is never queued. Rejecting instead would push work back onto the event loop, which is the
+    // pathology this exists to remove, so an unbounded queue is the least-bad choice rather than a free one.
+    // Null in synchronous mode (renders then run inline, preserving WAR/servlet blocking semantics).
+    private final ExecutorService templateActionExecutor;
+
     private final boolean synchronous;
 
     public static class SchedulerThreadFactory implements ThreadFactory {
@@ -95,9 +124,21 @@ public class Scheduler {
                 new SchedulerThreadFactory("LocalCallback")
             );
             this.localCallbackExecutor = localCallbackPool;
+            // Dedicated BOUNDED pool for template-action rendering (see field javadoc). Fixed size =
+            // actionHandlerThreadCount() (max(5, cores)) with an unbounded LinkedBlockingQueue: full CPU
+            // parallelism for renders, a fixed thread/memory ceiling, and no fallback onto the worker event
+            // loop. Threads are daemon (via SchedulerThreadFactory) so they never block JVM shutdown.
+            int templateThreads = configuration.actionHandlerThreadCount();
+            this.templateActionExecutor = new ThreadPoolExecutor(
+                templateThreads, templateThreads,
+                0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(),
+                new SchedulerThreadFactory("TemplateAction")
+            );
         } else {
             this.scheduler = null;
             this.localCallbackExecutor = null;
+            this.templateActionExecutor = null;
         }
     }
 
@@ -125,6 +166,14 @@ public class Scheduler {
             localCallbackExecutor.shutdown();
             try {
                 localCallbackExecutor.awaitTermination(500, MILLISECONDS);
+            } catch (InterruptedException ignore) {
+                // ignore interrupted exception
+            }
+        }
+        if (templateActionExecutor != null && !templateActionExecutor.isShutdown()) {
+            templateActionExecutor.shutdown();
+            try {
+                templateActionExecutor.awaitTermination(500, MILLISECONDS);
             } catch (InterruptedException ignore) {
                 // ignore interrupted exception
             }
@@ -226,6 +275,49 @@ public class Scheduler {
             scheduler.schedule(() -> localCallbackExecutor.execute(() -> run(command, port)), delayMillis, MILLISECONDS);
         } else {
             localCallbackExecutor.execute(() -> run(command, port));
+        }
+    }
+
+    /**
+     * Dispatch a template ACTION (RESPONSE_TEMPLATE / FORWARD_TEMPLATE render-and-write) so that — in
+     * asynchronous (Netty) mode — its synchronous, CPU-bound render never runs on the server worker event
+     * loop and never consumes the bounded shared scheduler pool.
+     * <p>
+     * In asynchronous mode the body runs on the dedicated, BOUNDED {@link #templateActionExecutor} (see its
+     * field javadoc): unlike the ordinary {@link #schedule} path — which runs a zero-delay command inline on
+     * the calling worker thread, and a delayed command on the shared scheduler pool — this always moves the
+     * whole render off both of those shared resources, so a burst of slow renders can only ever back up
+     * against other renders and never stalls unrelated match/forward traffic. This is deliberately the WHOLE
+     * action dispatch, not just the render call: offloading only the render and then blocking the calling
+     * thread on its result would leave the worker event-loop thread blocked for the render duration and buy
+     * nothing. An optional delay is honoured on the shared scheduled executor first (it only occupies a timer
+     * thread until it fires), after which the body hops to the bounded template pool — so a templated
+     * response with a configured delay still honours that delay exactly.
+     * <p>
+     * In synchronous mode (WAR/servlet, or the unit-test {@code synchronous=true} path) the body runs INLINE
+     * after any delay, exactly as the equivalent {@link #schedule} call would, so the response is written
+     * before the caller returns and blocking-model deployments keep their semantics unchanged.
+     * <p>
+     * Whatever thread the body ends up on, it runs through {@link #run(Runnable, Integer)} with the captured
+     * loop-prevention port restored, so response routing/{@code HttpState.getPort()} behave identically to
+     * the existing scheduler paths.
+     */
+    public void scheduleTemplateAction(Runnable command, boolean synchronous, Delay... delays) {
+        long delayMillis = sampleCombinedDelayMillis(delays);
+        Integer port = getPort();
+        if (this.synchronous || synchronous) {
+            if (delayMillis > 0) {
+                try {
+                    MILLISECONDS.sleep(delayMillis);
+                } catch (InterruptedException ie) {
+                    throw new RuntimeException("InterruptedException while applying delay to template action", ie);
+                }
+            }
+            run(command, port);
+        } else if (delayMillis > 0) {
+            scheduler.schedule(() -> templateActionExecutor.execute(() -> run(command, port)), delayMillis, MILLISECONDS);
+        } else {
+            templateActionExecutor.execute(() -> run(command, port));
         }
     }
 

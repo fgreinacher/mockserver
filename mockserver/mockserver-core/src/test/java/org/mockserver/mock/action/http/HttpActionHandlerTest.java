@@ -351,7 +351,10 @@ public class HttpActionHandlerTest {
                 .setMessageFormat("returning response:{}for request:{}for action:{}from expectation:{}")
                 .setArguments(response, request, template, expectation.getId())
         );
-        verify(scheduler).schedule(any(Runnable.class), eq(true), eq(milliseconds(1)));
+        // RESPONSE_TEMPLATE render is now dispatched via scheduleTemplateAction (dedicated bounded template
+        // pool) rather than the shared scheduler.schedule path; the action delay is still carried through.
+        verify(scheduler).scheduleTemplateAction(any(Runnable.class), eq(true), eq(milliseconds(1)));
+        // the inner response write (writeResponseActionResponse) still uses the shared scheduler.schedule path
         verify(scheduler).schedule(any(Runnable.class), eq(true), eq(milliseconds(0)));
     }
 
