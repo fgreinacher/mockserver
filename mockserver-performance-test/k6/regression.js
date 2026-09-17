@@ -4,10 +4,21 @@
 // runs and feed the stored-history baseline comparison (perf-test-compare.sh).
 //
 // Behaviours (each its own scenario, tagged op:<name>):
-//   match    — static mock match + response (data-plane hot path)
-//   forward  — forward action to a DEDICATED upstream MockServer
-//   template — Velocity response template (dynamic response generation)
-//   large    — ~4 KB JSON body decode + match
+//   match             — static mock match + response (data-plane hot path)
+//   forward           — forward action to a DEDICATED upstream MockServer
+//   template          — Velocity response template (dynamic response generation)
+//   template_mustache — Mustache response template          (item 15a)
+//   template_javascript — GraalJS response template — only on a -graaljs image,
+//                       enabled via K6_REG_JS_TEMPLATE     (item 15a)
+//   large             — ~4 KB JSON body decode + match
+//   large_1mb         — 1 MB JSON body decode + marker match (item 15d)
+//   large_10mb        — 10 MB JSON body decode + marker match (item 15d)
+//   large_file        — response served from a file (FileBodyMaterialiser) —
+//                       enabled via K6_REG_FILE_BODY_PATH   (item 15d)
+//
+// Each arm's op becomes the metric key <op>_<proto>, and perf-test-compare.sh
+// consumes it with NO change (its metric loop iterates over .behaviours), as a
+// notify-only (non-gating) metric until it earns >=10 clean runs of history.
 //
 // A warmup scenario (op:warmup) runs first so JIT/GC reach steady state; the
 // measured scenarios start after K6_REG_WARMUP and only their op submetrics feed
@@ -37,12 +48,114 @@
 // settle handle that: any handshake burst falls inside the excluded settle
 // window and behind reused H2 connections by the time measurement starts.
 //
-import http from 'k6/http';
 import exec from 'k6/execution';
 import { CONFIG, REGRESSION } from './lib/config.js';
-import { seedRegression, resetMockServer, getSimple, getForward, getTemplated, postLargeBody } from './lib/expectations.js';
+import {
+  seedRegression,
+  verifyRegressionArms,
+  resetMockServer,
+  getSimple,
+  getForward,
+  getTemplated,
+  getTemplatedMustache,
+  getTemplatedJavaScript,
+  postLargeBody,
+  postLarge1mb,
+  postLarge10mb,
+  getLargeFile,
+} from './lib/expectations.js';
 
-const OPS = ['match', 'forward', 'template', 'large'];
+// Each measured behaviour is an "arm": an op name (which becomes the metric key
+// <op>_<proto>, so perf-test-compare.sh picks it up with NO script change — its
+// metric loop iterates .behaviours), the exec function k6 runs, and an optional
+// per-arm offered rate / VU pool (the byte-heavy `large_*` arms run slower and
+// with a small pool so the byte-rate and run length stay bounded). Optional arms
+// (item 15a JavaScript, item 15d file-backed) are appended only when their
+// server-side capability is enabled; seedRegression seeds exactly the same set.
+//
+// `warm` (when present) touches the arm's path during the warmup window so it is
+// JIT-warm before measurement (Finding 3 — a cold heavy path at FULL rate piles
+// up VUs into a connection storm). CRITICAL: the warmup scenario runs at ~50/s
+// with maxVUs:100 — far above any per-arm throttle — so an arm warmed there is
+// driven at 50/s regardless of its measured rate. That is fine for the small-body
+// full-rate arms (match/forward/template*/large-4KB), but it would drive the
+// MB-scale `large_1mb`/`large_10mb`/`large_file` arms at 50/s for the whole 30 s
+// warmup and, because the 100k-entry log ring does not evict inside that window,
+// accumulate multiple GB of retained bodies and OOM the SUT before measurement
+// even starts. So the MB-scale arms are DELIBERATELY not warmed (no `warm`): at
+// <=2 rps a cold first cohort cannot form a connection storm (Finding 3's whole
+// premise), and it lands inside the excluded settle window anyway, so the
+// measured percentiles are unaffected.
+const ARMS = [
+  { op: 'match', exec: 'matchOp', warm: () => getSimple({ op: 'warmup' }) },
+  { op: 'forward', exec: 'forwardOp', warm: () => getForward({ op: 'warmup' }) },
+  { op: 'template', exec: 'templateOp', warm: () => getTemplated({ op: 'warmup' }) },
+  {
+    op: 'template_mustache', exec: 'templateMustacheOp',
+    rate: REGRESSION.templateArmRate,
+    warm: () => getTemplatedMustache({ op: 'warmup' }),
+  },
+  { op: 'large', exec: 'largeOp', warm: () => postLargeBody({ op: 'warmup' }) },
+  {
+    op: 'large_1mb', exec: 'large1mbOp', heavy: true,
+    rate: REGRESSION.large1mbRate, timeUnit: REGRESSION.large1mbTimeUnit, vus: REGRESSION.large1mbVUs,
+    // heavy: no warm — see the CRITICAL note above (MB-scale body would OOM the warmup)
+  },
+  {
+    op: 'large_10mb', exec: 'large10mbOp', heavy: true,
+    rate: REGRESSION.large10mbRate, timeUnit: REGRESSION.large10mbTimeUnit, vus: REGRESSION.large10mbVUs,
+    // heavy: no warm — see the CRITICAL note above (MB-scale body would OOM the warmup)
+  },
+];
+if (REGRESSION.jsTemplate) {
+  // GraalJS carries a Truffle cold-start, so it IS warmed — but at the reduced
+  // template-arm rate, and the warmup itself only ever drives it at ~50/s with a
+  // tiny (few-KB) response, so there is no memory concern from warming it.
+  ARMS.push({
+    op: 'template_javascript', exec: 'templateJavaScriptOp',
+    rate: REGRESSION.templateArmRate,
+    warm: () => getTemplatedJavaScript({ op: 'warmup' }),
+  });
+}
+if (REGRESSION.fileBodyPath) {
+  ARMS.push({
+    op: 'large_file', exec: 'largeFileOp', heavy: true,
+    rate: REGRESSION.fileBodyRate, timeUnit: REGRESSION.fileBodyTimeUnit, vus: REGRESSION.fileBodyVUs,
+    // heavy: no warm — see the CRITICAL note above (MB-scale file response would OOM the warmup)
+  });
+}
+const OPS = ARMS.map((a) => a.op);
+
+// Fail-loud contract check on the warm/heavy invariant. `heavy: true` marks the
+// MB-scale arms that must NOT be warmed (their body at the ~50/s warmup rate would
+// OOM the log ring). Every OTHER arm MUST declare a `warm()` — so a typo like
+// `warmm:` on a full-rate arm cannot silently un-warm it and reintroduce the
+// Finding-3 connection-storm tail. Both violations throw at init (k6 aborts before
+// any load), turning a silent regression into a loud one.
+for (const arm of ARMS) {
+  if (arm.heavy && arm.warm) {
+    throw new Error(`regression.js ARMS: '${arm.op}' is heavy and must NOT declare warm (warming an MB-scale arm at the ~50/s warmup rate OOMs the SUT log ring)`);
+  }
+  if (!arm.heavy && typeof arm.warm !== 'function') {
+    throw new Error(`regression.js ARMS: '${arm.op}' must declare a warm() (every non-heavy arm is JIT-warmed; a missing warm would reintroduce the Finding-3 cold-start tail)`);
+  }
+}
+// Per-arm offered rate (req/s). The byte-heavy large_* arms run slower than the
+// default (and some below 1 rps via a multi-second timeUnit), so delivery_ratio
+// and offered_rps in the summary must use the arm's OWN effective rate
+// (rate / timeUnit-in-seconds), not the global REGRESSION.rate.
+const OFFERED = Object.fromEntries(
+  ARMS.map((a) => [a.op, (a.rate || REGRESSION.rate) / toSeconds(a.timeUnit || '1s')]),
+);
+
+// Minimum measured request count below which a high percentile (p95/p99) is not a
+// statistic the data can support — it collapses to ~the max (a p95 needs ~20
+// samples to even be distinct from the max, a p99 far more). The sub-1-rps
+// large_10mb arm yields ~10-15 samples over the measured window, so its p95/p99
+// are suppressed (see handleSummary); large_1mb/large_file at ~55 samples clear
+// this bar. p50 (robust at low N), throughput, error_rate and the raw count are
+// always emitted.
+const MIN_TAIL_SAMPLES = 30;
 
 // Sum a k6 duration string to seconds (supports compound forms like "1m30s").
 function toSeconds(d) {
@@ -117,17 +230,22 @@ function regressionThresholds(ops) {
   return t;
 }
 
-function measuredScenario(execFn, op) {
+function measuredScenario(arm) {
+  // preAllocatedVUs == maxVUs per arm: the Finding-3 no-mid-run-allocation
+  // invariant, applied to each arm's own (possibly smaller) pool. The byte-heavy
+  // large_* arms run a lower rate + smaller pool so their in-flight bytes stay
+  // bounded; if a transient exceeds the pool k6 DROPS (counted), never ramps.
+  const vus = arm.vus || REGRESSION.preAllocatedVUs;
   return {
     executor: 'constant-arrival-rate',
-    exec: execFn,
-    rate: REGRESSION.rate,
-    timeUnit: '1s',
+    exec: arm.exec,
+    rate: arm.rate || REGRESSION.rate,
+    timeUnit: arm.timeUnit || '1s',
     duration: REGRESSION.duration,
-    // Staggered so the four scenarios' start transients do not superimpose.
-    startTime: `${startOffsetSec(op)}s`,
-    preAllocatedVUs: REGRESSION.preAllocatedVUs,
-    maxVUs: REGRESSION.maxVUs,
+    // Staggered so the scenarios' start transients do not superimpose.
+    startTime: `${startOffsetSec(arm.op)}s`,
+    preAllocatedVUs: vus,
+    maxVUs: vus,
   };
 }
 
@@ -148,29 +266,40 @@ export const options = {
       preAllocatedVUs: 10,
       maxVUs: 100,
     },
-    match: measuredScenario('matchOp', 'match'),
-    forward: measuredScenario('forwardOp', 'forward'),
-    template: measuredScenario('templateOp', 'template'),
-    large: measuredScenario('largeOp', 'large'),
+    // One measured scenario per arm (built from ARMS so adding an arm needs no
+    // edit here). The scenario name IS the op, which handleSummary maps to the
+    // <op>_<proto> metric key.
+    ...Object.fromEntries(ARMS.map((arm) => [arm.op, measuredScenario(arm)])),
   },
   thresholds: regressionThresholds(OPS),
 };
 
 export function setup() {
   seedRegression();
+  // Fail loudly NOW if an enabled optional arm (JavaScript / file-backed body)
+  // cannot actually serve — better an aborted run than a silent 100%-error arm
+  // baselined as a result.
+  verifyRegressionArms();
 }
 
 export function warmupOp() {
-  // Touch every measured path so each is JIT-warmed before measurement. The
-  // large (4 KB JSON body decode + ONLY_MATCHING_FIELDS match) path is the
-  // heaviest and slowest to warm; omitting it left its measured scenario JIT-cold
-  // at start, so its first cohort ran hundreds of ms, piled up VUs and produced a
-  // multi-second tail that MORE VUs only worsened (it feeds the connection storm).
-  // Warming it here is what actually collapses that tail — see Finding 3.
-  http.get(`${CONFIG.baseUrl}/simple`, { headers: CONFIG.keepAliveHeaders, tags: { op: 'warmup' } });
-  http.get(`${CONFIG.baseUrl}/template`, { headers: CONFIG.keepAliveHeaders, tags: { op: 'warmup' } });
-  http.get(`${CONFIG.baseUrl}/forward`, { headers: CONFIG.keepAliveHeaders, tags: { op: 'warmup' } });
-  postLargeBody({ op: 'warmup' });
+  // Touch each WARMED path so it is JIT-warm before measurement. A full-rate path
+  // left cold (the 4 KB body decode+match, and the GraalJS template with its
+  // Truffle cold-start) runs hundreds of ms to seconds on its first cohort, piles
+  // up VUs and produces a multi-second tail that MORE VUs only worsen (the
+  // connection storm) — warming it here collapses that tail (Finding 3).
+  //
+  // Warm every NON-heavy arm. The `heavy: true` MB-scale large_* arms are skipped:
+  // this warmup scenario runs at ~50/s (far above their <=2 rps throttle), so
+  // warming them would drive MB bodies at 50/s for 30 s and OOM the SUT's log ring
+  // before measurement (see the ARMS note). Their cold first cohort is instead
+  // absorbed by the settle exclusion. The load-time contract check above guarantees
+  // every non-heavy arm has a warm(), so this is not a silent skip.
+  for (const arm of ARMS) {
+    if (!arm.heavy) {
+      arm.warm();
+    }
+  }
 }
 
 export function matchOp() {
@@ -185,8 +314,28 @@ export function templateOp() {
   getTemplated({ op: phaseTag('template') });
 }
 
+export function templateMustacheOp() {
+  getTemplatedMustache({ op: phaseTag('template_mustache') });
+}
+
+export function templateJavaScriptOp() {
+  getTemplatedJavaScript({ op: phaseTag('template_javascript') });
+}
+
 export function largeOp() {
   postLargeBody({ op: phaseTag('large') });
+}
+
+export function large1mbOp() {
+  postLarge1mb({ op: phaseTag('large_1mb') });
+}
+
+export function large10mbOp() {
+  postLarge10mb({ op: phaseTag('large_10mb') });
+}
+
+export function largeFileOp() {
+  getLargeFile({ op: phaseTag('large_file') });
 }
 
 export function teardown() {
@@ -216,19 +365,28 @@ export function handleSummary(data) {
     const dropped = data.metrics[`dropped_iterations{scenario:${op}}`];
     const droppedCount = dropped && dropped.values ? dropped.values.count : 0;
     const throughput = round(measuredWindowSec > 0 ? count / measuredWindowSec : 0);
+    const offered = OFFERED[op] || REGRESSION.rate;
+    // Suppress the tail percentiles for a low-sample arm: at fewer than
+    // MIN_TAIL_SAMPLES measured requests p95/p99 are ~the max, not a real quantile.
+    // Null-valued metrics are filtered by perf-test-compare.sh, so a suppressed
+    // percentile is simply not compared rather than compared as a bogus statistic.
+    const enoughForTail = count >= MIN_TAIL_SAMPLES;
     behaviours[`${op}_${proto}`] = {
       p50_ms: round(dur.values['p(50)'] !== undefined ? dur.values['p(50)'] : dur.values.med),
-      p95_ms: round(dur.values['p(95)']),
-      p99_ms: round(dur.values['p(99)']),
+      p95_ms: enoughForTail ? round(dur.values['p(95)']) : null,
+      p99_ms: enoughForTail ? round(dur.values['p(99)']) : null,
+      // Raw measured count so a reader can see WHY a tail percentile is null (and
+      // audit throughput). Kept for every arm, not just the suppressed ones.
+      sample_count: round(count, 0),
       throughput_rps: throughput,
       // offered_rps + dropped_iterations make throughput_rps legible: a shortfall
       // of throughput below offered with dropped_iterations > 0 is a CLIENT (VU)
       // limit, not a server regression. delivery_ratio = achieved/offered is the
       // at-a-glance figure surfaced in the annotation. throughput_rps is recorded
       // but NOT budgeted (perf-test-compare.sh) until the shortfall is understood.
-      offered_rps: REGRESSION.rate,
+      offered_rps: offered,
       dropped_iterations: round(droppedCount, 0),
-      delivery_ratio: round(REGRESSION.rate > 0 ? throughput / REGRESSION.rate : null, 4),
+      delivery_ratio: round(offered > 0 ? throughput / offered : null, 4),
       error_rate: failed && failed.values ? round(failed.values.rate, 5) : 0,
       // Transparency for the settle exclusion: how many start-transient requests
       // were dropped from the percentiles, and over what window the rest were

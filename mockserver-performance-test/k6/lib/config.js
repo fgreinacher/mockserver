@@ -182,6 +182,87 @@ export const REGRESSION = {
   // (the medians and tail must move by ~this delay). Used by the sensitivity
   // check that guards against the settle exclusion silently hiding regressions.
   matchDelayMs: num('K6_REG_MATCH_DELAY_MS', 0),
+  // --- item 15a: template-engine arms --------------------------------------
+  // The `template` arm exercises VELOCITY (always on the classpath). A Mustache
+  // arm (jmustache is a NON-optional core dep, so it runs on the stock image) is
+  // always added. The JavaScript arm needs the GraalJS engine, which is an
+  // OPTIONAL dependency present ONLY in the -graaljs image variant — so it is
+  // OFF by default here (a bare `k6 run regression.js` against a stock server
+  // must not manufacture a broken 100%-error arm). perf-test-run.sh turns it ON
+  // and runs the SUT on the -graaljs image; regression.js then probes the arm in
+  // setup() and FAILS LOUDLY if the engine is absent (never a silent zero arm).
+  jsTemplate: bool('K6_REG_JS_TEMPLATE', false),
+  // The Mustache + JavaScript arms run at a REDUCED rate, not the full 200 rps of
+  // the velocity `template` arm. Adding two more full-rate template arms to the
+  // core-limited (2-CPU) SUT is a large perturbation of the historical
+  // match/forward/template/large arms for what is a cheap latency measurement;
+  // 50 rps over the measured window is thousands of samples per percentile while
+  // keeping the added CPU contention modest. Each arm still tracks its own
+  // per-arm regression history — the cross-engine rate need not match velocity.
+  templateArmRate: num('K6_REG_TEMPLATE_ARM_RATE', 50),
+  // --- item 15d: body-size axis on `large` ---------------------------------
+  // `large` stays the 4 KB point (unchanged, preserves baseline history). The
+  // 1 MB / 10 MB arms POST a JSON body of the target size matched on a small
+  // fixed marker (ONLY_MATCHING_FIELDS), so the DECODE/transfer cost scales with
+  // size while match cost stays constant. Offered at reduced rates + small VU
+  // pools so the byte-rate and run length stay bounded (the invariant
+  // preAllocatedVUs == maxVUs from Finding 3 is preserved per arm).
+  // NOTE the ceiling: MockServer rejects a REQUEST body larger than
+  // MOCKSERVER_MAX_REQUEST_BODY_SIZE (default 10 * 1024 * 1024 = 10,485,760 B)
+  // with 413. buildLargeJson overshoots its target by up to one token + wrapper,
+  // so a 10 * 1024 * 1024 target lands just OVER the limit → a 100%-error arm.
+  // Keep the 10 MB point in DECIMAL MB (10,000,000 B ≈ 9.54 MiB), comfortably
+  // under the 10 MiB cap. Override K6_REG_LARGE_10MB_BYTES only alongside a
+  // raised MOCKSERVER_MAX_REQUEST_BODY_SIZE on the SUT.
+  large1mbBytes: num('K6_REG_LARGE_1MB_BYTES', 1000 * 1000),
+  large10mbBytes: num('K6_REG_LARGE_10MB_BYTES', 10 * 1000 * 1000),
+  // MEMORY CEILING (why these rates are LOW) — retained-heap arithmetic.
+  // MockServer records every request (and its response) in an in-memory event-log
+  // ring of `maxLogEntries` entries, holding the FULL body of each. On the 2 GB CI
+  // SUT the heap is MaxRAMPercentage=75% ≈ 1.5 GB, so maxLogEntries =
+  // min(heapKB/8, 100000) = 100000. The ring is COUNT-bounded, so an entry lives
+  // for the last `maxLogEntries / total_offered_rps` seconds (the residence). At
+  // the full regression mix total_offered_rps ≈ 901 — 4 full-rate arms × 200
+  // (match/forward/template/large) + 2 template arms × 50 (mustache/javascript) +
+  // the three sub-1-rps large arms (≈ 1.1) — so residence ≈ 100000/901 ≈ 111 s,
+  // LONGER than a 2 m measured window minus settle, i.e. once the ring fills
+  // nothing older than ~111 s survives. This residence is a CONSERVATIVE upper
+  // bound: MockServer records ~2-3 log entries per request, so the ring actually
+  // fills faster and residence (and thus retention) is SHORTER than the figures
+  // below. The steady-state bytes retained by an arm at rate r with body B are
+  // therefore at most r × 111 × B. The large arms dominate, so keep their product
+  // small:
+  //   large_10mb @ 0.1 rps → 0.1 × 111 × 10 MB ≈ 111 MB
+  //   large_1mb  @ 0.5 rps → 0.5 × 111 ×  1 MB ≈  55 MB
+  //   large_file @ 0.5 rps → 0.5 × 111 ×  1 MB ≈  55 MB   (its ~1 MB RESPONSE)
+  //   large(4KB) @ 200 rps → 200 × 111 ×  4 KB ≈  89 MB
+  //   -> ~310 MB of large bodies + ~40-80 MB of small entries ≈ 390 MB raw,
+  //      ~0.6-0.8 GB live with MockServer's per-entry parse/overhead — comfortably
+  //      under the 1.5 GB heap. (The earlier 0.4/2/2 rps retained ~888 MB raw,
+  //      ~1.3-1.8 GB live, which risked OOM on the 2 GB SUT — hence these lower
+  //      rates.) The warmup NEVER touches these arms (regression.js excludes them
+  //      from warmupOp), so nothing accumulates before measurement either.
+  // `growth` needs the default 100000-entry log, so the ring cannot be shrunk;
+  // the large-body footprint MUST be bounded by rate instead. Raise these only
+  // with a correspondingly larger SUT heap (PERF_SERVER_MEMORY).
+  large1mbRate: num('K6_REG_LARGE_1MB_RATE', 1),
+  large1mbTimeUnit: env('K6_REG_LARGE_1MB_TIME_UNIT', '2s'), // 0.5 rps
+  large10mbRate: num('K6_REG_LARGE_10MB_RATE', 1),
+  large10mbTimeUnit: env('K6_REG_LARGE_10MB_TIME_UNIT', '10s'), // 0.1 rps
+  large1mbVUs: num('K6_REG_LARGE_1MB_VUS', 8),
+  large10mbVUs: num('K6_REG_LARGE_10MB_VUS', 8),
+  // File-backed RESPONSE body arm (FileBodyMaterialiser path). OFF unless a
+  // server-side file path is given: the file must exist on the SUT filesystem,
+  // which perf-test-run.sh provisions (generates + mounts read-only) and then
+  // passes here. Empty => the arm is absent (an explicit, documented omission,
+  // not a silent zero). When set, regression.js probes it in setup() and fails
+  // loudly if the server cannot read the file (a FILE body 500s when unreadable).
+  fileBodyPath: env('K6_REG_FILE_BODY_PATH', ''),
+  // Low for the same event-log reason (see the arithmetic above): the ~1 MB file
+  // RESPONSE is recorded per request. 0.5 rps × ~111 s × 1 MB ≈ 55 MB retained.
+  fileBodyRate: num('K6_REG_FILE_BODY_RATE', 1),
+  fileBodyTimeUnit: env('K6_REG_FILE_BODY_TIME_UNIT', '2s'), // 0.5 rps
+  fileBodyVUs: num('K6_REG_FILE_BODY_VUS', 8),
   // Transport label recorded in the result key (<op>_<proto>). Defaults from the
   // BASE_URL scheme; HTTPS auto-negotiates HTTP/2 with MockServer via ALPN, so
   // the https run is labelled https_h2 unless K6_HTTP2=false.

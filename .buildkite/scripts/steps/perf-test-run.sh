@@ -24,7 +24,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 K6_IMAGE="grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f"
-MOCKSERVER_IMAGE="${MOCKSERVER_IMAGE:-mockserver/mockserver:mockserver-snapshot}"
+# The SUT runs the -graaljs snapshot variant so the JavaScript response-template
+# arm (regression.js item 15a) has the GraalVM JS engine available; the engine is
+# an OPTIONAL dependency absent from the plain image, and a JS template without it
+# fails loud (500). The extra jars are inert for every non-JS arm (loaded lazily
+# only when a JS template renders), so the match/forward/velocity/mustache/large
+# numbers are unaffected. Overridable; if you point this at a NON-graaljs image,
+# also set PERF_JS_TEMPLATE=false or regression.js aborts the run loudly.
+MOCKSERVER_IMAGE="${MOCKSERVER_IMAGE:-mockserver/mockserver:mockserver-snapshot-graaljs}"
+# item 15a — enable the JavaScript template arm (default on; the SUT image above
+# carries GraalJS). item 15d — server-side path of the file-backed response body.
+PERF_JS_TEMPLATE="${PERF_JS_TEMPLATE:-true}"
+FILE_BODY_CONTAINER_PATH="/perf-files/large-file-body.json"
 RUN_ID="${BUILDKITE_BUILD_ID:-local}-$$"
 NETWORK="mockserver-perf-${RUN_ID}"
 SERVER="mockserver-perf-${RUN_ID}"
@@ -48,6 +59,23 @@ chmod 0777 "$OUT_DIR"
 RESULT_JSON="$OUT_DIR/result.json"
 SAMPLE_LOG="$OUT_DIR/samples.csv"
 
+# item 15d — file-backed response body arm. Generate a ~1 MB JSON file on the host
+# and mount it read-only into the SUT so a FILE-body expectation can serve it (the
+# FileBodyMaterialiser path). World-readable so the container's non-root user can
+# read it. Only the SUT gets the mount; the upstream does not need it.
+FILE_BODY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/perf-filebody.XXXXXX")"
+chmod 0755 "$FILE_BODY_DIR"
+FILE_BODY_HOST_PATH="$FILE_BODY_DIR/large-file-body.json"
+awk 'BEGIN{
+  printf "{\"marker\":\"large-file\",\"filler\":[";
+  n=62000; # ~1 MB of fixed-width quoted tokens (17 bytes each)
+  for(i=0;i<n;i++){ if(i)printf ","; printf "\"item-%09d\"", i }
+  printf "]}"
+}' > "$FILE_BODY_HOST_PATH"
+chmod 0644 "$FILE_BODY_HOST_PATH"
+FILE_BODY_MOUNT="$FILE_BODY_DIR:/perf-files:ro"
+echo "--- file-backed body: $(wc -c < "$FILE_BODY_HOST_PATH") bytes -> ${FILE_BODY_CONTAINER_PATH} (SUT mount)"
+
 SAMPLER_PID=""
 SWEEP_SAMPLER_PID=""
 SWEEP_K6="k6-sweep-${RUN_ID}"
@@ -56,6 +84,7 @@ cleanup() {
   [ -n "$SWEEP_SAMPLER_PID" ] && kill "$SWEEP_SAMPLER_PID" >/dev/null 2>&1 || true
   docker rm -f "$SERVER" "$UPSTREAM" "$SWEEP_K6" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  [ -n "${FILE_BODY_DIR:-}" ] && rm -rf "$FILE_BODY_DIR" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -112,7 +141,7 @@ cpuset_arg() { [ -n "$1" ] && printf -- '--cpuset-cpus=%s' "$1"; }
 docker network create "$NETWORK" >/dev/null
 
 start_mockserver() {
-  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}"
+  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}"
   # PERF_SERVER_JAVA_OPTS (when set) is passed through as JAVA_TOOL_OPTIONS so a
   # re-run can opt into a tuned JVM (e.g. low-pause GC + a larger heap) for nicer
   # documentation-site throughput/latency figures. Applied to BOTH the SUT and
@@ -127,6 +156,7 @@ start_mockserver() {
   docker run -d --rm --name "$name" --network "$NETWORK" --network-alias "$alias" \
     $(cpuset_arg "$cpus") \
     ${mem:+--memory="$mem"} \
+    ${mount:+-v "$mount"} \
     ${publish:+-p 127.0.0.1::1080} \
     ${java_opts_arg[@]+"${java_opts_arg[@]}"} \
     -e MOCKSERVER_LOG_LEVEL=ERROR \
@@ -156,7 +186,7 @@ wait_ready() {
 SERVER_ALIAS="mockserver"
 echo "--- starting upstream + MockServer ($MOCKSERVER_IMAGE)"
 start_mockserver "$UPSTREAM" "$UPSTREAM_CPUS" "mockserver-upstream"
-start_mockserver "$SERVER" "$SERVER_CPUS" "$SERVER_ALIAS" "publish" "$SERVER_MEMORY"
+start_mockserver "$SERVER" "$SERVER_CPUS" "$SERVER_ALIAS" "publish" "$SERVER_MEMORY" "$FILE_BODY_MOUNT"
 echo "--- SUT started with --memory=$SERVER_MEMORY (bounded heap so GC cycles)"
 wait_ready "$UPSTREAM"
 wait_ready "$SERVER"
@@ -332,9 +362,14 @@ run_regression() {
     -e "PROTO=$proto" \
     -e "INSECURE_SKIP_TLS_VERIFY=$insecure" \
     -e "K6_RESULT_PATH=/out/$out" \
+    -e "K6_REG_JS_TEMPLATE=$PERF_JS_TEMPLATE" \
+    -e "K6_REG_FILE_BODY_PATH=$FILE_BODY_CONTAINER_PATH" \
     ${K6_REG_WARMUP:+-e K6_REG_WARMUP="$K6_REG_WARMUP"} \
     ${K6_REG_DURATION:+-e K6_REG_DURATION="$K6_REG_DURATION"} \
     ${K6_REG_RATE:+-e K6_REG_RATE="$K6_REG_RATE"} \
+    ${K6_REG_LARGE_1MB_RATE:+-e K6_REG_LARGE_1MB_RATE="$K6_REG_LARGE_1MB_RATE"} \
+    ${K6_REG_LARGE_10MB_RATE:+-e K6_REG_LARGE_10MB_RATE="$K6_REG_LARGE_10MB_RATE"} \
+    ${K6_REG_FILE_BODY_RATE:+-e K6_REG_FILE_BODY_RATE="$K6_REG_FILE_BODY_RATE"} \
     "$K6_IMAGE" run /k6/regression.js
 }
 

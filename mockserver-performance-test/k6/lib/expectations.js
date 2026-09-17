@@ -13,6 +13,7 @@
 
 import http from 'k6/http';
 import { check, fail } from 'k6';
+import { SharedArray } from 'k6/data';
 import { CONFIG, FORWARD, REGRESSION } from './config.js';
 
 // The 4 seeded expectations — byte-for-byte the same shapes as the legacy
@@ -86,6 +87,97 @@ export const TEMPLATE_EXPECTATION = {
   times: { unlimited: true },
 };
 
+// Item 15a — Mustache response-template arm. jmustache is a NON-optional core
+// dependency, so this renders on the stock image alongside Velocity. Mustache
+// reads request fields via {{request.path}} / {{request.method}}.
+export const MUSTACHE_TEMPLATE_EXPECTATION = {
+  httpRequest: { path: '/template_mustache' },
+  httpResponseTemplate: {
+    templateType: 'MUSTACHE',
+    template: '{ "statusCode": 200, "body": "path={{request.path}} method={{request.method}}" }',
+  },
+  times: { unlimited: true },
+};
+
+// Item 15a — JavaScript response-template arm. The GraalJS engine is an OPTIONAL
+// dependency present only in the -graaljs image variant; a JavaScript template on
+// the stock image throws (fail-loud) and the request 500s. So this arm is seeded
+// ONLY when REGRESSION.jsTemplate is on (perf-test-run.sh, running the -graaljs
+// image), and regression.js probes it in setup() so an absent engine fails the
+// run loudly rather than recording a silent 100%-error arm. A JavaScript template
+// is the BARE BODY of the render function (the engine wraps it and supplies
+// `request`); it returns the response object — do NOT wrap it in your own
+// `function handle(){}`, which would double-wrap and yield a null response body.
+export const JS_TEMPLATE_EXPECTATION = {
+  httpRequest: { path: '/template_javascript' },
+  httpResponseTemplate: {
+    templateType: 'JAVASCRIPT',
+    template: "return { 'statusCode': 200, 'body': 'path=' + request.path + ' method=' + request.method };",
+  },
+  times: { unlimited: true },
+};
+
+// Item 15d — build a JSON body of approximately `targetBytes` carrying a fixed
+// top-level `marker` field. The matching expectation matches ONLY the marker
+// (ONLY_MATCHING_FIELDS), so the server must DECODE the whole posted body (the
+// size axis) while the match traversal stays constant — the variable under test
+// is body size, not match complexity.
+function buildLargeJson(targetBytes, marker) {
+  const head = `{"marker":"${marker}","filler":[`;
+  const tail = ']}';
+  // Each element is a fixed-width quoted token plus a comma; size to target.
+  const token = (i) => `"item-${String(i).padStart(9, '0')}"`;
+  const parts = [];
+  let size = head.length + tail.length;
+  let i = 0;
+  while (size < targetBytes) {
+    const t = token(i);
+    parts.push(t);
+    size += t.length + 1; // + comma
+    i += 1;
+  }
+  return `${head}${parts.join(',')}${tail}`;
+}
+
+// The large bodies are held in a SharedArray so they are built ONCE per k6
+// process and shared across all VUs, rather than re-materialised in every VU's
+// init context (which at 10 MB across the whole VU pool would exhaust the client).
+export const LARGE_BODIES = new SharedArray('regression-large-bodies', () => [
+  { marker: 'large-1mb', body: buildLargeJson(REGRESSION.large1mbBytes, 'large-1mb') },
+  { marker: 'large-10mb', body: buildLargeJson(REGRESSION.large10mbBytes, 'large-10mb') },
+]);
+
+// A large-body match expectation keyed on the small fixed marker only.
+function largeBodyExpectation(path, marker) {
+  return {
+    httpRequest: {
+      method: 'POST',
+      path,
+      body: { type: 'JSON', json: JSON.stringify({ marker }), matchType: 'ONLY_MATCHING_FIELDS' },
+    },
+    httpResponse: { statusCode: 200, body: `matched ${marker}` },
+    times: { unlimited: true },
+  };
+}
+
+export const LARGE_1MB_EXPECTATION = largeBodyExpectation('/large_1mb', 'large-1mb');
+export const LARGE_10MB_EXPECTATION = largeBodyExpectation('/large_10mb', 'large-10mb');
+
+// Item 15d — file-backed RESPONSE body arm (FileBodyMaterialiser path). The file
+// must exist on the SUT filesystem; perf-test-run.sh generates and mounts it and
+// passes its server-side path via K6_REG_FILE_BODY_PATH. When that is empty the
+// arm is absent.
+export function fileBodyExpectation(filePath) {
+  return {
+    httpRequest: { path: '/large_file' },
+    httpResponse: {
+      statusCode: 200,
+      body: { type: 'FILE', filePath, contentType: 'application/json' },
+    },
+    times: { unlimited: true },
+  };
+}
+
 // Build the /forward expectation routed at the given upstream host. Uses
 // httpOverrideForwardedRequest (a forward action that applies overrides then
 // forwards), routing /forward -> <host>/simple. For a regression baseline the
@@ -146,14 +238,53 @@ export function seedRegression() {
       times: { unlimited: true },
     },
     TEMPLATE_EXPECTATION,
+    MUSTACHE_TEMPLATE_EXPECTATION, // item 15a — always on (jmustache is bundled)
     forwardExpectation(host),
-    LARGE_BODY_EXPECTATION,
+    LARGE_BODY_EXPECTATION, // 4 KB (existing `large` arm)
+    LARGE_1MB_EXPECTATION, // item 15d
+    LARGE_10MB_EXPECTATION, // item 15d
   ];
+  // item 15a — the JavaScript arm needs GraalJS; seed it only when enabled.
+  if (REGRESSION.jsTemplate) {
+    expectations.push(JS_TEMPLATE_EXPECTATION);
+  }
+  // item 15d — the file-backed arm needs a server-side file; seed only when set.
+  if (REGRESSION.fileBodyPath) {
+    expectations.push(fileBodyExpectation(REGRESSION.fileBodyPath));
+  }
   const res = http.put(`${CONFIG.controlPlane}/expectation`, JSON.stringify(expectations), jsonParams());
   if (res.status !== 201 && res.status !== 200) {
     fail(`failed to seed regression expectations: HTTP ${res.status} ${res.body}`);
   }
   return res;
+}
+
+// Fail-loud verification of the OPTIONAL arms (item 15a JavaScript, item 15d
+// file-backed body). Both depend on server-side capability that may be absent (a
+// non-GraalJS image; a missing/unreadable file) and would otherwise record a
+// silent 100%-error arm that reads as a result. Probe each enabled arm ONCE and
+// fail() the whole run if it does not answer 200 — a broken arm must abort the
+// run, never be baselined as a zero. Called from regression.js setup().
+export function verifyRegressionArms() {
+  if (REGRESSION.jsTemplate) {
+    const res = http.get(`${CONFIG.baseUrl}/template_javascript`, { headers: CONFIG.keepAliveHeaders });
+    if (res.status !== 200) {
+      fail(
+        `JavaScript template arm (K6_REG_JS_TEMPLATE) is enabled but /template_javascript returned HTTP ${res.status} — ` +
+        `the SUT image almost certainly lacks the GraalJS engine (use a -graaljs image, or set K6_REG_JS_TEMPLATE=false). ` +
+        `Body: ${res.body}`,
+      );
+    }
+  }
+  if (REGRESSION.fileBodyPath) {
+    const res = http.get(`${CONFIG.baseUrl}/large_file`, { headers: CONFIG.keepAliveHeaders });
+    if (res.status !== 200) {
+      fail(
+        `File-backed body arm (K6_REG_FILE_BODY_PATH=${REGRESSION.fileBodyPath}) is enabled but /large_file returned ` +
+        `HTTP ${res.status} — the SUT cannot read that file (check the mount/path). Body: ${res.body}`,
+      );
+    }
+  }
 }
 
 // Seed ONLY the /forward expectation (forward.js). The forward path is the sole
@@ -232,5 +363,51 @@ export function getTemplated(extraTags) {
     tags: { op: 'template', name: 'GET /template', ...(extraTags || {}) },
   });
   check(res, { 'template: 200': (r) => r.status === 200 });
+  return res;
+}
+
+// item 15a — Mustache template arm.
+export function getTemplatedMustache(extraTags) {
+  const res = http.get(`${CONFIG.baseUrl}/template_mustache`, {
+    headers: CONFIG.keepAliveHeaders,
+    tags: { op: 'template_mustache', name: 'GET /template_mustache', ...(extraTags || {}) },
+  });
+  check(res, { 'template_mustache: 200': (r) => r.status === 200 });
+  return res;
+}
+
+// item 15a — JavaScript template arm (GraalJS).
+export function getTemplatedJavaScript(extraTags) {
+  const res = http.get(`${CONFIG.baseUrl}/template_javascript`, {
+    headers: CONFIG.keepAliveHeaders,
+    tags: { op: 'template_javascript', name: 'GET /template_javascript', ...(extraTags || {}) },
+  });
+  check(res, { 'template_javascript: 200': (r) => r.status === 200 });
+  return res;
+}
+
+// item 15d — POST a large JSON body (server decodes the whole body; matches only
+// the small marker). LARGE_BODIES[0] is 1 MB, [1] is 10 MB.
+export function postLarge1mb(extraTags) {
+  const res = http.post(`${CONFIG.baseUrl}/large_1mb`, LARGE_BODIES[0].body,
+    jsonParams({ op: 'large_1mb', name: 'POST /large_1mb', ...(extraTags || {}) }));
+  check(res, { 'large_1mb: 200': (r) => r.status === 200 });
+  return res;
+}
+
+export function postLarge10mb(extraTags) {
+  const res = http.post(`${CONFIG.baseUrl}/large_10mb`, LARGE_BODIES[1].body,
+    jsonParams({ op: 'large_10mb', name: 'POST /large_10mb', ...(extraTags || {}) }));
+  check(res, { 'large_10mb: 200': (r) => r.status === 200 });
+  return res;
+}
+
+// item 15d — GET a response served from a file on the SUT (FileBodyMaterialiser).
+export function getLargeFile(extraTags) {
+  const res = http.get(`${CONFIG.baseUrl}/large_file`, {
+    headers: CONFIG.keepAliveHeaders,
+    tags: { op: 'large_file', name: 'GET /large_file', ...(extraTags || {}) },
+  });
+  check(res, { 'large_file: 200': (r) => r.status === 200 });
   return res;
 }

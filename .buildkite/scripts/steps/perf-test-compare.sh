@@ -324,10 +324,44 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
 # never match a new fingerprinted head, so they drop out cleanly. All OTHER metrics
 # (k6/growth/rps) keep using the full baseline — this filter is microbench-only.
 (.config.jmh // null) as $headjmh
+# k6 methodology fingerprint (the k6-side analogue of the JMH .config.jmh guard
+# above). The k6 behaviour arms are only comparable against baseline runs measured
+# under the SAME methodology, and for k6 that signature is the SET OF CONCURRENTLY-
+# RUNNING ARMS (the sorted .behaviours keys) — and nothing else. Two reasons this
+# is the right and ONLY key:
+#   1. It captures the change that actually broke comparability: five arms
+#      (template_mustache/javascript + large_1mb/10mb/file) were added that contend
+#      on the core-limited SUT and shift the latencies of the historical arms
+#      (match/forward/template/large). Comparing the new 9-arm mix against a
+#      baseline measured under the old 4-arm mix is a silently-incomparable baseline
+#      (the false-green class the JMH fingerprint fixes; the asymmetry the review
+#      flagged).
+#   2. It ALREADY encodes the image variant: the JavaScript and file arms exist iff
+#      the -graaljs / file-body capability is enabled, so stock-vs-graaljs is
+#      implicit in the arm set. It must NOT also key on .config.image_digest — that
+#      is the RepoDigest of the MUTABLE mockserver-snapshot-graaljs tag, which
+#      changes on every snapshot rebuild (≈ every master merge). The daily/dispatched
+#      perf job always pulls the freshest snapshot, so the head digest would match
+#      ZERO prior runs, permanently emptying the k6 baseline and turning every arm into a
+#      perpetual :new: that never gates — resetting PRECISELY when app code changes,
+#      the event these arms exist to catch. (Pre-fix runs also stored a bare image ID,
+#      not a RepoDigest, so they could never match either.) The arm set is stable
+#      run-to-run: it performs the intended ONE-TIME reset across the 4->9-arm
+#      transition, re-arms after MIN_BASELINE matching runs, and then compares
+#      straight across snapshot rebuilds (the whole point of a baseline).
+# This filter is behaviours-only. growth/sweep/forward are single-arm scenarios not
+# affected by the regression arm mix, so they keep the FULL baseline and DO compare
+# across the stock->graaljs image change unfiltered — acceptable because the extra
+# GraalJS jars are inert for non-JS paths (loaded lazily only when a JS template
+# renders): growth.* and peak_achieved_rps are non-gating, and forward.error_rate
+# (gating) is a connection-pool guard the template engine cannot influence.
+| ((.behaviours // {}) | keys | sort) as $headarms
 | $baseline as $ballruns
 | [ $ballruns[] | select((.config.jmh // null) == $headjmh) ] as $bmicroruns
+| [ $ballruns[] | select(((.behaviours // {}) | keys | sort) == $headarms) ] as $bk6runs
 | bmapof($ballruns) as $bmapAll
 | bmapof($bmicroruns) as $bmapMicro
+| bmapof($bk6runs) as $bmapK6
 | ([ [ . | metrics ][] | select(.value != null) ]) as $headmetrics
 # FAIL CLOSED: any run metric with a non-null value whose budget key is absent
 # from the committed perf-budgets.json is reported as `missing` (the bash caller
@@ -336,7 +370,9 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
 | ([ $headmetrics[] | select(($budgets[.bkey]) == null) | {name:.name, bkey:.bkey} ]) as $missing
 | { baseline_total: ($ballruns|length),
     baseline_microbench_comparable: ($bmicroruns|length),
-    head_jmh_present: ($headjmh != null) } as $meta
+    baseline_k6_comparable: ($bk6runs|length),
+    head_jmh_present: ($headjmh != null),
+    head_k6fp_present: (($headarms | length) > 0) } as $meta
 | if ($missing | length) > 0
   then ($meta + { missing:$missing, rows:[], count:0, gating_count:0, nongating_count:0 })
   else
@@ -346,17 +382,25 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
       # gating is OPTIONAL in a budget entry: an omitted `gating` means notify-only
       # (a flag annotates but does not fail the build), so default it to false.
       | ($m0 + {dir:$b.dir, min_pct:$b.min_pct, floor:$b.floor, gating:($b.gating // false)}) as $m
-      # microbench(_extra) metrics compare only against config-matching baselines.
-      | (if ($m.bkey|startswith("microbench")) then ($bmapMicro[$m.name] // []) else ($bmapAll[$m.name] // []) end) as $bv
-      # Minimum comparable runs before a THRESHOLD is computed. A config reset leaves the
-      # microbench baseline with 1..MIN_BASELINE-1 points, where MAD~0 collapses the
-      # threshold to median*(1+min_pct) and a single >min_pct cross-day JMH excursion
-      # (more likely now that -wi/-i are trimmed) would fire a SPURIOUS gating red. So
-      # microbench metrics require the FULL MIN_BASELINE of config-matching runs before
-      # gating resumes — matching the global BASE_COUNT warm-up (which keys off the
-      # unfiltered baseline and so does NOT cover this filtered subset). Non-microbench
-      # metrics keep the existing >=1 behaviour (they are never config-filtered).
-      | (if ($m.bkey|startswith("microbench")) then $minbaseline else 1 end) as $minreq
+      # microbench(_extra) compare only against JMH-config-matching baselines;
+      # behaviours (k6 arms) compare only against k6-fingerprint-matching baselines
+      # (same image + arm set). growth/sweep/forward keep the full baseline.
+      | (if ($m.bkey|startswith("microbench")) then ($bmapMicro[$m.name] // [])
+         elif ($m.bkey|startswith("behaviours")) then ($bmapK6[$m.name] // [])
+         else ($bmapAll[$m.name] // []) end) as $bv
+      # Minimum comparable runs before a THRESHOLD is computed. A config/fingerprint
+      # reset leaves the filtered baseline with 1..MIN_BASELINE-1 points, where MAD~0
+      # collapses the threshold to median*(1+min_pct) and a single >min_pct excursion
+      # would fire a SPURIOUS flag (a gating red for microbench; a misleading
+      # notify-only flag for the non-gating behaviours). So BOTH the config-filtered
+      # families — microbench and behaviours — require the FULL MIN_BASELINE of
+      # fingerprint-matching runs before comparison resumes, matching the global
+      # BASE_COUNT warm-up (which keys off the UNFILTERED baseline and so does NOT
+      # cover these filtered subsets). The remaining metrics (growth/sweep/forward)
+      # are never fingerprint-filtered and keep the existing >=1 behaviour.
+      | (if ($m.bkey|startswith("microbench")) then $minbaseline
+         elif ($m.bkey|startswith("behaviours")) then $minbaseline
+         else 1 end) as $minreq
       | if ($bv|length) < $minreq then {name:$m.name, head:$m.value, gating:$m.gating, status:"no-baseline"}
         else
           ($bv|median) as $med
@@ -415,6 +459,22 @@ if [ "$HEAD_JMH_PRESENT" = "true" ] && [ "$MB_COMPARABLE" -lt "$BASE_TOTAL_CMP" 
 :information_source: **microbench baseline reset — JMH methodology changed.** Only ${MB_COMPARABLE}/${BASE_TOTAL_CMP} baseline run(s) were measured under this run's JMH config (\`.config.jmh\`), so \`microbench.*\` / \`microbench_extra.*\` metrics compare ONLY against those (other metrics use the full baseline). Those metrics stay \`:new: new\` (no comparable baseline, NOT flagged) until at least ${MIN_BASELINE} config-matching runs exist — the same warm-up threshold the global baseline uses — so a methodology change self-invalidates its own baseline and no spurious gating regression fires against a differently-measured baseline (or against a 1..$((MIN_BASELINE-1))-point window where MAD~0 would collapse the threshold to the bare floor). Gating resumes once ${MIN_BASELINE} comparable runs have accrued."
 fi
 
+# k6 behaviour baseline discontinuity (MAJOR): when the head run's k6 methodology
+# fingerprint (the SET OF BEHAVIOUR ARMS) differs from some/all baseline runs, only
+# the matching subset is comparable for the k6 behaviour metrics. Surface that
+# VISIBLY for the same reason — a skipped comparison that reads as a clean pass is
+# the false green we avoid. NOTE the accuracy caveat: the behaviour metrics are
+# NOTIFY-ONLY (they never fail the build), so what the reset prevents is a MISLEADING
+# informational flag against an incomparable baseline, not a gating red.
+K6_COMPARABLE="$(printf '%s' "$RESULT_CMP" | jq -r '.baseline_k6_comparable // 0')"
+HEAD_K6FP_PRESENT="$(printf '%s' "$RESULT_CMP" | jq -r '.head_k6fp_present // false')"
+K6_NOTE=""
+if [ "$HEAD_K6FP_PRESENT" = "true" ] && [ "$K6_COMPARABLE" -lt "$BASE_TOTAL_CMP" ]; then
+  K6_NOTE="
+
+:information_source: **k6 behaviour baseline reset — arm set changed.** Only ${K6_COMPARABLE}/${BASE_TOTAL_CMP} baseline run(s) share this run's set of behaviour arms, so the per-behaviour \`*.p95_ms\` / \`*.p99_ms\` / \`*.error_rate\` metrics compare ONLY against those (growth / sweep / forward keep the full baseline). They stay \`:new: new\` (no comparable baseline, NOT flagged) until at least ${MIN_BASELINE} arm-set-matching runs exist — the same warm-up threshold the global baseline uses — so adding or removing an arm (or switching the -graaljs/file capability, which changes which arms run) self-invalidates the k6 baseline window instead of comparing a different arm mix straight across the discontinuity and producing a misleading (notify-only) flag. The fingerprint is the arm set ALONE, which is stable across snapshot rebuilds, so once ${MIN_BASELINE} matching runs have accrued the metrics re-arm and then compare normally across rebuilds. These metrics are notify-only, so this never blocks the build."
+fi
+
 # --- 5. render annotation -----------------------------------------------------
 # The Status column distinguishes the two kinds of flagged regression:
 #   :red_circle: REGRESSION (fails build)  -> a GATING metric crossed its budget
@@ -445,11 +505,12 @@ EXTRA="$(jq -r '
     + $fginfra)
 ' "$RESULT" 2>/dev/null || echo "")"
 
-# Fold the provenance line, the pre-config-baseline warning, and the microbench
-# baseline-reset note into the body so every annotation (regression or clean) carries them.
+# Fold the provenance line, the pre-config-baseline warning, and the microbench +
+# k6 baseline-reset notes into the body so every annotation (regression or clean)
+# carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}"
+${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did
