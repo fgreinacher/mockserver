@@ -23,9 +23,21 @@ variable "region" {
 }
 
 variable "instance_types" {
-  description = "EC2 instance types (comma-separated). First type preferred for on-demand."
+  # 8 vCPU / 32 GiB (m5-class), NOT c5.2xlarge (8 vCPU / 16 GiB). The `:maven:
+  # build` and `:nexus: deploy snapshot` steps run one container (agents_per_instance
+  # = 1) that holds BOTH a 6g-Xmx Maven reactor JVM (mockserver/.mvn/jvm.config,
+  # driven to its ceiling by `-T 1C`) AND, in the same cgroup, the dashboard
+  # `vite build` spawned by mockserver-netty's frontend-maven-plugin — whose
+  # ~1.5-3g peak is rolldown NATIVE memory that no Node heap flag can bound. On
+  # 16 GiB those two could not both fit under the 7g container limit and OOM-killed
+  # (exit 137) ~half of master's builds. The container limit is raised to 12g
+  # (.buildkite/scripts/steps/java-build.sh, java-deploy-snapshot.sh); a 12g
+  # container needs a >=32 GiB host to leave the daemon/agent/OS room, so every
+  # type here is a same-vCPU 32 GiB variant (keeps the 8-vCPU assumption the perf
+  # gates rely on). Keep them ALL 8 vCPU / 32 GiB when editing for Spot diversity.
+  description = "EC2 instance types (comma-separated), all 8 vCPU / 32 GiB. First type preferred for on-demand."
   type        = string
-  default     = "c5.2xlarge"
+  default     = "m5.2xlarge"
 }
 
 variable "min_size" {

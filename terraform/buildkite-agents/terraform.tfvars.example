@@ -13,7 +13,11 @@
 # buildkite_agent_token = "NEVER_PUT_TOKEN_HERE"
 
 region               = "eu-west-2"
-instance_types       = "c5.2xlarge,c5.xlarge,c5a.2xlarge,c5a.xlarge,m5.2xlarge,m5.xlarge"
+# All 8 vCPU / 32 GiB. The default-queue build container is limited to 12g and
+# holds a 6g-Xmx Maven reactor + the rolldown-native `vite build` in one cgroup,
+# so 16 GiB types (c5.2xlarge, m5.xlarge) OOM-killed ~half of master's builds —
+# keep every entry a 32 GiB variant. See variables.tf "instance_types".
+instance_types       = "m5.2xlarge,m5a.2xlarge,m6i.2xlarge,m6a.2xlarge,m5n.2xlarge"
 min_size             = 0
 max_size             = 10
 on_demand_percentage = 20

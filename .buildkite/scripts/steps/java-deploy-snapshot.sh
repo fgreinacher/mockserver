@@ -49,9 +49,19 @@ echo "--- :nexus: Deploying snapshot to Central Portal"
 #   -Dgpg.skip=true             snapshots are not signature-checked by Central Portal;
 #                                skipping GPG removes signing latency if the release
 #                                profile were ever auto-activated.
+# -m 12g (raised from 7g): same OOM as the `:maven: build` step, and this deploy
+# is where most of the exit-137 kills landed. `deploy -DskipTests` still runs the
+# full default lifecycle up to deploy, so mockserver-netty's `build-ui` profile
+# rebuilds the dashboard (npm ci + `vite build`) in generate-resources — a
+# ~1.5-3g rolldown-native peak (NOT bounded by any Node heap flag) landing inside
+# the same cgroup as the 6g-Xmx Maven JVM (mvnw applies mockserver/.mvn/jvm.config
+# here too). 6g heap + JVM non-heap + node > 7g -> cgroup OOM at `vite
+# transforming...`. 12g clears both; see java-build.sh for the full rationale.
+# REQUIRES a >=32 GiB agent (default queue = m5.2xlarge) — coupled with the
+# terraform instance-type change.
 exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i mockserver/mockserver:maven \
-  -m 7g \
+  -m 12g \
   -w /build/mockserver \
   -e "SONATYPE_USERNAME=$SONATYPE_USERNAME" \
   -e "SONATYPE_PASSWORD=$SONATYPE_PASSWORD" \
