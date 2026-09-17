@@ -148,13 +148,26 @@ const OFFERED = Object.fromEntries(
   ARMS.map((a) => [a.op, (a.rate || REGRESSION.rate) / toSeconds(a.timeUnit || '1s')]),
 );
 
-// Minimum measured request count below which a high percentile (p95/p99) is not a
-// statistic the data can support — it collapses to ~the max (a p95 needs ~20
-// samples to even be distinct from the max, a p99 far more). The sub-1-rps
-// large_10mb arm yields ~10-15 samples over the measured window, so its p95/p99
-// are suppressed (see handleSummary); large_1mb/large_file at ~55 samples clear
-// this bar. p50 (robust at low N), throughput, error_rate and the raw count are
-// always emitted.
+// Minimum measured request count below which the LATENCY and DELIVERY statistics are
+// not something the data can support, so they are suppressed (emitted null) rather
+// than reported as if real. Two artefacts this stops, both observed on the sub-1-rps
+// MB-scale arms:
+//   - p95/p99 collapse to ~the max at low N (a p95 needs ~20 samples to be distinct
+//     from the max, a p99 far more);
+//   - p50 and delivery_ratio become NONSENSE when the handful of samples are mostly
+//     FAILURES: large_10mb (N≈12) reported a p50 of 0 ms (fast connection failures
+//     recorded as ~0) and a delivery_ratio of 1.09 (achieved > offered is impossible
+//     — a settle-window boundary artefact at tiny N). A number that is physically
+//     impossible must not be published as a measurement.
+// So below this floor p50_ms/p95_ms/p99_ms AND delivery_ratio are all null; the HONEST
+// facts an arm can always stand behind — sample_count, error_rate, throughput_rps,
+// offered_rps, dropped_iterations — are always emitted, and sample_count makes it
+// visible WHY the rest are null. perf-test-compare.sh filters null-valued metrics, so
+// a suppressed figure is simply not compared, never compared as a bogus statistic.
+// large_10mb (N≈12) stays a coverage/error-rate arm; large_1mb/large_file clear the
+// bar once the SUT is healthy (the byte-budget guard, see config.js) and report real
+// percentiles. This is the MIN_TAIL_SAMPLES rule the plan already mandates, applied to
+// the delivery figures it was being violated in spirit by.
 const MIN_TAIL_SAMPLES = 30;
 
 // Sum a k6 duration string to seconds (supports compound forms like "1m30s").
@@ -366,15 +379,19 @@ export function handleSummary(data) {
     const droppedCount = dropped && dropped.values ? dropped.values.count : 0;
     const throughput = round(measuredWindowSec > 0 ? count / measuredWindowSec : 0);
     const offered = OFFERED[op] || REGRESSION.rate;
-    // Suppress the tail percentiles for a low-sample arm: at fewer than
-    // MIN_TAIL_SAMPLES measured requests p95/p99 are ~the max, not a real quantile.
-    // Null-valued metrics are filtered by perf-test-compare.sh, so a suppressed
-    // percentile is simply not compared rather than compared as a bogus statistic.
-    const enoughForTail = count >= MIN_TAIL_SAMPLES;
+    // Suppress the latency AND delivery statistics for a low-sample arm: below
+    // MIN_TAIL_SAMPLES measured requests the tail percentiles are ~the max, the p50 is
+    // dominated by fast failures (the observed 0 ms for a 10 MB transfer), and
+    // delivery_ratio drifts past 1.0 on the settle-window boundary — none is a real
+    // statistic. Null-valued metrics are filtered by perf-test-compare.sh, so a
+    // suppressed figure is simply not compared rather than compared as a bogus one.
+    // sample_count + error_rate + throughput + offered + dropped are always emitted, so
+    // a low-N arm is honestly a coverage/error-rate arm, not a percentile it cannot back.
+    const enoughSamples = count >= MIN_TAIL_SAMPLES;
     behaviours[`${op}_${proto}`] = {
-      p50_ms: round(dur.values['p(50)'] !== undefined ? dur.values['p(50)'] : dur.values.med),
-      p95_ms: enoughForTail ? round(dur.values['p(95)']) : null,
-      p99_ms: enoughForTail ? round(dur.values['p(99)']) : null,
+      p50_ms: enoughSamples ? round(dur.values['p(50)'] !== undefined ? dur.values['p(50)'] : dur.values.med) : null,
+      p95_ms: enoughSamples ? round(dur.values['p(95)']) : null,
+      p99_ms: enoughSamples ? round(dur.values['p(99)']) : null,
       // Raw measured count so a reader can see WHY a tail percentile is null (and
       // audit throughput). Kept for every arm, not just the suppressed ones.
       sample_count: round(count, 0),
@@ -386,7 +403,10 @@ export function handleSummary(data) {
       // but NOT budgeted (perf-test-compare.sh) until the shortfall is understood.
       offered_rps: offered,
       dropped_iterations: round(droppedCount, 0),
-      delivery_ratio: round(offered > 0 ? throughput / offered : null, 4),
+      // Suppressed with the percentiles below the sample floor: a delivery_ratio > 1
+      // (observed 1.09 on large_10mb) is a small-N settle-boundary artefact, not a
+      // measurement. Above the floor it is the at-a-glance achieved/offered figure.
+      delivery_ratio: enoughSamples ? round(offered > 0 ? throughput / offered : null, 4) : null,
       error_rate: failed && failed.values ? round(failed.values.rate, 5) : 0,
       // Transparency for the settle exclusion: how many start-transient requests
       // were dropped from the percentiles, and over what window the rest were

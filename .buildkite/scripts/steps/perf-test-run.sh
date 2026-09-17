@@ -65,6 +65,46 @@ SAMPLE_INTERVAL="${PERF_SAMPLE_INTERVAL:-5}"
 # something. Applied to the SUT only, never the upstream. Overridable for a re-run.
 SERVER_MEMORY="${PERF_SERVER_MEMORY:-2g}"
 
+# --- event-log body-byte budget: the OOM guard that keeps the run alive ---------
+# WHY THIS EXISTS (build #249 died here). MockServer records every request AND its
+# response in a COUNT-bounded event-log ring of maxLogEntries entries, holding the
+# FULL body of each. On the 2 GB SUT the heap is MaxRAMPercentage=75% ~= 1.5 GB, so
+# maxLogEntries = min(heapKB/8, 100000) = 100000. An entry lives for the ring's
+# residence = maxLogEntries / total_ACHIEVED_insertion_rps, and — this is the trap —
+# residence LENGTHENS without bound as achieved throughput FALLS. The MB-scale
+# regression arms (large_1mb/large_10mb/large_file, k6 item 15d) then retain, per arm,
+# roughly rate x residence x body:
+#     arm          rate     body     @ residence 111 s (total ~901 rps, healthy)
+#     large_10mb   0.1/s    10 MB    -> 0.1 x 111 x 10 MB  ~= 111 MB
+#     large_1mb    0.5/s     1 MB    -> 0.5 x 111 x  1 MB  ~=  55 MB
+#     large_file   0.5/s    ~1 MB    -> 0.5 x 111 x  1 MB  ~=  55 MB   (its ~1 MB RESPONSE)
+#     large(4KB)   200/s     4 KB    -> 200 x 111 x  4 KB  ~=  89 MB
+# ~310 MB of large bodies looks safe under 1.5 GB — but ONLY at residence 111 s. When
+# the SUT contends (the pre-fix JavaScript contagion, or the EXTRA body throughput the
+# 2026-09-17 dispatch-pool fixes eec183f7e/7fbae1350 now ADMIT), total achieved rps
+# collapses, residence 2x/4x/10x, and every figure above scales with it — there is no
+# upper bound as achieved rps -> 0. Two back-to-back protocol passes (http then
+# https_h2) compound it. That is what pushed retention past the heap in build #249 and
+# killed the container mid-run, so the second (https_h2) pass could not even seed
+# ("no such host").
+# THE FIX: bound RETENTION, not rate. maxEventLogSizeInBytes is MockServer's own OOM
+# guard (MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES) — when > 0 the ring ALSO enforces a
+# body-byte budget, evicting oldest-first until total logged body bytes fit, in
+# addition to the count bound. Retention is then capped at the budget REGARDLESS of
+# residence, so no rate x residence product can run away however far throughput falls.
+# 256 MiB is the documented starting point for a 2 GB heap; actual live heap is a small
+# multiple (headers/metadata) ~= 0.5-1 GB, comfortably under 1.5 GB.
+# WHY NOT SHRINK maxLogEntries INSTEAD: growth.js runs on THIS SAME SUT and must fill
+# the DEFAULT 100k ring to reproduce the issue #2329 O(n)-eviction slope; a smaller
+# ring would never fill and would hide the bug. The byte budget does NOT corrupt growth
+# because growth loads only the tiny /simple body (~hundreds of bytes) — its total
+# retained bytes across 100k entries stay in the tens of MB, far below 256 MiB, so the
+# byte budget never fires for growth and its count-bounded fill is untouched. Applied to
+# EVERY SUT that runs regression.js with the MB arms: the main SUT here and the clustered
+# A/B nodes (start_clu) — the clustered image runs the same large_1mb/large_10mb arms on
+# a 1.5 GB heap and was at the identical risk.
+PERF_MAX_EVENT_LOG_BYTES="${PERF_MAX_EVENT_LOG_BYTES:-268435456}" # 256 MiB
+
 OUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/perf-result.XXXXXX")"
 # The k6 image runs as a NON-root user (uid 12345); mktemp -d creates the dir
 # 0700 owned by the agent user, so k6's handleSummary() can't write its result
@@ -184,6 +224,7 @@ start_mockserver() {
     -e MOCKSERVER_LOG_LEVEL=ERROR \
     -e MOCKSERVER_DISABLE_SYSTEM_OUT=true \
     -e MOCKSERVER_METRICS_ENABLED=true \
+    -e MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES="$PERF_MAX_EVENT_LOG_BYTES" \
     "$MOCKSERVER_IMAGE" -serverPort 1080 >/dev/null
 }
 
@@ -209,7 +250,7 @@ SERVER_ALIAS="mockserver"
 echo "--- starting upstream + MockServer ($MOCKSERVER_IMAGE)"
 start_mockserver "$UPSTREAM" "$UPSTREAM_CPUS" "mockserver-upstream"
 start_mockserver "$SERVER" "$SERVER_CPUS" "$SERVER_ALIAS" "publish" "$SERVER_MEMORY" "$FILE_BODY_MOUNT"
-echo "--- SUT started with --memory=$SERVER_MEMORY (bounded heap so GC cycles)"
+echo "--- SUT started with --memory=$SERVER_MEMORY (bounded heap so GC cycles) + maxEventLogSizeInBytes=$PERF_MAX_EVENT_LOG_BYTES (body-byte OOM guard)"
 wait_ready "$UPSTREAM"
 wait_ready "$SERVER"
 
@@ -261,6 +302,10 @@ metric_heap_max() {
     | awk '{printf "%d", $1+0}' || true
 }
 # One env var as the SUT container ACTUALLY received it (empty if unset).
+# NOTE this is a WEAKER observation than gc/heap_max_bytes, which are read from the JVM's own
+# metrics endpoint. This only proves the container was HANDED the value, not that the JVM parsed
+# and applied it - hence the config block labels it container-env rather than observed. If the
+# server ever exposes the effective budget as a metric, read it from there instead.
 container_env() { # VAR_NAME
   docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$SERVER" 2>/dev/null \
     | awk -F= -v k="$1" '$1==k{sub("^[^=]*=",""); print; exit}' || true
@@ -305,6 +350,12 @@ DISABLE_SYSOUT_VAL="$(container_env MOCKSERVER_DISABLE_SYSTEM_OUT)"; DISABLE_SYS
 # JAVA_TOOL_OPTIONS is legitimately absent when PERF_SERVER_JAVA_OPTS is unset — an
 # empty OBSERVED value here is a true fact (no JVM opts), not a masked placeholder.
 JAVA_TOOL_OPTS_VAL="$(container_env JAVA_TOOL_OPTIONS)"
+# Body-byte OOM guard the SUT ACTUALLY received (observed from the container env), so
+# a reader can see the guard was in force for this run — and so the fail-closed check
+# below reddens loudly if a future edit ever drops it (a run without the guard is at
+# the exact OOM risk build #249 hit, and must never be silently baselined as a healthy
+# one). Read back from the container, not echoed from the shell var, on purpose.
+MAX_EVENT_LOG_VAL="$(container_env MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES)"
 # k6 image digest is pinned in the K6_IMAGE ref itself (…@sha256:…).
 K6_IMAGE_DIGEST="$(printf '%s' "$K6_IMAGE" | sed -nE 's/.*@(sha256:[0-9a-f]+)$/\1/p')"
 # k6 container CPU allocation (cores * 100%) from its cpuset pin.
@@ -322,6 +373,7 @@ CONFIG_ERRORS=()
 awk -v v="$HEAP_MAX_BYTES" 'BEGIN{exit !(v+0>0)}' || CONFIG_ERRORS+=("resolved heap (jvm_memory_max_bytes{area=\"heap\"}) not a positive value: '${HEAP_MAX_BYTES}'")
 [ -n "$LOG_LEVEL_VAL" ]     || CONFIG_ERRORS+=("MOCKSERVER_LOG_LEVEL not recordable (neither container env nor shell)")
 [ -n "$DISABLE_SYSOUT_VAL" ] || CONFIG_ERRORS+=("MOCKSERVER_DISABLE_SYSTEM_OUT not recordable (neither container env nor shell)")
+awk -v v="$MAX_EVENT_LOG_VAL" 'BEGIN{exit !(v+0>0)}' || CONFIG_ERRORS+=("event-log body-byte OOM guard (MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES) not applied to the SUT, OR the container env could not be read (docker inspect failed) - these are not distinguished here and both fail closed: '${MAX_EVENT_LOG_VAL}' — a run without it is at the build-#249 OOM risk and must not be baselined as healthy")
 if [ "${#CONFIG_ERRORS[@]}" -gt 0 ]; then
   echo "ERROR: run configuration is not fully recordable — refusing to emit a result that misrepresents what it measured:" >&2
   printf '  - %s\n' "${CONFIG_ERRORS[@]}" >&2
@@ -336,6 +388,7 @@ CONFIG_JSON="$(jq -n \
   --arg gc "$GC_IN_USE" --arg heap_max "$HEAP_MAX_BYTES" \
   --arg log_level "$LOG_LEVEL_VAL" --arg log_level_src "$LOG_LEVEL_SRC" \
   --arg disable_sysout "$DISABLE_SYSOUT_VAL" --arg disable_sysout_src "$DISABLE_SYSOUT_SRC" \
+  --arg max_event_log "$MAX_EVENT_LOG_VAL" \
   --arg jto "$JAVA_TOOL_OPTS_VAL" --arg psjo "${PERF_SERVER_JAVA_OPTS:-}" \
   --arg k6_image "$K6_IMAGE" --arg k6_digest "$K6_IMAGE_DIGEST" \
   --arg server_cpus "${SERVER_CPUS:-none}" --arg upstream_cpus "${UPSTREAM_CPUS:-none}" --arg k6_cpus "${K6_CPUS:-none}" \
@@ -350,6 +403,7 @@ CONFIG_JSON="$(jq -n \
     heap_max_bytes: ($heap_max|tonumber),
     log_level: $log_level,
     disable_system_out: $disable_sysout,
+    max_event_log_size_bytes: ($max_event_log|tonumber),
     java_tool_options: $jto,
     perf_server_java_opts: $psjo,
     k6_image: $k6_image,
@@ -361,11 +415,12 @@ CONFIG_JSON="$(jq -n \
       image_digest:"observed", jdk:"observed", java_vendor:"observed", vm_name:"observed",
       gc:"observed", heap_max_bytes:"observed",
       log_level:$log_level_src, disable_system_out:$disable_sysout_src,
+      max_event_log_size_bytes:"container-env",
       java_tool_options:"observed", perf_server_java_opts:"declared",
       k6_image_digest:"observed", cpusets:"declared", k6_cpu_pin_pct:"declared"
     }
   }')"
-echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} (schema_version=2)"
+echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} maxEventLogSizeInBytes=${MAX_EVENT_LOG_VAL} (schema_version=2)"
 
 echo "--- seeding upstream /simple (forward target)"
 docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -X PUT \
@@ -1047,13 +1102,17 @@ fi
 # request latency moves merely by being a clustered member.
 #
 # RETENTION (the OOM lesson): the count-bounded event-log ring holds FULL bodies,
-# residence = maxLogEntries / total_offered_rps (LONGER as throughput falls). k6
-# drives ONLY the entry node (control, or cluster node A), so ONLY that node's ring
-# fills with request bodies — exactly like the main SUT, and it gets the SAME
-# PERF_CLUSTERED_MEMORY (2 GB default -> ~1.5 GB heap, maxLogEntries=100000). At
-# the reduced clustered arm rates the retained large-body footprint is the same
-# ~0.3 GB raw the config.js arithmetic derives (large_10mb@0.1rps -> ~111 MB,
-# large_1mb@0.5rps -> ~55 MB, large-4KB@200rps -> ~89 MB), well under 1.5 GB. The
+# residence = maxLogEntries / total_ACHIEVED_rps (LONGER, without bound, as achieved
+# throughput falls). k6 drives ONLY the entry node (control, or cluster node A), so
+# ONLY that node's ring fills with request bodies — exactly like the main SUT, and it
+# gets the SAME PERF_CLUSTERED_MEMORY (2 GB default -> ~1.5 GB heap,
+# maxLogEntries=100000). The per-arm rate x residence x body figures the config.js
+# arithmetic derives (large_10mb@0.1rps -> ~111 MB, large_1mb@0.5rps -> ~55 MB,
+# large-4KB@200rps -> ~89 MB) hold ONLY at residence 111 s; they run away as this node
+# contends. So the clustered nodes get the SAME maxEventLogSizeInBytes body-byte OOM
+# guard (start_clu, above) as the main SUT, which caps total retained body bytes
+# regardless of residence — and applies identically on control and cluster, so it does
+# not bias the ratio. The
 # SECOND node (B) receives NO request load, so its ring stays ~empty; it holds only
 # the seeded expectation set (tiny, seeded once) + bounded JGroups buffers (UFC/MFC
 # 2M each, NAKACK2/UNICAST3 send/recv, FRAG2 60K — single-digit MB). REPL_SYNC
@@ -1127,7 +1186,11 @@ JGROUPS_XML
     # arms are OFF for the clustered A/B (the clustered image bundles no GraalJS, and
     # a JS arm would 500 and abort regression.js in setup()); the core arms
     # (match/forward/template/template_mustache/large/large_1mb/large_10mb) run
-    # UNCHANGED — only env differs, the sanctioned parameterisation.
+    # UNCHANGED — only env differs, the sanctioned parameterisation. start_clu also
+    # carries the maxEventLogSizeInBytes body-byte OOM guard (below), for the same
+    # reason the main SUT does: these MB arms run here too, on a 1.5 GB clustered
+    # heap. The budget is identical on control and cluster, so it evicts symmetrically
+    # and cannot bias the within-run clustered/control ratio item 13 measures.
     start_clu() { # name  alias  backend(memory|infinispan)  cluster_name_or_empty
       local name="$1" alias="$2" backend="$3" cname="${4:-}"
       local extra=()
@@ -1147,6 +1210,7 @@ JGROUPS_XML
         --cpus "$CLU_CPUS" --memory "$CLU_MEM" -p 127.0.0.1::1080 \
         -e MOCKSERVER_LOG_LEVEL=WARN -e MOCKSERVER_DISABLE_SYSTEM_OUT=true \
         -e MOCKSERVER_METRICS_ENABLED=true \
+        -e MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES="$PERF_MAX_EVENT_LOG_BYTES" \
         -e "MOCKSERVER_STATE_BACKEND=$backend" \
         ${extra[@]+"${extra[@]}"} \
         "$CLU_IMAGE" -serverPort 1080 >/dev/null 2>&1

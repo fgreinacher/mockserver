@@ -216,35 +216,43 @@ export const REGRESSION = {
   // raised MOCKSERVER_MAX_REQUEST_BODY_SIZE on the SUT.
   large1mbBytes: num('K6_REG_LARGE_1MB_BYTES', 1000 * 1000),
   large10mbBytes: num('K6_REG_LARGE_10MB_BYTES', 10 * 1000 * 1000),
-  // MEMORY CEILING (why these rates are LOW) — retained-heap arithmetic.
+  // MEMORY CEILING — retained-heap arithmetic, and why RATE ALONE WAS NOT ENOUGH.
   // MockServer records every request (and its response) in an in-memory event-log
   // ring of `maxLogEntries` entries, holding the FULL body of each. On the 2 GB CI
   // SUT the heap is MaxRAMPercentage=75% ≈ 1.5 GB, so maxLogEntries =
-  // min(heapKB/8, 100000) = 100000. The ring is COUNT-bounded, so an entry lives
-  // for the last `maxLogEntries / total_offered_rps` seconds (the residence). At
-  // the full regression mix total_offered_rps ≈ 901 — 4 full-rate arms × 200
-  // (match/forward/template/large) + 2 template arms × 50 (mustache/javascript) +
-  // the three sub-1-rps large arms (≈ 1.1) — so residence ≈ 100000/901 ≈ 111 s,
-  // LONGER than a 2 m measured window minus settle, i.e. once the ring fills
-  // nothing older than ~111 s survives. This residence is a CONSERVATIVE upper
-  // bound: MockServer records ~2-3 log entries per request, so the ring actually
-  // fills faster and residence (and thus retention) is SHORTER than the figures
-  // below. The steady-state bytes retained by an arm at rate r with body B are
-  // therefore at most r × 111 × B. The large arms dominate, so keep their product
-  // small:
-  //   large_10mb @ 0.1 rps → 0.1 × 111 × 10 MB ≈ 111 MB
-  //   large_1mb  @ 0.5 rps → 0.5 × 111 ×  1 MB ≈  55 MB
-  //   large_file @ 0.5 rps → 0.5 × 111 ×  1 MB ≈  55 MB   (its ~1 MB RESPONSE)
-  //   large(4KB) @ 200 rps → 200 × 111 ×  4 KB ≈  89 MB
-  //   -> ~310 MB of large bodies + ~40-80 MB of small entries ≈ 390 MB raw,
-  //      ~0.6-0.8 GB live with MockServer's per-entry parse/overhead — comfortably
-  //      under the 1.5 GB heap. (The earlier 0.4/2/2 rps retained ~888 MB raw,
-  //      ~1.3-1.8 GB live, which risked OOM on the 2 GB SUT — hence these lower
-  //      rates.) The warmup NEVER touches these arms (regression.js excludes them
-  //      from warmupOp), so nothing accumulates before measurement either.
-  // `growth` needs the default 100000-entry log, so the ring cannot be shrunk;
-  // the large-body footprint MUST be bounded by rate instead. Raise these only
-  // with a correspondingly larger SUT heap (PERF_SERVER_MEMORY).
+  // min(heapKB/8, 100000) = 100000. The ring is COUNT-bounded, so an entry lives for
+  // the last `maxLogEntries / total_ACHIEVED_rps` seconds (the residence), and the
+  // steady-state bytes an arm retains at rate r with body B are r × residence × B.
+  //   PER ARM (at residence 111 s, i.e. total ACHIEVED ≈ 901 rps, a HEALTHY server):
+  //     large_10mb @ 0.1 rps → 0.1 × 111 × 10 MB ≈ 111 MB
+  //     large_1mb  @ 0.5 rps → 0.5 × 111 ×  1 MB ≈  55 MB
+  //     large_file @ 0.5 rps → 0.5 × 111 ×  1 MB ≈  55 MB   (its ~1 MB RESPONSE)
+  //     large(4KB) @ 200 rps → 200 × 111 ×  4 KB ≈  89 MB
+  //   ~310 MB of large bodies looks safe under 1.5 GB — BUT residence is NOT a
+  // constant. residence = maxLogEntries / total_ACHIEVED_rps, and achieved rps is not
+  // the offered 901: when the server contends it falls, and residence LENGTHENS
+  // WITHOUT BOUND (2×/4×/10× → ∞ as achieved rps → 0), scaling every figure above
+  // with it. That is not hypothetical — build #249 died exactly here: the JavaScript
+  // contagion (since fixed) depressed throughput, residence blew up, the MB bodies
+  // stacked across the http→https_h2 passes, and the container OOMed before the second
+  // pass could seed. The 2026-09-17 dispatch-pool fixes (eec183f7e/7fbae1350) make it
+  // WORSE, not better: freeing the pool admits MORE body throughput. So a per-arm rate
+  // is the WRONG lever — no rate keeps r × residence × B bounded once residence runs
+  // away. RETENTION is bounded at the SERVER instead: perf-test-run.sh starts every
+  // regression SUT with maxEventLogSizeInBytes = 256 MiB (MOCKSERVER_MAX_EVENT_LOG_-
+  // SIZE_IN_BYTES), a body-byte budget that evicts oldest-first so TOTAL retained body
+  // bytes never exceed the budget REGARDLESS of residence. These rates stay low only to
+  // keep per-arm CPU/GC contention on the core-limited SUT modest (so they don't shift
+  // the historical arms' latencies) and the run length bounded — NOT as the OOM guard.
+  // The warmup NEVER touches these arms (regression.js excludes them from warmupOp),
+  // so nothing accumulates before measurement either.
+  // `growth` needs the default 100000-entry ring to fill (issue #2329 O(n) eviction),
+  // so the COUNT bound cannot be shrunk — which is exactly why the guard is a BYTE
+  // budget, not a smaller ring: growth loads only the tiny /simple body, so its total
+  // retained bytes stay in the tens of MB, far below 256 MiB, and the byte budget never
+  // fires for growth — its count-bounded fill is untouched. Raising these rates is now
+  // safe from OOM (the budget caps retention); raise them only if the added SUT
+  // contention is acceptable, and shrink the budget only alongside a smaller heap.
   large1mbRate: num('K6_REG_LARGE_1MB_RATE', 1),
   large1mbTimeUnit: env('K6_REG_LARGE_1MB_TIME_UNIT', '2s'), // 0.5 rps
   large10mbRate: num('K6_REG_LARGE_10MB_RATE', 1),
