@@ -230,6 +230,43 @@ steps:
     timeout_in_minutes: 15
     soft_fail: true
 
+  # PER-MERGE allocation backstop (performance-programme item 16). Runs the three
+  # allocation JMH benchmarks (MatchingBenchmark, InboundDecodeBenchmark,
+  # ResponseWriteBenchmark) at pinned params and FAILS the build if any allocates
+  # more bytes/op than its ABSOLUTE committed floor in perf-budgets.json. This is
+  # DELIBERATELY:
+  #   * UNCONDITIONAL (no `if: build.branch == 'master'`) and placed BEFORE the
+  #     `- wait` that precedes the master-only block below, so it runs PRE-merge on
+  #     PR builds and BLOCKS the PR. A branch condition, or moving it into the
+  #     master-only container-integration suite, would silently make it a
+  #     POST-merge gate (nothing would tell us) — see item 16.
+  #   * NOT soft_fail — the whole point is that a real allocation regression a
+  #     matcher-only or rolling-median gate would miss goes RED here.
+  # Note: pipeline-java.yml is itself orchestrator-path-filtered (generate-pipeline.sh)
+  # to mockserver/ + mockserver-ui/ changes, so a JDK / base-image bump that shifts
+  # allocation reaches this gate only via the daily run, not per-merge.
+  - label: ":scales: per-merge allocation gate (item 16)"
+    command: ".buildkite/scripts/steps/perf-alloc-gate.sh"
+    timeout_in_minutes: 30
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+        # Transient Maven Central sentinel (run-in-docker.sh remaps a registry
+        # transfer failure to 42). SAFE to retry here — unlike the main `:maven
+        # build` step (which mixes resolution with the whole test reactor, so a
+        # real test failure can co-occur with a transfer blip and reach 42), this
+        # gate's Docker command is `-DskipTests` resolution + JMH only, and the
+        # pass/fail decision is made on the HOST in evaluate(), OUTSIDE Docker. So
+        # a real allocation regression can never surface as 42 — it always exits 1
+        # from evaluate(). Mirrors the isolated-resolution client jar-build steps
+        # that already carry this retry, and keeps a registry hiccup from redding
+        # a PR gate on shared agents.
+        - exit_status: 42   # transient Maven Central resolution failure
+          limit: 2
+
   - wait
 
   - label: ":nexus: deploy snapshot to Sonatype"

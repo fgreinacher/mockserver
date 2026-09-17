@@ -45,7 +45,7 @@ JMH_INCLUDE="${JMH_INCLUDE:-org\.mockserver\.benchmark\.MatchingBenchmark\.}"
 # no `gating:true` flag, so a flagged regression is notify-only). -bm avgt forces a
 # single average-time mode so every row is a comparable time_per_op (MetricsIncrement
 # declares Throughput+AverageTime); -prof gc captures alloc_bytes_per_op.
-JMH_INCLUDE_EXTRA="${JMH_INCLUDE_EXTRA:-org\.mockserver\.benchmark\.(InboundDecodeBenchmark|LocalCallbackDispatchBenchmark|ForwardPathBenchmark|OpenApiValidationBenchmark|MetricsIncrementBenchmark)\.}"
+JMH_INCLUDE_EXTRA="${JMH_INCLUDE_EXTRA:-org\.mockserver\.benchmark\.(InboundDecodeBenchmark|LocalCallbackDispatchBenchmark|ForwardPathBenchmark|OpenApiValidationBenchmark|MetricsIncrementBenchmark|ResponseWriteBenchmark)\.}"
 JMH_ARGS_EXTRA="${JMH_ARGS_EXTRA:--f 2 -wi 2 -i 3 -r 2 -w 2 -bm avgt -prof gc}"
 
 # EXACT expected row count for the promoted set — a fail-closed guard against
@@ -57,11 +57,12 @@ JMH_ARGS_EXTRA="${JMH_ARGS_EXTRA:--f 2 -wi 2 -i 3 -r 2 -w 2 -bm avgt -prof gc}"
 #   ForwardPath 8 methods x 0 params               = 8
 #   OpenApiValidation 1 method x 2 mode x 2 schema = 4
 #   MetricsIncrement 2 methods x 0 params (avgt)   = 2
-#                                            total  = 20
+#   ResponseWrite 1 method x 3 responseSize        = 3   (item 16 response-write arm)
+#                                            total  = 23
 # Overridable so a narrowed local include/args run can set its own expected count;
 # any change to the benchmark surface (a new @Param, a new @Benchmark) is a
 # deliberate, reviewed bump of this number, not a silent row-count drift.
-EXTRA_EXPECTED="${EXTRA_EXPECTED:-20}"
+EXTRA_EXPECTED="${EXTRA_EXPECTED:-23}"
 
 # -f 2 (item 15c): scaling sweep gets the same 2-fork/trimmed-iteration treatment
 # (defined here, not in the scaling section below, so the JMH-config fingerprint
