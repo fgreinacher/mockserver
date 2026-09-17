@@ -503,11 +503,12 @@ public class ConfigurationTest {
     @Test
     public void shouldSetAndGetMaxEventLogSizeInBytes() {
         try {
-            // default — derived from the heap ceiling (a quarter of the maxLogEntries ceiling budget),
-            // so on by default rather than 0. Asserted against the derivation, not a fixed number, since
-            // it depends on the test JVM's -Xmx.
+            // default — derived from the heap ceiling (a log-level-aware fraction of the maxLogEntries
+            // ceiling budget), so on by default rather than 0. Asserted against the derivation, not a
+            // fixed number, since it depends on the test JVM's -Xmx and log level.
             clearPropertyAndCache("mockserver.maxEventLogSizeInBytes");
-            long expectedDefault = ConfigurationProperties.defaultMaxEventLogSizeInBytes(ConfigurationProperties.heapAvailableInKB());
+            long expectedDefault = ConfigurationProperties.defaultMaxEventLogSizeInBytes(
+                ConfigurationProperties.heapAvailableInKB(), ConfigurationProperties.logLevel());
             assertThat(ConfigurationProperties.maxEventLogSizeInBytes(), equalTo(expectedDefault));
             assertThat(new Configuration().maxEventLogSizeInBytes(), equalTo(expectedDefault));
 
@@ -525,6 +526,40 @@ public class ConfigurationTest {
             assertThat(ConfigurationProperties.maxEventLogSizeInBytes(), equalTo(0L));
         } finally {
             clearPropertyAndCache("mockserver.maxEventLogSizeInBytes");
+        }
+    }
+
+    @Test
+    public void shouldRecomputeLogLevelAwareDefaultOnEachReadNotFreezeAtFirstLevel() {
+        // The default is log-level-aware (heap/4 at a non-rendering level, heap/8 at a rendering level).
+        // It must be recomputed from the CURRENT log level on every read — NOT resolved through the
+        // caching property reader, which would freeze it JVM-wide at whatever level was in force on the
+        // first read. The dangerous direction: a first read at ERROR (heap/4) freezing that larger
+        // budget for a server later running at INFO (heap/8), silently disabling the OOM protection this
+        // default exists to provide. On the pre-fix (caching) tree the INFO read below returns the
+        // frozen ERROR budget and the second assertion fails.
+        String originalLogLevel = ConfigurationProperties.logLevel().name();
+        try {
+            clearPropertyAndCache("mockserver.maxEventLogSizeInBytes");
+            long heapAvailableInKB = ConfigurationProperties.heapAvailableInKB();
+
+            ConfigurationProperties.logLevel("ERROR");
+            long errorBudget = ConfigurationProperties.maxEventLogSizeInBytes();
+            // deliberately do NOT clear the budget key here — a cached default would survive to the next read
+            ConfigurationProperties.logLevel("INFO");
+            long infoBudget = ConfigurationProperties.maxEventLogSizeInBytes();
+
+            assertThat(errorBudget, equalTo(ConfigurationProperties.defaultMaxEventLogSizeInBytes(heapAvailableInKB, Level.ERROR)));
+            assertThat(infoBudget, equalTo(ConfigurationProperties.defaultMaxEventLogSizeInBytes(heapAvailableInKB, Level.INFO)));
+
+            // and a per-instance server derives the default from ITS OWN log level, not the static one:
+            // static level ERROR, instance level INFO -> the instance must get the INFO (heap/8) budget
+            ConfigurationProperties.logLevel("ERROR");
+            assertThat(new Configuration().logLevel("INFO").maxEventLogSizeInBytes(),
+                equalTo(ConfigurationProperties.defaultMaxEventLogSizeInBytes(heapAvailableInKB, Level.INFO)));
+        } finally {
+            clearPropertyAndCache("mockserver.maxEventLogSizeInBytes");
+            ConfigurationProperties.logLevel(originalLogLevel);
         }
     }
 

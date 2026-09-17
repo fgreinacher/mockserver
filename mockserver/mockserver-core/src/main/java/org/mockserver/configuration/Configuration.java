@@ -1686,7 +1686,16 @@ public class Configuration {
 
     public Long maxEventLogSizeInBytes() {
         if (maxEventLogSizeInBytes == null) {
-            return ConfigurationProperties.maxEventLogSizeInBytes();
+            // Honour any EXPLICIT override first (programmatic set / system property / env), then derive
+            // the default from THIS instance's log level — not the static ConfigurationProperties.logLevel()
+            // — because the default is log-level-aware: a server configured via configuration.logLevel(INFO)
+            // must get the INFO (heap/8) budget even when the global level differs. Mirrors the way
+            // maxLogEntries()/maxExpectations() consult the instance devMode field to bypass the static value.
+            Long explicit = ConfigurationProperties.explicitMaxEventLogSizeInBytes();
+            if (explicit != null) {
+                return explicit;
+            }
+            return ConfigurationProperties.defaultMaxEventLogSizeInBytes(ConfigurationProperties.heapAvailableInKB(), logLevel());
         }
         return maxEventLogSizeInBytes;
     }
@@ -1698,8 +1707,12 @@ public class Configuration {
      * which {@link #maxLogEntries} cannot (a count cap treats a 10 MB body the same as a 10-byte one).
      * </p>
      * <p>
-     * The default is derived from the JVM heap ceiling (a quarter of the same ceiling-based budget that
-     * sizes {@link #maxLogEntries}), so it is on by default. Set it to 0 to disable the size-based limit
+     * The default is derived from the JVM heap ceiling and is on by default: a quarter of the
+     * ceiling-based budget that sizes {@link #maxLogEntries} at a non-rendering log level (WARN/ERROR),
+     * halved to an eighth at a rendering level (INFO/DEBUG/TRACE) where each retained entry costs about
+     * twice as much heap as its raw body bytes (the rendered message and derived copies are memoised on
+     * the entry). The same budget also bounds the bytes held by entries waiting to be processed, so it
+     * caps both the retained log and the processing backlog. Set it to 0 to disable the size-based limit
      * and bound the log only by {@link #maxLogEntries}; whichever bound is reached first evicts.
      * </p>
      *

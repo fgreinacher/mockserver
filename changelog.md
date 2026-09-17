@@ -7,19 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- The in-memory event log is now bounded by **size** as well as by entry count. `maxEventLogSizeInBytes`
-  was previously off by default, so the only active bound was a count that cannot see how large an entry
-  is -- a thousand small requests and a thousand ten-megabyte responses counted the same. It now defaults
-  to a quarter of the same heap-ceiling budget that sizes `maxLogEntries`. Workloads with bodies under
-  roughly two kilobytes still reach the count bound first and are unaffected; large-body workloads are now
-  bounded in bytes instead of exhausting the heap. Set `maxEventLogSizeInBytes=0` to restore count-only
-  bounding.
+- The in-memory event log is now bounded by **size** as well as by entry count, and that bound now also
+  covers the entries waiting to be written. `maxEventLogSizeInBytes` was previously off by default, so the
+  only active bound was a count that cannot see how large an entry is -- a thousand small requests and a
+  thousand ten-megabyte responses counted the same. It now defaults to a share of the same heap-ceiling
+  budget that sizes `maxLogEntries`: a quarter at `WARN` and below, an eighth at `INFO` and above, because
+  rendering each entry to the console roughly doubles the heap it retains. Workloads with bodies under
+  roughly two kilobytes still reach the count bound first and are unaffected. Set
+  `maxEventLogSizeInBytes=0` to restore count-only bounding.
+- A burst of large request bodies no longer exhausts the heap before the log can bound itself. Requests are
+  handed to the event log through a fixed-size queue, and each entry sat in that queue holding its full
+  body: the size bound applied only after an entry was written, so at the default `INFO` level -- where
+  rendering makes writing slow enough for the queue to back up -- a 512 MB server died in about eleven
+  seconds under 256 KB bodies, with or without the size bound set. The queue is now bounded in bytes too,
+  and the same server serves indefinitely. Under that pressure MockServer discards the newest entries
+  rather than failing: it says so once in the log, counts them in `mock_server_dropped_log_events`, and any
+  `verify` with an upper bound (`never`, `atMost`, `exactly`, `once`, `between`) **fails** rather than
+  passing on evidence that was discarded. That guard now also covers the pre-existing case where the queue
+  was simply full, which could previously let such a `verify` pass silently.
 - When the event log first discards entries, MockServer now logs a single warning naming which bound was
   hit and its current value, with remedies ordered cheapest-first. Eviction is what silently breaks a
   later `verify`, so it is no longer invisible. Where the count bound is the one binding, the warning
   suggests lowering the log level: the received-request and response entries a `verify` reads are retained
-  at every level, so reducing verbosity drops per-match diagnostics without affecting verification. It
-  does not free body bytes, so it is not offered when the byte bound is the one binding.
+  at every level, so reducing verbosity drops per-match diagnostics without affecting verification -- and
+  at `WARN` and below it also doubles the byte budget and lets the log keep up with incoming traffic. It
+  does not free body bytes directly, so it is not offered when the byte bound is the one binding.
 - New `jvm_runtime_info` metric on the Prometheus endpoint (`/mockserver/metrics`), an info-style gauge
   whose labels name the running JVM and the garbage collector(s) actually in use: `gc`, `java_version`,
   `java_runtime_version`, `java_vendor` and `vm_name`. The value is always `1` — the information is in the

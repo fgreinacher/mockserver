@@ -163,6 +163,31 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     // mock_server_dropped_log_events Prometheus counter) makes the cliff observable.
     private final AtomicLong droppedLogEvents = new AtomicLong(0);
     private final AtomicBoolean droppedLogEventWarned = new AtomicBoolean(false);
+    // Dropped log events since startup or the last reset()/clear-all — the resettable TAINT that feeds
+    // the fail-closed verify path (upperBoundUnprovableAfterEviction), distinct from the monotonic
+    // droppedLogEvents metric above (which must never be reset, as it mirrors a Prometheus counter). A
+    // drop means an incoming entry was NEVER recorded — the same loss of evidence as a deque eviction,
+    // and just as fatal to proving absence — so an upper-bound verify (never/atMost/exactly/once/
+    // between) must fail closed rather than pass on it. Reset alongside the deque's eviction counter on
+    // reset() and clear(null) so a suite that clears between tests is not permanently poisoned.
+    private final AtomicLong droppedLogEventsSinceLogReset = new AtomicLong(0);
+    // Bytes of request/response body held by log entries that have been PUBLISHED to the ring but not
+    // yet processed by the single consumer (the in-flight backlog). The deque byte budget
+    // (maxEventLogSizeInBytes) bounds only what has already been RETAINED after processing; it cannot
+    // see the ring, whose min(maxLogEntries,16384) pre-allocated slots each hold a full body. Under
+    // sustained large-body ingress faster than the consumer can drain (notably at INFO, where the
+    // consumer also renders every entry to the log), that backlog — not the deque — is what exhausts
+    // the heap. Tracking it lets add() drop, rather than OOM, once the in-flight bodies would exceed
+    // the same maxEventLogSizeInBytes budget. Incremented on a successful publish in add(), decremented
+    // in processLogEntry as each entry is consumed; both use LogEntry.estimatedHeapSize(), which is
+    // deterministic for the same body references, so the two sides balance exactly.
+    private final AtomicLong inFlightBytes = new AtomicLong(0);
+    // The in-flight byte budget in force, mirrored from configuration.maxEventLogSizeInBytes() at
+    // construction and refreshed by applyConfigurationCapacity() so a live PUT /mockserver/configuration
+    // change tracks here too. <= 0 disables the in-flight bound (ring bounded by slot count only),
+    // matching the deque byte budget's "0 disables" contract (e.g. a native image with no heap ceiling).
+    private volatile long maxInFlightBytes;
+    private final AtomicBoolean inFlightBytesDropWarned = new AtomicBoolean(false);
     // Set once the event log has evicted at least one entry to stay within maxLogEntries /
     // maxEventLogSizeInBytes, so the WARN below is emitted exactly once rather than per eviction.
     // The authoritative count lives on the deque (eventLog.getEvictedCount()); this is only the
@@ -196,6 +221,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
             configuration.maxEventLogSizeInBytes(),
             LogEntry::estimatedHeapSize,
             LogEntry::clear);
+        this.maxInFlightBytes = configuration.maxEventLogSizeInBytes();
         startRingBuffer();
     }
 
@@ -209,12 +235,44 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         }
         logEntry.setPort(getPort());
         if (asynchronousEventProcessing) {
+            // Bound the in-flight backlog by BYTES, not just by the ring's slot count. The weight is
+            // computed once here — before publish clears the source via translateTo — and always
+            // tracked (increment on publish, decrement in processLogEntry) INDEPENDENT of the budget,
+            // so the counter cannot drift if maxEventLogSizeInBytes is changed at runtime; the budget
+            // gates only the drop DECISION below. 0 for a body-less entry, so tracking is a no-op on
+            // the overwhelming majority of (small) entries.
+            long budget = maxInFlightBytes;
+            long inFlightWeight = logEntry.estimatedHeapSize();
+            // Would admitting this entry push the in-flight bodies over the budget? (See
+            // wouldExceedInFlightBudget: only rejects when something is already in flight, so a single
+            // body larger than the whole budget is still admitted — mirroring the deque's "one
+            // oversized element is still retained" rule.)
+            if (wouldExceedInFlightBudget(budget, inFlightBytes.get(), inFlightWeight)) {
+                // In-flight byte budget reached: drop rather than let the ring backlog exhaust the
+                // heap. Same observable accounting as a full ring (count + Prometheus counter + a
+                // once-only WARN), but named for the byte bound so the remedy points at body size /
+                // the budget rather than at ringBufferSize (more slots would hold MORE large bodies,
+                // making the OOM worse). Like an eviction/ring-full drop this loses the entry, so a
+                // later verify against it cannot prove presence — announced, not silent.
+                droppedLogEvents.incrementAndGet();
+                droppedLogEventsSinceLogReset.incrementAndGet();
+                Metrics.incrementDroppedLogEvents();
+                if (inFlightBytesDropWarned.compareAndSet(false, true)) {
+                    logger.warn("Log event in-flight byte budget reached (maxEventLogSizeInBytes=" + budget + " bytes) — dropping log events whose request/response bodies would exceed it while they wait to be processed, to bound the ring backlog and avoid running out of memory. The bodies waiting to be logged are arriving faster than they can be processed and recorded (most acute at a verbose log level, which renders every entry). To keep more coverage, cheapest first: (1) record smaller bodies — set maxLoggedBodyBytes to truncate large bodies; (2) lower the log level (e.g. to WARN) so the log consumer drains the backlog faster; (3) if you have heap headroom, raise maxEventLogSizeInBytes, or set it to 0 to bound by ring slot count only. Dropped events are not retrievable and cannot be verified.");
+                }
+                // if dropping, only mirror WARN and ERROR to the logger (as the ring-full path does)
+                if (logEntry.getLogLevel().toInt() >= Level.WARN.toInt()) {
+                    logger.warn("Too many in-flight log event bytes to add log event to ring buffer: " + logEntry);
+                }
+                return;
+            }
             if (!disruptor.getRingBuffer().tryPublishEvent(logEntry)) {
                 // ring buffer full: the event is dropped. Make the drop observable — count it,
                 // mirror it to the Prometheus mock_server_dropped_log_events counter (no-op when
                 // metrics are disabled), and WARN once so the saturation cliff surfaces in the log
                 // even for INFO/DEBUG events (which were previously dropped silently).
                 droppedLogEvents.incrementAndGet();
+                droppedLogEventsSinceLogReset.incrementAndGet();
                 Metrics.incrementDroppedLogEvents();
                 if (droppedLogEventWarned.compareAndSet(false, true)) {
                     logger.warn("Log event ring buffer full — dropping log events; increase ringBufferSize or reduce log verbosity to avoid losing events");
@@ -223,6 +281,9 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                 if (logEntry.getLogLevel().toInt() >= Level.WARN.toInt()) {
                     logger.warn("Too many log events failed to add log event to ring buffer: " + logEntry);
                 }
+            } else if (inFlightWeight > 0) {
+                // Published: this body is now in flight until the consumer processes it (see processLogEntry).
+                inFlightBytes.addAndGet(inFlightWeight);
             }
         } else {
             processLogEntry(logEntry);
@@ -289,6 +350,11 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     public void applyConfigurationCapacity() {
         eventLog.setMaxSize(configuration.maxLogEntries());
         eventLog.setMaxBytes(configuration.maxEventLogSizeInBytes());
+        // Keep the in-flight (ring backlog) byte bound in step with the retained (deque) byte bound;
+        // both are driven by maxEventLogSizeInBytes. A shrink of the in-flight bound cannot evict what
+        // is already in the ring (the ring is not resizable — see startRingBuffer), but it does apply
+        // to every subsequent publish, so the backlog trends down to the new bound as it drains.
+        this.maxInFlightBytes = configuration.maxEventLogSizeInBytes();
     }
 
     /**
@@ -370,6 +436,17 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     }
 
     private void processLogEntry(LogEntry logEntry) {
+        // This entry is leaving the in-flight backlog. Decrement by the SAME weight add() incremented
+        // by (estimatedHeapSize is deterministic for the same body references), before cloneAndClear
+        // clears the slot. Unconditional on the asynchronous path — matching the unconditional
+        // increment in add() — so the pair balances even if maxEventLogSizeInBytes is changed at
+        // runtime; in the synchronous path nothing was ever published to the ring, so nothing to undo.
+        if (asynchronousEventProcessing) {
+            long inFlightWeight = logEntry.estimatedHeapSize();
+            if (inFlightWeight > 0) {
+                inFlightBytes.addAndGet(-inFlightWeight);
+            }
+        }
         logEntry = logEntry.cloneAndClear();
         // Disk capture runs FIRST so persisted recorded requests keep full fidelity even when
         // maxLoggedBodyBytes truncates the in-memory copy below. (Recommended combo: disk-capture ON
@@ -407,6 +484,34 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         }
         notifyListeners(this, false);
         writeToSystemOut(logger, logEntry, configuration);
+    }
+
+    /**
+     * Decide whether admitting an entry of {@code incomingWeight} body bytes would push the in-flight
+     * (published-but-not-yet-processed) backlog over {@code budget}. Kept as a pure static function so
+     * the boundary rules are unit-testable without driving the disruptor.
+     * <ul>
+     *   <li>{@code budget <= 0} — the in-flight byte bound is disabled (ring bounded by slot count
+     *   only); never rejects.</li>
+     *   <li>{@code incomingWeight <= 0} — a body-less entry (e.g. a control/RUNNABLE or a bodyless
+     *   diagnostic) costs nothing to hold in flight; never rejects.</li>
+     *   <li>{@code inFlight <= 0} — nothing is in flight, so a single entry is always admitted even if
+     *   its body alone exceeds the budget (never reject into an empty backlog), matching the deque's
+     *   "one oversized element is still retained" rule.</li>
+     * </ul>
+     * Otherwise rejects once {@code inFlight + incomingWeight} exceeds {@code budget}.
+     */
+    static boolean wouldExceedInFlightBudget(long budget, long inFlight, long incomingWeight) {
+        return budget > 0 && incomingWeight > 0 && inFlight > 0 && inFlight + incomingWeight > budget;
+    }
+
+    /**
+     * Body bytes currently in flight (published to the ring, not yet processed). Package-private for
+     * tests: after the disruptor has drained this returns to zero, proving the add()/processLogEntry
+     * accounting balances.
+     */
+    long getInFlightBytes() {
+        return inFlightBytes.get();
     }
 
     /**
@@ -538,9 +643,14 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
             .setType(RUNNABLE)
             .setConsumer(() -> {
                 // clear() also zeroes the deque's eviction counter; re-arm the warn-once latch so a
-                // fresh round of eviction after this reset is reported again.
+                // fresh round of eviction after this reset is reported again. Do the same for the drop
+                // taint and its warn latches so a suite that reset()s between tests is not left
+                // permanently unable to prove absence (or silent) after one round of drops.
                 eventLog.clear();
                 evictedLogEntryWarned.set(false);
+                droppedLogEventsSinceLogReset.set(0);
+                inFlightBytesDropWarned.set(false);
+                droppedLogEventWarned.set(false);
                 future.complete("done");
                 notifyListeners(this, false);
             })
@@ -615,6 +725,9 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                     // nothing about the other evidence eviction already destroyed.
                     eventLog.resetEvictedCount();
                     evictedLogEntryWarned.set(false);
+                    droppedLogEventsSinceLogReset.set(0);
+                    inFlightBytesDropWarned.set(false);
+                    droppedLogEventWarned.set(false);
                 }
                 if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
                     mockServerLogger.logEvent(
@@ -1137,32 +1250,45 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
             return null;
         }
         long evicted = eventLog.getEvictedCount();
-        if (evicted <= 0) {
+        // Two distinct ways the log stops being a complete record, BOTH fatal to proving absence:
+        //  - EVICTION: a recorded entry was discarded from the retained deque (count or byte bound).
+        //  - DROP: an incoming entry was never recorded at all, because the in-flight ring backlog hit
+        //    the byte budget or the ring was full. The drop path is weight/type-agnostic, so the entry
+        //    most likely dropped under large-body load is exactly a RECEIVED_REQUEST — the entry a
+        //    request verify reads — which is why a drop MUST taint this path too and not only eviction.
+        long dropped = droppedLogEventsSinceLogReset.get();
+        if (evicted <= 0 && dropped <= 0) {
             return null;
         }
         // Name the bound that actually evicted so the remedy points at the right property. The byte
         // budget and the count cap are both active by default (whichever binds first evicts), and a
         // message that always blamed maxLogEntries would send an operator to raise a limit that was
-        // not the one hit.
-        // Lifetime scope, deliberately. This says the byte budget has evicted at some point on this
-        // log, not that the entries THIS verification wanted were byte-evicted rather than count-
-        // evicted. On a long-lived server where both bounds have bitten it can therefore name the
-        // byte budget when the missing entries went to the count cap. It is a remedy hint and both
-        // levers are documented, so the imprecision costs the reader a wrong first guess at worst;
-        // attributing per-entry would mean recording the cause on every evicted entry, which is a
-        // real cost on the hot path for a message almost nobody reads.
+        // not the one hit. Lifetime scope, deliberately (see the eviction-counter note): this says the
+        // byte budget has evicted at some point on this log, not that THIS verification's entries were
+        // byte- rather than count-evicted; it is a remedy hint and both levers are documented.
         boolean byteBoundHit = eventLog.getByteEvictedCount() > 0;
-        String boundDetail = byteBoundHit
-            ? "its maximum size in bytes (maxEventLogSizeInBytes=" + configuration.maxEventLogSizeInBytes() + ")"
-            : "its maximum number of entries (maxLogEntries=" + configuration.maxLogEntries() + ")";
-        String raiseAdvice = byteBoundHit
-            ? "Increase maxEventLogSizeInBytes (or reduce maxLoggedBodyBytes to retain less body per entry)"
-            : "Increase maxLogEntries (or lower the log level to record fewer entries per request)";
-        return subject + " could not be verified " + verification.getTimes() + " because the event log has discarded "
-            + evicted + " entr" + (evicted == 1 ? "y" : "ies") + " after reaching " + boundDetail
-            + ", so absence cannot be proven — the matching requests may have been"
-            + " evicted rather than never made. " + raiseAdvice + ", reset the event log between tests, or set"
-            + " failVerificationOnEvictedLog=false to restore the previous (unsound) behaviour.";
+        StringBuilder message = new StringBuilder(subject)
+            .append(" could not be verified ").append(verification.getTimes())
+            .append(" because the event log is not a complete record: ");
+        if (dropped > 0) {
+            message
+                .append(dropped).append(dropped == 1 ? " log event was" : " log events were")
+                .append(" DROPPED before being recorded (incoming request/response bodies arrived faster than the log could process them and exceeded the in-flight byte budget maxEventLogSizeInBytes=")
+                .append(configuration.maxEventLogSizeInBytes()).append(" bytes, or the ring buffer was full). ");
+        }
+        if (evicted > 0) {
+            String boundDetail = byteBoundHit
+                ? "its maximum size in bytes (maxEventLogSizeInBytes=" + configuration.maxEventLogSizeInBytes() + ")"
+                : "its maximum number of entries (maxLogEntries=" + configuration.maxLogEntries() + ")";
+            message
+                .append(evicted).append(evicted == 1 ? " recorded entry was" : " recorded entries were")
+                .append(" EVICTED after the log reached ").append(boundDetail).append(". ");
+        }
+        return message
+            .append("Absence cannot be proven — the matching requests may have been discarded rather than never made. ")
+            .append("Increase maxEventLogSizeInBytes / maxLogEntries, reduce maxLoggedBodyBytes, lower the log level, reset the event log between tests, or set")
+            .append(" failVerificationOnEvictedLog=false to restore the previous (unsound) behaviour.")
+            .toString();
     }
 
     private void verifyResponse(Verification verification, String logCorrelationId, boolean logResult, Consumer<String> resultConsumer) {

@@ -1975,17 +1975,44 @@ public class ConfigurationProperties {
     }
 
     // Fraction of the heap-ceiling budget (heapAvailableInKB) allotted by default to the bytes the
-    // event log retains in request/response bodies. A quarter leaves ample room for the expectation
-    // store, in-flight Netty buffers and JVM overhead while still bounding the body memory that the
-    // maxLogEntries count cap cannot see (a count cap treats a 10 MB body the same as a 10-byte one).
+    // event log retains in request/response bodies, at a NON-rendering log level (WARN/ERROR/OFF).
+    // A quarter leaves ample room for the expectation store, in-flight Netty buffers and JVM overhead
+    // while still bounding the body memory that the maxLogEntries count cap cannot see (a count cap
+    // treats a 10 MB body the same as a 10-byte one).
     static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR = 4;
+    // Tighter divisor used at a RENDERING log level (INFO/DEBUG/TRACE). At those levels the log
+    // consumer renders every received-request / response entry to the log, which memoizes the
+    // formatted message string AND materializes the httpUpdated* copies ON the retained entry — so a
+    // retained entry costs roughly TWICE the raw body bytes the weigher (LogEntry.estimatedHeapSize)
+    // counts. Measured on -Xmx512m: real retained heap per counted byte is ~3.7x at INFO versus ~1.9x
+    // at WARN (stable across 64 KB and 256 KB bodies). Halving the counted budget at rendering levels
+    // keeps the REAL retained heap a similar fraction of the ceiling regardless of verbosity, which is
+    // what stops the default (INFO) configuration exhausting a small heap: at heap/4 the INFO deque
+    // alone retained ~0.9x the whole -Xmx512m ceiling; at heap/8 it retains ~0.46x and the server
+    // survives sustained large-body load (measured). WARN/ERROR keep the larger budget — they do not
+    // render these entries, so their retention is not inflated and their coverage is not regressed.
+    static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING = 8;
+
+    /**
+     * True when {@code logLevel} renders every received-request / response log entry to the log
+     * (INFO/DEBUG/TRACE), which inflates each RETAINED entry's heap by the memoized message string and
+     * httpUpdated* copies (see {@link #DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING}). False for
+     * WARN/ERROR/OFF (and a {@code null} level, i.e. OFF), which do not render those entries.
+     */
+    static boolean rendersEveryLogEntry(Level logLevel) {
+        return logLevel != null && logLevel.toInt() <= Level.INFO.toInt();
+    }
 
     /**
      * Derive the default {@code maxEventLogSizeInBytes} — the byte budget bounding the event log's
-     * retained request/response bodies — as {@code heapAvailableInKB / 4} (converted to bytes). Like
-     * {@link #maxLogEntries()} it is derived from the deterministic heap <em>ceiling</em>
+     * retained request/response bodies — from the deterministic heap <em>ceiling</em>
      * ({@link #heapAvailableInKB()}), so it is a constant for the JVM's life and does not depend on
-     * allocation ordering.
+     * allocation ordering. The divisor is log-level-aware: a quarter of the ceiling budget at a
+     * non-rendering level (WARN/ERROR/OFF), an eighth at a rendering level (INFO/DEBUG/TRACE) where
+     * each retained entry costs about twice as much real heap as the weigher counts (see
+     * {@link #DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING}). The same value also bounds the in-flight
+     * ring backlog in {@code MockServerEventLog}, so tightening it at rendering levels bounds both the
+     * retained deque and the ring that the deque budget alone cannot see.
      * <p>
      * Returns {@code 0} (byte budget disabled, log bounded only by {@code maxLogEntries}) when the
      * heap ceiling is undefined ({@code heapAvailableInKB == 0}, e.g. a GraalVM native image where
@@ -1994,13 +2021,17 @@ public class ConfigurationProperties {
      * than pick an arbitrary number. An operator can always set an explicit value.
      *
      * @param heapAvailableInKB the ceiling-based store-sizing budget in KB (never negative)
+     * @param logLevel          the effective log level, which selects the divisor
      * @return the default byte budget in bytes, or {@code 0} to leave the byte budget disabled
      */
-    static long defaultMaxEventLogSizeInBytes(long heapAvailableInKB) {
+    static long defaultMaxEventLogSizeInBytes(long heapAvailableInKB, Level logLevel) {
         if (heapAvailableInKB <= 0) {
             return 0L;
         }
-        return (heapAvailableInKB / DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR) * 1024L;
+        int divisor = rendersEveryLogEntry(logLevel)
+            ? DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING
+            : DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR;
+        return (heapAvailableInKB / divisor) * 1024L;
     }
 
     /**
@@ -2039,8 +2070,46 @@ public class ConfigurationProperties {
     }
 
     public static long maxEventLogSizeInBytes() {
-        return Math.max(0L, readLongProperty(MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES, "MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES",
-            defaultMaxEventLogSizeInBytes(heapAvailableInKB())));
+        // Deliberately NOT resolved through readLongProperty/readPropertyHierarchically: that caches the
+        // resolved value INCLUDING the injected default under the property key and never invalidates it,
+        // freezing it JVM-wide at whatever logLevel() was in force on the first read. Now that the
+        // default is log-level-aware, a first read at WARN/ERROR (e.g. a CI perf run started with
+        // MOCKSERVER_LOG_LEVEL=ERROR) would pin the larger heap/4 budget for a server later running at
+        // INFO — silently disabling the OOM protection this default exists to provide, in the dangerous
+        // direction. So honour only an EXPLICIT override and recompute the (uncached) default from the
+        // current log level on every call — the same pattern, and for the same reason, as
+        // resolveRingBufferSize.
+        Long explicit = explicitMaxEventLogSizeInBytes();
+        if (explicit != null) {
+            return explicit;
+        }
+        return defaultMaxEventLogSizeInBytes(heapAvailableInKB(), logLevel());
+    }
+
+    /**
+     * The explicit {@code maxEventLogSizeInBytes} override — from the programmatic cache, a JVM system
+     * property, the properties file, or an environment variable — clamped to {@code >= 0}, or
+     * {@code null} when only the computed default would apply. Kept separate from
+     * {@link #maxEventLogSizeInBytes()} so {@link Configuration#maxEventLogSizeInBytes()} can honour an
+     * explicit value but otherwise derive the default from the INSTANCE's log level rather than the
+     * static one. Never caches a default (uses {@link #explicitProperty}).
+     */
+    static Long explicitMaxEventLogSizeInBytes() {
+        String explicit = explicitProperty(MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES, "MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES");
+        if (explicit == null) {
+            return null;
+        }
+        try {
+            return Math.max(0L, Long.parseLong(explicit.trim()));
+        } catch (NumberFormatException nfe) {
+            LoggerHolder.LOGGER.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.ERROR)
+                    .setMessageFormat("NumberFormatException converting " + MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES + " with value [" + explicit + "]")
+                    .setThrowable(nfe)
+            );
+            return null; // fall back to the computed default rather than propagate a parse error
+        }
     }
 
     /**
@@ -2051,12 +2120,16 @@ public class ConfigurationProperties {
      * 10 MB body the same as a 10-byte one.
      * </p>
      * <p>
-     * The default is derived from the JVM heap <em>ceiling</em> (a quarter of the same ceiling-based
-     * budget that sizes {@code maxLogEntries}), so it is on by default and constant for the JVM's life.
-     * Set it to {@code 0} to disable the size-based limit and bound the log only by {@code maxLogEntries}.
-     * Whichever of the two bounds is reached first evicts; eviction is announced once per server in the
-     * log and (with the default {@code failVerificationOnEvictedLog=true}) makes upper-bound
-     * verifications fail rather than silently pass on discarded evidence.
+     * The default is derived from the JVM heap <em>ceiling</em>, so it is on by default and constant for
+     * the JVM's life: a quarter of the same ceiling-based budget that sizes {@code maxLogEntries} at a
+     * non-rendering log level (WARN/ERROR), and an eighth at a rendering level (INFO/DEBUG/TRACE), where
+     * each retained entry costs about twice its raw body bytes because the rendered message and derived
+     * copies are memoised on it. The same budget also bounds the bytes held by entries still waiting to
+     * be processed, so it caps both the retained log and the processing backlog. Set it to {@code 0} to
+     * disable the size-based limit and bound the log only by {@code maxLogEntries}. Whichever of the two
+     * bounds is reached first evicts; eviction is announced once per server in the log and (with the
+     * default {@code failVerificationOnEvictedLog=true}) makes upper-bound verifications fail rather than
+     * silently pass on discarded evidence.
      * </p>
      *
      * @param maxEventLogSizeInBytes maximum total size in bytes of the in-memory event log (0 disables the limit)

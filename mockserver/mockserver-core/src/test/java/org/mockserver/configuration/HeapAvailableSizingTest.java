@@ -1,6 +1,7 @@
 package org.mockserver.configuration;
 
 import org.junit.Test;
+import org.slf4j.event.Level;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -170,33 +171,68 @@ public class HeapAvailableSizingTest {
         assertThat(value, is(100000));
     }
 
-    // ----- defaultMaxEventLogSizeInBytes: byte budget is a quarter of the ceiling budget -----
+    // ----- defaultMaxEventLogSizeInBytes: byte budget is a log-level-aware fraction of the ceiling -----
 
     @Test
-    public void shouldDeriveDefaultEventLogByteBudgetAsAQuarterOfTheHeapBudget() {
+    public void shouldDeriveDefaultEventLogByteBudgetAsAQuarterOfTheHeapBudgetAtNonRenderingLevel() {
+        // WARN does not render entries, so retention is not inflated -> a quarter of the ceiling budget.
         // 200,000 KB available -> a quarter is 50,000 KB -> 51,200,000 bytes
-        long value = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L);
+        long value = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.WARN);
 
         assertThat(value, is((200000L / 4) * 1024L));
         assertThat(value, is(51_200_000L));
     }
 
     @Test
+    public void shouldHalveDefaultEventLogByteBudgetAtRenderingLevel() {
+        // INFO renders every entry, memoising the message + derived copies on the retained entry, so a
+        // retained entry costs ~2x its raw body bytes (measured ~3.7x vs ~1.9x at WARN). Halving the
+        // counted budget keeps the REAL retained heap a similar fraction of the ceiling. 200,000 KB ->
+        // an eighth is 25,000 KB -> 25,600,000 bytes, exactly half the WARN budget.
+        long info = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.INFO);
+        long warn = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.WARN);
+
+        assertThat(info, is((200000L / 8) * 1024L));
+        assertThat(info, is(25_600_000L));
+        assertThat(info, is(warn / 2));
+    }
+
+    @Test
+    public void shouldTreatDebugAndTraceAsRenderingLevelsAndErrorAndOffAsNonRendering() {
+        assertThat(ConfigurationProperties.rendersEveryLogEntry(Level.TRACE), is(true));
+        assertThat(ConfigurationProperties.rendersEveryLogEntry(Level.DEBUG), is(true));
+        assertThat(ConfigurationProperties.rendersEveryLogEntry(Level.INFO), is(true));
+        assertThat(ConfigurationProperties.rendersEveryLogEntry(Level.WARN), is(false));
+        assertThat(ConfigurationProperties.rendersEveryLogEntry(Level.ERROR), is(false));
+        // logLevel() returns null when the level is OFF — treated as non-rendering (nothing is rendered)
+        assertThat(ConfigurationProperties.rendersEveryLogEntry(null), is(false));
+
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.DEBUG), is((200000L / 8) * 1024L));
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.ERROR), is((200000L / 4) * 1024L));
+    }
+
+    @Test
     public void shouldDisableDefaultEventLogByteBudgetWhenHeapCeilingUndefined() {
         // heapAvailableInKB == 0 (JMX + Runtime max undefined, e.g. a GraalVM native image) -> byte
-        // budget disabled (0), falling back to the maxLogEntries count cap rather than an arbitrary size
-        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(0L), is(0L));
+        // budget disabled (0) at every level, falling back to the maxLogEntries count cap rather than
+        // an arbitrary size
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(0L, Level.INFO), is(0L));
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(0L, Level.WARN), is(0L));
     }
 
     @Test
     public void shouldScaleDefaultEventLogByteBudgetWithTheHeapCeiling() {
         // the byte budget is deterministic in the ceiling and monotonic — a larger ceiling never
-        // yields a smaller default
-        long smallHeap = ConfigurationProperties.defaultMaxEventLogSizeInBytes(500_000L);
-        long largeHeap = ConfigurationProperties.defaultMaxEventLogSizeInBytes(4_000_000L);
+        // yields a smaller default (checked at both a rendering and a non-rendering level)
+        long smallHeapInfo = ConfigurationProperties.defaultMaxEventLogSizeInBytes(500_000L, Level.INFO);
+        long largeHeapInfo = ConfigurationProperties.defaultMaxEventLogSizeInBytes(4_000_000L, Level.INFO);
+        long smallHeapWarn = ConfigurationProperties.defaultMaxEventLogSizeInBytes(500_000L, Level.WARN);
+        long largeHeapWarn = ConfigurationProperties.defaultMaxEventLogSizeInBytes(4_000_000L, Level.WARN);
 
-        assertThat(smallHeap, is((500_000L / 4) * 1024L));
-        assertThat(largeHeap, is((4_000_000L / 4) * 1024L));
-        assertThat(largeHeap > smallHeap, is(true));
+        assertThat(smallHeapInfo, is((500_000L / 8) * 1024L));
+        assertThat(largeHeapInfo, is((4_000_000L / 8) * 1024L));
+        assertThat(largeHeapInfo > smallHeapInfo, is(true));
+        assertThat(smallHeapWarn, is((500_000L / 4) * 1024L));
+        assertThat(largeHeapWarn > smallHeapWarn, is(true));
     }
 }
