@@ -1,0 +1,9 @@
+{
+  "h2_connection_memory": {
+    "dated_utc": "2026-09-17T11:42:58Z",
+    "method": "in-process client+server; MemoryMXBean.gc() + HeapMemoryUsage.used; C connections x S in-flight (delayed) streams; event log cleared before sampling",
+    "conn_1x1": {"bytes_per_connection": 200112, "spread_pct": 116.30, "connections": 1, "streams_per_connection": 1, "inflight_confirmed": 1, "distinct_connections": 1, "log_occupancy": 0, "heap_baseline_bytes": 32083008, "heap_loaded_bytes": 32158296, "repeats": 5, "samples": [308016, 306736, 200112, 200008, 75288]},
+    "conn_10x10": {"bytes_per_connection": 223965, "spread_pct": 27.68, "connections": 10, "streams_per_connection": 10, "inflight_confirmed": 100, "distinct_connections": 10, "log_occupancy": 0, "heap_baseline_bytes": 41207224, "heap_loaded_bytes": 43336480, "repeats": 5, "samples": [274472, 269308, 223965, 212482, 212925]},
+    "conn_100x10": {"bytes_per_connection": 212198, "spread_pct": 1.35, "connections": 100, "streams_per_connection": 10, "inflight_confirmed": 1000, "distinct_connections": 100, "log_occupancy": 0, "heap_baseline_bytes": 120600016, "heap_loaded_bytes": 141799104, "repeats": 5, "samples": [214387, 212524, 212198, 211523, 211990]}
+  }
+}

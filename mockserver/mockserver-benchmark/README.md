@@ -164,3 +164,81 @@ measurement** (real figures land in the S3 run history from the first CI run). I
 the notify-only `perf-test-h2multiplex.sh` step (perf queue) records it into the
 run-history baseline; there is **no pass/fail threshold yet** because run-to-run
 variance on real agents is unknown — setting one now would be guessing.
+
+## HTTP/2 per-connection memory benchmark (`run-h2-connection-memory.sh`) — issue #2669, item 11
+
+The throughput harness above sweeps streams over **one** connection. This one adds the missing
+**connections axis** — *N connections × M concurrent in-flight streams* (shapes 1×1, 10×10, 100×10) —
+and records the **heap delta per established connection**, exactly what the 8.0.0 changelog warned the
+multiplex migration changed. `Http2ConnectionMemoryBenchmark` boots a real `MockServer` in-process and,
+per shape:
+
+1. forces GC (`MemoryMXBean.gc()`) and reads retained heap as the baseline `H0` (no connections open);
+2. opens `C` real TCP connections, each holding `S` concurrently in-flight streams (the matched response
+   is held open by a long server-side delay, so `C×S` stream child channels stay alive);
+3. **clears the event log** and confirms its occupancy is ~0, so the delta cannot be logged bodies;
+4. forces GC, reads `H1`; `bytes_per_connection = (H1 − H0) / C`;
+
+repeated `H2_MEM_REPEATS` times, reporting the median and sample spread.
+
+```bash
+(cd .. && ./mvnw -pl mockserver-netty -am install -DskipTests)   # one-time
+./run-h2-connection-memory.sh                 # full sweep -> perf-h2-connection-memory.json
+H2_MEM_SHAPES=1x1,5x5 H2_MEM_REPEATS=2 ./run-h2-connection-memory.sh   # tiny smoke
+./run-h2-connection-memory.sh selftest        # prove every gate fires (server-free)
+```
+
+**Establishment is proven, not assumed.** Four gates fail the run loudly (exit 2) rather than publish a
+number over nothing: (1) the driver opened `C` **distinct** local ports (a collapsed/multiplexed client
+fails here); (2) the server confirmed `C×S` in-flight streams — impossible on fewer than `ceil(C×S/100)`
+connections given `MAX_CONCURRENT_STREAMS=100`, an independent protocol-level proof the axis is real
+(1000 in flight ⇒ ≥10 connections); (3) the event log was empty at sample time (delta is not logged
+bodies); (4) the per-connection figure is above a floor (measured *something*) and below a ceiling
+(did not measure the whole heap). The heap is the whole in-process JVM (client + server), so the figure
+is an honest **trend** number; attributing the cost to the *server-side* change is what the cross-version
+comparison below does.
+
+**Output shape.** `{ "h2_connection_memory": { "conn_<C>x<S>": {bytes_per_connection, spread_pct,
+inflight_confirmed, distinct_connections, log_occupancy, heap_baseline_bytes, heap_loaded_bytes, samples,
+…} } }`. The step `perf-test-h2multiplex.sh` merges this with the throughput object into
+`perf-h2-multiplex.json`; `perf-test-compare.sh` persists it into the S3 run history for a dated trend.
+The `h2_connection_memory.*.bytes_per_connection` budget key is committed **non-gating** and currently
+**dormant** (the daily compare's metrics jq does not yet read `.h2_connection_memory` — see the item-11
+note in `perf-budgets.json`).
+
+### Cross-version comparison (`run-h2-connection-memory-compare.sh`) — the changelog's whole point
+
+A new number means nothing without something to compare it to. This script answers the changelog directly:
+it drives the **same external client** (`hold` mode) against two server images in turn and diffs the server
+**container's RSS** per established connection (RSS, not heap, because it is the one measure available
+uniformly for any published image, and it captures heap + Netty direct buffers). Because the client is
+identical, the difference is attributable to the server-side change. It warms the h2 stream path before the
+idle baseline so one-time JVM warm-up is not mis-charged to the measured connections.
+
+```bash
+H2_MEM_COMPARE_IMAGES="mockserver/mockserver:7.6.0 mockserver/mockserver:mockserver-8.0.0" \
+  ./run-h2-connection-memory-compare.sh          # requires the module compiled + docker
+```
+
+**Result (2026-09-17, `-m 512m`, 3 repeats, median), pre-multiplex 7.6.0 vs first-multiplex 8.0.0:**
+
+| shape  | 7.6.0 (pre-multiplex) | 8.0.0 (multiplex) | delta |
+|--------|----------------------:|------------------:|------:|
+| 1×1    | 209,715 B/conn        | 209,716 B/conn    | ~0 (below RSS 0.1 MiB granularity — one connection is unresolvable) |
+| 10×10  | 356,515 B/conn        | 346,030 B/conn    | within noise (spreads 29–39% overlap) |
+| 100×10 | 271,581 B/conn (spread 4.2%) | 338,690 B/conn (spread 6.2%) | **+24.7%** (~+67 KB/conn ≈ ~6.7 KB per concurrent stream child-channel) |
+
+**Conclusion.** The changelog's warning is **confirmed and quantified**: the HTTP/2-multiplex migration did
+raise per-connection memory — by ~25% at the 100×10 shape RSS can resolve with low spread (the extra
+~67 KB/connection is broadly the cost of the 10 concurrent stream-as-child-channels the design adds). It is
+a **modest** increase, not the multi-fold blow-up a naive un-warmed measurement first suggested (before the
+h2-path warm-up fix, un-amortised first-traffic JVM warm-up inflated it to a spurious ~2.7×). At 1×1 and
+10×10 the difference is within RSS granularity/run-to-run noise.
+
+> **Read the delta, not the absolute.** The trustworthy quantity is the **cross-version delta**, because the
+> identical client and identical warm-up are applied to both images so everything else cancels. The absolute
+> `bytes_per_connection` is **not** a pure per-connection cost: the warm-up opens a fixed 10×10 = 100 streams
+> regardless of the measured shape, which pre-grows Netty's pooled arena, so the 100×10 figure is the
+> *marginal* cost beyond a ~100-stream-warm process. Likewise the in-process absolute figures are
+> whole-JVM (client + server) heap. Treat both absolutes as trend/order-of-magnitude signals; treat the
+> cross-version delta as the answer to "did per-connection memory change at 8.0.0?".
