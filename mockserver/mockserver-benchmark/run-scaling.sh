@@ -17,7 +17,7 @@
 #   SCALING_RESULT_PATH=/path/to/perf-scaling.json ./run-scaling.sh  # custom output path
 #
 # Env overrides:
-#   JMH_ARGS_SCALING    JMH iteration/fork/time args (default: -f 1 -wi 3 -i 5 -r 2 -w 2)
+#   JMH_ARGS_SCALING    JMH iteration/fork/time args (default: -f 2 -wi 2 -i 3 -r 2 -w 2)
 #   SCALING_RESULT_PATH output contract file (default: <repo-root>/perf-scaling.json)
 #
 # Requires JDK 17+, Maven and jq. Builds mockserver-netty plus its upstream
@@ -31,7 +31,9 @@ cd "${DIR}"
 
 # Bounded by default; override for a fast validation run. JMH forks a JVM per param
 # combo, so iteration counts multiply across the (many) combos below — keep them small.
-JMH_ARGS_SCALING="${JMH_ARGS_SCALING:--f 1 -wi 3 -i 5 -r 2 -w 2}"
+# -f 2 (item 15c): two forks sample inter-fork JIT variance so the reported dispersion
+# is not understated; iterations trimmed (-wi 3->2, -i 5->3) so wall-clock stays bounded.
+JMH_ARGS_SCALING="${JMH_ARGS_SCALING:--f 2 -wi 2 -i 3 -r 2 -w 2}"
 SCALING_RESULT_PATH="${SCALING_RESULT_PATH:-${REPO_ROOT}/perf-scaling.json}"
 
 RAW_MATCHING="${DIR}/target/jmh-scaling-matching.json"

@@ -13,7 +13,13 @@ set -euo pipefail
 #   2. persist to s3://<bucket>/runs/<branch>/<iso>__<sha>.json   (history)
 #   3. pull the last N PRIOR runs; if < MIN_BASELINE, annotate "warming up"
 #   4. per metric: rolling baseline = median + MAD; flag a regression when the
-#      head value crosses max(median + 3·1.4826·MAD, percent-floor / abs-floor)
+#      head value crosses max(median + 3·1.4826·MAD, percent-floor / abs-floor).
+#      The per-metric dir / min_pct / abs-floor / gating flags are NOT hardcoded
+#      here — they are read from the committed, reviewed
+#      mockserver-performance-test/perf-budgets.json, so a floor can only be
+#      loosened by a reviewed diff. The annotation names that file's last-changed
+#      commit. FAIL CLOSED: a missing/corrupt budget file, an unknown budget
+#      provenance commit, or a run metric with no budget entry goes RED (exit 1).
 #   5. post a Buildkite annotation table; exit non-zero iff a GATING metric flagged
 #
 # Only metrics with a derived, trustworthy budget start gating (JMH micro-benchmark
@@ -45,18 +51,63 @@ annotate() { # style, body
   printf '\n%s\n' "$2"
 }
 
+# --- 0. load committed budget floors ------------------------------------------
+# The absolute floors used by the compare below live in a committed, reviewed
+# JSON file (mockserver-performance-test/perf-budgets.json), NOT hardcoded in
+# this jq, so a floor can only be loosened by a reviewed diff. FAIL CLOSED: a
+# missing or unparseable budget file, or a run metric with no budget entry, must
+# go RED — a silent default of "no floor" would be a false green. See
+# docs/plans/performance-programme.md -> "Budgets that ratchet".
+BUDGETS_FILE="${PERF_BUDGETS_FILE:-$REPO_ROOT/mockserver-performance-test/perf-budgets.json}"
+if [ ! -f "$BUDGETS_FILE" ]; then
+  annotate "error" ":no_entry: **Perf budget file MISSING — cannot compare** — expected \`${BUDGETS_FILE}\`.
+
+The committed absolute floors could not be found, so the regression gate cannot run. This fails the build deliberately (fail-closed): a missing budget must never silently mean \"no floor\"."
+  exit 1
+fi
+if ! jq empty "$BUDGETS_FILE" >/dev/null 2>&1; then
+  annotate "error" ":no_entry: **Perf budget file UNPARSEABLE — cannot compare** — \`${BUDGETS_FILE}\` is not valid JSON.
+
+This fails the build deliberately (fail-closed): a corrupt budget file must never silently mean \"no floor\"."
+  exit 1
+fi
+if [ "$(jq -r '(.budgets | type) // "null"' "$BUDGETS_FILE" 2>/dev/null)" != "object" ]; then
+  annotate "error" ":no_entry: **Perf budget file has no \`budgets\` object — cannot compare** — \`${BUDGETS_FILE}\`.
+
+This fails the build deliberately (fail-closed): the floors could not be read."
+  exit 1
+fi
+
+# Name the budget file's last-changed commit in the annotation so a silent
+# loosening is visible in the build output, not only in git history. If git
+# metadata is unavailable (not a checkout) or the file is uncommitted, we CANNOT
+# prove the floors were reviewed, so FAIL LOUDLY rather than print a blank or a
+# misleading provenance. Override via PERF_BUDGETS_COMMIT for local testing only.
+BUDGETS_COMMIT="${PERF_BUDGETS_COMMIT:-}"
+if [ -z "$BUDGETS_COMMIT" ]; then
+  BUDGETS_COMMIT="$(git -C "$REPO_ROOT" log -1 --format=%H -- "$BUDGETS_FILE" 2>/dev/null || true)"
+fi
+if [ -z "$BUDGETS_COMMIT" ]; then
+  annotate "error" ":no_entry: **Perf budget provenance UNKNOWN — cannot vouch for the floors** — \`git log\` reported no commit for \`${BUDGETS_FILE}\` (not a git checkout, or the file is uncommitted).
+
+The annotation must name the budget file's last-changed commit so a silent loosening is visible. Without it the floors cannot be proven reviewed, so this fails the build deliberately (fail-closed). Set \`PERF_BUDGETS_COMMIT\` only for local testing."
+  exit 1
+fi
+
 # --- 1. gather this run's result ----------------------------------------------
 RESULT="$WORK/result.json"
 if command -v buildkite-agent >/dev/null 2>&1; then
   buildkite-agent artifact download perf-result.json "$WORK/" || { echo "ERROR: no perf-result.json artifact" >&2; exit 0; }
   cp "$WORK/perf-result.json" "$RESULT"
   buildkite-agent artifact download perf-microbench.json "$WORK/" 2>/dev/null || true
+  buildkite-agent artifact download perf-microbench-extra.json "$WORK/" 2>/dev/null || true
   buildkite-agent artifact download perf-sweep.json "$WORK/" 2>/dev/null || true
   buildkite-agent artifact download perf-scaling.json "$WORK/" 2>/dev/null || true
   buildkite-agent artifact download perf-h2-multiplex.json "$WORK/" 2>/dev/null || true
 else
   cp "${PERF_RESULT_FILE:-$REPO_ROOT/perf-result.json}" "$RESULT"
   [ -f "$REPO_ROOT/perf-microbench.json" ] && cp "$REPO_ROOT/perf-microbench.json" "$WORK/perf-microbench.json" || true
+  [ -f "$REPO_ROOT/perf-microbench-extra.json" ] && cp "$REPO_ROOT/perf-microbench-extra.json" "$WORK/perf-microbench-extra.json" || true
   [ -f "$REPO_ROOT/perf-sweep.json" ] && cp "$REPO_ROOT/perf-sweep.json" "$WORK/perf-sweep.json" || true
   [ -f "$REPO_ROOT/perf-scaling.json" ] && cp "$REPO_ROOT/perf-scaling.json" "$WORK/perf-scaling.json" || true
   [ -f "$REPO_ROOT/perf-h2-multiplex.json" ] && cp "$REPO_ROOT/perf-h2-multiplex.json" "$WORK/perf-h2-multiplex.json" || true
@@ -64,6 +115,12 @@ fi
 # Merge micro-benchmark results into the run object if present.
 if [ -f "$WORK/perf-microbench.json" ]; then
   jq -s '.[0] * .[1]' "$RESULT" "$WORK/perf-microbench.json" > "$WORK/merged.json" && mv "$WORK/merged.json" "$RESULT"
+fi
+# Merge the promoted dark-benchmark results (item 15b) — same shape, under
+# `microbench_extra`. Consumed NON-GATING below (notify-only: no baseline history
+# yet), so a regression on one annotates but does NOT fail the build.
+if [ -f "$WORK/perf-microbench-extra.json" ]; then
+  jq -s '.[0] * .[1]' "$RESULT" "$WORK/perf-microbench-extra.json" > "$WORK/merged.json" && mv "$WORK/merged.json" "$RESULT"
 fi
 # Persist the throughput-vs-latency sweep + JMH scaling sweep into the stored run
 # so the S3 history keeps them. NOTIFY-ONLY: these are recorded for the doc-site
@@ -96,30 +153,53 @@ KEY="runs/${BRANCH}/${TS//:/-}__${COMMIT:0:10}.json"
 # The run's own `validity` block records whether the measurement RIG was sound
 # (client had CPU headroom, k6 dropped no iterations, resource samples captured,
 # latency metrics present). Baselining an invalid run would poison the rolling
-# median with garbage, so REFUSE: annotate an error, and do NOT persist to the
-# history and do NOT compare. Notify-only overall (exit 0), but loud. A run
-# produced by perf-test-run.sh always carries the block; an ABSENT block (older
-# producer or a truncated run) is treated as invalid on purpose.
+# median with garbage, so REFUSE to persist or compare it. A run produced by
+# perf-test-run.sh always carries the block; an ABSENT block (older producer or a
+# truncated run) is treated as invalid on purpose.
+#
+# FAIL THE BUILD (exit 1), do not exit 0. Rationale (asked to decide + justify):
+# the user's model is "a failing pipeline IS the notification, checked regularly",
+# so a GREEN daily build asserts "measured, and OK". An invalid run measured
+# nothing trustworthy — a green square there is a false green (the exact failure
+# mode this programme keeps finding), and it is consistent with perf-test-run.sh
+# already refusing (exit 1) to emit an unrecordable config and with item 0's
+# principle of never emitting a result that misrepresents what it measured. The
+# counter-argument — a transient rig blip (a noisy cloud neighbour dropping k6
+# iterations) fires an unactionable red — is real but weaker here: this is the
+# DAILY run, not a per-commit gate; agent-loss/Spot transients are already caught
+# by the pipeline's exit -1/255 auto-retry (a DIFFERENT signal from rig-invalidity);
+# and a validity failure that recurs IS actionable (the rig needs attention). The
+# silent-staleness a green invalid run causes is worse than a loud, investigable red.
 VALID="$(jq -r '.validity.valid // "absent"' "$RESULT")"
 if [ "$VALID" != "true" ]; then
   FAILED_CHECKS="$(jq -r '
     (.validity.checks // []) | map(select(.ok != true))
     | if length == 0 then "- (no validity block present in this run)"
       else map("- **\(.name)**: \(.detail)") | join("\n") end' "$RESULT")"
-  annotate "error" ":no_entry: **Perf run INVALID — not baselined** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+  annotate "error" ":no_entry: **Perf run INVALID — build FAILED, not baselined** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
 
-This run's \`validity\` block is absent or false, so it was **not persisted to the baseline history and not compared** — a compromised measurement must not poison the rolling median (the inject harness's discipline: exclude a bad point, don't report it).
+This run's \`validity\` block is absent or false, so it was **not persisted to the baseline history and not compared** — a compromised measurement must not poison the rolling median (the inject harness's discipline: exclude a bad point, don't report it). **This fails the build** so a run that could not measure anything is loud, not a green square that misrepresents it as OK.
 
 Failing checks:
 ${FAILED_CHECKS}"
-  exit 0
+  exit 1
 fi
 
 # --- 2. persist this run to S3 (history) --------------------------------------
+# FATAL on failure. A failed S3 write used to only WARN and continue, leaving the
+# build GREEN having stored nothing: the baseline then silently stops refreshing
+# while every later comparison reports OK against an ever-staler window — invisible
+# rot, the worst kind of false green. A run that could not be recorded must go RED so
+# the storage failure is investigated, not accumulate silently.
 HAVE_AWS=false
 if command -v aws >/dev/null 2>&1 && [ -z "${PERF_BASELINE_DIR:-}" ]; then
   HAVE_AWS=true
-  aws s3 cp "$RESULT" "s3://${BUCKET}/${KEY}" --only-show-errors || echo "WARNING: failed to persist run to S3" >&2
+  if ! aws s3 cp "$RESULT" "s3://${BUCKET}/${KEY}" --only-show-errors; then
+    annotate "error" ":no_entry: **Perf run NOT persisted — build FAILED** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+Writing this run to \`s3://${BUCKET}/${KEY}\` failed, so it was **not stored in the baseline history**. Left green, the baseline would stop refreshing while comparisons kept reporting OK against a stale window (silent rot). This fails the build deliberately so the storage failure is fixed, not accumulated. Check S3 permissions / bucket / connectivity from the perf agent."
+    exit 1
+  fi
 fi
 
 # --- 3. pull the last N PRIOR runs --------------------------------------------
@@ -178,95 +258,162 @@ def fabs: if . < 0 then -. else . end;
 def median: sort | length as $n | if $n==0 then null elif ($n%2==1) then .[($n/2|floor)] else (.[$n/2-1]+.[$n/2])/2 end;
 def mad($m): map((. - $m)|fabs) | median;
 
-# Flat list of comparable metrics for one run object. Each carries `gating`:
-# true  -> a flagged regression FAILS the build (non-zero exit).
-# false -> a flagged regression is reported just as loudly but is informational
-#          only (notify-only until it earns a budget from >=10 clean runs).
-# Only metrics with a derived, trustworthy budget gate today; see the header.
+# Flat list of comparable metrics for one run object. Each metric carries a
+# `bkey` (budget key) resolved against $budgets (loaded from the committed
+# perf-budgets.json). The tail below folds in that entry dir / min_pct /
+# floor / gating; a run metric whose bkey is absent from $budgets is a fail-
+# closed error (see the tail of this program and the MISSING_COUNT check). The
+# wildcard bkeys `behaviours.*.<m>` / `microbench.*.<m>` cover every runtime
+# behaviour / benchmark key of that shape. Rationale for WHY each metric gates or
+# is notify-only, and how its floor was chosen, now lives in perf-budgets.json.
 def metrics:
   ((.behaviours // {}) | to_entries[] | .key as $k | .value as $v |
-    # k6 latency percentiles: notify-only. The percentiles were only just fixed
-    # (4ce6ae27b measures the server, not k6 scenario-start) so they have zero
-    # clean runs of history behind them — gating now would fire on noise.
-    ( {name:($k+".p95_ms"),        value:$v.p95_ms,        dir:"up",   min_pct:0.10, floor:null,  gating:false},
-      {name:($k+".p99_ms"),        value:$v.p99_ms,        dir:"up",   min_pct:0.10, floor:null,  gating:false},
-      # throughput_rps is DELIBERATELY not budgeted (but still recorded, with
-      # offered_rps + dropped_iterations + delivery_ratio alongside it). It is
-      # count(COMPLETED)/duration, and k6 drops iterations when its VU pool cannot
-      # keep up — so a shortfall below offered is AMBIGUOUS (server slower vs client
-      # VU-starved) and must not carry a budget until the 4-11% shortfall seen in
-      # real runs is understood. peak_achieved_rps (below) is the budgeted ceiling
-      # signal; the delivery ratio is surfaced in the annotation instead.
-      # Per-behaviour error_rate: notify-only (its 0.005 floor is not yet
-      # history-derived; only forward.error_rate gates today).
-      {name:($k+".error_rate"),    value:$v.error_rate,    dir:"up",   min_pct:0,    floor:0.005, gating:false} ) ),
+    # k6 latency percentiles + per-behaviour error_rate. throughput_rps is
+    # DELIBERATELY not budgeted (recorded with offered_rps + dropped_iterations +
+    # delivery_ratio alongside): a shortfall below offered is AMBIGUOUS (server
+    # slower vs client VU-starved). peak_achieved_rps (below) is the ceiling signal.
+    ( {name:($k+".p95_ms"),     value:$v.p95_ms,     bkey:"behaviours.*.p95_ms"},
+      {name:($k+".p99_ms"),     value:$v.p99_ms,     bkey:"behaviours.*.p99_ms"},
+      {name:($k+".error_rate"), value:$v.error_rate, bkey:"behaviours.*.error_rate"} ) ),
   ((.growth // {}) |
-    ( # CPU/heap at constant load should hold ~1.0 → tight absolute floor.
-      # Latency is noisier (GC/warmup) so its floor has headroom; the rolling
-      # median+MAD remains the sensitive gate for an INTRODUCED regression. Both
-      # are far below a #2329-class signal (CPU saturation / latency ~hundreds×).
-      # Growth ratios stay notify-only until 10 clean runs establish their variance.
-      {name:"growth.cpu_ratio",  value:(.cpu_pct.ratio),         dir:"up", min_pct:0.10, floor:1.30, gating:false},
-      {name:"growth.heap_ratio", value:(.heap_used_bytes.ratio), dir:"up", min_pct:0.10, floor:1.30, gating:false},
-      # A ratio detects a SLOPE; an absolute detects a STEP. A leak that plateaus
-      # at the ring cap gives ratio ~1.0 while the live set is permanently doubled,
-      # and an elevated first-window floor (warm-up garbage) inflates the ratio
-      # denominator and hides a real leak. So budget the absolute live-set floor
-      # (min heap over the last 60 s) too, on the rolling median+MAD. Notify-only.
-      {name:"growth.live_set_bytes", value:(.heap_used_bytes.min_last_window), dir:"up", min_pct:0.10, floor:null, gating:false},
-      {name:"growth.p95_ratio",  value:(.p95_ms.ratio),          dir:"up", min_pct:0.10, floor:2.0,  gating:false} ) ),
+    # cpu_ratio/heap_ratio detect a SLOPE; live_set_bytes detects a STEP a plateaued
+    # leak (ratio ~1.0) would hide. p95_ratio is the noisier latency slope.
+    ( {name:"growth.cpu_ratio",      value:(.cpu_pct.ratio),                   bkey:"growth.cpu_ratio"},
+      {name:"growth.heap_ratio",     value:(.heap_used_bytes.ratio),           bkey:"growth.heap_ratio"},
+      {name:"growth.live_set_bytes", value:(.heap_used_bytes.min_last_window), bkey:"growth.live_set_bytes"},
+      {name:"growth.p95_ratio",      value:(.p95_ms.ratio),                    bkey:"growth.p95_ratio"} ) ),
   ((.microbench // {}) | to_entries[] | .key as $k | .value as $v |
-    # JMH micro-benchmarks GATE: deterministic and hardware-independent (forked
-    # JVM, steady-state, low run-to-run noise), the strongest signal in the repo.
-    # alloc_bytes_per_op especially is essentially noise-free. Tight 5% floor.
-    ( {name:($k+".time_per_op"),       value:$v.time_per_op,       dir:"up", min_pct:0.05, floor:null, gating:true},
-      {name:($k+".alloc_bytes_per_op"),value:$v.alloc_bytes_per_op,dir:"up", min_pct:0.05, floor:null, gating:true} ) ),
+    # JMH micro-benchmarks: deterministic and hardware-independent (forked JVM,
+    # steady-state, low run-to-run noise), the strongest signal in the repo.
+    ( {name:($k+".time_per_op"),        value:$v.time_per_op,        bkey:"microbench.*.time_per_op"},
+      {name:($k+".alloc_bytes_per_op"), value:$v.alloc_bytes_per_op, bkey:"microbench.*.alloc_bytes_per_op"} ) ),
+  ((.microbench_extra // {}) | to_entries[] | .key as $k | .value as $v |
+    # Promoted dark benchmarks (item 15b): identical JMH shape to .microbench, but a
+    # SEPARATE budget key so they can be NOTIFY-ONLY while .microbench gates. They
+    # have no baseline history yet; their perf-budgets.json entries omit `gating`
+    # (-> non-gating), so a flagged regression annotates just as loudly but does NOT
+    # fail the build. NOTE: this compare only iterates HEAD metrics, so it CANNOT
+    # detect a benchmark that drift silently drops (a baseline-has-key / head-lacks-it
+    # gap) — a dropped row just disappears here unnoticed. Drift is caught upstream in
+    # the producer (perf-test-microbench.sh), which asserts the EXACT expected row
+    # count (EXTRA_EXPECTED) and fails the step on a partial vanish.
+    ( {name:($k+".time_per_op"),        value:$v.time_per_op,        bkey:"microbench_extra.*.time_per_op"},
+      {name:($k+".alloc_bytes_per_op"), value:$v.alloc_bytes_per_op, bkey:"microbench_extra.*.alloc_bytes_per_op"} ) ),
   # peak_achieved_rps: max achieved throughput across sweep rungs where the k6
-  # CLIENT was sound (CPU headroom, no dropped iterations, low errors) — derived in
-  # perf-test-run.sh. CONTINUOUS (moves proportionally with the real ceiling, e.g.
-  # 36,324 at 48,000 offered), so a 15% relative floor is meaningful. The down
-  # branch honours min_pct. saturation_rps (the knee) is ladder-QUANTISED — its
-  # smallest move is a factor of two — so it is recorded but NOT budgeted here.
-  # Notify-only: proportional to client provisioning, no clean history yet.
-  ( {name:"peak_achieved_rps", value:(.peak_achieved_rps), dir:"down", min_pct:0.15, floor:null, gating:false} ),
-  # forward.error_rate GATES: the forward connection-pool guard (forward.js). ~0
-  # with pooling on (the default); spikes if pooling regresses and the SUT exhausts
-  # ephemeral ports. Absolute floor 0.01 mirrors the k6 threshold in forward.js —
-  # a discriminating pass/fail guard (pool works vs it does not), not a tuned
-  # threshold that needs history to calibrate, so it is safe to gate from day one.
-  ( {name:"forward.error_rate", value:((.forward_guard // {}).error_rate), dir:"up", min_pct:0, floor:0.01, gating:true} );
+  # CLIENT was sound. CONTINUOUS, so a relative floor is meaningful. saturation_rps
+  # (the knee) is ladder-QUANTISED, so it is recorded but NOT budgeted here.
+  ( {name:"peak_achieved_rps", value:(.peak_achieved_rps), bkey:"peak_achieved_rps"} ),
+  # forward.error_rate: the forward connection-pool guard (forward.js) — a
+  # discriminating pass/fail guard (pool works vs it does not).
+  ( {name:"forward.error_rate", value:((.forward_guard // {}).error_rate), bkey:"forward.error_rate"} );
 
-($baseline | map([metrics]) | add | map(select(.value != null)) | group_by(.name)
-  | map({key:.[0].name, value:[.[].value]}) | from_entries) as $bmap
-| [ ([ . | metrics ][] | select(.value != null)) as $m
-    | ($bmap[$m.name] // []) as $bv
-    | if ($bv|length) < 1 then {name:$m.name, head:$m.value, gating:$m.gating, status:"no-baseline"}
-      else
-        ($bv|median) as $med
-        | (($bv|mad($med)) * 1.4826) as $sigma
-        | (if $m.dir=="up"
-            then (if $m.floor!=null then ([$med + 3*$sigma, $m.floor]|max)
-                  else ([$med + 3*$sigma, $med*(1+$m.min_pct)]|max) end) as $th
-                 | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
-                    gating:$m.gating, regression: ($m.value > $th)}
-            else (if $m.floor!=null then ([$med - 3*$sigma, $m.floor]|min)
-                  else ([$med - 3*$sigma, $med*(1-$m.min_pct)]|min) end) as $th
-                 | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
-                    gating:$m.gating, regression: ($m.value < $th)} end)
-      end ] as $rows
-| { count: ([$rows[]|select(.regression==true)]|length),
-    gating_count: ([$rows[]|select(.regression==true and .gating==true)]|length),
-    nongating_count: ([$rows[]|select(.regression==true and .gating!=true)]|length),
-    rows: $rows }
+# Build a {name: [values]} baseline map from a set of runs. `add // []` guards the
+# EMPTY-set case (e.g. no baseline run matches the head JMH config): [] | add is null,
+# and iterating null throws — an empty run set must yield an empty map, not an error.
+def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != null))
+  | group_by(.name) | map({key:.[0].name, value:[.[].value]}) | from_entries);
+
+# JMH methodology fingerprint of the HEAD run (item 15c baseline-discontinuity guard).
+# microbench / microbench_extra metrics are only comparable against baseline runs
+# measured under the SAME .config.jmh — a methodology change (e.g. -f1 6s warmup ->
+# -f2 4s warmup) can shift absolute timings, which against a differently-measured
+# baseline would fire a SPURIOUS gating regression. So the microbench baseline is the
+# subset of runs whose fingerprint matches head; a methodology change self-invalidates
+# its own baseline (those metrics take the no-baseline branch until history repopulates
+# under the new config), and NO false red fires. Historical runs (no .config.jmh, null)
+# never match a new fingerprinted head, so they drop out cleanly. All OTHER metrics
+# (k6/growth/rps) keep using the full baseline — this filter is microbench-only.
+(.config.jmh // null) as $headjmh
+| $baseline as $ballruns
+| [ $ballruns[] | select((.config.jmh // null) == $headjmh) ] as $bmicroruns
+| bmapof($ballruns) as $bmapAll
+| bmapof($bmicroruns) as $bmapMicro
+| ([ [ . | metrics ][] | select(.value != null) ]) as $headmetrics
+# FAIL CLOSED: any run metric with a non-null value whose budget key is absent
+# from the committed perf-budgets.json is reported as `missing` (the bash caller
+# turns a non-empty `missing` into a red build). A missing budget must never be
+# silently skipped — that would default the metric to "no floor".
+| ([ $headmetrics[] | select(($budgets[.bkey]) == null) | {name:.name, bkey:.bkey} ]) as $missing
+| { baseline_total: ($ballruns|length),
+    baseline_microbench_comparable: ($bmicroruns|length),
+    head_jmh_present: ($headjmh != null) } as $meta
+| if ($missing | length) > 0
+  then ($meta + { missing:$missing, rows:[], count:0, gating_count:0, nongating_count:0 })
+  else
+    [ $headmetrics[]
+      | . as $m0
+      | ($budgets[$m0.bkey]) as $b
+      # gating is OPTIONAL in a budget entry: an omitted `gating` means notify-only
+      # (a flag annotates but does not fail the build), so default it to false.
+      | ($m0 + {dir:$b.dir, min_pct:$b.min_pct, floor:$b.floor, gating:($b.gating // false)}) as $m
+      # microbench(_extra) metrics compare only against config-matching baselines.
+      | (if ($m.bkey|startswith("microbench")) then ($bmapMicro[$m.name] // []) else ($bmapAll[$m.name] // []) end) as $bv
+      # Minimum comparable runs before a THRESHOLD is computed. A config reset leaves the
+      # microbench baseline with 1..MIN_BASELINE-1 points, where MAD~0 collapses the
+      # threshold to median*(1+min_pct) and a single >min_pct cross-day JMH excursion
+      # (more likely now that -wi/-i are trimmed) would fire a SPURIOUS gating red. So
+      # microbench metrics require the FULL MIN_BASELINE of config-matching runs before
+      # gating resumes — matching the global BASE_COUNT warm-up (which keys off the
+      # unfiltered baseline and so does NOT cover this filtered subset). Non-microbench
+      # metrics keep the existing >=1 behaviour (they are never config-filtered).
+      | (if ($m.bkey|startswith("microbench")) then $minbaseline else 1 end) as $minreq
+      | if ($bv|length) < $minreq then {name:$m.name, head:$m.value, gating:$m.gating, status:"no-baseline"}
+        else
+          ($bv|median) as $med
+          | (($bv|mad($med)) * 1.4826) as $sigma
+          | (if $m.dir=="up"
+              then (if $m.floor!=null then ([$med + 3*$sigma, $m.floor]|max)
+                    else ([$med + 3*$sigma, $med*(1+$m.min_pct)]|max) end) as $th
+                   | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
+                      gating:$m.gating, regression: ($m.value > $th)}
+              else (if $m.floor!=null then ([$med - 3*$sigma, $m.floor]|min)
+                    else ([$med - 3*$sigma, $med*(1-$m.min_pct)]|min) end) as $th
+                   | {name:$m.name, head:$m.value, baseline:$med, threshold:$th,
+                      gating:$m.gating, regression: ($m.value < $th)} end)
+        end ] as $rows
+    | ($meta + { missing: [],
+        count: ([$rows[]|select(.regression==true)]|length),
+        gating_count: ([$rows[]|select(.regression==true and .gating==true)]|length),
+        nongating_count: ([$rows[]|select(.regression==true and .gating!=true)]|length),
+        rows: $rows })
+  end
 '
 RESULT_CMP="$(jq -n \
   --slurpfile baselineFile "$WORK/baseline.json" \
   --slurpfile runFile "$RESULT" \
-  '($baselineFile[0]) as $baseline | ($runFile[0]) | '"$COMPARE")"
+  --slurpfile budgetsFile "$BUDGETS_FILE" \
+  --argjson minbaseline "$MIN_BASELINE" \
+  '($baselineFile[0]) as $baseline | ($budgetsFile[0].budgets) as $budgets | ($runFile[0]) | '"$COMPARE")"
+
+# FAIL CLOSED: a run metric with no budget entry must go RED, not be skipped.
+MISSING_COUNT="$(printf '%s' "$RESULT_CMP" | jq -r '.missing | length')"
+if [ "$MISSING_COUNT" -gt 0 ]; then
+  MISSING_LIST="$(printf '%s' "$RESULT_CMP" | jq -r '.missing[] | "- **\(.name)** (budget key `\(.bkey)`)"')"
+  annotate "error" ":no_entry: **Perf budget INCOMPLETE — cannot compare** — ${MISSING_COUNT} metric(s) in this run have no entry in \`$(basename "$BUDGETS_FILE")\` (commit \`${BUDGETS_COMMIT:0:10}\`):
+
+${MISSING_LIST}
+
+This fails the build deliberately (fail-closed): a metric with no committed budget must never be silently skipped. Add a budget entry (a reviewed diff) or remove the metric from the run producer."
+  exit 1
+fi
 
 COUNT="$(printf '%s' "$RESULT_CMP" | jq -r '.count')"
 GATING_COUNT="$(printf '%s' "$RESULT_CMP" | jq -r '.gating_count')"
 NONGATING_COUNT="$(printf '%s' "$RESULT_CMP" | jq -r '.nongating_count')"
+
+# microbench baseline discontinuity (item 15c): when the head run's JMH methodology
+# fingerprint (.config.jmh) differs from some/all baseline runs, only the matching
+# subset is comparable for microbench(_extra) metrics. Surface that VISIBLY — a
+# skipped comparison that looks like a clean pass is the false green we avoid.
+MB_COMPARABLE="$(printf '%s' "$RESULT_CMP" | jq -r '.baseline_microbench_comparable // 0')"
+BASE_TOTAL_CMP="$(printf '%s' "$RESULT_CMP" | jq -r '.baseline_total // 0')"
+HEAD_JMH_PRESENT="$(printf '%s' "$RESULT_CMP" | jq -r '.head_jmh_present // false')"
+MB_NOTE=""
+if [ "$HEAD_JMH_PRESENT" = "true" ] && [ "$MB_COMPARABLE" -lt "$BASE_TOTAL_CMP" ]; then
+  MB_NOTE="
+
+:information_source: **microbench baseline reset — JMH methodology changed.** Only ${MB_COMPARABLE}/${BASE_TOTAL_CMP} baseline run(s) were measured under this run's JMH config (\`.config.jmh\`), so \`microbench.*\` / \`microbench_extra.*\` metrics compare ONLY against those (other metrics use the full baseline). Those metrics stay \`:new: new\` (no comparable baseline, NOT flagged) until at least ${MIN_BASELINE} config-matching runs exist — the same warm-up threshold the global baseline uses — so a methodology change self-invalidates its own baseline and no spurious gating regression fires against a differently-measured baseline (or against a 1..$((MIN_BASELINE-1))-point window where MAD~0 would collapse the threshold to the bare floor). Gating resumes once ${MIN_BASELINE} comparable runs have accrued."
+fi
 
 # --- 5. render annotation -----------------------------------------------------
 # The Status column distinguishes the two kinds of flagged regression:
@@ -298,13 +445,13 @@ EXTRA="$(jq -r '
     + $fginfra)
 ' "$RESULT" 2>/dev/null || echo "")"
 
-# Fold the provenance line and the pre-config-baseline warning into the body so
-# both the regression and the clean annotation carry them.
+# Fold the provenance line, the pre-config-baseline warning, and the microbench
+# baseline-reset note into the body so every annotation (regression or clean) carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${PRECFG_NOTE}"
+${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}"
 
-HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD)"
+HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did
 # (or did not) go red, and how a notify-only metric graduates to gating.
 LEGEND="_Gating metrics_ (JMH \`*.time_per_op\` / \`*.alloc_bytes_per_op\`, \`forward.error_rate\`) **fail the build** when flagged. _Notify-only_ metrics are reported just as loudly but do NOT fail the build — they graduate to gating once they have >=10 clean runs of history and a budget derived from them (see docs/plans/performance-programme.md item 1)."

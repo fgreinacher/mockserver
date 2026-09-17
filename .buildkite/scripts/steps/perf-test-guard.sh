@@ -108,7 +108,16 @@ steps:
     # param combo across MatchingBenchmark (8 combos) + CandidateIndexBenchmark (10
     # combos) after a SECOND core build. With the bounded JMH_ARGS_SCALING this adds
     # ~12-18 min, which can exceed the old 30m budget under cloud-CI noise.
-    timeout_in_minutes: 50
+    # Bumped 50 -> 70 (items 15b/15c): the step now ALSO runs the promoted dark
+    # benchmarks (~20 param combos, one extra JMH invocation on the microbench
+    # classpath — NO third module build) and every JMH run went -f 1 -> -f 2. The
+    # added fork is offset by trimmed iterations (-wi 3->2, -i 5->3), so each combo
+    # is ~+33% wall-clock, not +100%. Laptop JMH compute goes ~6 -> ~16 min
+    # (existing 21 combos +2 min from the fork/iter change; ~20 new dark combos
+    # +8 min). Cloud agents run JMH ~2-3x slower, so that ~10 min laptop delta is
+    # ~20-25 min on the box; 70m keeps the two module builds + all three JMH runs
+    # inside budget under cloud noise.
+    timeout_in_minutes: 70
     agents:
       queue: "perf"
   - label: ":racing_car: perf regression — HTTP/2 multiplex (issue #2669)"
