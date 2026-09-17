@@ -166,6 +166,25 @@ resource "buildkite_pipeline_schedule" "perf_regression_daily" {
   message     = "Scheduled: daily performance regression run"
 }
 
+# Perf baseline-freshness safety-net. Gives the baseline-freshness assertion
+# (.buildkite/scripts/steps/perf-baseline-freshness.sh, in pipeline-infra.yml) a
+# GUARANTEED daily cadence of its own, instead of relying on someone happening to
+# touch an infra path. It runs in mockserver-infra — a DIFFERENT pipeline from the
+# perf producer above — precisely so it survives the producer dying: a decay
+# detector that shares the producer's schedule dies with it. Fires at 16:00 UTC,
+# well clear of the producer (04:00) and the cleanup sweep (06:00), so a dead
+# producer schedule is detected within ~a day. The freshness step keys off the
+# producer's Buildkite build liveness (not S3), so this schedule needs no extra
+# credentials. Autoscaling is unchanged: this only enqueues a build; the queue
+# scales from and back to min_size = 0 on demand.
+resource "buildkite_pipeline_schedule" "infra_baseline_freshness_daily" {
+  pipeline_id = buildkite_pipeline.pipeline["infra"].id
+  label       = "Daily perf baseline freshness check"
+  cronline    = "0 16 * * *"
+  branch      = "master"
+  message     = "Scheduled: assert perf baseline freshness (safety-net)"
+}
+
 locals {
   # Audit finding F-BK-CLOUD-02: pipelines that load secrets via AWS Secrets
   # Manager must be PRIVATE so their build logs are not world-readable. The

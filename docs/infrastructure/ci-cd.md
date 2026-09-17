@@ -151,6 +151,19 @@ OpenAPI spec and fails if the committed `examples/postman/**` or `examples/bruno
 have drifted — so `examples/` and `jekyll-www.mock-server.com/mockserver-openapi.yaml`
 also route to this pipeline.
 
+It also runs the **perf baseline-freshness assertion** (`perf-baseline-freshness.sh`,
+`trigger` queue). This is a decay detector for the daily perf-regression control:
+it lives here, in a *different* pipeline from the perf producer, so it survives that
+producer dying. It keys off **producer liveness via the Buildkite API** — that the
+daily `mockserver-performance-test` schedule is still firing and its most recent
+*scheduled* build passed — rather than the raw age of the S3 baseline object, because
+the producer is commit-gated not to write on a quiet day, so object age cannot tell a
+dead producer apart from a legitimately quiet master. It fails closed (no-schedule,
+stalled, last-run-not-passed, denied, transport each exit non-zero) and, so it has a
+guaranteed cadence rather than depending on an infra-path commit, runs on its **own
+daily Buildkite schedule** (`infra_baseline_freshness_daily` at 16:00 UTC, offset from
+the producer's 04:00 run) as well as on every infra-path build.
+
 ### Buildkite Pipelines
 
 All pipelines are managed via Terraform in `terraform/buildkite-pipelines/pipelines.tf`. Only the main orchestrator pipeline triggers from GitHub webhooks; all child pipelines have `trigger_mode = "none"` and are triggered by the orchestrator.
@@ -164,14 +177,13 @@ All pipelines are managed via Terraform in `terraform/buildkite-pipelines/pipeli
 | `mockserver-python` | `pipeline-python.yml` | Orchestrator | Python unit + integration tests (builds MockServer image from HEAD) |
 | `mockserver-ruby` | `pipeline-ruby.yml` | Orchestrator | Ruby unit + integration tests (builds MockServer image from HEAD) |
 | `mockserver-maven-plugin` | `pipeline-maven-plugin.yml` | Orchestrator | Maven plugin build and test |
-| `mockserver-performance-test` | `pipeline-perf-test.yml` | Orchestrator | Perf test script validation |
+| `mockserver-performance-test` | `pipeline-perf-test.yml` | Orchestrator + daily Buildkite schedule (04:00 UTC) | Perf test script validation on orchestrator builds; on the daily schedule, the performance-regression run — guard + k6 run + JMH microbench + rolling-baseline compare. Both trigger paths are the **same** Buildkite pipeline (Terraform attaches `buildkite_pipeline_schedule.perf_regression_daily` to it); there is no separate `mockserver-perf-regression` pipeline. |
 | `mockserver-container-tests` | `pipeline-container-tests.yml` | Orchestrator | Shell script validation + k3d Helm integration tests (builds the `-clustered` + webhook images from tree-built jar artifacts) |
 | `mockserver-website` | `pipeline-website.yml` | Orchestrator | Jekyll site build |
 | `mockserver-infra` | `pipeline-infra.yml` | Orchestrator | Infrastructure validation |
 | `mockserver-build-image` | `docker-push-maven.yml` | Orchestrator + Manual | Build/push maven CI image |
 | `mockserver-release` | `release-pipeline.yml` | Manual | Automated release pipeline (TOTP, Maven Central, maven-plugin, Docker Hub + ECR Public, npm, Helm, Javadoc, SwaggerHub, website, JSON Schema, PyPI, RubyGems, GitHub Release, optional versioned site) |
 | `mockserver-cleanup` | `pipeline-cleanup.yml` | GitHub webhook + scheduled | Clean up builds for closed PRs |
-| `mockserver-perf-regression` | `pipeline-perf-test.yml` | Daily Buildkite schedule (04:00 UTC) | Daily performance-regression pipeline — guard + k6 run + JMH microbench + rolling-baseline compare |
 
 A single commit can trigger multiple child pipelines if it changes files in multiple areas. For example, a commit touching both `mockserver/` and `mockserver-ui/` triggers both `mockserver-java` and `mockserver-ui` pipelines.
 

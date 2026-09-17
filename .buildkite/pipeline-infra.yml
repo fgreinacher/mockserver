@@ -72,3 +72,28 @@ steps:
           limit: 2
         - exit_status: 255  # agent forced shutdown
           limit: 2
+
+  # Baseline-freshness assertion for the daily perf-regression control. It lives HERE,
+  # in mockserver-infra, ON PURPOSE: a check that lives inside the system it monitors
+  # (the perf pipeline) dies with it, so it sits in a DIFFERENT pipeline. It keys off
+  # PRODUCER LIVENESS via the Buildkite API — that the daily mockserver-performance-test
+  # schedule is still firing and its last completed scheduled build passed — NOT raw S3
+  # object age (which cannot tell a dead producer apart from a legitimately quiet master,
+  # because the producer is commit-gated not to write on a quiet day). See the script
+  # header for the full rationale. Cheap `trigger` queue: one Secrets Manager read + one
+  # Buildkite API call + jq, no build, and the trigger queue already holds the API token.
+  # This step runs on infra-path builds AND on its own daily Buildkite schedule
+  # (terraform/buildkite-pipelines/pipelines.tf) so it has a guaranteed cadence.
+  # Fails closed: no-schedule, stalled, last-run-not-passed, denied, and transport all
+  # exit non-zero (see the script header for the distinct messages).
+  - label: ":stopwatch: assert perf baseline is fresh"
+    command: ".buildkite/scripts/steps/perf-baseline-freshness.sh"
+    timeout_in_minutes: 5
+    agents:
+      queue: "trigger"
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
