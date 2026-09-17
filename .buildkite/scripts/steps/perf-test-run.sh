@@ -48,6 +48,14 @@ UPSTREAM="mockserver-upstream-${RUN_ID}"
 # nothing happens (see the streaming phase's header for the full rationale).
 STREAM_K6="mockserver-perf-k6-stream-${RUN_ID}"
 STREAM_SUT="mockserver-perf-stream-sut-${RUN_ID}"
+# item 13 — clustered state under load (within-run A/B). A single in-memory-backend
+# control SUT and a two-node Infinispan/JGroups cluster, all on the SAME clustered
+# image so the ONLY variable is the state backend; regression.js (unchanged) runs
+# against each and the metric is the per-arm ratio (clustered / control), the
+# CandidateIndexBenchmark within-run A/B that cancels host/JVM/image noise.
+CLU_CTRL="mockserver-perf-clu-ctrl-${RUN_ID}"
+CLU_A="mockserver-perf-clu-a-${RUN_ID}"
+CLU_B="mockserver-perf-clu-b-${RUN_ID}"
 SAMPLE_INTERVAL="${PERF_SAMPLE_INTERVAL:-5}"
 # Hard memory bound for the SUT (item: measure growth against a realistic heap).
 # Unbounded on a 32 GB box, MaxRAMPercentage=75 yields a ~24 GB heap that barely
@@ -94,6 +102,7 @@ cleanup() {
   # The item 14 handshake SUTs (deterministic names from RUN_ID) — removed here too
   # so an early exit before the proxy block's own cleanup never leaks them.
   docker rm -f "$SERVER" "$UPSTREAM" "$SWEEP_K6" "$STREAM_K6" "$STREAM_SUT" \
+    "$CLU_CTRL" "$CLU_A" "$CLU_B" \
     "mockserver-mtls-${RUN_ID}" "mockserver-jdk-${RUN_ID}" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
   [ -n "${FILE_BODY_DIR:-}" ] && rm -rf "$FILE_BODY_DIR" >/dev/null 2>&1 || true
@@ -1002,6 +1011,339 @@ if [ "${PERF_STREAMING:-true}" = "true" ]; then
   fi
 fi
 
+# --- item 13: clustered state under load (within-run A/B) ---------------------
+# The StateBackend SPI + Infinispan backend move expectation reads and event-log
+# writes onto a network for the central deployment the owner named; no number
+# existed for what that costs. This block runs regression.js UNCHANGED against two
+# targets IN THE SAME RUN and records the per-arm RATIO (clustered / control):
+#
+#   control  : ONE MockServer, stateBackend=memory   (the default InMemory backend)
+#   candidate: TWO MockServers, stateBackend=infinispan + clusterEnabled=true,
+#              sharing state over a JGroups TCP/TCPPING transport (REPL_SYNC)
+#
+# BOTH targets run the SAME clustered image (PERF_CLUSTERED_IMAGE), so the ONLY
+# variable between the arms is the backend — the CandidateIndexBenchmark within-run
+# A/B discipline the plan names as the repo's gold standard: the ratio cancels
+# host / JVM / GC / image noise almost entirely, which is why .clustered_state
+# rides the FULL baseline (NOT the k6 arm-set fingerprint or the image digest) in
+# perf-test-compare.sh.
+#
+# REUSE, DON'T REBUILD: PERF_CLUSTERED_IMAGE defaults to the snapshot-clustered
+# image; locally point it at the container-tests `integration_testing_clustered`
+# image, which is assembled from the SAME clustered-libs jars the container-tests
+# pipeline already builds (netty fat jar + /libs/* = Infinispan + JGroups). We do
+# NOT build Infinispan a second time here.
+#
+# WHAT THE HOT PATH ACTUALLY TOUCHES (why the ratio is what it is): seedRegression
+# seeds every expectation with times:{unlimited:true}, so there is NO per-request
+# Times CAS (clusterSharedTimesEnabled fires only on a bounded Times). Matching
+# reads hit each node's LOCAL compiled-matcher cache (reconciled via invalidation),
+# not a network read per request, and the event log is node-local. So the per-
+# request network cost for this read/forward/template mix is ~zero; what the ratio
+# captures is the STEADY-STATE overhead of running the clustered stack on the
+# request path (Infinispan on the classpath, background JGroups FD_ALL3 heartbeats
+# + STABLE gossip stealing a little CPU) plus the one-time seed replication. That
+# is the honest, useful answer for the central deployment: how far a node's per-
+# request latency moves merely by being a clustered member.
+#
+# RETENTION (the OOM lesson): the count-bounded event-log ring holds FULL bodies,
+# residence = maxLogEntries / total_offered_rps (LONGER as throughput falls). k6
+# drives ONLY the entry node (control, or cluster node A), so ONLY that node's ring
+# fills with request bodies — exactly like the main SUT, and it gets the SAME
+# PERF_CLUSTERED_MEMORY (2 GB default -> ~1.5 GB heap, maxLogEntries=100000). At
+# the reduced clustered arm rates the retained large-body footprint is the same
+# ~0.3 GB raw the config.js arithmetic derives (large_10mb@0.1rps -> ~111 MB,
+# large_1mb@0.5rps -> ~55 MB, large-4KB@200rps -> ~89 MB), well under 1.5 GB. The
+# SECOND node (B) receives NO request load, so its ring stays ~empty; it holds only
+# the seeded expectation set (tiny, seeded once) + bounded JGroups buffers (UFC/MFC
+# 2M each, NAKACK2/UNICAST3 send/recv, FRAG2 60K — single-digit MB). REPL_SYNC
+# replicates only expectation/scenario WRITES, of which there are ~none after the
+# one-time seed, so node B never accumulates bodies. The clustered arm therefore
+# adds no retention risk beyond the control's, per node.
+#
+# BEST-EFFORT / NOTIFY-ONLY like streaming/laptop: a failure defaults the block to
+# {} and never costs the k6/growth result its baseline place. BUT — item 8's lesson
+# — an empty block must not read as both "off" and "broken". So `clustered_attempted`
+# turns true ONLY once the clustered image is present and we start forming the
+# cluster; from then a cluster that forms but produces nothing (view < 2, state did
+# not cross, or a null ratio) makes the `clustered_metrics_present` validity check
+# FALSE and REDS the build (loud), while PERF_CLUSTERED=false or an absent image
+# stays a green skip.
+CLUSTERED_JSON='{}'
+CLUSTERED_ATTEMPTED=false
+CLU_CTRL_BEHAVIOURS='{}'
+CLU_CAND_BEHAVIOURS='{}'
+if [ "${PERF_CLUSTERED:-true}" = "true" ]; then
+  CLU_IMAGE="${PERF_CLUSTERED_IMAGE:-mockserver/mockserver:mockserver-snapshot-clustered}"
+  if ! docker image inspect "$CLU_IMAGE" >/dev/null 2>&1; then
+    echo "WARNING: clustered image '$CLU_IMAGE' not present — clustered A/B SKIPPED (notify-only)." >&2
+    echo "         Set PERF_CLUSTERED_IMAGE to the container-tests clustered image (built from the" >&2
+    echo "         clustered-libs jars), or PERF_CLUSTERED=false to disable. NOT counted as attempted." >&2
+  else
+    CLUSTERED_ATTEMPTED=true
+    CLU_CPUS="${PERF_CLUSTERED_CPUS:-2}"
+    CLU_MEM="${PERF_CLUSTERED_MEMORY:-2g}"
+    CLU_NAME="perf-cluster-${RUN_ID}"
+    # Shorter measured window than the main run (the ratio is robust and both arms
+    # are measured identically, so a full 2 m window buys little); still long enough
+    # for the small-body arms to clear MIN_TAIL_SAMPLES for a p95 ratio.
+    CLU_WARMUP="${K6_CLU_REG_WARMUP:-20s}"
+    CLU_DURATION="${K6_CLU_REG_DURATION:-45s}"
+    echo "--- clustered A/B: image=$CLU_IMAGE cpus=$CLU_CPUS mem=$CLU_MEM warmup=$CLU_WARMUP duration=$CLU_DURATION"
+
+    # JGroups TCP + TCPPING transport for two SEPARATE containers (the built-in
+    # loopback stack is in-JVM only and would form two clusters of one). initial_hosts
+    # lists both node aliases; bind matches the container's eth0 on the docker network.
+    # Written world-readable so the image's non-root user can read the mount.
+    CLU_JG="$OUT_DIR/jgroups-tcp.xml"
+    cat > "$CLU_JG" <<'JGROUPS_XML'
+<config xmlns="urn:org:jgroups"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="urn:org:jgroups http://www.jgroups.org/schema/jgroups.xsd">
+    <TCP bind_addr="match-interface:eth0,site_local,loopback"
+         bind_port="7800"
+         thread_pool.min_threads="0"
+         thread_pool.max_threads="20"
+         thread_pool.keep_alive_time="30000" />
+    <org.jgroups.protocols.TCPPING
+         initial_hosts="${JGROUPS_TCPPING_INITIAL_HOSTS}"
+         port_range="1" />
+    <MERGE3 max_interval="30000" min_interval="10000" />
+    <FD_ALL3 timeout="40000" interval="5000" />
+    <VERIFY_SUSPECT2 timeout="1500" />
+    <pbcast.NAKACK2 use_mcast_xmit="false" />
+    <UNICAST3 />
+    <pbcast.STABLE desired_avg_gossip="50000" max_bytes="4M" />
+    <pbcast.GMS print_local_addr="true" join_timeout="5000" />
+    <UFC max_credits="2M" min_threshold="0.4" />
+    <MFC max_credits="2M" min_threshold="0.4" />
+    <FRAG2 frag_size="60K" />
+</config>
+JGROUPS_XML
+    chmod 0644 "$CLU_JG"
+
+    # Start a clustered-image MockServer. backend=memory|infinispan; when clustered,
+    # pass the JGroups mount + initial_hosts + cluster name. The GraalJS + file-body
+    # arms are OFF for the clustered A/B (the clustered image bundles no GraalJS, and
+    # a JS arm would 500 and abort regression.js in setup()); the core arms
+    # (match/forward/template/template_mustache/large/large_1mb/large_10mb) run
+    # UNCHANGED — only env differs, the sanctioned parameterisation.
+    start_clu() { # name  alias  backend(memory|infinispan)  cluster_name_or_empty
+      local name="$1" alias="$2" backend="$3" cname="${4:-}"
+      local extra=()
+      if [ "$backend" = "infinispan" ]; then
+        extra=(
+          -e MOCKSERVER_CLUSTER_ENABLED=true
+          -e "MOCKSERVER_CLUSTER_NAME=$cname"
+          -e MOCKSERVER_CLUSTER_TRANSPORT_CONFIG=/config/jgroups-tcp.xml
+          -e "JGROUPS_TCPPING_INITIAL_HOSTS=${CLU_A}[7800],${CLU_B}[7800]"
+          -v "$CLU_JG:/config/jgroups-tcp.xml:ro"
+        )
+      fi
+      # ${extra[@]+"${extra[@]}"} — safe expansion of a possibly-empty array under
+      # `set -u` (the memory-backend control passes no extra flags), matching the
+      # start_mockserver java_opts_arg idiom above.
+      docker run -d --rm --name "$name" --network "$NETWORK" --network-alias "$alias" \
+        --cpus "$CLU_CPUS" --memory "$CLU_MEM" -p 127.0.0.1::1080 \
+        -e MOCKSERVER_LOG_LEVEL=WARN -e MOCKSERVER_DISABLE_SYSTEM_OUT=true \
+        -e MOCKSERVER_METRICS_ENABLED=true \
+        -e "MOCKSERVER_STATE_BACKEND=$backend" \
+        ${extra[@]+"${extra[@]}"} \
+        "$CLU_IMAGE" -serverPort 1080 >/dev/null 2>&1
+    }
+
+    clu_hostport() { docker port "$1" 1080/tcp 2>/dev/null | head -1; }
+    clu_members()  { curl -s --max-time 4 "http://$1/mockserver/cluster" 2>/dev/null | jq -r '.memberCount // 0' 2>/dev/null || echo 0; }
+    clu_clustered(){ curl -s --max-time 4 "http://$1/mockserver/cluster" 2>/dev/null | jq -r '.clustered // false' 2>/dev/null || echo false; }
+    # Run regression.js UNCHANGED against one clustered target. Distinct PROTO so its
+    # behaviour keys (<op>_<proto>) do not collide with the main run's.
+    run_clu_regression() { # proto  base_url  out
+      # shellcheck disable=SC2046
+      docker run --rm --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+        -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" -v "$OUT_DIR:/out" \
+        -e "BASE_URL=$2" -e "PROTO=$1" -e "INSECURE_SKIP_TLS_VERIFY=false" \
+        -e "K6_RESULT_PATH=/out/$3" \
+        -e "K6_REG_JS_TEMPLATE=false" -e "K6_REG_FILE_BODY_PATH=" \
+        -e "K6_REG_WARMUP=$CLU_WARMUP" -e "K6_REG_DURATION=$CLU_DURATION" \
+        ${K6_REG_RATE:+-e K6_REG_RATE="$K6_REG_RATE"} \
+        ${K6_CLU_REG_RATE:+-e K6_REG_RATE="$K6_CLU_REG_RATE"} \
+        "$K6_IMAGE" run /k6/regression.js >/dev/null 2>&1
+    }
+    # Run the per-request-CROSSING arm (clustered_crossing.js). regression.js above
+    # measures MEMBERSHIP overhead (its unlimited-Times matches never leave the node);
+    # this drives a BOUNDED-Times match, whose shared-Times compareAndSet is a local
+    # ConcurrentHashMap swap on the memory control but a SYNCHRONOUS REPL_SYNC round
+    # trip on the cluster — so its clustered/control ratio is the real per-request
+    # NETWORK cost (RequestMatchers shared-Times CAS -> InfinispanKeyValueStore
+    # .compareAndSet -> cache.replace). Emits the same behaviours shape (op `crossing`).
+    run_clu_crossing() { # proto  base_url  out
+      # shellcheck disable=SC2046
+      docker run --rm --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+        -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" -v "$OUT_DIR:/out" \
+        -e "BASE_URL=$2" -e "PROTO=$1" -e "INSECURE_SKIP_TLS_VERIFY=false" \
+        -e "K6_CLU_CROSS_RESULT_PATH=/out/$3" \
+        -e "K6_CLU_CROSS_WARMUP=$CLU_WARMUP" -e "K6_CLU_CROSS_DURATION=$CLU_DURATION" \
+        ${K6_CLU_CROSS_RATE:+-e K6_CLU_CROSS_RATE="$K6_CLU_CROSS_RATE"} \
+        "$K6_IMAGE" run /k6/clustered_crossing.js >/dev/null 2>&1
+    }
+
+    # --- CONTROL arm: single node, in-memory backend --------------------------
+    echo "--- clustered A/B: starting CONTROL (stateBackend=memory)"
+    if start_clu "$CLU_CTRL" clu-ctrl memory ""; then wait_ready "$CLU_CTRL" || true; fi
+    CTRL_HP="$(clu_hostport "$CLU_CTRL")"
+    CTRL_MEMBERS="$(clu_members "$CTRL_HP")"
+    CTRL_CLUSTERED="$(clu_clustered "$CTRL_HP")"
+    echo "--- clustered A/B: control cluster view members=$CTRL_MEMBERS clustered=$CTRL_CLUSTERED (expect 1 / false)"
+    run_clu_regression "clustered_control" "http://clu-ctrl:1080" "clu-control.json" \
+      || echo "WARNING: clustered CONTROL regression run failed" >&2
+    run_clu_crossing "clustered_control" "http://clu-ctrl:1080" "clu-cross-control.json" \
+      || echo "WARNING: clustered CONTROL crossing run failed" >&2
+    docker rm -f "$CLU_CTRL" >/dev/null 2>&1 || true
+
+    # --- CANDIDATE arm: two-node Infinispan/JGroups cluster -------------------
+    # Positive control (degrade-and-confirm-red): PERF_CLU_BREAK=cluster starts node
+    # B in a DIFFERENT cluster so the view never reaches 2 — the genuineness gate
+    # below must then RED. Proves the check can go red (not a silent two-of-one).
+    CLU_B_NAME="$CLU_NAME"
+    if [ "${PERF_CLU_BREAK:-}" = "cluster" ]; then
+      CLU_B_NAME="${CLU_NAME}-BROKEN"
+      echo "--- clustered A/B: PERF_CLU_BREAK=cluster — node B joins '$CLU_B_NAME' (SELF-TEST: view must stay 1)" >&2
+    fi
+    echo "--- clustered A/B: starting CANDIDATE 2-node cluster (stateBackend=infinispan, JGroups TCPPING)"
+    start_clu "$CLU_A" clu-a infinispan "$CLU_NAME" || echo "WARNING: cluster node A did not start" >&2
+    start_clu "$CLU_B" clu-b infinispan "$CLU_B_NAME" || echo "WARNING: cluster node B did not start" >&2
+    wait_ready "$CLU_A" || true
+    wait_ready "$CLU_B" || true
+    A_HP="$(clu_hostport "$CLU_A")"; B_HP="$(clu_hostport "$CLU_B")"
+    # Wait (bounded) for the JGroups view to converge to 2 on node A.
+    A_MEMBERS=1
+    for _ in $(seq 1 30); do
+      A_MEMBERS="$(clu_members "$A_HP")"
+      [ "${A_MEMBERS:-0}" -ge 2 ] && break
+      sleep 2
+    done
+    B_MEMBERS="$(clu_members "$B_HP")"
+    A_CLUSTERED="$(clu_clustered "$A_HP")"
+    echo "--- clustered A/B: candidate view members A=$A_MEMBERS B=$B_MEMBERS clustered(A)=$A_CLUSTERED (expect 2 / 2 / true)"
+    # DIAGNOSTIC on formation failure: if the view did not converge to 2, dump each
+    # node's cluster snapshot + the tail of its JGroups startup logs so a real
+    # TCPPING/discovery failure (once the image is wired live) is debuggable rather
+    # than a bare "members A=1". The genuineness gate below still REDs — this only
+    # explains WHY. (Expected + intentional under the PERF_CLU_BREAK self-test.)
+    if [ "${A_MEMBERS:-0}" -lt 2 ]; then
+      echo "--- clustered A/B: DIAGNOSTIC — JGroups view did not reach 2; dumping node state" >&2
+      echo "    node A /mockserver/cluster: $(curl -s --max-time 4 "http://$A_HP/mockserver/cluster" 2>/dev/null)" >&2
+      echo "    node B /mockserver/cluster: $(curl -s --max-time 4 "http://$B_HP/mockserver/cluster" 2>/dev/null)" >&2
+      docker logs "$CLU_A" 2>&1 | grep -iE "jgroups|ISPN|view|GMS|TCPPING|cluster" | tail -8 | sed 's/^/    A| /' >&2 || true
+      docker logs "$CLU_B" 2>&1 | grep -iE "jgroups|ISPN|view|GMS|TCPPING|cluster" | tail -8 | sed 's/^/    B| /' >&2 || true
+    fi
+
+    # PROVE STATE CROSSES THE NETWORK: seed a UNIQUE expectation ONLY on node A, then
+    # match it on node B (which never received the seed directly). This is the
+    # anti-"two independent in-memory servers" gate — the textbook false green.
+    CROSS_TOKEN="cross-$RUN_ID"
+    CROSS_CODE=0; NEG_CODE=0
+    if [ -n "$A_HP" ] && [ -n "$B_HP" ]; then
+      curl -s --max-time 5 -X PUT "http://$A_HP/mockserver/expectation" -H 'Content-Type: application/json' \
+        -d "[{\"httpRequest\":{\"path\":\"/$CROSS_TOKEN\"},\"httpResponse\":{\"statusCode\":222,\"body\":\"$CROSS_TOKEN\"},\"times\":{\"unlimited\":true}}]" \
+        -o /dev/null 2>/dev/null || true
+      # Give REPL_SYNC a beat, then probe node B for the A-only expectation. Body is
+      # written under OUT_DIR (per the repo tmp-file convention), not /tmp.
+      CROSS_BODY="$OUT_DIR/clu-cross-probe.$$"
+      for _ in $(seq 1 10); do
+        CROSS_CODE="$(curl -s --max-time 5 -o "$CROSS_BODY" -w '%{http_code}' "http://$B_HP/$CROSS_TOKEN" 2>/dev/null || echo 0)"
+        [ "$CROSS_CODE" = 222 ] && grep -q "$CROSS_TOKEN" "$CROSS_BODY" 2>/dev/null && break
+        sleep 1
+      done
+      # Negative control: a path seeded NOWHERE must NOT match on B (proves the 222
+      # above is the replicated expectation, not a catch-all).
+      NEG_CODE="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://$B_HP/never-seeded-$RUN_ID" 2>/dev/null || echo 0)"
+      rm -f "$CROSS_BODY" 2>/dev/null || true
+    fi
+    STATE_CROSSED=false
+    [ "$CROSS_CODE" = 222 ] && STATE_CROSSED=true
+    echo "--- clustered A/B: state-crossed(A->B)=$STATE_CROSSED (probe HTTP $CROSS_CODE, negative-control HTTP $NEG_CODE)"
+
+    run_clu_regression "clustered" "http://clu-a:1080" "clu-clustered.json" \
+      || echo "WARNING: clustered CANDIDATE regression run failed" >&2
+    run_clu_crossing "clustered" "http://clu-a:1080" "clu-cross-clustered.json" \
+      || echo "WARNING: clustered CANDIDATE crossing run failed" >&2
+    docker rm -f "$CLU_A" "$CLU_B" >/dev/null 2>&1 || true
+
+    # Load both behaviour blocks (guarded to {} on any parse failure), then MERGE in
+    # the crossing arm (op `crossing`) so the ratio machinery treats it identically —
+    # it becomes clustered_state.arms.crossing, the per-request NETWORK-cost headline,
+    # alongside the non-crossing membership arms.
+    CLU_CTRL_BEHAVIOURS="$(jq -sc '(.[0].behaviours // {}) + (.[1].behaviours // {})' \
+      "$OUT_DIR/clu-control.json" "$OUT_DIR/clu-cross-control.json" 2>/dev/null || echo '{}')"
+    jq -e . >/dev/null 2>&1 <<<"$CLU_CTRL_BEHAVIOURS" || CLU_CTRL_BEHAVIOURS='{}'
+    CLU_CAND_BEHAVIOURS="$(jq -sc '(.[0].behaviours // {}) + (.[1].behaviours // {})' \
+      "$OUT_DIR/clu-clustered.json" "$OUT_DIR/clu-cross-clustered.json" 2>/dev/null || echo '{}')"
+    jq -e . >/dev/null 2>&1 <<<"$CLU_CAND_BEHAVIOURS" || CLU_CAND_BEHAVIOURS='{}'
+
+    # Assemble .clustered_state: the per-arm ratio (the metric), plus the cluster
+    # genuineness proof. Ratios pair on the arm op (behaviour key minus its _<proto>
+    # suffix). p50 is the primary ratio (robust at low N); p95 only where BOTH arms
+    # cleared MIN_TAIL_SAMPLES (non-null p95). throughput_ratio is dir:down.
+    CLUSTERED_JSON="$(jq -nc \
+      --argjson ctrl "$CLU_CTRL_BEHAVIOURS" --argjson cand "$CLU_CAND_BEHAVIOURS" \
+      --argjson a_members "${A_MEMBERS:-0}" --argjson b_members "${B_MEMBERS:-0}" \
+      --argjson ctrl_members "${CTRL_MEMBERS:-0}" \
+      --arg a_clustered "${A_CLUSTERED:-false}" --arg ctrl_clustered "${CTRL_CLUSTERED:-false}" \
+      --arg state_crossed "$STATE_CROSSED" \
+      --argjson cross_code "${CROSS_CODE:-0}" --argjson neg_code "${NEG_CODE:-0}" \
+      --arg image "$CLU_IMAGE" '
+      # strip a trailing _<proto> to recover the arm op
+      def op(k; p): (k | sub("_"+p+"$"; ""));
+      ($ctrl | to_entries | map({key: op(.key; "clustered_control"), value: .value}) | from_entries) as $C |
+      ($cand | to_entries | map({key: op(.key; "clustered"),         value: .value}) | from_entries) as $K |
+      {
+        attempted: true,
+        control_backend: "memory",
+        candidate_backend: "infinispan",
+        image: $image,
+        cluster: {
+          member_count_node_a: $a_members,
+          member_count_node_b: $b_members,
+          control_member_count: $ctrl_members,
+          candidate_clustered: ($a_clustered == "true"),
+          control_clustered: ($ctrl_clustered == "true"),
+          state_crossed_network: ($state_crossed == "true"),
+          cross_node_probe_http_code: $cross_code,
+          negative_control_http_code: $neg_code
+        },
+        arms: (
+          [ $K | keys[] | select($C[.] != null) | . as $op |
+            { key: $op, value: (
+              ($C[$op]) as $c | ($K[$op]) as $k |
+              {
+                p50_control_ms: $c.p50_ms, p50_clustered_ms: $k.p50_ms,
+                p50_ratio: (if ($c.p50_ms // 0) > 0 and $k.p50_ms != null
+                            then (($k.p50_ms / $c.p50_ms) * 1000 | round) / 1000 else null end),
+                p95_control_ms: $c.p95_ms, p95_clustered_ms: $k.p95_ms,
+                p95_ratio: (if ($c.p95_ms // null) != null and ($c.p95_ms // 0) > 0 and ($k.p95_ms // null) != null
+                            then (($k.p95_ms / $c.p95_ms) * 1000 | round) / 1000 else null end),
+                throughput_control_rps: $c.throughput_rps, throughput_clustered_rps: $k.throughput_rps,
+                throughput_ratio: (if ($c.throughput_rps // 0) > 0 and $k.throughput_rps != null
+                            then (($k.throughput_rps / $c.throughput_rps) * 1000 | round) / 1000 else null end),
+                control_error_rate: $c.error_rate, clustered_error_rate: $k.error_rate,
+                sample_count_control: $c.sample_count, sample_count_clustered: $k.sample_count,
+                # true ONLY for the bounded-Times `crossing` arm (a per-request REPL_SYNC
+                # round trip); the regression arms are node-local membership overhead.
+                # So a reader never mistakes a membership ratio for total clustering cost.
+                crosses_network: ($k.crosses_network // false)
+              }) } ] | from_entries
+        )
+      }')"
+    jq -e . >/dev/null 2>&1 <<<"$CLUSTERED_JSON" || CLUSTERED_JSON='{}'
+    echo "--- clustered A/B result (crossing = per-request NETWORK cost; the rest = membership-only):"
+    jq -c '{cluster,
+            crossing_arm: (.arms | to_entries | map(select(.value.crosses_network)) | from_entries | with_entries(.value |= {p50_ratio, p95_ratio, throughput_ratio})),
+            membership_arms: (.arms | to_entries | map(select(.value.crosses_network|not)) | from_entries | with_entries(.value |= {p50_ratio, p95_ratio, throughput_ratio}))}' \
+      <<<"$CLUSTERED_JSON" 2>/dev/null || echo "$CLUSTERED_JSON"
+  fi
+fi
+
 # --- derive resource slope ratios from the sample log -------------------------
 # start = first non-empty sample, end = last, peak = max. ratio = end/start.
 # PROVOCATION (observed false): with the metrics port unreachable the sampler
@@ -1103,6 +1445,28 @@ if [ "${PERF_STREAMING:-true}" = "true" ] && command -v python3 >/dev/null 2>&1;
     add_check "streaming_metrics_present" false "streaming profile attempted but match_p95_ratio is null — streaming.js produced no comparable match latency this run"
   fi
 fi
+# item 13 — clustered A/B presence + GENUINENESS. Only asserted when ATTEMPTED
+# (PERF_CLUSTERED on AND the clustered image present) — a disabled/absent-image run
+# is a green skip, not a failure. When attempted, ALL of: the candidate cluster
+# formed a >=2 view, state actually crossed the network (an A-only expectation
+# matched on B), the control was genuinely single-node (view 1), and at least one
+# arm yielded a p50 ratio. This is the anti-false-green gate: two independent
+# in-memory servers (view 1/1) or a non-crossing state would otherwise pass with an
+# empty/degenerate block. Proven both directions by PERF_CLU_BREAK=cluster.
+if [ "$CLUSTERED_ATTEMPTED" = "true" ]; then
+  if jq -e '
+      (.cluster.member_count_node_a >= 2)
+      and (.cluster.state_crossed_network == true)
+      and (.cluster.control_member_count == 1)
+      and ((.arms // {}) | to_entries | map(select(.value.p50_ratio != null)) | length > 0)
+    ' <<<"$CLUSTERED_JSON" >/dev/null 2>&1; then
+    add_check "clustered_metrics_present" true \
+      "clustered A/B genuine: view=$(jq -r '.cluster.member_count_node_a' <<<"$CLUSTERED_JSON") state_crossed=$(jq -r '.cluster.state_crossed_network' <<<"$CLUSTERED_JSON") arms=$(jq -r '(.arms // {}) | length' <<<"$CLUSTERED_JSON")"
+  else
+    add_check "clustered_metrics_present" false \
+      "clustered profile attempted but not genuinely clustered/measured: view_a=$(jq -r '.cluster.member_count_node_a // "?"' <<<"$CLUSTERED_JSON") state_crossed=$(jq -r '.cluster.state_crossed_network // "?"' <<<"$CLUSTERED_JSON") control_members=$(jq -r '.cluster.control_member_count // "?"' <<<"$CLUSTERED_JSON") arms_with_ratio=$(jq -r '(.arms // {}) | to_entries | map(select(.value.p50_ratio != null)) | length' <<<"$CLUSTERED_JSON" 2>/dev/null) — would be a false green (two independent servers or no ratio)"
+  fi
+fi
 if [ "${#VALIDITY_CHECKS[@]}" -gt 0 ]; then
   VALIDITY_JSON="$(printf '%s\n' "${VALIDITY_CHECKS[@]}" | jq -sc '{valid: (map(.ok) | all), checks: .}')"
 else
@@ -1126,6 +1490,10 @@ jq -n \
   --argjson proxyfwd "$PROXY_FWD_JSON" \
   --argjson handshake "$HANDSHAKE_JSON" \
   --argjson streaming "$STREAMING_JSON" \
+  --argjson clustered_state "$CLUSTERED_JSON" \
+  --argjson clustered_attempted "$CLUSTERED_ATTEMPTED" \
+  --argjson clu_ctrl "$CLU_CTRL_BEHAVIOURS" \
+  --argjson clu_cand "$CLU_CAND_BEHAVIOURS" \
   --argjson validity "$VALIDITY_JSON" \
   --argjson config "$CONFIG_JSON" \
   --argjson laptop "$LAPTOP_JSON" \
@@ -1156,7 +1524,16 @@ jq -n \
     # compare step "k6 behaviour baseline reset" note. (These arms are notify-only,
     # so no GATING coverage is lost; forward.error_rate and the JMH gates are
     # unaffected as they are not behaviours.* and not fingerprint-filtered.)
-    behaviours: (($http[0].behaviours // {}) + ($https[0].behaviours // {}) + ($proxyfwd.behaviours // {})),
+    # item 13 — the clustered A/B raw per-arm latencies land here too (distinct
+    # <op>_clustered / <op>_clustered_control keys), so the existing behaviours.*
+    # budgets cover them with no new key. Adding these arms GROWS the k6 arm-set
+    # fingerprint, so compare resets the k6 behaviour baseline ONCE — the same
+    # self-healing, notify-only reset the item 9a forward-proxy arms already trigger
+    # (no GATING coverage lost). The headline metric — the RATIO — is in
+    # .clustered_state (below), which rides the FULL baseline, not this fingerprint.
+    # When the clustered profile is disabled/skipped, both objects are {}, so no arms
+    # are added and the fingerprint is unchanged.
+    behaviours: (($http[0].behaviours // {}) + ($https[0].behaviours // {}) + ($proxyfwd.behaviours // {}) + $clu_ctrl + $clu_cand),
     # item 14 — TLS/mTLS/native-absent handshake cost (proxy.js handshake mode +
     # per-SUT CPU/alloc augmentation above). NOT part of .behaviours, so it does not
     # touch the k6 fingerprint; compare reads it as its own non-gating metric family.
@@ -1166,6 +1543,15 @@ jq -n \
     # open stream. NOT part of .behaviours, so it does not touch the k6 fingerprint;
     # compare reads a CURATED subset as its own non-gating metric family.
     streaming: $streaming,
+    # item 13 — clustered state under load: the per-arm ratio (clustered / in-memory
+    # control) measured in this run, plus the cluster-genuineness proof (2-node view,
+    # state-crossed-the-network, control-is-single-node). NOT part of .behaviours, so
+    # it does not touch the k6 fingerprint; compare reads .clustered_state.arms.* as
+    # its own non-gating family on the FULL baseline (the within-run ratio already
+    # cancels environment, so it must NOT be keyed on the arm set or image digest).
+    # {} when the profile was disabled or the clustered image was absent.
+    clustered_state: $clustered_state,
+    clustered_attempted: $clustered_attempted,
     growth: {
       duration_s: ($growth.duration_s // null),
       p95_ms: ($growth.p95_ms // null),

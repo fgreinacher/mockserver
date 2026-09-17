@@ -38,4 +38,4 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f \
   --entrypoint sh \
   -w /build/mockserver-performance-test \
-  -- -c 'set -e; for f in k6/smoke.js k6/load.js k6/stress.js k6/soak.js k6/regression.js k6/growth.js k6/sweep.js k6/forward.js k6/proxy.js k6/streaming.js; do echo "k6 inspect $f"; k6 inspect "$f" > /dev/null; done'
+  -- -c 'set -e; for f in k6/smoke.js k6/load.js k6/stress.js k6/soak.js k6/regression.js k6/growth.js k6/sweep.js k6/forward.js k6/proxy.js k6/streaming.js k6/clustered_crossing.js; do echo "k6 inspect $f"; k6 inspect "$f" > /dev/null; done'

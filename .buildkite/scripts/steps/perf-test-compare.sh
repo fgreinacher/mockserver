@@ -399,6 +399,23 @@ def metrics:
     {name:"streaming.intertoken_error_load_p99_ms",  value:((.streaming // {}).intertoken_error_load_p99_ms),  bkey:"streaming.intertoken_error_load_p99_ms"},
     {name:"streaming.intertoken_error_p95_ratio",    value:((.streaming // {}).intertoken_error_p95_ratio),    bkey:"streaming.intertoken_error_p95_ratio"},
     {name:"streaming.heap_bytes_per_stream",         value:((.streaming // {}).heap_bytes_per_stream),         bkey:"streaming.heap_bytes_per_stream"} ),
+  # item 13 — clustered state under load. The headline metric is the per-arm RATIO
+  # (clustered / in-memory control), measured within ONE run against two targets that
+  # differ ONLY in state backend. Keyed by arm op under .clustered_state.arms, so a
+  # wildcard bkey (clustered_state.*.<metric>) covers every arm. Rides the FULL
+  # baseline (this else-family, unfiltered by the k6 fingerprint or image digest) BY
+  # DESIGN: the within-run A/B already cancels environment, and keying it on the arm
+  # set / image would reset it on every snapshot rebuild — the exact trap the
+  # fingerprint was chosen to avoid. All NON-GATING (perf-budgets.json omits gating).
+  # A disabled/absent-image run leaves .clustered_state {} (no arms), so this emits
+  # ZERO metrics rather than a fail-closed missing-budget error — the genuineness of
+  # an ATTEMPTED run is enforced by the run clustered_metrics_present validity check,
+  # not here. p95_ratio is null (dropped) unless BOTH arms cleared MIN_TAIL_SAMPLES.
+  ((.clustered_state.arms // {}) | to_entries[] | .key as $k | .value as $v |
+    ( {name:("clustered_state."+$k+".p50_ratio"),          value:$v.p50_ratio,          bkey:"clustered_state.*.p50_ratio"},
+      {name:("clustered_state."+$k+".p95_ratio"),          value:$v.p95_ratio,          bkey:"clustered_state.*.p95_ratio"},
+      {name:("clustered_state."+$k+".throughput_ratio"),   value:$v.throughput_ratio,   bkey:"clustered_state.*.throughput_ratio"},
+      {name:("clustered_state."+$k+".clustered_error_rate"),value:$v.clustered_error_rate,bkey:"clustered_state.*.clustered_error_rate"} ) ),
   # peak_achieved_rps: max achieved throughput across sweep rungs where the k6
   # CLIENT was sound. CONTINUOUS, so a relative floor is meaningful. saturation_rps
   # (the knee) is ladder-QUANTISED, so it is recorded but NOT budgeted here.
@@ -617,12 +634,43 @@ if printf '%s' "$RESULT_CMP" | jq -e '[.rows[]?.name | select(startswith("stream
 :information_source: **Streaming (item 12) metric notes:** \`streaming.heap_bytes_per_stream\` is an **upper bound** — it includes the streamed response bodies retained in the event-log ring, not just per-connection state. \`streaming.match_*_p95_ms\` / \`match_p95_ratio\` and the absolute \`intertoken_error_*\` are measured against a **deliberately CPU-/thread-constrained** SUT so the scheduler sits near its knee: they are RELATIVE tripwires (a regression pushes the ratio up), not absolute production figures. The idle-vs-load \`intertoken_error_p95_ratio\` normalises against the client-jitter floor, so it stays meaningful regardless of saturation."
 fi
 
+# item 13 — SURFACE a skipped clustered A/B (the reviewer's MAJOR: a dark skip
+# reads as a clean pass). compare is head-driven, so when the run took the
+# absent-image / disabled skip branch it emits ZERO clustered_state metrics and no
+# other signal — item 13 could then skip on every run for months with the build
+# green and only a buried stderr WARNING. This does NOT fail the build (the
+# clustered image is not yet published to the perf queue; failing would permanently
+# red the gate on an unpublished image) — it annotates. The attempted-but-produced-
+# nothing case is a DIFFERENT gate: it is caught by the run's clustered_metrics_present
+# validity check, which REDs before this step. Only fires for the NEW producer's
+# explicit skip (clustered_attempted:false); a pre-feature run (key absent) is exempt.
+CLU_NOTE=""
+CLU_ATTEMPTED_HEAD="$(jq -r 'if has("clustered_attempted") then (.clustered_attempted|tostring) else "absent" end' "$RESULT" 2>/dev/null || echo absent)"
+CLU_ROWS="$(printf '%s' "$RESULT_CMP" | jq '[.rows[]?.name | select(startswith("clustered_state."))] | length' 2>/dev/null || echo 0)"
+if [ "$CLU_ATTEMPTED_HEAD" = "false" ] && [ "${CLU_ROWS:-0}" -eq 0 ]; then
+  # Consecutive recent skips: newest-first, count leading explicit `false` runs,
+  # stopping at the first `true` (a real measurement) or absent (pre-feature run).
+  # Makes a permanent silent skip visible as a growing number rather than a green.
+  # NB: use has()+explicit else, NOT `.clustered_attempted // null` — jq's `//`
+  # treats a `false` LHS as empty and would map an explicit skip to null, zeroing
+  # the count. has() distinguishes "false" (explicit skip) from "absent" (pre-feature).
+  CLU_SKIPS="$(jq '[ .[] | (if has("clustered_attempted") then .clustered_attempted else null end) ] | reverse
+    | (reduce .[] as $x ({n:0,stop:false};
+        if .stop then . elif $x==false then {n:(.n+1),stop:false} else {n:.n,stop:true} end)).n' \
+    "$WORK/baseline.json" 2>/dev/null || echo 0)"
+  CLU_SKIP_SUFFIX=""
+  [ "${CLU_SKIPS:-0}" -gt 0 ] && CLU_SKIP_SUFFIX=" It has now skipped **${CLU_SKIPS} consecutive** run(s) since the profile last measured — if this keeps growing, the clustered image is not reaching the perf agent."
+  CLU_NOTE="
+
+:information_source: **Clustered state A/B (item 13) did NOT run this build** — \`clustered_attempted\` is \`false\` and no \`clustered_state.*\` metrics were emitted, so the clustered/in-memory ratio is UNMEASURED this run. The usual cause is the clustered image (\`PERF_CLUSTERED_IMAGE\`, default \`mockserver/mockserver:mockserver-snapshot-clustered\`) not being present on the perf agent, so the run took the absent-image skip branch (or the profile was disabled with \`PERF_CLUSTERED=false\`). This does NOT fail the build — the image is not yet published to the perf queue — but item 13 stays unanswered until the container-tests clustered image is wired into the perf pipeline (or \`PERF_CLUSTERED_IMAGE\` points at a present image).${CLU_SKIP_SUFFIX}"
+fi
+
 # Fold the provenance line, the pre-config-baseline warning, and the microbench +
 # k6 baseline-reset notes into the body so every annotation (regression or clean)
 # carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}"
+${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did
