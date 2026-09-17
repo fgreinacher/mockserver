@@ -47,10 +47,11 @@ heapAvailableInKB = maxHeap / 1024 - 20480      (maxHeap is the heap ceiling, -X
 
 maxLogEntries          = min(heapAvailableInKB / 8, 100000)          (entry-count bound)
 maxExpectations        = min(heapAvailableInKB / 10, 15000)
-maxEventLogSizeInBytes = (heapAvailableInKB / 4) * 1024              (event-log body-byte bound; 0 when heap ceiling undefined)
+maxEventLogSizeInBytes = (heapAvailableInKB / 8) * 1024  at INFO/DEBUG/TRACE   (event-log body-byte bound; 0 when heap ceiling undefined)
+                       = (heapAvailableInKB / 4) * 1024  at WARN/ERROR/OFF
 ```
 
-`maxLogEntries` and `maxEventLogSizeInBytes` are two independent bounds on the **same** event log — a count cap and a byte cap. Whichever is reached first evicts (see [Byte-Budget Eviction](#byte-budget-eviction-maxeventlogsizeinbytes)). The byte cap is derived from the same heap ceiling as the count cap (a quarter of the ceiling budget), so it too is a constant for the JVM's life; it is **on by default** so a workload with large bodies cannot exhaust the heap through a count-bounded log that cannot see entry size. Set `mockserver.maxEventLogSizeInBytes=0` to disable it and bound the log by count only.
+`maxLogEntries` and `maxEventLogSizeInBytes` are two independent bounds on the **same** event log — a count cap and a byte cap. Whichever is reached first evicts (see [Byte-Budget Eviction](#byte-budget-eviction-maxeventlogsizeinbytes)). The byte cap is derived from the same heap ceiling as the count cap; the divisor is log-level-aware (one-eighth at `INFO`/`DEBUG`/`TRACE`, one-quarter at `WARN`/`ERROR`/`OFF`) to compensate for the higher per-entry heap cost at rendering levels (see the [Formula](#formula) below). It is **on by default** so a workload with large bodies cannot exhaust the heap through a count-bounded log that cannot see entry size. Set `mockserver.maxEventLogSizeInBytes=0` to disable it and bound the log by count only.
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
@@ -71,6 +72,8 @@ maxEventLogSizeInBytes = (heapAvailableInKB / 4) * 1024              (event-log 
 | `maxExpectations()` default | `ConfigurationProperties.java` | `maxExpectations()` |
 | Ring buffer sizing | `Configuration.java` | `ringBufferSize()` (resolves field → property → `min(maxLogEntries, 16384)`) |
 | Ring buffer default resolution | `ConfigurationProperties.java` | `resolveRingBufferSize(int)` |
+| `maxEventLogSizeInBytes()` default | `ConfigurationProperties.java` | `defaultMaxEventLogSizeInBytes(long, Level)` |
+| Level-aware rendering check | `ConfigurationProperties.java` | `rendersEveryLogEntry(Level)` |
 | Heap measurement | `MemoryMonitoring.java` | `getJVMMemory()` |
 
 ### Example: Default Limits by Heap Size
@@ -313,7 +316,7 @@ The `arguments` field in `LogEntry` stores objects used for message formatting. 
 
 ### Byte-Budget Eviction (`maxEventLogSizeInBytes`)
 
-The `CircularConcurrentLinkedDeque` supports a second, independent bound: a **body-byte budget** supplied via the `maxEventLogSizeInBytes` configuration property. It is **on by default**, derived from the heap ceiling as `(heapAvailableInKB / 4) * 1024` bytes (a quarter of the same ceiling budget that sizes `maxLogEntries`); it is `0` (disabled) only when the heap ceiling is undefined (e.g. a GraalVM native image), and can be set to `0` explicitly to bound the log by entry count alone. The quarter fraction leaves headroom for the expectation store, in-flight Netty buffers and JVM overhead while still bounding the body memory the count cap cannot see.
+The `CircularConcurrentLinkedDeque` supports a second, independent bound: a **body-byte budget** supplied via the `maxEventLogSizeInBytes` configuration property. It is **on by default**, derived from the heap ceiling with a log-level-aware divisor (`(heapAvailableInKB / 8) * 1024` at `INFO`/`DEBUG`/`TRACE`; `(heapAvailableInKB / 4) * 1024` at `WARN`/`ERROR`/`OFF`); it is `0` (disabled) only when the heap ceiling is undefined (e.g. a GraalVM native image), and can be set to `0` explicitly to bound the log by entry count alone. The fractional budget leaves headroom for the expectation store, in-flight Netty buffers and JVM overhead while still bounding the body memory the count cap cannot see.
 
 ### Why it exists
 
@@ -349,7 +352,7 @@ public long estimatedHeapSize() {
 
 The value is computed lazily and cached (`-1` until first call) so the weight is identical at add-time and at evict-time. It deliberately excludes lazily-derived `httpUpdated*` copies and the `arguments` array so it never changes after the entry is built — the deque relies on add-time weight matching evict-time weight exactly.
 
-Actual heap retention is a small multiple of this figure (headers, metadata, UUID strings, etc.), so the default budget deliberately sits at a quarter of the heap-ceiling budget rather than the whole of it. For a 2 GB heap the default works out around 480 MB of retained bodies (`(2048 − 20) MB / 4`), leaving the rest of the heap for everything else; lower it if the log shares the heap with a large expectation store or heavy forwarding, raise it if you have headroom and want to retain more history.
+Actual heap retention is a small multiple of this figure (headers, metadata, UUID strings, etc.), so the default budget deliberately sits at a fraction of the heap-ceiling budget rather than the whole of it. The fraction is log-level-aware: one-eighth at `INFO`/`DEBUG`/`TRACE` (where each retained entry costs roughly twice the raw body bytes due to memoised message strings — measured ~3.7x at `INFO` versus ~1.9x at `WARN`) and one-quarter at `WARN`/`ERROR`/`OFF`. For a 2 GB heap at `WARN` the default is around 480 MB of retained bodies; at `INFO` it is around 240 MB. The **same budget also bounds the ring buffer's in-flight backlog** (see [Ring In-Flight Bounding and Drops](#ring-in-flight-bounding-and-drops)), so tightening it at rendering levels constrains both the deque and the ring simultaneously. Lower it if the log shares the heap with a large expectation store or heavy forwarding; raise it if you have headroom and want to retain more history.
 
 ### Body truncation (`maxLoggedBodyBytes`)
 
@@ -359,9 +362,27 @@ Key ordering guarantee: disk capture (when `persistRecordedRequestsToDisk` is en
 
 **Verification impact:** setting `maxLoggedBodyBytes` breaks verification against request or response body content. A verify call that matches on body returns 406 against a truncated log entry where the full body would return 202. Verification by path, method, and header is not affected. The truncation is visible in the retrieved entry and in the dashboard via the `x-mockserver-body-truncated: <originalLength>` header on the stored copy. This is by design — truncation is an intentional trade-off to reduce deque body footprint, not a silent loss.
 
-**Does not prevent ring-buffer OOM at INFO.** `truncateBodiesForLog()` runs in the LMAX Disruptor consumer, downstream of the ring. At the default `INFO` level the consumer is slow (it formats every entry to system-out), so the ring backs up and fills with full-sized bodies before truncation can run. Measured: with and without `maxLoggedBodyBytes=4096`, OOM occurred at the same point (~293-298 requests with 256 KB bodies at `INFO`). To survive large-body load on a constrained heap, raise the log level to `WARN` (which lets the consumer drain the ring) or increase `-Xmx`.
+**Does not prevent ring-backlog drops.** `truncateBodiesForLog()` runs in the LMAX Disruptor consumer, downstream of the ring. The body is already in the ring at full size before truncation can run, so truncation does not reduce the ring's in-flight byte contribution. The ring's in-flight backlog is bounded instead by the `maxEventLogSizeInBytes` budget (see [Ring In-Flight Bounding and Drops](#ring-in-flight-bounding-and-drops)).
 
 The byte-budget weigher measures the (possibly truncated) body bytes, so truncation reduces the weight contributed to `totalBytes`.
+
+### Ring In-Flight Bounding and Drops
+
+The `maxEventLogSizeInBytes` budget applies in two places: the deque (retained entries) and the ring buffer's in-flight backlog (published but not yet processed entries). The ring is bounded separately because the deque budget alone cannot see it — at `INFO`, the single consumer formats every entry to system-out and is slow enough that the ring can back up and hold many full bodies before any eviction or truncation downstream can run.
+
+**Mechanism.** `MockServerEventLog.add()` maintains an `AtomicLong inFlightBytes` counter: incremented by `LogEntry.estimatedHeapSize()` on a successful ring publish, decremented by the same amount in `processLogEntry()` when the entry is consumed. Before each publish, `wouldExceedInFlightBudget()` checks whether `inFlight + incomingWeight > maxEventLogSizeInBytes`. If it would exceed the budget (and something is already in flight — a single oversized body is always admitted into an empty backlog, mirroring the deque's one-oversized-element rule), the entry is **dropped** rather than published.
+
+**Drops are announced, not silent.**
+
+- A once-only `WARN` is logged on the first drop for each cause (ring full or in-flight byte budget), naming the budget, the current value, and remedies cheapest-first.
+- The `mock_server_dropped_log_events` Prometheus counter increments on every drop (never reset — mirrors a Prometheus counter's monotonic semantics).
+- A separate `droppedLogEventsSinceLogReset` counter tracks drops since the last `reset()` or `clear(null)` — this is the **taint** that the fail-closed verify path reads.
+
+**Fail-closed verification.** `droppedLogEventsSinceLogReset > 0` is treated identically to a deque eviction for the purposes of upper-bound verification. A `verify` with `never()`, `atMost(n)`, `exactly(n)`, `once()`, or `between(a,b)` will **fail** once this counter is non-zero, because a dropped entry cannot be found even if the event actually happened. `atLeast(n)` and the bare `verify(request)` (which is `atLeast(1)`) are unaffected — they require presence, not absence.
+
+**Clearing the taint.** `reset()` and `clear(null)` reset `droppedLogEventsSinceLogReset` to zero and re-arm both warn-once latches (`droppedLogEventWarned`, `inFlightBytesDropWarned`), so a suite that clears or resets between tests starts each test with a clean slate. A filtered `clear(request)` deliberately does not reset the taint, since removing some entries says nothing about the evidence already lost by prior drops.
+
+**Budget is recomputed per `applyConfigurationCapacity()`.** When `PUT /mockserver/configuration` changes `maxEventLogSizeInBytes` at runtime, `applyConfigurationCapacity()` updates `maxInFlightBytes` alongside the deque's `maxBytes`, so both bounds track the new value. A shrink applies to every subsequent publish; it cannot evict what is already in the ring (the ring is not resizable).
 
 ## Eviction and GC
 
@@ -426,7 +447,7 @@ For workloads with very large request/response bodies (>10 KB), the automatic de
 | Property | System Property | Environment Variable | Default |
 |----------|----------------|---------------------|---------|
 | Max log entries | `mockserver.maxLogEntries` | `MOCKSERVER_MAX_LOG_ENTRIES` | `min(heapAvailableKB / 8, 100000)` |
-| Max event log size (bytes) | `mockserver.maxEventLogSizeInBytes` | `MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES` | `(heapAvailableKB / 4) * 1024` (see formula above; `0` only when heap ceiling is undefined) |
+| Max event log size (bytes) | `mockserver.maxEventLogSizeInBytes` | `MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES` | `(heapAvailableKB / 8) * 1024` at `INFO`/`DEBUG`/`TRACE`; `(heapAvailableKB / 4) * 1024` at `WARN`/`ERROR`/`OFF` (see formula above; `0` only when heap ceiling is undefined) |
 | Max logged body bytes | `mockserver.maxLoggedBodyBytes` | `MOCKSERVER_MAX_LOGGED_BODY_BYTES` | `0` (unlimited) |
 | Ring buffer size | `mockserver.ringBufferSize` | `MOCKSERVER_RING_BUFFER_SIZE` | `min(maxLogEntries, 16384)` (rounded up to a power of two) |
 | Max expectations | `mockserver.maxExpectations` | `MOCKSERVER_MAX_EXPECTATIONS` | `min(heapAvailableKB / 10, 15000)` |
