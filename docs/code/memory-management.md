@@ -357,6 +357,10 @@ Actual heap retention is a small multiple of this figure (headers, metadata, UUI
 
 Key ordering guarantee: disk capture (when `persistRecordedRequestsToDisk` is enabled) runs **before** truncation in `processLogEntry`, so the NDJSON archive always receives the full body regardless of `maxLoggedBodyBytes`. The archive captures both forwarded and mocked exchanges and outlives ring-buffer (`maxLogEntries` / `maxEventLogSizeInBytes`) eviction and process restarts; evicted entries can be brought back into the queryable in-memory log via `PUT /mockserver/import?format=recording` (`?source=disk` to read the configured path). See [event-system.md](event-system.md) for the disk-capture and re-import paths.
 
+**Verification impact:** setting `maxLoggedBodyBytes` breaks verification against request or response body content. A verify call that matches on body returns 406 against a truncated log entry where the full body would return 202. Verification by path, method, and header is not affected. The truncation is visible in the retrieved entry and in the dashboard via the `x-mockserver-body-truncated: <originalLength>` header on the stored copy. This is by design — truncation is an intentional trade-off to reduce deque body footprint, not a silent loss.
+
+**Does not prevent ring-buffer OOM at INFO.** `truncateBodiesForLog()` runs in the LMAX Disruptor consumer, downstream of the ring. At the default `INFO` level the consumer is slow (it formats every entry to system-out), so the ring backs up and fills with full-sized bodies before truncation can run. Measured: with and without `maxLoggedBodyBytes=4096`, OOM occurred at the same point (~293-298 requests with 256 KB bodies at `INFO`). To survive large-body load on a constrained heap, raise the log level to `WARN` (which lets the consumer drain the ring) or increase `-Xmx`.
+
 The byte-budget weigher measures the (possibly truncated) body bytes, so truncation reduces the weight contributed to `totalBytes`.
 
 ## Eviction and GC
@@ -422,7 +426,7 @@ For workloads with very large request/response bodies (>10 KB), the automatic de
 | Property | System Property | Environment Variable | Default |
 |----------|----------------|---------------------|---------|
 | Max log entries | `mockserver.maxLogEntries` | `MOCKSERVER_MAX_LOG_ENTRIES` | `min(heapAvailableKB / 8, 100000)` |
-| Max event log size (bytes) | `mockserver.maxEventLogSizeInBytes` | `MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES` | `0` (disabled) |
+| Max event log size (bytes) | `mockserver.maxEventLogSizeInBytes` | `MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES` | `(heapAvailableKB / 4) * 1024` (see formula above; `0` only when heap ceiling is undefined) |
 | Max logged body bytes | `mockserver.maxLoggedBodyBytes` | `MOCKSERVER_MAX_LOGGED_BODY_BYTES` | `0` (unlimited) |
 | Ring buffer size | `mockserver.ringBufferSize` | `MOCKSERVER_RING_BUFFER_SIZE` | `min(maxLogEntries, 16384)` (rounded up to a power of two) |
 | Max expectations | `mockserver.maxExpectations` | `MOCKSERVER_MAX_EXPECTATIONS` | `min(heapAvailableKB / 10, 15000)` |
