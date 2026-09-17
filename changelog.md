@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced a given set of measurements, which could not previously be determined from the metrics endpoint.
 
 ### Changed
+- Upgraded the dashboard's diagram dependency `mermaid` from 11 to 12 (`mockserver-ui`). The diagram output
+  the dashboard renders (agent call graphs and scenario state diagrams) is unchanged. An npm `overrides` entry
+  pins `lodash-es` to `4.18.1` — the release that fixes the `_.template`, `_.unset` and `_.omit` advisories —
+  which keeps the production dependency audit (`npm audit --omit=dev`) clean; the affected lodash functions are
+  not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
 
 ### Fixed
 - Forward-proxy authentication no longer allocates a per-request memory buffer that was never released. Every
