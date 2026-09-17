@@ -1704,6 +1704,18 @@ answer is "nothing happened", the controls are theatre.
    the numbers representative but breaks comparability with the entire stored baseline.
    Recommendation: keep `ERROR` for the tracked baseline, **add** an `INFO` rung for the
    published figure, label both. Decide before item 19 refreshes the site.
+   **DECIDED + measurement capability landed (2026-09-18).** The tracked, gated baseline stays
+   `ERROR` and is unchanged. `perf-test-run.sh` now adds a second SUT at the shipped-default
+   `INFO` level and re-measures ONLY the two published families — the knee curve (`sweep.js`)
+   and per-behaviour percentiles (`regression.js` http+https) — emitting them under a DISTINCT
+   result key (`.info_log_level_arm.*`, self-describing via `.config.log_level`), never under
+   `.behaviours` / `.sweep` / `peak_achieved_rps`, so an `INFO` number can never be confused
+   with or diffed against the `ERROR` series. Non-gating and excluded from `validity` (open
+   question 9); `PERF_INFO_ARM=false` disables it; estimated ~10 min added wall-clock (open
+   question 6 — verify against a real run). `perf-budgets.json` carries staged, notify-only
+   `provisional` `info_*` budgets. **Still pending:** `perf-test-compare.sh` does not yet
+   surface these keys and item 19 does not yet publish the `INFO` figure — sequence that after
+   a run emits both series (a number is not published until it is measured).
 6. **Cost is not the constraint; the serialised box is.** One estimate unverified: nobody has
    measured how long the daily chain occupies it. Every row of the cost table depends on it.
 7. **Is `alloc_bytes_per_op` really agent-independent?** One cheap experiment: same commit,

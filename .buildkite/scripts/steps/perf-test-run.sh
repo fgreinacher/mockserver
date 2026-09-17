@@ -135,6 +135,22 @@ echo "--- file-backed body: $(wc -c < "$FILE_BODY_HOST_PATH") bytes -> ${FILE_BO
 SAMPLER_PID=""
 SWEEP_SAMPLER_PID=""
 SWEEP_K6="k6-sweep-${RUN_ID}"
+# Plan open question 5 — the INFO-log-level PUBLICATION arm. The tracked, gated
+# baseline is measured at MOCKSERVER_LOG_LEVEL=ERROR (start_mockserver's default)
+# and MUST NOT move — every historical S3 run is ERROR, so switching it would break
+# comparability. This arm ADDS a second SUT at the SHIPPED-DEFAULT log level (INFO)
+# and re-measures ONLY the two PUBLISHED figure families against it — the knee curve
+# (sweep.js) and the per-behaviour percentiles (regression.js) — so the site can show
+# an honest "out of the box" number ALONGSIDE the (legitimate, but labelled) ERROR
+# one. Its output lands under DISTINCT top-level keys (info_log_level_arm.*), never
+# under .behaviours / .sweep / peak_achieved_rps, so an INFO number can never be
+# confused with, or diffed against, the ERROR baseline series. Set PERF_INFO_ARM=false
+# to skip it if the (serialised) perf box is time-pressed — it is a pure add-on and
+# nothing else in the run depends on it.
+INFO_SERVER="mockserver-perf-info-${RUN_ID}"
+INFO_SERVER_ALIAS="mockserver-info"
+INFO_SWEEP_K6="k6-info-sweep-${RUN_ID}"
+PERF_INFO_ARM="${PERF_INFO_ARM:-true}"
 cleanup() {
   [ -n "$SAMPLER_PID" ] && kill "$SAMPLER_PID" >/dev/null 2>&1 || true
   [ -n "$SWEEP_SAMPLER_PID" ] && kill "$SWEEP_SAMPLER_PID" >/dev/null 2>&1 || true
@@ -142,6 +158,7 @@ cleanup() {
   # The item 14 handshake SUTs (deterministic names from RUN_ID) — removed here too
   # so an early exit before the proxy block's own cleanup never leaks them.
   docker rm -f "$SERVER" "$UPSTREAM" "$SWEEP_K6" "$STREAM_K6" "$STREAM_SUT" \
+    "$INFO_SERVER" "$INFO_SWEEP_K6" \
     "$CLU_CTRL" "$CLU_A" "$CLU_B" \
     "mockserver-mtls-${RUN_ID}" "mockserver-jdk-${RUN_ID}" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
@@ -203,7 +220,10 @@ cpuset_arg() { [ -n "$1" ] && printf -- '--cpuset-cpus=%s' "$1"; }
 docker network create "$NETWORK" >/dev/null
 
 start_mockserver() {
-  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}"
+  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}" log_level="${7:-ERROR}"
+  # log_level defaults to ERROR — the tracked baseline's level, which every existing
+  # caller relies on. The INFO publication arm (plan open question 5) passes INFO
+  # explicitly; nothing else does, so the ERROR baseline is unaffected.
   # PERF_SERVER_JAVA_OPTS (when set) is passed through as JAVA_TOOL_OPTIONS so a
   # re-run can opt into a tuned JVM (e.g. low-pause GC + a larger heap) for nicer
   # documentation-site throughput/latency figures. Applied to BOTH the SUT and
@@ -221,7 +241,7 @@ start_mockserver() {
     ${mount:+-v "$mount"} \
     ${publish:+-p 127.0.0.1::1080} \
     ${java_opts_arg[@]+"${java_opts_arg[@]}"} \
-    -e MOCKSERVER_LOG_LEVEL=ERROR \
+    -e MOCKSERVER_LOG_LEVEL="$log_level" \
     -e MOCKSERVER_DISABLE_SYSTEM_OUT=true \
     -e MOCKSERVER_METRICS_ENABLED=true \
     -e MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES="$PERF_MAX_EVENT_LOG_BYTES" \
@@ -306,8 +326,11 @@ metric_heap_max() {
 # metrics endpoint. This only proves the container was HANDED the value, not that the JVM parsed
 # and applied it - hence the config block labels it container-env rather than observed. If the
 # server ever exposes the effective budget as a metric, read it from there instead.
-container_env() { # VAR_NAME
-  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$SERVER" 2>/dev/null \
+container_env() { # VAR_NAME [container_name=$SERVER]
+  # Defaults to the ERROR baseline SUT so every existing caller is unchanged; the
+  # INFO publication arm passes its own container name to read that SUT's log level.
+  local cname="${2:-$SERVER}"
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$cname" 2>/dev/null \
     | awk -F= -v k="$1" '$1==k{sub("^[^=]*=",""); print; exit}' || true
 }
 
@@ -470,108 +493,133 @@ SWEEP_STEP="${K6_SWEEP_STEP:-15s}"
 SWEEP_GAP="${K6_SWEEP_GAP:-5s}"
 SWEEP_CPU_LOG="$OUT_DIR/sweep-k6-cpu.csv"
 
-# Background sampler of the k6 CLIENT container's CPU while the sweep runs — the
-# missing "was the client the bottleneck?" evidence. A rung where k6 is near its
-# own CPU pin is a CLIENT ceiling, not MockServer's, and is excluded below.
-sweep_k6_sampler() {
-  echo "ts,cpu_pct" > "$SWEEP_CPU_LOG"
-  while true; do
-    local ts cpu
-    ts="$(date -u +%s)"
-    cpu="$(docker stats --no-stream --format '{{.CPUPerc}}' "$SWEEP_K6" 2>/dev/null | tr -d '% ' || echo '')"
-    [ -n "$cpu" ] && printf '%s,%s\n' "$ts" "$cpu" >> "$SWEEP_CPU_LOG"
-    sleep "${PERF_SWEEP_SAMPLE_INTERVAL:-3}"
-  done
-}
-
-echo "--- sweep.js (throughput-vs-latency knee curve; ladder=$SWEEP_RATES)"
-SWEEP_T0="$(date -u +%s)"
-sweep_k6_sampler & SWEEP_SAMPLER_PID=$!
-# shellcheck disable=SC2046
-docker run --rm --name "$SWEEP_K6" --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
-  -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
-  -v "$OUT_DIR:/out" \
-  -e "BASE_URL=http://${SERVER_ALIAS}:1080" \
-  -e "PROTO=http" \
-  -e "K6_SWEEP_RATES=$SWEEP_RATES" \
-  -e "K6_SWEEP_STEP=$SWEEP_STEP" \
-  -e "K6_SWEEP_GAP=$SWEEP_GAP" \
-  -e "K6_SWEEP_RESULT_PATH=/out/sweep.json" \
-  ${K6_SWEEP_PRE_VUS:+-e K6_SWEEP_PRE_VUS="$K6_SWEEP_PRE_VUS"} \
-  ${K6_SWEEP_MAX_VUS:+-e K6_SWEEP_MAX_VUS="$K6_SWEEP_MAX_VUS"} \
-  "$K6_IMAGE" run /k6/sweep.js
-kill "$SWEEP_SAMPLER_PID" >/dev/null 2>&1 || true; SWEEP_SAMPLER_PID=""
-
-# --- derive saturation_rps from the sweep (item: prove the client had headroom) -
-# Per rung: attribute the max k6-container CPU seen during that rung's hold window
-# (from the sampler log + the known ladder schedule), pair it with k6's per-rung
-# dropped_iterations, and mark the rung CLEAN iff achieved >= 0.95*offered AND the
-# client had CPU headroom (< 85% of its pin) AND k6 dropped no iterations. The
-# highest CLEAN rung's offered rate is saturation_rps. If nothing is clean, the
-# client was the bottleneck everywhere and the run is flagged invalid below.
+# Ladder schedule + client-pin constants, derived ONCE and reused by every sweep
+# (the ERROR baseline below AND the INFO publication arm). They depend only on the
+# static ladder/pin config, never on a sweep's output, so hoisting them here keeps
+# the two sweeps' saturation derivation identical (a fair ERROR-vs-INFO comparison
+# requires the SAME knee methodology). SETTLE_S / err-eps are the same tunables the
+# derivation used inline before this was factored out.
 STEP_S="$(to_secs "$SWEEP_STEP")"
 GAP_S="$(to_secs "$SWEEP_GAP")"
 SETTLE_S="${PERF_SWEEP_SETTLE_S:-3}"
 K6_CORES="$(k6_core_count "$K6_CPUS")"
 K6_PIN_PCT=$((K6_CORES * 100))
-
-# Max k6 CPU% per rung, keyed by offered rate, from the CPU sample log + schedule.
-CPU_MAP="{}"
-IFS=',' read -ra RATE_ARR <<< "$SWEEP_RATES"
-for i in "${!RATE_ARR[@]}"; do
-  r="${RATE_ARR[$i]}"
-  ws=$(( SWEEP_T0 + i * (STEP_S + GAP_S) + SETTLE_S ))
-  we=$(( SWEEP_T0 + i * (STEP_S + GAP_S) + STEP_S ))
-  maxcpu="$(awk -F',' -v a="$ws" -v b="$we" 'NR>1 && $1>=a && $1<=b { if($2+0>m) m=$2+0 } END{ printf "%.1f", m+0 }' "$SWEEP_CPU_LOG" 2>/dev/null || echo 0)"
-  CPU_MAP="$(jq -c --arg k "$r" --argjson v "${maxcpu:-0}" '. + {($k): $v}' <<<"$CPU_MAP")"
-done
-
-# A rung is RIG-VALID when the measurement itself is trustworthy: the k6 client
-# had CPU headroom, dropped no iterations, and the server was not returning fast
-# errors (a rung "achieves" its offered rate even while erroring, so error_rate is
-# part of validity, not just throughput). The BUDGETED metric is peak_achieved_rps
-# = max achieved over rig-valid rungs — CONTINUOUS (it moves proportionally with
-# the real ceiling, e.g. 36,324 achieved at 48,000 offered), unlike the ladder-
-# QUANTISED saturation_rps (only ever a rung's offered value, 16k/32k/... — its
-# smallest move is a factor of two, so it cannot carry a percentage floor).
-# saturation_rps is kept as a DESCRIPTIVE figure only (the knee), not budgeted.
 SWEEP_ERR_EPS="${PERF_SWEEP_ERROR_EPS:-0.01}"
-SATURATION_JSON="$(jq -n \
-  --slurpfile sweep "$OUT_DIR/sweep.json" \
-  --argjson cpu "$CPU_MAP" \
-  --argjson pin "$K6_PIN_PCT" \
-  --argjson cores "$K6_CORES" \
-  --argjson err_eps "$SWEEP_ERR_EPS" '
-  ($pin * 0.85) as $cpu_ceiling
-  | (($sweep[0].points) // []) as $points
-  | [ $points[]
-      | ($cpu[(.offered_rps|tostring)]) as $c
-      | (.dropped_iterations // 0) as $drops
-      | (.error_rate // 0) as $err
-      | (.offered_rps) as $off | (.achieved_rps // 0) as $ach
-      | (($cores <= 0) or ($c == null) or ($c <= $cpu_ceiling)) as $headroom
-      | ($drops <= 0) as $no_drops
-      | ($err <= $err_eps) as $low_err
-      # rig_valid: the measurement itself is trustworthy (says nothing about the
-      # server verdict). clean: rig_valid AND the server actually kept up (knee).
-      | ($headroom and $no_drops and $low_err) as $rig_valid
-      | ($rig_valid and ($off > 0) and ($ach >= 0.95 * $off)) as $clean
-      | { offered_rps:$off, achieved_rps:$ach, k6_cpu_pct:$c,
-          dropped_iterations:$drops, error_rate:$err,
-          rig_valid:$rig_valid, clean:$clean,
-          exclude_reason:(
-            if $rig_valid then null
-            elif ($headroom|not) then "k6 client CPU \($c)% >= 85% of \($pin)% pin (client bottleneck)"
-            elif ($no_drops|not) then "k6 dropped \($drops) iterations (client VU-starved)"
-            else "server error_rate \($err) > \($err_eps) (fast errors inflate achieved)" end) } ]
-  | . as $rungs
-  | ([ $rungs[] | select(.rig_valid) | .achieved_rps ] | max // 0) as $peak
-  | ([ $rungs[] | select(.clean) | .offered_rps ] | max // 0) as $sat
-  | { peak_achieved_rps:$peak, saturation_rps:$sat,
-      client_pin_pct:$pin, client_cores:$cores,
-      ladder:$rungs,
-      excluded:[ $rungs[] | select(.rig_valid|not)
-                 | {offered_rps, achieved_rps, k6_cpu_pct, dropped_iterations, error_rate, reason:.exclude_reason} ] }')"
+
+# Background sampler of the k6 CLIENT container's CPU while a sweep runs — the
+# missing "was the client the bottleneck?" evidence. A rung where k6 is near its
+# own CPU pin is a CLIENT ceiling, not MockServer's, and is excluded by
+# derive_saturation. Parameterised by container name + output CSV so the ERROR and
+# INFO sweeps each get their own sampler against their own k6 container.
+sweep_cpu_sampler() { # k6_container_name  out_csv
+  local cname="$1" out_csv="$2"
+  echo "ts,cpu_pct" > "$out_csv"
+  while true; do
+    local ts cpu
+    ts="$(date -u +%s)"
+    cpu="$(docker stats --no-stream --format '{{.CPUPerc}}' "$cname" 2>/dev/null | tr -d '% ' || echo '')"
+    [ -n "$cpu" ] && printf '%s,%s\n' "$ts" "$cpu" >> "$out_csv"
+    sleep "${PERF_SWEEP_SAMPLE_INTERVAL:-3}"
+  done
+}
+
+# Run one throughput-vs-latency sweep against $target_alias, writing k6's result to
+# $out_json and the client-CPU trace to $cpu_log. Records the sweep's start epoch in
+# the global LAST_SWEEP_T0 (NOT echoed — the docker run's own stdout would pollute a
+# captured value) so derive_saturation can line each rung up with its hold window.
+# Registers the sampler PID in SWEEP_SAMPLER_PID so cleanup() reaps it on an early
+# exit, and clears it once reaped.
+run_sweep() { # k6_container_name  target_alias  out_json_host_path  cpu_log_host_path
+  local k6name="$1" target_alias="$2" out_json="$3" cpu_log="$4"
+  LAST_SWEEP_T0="$(date -u +%s)"
+  sweep_cpu_sampler "$k6name" "$cpu_log" & SWEEP_SAMPLER_PID=$!
+  # shellcheck disable=SC2046
+  docker run --rm --name "$k6name" --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+    -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
+    -v "$OUT_DIR:/out" \
+    -e "BASE_URL=http://${target_alias}:1080" \
+    -e "PROTO=http" \
+    -e "K6_SWEEP_RATES=$SWEEP_RATES" \
+    -e "K6_SWEEP_STEP=$SWEEP_STEP" \
+    -e "K6_SWEEP_GAP=$SWEEP_GAP" \
+    -e "K6_SWEEP_RESULT_PATH=/out/$(basename "$out_json")" \
+    ${K6_SWEEP_PRE_VUS:+-e K6_SWEEP_PRE_VUS="$K6_SWEEP_PRE_VUS"} \
+    ${K6_SWEEP_MAX_VUS:+-e K6_SWEEP_MAX_VUS="$K6_SWEEP_MAX_VUS"} \
+    "$K6_IMAGE" run /k6/sweep.js
+  kill "$SWEEP_SAMPLER_PID" >/dev/null 2>&1 || true; SWEEP_SAMPLER_PID=""
+}
+
+# --- derive saturation_rps from a sweep (item: prove the client had headroom) ---
+# Per rung: attribute the max k6-container CPU seen during that rung's hold window
+# (from the sampler log + the known ladder schedule anchored at $t0), pair it with
+# k6's per-rung dropped_iterations, and mark the rung CLEAN iff achieved >=
+# 0.95*offered AND the client had CPU headroom (< 85% of its pin) AND k6 dropped no
+# iterations. The highest CLEAN rung's offered rate is saturation_rps. If nothing is
+# clean, the client was the bottleneck everywhere (the caller flags the run invalid).
+# Echoes the SATURATION_JSON object on stdout.
+derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
+  local sweep_json="$1" cpu_log="$2" t0="$3"
+  local cpu_map="{}" i r ws we maxcpu
+  local -a rate_arr
+  IFS=',' read -ra rate_arr <<< "$SWEEP_RATES"
+  for i in "${!rate_arr[@]}"; do
+    r="${rate_arr[$i]}"
+    ws=$(( t0 + i * (STEP_S + GAP_S) + SETTLE_S ))
+    we=$(( t0 + i * (STEP_S + GAP_S) + STEP_S ))
+    maxcpu="$(awk -F',' -v a="$ws" -v b="$we" 'NR>1 && $1>=a && $1<=b { if($2+0>m) m=$2+0 } END{ printf "%.1f", m+0 }' "$cpu_log" 2>/dev/null || echo 0)"
+    cpu_map="$(jq -c --arg k "$r" --argjson v "${maxcpu:-0}" '. + {($k): $v}' <<<"$cpu_map")"
+  done
+  # A rung is RIG-VALID when the measurement itself is trustworthy: the k6 client
+  # had CPU headroom, dropped no iterations, and the server was not returning fast
+  # errors (a rung "achieves" its offered rate even while erroring, so error_rate is
+  # part of validity, not just throughput). The BUDGETED metric is peak_achieved_rps
+  # = max achieved over rig-valid rungs — CONTINUOUS (it moves proportionally with
+  # the real ceiling, e.g. 36,324 achieved at 48,000 offered), unlike the ladder-
+  # QUANTISED saturation_rps (only ever a rung's offered value, 16k/32k/... — its
+  # smallest move is a factor of two, so it cannot carry a percentage floor).
+  # saturation_rps is kept as a DESCRIPTIVE figure only (the knee), not budgeted.
+  jq -n \
+    --slurpfile sweep "$sweep_json" \
+    --argjson cpu "$cpu_map" \
+    --argjson pin "$K6_PIN_PCT" \
+    --argjson cores "$K6_CORES" \
+    --argjson err_eps "$SWEEP_ERR_EPS" '
+    ($pin * 0.85) as $cpu_ceiling
+    | (($sweep[0].points) // []) as $points
+    | [ $points[]
+        | ($cpu[(.offered_rps|tostring)]) as $c
+        | (.dropped_iterations // 0) as $drops
+        | (.error_rate // 0) as $err
+        | (.offered_rps) as $off | (.achieved_rps // 0) as $ach
+        | (($cores <= 0) or ($c == null) or ($c <= $cpu_ceiling)) as $headroom
+        | ($drops <= 0) as $no_drops
+        | ($err <= $err_eps) as $low_err
+        # rig_valid: the measurement itself is trustworthy (says nothing about the
+        # server verdict). clean: rig_valid AND the server actually kept up (knee).
+        | ($headroom and $no_drops and $low_err) as $rig_valid
+        | ($rig_valid and ($off > 0) and ($ach >= 0.95 * $off)) as $clean
+        | { offered_rps:$off, achieved_rps:$ach, k6_cpu_pct:$c,
+            dropped_iterations:$drops, error_rate:$err,
+            rig_valid:$rig_valid, clean:$clean,
+            exclude_reason:(
+              if $rig_valid then null
+              elif ($headroom|not) then "k6 client CPU \($c)% >= 85% of \($pin)% pin (client bottleneck)"
+              elif ($no_drops|not) then "k6 dropped \($drops) iterations (client VU-starved)"
+              else "server error_rate \($err) > \($err_eps) (fast errors inflate achieved)" end) } ]
+    | . as $rungs
+    | ([ $rungs[] | select(.rig_valid) | .achieved_rps ] | max // 0) as $peak
+    | ([ $rungs[] | select(.clean) | .offered_rps ] | max // 0) as $sat
+    | { peak_achieved_rps:$peak, saturation_rps:$sat,
+        client_pin_pct:$pin, client_cores:$cores,
+        ladder:$rungs,
+        excluded:[ $rungs[] | select(.rig_valid|not)
+                   | {offered_rps, achieved_rps, k6_cpu_pct, dropped_iterations, error_rate, reason:.exclude_reason} ] }'
+}
+
+echo "--- sweep.js (throughput-vs-latency knee curve; ladder=$SWEEP_RATES)"
+run_sweep "$SWEEP_K6" "$SERVER_ALIAS" "$OUT_DIR/sweep.json" "$SWEEP_CPU_LOG"
+SWEEP_T0="$LAST_SWEEP_T0"
+SATURATION_JSON="$(derive_saturation "$OUT_DIR/sweep.json" "$SWEEP_CPU_LOG" "$SWEEP_T0")"
 PEAK_ACHIEVED_RPS="$(jq -r '.peak_achieved_rps' <<<"$SATURATION_JSON")"
 SATURATION_RPS="$(jq -r '.saturation_rps' <<<"$SATURATION_JSON")"
 echo "--- peak_achieved_rps=$PEAK_ACHIEVED_RPS saturation_rps=$SATURATION_RPS (client pin=${K6_PIN_PCT}%, cores=$K6_CORES)"
@@ -585,6 +633,126 @@ if awk -v v="$PEAK_ACHIEVED_RPS" 'BEGIN{exit !(v+0>0)}'; then
   add_check "sweep_client_had_headroom" true "peak_achieved_rps=${PEAK_ACHIEVED_RPS} measured with client headroom, no dropped iterations, low errors"
 else
   add_check "sweep_client_had_headroom" false "every sweep rung was excluded (client CPU-pinned / VU-starved / erroring) — the k6 client, not MockServer, was the bottleneck; no server throughput figure is trustworthy"
+fi
+
+# --- INFO-log-level publication arm (plan open question 5) ---------------------
+# Re-measure ONLY the two PUBLISHED figure families — the knee curve (sweep.js) and
+# the per-behaviour percentiles (regression.js, http + https_h2) — against a SECOND
+# SUT running at the SHIPPED-DEFAULT log level (INFO). The owner's decision: the
+# tracked baseline stays ERROR (a performance-sensitive user really does set ERROR,
+# so publishing it is legitimate and every historical S3 run is ERROR), but the
+# INFO figure is published ALONGSIDE it and LABELLED as INFO so nobody is misled
+# about the out-of-the-box number.
+#
+# NON-GATING BY CONSTRUCTION. This arm never fails the step and never touches the
+# ERROR baseline: (1) its output lands under DISTINCT keys (info_log_level_arm.*),
+# not .behaviours / .sweep / peak_achieved_rps, so it can never be confused with or
+# diffed against the ERROR series; (2) it is EXCLUDED from VALIDITY_CHECKS, so an
+# INFO hiccup cannot flip validity.valid and block the ERROR baseline from being
+# stored; (3) every fallible command is guarded so a failure degrades to
+# measured:false, not an aborted run. Plan open question 9: land notify-only,
+# observe ten runs, THEN attach a budget — the info_* budget entries carry no
+# `gating` (notify-only) and `provisional: true` until that history exists.
+#
+# The INFO SUT is pinned to the SAME cpuset as the ERROR SUT (SERVER_CPUS) and runs
+# HERE, right after the ERROR sweep, while the ERROR SUT is idle — so the INFO knee
+# is measured under the same core budget as the ERROR knee (a fair comparison) with
+# negligible contention. It is torn down immediately afterwards to free its heap
+# before the growth phase. regression.js / sweep.js each seed AND reset the SUT they
+# target, so pointing them at the INFO alias keeps the two SUTs isolated.
+INFO_ARM_JSON='{}'
+INFO_ARM_ATTEMPTED=false
+if [ "$PERF_INFO_ARM" = "true" ]; then
+  INFO_ARM_ATTEMPTED=true
+  INFO_T_START="$(date -u +%s)"
+  echo "--- INFO-log-level arm: starting SUT ($MOCKSERVER_IMAGE, MOCKSERVER_LOG_LEVEL=INFO, pinned to $SERVER_CPUS)"
+  INFO_MEASURED=false
+  # publish="" (no host port needed — log level is read via docker inspect, not the
+  # metrics endpoint); same memory bound + file-body mount + image as the ERROR SUT
+  # so the JS-template and file-body arms behave identically. Guarded with `|| true`
+  # so a docker-run failure here degrades the (notify-only) INFO arm rather than
+  # aborting the ERROR-baseline run under `set -e`; a failed start leaves no
+  # container, so wait_ready then reports not-ready and the arm records measured:false.
+  start_mockserver "$INFO_SERVER" "$SERVER_CPUS" "$INFO_SERVER_ALIAS" "" "$SERVER_MEMORY" "$FILE_BODY_MOUNT" "INFO" \
+    || echo "WARNING: INFO SUT failed to start — INFO arm will record measured:false" >&2
+  if wait_ready "$INFO_SERVER"; then
+    INFO_MEASURED=true
+    # Per-behaviour percentiles at INFO (http + https_h2), same durations/arms as the
+    # ERROR regression so the two are comparable. Guarded: a k6 failure degrades this
+    # arm to measured:false rather than aborting the (ERROR-baseline) run.
+    run_regression "http"     "http://${INFO_SERVER_ALIAS}:1080"  "false" "info-regression-http.json"  || { echo "WARNING: INFO regression http failed — INFO arm degraded" >&2; INFO_MEASURED=false; }
+    run_regression "https_h2" "https://${INFO_SERVER_ALIAS}:1080" "true"  "info-regression-https.json" || { echo "WARNING: INFO regression https_h2 failed — INFO arm degraded" >&2; INFO_MEASURED=false; }
+    # Knee curve at INFO (same ladder + saturation methodology as the ERROR sweep).
+    echo "--- INFO-log-level arm: sweep.js (knee curve at INFO)"
+    run_sweep "$INFO_SWEEP_K6" "$INFO_SERVER_ALIAS" "$OUT_DIR/info-sweep.json" "$OUT_DIR/info-sweep-k6-cpu.csv" \
+      || { echo "WARNING: INFO sweep failed — INFO knee degraded" >&2; INFO_MEASURED=false; }
+  else
+    echo "WARNING: INFO SUT did not become ready — INFO arm skipped (notify-only, ERROR baseline unaffected)" >&2
+  fi
+
+  # Log level the INFO SUT ACTUALLY received (observed from its container env) — the
+  # self-describing tag that lets a reader tell an INFO record from an ERROR one by
+  # the DATA, not by which key it landed under (plan open question 5, point 4). Read
+  # the same way the ERROR baseline's config.log_level is (container_env), i.e. an
+  # extension of the existing config-block mechanism, not a parallel one.
+  INFO_LOG_LEVEL_VAL="$(container_env MOCKSERVER_LOG_LEVEL "$INFO_SERVER")"; INFO_LOG_LEVEL_SRC="observed"
+  [ -n "$INFO_LOG_LEVEL_VAL" ] || { INFO_LOG_LEVEL_VAL="INFO"; INFO_LOG_LEVEL_SRC="declared"; }
+
+  # Merge the http + https_h2 behaviours (guarded to {} on any missing/unparsable
+  # file), derive the INFO saturation with the SHARED derive_saturation (identical
+  # knee methodology to the ERROR arm), then assemble the self-describing block.
+  INFO_BEHAVIOURS="$(jq -sc '(.[0].behaviours // {}) + (.[1].behaviours // {})' \
+    "$OUT_DIR/info-regression-http.json" "$OUT_DIR/info-regression-https.json" 2>/dev/null || echo '{}')"
+  jq -e . >/dev/null 2>&1 <<<"$INFO_BEHAVIOURS" || INFO_BEHAVIOURS='{}'
+  INFO_SWEEP_JSON="$(cat "$OUT_DIR/info-sweep.json" 2>/dev/null || echo '{}')"
+  jq -e . >/dev/null 2>&1 <<<"$INFO_SWEEP_JSON" || INFO_SWEEP_JSON='{}'
+  if [ -f "$OUT_DIR/info-sweep.json" ]; then
+    INFO_SATURATION_JSON="$(derive_saturation "$OUT_DIR/info-sweep.json" "$OUT_DIR/info-sweep-k6-cpu.csv" "$LAST_SWEEP_T0" 2>/dev/null || echo '{}')"
+  else
+    INFO_SATURATION_JSON='{}'
+  fi
+  jq -e . >/dev/null 2>&1 <<<"$INFO_SATURATION_JSON" || INFO_SATURATION_JSON='{}'
+
+  INFO_ARM_JSON="$(jq -n \
+    --argjson measured "$INFO_MEASURED" \
+    --arg log_level "$INFO_LOG_LEVEL_VAL" --arg log_level_src "$INFO_LOG_LEVEL_SRC" \
+    --arg image "$MOCKSERVER_IMAGE" --arg image_digest "$IMAGE_DIGEST" \
+    --arg server_cpus "${SERVER_CPUS:-none}" --arg k6_cpus "${K6_CPUS:-none}" \
+    --argjson behaviours "$INFO_BEHAVIOURS" \
+    --argjson sweep "$INFO_SWEEP_JSON" \
+    --argjson saturation "$INFO_SATURATION_JSON" '
+    {
+      # The log level is carried EXPLICITLY in the record so a reader can tell an
+      # INFO number from an ERROR number by the data alone — never by convention or
+      # by which key it landed under. The ERROR baseline is self-described the same
+      # way at top-level .config.log_level; this is the INFO twin of that tag.
+      measured: $measured,
+      config: {
+        log_level: $log_level,
+        log_level_source: $log_level_src,
+        image: $image,
+        image_digest: $image_digest,
+        cpusets: { server: $server_cpus, k6: $k6_cpus }
+      },
+      # Per-behaviour percentiles (http + https_h2 merged), SAME shape as the ERROR
+      # .behaviours but under a distinct key so it is never fingerprint-matched or
+      # diffed against the ERROR series.
+      behaviours: $behaviours,
+      # The knee curve at INFO + its derived saturation (peak_achieved_rps is the
+      # continuous ceiling; saturation_rps is the ladder-quantised knee).
+      sweep: { proto: ($sweep.proto // "http"), points: ($sweep.points // []) },
+      saturation: $saturation,
+      peak_achieved_rps: ($saturation.peak_achieved_rps // null),
+      saturation_rps: ($saturation.saturation_rps // null)
+    }')"
+  INFO_PEAK="$(jq -r '.peak_achieved_rps // "n/a"' <<<"$INFO_ARM_JSON")"
+  INFO_SAT="$(jq -r '.saturation_rps // "n/a"' <<<"$INFO_ARM_JSON")"
+  INFO_T_END="$(date -u +%s)"
+  echo "--- INFO-log-level arm done (log_level=${INFO_LOG_LEVEL_VAL} measured=${INFO_MEASURED} peak_achieved_rps=${INFO_PEAK} saturation_rps=${INFO_SAT}); added wall-clock $((INFO_T_END - INFO_T_START))s"
+  # Free the INFO SUT's heap before the growth phase (cleanup() also reaps it).
+  docker rm -f "$INFO_SERVER" >/dev/null 2>&1 || true
+else
+  echo "--- INFO-log-level arm skipped (PERF_INFO_ARM=$PERF_INFO_ARM)"
 fi
 
 # --- resource sampler (background) --------------------------------------------
@@ -1594,6 +1762,8 @@ jq -n \
   --argjson laptop_attempted "$LAPTOP_ATTEMPTED" \
   --argjson serving_percore "$SERVING_PERCORE_JSON" \
   --argjson serving_percore_attempted "$SERVING_PERCORE_ATTEMPTED" \
+  --argjson info_log_level_arm "$INFO_ARM_JSON" \
+  --argjson info_log_level_arm_attempted "$INFO_ARM_ATTEMPTED" \
   --arg cpu_start "$CPU_START" --arg cpu_end "$CPU_END" --arg cpu_peak "$CPU_PEAK" --arg cpu_ratio "$CPU_RATIO" \
   --arg heap_start "$HEAP_START" --arg heap_end "$HEAP_END" --arg heap_peak "$HEAP_PEAK" --arg heap_ratio "$HEAP_RATIO" \
   --arg heap_min_first "$HEAP_MIN_FIRST" --arg heap_min_last "$HEAP_MIN_LAST" \
@@ -1692,7 +1862,22 @@ jq -n \
     # trip). serving_percore_attempted lets compare RED a wholesale failure
     # (attempted but no points) apart from a disabled profile — the laptop split.
     serving_percore: $serving_percore,
-    serving_percore_attempted: $serving_percore_attempted
+    serving_percore_attempted: $serving_percore_attempted,
+    # Plan open question 5 — the INFO-log-level PUBLICATION arm. The two PUBLISHED
+    # figure families (knee curve + per-behaviour percentiles) re-measured against a
+    # SUT at the shipped-default log level, so the site can show an honest
+    # out-of-the-box number ALONGSIDE the (legitimate, labelled) ERROR baseline. Lives
+    # here under a DISTINCT key — NOT in .behaviours / .sweep / peak_achieved_rps — so
+    # an INFO number can never be confused with or diffed against the ERROR series, and
+    # carries its own .config.log_level so it is self-describing in the DATA. `{}` when
+    # the arm was disabled (PERF_INFO_ARM=false); the sibling *_attempted flag
+    # distinguishes disabled from attempted-but-failed (.info_log_level_arm.measured ==
+    # false). NON-GATING and EXCLUDED from validity — it never blocks the ERROR
+    # baseline. compare.sh does NOT yet read these keys (publication is sequenced after
+    # a run emits both series); the info_* budget entries are staged notify-only /
+    # provisional for when it does.
+    info_log_level_arm: $info_log_level_arm,
+    info_log_level_arm_attempted: $info_log_level_arm_attempted
   }' > "$RESULT_JSON"
 
 echo "--- result.json"

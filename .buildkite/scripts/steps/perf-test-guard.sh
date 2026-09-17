@@ -99,7 +99,14 @@ buildkite-agent pipeline upload <<'YAML'
 steps:
   - label: ":k6: perf regression — run + sample"
     command: ".buildkite/scripts/steps/perf-test-run.sh"
-    timeout_in_minutes: 45
+    # Bumped 45 -> 60 for the INFO-log-level publication arm (plan open question 5):
+    # a SECOND SUT at the shipped-default log level re-runs the two published figure
+    # families (regression.js http+https + sweep.js), adding an estimated ~10 min of
+    # wall-clock. The perf box is serialised and the chain's occupancy is not yet
+    # measured (open question 6), so this adds headroom rather than risking the cap;
+    # trim it back once a few runs show the real duration, or set PERF_INFO_ARM=false
+    # to drop the arm entirely.
+    timeout_in_minutes: 60
     agents:
       queue: "perf"
   - label: ":microscope: perf regression — micro-benchmark + scaling sweep"
