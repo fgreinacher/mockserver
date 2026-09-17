@@ -52,10 +52,18 @@ BUDGETS_FILE="${PERF_BUDGETS_FILE:-$REPO_ROOT/mockserver-performance-test/perf-b
 
 # The three allocation benchmarks and the params that pin each to EXACTLY ONE row.
 # MatchingBenchmark reads matcherType/expectationCount/logLevel; InboundDecode reads
-# bodySize; ResponseWrite reads responseSize. JMH applies each -p only to the
-# benchmarks that declare it, so passing all five yields one row per class = 3 rows.
+# bodySize; ResponseWrite reads responseSize AND declareBodyCharset. JMH applies each
+# -p only to the benchmarks that declare it, so passing all six yields one row per
+# class = 3 rows. EVERY param a benchmark declares must be pinned here: an unpinned
+# param is expanded over all its values, which multiplies that class's row count and
+# trips the EXPECTED_ROWS assertion below -- fail-closed, but it blocks every merge
+# until the pin is added. declareBodyCharset is pinned to `false` deliberately: the
+# committed ResponseWriteBenchmark floor was derived from the implicit-charset shape,
+# so gating the explicit-charset arm instead would compare a different workload
+# against a floor that never described it. The explicit arm is measured by
+# perf-test-microbench.sh, where both arms are reported.
 JMH_INCLUDE="${PERF_ALLOC_INCLUDE:-org\.mockserver\.benchmark\.(MatchingBenchmark|InboundDecodeBenchmark|ResponseWriteBenchmark)\.}"
-JMH_ARGS="${PERF_ALLOC_JMH_ARGS:--bm avgt -prof gc -f 1 -wi 3 -i 5 -r 1 -w 1 -p matcherType=EXACT -p expectationCount=100 -p logLevel=INFO -p bodySize=16384 -p responseSize=16384}"
+JMH_ARGS="${PERF_ALLOC_JMH_ARGS:--bm avgt -prof gc -f 1 -wi 3 -i 5 -r 1 -w 1 -p matcherType=EXACT -p expectationCount=100 -p logLevel=INFO -p bodySize=16384 -p responseSize=16384 -p declareBodyCharset=false}"
 
 # EXACT expected row count — a fail-closed guard against include/param drift (a
 # renamed class, or a param that stops pinning, silently drops a row). Three

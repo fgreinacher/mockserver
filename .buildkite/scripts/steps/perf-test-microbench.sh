@@ -57,13 +57,17 @@ JMH_ARGS_EXTRA="${JMH_ARGS_EXTRA:--f 2 -wi 2 -i 3 -r 2 -w 2 -bm avgt -prof gc}"
 #   ForwardPath 8 methods x 0 params                = 8
 #   OpenApiValidation 1 method x 2 mode x 2 schema  = 4
 #   MetricsIncrement 2 methods x 0 params (avgt)    = 2
-#   ResponseWrite 1 method x 3 responseSize         = 3   (item 16 response-write arm)
+#   ResponseWrite 1 method x 3 responseSize x 2 declareBodyCharset = 6
+#                                                        (item 16 response-write arm;
+#                                                         declareBodyCharset splits the
+#                                                         explicit-charset reuse path from
+#                                                         the implicit-charset control)
 #   Http3RequestBridge 1 method x 2 protocol x 3 bodySize = 6   (item 20a H3-vs-H2 A/B)
-#                                             total  = 29
+#                                             total  = 32
 # Overridable so a narrowed local include/args run can set its own expected count;
 # any change to the benchmark surface (a new @Param, a new @Benchmark) is a
 # deliberate, reviewed bump of this number, not a silent row-count drift.
-EXTRA_EXPECTED="${EXTRA_EXPECTED:-29}"
+EXTRA_EXPECTED="${EXTRA_EXPECTED:-32}"
 
 # -f 2 (item 15c): scaling sweep gets the same 2-fork/trimmed-iteration treatment
 # (defined here, not in the scaling section below, so the JMH-config fingerprint
