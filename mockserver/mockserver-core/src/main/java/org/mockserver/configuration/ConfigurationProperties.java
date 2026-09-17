@@ -1974,6 +1974,35 @@ public class ConfigurationProperties {
         return heapBased > 0 ? heapBased : Math.min(floor, cap);
     }
 
+    // Fraction of the heap-ceiling budget (heapAvailableInKB) allotted by default to the bytes the
+    // event log retains in request/response bodies. A quarter leaves ample room for the expectation
+    // store, in-flight Netty buffers and JVM overhead while still bounding the body memory that the
+    // maxLogEntries count cap cannot see (a count cap treats a 10 MB body the same as a 10-byte one).
+    static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR = 4;
+
+    /**
+     * Derive the default {@code maxEventLogSizeInBytes} — the byte budget bounding the event log's
+     * retained request/response bodies — as {@code heapAvailableInKB / 4} (converted to bytes). Like
+     * {@link #maxLogEntries()} it is derived from the deterministic heap <em>ceiling</em>
+     * ({@link #heapAvailableInKB()}), so it is a constant for the JVM's life and does not depend on
+     * allocation ordering.
+     * <p>
+     * Returns {@code 0} (byte budget disabled, log bounded only by {@code maxLogEntries}) when the
+     * heap ceiling is undefined ({@code heapAvailableInKB == 0}, e.g. a GraalVM native image where
+     * {@code MemoryUsage.getMax()} is {@code -1}). That mirrors the count-store floor pattern: with no
+     * usable ceiling we cannot size a sensible byte budget, so we fall back to the count cap rather
+     * than pick an arbitrary number. An operator can always set an explicit value.
+     *
+     * @param heapAvailableInKB the ceiling-based store-sizing budget in KB (never negative)
+     * @return the default byte budget in bytes, or {@code 0} to leave the byte budget disabled
+     */
+    static long defaultMaxEventLogSizeInBytes(long heapAvailableInKB) {
+        if (heapAvailableInKB <= 0) {
+            return 0L;
+        }
+        return (heapAvailableInKB / DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR) * 1024L;
+    }
+
     /**
      * <p>
      * Maximum number of expectations stored in memory.  Expectations are stored in a circular queue so once this limit is reach the oldest and lowest priority expectations are overwritten
@@ -2010,15 +2039,24 @@ public class ConfigurationProperties {
     }
 
     public static long maxEventLogSizeInBytes() {
-        return Math.max(0L, readLongProperty(MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES, "MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES", 0L));
+        return Math.max(0L, readLongProperty(MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES, "MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES",
+            defaultMaxEventLogSizeInBytes(heapAvailableInKB())));
     }
 
     /**
      * <p>
-     * Maximum total size in bytes of the in-memory event log before older entries are evicted from memory (the oldest first).
+     * Maximum total size in bytes of the request/response bodies the in-memory event log retains before
+     * older entries are evicted (the oldest first). This bounds the memory the log can hold when
+     * individual entries are large — which {@code maxLogEntries} cannot, since a count cap treats a
+     * 10 MB body the same as a 10-byte one.
      * </p>
      * <p>
-     * The default is 0, which disables the size-based limit (the event log is bounded only by {@code maxLogEntries}).
+     * The default is derived from the JVM heap <em>ceiling</em> (a quarter of the same ceiling-based
+     * budget that sizes {@code maxLogEntries}), so it is on by default and constant for the JVM's life.
+     * Set it to {@code 0} to disable the size-based limit and bound the log only by {@code maxLogEntries}.
+     * Whichever of the two bounds is reached first evicts; eviction is announced once per server in the
+     * log and (with the default {@code failVerificationOnEvictedLog=true}) makes upper-bound
+     * verifications fail rather than silently pass on discarded evidence.
      * </p>
      *
      * @param maxEventLogSizeInBytes maximum total size in bytes of the in-memory event log (0 disables the limit)

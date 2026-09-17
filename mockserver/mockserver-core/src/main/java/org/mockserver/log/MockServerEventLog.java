@@ -391,24 +391,73 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         // add() weighs the (possibly truncated) entry via LogEntry::estimatedHeapSize for the byte
         // budget — truncation has already run, and the estimate is computed lazily inside add().
         eventLog.add(logEntry);
-        // Make eviction observable. Runs on the single disruptor consumer thread, so this is an
-        // uncontended read of an AtomicLong plus (after the first eviction) an already-set
-        // AtomicBoolean — negligible on the hot path.
+        // Make eviction observable. The guard is ordered so the non-evicting hot path pays only a
+        // single volatile read: getEvictedCount() > 0 is false until the first eviction and
+        // short-circuits before the compareAndSet, so on the overwhelming majority of writes nothing
+        // else runs. The whole warning-building branch executes at most ONCE per log instance (the
+        // AtomicBoolean latch), on the single disruptor consumer thread, so the string work below is
+        // off the steady-state path even under sustained eviction.
         if (eventLog.getEvictedCount() > 0 && evictedLogEntryWarned.compareAndSet(false, true)) {
             Metrics.incrementEvictedLogEntries();
-            logger.warn(
-                "event log full — discarding the oldest entries (maxLogEntries=" + configuration.maxLogEntries() + "). "
-                    + "Requests that have been evicted are no longer visible to retrieve or verify, so any verification "
-                    + "asserting an upper bound — never(), atMost(n), exactly(n), once() and between(a,b) — can no longer "
-                    + "prove absence and will now FAIL rather than pass on missing evidence. Note this includes once(), "
-                    + "which asserts exactly one call. atLeast(n), and the bare verify(request) which defaults to "
-                    + "atLeast(1), are unaffected. Increase maxLogEntries, or clear/reset the log between tests. "
-                    + "Note each request can log up to (number of expectations + 2) entries, because a non-matching "
-                    + "expectation logs EXPECTATION_NOT_MATCHED at INFO."
-            );
+            logger.warn(buildEvictionWarning(
+                eventLog.getByteEvictedCount() > 0,
+                configuration.maxLogEntries(),
+                configuration.maxEventLogSizeInBytes(),
+                configuration.logLevel()));
         }
         notifyListeners(this, false);
         writeToSystemOut(logger, logEntry, configuration);
+    }
+
+    /**
+     * Build the once-per-server WARN emitted when the event log first evicts. Kept as a pure static
+     * function (no field access) so it is unit-testable and so the (one-off) string work never touches
+     * the hot path. The message is actionable without opening documentation: it names which bound was
+     * hit and its current value, states the effect on verification, and orders remedies cheapest-first,
+     * tailored to the bound.
+     *
+     * <p><strong>The verbosity remedy is only offered for the count bound, and it is safe.</strong> In
+     * {@link org.mockserver.logging.MockServerLogger#logEvent}, the entry types a verification reads —
+     * {@code RECEIVED_REQUEST} (request verify) and {@code EXPECTATION_RESPONSE}/{@code FORWARDED_REQUEST}
+     * (response verify) — are added to the event log at EVERY log level; only lower-priority diagnostics
+     * such as {@code EXPECTATION_NOT_MATCHED} are gated by the level. So lowering the level reduces the
+     * number of entries retained per request without dropping anything {@code verify} depends on — it
+     * trades log detail, never verification correctness. That lever does NOT help the byte bound: the
+     * request/response bodies dominating the byte budget live on the always-retained entry types, so for
+     * a byte-bound eviction the message points at {@code maxLoggedBodyBytes} / the budget instead.
+     *
+     * @param byteBoundHit  true when the byte budget ({@code maxEventLogSizeInBytes}) drove the first
+     *                      eviction; false when the entry-count bound ({@code maxLogEntries}) did
+     * @param maxLogEntries the effective {@code maxLogEntries} for this server
+     * @param maxEventLogSizeInBytes the effective {@code maxEventLogSizeInBytes} for this server
+     * @param logLevel      the effective log level for this server (named in the verbosity remedy)
+     */
+    static String buildEvictionWarning(boolean byteBoundHit, int maxLogEntries, long maxEventLogSizeInBytes, Level logLevel) {
+        String bound = byteBoundHit
+            ? "byte budget reached (maxEventLogSizeInBytes=" + maxEventLogSizeInBytes + " bytes) — the retained request/response bodies exceeded it"
+            : "entry-count limit reached (maxLogEntries=" + maxLogEntries + ")";
+        StringBuilder message = new StringBuilder()
+            .append("MockServer event log full — now discarding the oldest entries, so it is no longer a complete record; ")
+            .append(bound).append(". ")
+            .append("Verifications asserting an upper bound — never(), atMost(n), exactly(n), once() and between(a,b) — can no longer prove absence ")
+            .append("and (with the default failVerificationOnEvictedLog=true) will now FAIL rather than pass on discarded evidence; ")
+            .append("atLeast(n) and the bare verify(request) [atLeast(1)] are unaffected. ")
+            .append("To keep more coverage, cheapest first: ");
+        if (byteBoundHit) {
+            message
+                .append("(1) record smaller bodies — set maxLoggedBodyBytes to truncate large bodies, which dominate this budget ")
+                .append("(bodies are retained at every log level, so lowering the log level will NOT free this); ")
+                .append("(2) if you have heap headroom, raise the budget maxEventLogSizeInBytes (currently ").append(maxEventLogSizeInBytes).append(" bytes), or set it to 0 to bound by count only; ")
+                .append("(3) clear/reset the event log between tests.");
+        } else {
+            message
+                .append("(1) record less — at log level ").append(logLevel).append(" each request also logs a diagnostic entry per non-matching expectation; ")
+                .append("lowering the log level (e.g. to WARN) stops recording those and cuts entries retained per request, and does NOT affect what verify can find ")
+                .append("(received requests and mocked/forwarded responses are recorded at every level); ")
+                .append("(2) if you have heap headroom, raise the limit maxLogEntries (currently ").append(maxLogEntries).append("); ")
+                .append("(3) clear/reset the event log between tests.");
+        }
+        return message.toString();
     }
 
     /**
@@ -1091,10 +1140,28 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         if (evicted <= 0) {
             return null;
         }
+        // Name the bound that actually evicted so the remedy points at the right property. The byte
+        // budget and the count cap are both active by default (whichever binds first evicts), and a
+        // message that always blamed maxLogEntries would send an operator to raise a limit that was
+        // not the one hit.
+        // Lifetime scope, deliberately. This says the byte budget has evicted at some point on this
+        // log, not that the entries THIS verification wanted were byte-evicted rather than count-
+        // evicted. On a long-lived server where both bounds have bitten it can therefore name the
+        // byte budget when the missing entries went to the count cap. It is a remedy hint and both
+        // levers are documented, so the imprecision costs the reader a wrong first guess at worst;
+        // attributing per-entry would mean recording the cause on every evicted entry, which is a
+        // real cost on the hot path for a message almost nobody reads.
+        boolean byteBoundHit = eventLog.getByteEvictedCount() > 0;
+        String boundDetail = byteBoundHit
+            ? "its maximum size in bytes (maxEventLogSizeInBytes=" + configuration.maxEventLogSizeInBytes() + ")"
+            : "its maximum number of entries (maxLogEntries=" + configuration.maxLogEntries() + ")";
+        String raiseAdvice = byteBoundHit
+            ? "Increase maxEventLogSizeInBytes (or reduce maxLoggedBodyBytes to retain less body per entry)"
+            : "Increase maxLogEntries (or lower the log level to record fewer entries per request)";
         return subject + " could not be verified " + verification.getTimes() + " because the event log has discarded "
-            + evicted + " entr" + (evicted == 1 ? "y" : "ies") + " after reaching its maximum size (maxLogEntries="
-            + configuration.maxLogEntries() + "), so absence cannot be proven — the matching requests may have been"
-            + " evicted rather than never made. Increase maxLogEntries, reset the event log between tests, or set"
+            + evicted + " entr" + (evicted == 1 ? "y" : "ies") + " after reaching " + boundDetail
+            + ", so absence cannot be proven — the matching requests may have been"
+            + " evicted rather than never made. " + raiseAdvice + ", reset the event log between tests, or set"
             + " failVerificationOnEvictedLog=false to restore the previous (unsound) behaviour.";
     }
 

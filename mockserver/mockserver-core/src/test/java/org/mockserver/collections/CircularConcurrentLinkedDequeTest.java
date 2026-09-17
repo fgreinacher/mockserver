@@ -220,6 +220,27 @@ public class CircularConcurrentLinkedDequeTest {
         assertThat(queue.size(), is(maxSize));
     }
 
+    @Test(timeout = 30000)
+    public void shouldAddWithByteBudgetInConstantTimeRegardlessOfSize() {
+        // given — a byte-bounded deque; the byte accounting (totalBytes AtomicLong + getByteEvictedCount)
+        // must not reintroduce the O(n) size() cost the count path avoids
+        int maxSize = 50000;
+        CircularConcurrentLinkedDeque<byte[]> queue =
+            new CircularConcurrentLinkedDeque<>(maxSize, 5_000_000L, b -> b.length, null);
+
+        // when — 150k inserts of 200-byte elements; the 5 MB budget binds well before the count bound,
+        // so almost every insert both count-checks and byte-evicts
+        byte[] element = new byte[200];
+        for (int i = 0; i < maxSize * 3; i++) {
+            queue.add(element);
+        }
+
+        // then — bounded by bytes (5 MB / 200 => ~25k elements), and it completed within the timeout,
+        // demonstrating the per-insert cost stays bounded as the deque fills rather than climbing O(n)
+        assertThat(queue.size() <= 25_000, is(true));
+        assertThat(queue.getByteEvictedCount() > 0, is(true));
+    }
+
     @Test
     public void shouldEvictImmediatelyWhenMaxSizeShrunk() {
         // given - a full deque recording every eviction
@@ -259,6 +280,95 @@ public class CircularConcurrentLinkedDequeTest {
         assertThat(queue.size(), is(1));
         assertThat(queue, contains("cccccccccc"));
         assertThat(evicted, contains("aaaaaaaaaa", "bbbbbbbbbb"));
+    }
+
+    @Test
+    public void shouldAttributeByteEvictionsToTheByteBudget() {
+        // given — count bound generous, byte budget small so eviction is byte-driven
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(1000, 6, String::length, null);
+
+        // when — four 3-byte elements against a 6-byte budget => two byte-evictions
+        queue.add("aaa");
+        queue.add("bbb");
+        queue.add("ccc");
+        queue.add("ddd");
+
+        // then — every eviction is attributed to the byte budget
+        assertThat(queue.getEvictedCount(), is(2L));
+        assertThat(queue.getByteEvictedCount(), is(2L));
+        assertThat(queue, contains("ccc", "ddd"));
+    }
+
+    @Test
+    public void shouldNotAttributeCountEvictionsToTheByteBudget() {
+        // given — a byte budget large enough never to bind; only the count bound evicts
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(2, 1_000_000, String::length, null);
+
+        // when — three elements against a count bound of two => one count-eviction
+        queue.add("aaa");
+        queue.add("bbb");
+        queue.add("ccc");
+
+        // then — the eviction is counted but NOT attributed to the byte budget
+        assertThat(queue.getEvictedCount(), is(1L));
+        assertThat(queue.getByteEvictedCount(), is(0L));
+        assertThat(queue, contains("bbb", "ccc"));
+    }
+
+    @Test
+    public void shouldAttributeByteEvictionsOnMaxBytesShrink() {
+        // given — a byte-budgeted deque holding 30 bytes
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(100, 100, String::length, null);
+        queue.add("aaaaaaaaaa");
+        queue.add("bbbbbbbbbb");
+        queue.add("cccccccccc");
+
+        // when — shrinking the budget forces two byte-evictions
+        queue.setMaxBytes(15);
+
+        // then — both are attributed to the byte budget
+        assertThat(queue.getEvictedCount(), is(2L));
+        assertThat(queue.getByteEvictedCount(), is(2L));
+    }
+
+    @Test
+    public void shouldResetByteEvictedCountOnClear() {
+        // given — a deque that has byte-evicted
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(1000, 6, String::length, null);
+        queue.add("aaa");
+        queue.add("bbb");
+        queue.add("ccc");
+        assertThat(queue.getByteEvictedCount(), is(1L));
+
+        // when — cleared
+        queue.clear();
+
+        // then — both eviction counters reset alongside the contents
+        assertThat(queue.getEvictedCount(), is(0L));
+        assertThat(queue.getByteEvictedCount(), is(0L));
+    }
+
+    @Test
+    public void shouldResetByteEvictedCountOnResetEvictedCount() {
+        // given — a deque that has byte-evicted (contents retained, only the counters cleared)
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(1000, 6, String::length, null);
+        queue.add("aaa");
+        queue.add("bbb");
+        queue.add("ccc");
+        assertThat(queue.getByteEvictedCount(), is(1L));
+
+        // when — the counters are reset without emptying the deque (the tombstone-clear path)
+        queue.resetEvictedCount();
+
+        // then — both counters are zero but the contents remain
+        assertThat(queue.getEvictedCount(), is(0L));
+        assertThat(queue.getByteEvictedCount(), is(0L));
+        assertThat(queue.size(), is(2));
     }
 
     @Test

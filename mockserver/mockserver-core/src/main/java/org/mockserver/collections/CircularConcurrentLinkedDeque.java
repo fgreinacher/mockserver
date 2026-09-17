@@ -63,6 +63,12 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
     // Number of elements discarded to stay within maxSize/maxBytes — see class javadoc. Incremented
     // ONLY by pollAndEvict (real eviction), never by clear() or removeItem() (deliberate removal).
     private final AtomicLong evictedCount = new AtomicLong(0);
+    // Subset of evictedCount attributable to the BYTE budget (maxBytes) rather than the element-count
+    // bound (maxSize) — incremented only in the byte-eviction paths (the byte loop of
+    // evictExcessElements and a byte-budget shrink). Lets a caller tell which bound is doing the
+    // evicting so it can name the right property in an operator warning, without threading a reason
+    // through the shared pollAndEvict. Reset alongside evictedCount by clear() and resetEvictedCount().
+    private final AtomicLong byteEvictedCount = new AtomicLong(0);
 
     public CircularConcurrentLinkedDeque(int maxSize, Consumer<E> onEvictCallback) {
         this(maxSize, 0, null, onEvictCallback);
@@ -100,7 +106,9 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
         this.maxBytes = maxBytes;
         if (maxBytes > 0 && weigher != null) {
             while (totalBytes.get() > maxBytes && count.get() > 0) {
-                if (!pollAndEvict()) {
+                if (pollAndEvict()) {
+                    byteEvictedCount.incrementAndGet();
+                } else {
                     break;
                 }
             }
@@ -183,7 +191,9 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
         }
         if (maxBytes > 0 && weigher != null) {
             while (totalBytes.get() + incomingWeight > maxBytes && count.get() > 0) {
-                if (!pollAndEvict()) {
+                if (pollAndEvict()) {
+                    byteEvictedCount.incrementAndGet();
+                } else {
                     break;
                 }
             }
@@ -223,6 +233,18 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
     }
 
     /**
+     * Of the {@link #getEvictedCount()} evictions, how many were driven by the BYTE budget
+     * ({@code maxBytes}) rather than the element-count bound ({@code maxSize}). Zero when the byte
+     * budget is disabled or every eviction so far was count-driven. A caller can compare this with
+     * {@link #getEvictedCount()} to tell which bound is doing the evicting and name the property that
+     * raises it. Reset to zero by {@link #clear()} and {@link #resetEvictedCount()} alongside the
+     * total.
+     */
+    public long getByteEvictedCount() {
+        return byteEvictedCount.get();
+    }
+
+    /**
      * Forget past evictions without touching the contents. Used when a caller declares everything
      * recorded so far irrelevant but does not (or cannot) physically empty the deque — e.g.
      * MockServer's "clear everything" path, which tombstones entries rather than removing them.
@@ -230,6 +252,7 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
      */
     public void resetEvictedCount() {
         evictedCount.set(0);
+        byteEvictedCount.set(0);
     }
 
     @Override
@@ -249,6 +272,7 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
         // per-test `reset()` from permanently poisoning every later verification in a long-running
         // server — see MockServerEventLog.
         evictedCount.set(0);
+        byteEvictedCount.set(0);
     }
 
     /**

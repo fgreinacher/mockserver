@@ -169,4 +169,34 @@ public class HeapAvailableSizingTest {
 
         assertThat(value, is(100000));
     }
+
+    // ----- defaultMaxEventLogSizeInBytes: byte budget is a quarter of the ceiling budget -----
+
+    @Test
+    public void shouldDeriveDefaultEventLogByteBudgetAsAQuarterOfTheHeapBudget() {
+        // 200,000 KB available -> a quarter is 50,000 KB -> 51,200,000 bytes
+        long value = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L);
+
+        assertThat(value, is((200000L / 4) * 1024L));
+        assertThat(value, is(51_200_000L));
+    }
+
+    @Test
+    public void shouldDisableDefaultEventLogByteBudgetWhenHeapCeilingUndefined() {
+        // heapAvailableInKB == 0 (JMX + Runtime max undefined, e.g. a GraalVM native image) -> byte
+        // budget disabled (0), falling back to the maxLogEntries count cap rather than an arbitrary size
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(0L), is(0L));
+    }
+
+    @Test
+    public void shouldScaleDefaultEventLogByteBudgetWithTheHeapCeiling() {
+        // the byte budget is deterministic in the ceiling and monotonic — a larger ceiling never
+        // yields a smaller default
+        long smallHeap = ConfigurationProperties.defaultMaxEventLogSizeInBytes(500_000L);
+        long largeHeap = ConfigurationProperties.defaultMaxEventLogSizeInBytes(4_000_000L);
+
+        assertThat(smallHeap, is((500_000L / 4) * 1024L));
+        assertThat(largeHeap, is((4_000_000L / 4) * 1024L));
+        assertThat(largeHeap > smallHeap, is(true));
+    }
 }

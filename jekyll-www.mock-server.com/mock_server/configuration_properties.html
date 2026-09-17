@@ -97,6 +97,12 @@ mockserver.enableCORSForAllResponses=false</code></pre>
             <td>How many log entries are retained in memory before the oldest are overwritten. Lower for high-throughput or large-body workloads; each HTTP request generates 2–3 log entries</td>
         </tr>
         <tr>
+            <td><span class="inline_code">maxEventLogSizeInBytes</span></td>
+            <td><span class="inline_code">MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES</span></td>
+            <td><span class="this_value">heap-based (¼ of the maxLogEntries budget)</span></td>
+            <td>Byte budget bounding the request/response body memory the log retains — protection that <span class="inline_code">maxLogEntries</span> cannot give, since a count cap ignores body size. On by default; set to 0 to bound by count only. Whichever bound is hit first evicts</td>
+        </tr>
+        <tr>
             <td><span class="inline_code">ringBufferSize</span></td>
             <td><span class="inline_code">MOCKSERVER_RING_BUFFER_SIZE</span></td>
             <td><span class="this_value">min(maxLogEntries, 16,384)</span></td>
@@ -616,11 +622,12 @@ mockserver.enableCORSForAllResponses=true</code></pre>
 
 <button id="button_configuration_max_event_log_size_in_bytes" class="accordion title"><strong>Maximum Event Log Size In Bytes</strong></button>
 <div class="panel title">
-    <p>OOM guard for the in-memory event log. The log is normally bounded only by entry count (<span class="inline_code">maxLogEntries</span>), not by size — so a few thousand large request/response bodies (e.g. LLM tool schemas, growing conversation context, or accumulated SSE chunks) can exhaust the heap even when the entry count is low. When this is set to a value &gt; 0, the log also enforces a body-byte budget: once exceeded, the oldest entries are evicted (oldest-first) until the budget fits, in addition to the existing count bound.</p>
-    <p>The budget measures primary request and response body bytes only (using <span class="inline_code">LogEntry.estimatedHeapSize()</span>). Actual heap retention is a small multiple of that figure (headers, metadata, etc.), so set this well under the JVM heap. For a 2 GB heap, 256 MB (<span class="inline_code">268435456</span>) is a reasonable starting point.</p>
-    <p>When 0 (the default), the byte budget is disabled and the log is bounded only by entry count.</p>
+    <p>OOM guard for the in-memory event log. Entry count (<span class="inline_code">maxLogEntries</span>) alone cannot protect a memory-constrained server, because a count cap treats a 10&nbsp;MB body the same as a 10-byte one — so a few thousand large request/response bodies (e.g. LLM tool schemas, growing conversation context, or accumulated SSE chunks) can exhaust the heap even when the entry count is low. This byte budget is a second, independent bound on the same log: once the retained bodies exceed it, the oldest entries are evicted (oldest-first) until they fit. Whichever bound — count or bytes — is reached first evicts.</p>
+    <p><strong>On by default.</strong> The default is derived from the JVM heap ceiling: a quarter of the same ceiling-based budget that sizes <span class="inline_code">maxLogEntries</span> (roughly <span class="inline_code">((-Xmx&nbsp;in&nbsp;MB) − 20) / 4</span> MB — about 480&nbsp;MB on a 2&nbsp;GB heap). Because it comes from the fixed heap ceiling it is constant for the JVM's life. Raise it if you have heap headroom and want to retain more history; lower it if the log shares the heap with a large expectation store or heavy forwarding; set it to <span class="this_value">0</span> to disable the byte budget and bound the log by entry count only.</p>
+    <p>The budget measures primary request and response body bytes only (using <span class="inline_code">LogEntry.estimatedHeapSize()</span>) — the dominant retained cost. Actual heap retention is a small multiple of that figure (headers, metadata, etc.), which is why the default is a quarter of the heap rather than all of it.</p>
+    <p><strong>Eviction is not silent.</strong> The first time the log evicts, MockServer logs a single WARN naming which bound was hit (count or bytes), its current value, and how to keep more coverage; and with the default <span class="inline_code">failVerificationOnEvictedLog=true</span> an upper-bound verification (<span class="inline_code">never()</span>, <span class="inline_code">atMost(n)</span>, <span class="inline_code">exactly(n)</span>, <span class="inline_code">once()</span>, <span class="inline_code">between(a,b)</span>) fails rather than silently passing on discarded evidence. Only these size-based bounds evict; the received-request and response entries a verification reads are recorded regardless of log level.</p>
     <p>See <a href="/mock_server/performance.html#proxying_large_bodies">Proxying LLM / Large-Body Traffic Without OOM</a> for the recommended combo with disk capture.</p>
-    <p>Type: <span class="keyword">long</span> Default: <span class="this_value">0</span> (disabled)</p>
+    <p>Type: <span class="keyword">long</span> Default: <span class="this_value">heap-based (a quarter of the maxLogEntries ceiling budget)</span>; <span class="inline_code">0</span> disables the byte budget</p>
     <p>Java Code:</p>
     <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.maxEventLogSizeInBytes(long bytes)</code></pre>
     <pre class="prettyprint lang-java code"><code class="code">Configuration.maxEventLogSizeInBytes(Long bytes)</code></pre>

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The in-memory event log is now bounded by **size** as well as by entry count. `maxEventLogSizeInBytes`
+  was previously off by default, so the only active bound was a count that cannot see how large an entry
+  is -- a thousand small requests and a thousand ten-megabyte responses counted the same. It now defaults
+  to a quarter of the same heap-ceiling budget that sizes `maxLogEntries`. Workloads with bodies under
+  roughly two kilobytes still reach the count bound first and are unaffected; large-body workloads are now
+  bounded in bytes instead of exhausting the heap. Set `maxEventLogSizeInBytes=0` to restore count-only
+  bounding.
+- When the event log first discards entries, MockServer now logs a single warning naming which bound was
+  hit and its current value, with remedies ordered cheapest-first. Eviction is what silently breaks a
+  later `verify`, so it is no longer invisible. Where the count bound is the one binding, the warning
+  suggests lowering the log level: the received-request and response entries a `verify` reads are retained
+  at every level, so reducing verbosity drops per-match diagnostics without affecting verification. It
+  does not free body bytes, so it is not offered when the byte bound is the one binding.
 - New `jvm_runtime_info` metric on the Prometheus endpoint (`/mockserver/metrics`), an info-style gauge
   whose labels name the running JVM and the garbage collector(s) actually in use: `gc`, `java_version`,
   `java_runtime_version`, `java_vendor` and `vm_name`. The value is always `1` — the information is in the

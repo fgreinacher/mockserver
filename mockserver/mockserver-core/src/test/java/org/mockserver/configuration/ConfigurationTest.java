@@ -503,10 +503,13 @@ public class ConfigurationTest {
     @Test
     public void shouldSetAndGetMaxEventLogSizeInBytes() {
         try {
-            // default
+            // default — derived from the heap ceiling (a quarter of the maxLogEntries ceiling budget),
+            // so on by default rather than 0. Asserted against the derivation, not a fixed number, since
+            // it depends on the test JVM's -Xmx.
             clearPropertyAndCache("mockserver.maxEventLogSizeInBytes");
-            assertThat(ConfigurationProperties.maxEventLogSizeInBytes(), equalTo(0L));
-            assertThat(new Configuration().maxEventLogSizeInBytes(), equalTo(0L));
+            long expectedDefault = ConfigurationProperties.defaultMaxEventLogSizeInBytes(ConfigurationProperties.heapAvailableInKB());
+            assertThat(ConfigurationProperties.maxEventLogSizeInBytes(), equalTo(expectedDefault));
+            assertThat(new Configuration().maxEventLogSizeInBytes(), equalTo(expectedDefault));
 
             // system property -> property
             ConfigurationProperties.maxEventLogSizeInBytes(1048576L);

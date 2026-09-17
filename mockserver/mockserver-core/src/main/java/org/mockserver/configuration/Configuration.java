@@ -1693,10 +1693,14 @@ public class Configuration {
 
     /**
      * <p>
-     * Maximum total size in bytes of the in-memory event log before older entries are evicted from memory (the oldest first).
+     * Maximum total size in bytes of the request/response bodies the in-memory event log retains before
+     * older entries are evicted (the oldest first). Bounds the log's memory when entries are large,
+     * which {@link #maxLogEntries} cannot (a count cap treats a 10 MB body the same as a 10-byte one).
      * </p>
      * <p>
-     * The default is 0, which disables the size-based limit (the event log is bounded only by {@link #maxLogEntries}).
+     * The default is derived from the JVM heap ceiling (a quarter of the same ceiling-based budget that
+     * sizes {@link #maxLogEntries}), so it is on by default. Set it to 0 to disable the size-based limit
+     * and bound the log only by {@link #maxLogEntries}; whichever bound is reached first evicts.
      * </p>
      *
      * @param maxEventLogSizeInBytes maximum total size in bytes of the in-memory event log (0 disables the limit)

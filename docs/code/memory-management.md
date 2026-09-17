@@ -45,9 +45,12 @@ Both `maxLogEntries` and `maxExpectations` are computed from the JVM heap **ceil
 ```
 heapAvailableInKB = maxHeap / 1024 - 20480      (maxHeap is the heap ceiling, -Xmx)
 
-maxLogEntries    = min(heapAvailableInKB / 8, 100000)
-maxExpectations  = min(heapAvailableInKB / 10, 15000)
+maxLogEntries          = min(heapAvailableInKB / 8, 100000)          (entry-count bound)
+maxExpectations        = min(heapAvailableInKB / 10, 15000)
+maxEventLogSizeInBytes = (heapAvailableInKB / 4) * 1024              (event-log body-byte bound; 0 when heap ceiling undefined)
 ```
+
+`maxLogEntries` and `maxEventLogSizeInBytes` are two independent bounds on the **same** event log — a count cap and a byte cap. Whichever is reached first evicts (see [Byte-Budget Eviction](#byte-budget-eviction-maxeventlogsizeinbytes)). The byte cap is derived from the same heap ceiling as the count cap (a quarter of the ceiling budget), so it too is a constant for the JVM's life; it is **on by default** so a workload with large bodies cannot exhaust the heap through a count-bounded log that cannot see entry size. Set `mockserver.maxEventLogSizeInBytes=0` to disable it and bound the log by count only.
 
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
@@ -310,7 +313,7 @@ The `arguments` field in `LogEntry` stores objects used for message formatting. 
 
 ### Byte-Budget Eviction (`maxEventLogSizeInBytes`)
 
-The `CircularConcurrentLinkedDeque` supports a second, independent bound: a **body-byte budget** supplied via the `maxEventLogSizeInBytes` configuration property (default 0 = disabled).
+The `CircularConcurrentLinkedDeque` supports a second, independent bound: a **body-byte budget** supplied via the `maxEventLogSizeInBytes` configuration property. It is **on by default**, derived from the heap ceiling as `(heapAvailableInKB / 4) * 1024` bytes (a quarter of the same ceiling budget that sizes `maxLogEntries`); it is `0` (disabled) only when the heap ceiling is undefined (e.g. a GraalVM native image), and can be set to `0` explicitly to bound the log by entry count alone. The quarter fraction leaves headroom for the expectation store, in-flight Netty buffers and JVM overhead while still bounding the body memory the count cap cannot see.
 
 ### Why it exists
 
@@ -346,7 +349,7 @@ public long estimatedHeapSize() {
 
 The value is computed lazily and cached (`-1` until first call) so the weight is identical at add-time and at evict-time. It deliberately excludes lazily-derived `httpUpdated*` copies and the `arguments` array so it never changes after the entry is built — the deque relies on add-time weight matching evict-time weight exactly.
 
-Actual heap retention is a small multiple of this figure (headers, metadata, UUID strings, etc.). Set `maxEventLogSizeInBytes` well under the JVM heap — for a 2 GB heap, 256 MB is a reasonable starting point.
+Actual heap retention is a small multiple of this figure (headers, metadata, UUID strings, etc.), so the default budget deliberately sits at a quarter of the heap-ceiling budget rather than the whole of it. For a 2 GB heap the default works out around 480 MB of retained bodies (`(2048 − 20) MB / 4`), leaving the rest of the heap for everything else; lower it if the log shares the heap with a large expectation store or heavy forwarding, raise it if you have headroom and want to retain more history.
 
 ### Body truncation (`maxLoggedBodyBytes`)
 
@@ -369,6 +372,13 @@ When the `CircularConcurrentLinkedDeque` reaches capacity (count or byte budget)
 The LMAX Disruptor ring buffer pre-allocates `LogEntry` slots separately. Data is copied into ring buffer slots via `translateTo()`, then the consumer calls `cloneAndClear()` — creating a new `LogEntry` for persistent storage and clearing the ring buffer slot. Ring buffer slots do not contribute to persistent memory usage.
 
 **O(1) capacity check (CPU).** The eviction check on every insert uses an internal `AtomicInteger` size counter, not `ConcurrentLinkedDeque.size()` (which is O(n) — it walks the whole list). This matters because the check runs on the hot path for every log entry: with the O(n) call, once the log was full each insert cost ~`O(maxLogEntries)` and CPU climbed as the log filled (GitHub issue #2329). With the counter, insert/evict/`size()` are O(1). If you change `CircularConcurrentLinkedDeque`, keep all mutators updating the counter (see its javadoc) so `size()` stays accurate.
+
+**Eviction is announced once per server.** Eviction is silent by nature — an entry dropped is a `verify` that later fails to match — so `MockServerEventLog` emits a single WARN the first time the log evicts (latched per log instance via an `AtomicBoolean`, reset on `clear()`/`reset()`, so a busy recording proxy does not emit thousands of lines a second, and the string work stays off the steady-state path). The guard on the non-evicting hot path is one volatile read (`eventLog.getEvictedCount() > 0`), which short-circuits before any message is built. The message (`buildEvictionWarning`) names **which bound was hit** — the deque tracks byte-driven versus count-driven evictions (`getByteEvictedCount()`) — states its current value, and orders remedies cheapest-first, tailored to the bound:
+
+- **Count bound hit:** the cheapest safe lever is to record less — lowering the log level drops the per-non-matching-expectation `EXPECTATION_NOT_MATCHED` diagnostics and cuts entries retained per request, and does **not** affect what `verify` can find, because `RECEIVED_REQUEST`/`EXPECTATION_RESPONSE`/`FORWARDED_REQUEST` (the types verification reads) are added to the log at **every** level (see `MockServerLogger.logEvent`). Then raise `maxLogEntries`, then clear/reset.
+- **Byte bound hit:** the dominant cost is body bytes, which live on the always-retained entry types, so lowering the level will **not** free them — the message points at `maxLoggedBodyBytes` (truncate bodies) and `maxEventLogSizeInBytes` (raise/disable the budget) instead.
+
+This complements `failVerificationOnEvictedLog` (default `true`), which makes upper-bound verifications (`never()`, `atMost(n)`, `exactly(n)`, `once()`, `between(a,b)`) **fail** rather than pass on discarded evidence — that failure message is likewise bound-aware. The two together cover both halves of the eviction hazard: the WARN flags coverage loss at the moment it begins, and the fail-closed verify flags it again at the point a specific verification is undermined.
 
 **Clearing expectations does NOT clear the log.** `PUT /mockserver/clear?type=EXPECTATIONS` only clears stored expectations; the request/event log is independent and keeps its entries (bounded by `maxLogEntries` and `maxEventLogSizeInBytes`). To free the log, use `PUT /mockserver/clear?type=LOG` (or `?type=ALL`), or `PUT /mockserver/reset` (clears both). Long-running, high-throughput servers should either lower `maxLogEntries`, set a byte budget, or periodically clear the log.
 
