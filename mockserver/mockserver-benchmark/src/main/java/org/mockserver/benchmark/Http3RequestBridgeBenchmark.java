@@ -187,9 +187,12 @@ public class Http3RequestBridgeBenchmark {
                 Http3RequestBridge.accumulateBody(accumulator, dataFrame);
                 dataFrame.release();
             }
-            byte[] body = Http3RequestBridge.readAccumulatedBody(accumulator);
+            // Pass the accumulated buffer straight through, which is the sequence
+            // Http3MockServerHandler now runs. The older byte[] overload is still public API and
+            // still covered by its own tests, but it is no longer the production path, so
+            // benchmarking it would measure code the server does not execute.
             return Http3RequestBridge.toHttpRequest(
-                parsed.method(), parsed.path(), parsed.scheme(), parsed.authority(), parsed.headers(), body);
+                parsed.method(), parsed.path(), parsed.scheme(), parsed.authority(), parsed.headers(), accumulator);
         } finally {
             accumulator.release();
         }

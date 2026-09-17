@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
 
 ### Fixed
+- HTTP/3 requests with a text body (JSON, XML, plain text) no longer allocate the body twice on the way
+  in. The bridge decoded the accumulated QUIC buffer into a `byte[]` and then re-read that array into a
+  `String`; it now decodes straight from the buffer, so a single-component body skips the intermediate
+  array entirely and a multi-component one is no worse than before. Binary bodies are unchanged, and the
+  resulting request is byte-for-byte identical -- including for malformed input, which decodes with the
+  same replacement behaviour as before.
 - The default `maxLogEntries` and `maxExpectations` no longer depend on how much heap happened to be in use
   when the first MockServer instance in a JVM started. They are now derived from the JVM heap **ceiling**
   (`-Xmx`) — a value fixed for the JVM's lifetime — instead of the momentary free heap (`max − used`).

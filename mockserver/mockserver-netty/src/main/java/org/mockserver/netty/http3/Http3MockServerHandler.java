@@ -207,15 +207,18 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
                 return;
             }
 
-            byte[] body = bodyAccumulator != null ? Http3RequestBridge.readAccumulatedBody(bodyAccumulator) : new byte[0];
-
+            // Pass the accumulated body buffer straight to the bridge rather than first copying
+            // it into a byte[]: for the common text-body case the bridge decodes the buffer to a
+            // String in one step, removing the body-sized byte[] copy readAccumulatedBody used to
+            // make. The buffer is read non-destructively and is released below in the finally
+            // (releaseBodyAccumulator), so the retain/release contract is unchanged.
             HttpRequest request = Http3RequestBridge.toHttpRequest(
                 parsedHeaders.method(),
                 parsedHeaders.path(),
                 parsedHeaders.scheme(),
                 parsedHeaders.authority(),
                 parsedHeaders.headers(),
-                body
+                bodyAccumulator
             );
 
             // mTLS client-certificate capture: extract the peer certificate chain

@@ -52,6 +52,89 @@ public final class Http3RequestBridge {
         List<Map.Entry<String, String>> headers,
         byte[] body
     ) {
+        HttpRequest request = buildRequestWithoutBody(method, path, scheme, authority, headers);
+
+        // set body -- use string body for text content types so that expectation
+        // matching (which compares string bodies) works correctly; use binary body
+        // for everything else
+        if (body != null && body.length > 0) {
+            String contentType = findContentType(headers);
+            if (isTextContentType(contentType)) {
+                java.nio.charset.Charset charset = extractCharset(contentType);
+                request.withBody(new String(body, charset));
+            } else {
+                request.withBody(body);
+            }
+        }
+
+        return request;
+    }
+
+    /**
+     * As {@link #toHttpRequest(String, String, String, String, List, byte[])}, but reads the
+     * accumulated request body straight from the {@link ByteBuf} it was accumulated into,
+     * <b>without first copying it into an intermediate {@code byte[]}</b>.
+     * <p>
+     * This removes one of the two body-sized allocations the HTTP/3 request path used to make.
+     * The previous flow was {@code readAccumulatedBody} (a body-sized {@code byte[]} copy of the
+     * composite buffer) followed by {@code new String(body, charset)} (a second body-sized
+     * allocation) for the common text case (JSON/XML/text bodies are stored as string bodies so
+     * expectation matching — which compares string bodies — works). For a text body this decodes
+     * the buffer to a {@code String} in one step; for a single-component buffer that avoids the
+     * intermediate {@code byte[]} entirely, and for a multi-component buffer it is no worse than
+     * before (the decoder consolidates once, as {@code readAccumulatedBody} did). A binary body
+     * still makes exactly one {@code byte[]} copy, as it always did.
+     * <p>
+     * The resulting {@link HttpRequest} is byte-for-byte identical to the {@code byte[]} overload's:
+     * {@code buf.toString(readerIndex, readableBytes, charset)} and {@code new String(bytes, charset)}
+     * decode the same bytes with the same charset (Netty's {@code CharsetUtil} decoder, like
+     * {@code String}'s constructor, replaces malformed/unmappable input), so encoding behaviour
+     * across content types and charsets is preserved exactly.
+     * <p>
+     * <b>Buffer ownership:</b> the body is read non-destructively (reader index is not advanced) and
+     * the buffer is <b>not</b> released here — the caller retains ownership and must release it (the
+     * production handler does so in a {@code finally}, on every path including errors).
+     */
+    public static HttpRequest toHttpRequest(
+        String method,
+        String path,
+        String scheme,
+        String authority,
+        List<Map.Entry<String, String>> headers,
+        ByteBuf body
+    ) {
+        HttpRequest request = buildRequestWithoutBody(method, path, scheme, authority, headers);
+
+        if (body != null && body.isReadable()) {
+            String contentType = findContentType(headers);
+            if (isTextContentType(contentType)) {
+                java.nio.charset.Charset charset = extractCharset(contentType);
+                // decode straight from the buffer -- no intermediate byte[] for a single-component
+                // buffer. Non-destructive: toString(index, length, charset) does not advance the
+                // reader index, so the caller's release contract is unaffected.
+                request.withBody(body.toString(body.readerIndex(), body.readableBytes(), charset));
+            } else {
+                byte[] bytes = new byte[body.readableBytes()];
+                body.getBytes(body.readerIndex(), bytes);
+                request.withBody(bytes);
+            }
+        }
+
+        return request;
+    }
+
+    /**
+     * Build the {@link HttpRequest} with method, path, query string and headers set, but no body.
+     * Shared by both {@code toHttpRequest} overloads so the two body-materialisation strategies
+     * differ only in how they read the body, never in how the rest of the request is built.
+     */
+    private static HttpRequest buildRequestWithoutBody(
+        String method,
+        String path,
+        String scheme,
+        String authority,
+        List<Map.Entry<String, String>> headers
+    ) {
         // split path and query
         String requestPath = path;
         String queryString = "";
@@ -97,28 +180,21 @@ public final class Http3RequestBridge {
             }
         }
 
-        // set body -- use string body for text content types so that expectation
-        // matching (which compares string bodies) works correctly; use binary body
-        // for everything else
-        if (body != null && body.length > 0) {
-            String contentType = null;
-            if (headers != null) {
-                for (Map.Entry<String, String> header : headers) {
-                    if ("content-type".equalsIgnoreCase(header.getKey())) {
-                        contentType = header.getValue();
-                        break;
-                    }
+        return request;
+    }
+
+    /**
+     * Find the {@code content-type} header value (case-insensitive), or null when absent.
+     */
+    private static String findContentType(List<Map.Entry<String, String>> headers) {
+        if (headers != null) {
+            for (Map.Entry<String, String> header : headers) {
+                if ("content-type".equalsIgnoreCase(header.getKey())) {
+                    return header.getValue();
                 }
             }
-            if (isTextContentType(contentType)) {
-                java.nio.charset.Charset charset = extractCharset(contentType);
-                request.withBody(new String(body, charset));
-            } else {
-                request.withBody(body);
-            }
         }
-
-        return request;
+        return null;
     }
 
     /**

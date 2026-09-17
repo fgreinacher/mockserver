@@ -9,6 +9,7 @@ import org.junit.Test;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.AbstractMap;
 import java.util.ArrayList;
@@ -119,6 +120,200 @@ public class Http3RequestBridgeTest {
         assertThat(request.getPath().getValue(), is("/api/items"));
         assertThat(request.getBodyAsString(), is("{\"name\":\"test\"}"));
         assertThat(request.getFirstHeader("content-type"), is("application/json"));
+    }
+
+    // ---- ByteBuf-overload of toHttpRequest ----
+    // The ByteBuf overload decodes a text body straight from the accumulated buffer, removing the
+    // intermediate body-sized byte[] copy the byte[] overload's caller had to make first. These
+    // tests pin that it produces a request byte-for-byte identical to the byte[] overload's across
+    // content types AND charsets (the encoding-preservation guarantee), that a binary body is still
+    // stored as raw bytes, and that the buffer is read non-destructively and NOT released (the
+    // handler owns release).
+
+    @Test
+    public void shouldDecodeTextBodyFromByteBufIdenticallyToByteArray() {
+        byte[] body = "{\"name\":\"tëst\",\"€\":1}".getBytes(StandardCharsets.UTF_8);
+        List<Map.Entry<String, String>> headers = Arrays.asList(
+            new AbstractMap.SimpleImmutableEntry<>("content-type", "application/json; charset=utf-8"),
+            new AbstractMap.SimpleImmutableEntry<>("content-length", String.valueOf(body.length))
+        );
+
+        HttpRequest viaBytes = Http3RequestBridge.toHttpRequest(
+            "POST", "/api/items", "https", "localhost:8443", headers, body);
+
+        ByteBuf buf = Unpooled.wrappedBuffer(body);
+        try {
+            HttpRequest viaBuf = Http3RequestBridge.toHttpRequest(
+                "POST", "/api/items", "https", "localhost:8443", headers, buf);
+
+            // identical String body, and equal to the reference decode
+            assertThat(viaBuf.getBodyAsString(), is(new String(body, StandardCharsets.UTF_8)));
+            assertThat(viaBuf.getBodyAsString(), is(viaBytes.getBodyAsString()));
+            assertThat(viaBuf.getBody(), is(viaBytes.getBody()));
+        } finally {
+            buf.release();
+        }
+    }
+
+    /**
+     * The {@code String} conversion exists for charset handling; this repo has been bitten by a
+     * media-type gap that made a body decode wrongly. This pins that a non-UTF-8 charset (here
+     * ISO-8859-1, where byte {@code 0xE9} is 'é') decodes through the ByteBuf overload to exactly
+     * the same String the byte[] overload and {@code new String(bytes, charset)} produce — so the
+     * allocation change did not alter charset behaviour. It would fail if the ByteBuf path decoded
+     * with the wrong charset (e.g. UTF-8), where {@code 0xE9} is not a valid single byte.
+     */
+    @Test
+    public void shouldPreserveNonUtf8CharsetWhenDecodingBodyFromByteBuf() {
+        Charset iso = StandardCharsets.ISO_8859_1;
+        byte[] body = new byte[]{'c', 'a', 'f', (byte) 0xE9}; // "café" in ISO-8859-1
+        List<Map.Entry<String, String>> headers = Arrays.asList(
+            new AbstractMap.SimpleImmutableEntry<>("content-type", "text/plain; charset=iso-8859-1"),
+            new AbstractMap.SimpleImmutableEntry<>("content-length", String.valueOf(body.length))
+        );
+
+        HttpRequest viaBytes = Http3RequestBridge.toHttpRequest(
+            "POST", "/echo", "https", "localhost:8443", headers, body);
+
+        ByteBuf buf = Unpooled.wrappedBuffer(body);
+        try {
+            HttpRequest viaBuf = Http3RequestBridge.toHttpRequest(
+                "POST", "/echo", "https", "localhost:8443", headers, buf);
+
+            assertThat(viaBuf.getBodyAsString(), is("café"));
+            assertThat(viaBuf.getBodyAsString(), is(new String(body, iso)));
+            assertThat(viaBuf.getBodyAsString(), is(viaBytes.getBodyAsString()));
+        } finally {
+            buf.release();
+        }
+    }
+
+    @Test
+    public void shouldDecodeMalformedUtf8IdenticallyToTheByteArrayOverload() {
+        // The buffer overload's whole justification is that it decodes identically to
+        // new String(bytes, charset). Valid input cannot distinguish the two decoders --
+        // only malformed input can, since that is where replacement behaviour lives.
+        // Netty's CharsetUtil decoder sets CodingErrorAction.REPLACE for both malformed
+        // and unmappable input, matching String's constructor; this pins that.
+        byte[] body = new byte[]{
+            'a',
+            (byte) 0xE9,             // lone continuation-less byte, invalid UTF-8
+            (byte) 0xE2, (byte) 0x82, // truncated euro sign
+            (byte) 0xC0, (byte) 0x80, // overlong encoding of NUL
+            'z'
+        };
+        List<Map.Entry<String, String>> headers = Arrays.asList(
+            new AbstractMap.SimpleImmutableEntry<>("content-type", "text/plain; charset=utf-8"),
+            new AbstractMap.SimpleImmutableEntry<>("content-length", String.valueOf(body.length))
+        );
+
+        HttpRequest viaBytes = Http3RequestBridge.toHttpRequest(
+            "POST", "/echo", "https", "localhost:8443", headers, body);
+
+        ByteBuf buf = Unpooled.wrappedBuffer(body);
+        try {
+            HttpRequest viaBuf = Http3RequestBridge.toHttpRequest(
+                "POST", "/echo", "https", "localhost:8443", headers, buf);
+
+            assertThat(viaBuf.getBodyAsString(), is(new String(body, StandardCharsets.UTF_8)));
+            assertThat(viaBuf.getBodyAsString(), is(viaBytes.getBodyAsString()));
+        } finally {
+            buf.release();
+        }
+    }
+
+    @Test
+    public void shouldStoreBinaryBodyAsRawBytesWhenDecodingFromByteBuf() {
+        byte[] body = new byte[]{0x00, 0x01, (byte) 0xFF, (byte) 0xFE, 0x7F};
+        List<Map.Entry<String, String>> headers = Arrays.asList(
+            new AbstractMap.SimpleImmutableEntry<>("content-type", "application/octet-stream"),
+            new AbstractMap.SimpleImmutableEntry<>("content-length", String.valueOf(body.length))
+        );
+
+        HttpRequest viaBytes = Http3RequestBridge.toHttpRequest(
+            "POST", "/upload", "https", "localhost:8443", headers, body);
+
+        ByteBuf buf = Unpooled.wrappedBuffer(body);
+        try {
+            HttpRequest viaBuf = Http3RequestBridge.toHttpRequest(
+                "POST", "/upload", "https", "localhost:8443", headers, buf);
+
+            assertThat(viaBuf.getBodyAsRawBytes(), is(body));
+            assertThat(viaBuf.getBody(), is(viaBytes.getBody()));
+        } finally {
+            buf.release();
+        }
+    }
+
+    @Test
+    public void shouldDecodeTextBodyFromMultiComponentComposite() {
+        CompositeByteBuf composite = Unpooled.compositeBuffer();
+        DefaultHttp3DataFrame frame1 = new DefaultHttp3DataFrame(
+            Unpooled.wrappedBuffer("{\"a\":".getBytes(StandardCharsets.UTF_8)));
+        DefaultHttp3DataFrame frame2 = new DefaultHttp3DataFrame(
+            Unpooled.wrappedBuffer("\"tëst\"}".getBytes(StandardCharsets.UTF_8)));
+        Http3RequestBridge.accumulateBody(composite, frame1);
+        Http3RequestBridge.accumulateBody(composite, frame2);
+
+        List<Map.Entry<String, String>> headers = Arrays.asList(
+            new AbstractMap.SimpleImmutableEntry<>("content-type", "application/json; charset=utf-8"));
+        try {
+            HttpRequest request = Http3RequestBridge.toHttpRequest(
+                "POST", "/api/items", "https", "localhost:8443", headers, composite);
+            assertThat(request.getBodyAsString(), is("{\"a\":\"tëst\"}"));
+        } finally {
+            frame1.release();
+            frame2.release();
+            composite.release();
+        }
+    }
+
+    /**
+     * The ByteBuf overload must read the body non-destructively and must NOT release the buffer —
+     * the production handler owns the accumulator and releases it in a {@code finally}. If the
+     * overload consumed the buffer (advanced the reader index) or released it, this fails; a leak or
+     * a double-free would surface as a wrong refCnt / readableBytes here.
+     */
+    @Test
+    public void shouldNotConsumeOrReleaseBodyBuffer() {
+        byte[] body = "{\"name\":\"test\"}".getBytes(StandardCharsets.UTF_8);
+        List<Map.Entry<String, String>> headers = Arrays.asList(
+            new AbstractMap.SimpleImmutableEntry<>("content-type", "application/json"));
+
+        ByteBuf buf = Unpooled.wrappedBuffer(body);
+        int readerIndexBefore = buf.readerIndex();
+        int readableBefore = buf.readableBytes();
+        int refCntBefore = buf.refCnt();
+
+        Http3RequestBridge.toHttpRequest(
+            "POST", "/api/items", "https", "localhost:8443", headers, buf);
+
+        assertThat("reader index must be untouched", buf.readerIndex(), is(readerIndexBefore));
+        assertThat("readable bytes must be untouched", buf.readableBytes(), is(readableBefore));
+        assertThat("buffer must not be released by the bridge", buf.refCnt(), is(refCntBefore));
+
+        // caller still owns it and can release exactly once
+        assertThat(buf.release(), is(true));
+        assertThat(buf.refCnt(), is(0));
+    }
+
+    @Test
+    public void shouldHandleEmptyAndNullBodyBuffer() {
+        List<Map.Entry<String, String>> headers = Arrays.asList(
+            new AbstractMap.SimpleImmutableEntry<>("content-type", "application/json"));
+
+        HttpRequest fromNull = Http3RequestBridge.toHttpRequest(
+            "GET", "/x", "https", "localhost:8443", headers, (ByteBuf) null);
+        assertThat(fromNull.getBody(), is(nullValue()));
+
+        ByteBuf empty = Unpooled.buffer(0);
+        try {
+            HttpRequest fromEmpty = Http3RequestBridge.toHttpRequest(
+                "GET", "/x", "https", "localhost:8443", headers, empty);
+            assertThat(fromEmpty.getBody(), is(nullValue()));
+        } finally {
+            empty.release();
+        }
     }
 
     @Test
