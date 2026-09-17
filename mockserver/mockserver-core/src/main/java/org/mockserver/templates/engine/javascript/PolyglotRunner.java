@@ -3,6 +3,7 @@ package org.mockserver.templates.engine.javascript;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
@@ -19,6 +20,7 @@ import org.mockserver.templates.engine.model.HttpResponseTemplateObject;
 import org.mockserver.templates.engine.serializer.HttpTemplateOutputDeserializer;
 import org.slf4j.event.Level;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -73,7 +75,67 @@ final class PolyglotRunner {
         return thread;
     });
 
+    /**
+     * A single process-wide GraalVM {@link Engine} shared by every {@link Context} this runner builds.
+     *
+     * <p><strong>Why this exists (the performance fix).</strong> A GraalVM {@code Context} built with no
+     * explicit {@code Engine} gets its own private, throw-away engine, so the parsed/compiled form of a
+     * script cannot be reused across invocations: every request paid full engine construction plus a fresh
+     * (interpreter-only, on stock OpenJDK) parse of the same template. Driving the JavaScript template path
+     * under concurrent load therefore monopolised the small shared dispatch pool and starved every other
+     * workload on the server. A shared {@code Engine} is the documented mechanism for cross-{@code Context}
+     * code caching: contexts built on it reuse the engine's parsed-{@link Source} cache, so the second and
+     * subsequent renders of a given template skip the parse entirely, and building each {@code Context} on an
+     * already-constructed engine is far cheaper than constructing engine-and-context together.
+     *
+     * <p><strong>Thread-safety.</strong> An {@code Engine} is explicitly thread-safe and designed to be
+     * shared across threads and contexts; a {@code Context} is NOT — see {@link #run} for how each request
+     * still gets its own short-lived {@code Context} for isolation. The engine lives for the JVM lifetime
+     * (like {@link #WATCHDOG}) and is never closed. Closing a per-request {@code Context} — including the
+     * watchdog's {@code context.close(true)} — affects only that context and never the shared engine.
+     *
+     * <p>No {@code polyglotimpl.DisableVersionChecks}/{@code engine.WarnInterpreterOnly} tuning is applied:
+     * the interpreter-only warning is a real signal (see the class comment on {@code run}) and, now that the
+     * engine is shared, it is emitted once for the process rather than once per render.
+     */
+    private static final Engine ENGINE = Engine.newBuilder("js").build();
+
+    /**
+     * Upper bound on the number of distinct parsed {@link Source} objects retained in {@link #SOURCE_CACHE}.
+     * Templates come from a bounded set of expectations in normal use, so this cap is generous; it exists
+     * only so a workload that generates a very large number of distinct one-off scripts (e.g. streaming
+     * payload templates assembled per request) cannot grow the cache without limit. Beyond the cap a fresh
+     * {@code Source} is created per call and not cached — correct, just without the parse-cache hit.
+     */
+    private static final int MAX_CACHED_SOURCES = 500;
+
+    /**
+     * Cache of parsed {@link Source} objects keyed by the exact script text. Reusing a {@code Source}
+     * instance (rather than calling {@link Source#create} afresh each time) is what lets the shared
+     * {@link #ENGINE} serve its cached parse: the engine's code cache is keyed by {@code Source}, so handing
+     * it the same instance guarantees the hit and also avoids re-hashing the script text on every call.
+     */
+    private static final ConcurrentHashMap<String, Source> SOURCE_CACHE = new ConcurrentHashMap<>();
+
     private PolyglotRunner() {
+    }
+
+    /**
+     * Return the parsed {@link Source} for {@code fullScript}, reusing a cached instance when present so the
+     * shared {@link #ENGINE} can serve its cached parse. Bounded by {@link #MAX_CACHED_SOURCES}: once the cap
+     * is reached a fresh (uncached) {@code Source} is returned, so the map can never grow without limit.
+     */
+    private static Source sourceFor(String fullScript) {
+        Source cached = SOURCE_CACHE.get(fullScript);
+        if (cached != null) {
+            return cached;
+        }
+        Source created = Source.create("js", fullScript);
+        if (SOURCE_CACHE.size() < MAX_CACHED_SOURCES) {
+            Source existing = SOURCE_CACHE.putIfAbsent(fullScript, created);
+            return existing != null ? existing : created;
+        }
+        return created;
     }
 
     static <T> T run(
@@ -144,7 +206,18 @@ final class PolyglotRunner {
         // behaviour). watchdogFired distinguishes "we cancelled it" from any other cancellation.
         final AtomicBoolean watchdogFired = new AtomicBoolean(false);
 
+        // A fresh Context per request, built on the shared ENGINE. Each Context has its own JavaScript
+        // realm (global scope, own copies of the built-in prototypes), so nothing a template writes —
+        // an implicit global, a globalThis assignment, a prototype mutation — can survive into the next
+        // request: isolation is byte-for-byte identical to building a standalone Context per request, as
+        // before. What the shared engine changes is only the COST: the parsed Source (see sourceFor) is
+        // cached and compiled code is reused across contexts, and building a Context on an existing engine
+        // is far cheaper than building engine-and-context together. The Context is single-threaded, which
+        // is respected here because it is created, used and closed entirely within this one call on the
+        // calling thread. allowHostClassLookup(classFilter) remains per-context, so engines with different
+        // class-filter configurations safely share one ENGINE (the code cache is filter-independent).
         try (Context context = Context.newBuilder("js")
+            .engine(ENGINE)
             .allowHostAccess(HOST_ACCESS)
             .allowHostClassLookup(classFilter)
             .build()) {
@@ -247,7 +320,9 @@ final class PolyglotRunner {
                 jsBindings.putMember("iteration", iteration);
             }
 
-            Source source = Source.create("js", fullScript);
+            // Reuse the cached, already-parsed Source so the shared ENGINE serves its code cache instead of
+            // re-parsing this script (the expensive, interpreter-only step) on every request.
+            Source source = sourceFor(fullScript);
             context.eval(source);
 
             Value serialiseFunc = jsBindings.getMember("serialise");

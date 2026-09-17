@@ -27,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
 
 ### Fixed
+- JavaScript response/forward templates no longer construct a throw-away GraalVM engine and re-parse the
+  script on every request, which under concurrent load could monopolise the small shared action-dispatch
+  thread pool and starve unrelated workloads (plain matches, forwarding, Velocity templates, large-body
+  responses) — their tail latencies collapsed while medians stayed clean. The engine is now shared process-wide
+  and the parsed script is cached, so the second and subsequent renders of a template skip the parse entirely
+  and each render allocates far less. In a local harness on a 6-thread pool this cut single-render latency
+  roughly 4-5x (p50 ~0.9ms → ~0.16ms), raised render throughput ~2.7x, and more than halved the time an
+  unrelated request waited behind in-flight JavaScript renders. Each request still evaluates in its own fresh
+  JavaScript realm, so template output and per-request isolation are unchanged: nothing one template writes
+  (an implicit global, a `globalThis` assignment, a built-in prototype mutation) can be observed by another
+  request. JavaScript templates remain interpreter-only on a stock (non-GraalVM) JVM, so absolute throughput
+  is still bounded — the fix removes the catastrophic, contagious slowdown, it does not make JavaScript
+  templating fast.
 - Unusual request header values (a leading space, an embedded DEL `0x7F`, other control characters) are still
   accepted, matched and recorded byte-for-byte on the HTTP/2 multiplex server path. MockServer deliberately
   records malformed traffic so users can test how their own clients behave. The multiplex frame decoder

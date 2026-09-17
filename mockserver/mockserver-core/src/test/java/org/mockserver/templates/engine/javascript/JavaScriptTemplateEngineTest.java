@@ -1792,4 +1792,106 @@ public class JavaScriptTemplateEngineTest {
         assertThat(actualHttpResponse, is(response().withStatusCode(200).withBody("hello")));
     }
 
+    // ----------------------------------------------------------------------------------------------------
+    // Per-request isolation guards.
+    //
+    // The performance fix shares a single GraalVM Engine across every render and caches the parsed Source,
+    // but each request must still evaluate in its OWN JavaScript realm so nothing one template writes can be
+    // observed by the next. These tests write global state in one render and assert a SUBSEQUENT render on
+    // the SAME engine instance cannot see it. They would fail immediately if a future change reused a Context
+    // (or otherwise shared a realm) without resetting global scope between requests — a state leak, which for
+    // a template that could read a previous request's data would be a security-relevant regression far worse
+    // than the performance problem being fixed.
+    // ----------------------------------------------------------------------------------------------------
+
+    @Test
+    public void shouldNotLeakImplicitGlobalBetweenRequestsOnSharedEngine() {
+        // given - one engine instance reused for both renders (production reuses the engine across requests)
+        graalJsAvailable();
+        JavaScriptTemplateEngine engine = new JavaScriptTemplateEngine(mockServerLogger, configuration);
+        // writer assigns an implicit (undeclared) global — the classic cross-request leak vector
+        String writer = "leakedImplicitGlobal = 'secret-from-first-request';" + NEW_LINE +
+            "return { 'statusCode': 200, 'body': 'written' };";
+        // reader reports whether that global is visible in its realm
+        String reader = "return {" + NEW_LINE +
+            "    'statusCode': 200," + NEW_LINE +
+            "    'body': (typeof leakedImplicitGlobal === 'undefined') ? 'ISOLATED' : ('LEAKED:' + leakedImplicitGlobal)" + NEW_LINE +
+            "};";
+        HttpRequest request = request().withPath("/somePath").withMethod("GET");
+
+        // when
+        engine.executeTemplate(writer, request, HttpResponseDTO.class);
+        HttpResponse readerResponse = engine.executeTemplate(reader, request, HttpResponseDTO.class);
+
+        // then - the second request's realm is clean
+        assertThat(readerResponse, is(response().withStatusCode(200).withBody("ISOLATED")));
+    }
+
+    @Test
+    public void shouldNotLeakGlobalThisAssignmentBetweenRequestsOnSharedEngine() {
+        // given
+        graalJsAvailable();
+        JavaScriptTemplateEngine engine = new JavaScriptTemplateEngine(mockServerLogger, configuration);
+        String writer = "globalThis.leakedOnGlobalThis = request.body;" + NEW_LINE +
+            "return { 'statusCode': 200, 'body': 'written' };";
+        String reader = "return {" + NEW_LINE +
+            "    'statusCode': 200," + NEW_LINE +
+            "    'body': ('leakedOnGlobalThis' in globalThis) ? ('LEAKED:' + globalThis.leakedOnGlobalThis) : 'ISOLATED'" + NEW_LINE +
+            "};";
+
+        // when
+        engine.executeTemplate(writer, request().withPath("/w").withMethod("POST").withBody("secret-body"), HttpResponseDTO.class);
+        HttpResponse readerResponse = engine.executeTemplate(reader, request().withPath("/r").withMethod("GET"), HttpResponseDTO.class);
+
+        // then
+        assertThat(readerResponse, is(response().withStatusCode(200).withBody("ISOLATED")));
+    }
+
+    @Test
+    public void shouldNotLeakBuiltInPrototypeMutationBetweenRequestsOnSharedEngine() {
+        // given - a mutated built-in prototype must not survive into the next request's realm
+        graalJsAvailable();
+        JavaScriptTemplateEngine engine = new JavaScriptTemplateEngine(mockServerLogger, configuration);
+        String writer = "Array.prototype.leakedProtoMethod = function() { return 'polluted'; };" + NEW_LINE +
+            "return { 'statusCode': 200, 'body': [].leakedProtoMethod() };";
+        String reader = "return {" + NEW_LINE +
+            "    'statusCode': 200," + NEW_LINE +
+            "    'body': (typeof [].leakedProtoMethod === 'undefined') ? 'ISOLATED' : 'LEAKED'" + NEW_LINE +
+            "};";
+        HttpRequest request = request().withPath("/somePath").withMethod("GET");
+
+        // when - writer proves it mutated its own realm, reader must still be clean
+        HttpResponse writerResponse = engine.executeTemplate(writer, request, HttpResponseDTO.class);
+        HttpResponse readerResponse = engine.executeTemplate(reader, request, HttpResponseDTO.class);
+
+        // then
+        assertThat(writerResponse, is(response().withStatusCode(200).withBody("polluted")));
+        assertThat(readerResponse, is(response().withStatusCode(200).withBody("ISOLATED")));
+    }
+
+    @Test
+    public void shouldNotLeakGlobalStateAcrossManyInterleavedRequestsOnSharedEngine() {
+        // given - many renders on one engine, each writing a UNIQUE marker as an implicit global and then,
+        // in a following render, asserting no marker at all is visible. This guards the isolation property
+        // holds not just once but across a long series of reuses of the shared engine and Source cache.
+        graalJsAvailable();
+        JavaScriptTemplateEngine engine = new JavaScriptTemplateEngine(mockServerLogger, configuration);
+        HttpRequest request = request().withPath("/somePath").withMethod("GET");
+        for (int i = 0; i < 25; i++) {
+            String writer = "perRequestMarker = 'marker-" + i + "';" + NEW_LINE +
+                "return { 'statusCode': 200, 'body': 'written' };";
+            String reader = "return {" + NEW_LINE +
+                "    'statusCode': 200," + NEW_LINE +
+                "    'body': (typeof perRequestMarker === 'undefined') ? 'ISOLATED' : ('LEAKED:' + perRequestMarker)" + NEW_LINE +
+                "};";
+
+            // when
+            engine.executeTemplate(writer, request, HttpResponseDTO.class);
+            HttpResponse readerResponse = engine.executeTemplate(reader, request, HttpResponseDTO.class);
+
+            // then - never observes its own or any earlier request's marker
+            assertThat("iteration " + i, readerResponse, is(response().withStatusCode(200).withBody("ISOLATED")));
+        }
+    }
+
 }
