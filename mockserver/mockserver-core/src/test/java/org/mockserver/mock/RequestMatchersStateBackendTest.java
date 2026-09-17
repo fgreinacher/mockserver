@@ -586,8 +586,11 @@ public class RequestMatchersStateBackendTest {
     @Test
     public void clusteredLimitedTimesUsesSharedBackendCasByDefault() {
         // Default (clusterSharedTimesEnabled=true): a match on a clustered
-        // backend decrements the SHARED remainingTimes counter via CAS, so
-        // the backend entry reflects fleet-wide consumption.
+        // backend decrements the dedicated SHARED-TIMES COUNTER via CAS, so the
+        // fleet-wide remaining count reflects consumption. The counter lives in
+        // its own tiny-value store (sharedTimesCounters()) so a clustered
+        // decrement replicates only an Integer, not the whole ExpectationEntry;
+        // the ExpectationEntry's own remainingTimes stays at the immutable seed.
         InMemoryStateBackend clusteredBackend = newClusteredBackend();
         Configuration config = configuration().maxExpectations(10);
         RequestMatchers matchers = new RequestMatchers(
@@ -599,16 +602,23 @@ public class RequestMatchersStateBackendTest {
             Times.exactly(3), null, 0).withId("a")
             .thenRespond(response().withBody("a")), API);
 
-        // Backend seeded with remainingTimes = 3
+        // The ExpectationEntry carries the original count as an immutable seed.
         assertThat(clusteredBackend.expectations().get("a").get().getValue().getRemainingTimes(),
             is(3));
+        // The counter is EAGERLY seeded to N at add time (so an absent counter at
+        // consume time means discarded, never "not yet seeded" — fail closed).
+        assertThat(clusteredBackend.sharedTimesCounters().get("a").get().getValue(), is(3));
 
-        // One match decrements the SHARED counter via CAS
+        // One match decrements the dedicated counter via CAS.
         Expectation matched = matchers.firstMatchingExpectation(request().withPath("/a"));
         assertThat(matched, is(notNullValue()));
-        assertThat("default shared-Times path decrements the backend counter",
-            clusteredBackend.expectations().get("a").get().getValue().getRemainingTimes(),
+        assertThat("default shared-Times path decrements the dedicated counter",
+            clusteredBackend.sharedTimesCounters().get("a").get().getValue(),
             is(2));
+        // The ExpectationEntry seed is untouched by the decrement.
+        assertThat("ExpectationEntry remainingTimes stays at the immutable seed",
+            clusteredBackend.expectations().get("a").get().getValue().getRemainingTimes(),
+            is(3));
     }
 
     @Test

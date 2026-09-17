@@ -63,6 +63,18 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     // httpRequestMatchers CPQ is a derived cache of compiled matchers.
     private volatile StateBackend stateBackend;
     private volatile KeyValueStore<ExpectationEntry> expectationBackend;
+    // Dedicated shared remaining-times counter store for clustered Times
+    // consumption. When non-null, consumeTimesViaBackendCas CASes a small
+    // Integer here instead of re-CASing the whole ExpectationEntry — so a
+    // clustered decrement replicates a few bytes, not the serialized
+    // expectation. Null (the default for backends that do not override
+    // StateBackend.sharedTimesCounters()) selects the legacy on-entry path.
+    private volatile KeyValueStore<Integer> sharedTimesBackend;
+    // Dedup guard for the "shared-times counter evicted under memory pressure"
+    // WARN, so a hot expectation whose counter was discarded logs once, not per
+    // request. Touched ONLY on the cold evicted-counter branch of a consume
+    // (never on the hot success path), so it costs the request path nothing.
+    private final Set<String> warnedEvictedTimesCounters = ConcurrentHashMap.newKeySet();
     // Fast id-to-matcher lookup for the node-local cache. Kept in sync with
     // httpRequestMatchers; used to avoid O(n) scans during reconciliation.
     private final ConcurrentHashMap<String, HttpRequestMatcher> matcherCacheById = new ConcurrentHashMap<>();
@@ -275,6 +287,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     public void setStateBackend(StateBackend stateBackend) {
         this.stateBackend = stateBackend;
         this.expectationBackend = stateBackend != null ? stateBackend.expectations() : null;
+        this.sharedTimesBackend = stateBackend != null ? stateBackend.sharedTimesCounters() : null;
         if (this.expectationBackend != null) {
             // Disable node-local eviction — backend is the eviction authority
             httpRequestMatchers.setMaxSize(Integer.MAX_VALUE);
@@ -412,6 +425,13 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 // clustered backend this is a blocking distributed round-trip and MUST NOT run
                 // under any lock (issue #2579 revert lesson).
                 if (expectationBackend != null) {
+                    // EAGER-SEED the shared-Times counter BEFORE publishing the
+                    // expectation, so a peer that reconciles on the expectation's
+                    // replication already sees the counter — closing the window
+                    // where a consume could otherwise find it absent. Ordering the
+                    // seed first also means an update-in-place resets the count
+                    // (last-writer-wins put) with no transient-absent gap.
+                    seedSharedTimesCounter(expectation);
                     long newVersion = expectationBackend.put(expectationId, new ExpectationEntry(expectation));
                     lastReconciledVersion.put(expectationId, newVersion);
                     // Deregister BEFORE this add's OWN eviction reconcile. The put has returned, so
@@ -539,6 +559,8 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 // Backend writes — OUTSIDE the monitor (a clustered put is a blocking round-trip).
                 if (expectationBackend != null) {
                     for (Expectation expectation : distinct.values()) {
+                        // EAGER-SEED before publishing each expectation (see add()).
+                        seedSharedTimesCounter(expectation);
                         long newVersion = expectationBackend.put(expectation.getId(), new ExpectationEntry(expectation));
                         lastReconciledVersion.put(expectation.getId(), newVersion);
                     }
@@ -646,6 +668,9 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         lastReconciledVersion.clear();
         if (expectationBackend != null) {
             expectationBackend.clear();
+        }
+        if (sharedTimesBackend != null) {
+            sharedTimesBackend.clear();
         }
         // Invalidate the candidate index — the store is now empty.
         markMatchersModified();
@@ -1366,6 +1391,14 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 }
             }
         }
+        // Drop the shared-Times counters of expectations the backend evicted, so
+        // orphan counters cannot accumulate and push the (bounded) counter cache
+        // to its own eviction bound — which would otherwise evict LIVE counters.
+        // OUTSIDE the monitor: a clustered counter remove is a replicated write
+        // (issue #2579 — no backend call under the monitor).
+        for (String evictedId : evictedIds) {
+            invalidateSharedTimesCounter(evictedId);
+        }
         // Clustered reconcile may have added/updated/removed matchers — invalidate
         // the candidate index unconditionally (a single atomic increment).
         markMatchersModified();
@@ -1455,6 +1488,12 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 lastReconciledVersion.remove(evictedId);
             }
         }
+        // Drop the shared-Times counters of backend-evicted expectations too, so
+        // orphan counters cannot fill the bounded counter cache and force eviction
+        // of live counters. OUTSIDE the monitor (replicated write — issue #2579).
+        for (String evictedId : evictedIds) {
+            invalidateSharedTimesCounter(evictedId);
+        }
         // Backend eviction dropped matchers from the node-local store — invalidate
         // the candidate index so it no longer holds the evicted entries.
         markMatchersModified();
@@ -1540,6 +1579,9 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 if (expectationBackend != null) {
                     expectationBackend.remove(id);
                 }
+                // Drop any shared-Times counter so a removed/exhausted
+                // expectation does not leak a counter entry.
+                invalidateSharedTimesCounter(id);
             }
             if (httpRequestMatcher.getExpectation() != null && mockServerLogger.isEnabledForInstance(Level.INFO)) {
                 Expectation expectation = httpRequestMatcher.getExpectation().clone();
@@ -2127,6 +2169,20 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     ConsumeTimesResult consumeTimesViaBackendCas(Expectation expectation) {
         final String id = expectation.getId();
 
+        // Preferred path: CAS a dedicated small counter. The replicated write
+        // then carries a single Integer, not the whole serialized expectation
+        // (ExpectationEntry marshals the entire expectation as JSON on every
+        // write). This is the only difference from the legacy path below — the
+        // exactly-N guarantee, the per-match round-trip count, and the
+        // fail-closed-on-contention behaviour are all identical.
+        if (sharedTimesBackend != null) {
+            return consumeSharedTimesCounter(id);
+        }
+
+        // Legacy path: CAS the remaining count on the ExpectationEntry itself.
+        // Used only by a clustered StateBackend that does not provide a
+        // dedicated sharedTimesCounters() store (returns null), so its
+        // behaviour is preserved byte-for-byte.
         for (int attempt = 0; attempt < MAX_CAS_RETRIES; attempt++) {
             Optional<Versioned<ExpectationEntry>> current = expectationBackend.get(id);
             if (!current.isPresent()) {
@@ -2155,5 +2211,123 @@ public class RequestMatchers extends MockServerMatcherNotifier {
 
         // Exhausted retries without success — conservative failure
         return new ConsumeTimesResult(false, false);
+    }
+
+    /**
+     * Consumes one shared-Times unit by CAS-decrementing the dedicated
+     * {@link StateBackend#sharedTimesCounters()} counter for {@code id}.
+     * <p>
+     * The counter is <b>eagerly seeded</b> to the configured N when the
+     * expectation is stored (see {@link #seedSharedTimesCounter}), so by the
+     * time a consume runs the counter already exists. This is deliberate: it
+     * makes an ABSENT counter mean exactly one thing — the counter was
+     * discarded (removed on exhaustion/removal, or evicted from the bounded
+     * counter cache under memory pressure) — never "not yet seeded". An absent
+     * counter is therefore treated as <b>exhausted</b> and this node does not
+     * serve. This <b>fails closed</b>: a lost counter can only cause UNDER-serving
+     * (the same failure direction as node failure and as the legacy on-entry
+     * path), never over-serving. Re-seeding from the entry here would fail OPEN
+     * — a node-local eviction (Infinispan memory eviction is NOT replicated)
+     * would resurrect the full N over a live decremented value on peers and let
+     * {@code Times.exactly(N)} serve more than N.
+     * <p>
+     * Correctness: the counter only ever decreases (a CAS from a read value
+     * {@code > 0}), and each successful CAS is one served match — so the
+     * fleet-wide total can never exceed the seeded N. The {@code get()} is a
+     * node-local replica read (no network); only the {@code compareAndSet} is a
+     * replicated write.
+     */
+    private ConsumeTimesResult consumeSharedTimesCounter(String id) {
+        for (int attempt = 0; attempt < MAX_CAS_RETRIES; attempt++) {
+            Optional<Versioned<Integer>> current = sharedTimesBackend.get(id);
+            if (!current.isPresent()) {
+                // Counter discarded — treat as exhausted (fail closed). Distinguish
+                // genuine exhaustion/removal (expectation gone too) from a counter
+                // evicted under memory pressure while the expectation is still live,
+                // and WARN once per id for the latter so a silent stop is explained.
+                warnIfCounterEvictedWhileLive(id);
+                return new ConsumeTimesResult(false, true);
+            }
+            Versioned<Integer> versioned = current.get();
+            int remaining = versioned.getValue();
+            if (remaining <= 0) {
+                // Already exhausted across the fleet
+                return new ConsumeTimesResult(false, true);
+            }
+            if (sharedTimesBackend.compareAndSet(id, versioned.getVersion(), remaining - 1)) {
+                // CAS succeeded — this node wins this match slot
+                return new ConsumeTimesResult(true, false);
+            }
+            // CAS failed — another node wrote concurrently; retry with fresh read
+        }
+        // Exhausted retries without success — conservative failure
+        return new ConsumeTimesResult(false, false);
+    }
+
+    /**
+     * Emits a one-shot WARN when a shared-Times counter is absent at consume
+     * time but its expectation is still present with a positive remaining count
+     * — i.e. the counter was evicted from the bounded counter cache under memory
+     * pressure rather than genuinely exhausted. The expectation will no longer
+     * match on this node (the absent counter fails closed), so the WARN names
+     * {@code maxExpectations} as the lever. Deduplicated per id via a set that is
+     * touched ONLY on this cold branch, so the hot success path pays nothing.
+     */
+    private void warnIfCounterEvictedWhileLive(String id) {
+        Optional<Versioned<ExpectationEntry>> entry = expectationBackend.get(id);
+        if (entry.isPresent()
+            && entry.get().getValue().getRemainingTimes() > 0
+            && warnedEvictedTimesCounters.add(id)
+            && mockServerLogger.isEnabledForInstance(Level.WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.WARN)
+                    .setMessageFormat("shared Times counter for expectation " + id
+                        + " was discarded under memory pressure (clustered counter cache full); "
+                        + "this expectation will no longer match on this node. Raise maxExpectations "
+                        + "so the shared-Times counter cache can retain every limited-Times expectation.")
+            );
+        }
+    }
+
+    /**
+     * Eagerly seeds (or resets) the shared-Times counter for {@code expectation}
+     * to its configured remaining count, when a dedicated counter store is wired
+     * and the expectation has limited {@code Times}. An unconditional
+     * last-writer-wins {@code put} so an update-in-place resets to the new N with
+     * no transient-absent gap; for unlimited (or no) {@code Times} it removes any
+     * stale counter left by a prior bounded version. A no-op without a counter
+     * store. Called on the control path (add/update) BEFORE the expectation is
+     * published, so a peer reconciling on the expectation's replication already
+     * sees the counter. Also clears the per-id WARN dedup so a re-seeded id can
+     * warn again if it is later evicted.
+     */
+    private void seedSharedTimesCounter(Expectation expectation) {
+        KeyValueStore<Integer> counters = sharedTimesBackend;
+        if (counters == null) {
+            return;
+        }
+        String id = expectation.getId();
+        warnedEvictedTimesCounters.remove(id);
+        if (expectation.getTimes() != null && !expectation.getTimes().isUnlimited()) {
+            counters.put(id, expectation.getTimes().getRemainingTimes());
+        } else {
+            counters.remove(id);
+        }
+    }
+
+    /**
+     * Removes the shared-Times counter for {@code id} (if a dedicated counter
+     * store is wired). Called when an expectation is removed/reset and when the
+     * backend evicts it (reconcile), so a consumed, deleted, or evicted
+     * expectation does not leak a counter into the bounded counter cache. A no-op
+     * when no counter store is present or the counter was never created.
+     */
+    private void invalidateSharedTimesCounter(String id) {
+        KeyValueStore<Integer> counters = sharedTimesBackend;
+        if (counters != null) {
+            counters.remove(id);
+            warnedEvictedTimesCounters.remove(id);
+        }
     }
 }

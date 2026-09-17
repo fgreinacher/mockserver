@@ -529,6 +529,236 @@ class ClusteredTwoNodeTest {
     }
 
     /**
+     * NON-NEGOTIABLE over-match guard for the dedicated shared-times counter
+     * path. Many threads on BOTH nodes race to consume a {@code Times.exactly(N)}
+     * expectation far more than N times; the test fails if the fleet-wide total
+     * served EVER exceeds N (the correctness bug a user would see directly). It
+     * also proves the NEW mechanism is what enforces the bound: the dedicated
+     * shared-times counter — not the ExpectationEntry — is what reaches exactly
+     * 0, and the ExpectationEntry's own remainingTimes is left at the seed.
+     */
+    @Test
+    void sharedTimesCounterEnforcesExactlyNAcrossTwoNodesUnderContention() throws Exception {
+        final int N = 7;
+        final int THREADS_PER_NODE = 6;
+        final int ATTEMPTS_PER_THREAD = 5; // 2*6*5 = 60 attempts for 7 slots
+        RequestMatchers nodeAMatchers = createNodeMatchers(nodeA);
+        RequestMatchers nodeBMatchers = createNodeMatchers(nodeB);
+        wireReconciliationListener(nodeA, nodeAMatchers);
+        wireReconciliationListener(nodeB, nodeBMatchers);
+
+        Expectation expectation = Expectation.when(
+            HttpRequest.request("/times-overmatch-guard"),
+            Times.exactly(N),
+            org.mockserver.matchers.TimeToLive.unlimited()
+        ).thenRespond(HttpResponse.response("guard"));
+        nodeAMatchers.add(expectation, RequestMatchers.Cause.API);
+
+        awaitCondition(
+            () -> nodeBMatchers.peekFirstMatchingExpectation(
+                HttpRequest.request("/times-overmatch-guard")) != null,
+            Duration.ofSeconds(5),
+            "node B should see the expectation"
+        );
+
+        HttpRequest request = HttpRequest.request("/times-overmatch-guard");
+        CyclicBarrier barrier = new CyclicBarrier(THREADS_PER_NODE * 2);
+        AtomicInteger totalMatches = new AtomicInteger(0);
+        Thread[] threads = new Thread[THREADS_PER_NODE * 2];
+        for (int i = 0; i < threads.length; i++) {
+            RequestMatchers matchers = (i < THREADS_PER_NODE) ? nodeAMatchers : nodeBMatchers;
+            threads[i] = new Thread(() -> {
+                try {
+                    barrier.await();
+                    for (int attempt = 0; attempt < ATTEMPTS_PER_THREAD; attempt++) {
+                        Expectation matched = matchers.firstMatchingExpectation(request);
+                        matchers.postProcess(matched);
+                        if (matched != null) {
+                            totalMatches.incrementAndGet();
+                        }
+                    }
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+        }
+        for (Thread t : threads) t.start();
+        for (Thread t : threads) t.join(30_000);
+
+        assertThat("Times.exactly(" + N + ") must NEVER be served more than N times "
+                + "across two nodes, got " + totalMatches.get(),
+            totalMatches.get(), is(N));
+
+        // The dedicated counter is the mechanism that reached exactly 0...
+        Optional<Versioned<Integer>> counter = nodeA.sharedTimesCounters().get(expectation.getId());
+        assertTrue(counter.isPresent(), "shared-times counter should exist");
+        assertThat("shared-times counter drained to exactly 0 (never negative)",
+            counter.get().getValue(), is(0));
+        // ...and the ExpectationEntry seed was never rewritten by a decrement.
+        assertThat("ExpectationEntry remainingTimes stays at the immutable seed",
+            nodeA.expectations().get(expectation.getId()).get().getValue().getRemainingTimes(),
+            is(N));
+    }
+
+    /**
+     * REGRESSION GUARD for the counter-eviction fail-open (review CRITICAL).
+     * Infinispan memory eviction is node-local and NOT replicated. If an absent
+     * counter were re-seeded from the expectation's original N, a node could
+     * resurrect the full allotment over the live decremented value and
+     * {@code Times.exactly(N)} would serve MORE than N fleet-wide.
+     * <p>
+     * <b>Determinism.</b> The buggy re-seed is {@code putIfAbsent(id, N)}, which
+     * only resurrects when the evicting node's consume reaches a PRIMARY OWNER
+     * that has also lost the entry. JGroups node names and the expectation UUID
+     * are random per run, so evicting on ONE node makes the regression fire only
+     * when that node happens to be the key's primary owner — a coin flip. This
+     * test therefore evicts the counter on <b>both</b> nodes, so the key is
+     * absent at its primary owner regardless of which node that is, and the
+     * buggy {@code putIfAbsent} deterministically creates (resurrects) N every
+     * run. Verified: RED on all 5 lazy-re-seed degrade runs (total = 6);
+     * GREEN with the fix (fail-closed: both nodes read absent, serve nothing
+     * more, total = 1 &le; N).
+     * <p>
+     * The load-bearing assertion is {@code total <= N}. (A pre-eviction serve
+     * count &gt; 0 is asserted separately so a wholesale non-match cannot make
+     * this pass vacuously.)
+     */
+    @Test
+    void sharedTimesCounterEvictedOnAllNodesMustNotOverServe() throws Exception {
+        final int N = 5;
+        RequestMatchers nodeAMatchers = createNodeMatchers(nodeA);
+        RequestMatchers nodeBMatchers = createNodeMatchers(nodeB);
+        wireReconciliationListener(nodeA, nodeAMatchers);
+        wireReconciliationListener(nodeB, nodeBMatchers);
+
+        Expectation expectation = Expectation.when(
+            HttpRequest.request("/times-evict-all"),
+            Times.exactly(N),
+            org.mockserver.matchers.TimeToLive.unlimited()
+        ).thenRespond(HttpResponse.response("evict"));
+        nodeAMatchers.add(expectation, RequestMatchers.Cause.API);
+        String id = expectation.getId();
+
+        awaitCondition(
+            () -> nodeBMatchers.peekFirstMatchingExpectation(
+                HttpRequest.request("/times-evict-all")) != null,
+            Duration.ofSeconds(5),
+            "node B should see the expectation"
+        );
+
+        HttpRequest request = HttpRequest.request("/times-evict-all");
+        int totalServed = 0;
+
+        // Serve ONCE so the counter is live (remaining = N-1) when evicted.
+        Expectation first = nodeAMatchers.firstMatchingExpectation(request);
+        nodeAMatchers.postProcess(first);
+        if (first != null) {
+            totalServed++;
+        }
+        assertThat("counter is live before eviction",
+            nodeA.sharedTimesCounters().get(id).get().getValue(), is(N - 1));
+
+        // Evict the LIVE counter on BOTH nodes: the key is now absent at its
+        // primary owner whichever node that is, so the buggy putIfAbsent(N) is
+        // deterministically a create (resurrect), not an ownership coin flip.
+        nodeA.getCacheManager().getCache(InfinispanStateBackend.SHARED_TIMES_CACHE).evict(id);
+        nodeB.getCacheManager().getCache(InfinispanStateBackend.SHARED_TIMES_CACHE).evict(id);
+        assertThat("node A counter replica evicted",
+            nodeA.sharedTimesCounters().get(id).isPresent(), is(false));
+        assertThat("node B counter replica evicted",
+            nodeB.sharedTimesCounters().get(id).isPresent(), is(false));
+
+        // Hammer both nodes far more than the remaining allotment. Sequential so
+        // the count is deterministic under REPL_SYNC.
+        for (int i = 0; i < N * 2; i++) {
+            RequestMatchers matchers = (i % 2 == 0) ? nodeAMatchers : nodeBMatchers;
+            Expectation matched = matchers.firstMatchingExpectation(request);
+            matchers.postProcess(matched);
+            if (matched != null) {
+                totalServed++;
+            }
+        }
+
+        assertThat("Times.exactly(" + N + ") must NEVER serve more than N fleet-wide, "
+                + "even after eviction of a live counter, got " + totalServed,
+            totalServed, lessThanOrEqualTo(N));
+        // Non-vacuity: the pre-eviction serve must have counted (weak guard —
+        // the load-bearing assertion is total <= N above).
+        assertThat("at least the pre-eviction match served", totalServed, greaterThanOrEqualTo(1));
+    }
+
+    /**
+     * Pins the node-local semantics of Infinispan {@code Cache.evict()} that the
+     * fix relies on: evicting on ONE node does NOT remove the entry from peers.
+     * After node A evicts its counter replica, node B STILL HOLDS the true live
+     * value (N-1) — this is the deterministic, ownership-independent observation
+     * (a {@code get} is a local read; node B never evicted). Hammering both nodes
+     * then stays &le; N (the fix never over-serves).
+     * <p>
+     * NOTE: the exact number node B serves after A's eviction is NOT asserted —
+     * it is ownership-dependent. Node B's CAS is a {@code cache.replace} routed
+     * to the key's primary owner; if that owner is the evicted node A, the
+     * replace sees absent and fails, so B serves 0, whereas if B is primary it
+     * serves its remaining N-1. Both outcomes satisfy the safety bound; only the
+     * bound is asserted. This is also why the over-serve guard above evicts on
+     * both nodes rather than relying on this single-node path.
+     */
+    @Test
+    void nodeLocalCounterEvictionIsNotReplicatedToPeer() throws Exception {
+        final int N = 5;
+        RequestMatchers nodeAMatchers = createNodeMatchers(nodeA);
+        RequestMatchers nodeBMatchers = createNodeMatchers(nodeB);
+        wireReconciliationListener(nodeA, nodeAMatchers);
+        wireReconciliationListener(nodeB, nodeBMatchers);
+
+        Expectation expectation = Expectation.when(
+            HttpRequest.request("/times-evict-one"),
+            Times.exactly(N),
+            org.mockserver.matchers.TimeToLive.unlimited()
+        ).thenRespond(HttpResponse.response("evict-one"));
+        nodeAMatchers.add(expectation, RequestMatchers.Cause.API);
+        String id = expectation.getId();
+
+        awaitCondition(
+            () -> nodeBMatchers.peekFirstMatchingExpectation(
+                HttpRequest.request("/times-evict-one")) != null,
+            Duration.ofSeconds(5),
+            "node B should see the expectation"
+        );
+
+        HttpRequest request = HttpRequest.request("/times-evict-one");
+        int totalServed = 0;
+
+        Expectation first = nodeAMatchers.firstMatchingExpectation(request);
+        nodeAMatchers.postProcess(first);
+        if (first != null) {
+            totalServed++;
+        }
+        assertThat("counter live before eviction", nodeA.sharedTimesCounters().get(id).get().getValue(), is(N - 1));
+
+        // Evict on node A ONLY.
+        nodeA.getCacheManager().getCache(InfinispanStateBackend.SHARED_TIMES_CACHE).evict(id);
+
+        // Deterministic node-local semantics: A lost its replica, B still holds
+        // the true live value. (evict() is documented as node-local, not cluster-wide.)
+        assertThat("node A lost its replica", nodeA.sharedTimesCounters().get(id).isPresent(), is(false));
+        assertThat("node B (peer) retains the live value — evict is node-local",
+            nodeB.sharedTimesCounters().get(id).get().getValue(), is(N - 1));
+
+        // Hammer both nodes; the fix never over-serves regardless of primary ownership.
+        for (int i = 0; i < N * 2; i++) {
+            RequestMatchers matchers = (i % 2 == 0) ? nodeAMatchers : nodeBMatchers;
+            Expectation matched = matchers.firstMatchingExpectation(request);
+            matchers.postProcess(matched);
+            if (matched != null) {
+                totalServed++;
+            }
+        }
+        assertThat("Times.exactly(" + N + ") must NEVER serve more than N fleet-wide, got " + totalServed,
+            totalServed, lessThanOrEqualTo(N));
+    }
+
+    /**
      * Opt-out: with {@code clusterSharedTimesEnabled=false}, limited-Times
      * matching takes the NODE-LOCAL fast path even on a clustered backend —
      * the synchronous shared-counter CAS (a replicated write on the request
@@ -629,8 +859,12 @@ class ClusteredTwoNodeTest {
     }
 
     /**
-     * G10 backend CAS: after Times are exhausted on the shared backend,
-     * the remainingTimes counter on the backend entry should be 0.
+     * G10 backend CAS: after Times are exhausted, the dedicated shared-times
+     * COUNTER reaches 0. The counter is decremented across the wire as a bare
+     * Integer, not by rewriting the ExpectationEntry — so the entry's own
+     * remainingTimes stays at the immutable seed (N) while the counter drops
+     * to 0. (Uses a mock Scheduler, so the exhaustion-triggered lazy removal
+     * never runs and both the entry and the counter remain observable.)
      */
     @Test
     void backendRemainingTimesShouldReachZeroWhenExhausted() throws Exception {
@@ -651,11 +885,17 @@ class ClusteredTwoNodeTest {
             nodeAMatchers.postProcess(matched);
         }
 
-        // Check the backend entry's shared counter
+        // The dedicated shared-times counter reaches 0 after exhaustion...
+        Optional<Versioned<Integer>> counter = nodeA.sharedTimesCounters().get(expectation.getId());
+        assertTrue(counter.isPresent(), "shared-times counter should still exist");
+        assertThat("shared-times counter should be 0 after exhaustion",
+            counter.get().getValue(), is(0));
+
+        // ...while the ExpectationEntry seed is left untouched by the decrement.
         Optional<Versioned<ExpectationEntry>> entry = nodeA.expectations().get(expectation.getId());
         assertTrue(entry.isPresent(), "backend entry should still exist");
-        assertThat("remainingTimes should be 0 after exhaustion",
-            entry.get().getValue().getRemainingTimes(), is(0));
+        assertThat("ExpectationEntry remainingTimes stays at the immutable seed",
+            entry.get().getValue().getRemainingTimes(), is(N));
     }
 
     // --- Cross-node ScenarioManager transitions (G10 follow-up) ---

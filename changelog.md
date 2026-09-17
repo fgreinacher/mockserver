@@ -40,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
 
 ### Fixed
+- Consuming a bounded `Times` (`Times.exactly(n)`, `once()`, `atMost(n)`) in a **cluster** no longer
+  replicates the whole expectation on every match. The remaining count lived on the same replicated
+  value as the expectation definition, and that value serialises the entire expectation to JSON on
+  every write -- so subtracting one from a counter re-marshalled the request matcher, the response
+  body and every other field, and shipped them across the network. The count now lives in a small
+  dedicated replicated counter, so a match sends the counter rather than the expectation. The
+  fleet-wide exactly-n guarantee is unchanged, including under node failure; unlimited `Times` and
+  single-node deployments are unaffected. If memory pressure discards a counter, the expectation
+  stops matching rather than resuming its original count -- it under-serves rather than over-serves,
+  and says so in a warning naming `maxExpectations`.
 - A response body whose bytes were already materialised in the charset it is served in is no longer
   encoded a second time on the way to the wire. When the body declares its own charset -- `withBody(json,
   APPLICATION_JSON_UTF_8)`, `json(str, JSON_UTF_8)`, `withBody(str, charset)` -- that charset always wins

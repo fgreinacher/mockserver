@@ -16,6 +16,7 @@ public class InMemoryStateBackend implements StateBackend {
 
     private final InMemoryExpectationKeyValueStore expectations;
     private final InMemoryKeyValueStore<String> scenarioStates;
+    private final InMemoryKeyValueStore<Integer> sharedTimesCounters;
     private final ConcurrentHashMap<String, KeyValueStore<ObjectNode>> crudStores;
     private final BlobStore blobStore;
     private final String nodeId;
@@ -37,6 +38,7 @@ public class InMemoryStateBackend implements StateBackend {
     public InMemoryStateBackend(int maxExpectations, BlobStore blobStore) {
         this.expectations = new InMemoryExpectationKeyValueStore(maxExpectations);
         this.scenarioStates = new InMemoryKeyValueStore<>();
+        this.sharedTimesCounters = new InMemoryKeyValueStore<>();
         this.crudStores = new ConcurrentHashMap<>();
         this.blobStore = blobStore;
         this.nodeId = UUIDService.getUUID();
@@ -58,6 +60,11 @@ public class InMemoryStateBackend implements StateBackend {
     @Override
     public KeyValueStore<String> scenarioStates() {
         return scenarioStates;
+    }
+
+    @Override
+    public KeyValueStore<Integer> sharedTimesCounters() {
+        return sharedTimesCounters;
     }
 
     @Override

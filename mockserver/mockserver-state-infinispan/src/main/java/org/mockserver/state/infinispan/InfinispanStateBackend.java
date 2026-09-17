@@ -60,6 +60,7 @@ public class InfinispanStateBackend implements StateBackend {
 
     static final String EXPECTATIONS_CACHE = "expectations";
     static final String SCENARIO_STATES_CACHE = "scenarioStates";
+    static final String SHARED_TIMES_CACHE = "sharedTimesCounters";
     static final String BLOBS_CACHE = "blobs";
     static final String CRUD_CACHE_PREFIX = "crud-";
 
@@ -87,6 +88,7 @@ public class InfinispanStateBackend implements StateBackend {
     private final EmbeddedCacheManager cacheManager;
     private final InfinispanKeyValueStore<ExpectationEntry> expectations;
     private final InfinispanKeyValueStore<String> scenarioStates;
+    private final InfinispanKeyValueStore<Integer> sharedTimesCounters;
     private final ConcurrentHashMap<String, KeyValueStore<ObjectNode>> crudStores;
     private final InfinispanBlobStore blobStore;
     private final String nodeId;
@@ -114,6 +116,7 @@ public class InfinispanStateBackend implements StateBackend {
 
         this.expectations = createKeyValueStore(EXPECTATIONS_CACHE);
         this.scenarioStates = createKeyValueStore(SCENARIO_STATES_CACHE);
+        this.sharedTimesCounters = createKeyValueStore(SHARED_TIMES_CACHE);
         this.blobStore = new InfinispanBlobStore(cacheManager.getCache(BLOBS_CACHE));
         this.crudStores = new ConcurrentHashMap<>();
 
@@ -135,6 +138,7 @@ public class InfinispanStateBackend implements StateBackend {
         this.cacheManager = createLocalCacheManager(maxExpectations);
         this.expectations = createKeyValueStore(EXPECTATIONS_CACHE);
         this.scenarioStates = createKeyValueStore(SCENARIO_STATES_CACHE);
+        this.sharedTimesCounters = createKeyValueStore(SHARED_TIMES_CACHE);
         this.blobStore = new InfinispanBlobStore(cacheManager.getCache(BLOBS_CACHE));
         this.crudStores = new ConcurrentHashMap<>();
 
@@ -164,9 +168,19 @@ public class InfinispanStateBackend implements StateBackend {
         ConfigurationBuilder unboundedConfig = new ConfigurationBuilder();
         unboundedConfig.memory().storage(StorageType.HEAP);
 
+        // Shared-times counter cache: bounded like the expectation cache so a
+        // counter for an evicted/removed expectation cannot leak unboundedly.
+        ConfigurationBuilder sharedTimesConfig = new ConfigurationBuilder();
+        sharedTimesConfig
+            .memory()
+                .storage(StorageType.HEAP)
+                .maxCount(maxExpectations)
+                .whenFull(EvictionStrategy.REMOVE);
+
         DefaultCacheManager manager = new DefaultCacheManager(global.build());
         manager.defineConfiguration(EXPECTATIONS_CACHE, expectationsConfig.build());
         manager.defineConfiguration(SCENARIO_STATES_CACHE, unboundedConfig.build());
+        manager.defineConfiguration(SHARED_TIMES_CACHE, sharedTimesConfig.build());
         manager.defineConfiguration(BLOBS_CACHE, unboundedConfig.build());
 
         return manager;
@@ -227,9 +241,22 @@ public class InfinispanStateBackend implements StateBackend {
             .clustering().cacheMode(CacheMode.REPL_SYNC)
             .memory().storage(StorageType.HEAP);
 
+        // Shared-times counter cache: REPL_SYNC, bounded like the expectation
+        // cache. Each value is a single Integer, so a clustered Times consume
+        // replicates ~a handful of bytes rather than re-serialising the whole
+        // ExpectationEntry (which marshals the entire expectation as JSON).
+        ConfigurationBuilder sharedTimesConfig = new ConfigurationBuilder();
+        sharedTimesConfig
+            .clustering().cacheMode(CacheMode.REPL_SYNC)
+            .memory()
+                .storage(StorageType.HEAP)
+                .maxCount(configuration.maxExpectations())
+                .whenFull(EvictionStrategy.REMOVE);
+
         DefaultCacheManager manager = new DefaultCacheManager(global.build());
         manager.defineConfiguration(EXPECTATIONS_CACHE, expectationsConfig.build());
         manager.defineConfiguration(SCENARIO_STATES_CACHE, scenarioConfig.build());
+        manager.defineConfiguration(SHARED_TIMES_CACHE, sharedTimesConfig.build());
         manager.defineConfiguration(BLOBS_CACHE, blobsConfig.build());
 
         return manager;
@@ -252,6 +279,17 @@ public class InfinispanStateBackend implements StateBackend {
     @Override
     public KeyValueStore<String> scenarioStates() {
         return scenarioStates;
+    }
+
+    /**
+     * Returns the shared-times counter store. A clustered Times consume CASes
+     * this store, so only the small counter value crosses the wire — the
+     * counter cache is deliberately NOT wired to the cross-node invalidation
+     * listener (a decrement must not trigger a node-local matcher reconcile).
+     */
+    @Override
+    public KeyValueStore<Integer> sharedTimesCounters() {
+        return sharedTimesCounters;
     }
 
     @Override

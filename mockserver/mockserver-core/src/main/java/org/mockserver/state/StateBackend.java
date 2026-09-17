@@ -29,6 +29,31 @@ public interface StateBackend extends Closeable {
     KeyValueStore<String> scenarioStates();
 
     /**
+     * Returns the shared remaining-times counter store used by a clustered
+     * backend to enforce per-expectation {@code Times} limits fleet-wide.
+     * Keyed by expectation id; each value is the remaining match count.
+     * <p>
+     * This store is kept <b>separate</b> from {@link #expectations()} on
+     * purpose: a {@code Times} consume on the hot request path decrements only
+     * this counter, so a clustered (replicated) decrement ships a single
+     * {@code Integer} across the wire rather than re-serialising the whole
+     * {@link ExpectationEntry} (which marshals the entire expectation as JSON
+     * on every write). See {@code RequestMatchers.consumeTimesViaBackendCas}.
+     * <p>
+     * Only ever consulted on a clustered backend ({@link #isClustered()} is
+     * {@code true}). The default returns {@code null}, which makes
+     * {@code RequestMatchers} fall back to the legacy path that CASes the
+     * remaining count on the {@link ExpectationEntry} itself — so any backend
+     * that does not override this keeps its previous behaviour exactly.
+     *
+     * @return the shared-times counter store, or {@code null} to use the
+     *         legacy on-{@code ExpectationEntry} counter
+     */
+    default KeyValueStore<Integer> sharedTimesCounters() {
+        return null;
+    }
+
+    /**
      * Returns a CRUD entity key-value store for the given namespace.
      * Each namespace corresponds to a distinct CRUD resource path.
      */
