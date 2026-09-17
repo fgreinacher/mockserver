@@ -956,6 +956,88 @@ looked at. **And measure `devMode`** as the control arm: it exists for this prof
 nobody knows what it saves. If it saves a lot, the JUnit integrations should probably default
 to it — a shippable outcome rather than a table.
 
+**Measured 2026-09-17 (14-core laptop, `-Xmx2g`, 8.0.1-SNAPSHOT jar in-JVM /
+`mockserver/mockserver:7.6.0` containers). Harnesses: `scripts/perf/InJvmParallelBench.java`
+(in-JVM shape) and `scripts/perf/parallel_instances.py` (container shape).** Both shapes ran the
+full {1,4,8,16,32}; 32 fit comfortably. Findings, several correcting the plan's own arithmetic:
+
+- **The "480 threads" figure is a warm-pool ceiling, not the steady state — measured 222 live at
+  N=32 in one JVM (6.7/instance, ~7× fewer).** Thread pools start LAZILY. The action-handler pool
+  (`Scheduler`, a `ScheduledThreadPoolExecutor(actionHandlerThreadCount())`) starts **zero** core
+  threads until a delayed/callback response schedules a task — verified by a positive control: 0
+  scheduler threads under plain load, exactly **14** (`max(5, 14 cores)`) after 60 concurrent
+  *delayed* responses. Netty's boss/worker `NioEventLoop` threads also start per registration, so
+  the worker group shows ~2 alive of its 5 sized. Per-instance sized ceiling on this host is
+  5 boss + 5 worker + 14 scheduler = 24 (the plan's 15 omits the boss group and assumes 10 cores);
+  live under light load is ~5 server threads/instance. So the 480 ceiling is reachable only when
+  every instance concurrently runs delayed/callback responses — not on a typical mock-only suite.
+
+- **Store-sizing is worse and different from the hypothesis: the capacity is FROZEN at first read
+  for the whole JVM, not recomputed per instance.** `readPropertyHierarchically`
+  (`ConfigurationProperties.java:6531-6543`) caches the computed default string on first read and
+  returns it forever. So all 32 instances get an *identical* `maxLogEntries`/`maxExpectations` —
+  but that shared value is a lottery set by how full the heap was when the FIRST store was
+  constructed. Proven with the harness's `--preconsumeHeapMb` flag (which holds heap before the
+  first store read): the frozen `maxLogEntries` fell as pre-consumed heap rose — e.g. 100000 (0 MB)
+  → 45957 (300 MB) at `-Xmx1g`, and down to ~8045 under a tighter `-Xmx512m` + pre-consumption — a
+  multi-fold swing purely from heap-at-first-read, while a *later* 300 MB allocation did NOT change
+  it (the freeze). The committed harness's per-instance `maxLogPre`/`maxLogPost` prove the freeze
+  (constant across instances); `--preconsumeHeapMb` reproduces the swing across separate runs. That
+  is the real "flaky only on CI" mechanism — a suite whose first MockServer start happens after a
+  heavy fixture silently gets a tiny store for *every* instance, so log/expectation eviction (and
+  "absence cannot be proven" verify failures) appears only on that machine/order.
+
+- **`devMode` saves ~2 MB heap per instance and, more importantly, kills the freeze lottery.**
+  In-JVM heap-used at N=32: 117 MB (default) → 52 MB (`devMode`), a 56% reduction scaling linearly
+  at ~2 MB/instance; threads and startup are unchanged (it only fixes store sizes to 1000/1000).
+  The decisive benefit is determinism: `devMode` sizes stores at a fixed 1000/1000 with no heap
+  derivation, so it removes the order-dependent freeze entirely. **Two recommendations follow, both
+  separate product units with their own review (not implemented here — this unit is measurement):**
+  1. **Default the JUnit integrations (`MockServerExtension` / `MockServerRule`) to `devMode`** — to
+     make test-store capacity deterministic (killing the flakiness above), with a secondary
+     ~2 MB/instance saving. But "a suite that needs more can opt out" is **not sufficient on its
+     own**, because exceeding the cap fails *silently*: the ring overwrites and a later verify
+     quietly fails with no error. So a default change **must** be paired with a store-construction
+     log line stating the effective `maxLogEntries`/`maxExpectations` and that `devMode` set them,
+     so a suite that outgrows 1000 finds out from a log, not from a flaky verify.
+  2. **The cleaner underlying fix is to stop caching *derived* defaults.** `devMode` only *masks*
+     the freeze; the actual defect is that `readPropertyHierarchically` caches heap-based computed
+     defaults as though they were resolved configuration. Caching only *explicitly-set* values
+     (env var, properties file, system property) and never derived defaults would fix the freeze
+     for ordinary users who never touch `devMode`.
+
+- **The two shapes differ mostly in baseline replication, not per-instance pool sizing.**
+  Containers: `availableProcessors()` IS cgroup-aware — verified `--cpuset-cpus=0,1` makes the JVM
+  report 2 processors (vs 14 unpinned), so each container caps `actionHandlerThreadCount` at
+  `max(5,2)=5` off its own limit. But because that pool is lazy, the practical cost difference is
+  the JVM **baseline**: each container is a full JVM (**process RSS** ~175 MiB, ~14 threads,
+  ~520 ms cold start, all flat regardless of N — cgroup-isolated), so N containers cost N
+  baselines while the in-JVM shape shares one. **Container aggregate RSS therefore grows ~N× faster
+  than the in-JVM footprint** — 2806 MiB (N=16) and 5330 MiB (N=32) of process RSS, versus the
+  in-JVM shape's single shared baseline. A clean side-by-side *multiplier* is deliberately NOT
+  claimed: the trustworthy in-JVM memory figure is **heap-used** (52→117 MB across N, monotonic),
+  which is not the same quantity as container process RSS (that includes metaspace, code cache,
+  thread stacks and Netty direct buffers); and the in-JVM **process-RSS** samples from `ps` are a
+  post-`System.gc()` point read that came back non-monotonic (460 MiB at N=16, 394 MiB at N=32),
+  so they are not trustworthy enough to anchor a ratio. Thread counts ARE like-for-like: 448
+  (container, N=32) vs 222 (in-JVM) — ~2×, again the replicated per-JVM baseline.
+
+- **Ephemeral ports and per-instance startup are non-issues at these N.** In-JVM held TCP sockets
+  scaled linearly to 176 at N=32 (~5.5/instance) — no exhaustion risk. Per-instance startup did
+  not degrade with N (both shapes: cold first launch ~520-630 ms dominated by one-time class
+  loading, warm launches ~7-15 ms flat through N=32). Per-instance light-load p95 is reported as a
+  distribution: in-JVM per-instance p95 rose from ~1 ms (N=1) to a median 2.6 ms / max 3.3 ms at
+  N=32, with a fat tail (p99 max 23.5 ms) — reported per-instance, never as a mean.
+
+These are laptop-profile research numbers, not daily-gated metrics; the harnesses write their own
+`--out` JSON and do **not** emit into the daily perf result. To wire a `.laptop` parallel block
+into `perf-test-compare.sh` later, the existing `laptop.*` leaves `ready_ms` / `cold_ready_ms` /
+`rss_mb` / `threads` cover the reused metrics, but new **notify-only** wildcard budgets would be
+needed first (compare is fail-closed on unbudgeted metrics): `laptop.*.heap_used_mb`,
+`laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`,
+`laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`,
+`laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` (all `dir:"up"`, `gating:false`).
+
 #### 18. req/s per core for the serving path — **research, about a week**
 
 Pin the SUT to C in {1, 2, 4, 8, 16} cores and run the ladder at each, recording
