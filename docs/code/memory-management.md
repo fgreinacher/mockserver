@@ -38,12 +38,12 @@ graph TB
 
 ## Default Limit Calculation
 
-Both `maxLogEntries` and `maxExpectations` are computed from available heap at the time the property is first read.
+Both `maxLogEntries` and `maxExpectations` are computed from the JVM heap **ceiling** (`-Xmx`), a value fixed for the JVM's lifetime. The derived default is therefore a constant: every store constructed in the JVM gets the same capacity, and it does not vary with how much heap happened to be in use when the property was first read. (Before this was fixed, the default was derived from the *momentary free heap* — see [Timing Sensitivity](#timing-sensitivity) — which, combined with the JVM-wide caching of resolved defaults, let an unrelated heavy fixture running before the first store was constructed silently shrink the capacity of every store for the rest of the JVM.)
 
 ### Formula
 
 ```
-heapAvailableInKB = (maxHeap - usedHeap) / 1024 - 20480
+heapAvailableInKB = maxHeap / 1024 - 20480      (maxHeap is the heap ceiling, -Xmx)
 
 maxLogEntries    = min(heapAvailableInKB / 8, 100000)
 maxExpectations  = min(heapAvailableInKB / 10, 15000)
@@ -62,7 +62,7 @@ maxExpectations  = min(heapAvailableInKB / 10, 15000)
 | Component | File | Method |
 |-----------|------|--------|
 | Heap available probe | `ConfigurationProperties.java` | `heapAvailableInKB()` |
-| Undefined-max-robust heap calc | `ConfigurationProperties.java` | `computeHeapAvailableInKB(long, long, long, long)` |
+| Undefined-max-robust heap calc | `ConfigurationProperties.java` | `computeHeapAvailableInKB(long, long)` |
 | Heap-based default with floor | `ConfigurationProperties.java` | `heapBasedDefaultOrFloor(long, long, int, int)` |
 | `maxLogEntries()` default | `ConfigurationProperties.java` | `maxLogEntries()` |
 | `maxExpectations()` default | `ConfigurationProperties.java` | `maxExpectations()` |
@@ -72,19 +72,19 @@ maxExpectations  = min(heapAvailableInKB / 10, 15000)
 
 ### Example: Default Limits by Heap Size
 
-The table below shows the computed defaults for different JVM heap configurations, assuming 30% of heap is used at the time the property is first read.
+The table below shows the computed defaults for different JVM heap configurations. Because the derivation uses the heap ceiling (`-Xmx`) and not the momentary free heap, these figures depend only on `-Xmx` — they are the same whether the property is first read at a clean start or after a heavy fixture has run.
 
-| Max Heap (`-Xmx`) | Used at Startup (~30%) | Available KB | Default `maxLogEntries` | Default `maxExpectations` |
-|--------------------|----------------------|--------------|------------------------|--------------------------|
-| 64 MB | 19 MB | 24,256 | 3,032 | 2,425 |
-| 128 MB | 38 MB | 71,552 | 8,944 | 7,155 |
-| 256 MB | 77 MB | 162,048 | 20,256 | 15,000 (capped) |
-| 512 MB | 154 MB | 346,112 | 43,264 | 15,000 (capped) |
-| 1 GB | 307 MB | 711,168 | 88,896 | 15,000 (capped) |
-| 2 GB | 614 MB | 1,401,856 | 100,000 (capped) | 15,000 (capped) |
-| 4 GB | 1,229 MB | 2,843,648 | 100,000 (capped) | 15,000 (capped) |
+| Max Heap (`-Xmx`) | Available KB (ceiling − 20 MB) | Default `maxLogEntries` | Default `maxExpectations` |
+|--------------------|-------------------------------|------------------------|--------------------------|
+| 64 MB | 45,056 | 5,632 | 4,505 |
+| 128 MB | 110,592 | 13,824 | 11,059 |
+| 256 MB | 241,664 | 30,208 | 15,000 (capped) |
+| 512 MB | 503,808 | 62,976 | 15,000 (capped) |
+| 1 GB | 1,028,096 | 100,000 (capped) | 15,000 (capped) |
+| 2 GB | 2,076,672 | 100,000 (capped) | 15,000 (capped) |
+| 4 GB | 4,173,824 | 100,000 (capped) | 15,000 (capped) |
 
-With the default Docker image (no `-Xmx` set, JVM defaults to ~256 MB), users get roughly **20,000 log entries**.
+With the default Docker image (no `-Xmx` set, JVM defaults to ~256 MB), users get roughly **30,000 log entries**.
 
 #### Log entries per request — budget for the expectation count, not a constant
 
@@ -122,15 +122,19 @@ On small heaps (< 256 MB), if you have both a large number of expectations AND h
 
 ### Timing Sensitivity
 
-`heapAvailableInKB()` measures the *current* free heap at the moment the property is first read. During JVM startup, the heap may be more heavily used (class loading, initialisation) than during steady state. This means the computed default can be lower than what the JVM can actually sustain. After garbage collection runs and startup objects are freed, significantly more heap may be available.
+`heapAvailableInKB()` derives its budget from the heap **ceiling** (`-Xmx`), which is fixed for the JVM's lifetime, so the computed default does **not** depend on when the property is first read or on allocation history.
+
+This was previously a real defect. The budget used to be `(maxHeap − usedHeap)`, i.e. the *momentary free heap* at first read. Because the resolved default is cached JVM-wide with no reset path, whatever the free heap looked like at that first read froze the capacity for **every** store in the JVM. A test suite whose first MockServer start happened after a heavy fixture silently got a small store for every instance — for example, at `-Xmx1g` holding ~645 MB before the first read drove the frozen `maxLogEntries` down from 100,000 to ~45,957, and a later allocation could not raise it. Under-sizing the log is not merely a memory concern: the ring overwrites silently, so a later `verify` can stop finding what it should. Sizing off the ceiling removes this dependence on allocation ordering entirely.
+
+Note the change moves the basis from "size to currently-free heap" to "size to the heap the JVM is allowed" — the default now over-provisions slightly relative to free memory on a heavily-used small heap, deterministically. Deployments that need a smaller store set `mockserver.maxLogEntries` / `mockserver.maxExpectations` explicitly (which is unaffected by this change and always wins).
 
 ### Undefined Heap Max (JMX `getMax()` = -1)
 
-The JMX spec allows `MemoryUsage.getMax()` to return **-1 (undefined)**. In some environments the aggregated heap-pool max reports as `-1`/`0` — verified on a **GraalVM native image** of the shaded jar, and possible in exotic JVM/WAR setups. Left unguarded, `(max - used) / 1024 - 20480` would then be a large **negative** number, driving `maxExpectations`/`maxLogEntries` to `<= 0` — so the expectation store and log ring buffer silently drop everything (`PUT /mockserver/expectation` returns 201 but the expectation never matches; "Log event ring buffer full" at startup).
+The JMX spec allows `MemoryUsage.getMax()` to return **-1 (undefined)**. In some environments the aggregated heap-pool max reports as `-1`/`0` — verified on a **GraalVM native image** of the shaded jar, and possible in exotic JVM/WAR setups. Left unguarded, `max / 1024 - 20480` would then be a large **negative** number, driving `maxExpectations`/`maxLogEntries` to `<= 0` — so the expectation store and log ring buffer silently drop everything (`PUT /mockserver/expectation` returns 201 but the expectation never matches; "Log event ring buffer full" at startup).
 
 `heapAvailableInKB()` is therefore robust to an undefined heap max (see `computeHeapAvailableInKB(...)`):
 
-1. When the aggregated JMX heap max is `<= 0`, it falls back to `Runtime.maxMemory()` for the ceiling and `totalMemory() - freeMemory()` for used. (`Runtime.maxMemory()` may be `Long.MAX_VALUE` when the heap is unbounded — the subtraction stays non-negative and the very large result is clamped by the `min(..., cap)` in the callers.)
+1. When the aggregated JMX heap max is `<= 0`, it falls back to `Runtime.maxMemory()` for the ceiling. (`Runtime.maxMemory()` may be `Long.MAX_VALUE` when the heap is unbounded — the result stays non-negative and the very large value is clamped by the `min(..., cap)` in the callers.)
 2. When neither JMX nor `Runtime` yields a usable ceiling, it returns `0`.
 3. The result is **floored at 0** — never negative.
 

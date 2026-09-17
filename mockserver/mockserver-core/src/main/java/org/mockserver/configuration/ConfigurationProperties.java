@@ -1888,56 +1888,65 @@ public class ConfigurationProperties {
 
     // memory usage
 
-    // Reserved for JVM internals, Netty buffers and thread stacks; subtracted from the free heap
+    // Reserved for JVM internals, Netty buffers and thread stacks; subtracted from the heap ceiling
     // before deriving the maxLogEntries / maxExpectations defaults.
     static final long BASE_MEMORY_IN_KB = 20 * 1024L;
 
+    /**
+     * The store-sizing budget (in KB) used to derive the {@code maxLogEntries} / {@code maxExpectations}
+     * defaults. Derived from the JVM heap <em>ceiling</em> ({@code -Xmx}), NOT from live free heap, so the
+     * value is a constant for the JVM's lifetime: it does not vary with how much heap happened to be in
+     * use when the property was first read. See {@link #computeHeapAvailableInKB(long, long)} for why the
+     * ceiling rather than the momentary free heap is the right basis.
+     */
     public static long heapAvailableInKB() {
         Summary heap = MemoryMonitoring.getJVMMemory(MemoryType.HEAP);
         Runtime runtime = Runtime.getRuntime();
         return computeHeapAvailableInKB(
             heap.getNet().getMax(),
-            heap.getNet().getUsed(),
-            runtime.maxMemory(),
-            runtime.totalMemory() - runtime.freeMemory()
+            runtime.maxMemory()
         );
     }
 
     /**
-     * Compute the available heap (in KB) used to derive the {@code maxLogEntries} and
-     * {@code maxExpectations} defaults, robust to environments where the aggregated JMX heap-pool
-     * max is undefined.
+     * Compute the store-sizing budget (in KB) used to derive the {@code maxLogEntries} and
+     * {@code maxExpectations} defaults, from the JVM heap <em>ceiling</em> ({@code -Xmx}) rather than
+     * from the momentary free heap.
      * <p>
-     * The JMX spec allows {@link java.lang.management.MemoryUsage#getMax()} to return {@code -1}
-     * (undefined); some environments (verified: a GraalVM native image of the shaded jar; also
-     * possible in exotic JVM/WAR setups) report the heap pools' max as {@code -1}/{@code 0}. When
-     * that happens the JMX figures are unusable, so we fall back to {@link Runtime#maxMemory()} /
-     * {@code totalMemory() - freeMemory()}. {@code Runtime.maxMemory()} may return
-     * {@link Long#MAX_VALUE} when the heap is unbounded — the subtraction stays non-negative, and
-     * the (very large) result is clamped by the {@code Math.min(..., cap)} in the callers.
+     * <strong>Why the ceiling, not free heap.</strong> The heap ceiling ({@link java.lang.management.MemoryUsage#getMax()}
+     * / {@link Runtime#maxMemory()}) is fixed for the JVM's lifetime, so the derived default is a
+     * constant: every store constructed in the JVM gets the same capacity, and it does not change with
+     * allocation history. Deriving from free heap instead ({@code max - used}) made the default depend on
+     * whatever was in use at the moment of the first read — an unrelated heavy fixture running before the
+     * first store was constructed silently shrank the capacity for the whole JVM (the resolved default is
+     * cached), which fails as silent ring-buffer eviction and can make a later {@code verify} stop finding
+     * what it should. Sizing off the ceiling removes that dependence on allocation ordering entirely.
+     * <p>
+     * Robust to environments where the aggregated JMX heap-pool max is undefined: the JMX spec allows
+     * {@code getMax()} to return {@code -1} (verified on a GraalVM native image of the shaded jar; also
+     * possible in exotic JVM/WAR setups), so when it is {@code <= 0} we fall back to
+     * {@link Runtime#maxMemory()}. {@code Runtime.maxMemory()} may return {@link Long#MAX_VALUE} when the
+     * heap is unbounded — the result stays non-negative, and the (very large) value is clamped by the
+     * {@code Math.min(..., cap)} in the callers.
      * <p>
      * The result is floored at {@code 0} so it is never negative (a negative value would produce a
      * non-functional {@code <= 0} store capacity downstream).
      *
-     * @param heapMax     aggregated JMX heap-pool max in bytes ({@code <= 0} when undefined)
-     * @param heapUsed    aggregated JMX heap-pool used in bytes
-     * @param runtimeMax  {@link Runtime#maxMemory()} fallback ceiling in bytes
-     * @param runtimeUsed {@link Runtime#totalMemory()} minus {@link Runtime#freeMemory()} in bytes
-     * @return available heap in KB, never negative
+     * @param heapMax    aggregated JMX heap-pool max in bytes ({@code <= 0} when undefined)
+     * @param runtimeMax {@link Runtime#maxMemory()} fallback ceiling in bytes
+     * @return the ceiling-based store-sizing budget in KB, never negative
      */
-    static long computeHeapAvailableInKB(long heapMax, long heapUsed, long runtimeMax, long runtimeUsed) {
+    static long computeHeapAvailableInKB(long heapMax, long runtimeMax) {
         long max = heapMax;
-        long used = heapUsed;
         if (max <= 0) {
-            // JMX heap-pool max undefined (-1); fall back to the Runtime view of the heap.
+            // JMX heap-pool max undefined (-1); fall back to the Runtime ceiling.
             max = runtimeMax;
-            used = runtimeUsed;
         }
         if (max <= 0) {
             // Still no usable ceiling (both JMX and Runtime undefined) — avoid a garbage result.
             return 0L;
         }
-        return Math.max(0L, ((max - used) / 1024L) - BASE_MEMORY_IN_KB);
+        return Math.max(0L, (max / 1024L) - BASE_MEMORY_IN_KB);
     }
 
     public static int maxExpectations() {

@@ -815,14 +815,14 @@ Properties can be set via (in order of precedence):
 
 **maxExpectations**
 Maximum expectations held in the in-memory ring buffer. Oldest/lowest-priority expectations are overwritten when limit is reached.
-- Default: min(free heap KB / 10, 15000) — automatically calculated from available JVM heap
+- Default: min(JVM heap size KB / 10, 15000) — automatically calculated from the JVM heap size (-Xmx), same for every instance in the JVM
 - System property: mockserver.maxExpectations
 - Environment variable: MOCKSERVER_MAX_EXPECTATIONS
 - Each expectation typically uses 4-10 KB of heap
 
 **maxLogEntries**
 Maximum log entries in the in-memory ring buffer. Includes recorded requests, match failures, and other log entries.
-- Default: min(free heap KB / 8, 100000) — automatically calculated from available JVM heap
+- Default: min(JVM heap size KB / 8, 100000) — automatically calculated from the JVM heap size (-Xmx), same for every instance in the JVM
 - System property: mockserver.maxLogEntries
 - Environment variable: MOCKSERVER_MAX_LOG_ENTRIES
 - Each HTTP request generates 2-3 log entries; each entry uses 4-10 KB

@@ -6,7 +6,7 @@
 
 <p>MockServer stores expectations and log entries in memory using ring buffers. The two most important settings that affect memory usage are <a href="/mock_server/configuration_properties.html#button_configuration_max_expectations">maxExpectations</a> and <a href="/mock_server/configuration_properties.html#button_configuration_request_log_size">maxLogEntries</a>. Each HTTP request processed by MockServer generates 2-3 log entries (the request itself, the expectation match result, and the response).</p>
 
-<p>Both settings have automatic defaults based on available JVM heap space. The table below provides recommended values if you want to override the defaults for different heap sizes:</p>
+<p>Both settings have automatic defaults derived from the JVM heap size (the <span class="inline_code">-Xmx</span> maximum), so the default is the same for every MockServer instance in a JVM regardless of how much memory is already in use. The table below provides recommended values if you want to override the defaults for different heap sizes:</p>
 
 <table>
     <tr>

@@ -27,6 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
 
 ### Fixed
+- The default `maxLogEntries` and `maxExpectations` no longer depend on how much heap happened to be in use
+  when the first MockServer instance in a JVM started. They are now derived from the JVM heap **ceiling**
+  (`-Xmx`) — a value fixed for the JVM's lifetime — instead of the momentary free heap (`max − used`).
+  Previously the free-heap figure was read once and the resolved default cached JVM-wide with no reset path,
+  so whatever the heap looked like at that first read froze the store capacity for **every** instance for the
+  rest of the JVM: a test suite whose first mock server started after a heavy fixture silently got a small
+  store, the ring buffer then overwrote entries silently, and a later `verify` could stop finding requests it
+  should have — a plausible cause of failures that reproduce only on one machine or one test ordering (at
+  `-Xmx1g`, holding ~645 MB before the first read dropped the frozen `maxLogEntries` from 100,000 to ~45,957,
+  and a later allocation could not raise it). The default is now deterministic and identical for every
+  instance in the JVM, independent of allocation history. **Note this changes the default sizing basis, not a
+  bug in isolation:** the store is now sized to the heap the JVM is *allowed* rather than to what was free at
+  one moment, so on a heavily-used small heap the default is somewhat larger (and deterministic) than before.
+  Behaviour for an **explicitly set** `mockserver.maxLogEntries` / `mockserver.maxExpectations` (system
+  property, environment variable, or properties file) is unchanged — an explicit value is still resolved and
+  cached exactly as before and always wins. Deployments that need a smaller store should set the property
+  explicitly. On JVMs that do not report a usable heap maximum (e.g. GraalVM native images) the dev-mode floor
+  of 1,000 still applies.
 - JavaScript response/forward templates no longer construct a throw-away GraalVM engine and re-parse the
   script on every request, which under concurrent load could monopolise the small shared action-dispatch
   thread pool and starve unrelated workloads (plain matches, forwarding, Velocity templates, large-body

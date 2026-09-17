@@ -50,7 +50,7 @@
 
 <p><strong>Important notes for parallel testing:</strong></p>
 <ul>
-    <li>The event log size is bounded by the <code>maxLogEntries</code> configuration property (default: minimum of free heap KB / 8 and 100,000 entries—see <a href="/mock_server/configuration_properties.html">configuration</a>). When this limit is reached, the oldest entries are evicted. If you run many parallel tests generating thousands of requests, consider increasing this value. Similarly, the number of expectations held in memory is bounded by <code>maxExpectations</code> (default: minimum of free heap KB / 10 and 15,000 expectations).</li>
+    <li>The event log size is bounded by the <code>maxLogEntries</code> configuration property (default: minimum of JVM heap size KB / 8 and 100,000 entries—see <a href="/mock_server/configuration_properties.html">configuration</a>). When this limit is reached, the oldest entries are evicted. If you run many parallel tests generating thousands of requests, consider increasing this value. Similarly, the number of expectations held in memory is bounded by <code>maxExpectations</code> (default: minimum of JVM heap size KB / 10 and 15,000 expectations).</li>
     <li>Event recording uses an asynchronous ring buffer. However, verification operations are serialized through the same ring buffer in FIFO order, so a request that has reached MockServer and been recorded will be visible to subsequent verification calls. Intermittent failures are more commonly caused by:
         <ul>
             <li>Your application under test sending requests asynchronously—ensure the application has completed sending before you verify</li>
