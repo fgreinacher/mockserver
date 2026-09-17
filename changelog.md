@@ -21,6 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
 
 ### Fixed
+- Unusual request header values (a leading space, an embedded DEL `0x7F`, other control characters) are still
+  accepted, matched and recorded byte-for-byte on the HTTP/2 multiplex server path. MockServer deliberately
+  records malformed traffic so users can test how their own clients behave. The multiplex frame decoder
+  previously validated only header *names*, so such values passed; a newer Netty (`netty-codec-http2` 4.2.18)
+  tightened that decoder to validate header *values* too, so the request was rejected with
+  `RST_STREAM(PROTOCOL_ERROR)` at frame-decode time — before it could be matched or logged. Inbound validation
+  is now disabled on the multiplex frame codec, which restores that value leniency. Netty folds header-name and
+  header-value validation under a single frame-codec flag with no names-only control, so this **also** disables
+  inbound header-*name* validation on the multiplex path: malformed header names (control characters, spaces)
+  that the frame decoder rejected on both 4.2.17 and 4.2.18 are now accepted and recorded as well. This makes
+  the multiplex path more lenient for names than the relay/echo paths, which disable validation only on the
+  HTTP/2→HTTP/1 conversion and keep their frame reader strict. Outbound response and trailer header names remain
+  validated, and HTTP/2-forbidden connection-specific header names (for example `Connection`,
+  `Transfer-Encoding`) are still rejected by the framing layer regardless.
 - Forward-proxy authentication no longer allocates a per-request memory buffer that was never released. Every
   proxy-authenticated request built its expected `Proxy-Authorization` value with Netty buffers that were left
   for the garbage collector instead of being freed, producing steady per-request garbage on a hot path. The

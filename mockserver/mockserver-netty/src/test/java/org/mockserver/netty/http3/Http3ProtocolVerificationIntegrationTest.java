@@ -15,6 +15,7 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicSslContextBuilder;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import org.junit.After;
 import org.junit.Assume;
 import org.junit.Before;
@@ -26,8 +27,6 @@ import org.mockserver.model.Format;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.Protocol;
 
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 import java.net.InetSocketAddress;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -138,7 +137,7 @@ public class Http3ProtocolVerificationIntegrationTest {
         clientGroup = new NioEventLoopGroup(1);
 
         QuicSslContext clientSslContext = QuicSslContextBuilder.forClient()
-            .trustManager(trustAllManager())
+            .trustManager(InsecureTrustManagerFactory.INSTANCE)
             .applicationProtocols(Http3.supportedApplicationProtocols())
             .build();
 
@@ -216,23 +215,5 @@ public class Http3ProtocolVerificationIntegrationTest {
                 t
             );
         }
-    }
-
-    @SuppressWarnings("TrustAllX509TrustManager")
-    private static TrustManager trustAllManager() {
-        return new X509TrustManager() {
-            @Override
-            public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType) {
-            }
-
-            @Override
-            public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType) {
-            }
-
-            @Override
-            public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-                return new java.security.cert.X509Certificate[0];
-            }
-        };
     }
 }

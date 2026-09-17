@@ -19,6 +19,7 @@ import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicSslContextBuilder;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import org.junit.After;
 import org.junit.Assume;
 import org.junit.Before;
@@ -27,8 +28,6 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.HttpError;
 
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 import java.net.InetSocketAddress;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -180,7 +179,7 @@ public class Http3StreamErrorIntegrationTest {
         clientGroup = new NioEventLoopGroup(1);
 
         QuicSslContext clientSslContext = QuicSslContextBuilder.forClient()
-            .trustManager(trustAllManager())
+            .trustManager(InsecureTrustManagerFactory.INSTANCE)
             .applicationProtocols(Http3.supportedApplicationProtocols())
             .build();
 
@@ -297,21 +296,5 @@ public class Http3StreamErrorIntegrationTest {
                 "native QUIC transport failed to load -- skipping HTTP/3 stream-error test", t
             );
         }
-    }
-
-    @SuppressWarnings("TrustAllX509TrustManager")
-    private static TrustManager trustAllManager() {
-        return new X509TrustManager() {
-            @Override
-            public void checkClientTrusted(X509Certificate[] chain, String authType) {}
-
-            @Override
-            public void checkServerTrusted(X509Certificate[] chain, String authType) {}
-
-            @Override
-            public X509Certificate[] getAcceptedIssuers() {
-                return new X509Certificate[0];
-            }
-        };
     }
 }

@@ -424,6 +424,26 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
         // compression is a separate concern carried by the grpc-encoding header (handled by
         // GrpcFrameCodec), on which HttpContentDecompressor is inert.
         Http2FrameCodecBuilder frameCodecBuilder = Http2FrameCodecBuilder.forServer()
+            // Disable INBOUND header validation on the connection-level frame decoder so unusual request
+            // header values (leading space, embedded DEL/0x7F, other control characters) are decoded and
+            // recorded rather than RST_STREAM'd -- MockServer records malformed traffic so users can test
+            // their own clients. This governs the frame codec's Http2HeadersDecoder: as of netty-codec-http2
+            // 4.2.18 that decoder validates header VALUES too (earlier versions validated only names), so a
+            // value like 0x7F is otherwise rejected with PROTOCOL_ERROR at DECODE time -- before the
+            // per-stream LenientInboundHttp2StreamFrameCodec (which relaxes only the HTTP/2->HTTP/1
+            // CONVERSION) can accept it.
+            //
+            // This flag is deliberately load-bearing -- do NOT "tidy" it away. Netty exposes a single
+            // validateHeaders flag covering both names and values with no names-only control, so disabling it
+            // ALSO disables inbound header-NAME validation. That makes this the ONLY MockServer path with an
+            // unvalidated frame reader: the relay/echo connection-adapter paths (RelayConnectHandler,
+            // EchoServerInitializer) disable validation only on the InboundHttp2ToHttpAdapter CONVERSION
+            // (validateHttpHeaders(false)) while their frame reader keeps the default validateHeaders=true, so
+            // they still reject malformed inbound NAMES. The wider name leniency here is an accepted,
+            // unavoidable consequence of keeping value leniency. HTTP/2-forbidden connection-specific names
+            // (Connection, Transfer-Encoding, ...) are still rejected by the framing layer, and OUTBOUND
+            // response/trailer header NAMES remain validated by the per-stream codec.
+            .validateHeaders(false)
             .initialSettings(Http2Settings.defaultSettings()
                 .maxConcurrentStreams(HTTP2_MAX_CONCURRENT_STREAMS)
                 .maxFrameSize(configuration.maxRequestBodySize() < Http2CodecUtil.MAX_FRAME_SIZE_LOWER_BOUND

@@ -27,6 +27,7 @@ import org.junit.Test;
 import org.mockserver.client.MockServerClient;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.mock.Expectation;
+import org.mockserver.model.HttpRequest;
 import org.mockserver.netty.MockServer;
 
 import java.nio.charset.StandardCharsets;
@@ -69,6 +70,14 @@ public class Http2MultiplexHeaderValidationIntegrationTest {
     // (an octet == 0x7F is not permitted) — so it survives the HTTP/2 layer and only the HTTP/1-object
     // conversion validation trips on it.
     private static final String MALFORMED_HEADER_VALUE = "abc\u007Fdef";
+
+    // A header NAME carrying the same DEL (0x7F). A control character is illegal in an HTTP field name, so
+    // Netty's header-name validator rejects it when the frame reader has validateHeaders on (the default, and
+    // what every OTHER MockServer path uses) -- the multiplex frame codec's validateHeaders(false) is the only
+    // reason it is accepted here. The surrounding "x-...name" is an ordinary lowercase token, keeping this
+    // clear of the separate, UNCONDITIONAL HTTP/2 checks (lowercase-name enforcement, connection-specific-name
+    // ban) that validateHeaders(false) does NOT relax, so the test isolates the name-validation change.
+    private static final String MALFORMED_HEADER_NAME = "x-malformedname";
 
     private MockServer mockServer;
     private MockServerClient mockServerClient;
@@ -114,6 +123,62 @@ public class Http2MultiplexHeaderValidationIntegrationTest {
         assertThat("MALFORMED_HEADER_VALUE must contain DEL (0x7F) or this test proves nothing",
             (int) MALFORMED_HEADER_VALUE.charAt(3), is(0x7F));
     }
+
+    /**
+     * Same mechanical guard as {@link #malformedHeaderValueMustActuallyCarryTheDelCharacter()} but for the
+     * header NAME: the DEL (0x7F) is non-printing, so {@link #MALFORMED_HEADER_NAME} reads as
+     * "x-malformedname" in grep/diff/review output. Assert the byte is there so the name-dimension test below
+     * cannot silently degrade to a well-formed name that would pass under strict validation and prove nothing.
+     */
+    @Test
+    public void malformedHeaderNameMustActuallyCarryTheDelCharacter() {
+        assertThat("MALFORMED_HEADER_NAME must contain DEL (0x7F) or this test proves nothing",
+            (int) MALFORMED_HEADER_NAME.charAt("x-malformed".length()), is(0x7F));
+    }
+
+    /**
+     * The name-dimension counterpart to {@link #shouldAcceptUnusualHeaderValueOnTheMultiplexPath()}. Disabling
+     * frame-reader validation to keep unusual header VALUES working (see PortUnificationHandler) also disables
+     * inbound header-NAME validation, because Netty folds both under one flag with no names-only control. That
+     * is the half that actually CHANGES behaviour on the multiplex path, so it gets equal coverage: a header
+     * whose NAME carries a DEL (0x7F) — rejected at frame-decode with strict validation — must be accepted,
+     * matched (on path), and recorded with the name intact through to the event log.
+     */
+    @Test(timeout = 30000)
+    public void shouldAcceptUnusualHeaderNameOnTheMultiplexPath() throws Exception {
+        NioEventLoopGroup group = new NioEventLoopGroup();
+        try {
+            Channel parent = connectMultiplexParent(group);
+
+            CompletableFuture<Response> responseFuture = new CompletableFuture<>();
+            Http2StreamChannel streamChannel = new Http2StreamChannelBootstrap(parent)
+                .handler(new ResponseCollector(responseFuture))
+                .open()
+                .sync()
+                .getNow();
+
+            Http2Headers headers = new DefaultHttp2Headers(false)
+                .method(HttpMethod.GET.asciiName())
+                .scheme(HttpScheme.HTTP.name())
+                .authority("localhost:" + mockServer.getLocalPort())
+                .path("/http2_multiplex_malformed_header");
+            headers.set(MALFORMED_HEADER_NAME, "present");
+            streamChannel.writeAndFlush(new DefaultHttp2HeadersFrame(headers, true));
+
+            Response response = responseFuture.get(15, TimeUnit.SECONDS);
+
+            assertThat("status", response.status, is("200"));
+            assertThat(response.body, is("received_malformed_header"));
+
+            HttpRequest[] recorded = mockServerClient.retrieveRecordedRequests(
+                request().withPath("/http2_multiplex_malformed_header"));
+            assertThat("recorded request count", recorded.length, is(1));
+            assertThat("recorded header NAME preserved intact (embedded DEL 0x7F)",
+                recorded[0].getFirstHeader(MALFORMED_HEADER_NAME), is("present"));
+        } finally {
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
+        }
+    }
     @Test(timeout = 30000)
     public void shouldAcceptUnusualHeaderValueOnTheMultiplexPath() throws Exception {
         NioEventLoopGroup group = new NioEventLoopGroup();
@@ -127,9 +192,13 @@ public class Http2MultiplexHeaderValidationIntegrationTest {
                 .sync()
                 .getNow();
 
-            // DefaultHttp2Headers validates only names, never values, so the malformed value goes on the
-            // wire verbatim.
-            Http2Headers headers = new DefaultHttp2Headers()
+            // Build the inbound headers with validation disabled (new DefaultHttp2Headers(false)) so the
+            // DEL (0x7F) value can be injected verbatim, exactly as the real lenient inbound path delivers
+            // it: the shared-connection decoder sets validateHttpHeaders(false). The no-arg constructor
+            // enables validation, and as of netty-codec-http2 4.2.18 that validation now rejects 0x7F
+            // header values (earlier versions validated only names) — which would throw here at setup,
+            // before the server-side conversion under test ever runs.
+            Http2Headers headers = new DefaultHttp2Headers(false)
                 .method(HttpMethod.GET.asciiName())
                 .scheme(HttpScheme.HTTP.name())
                 .authority("localhost:" + mockServer.getLocalPort())
@@ -145,6 +214,17 @@ public class Http2MultiplexHeaderValidationIntegrationTest {
 
             assertThat("status", response.status, is("200"));
             assertThat(response.body, is("received_malformed_header"));
+
+            // Accepted-and-matched is necessary but not sufficient: prove the value is RECORDED INTACT,
+            // with the DEL (0x7F) byte preserved end to end, which is the point of the lenient inbound
+            // path (users record malformed traffic to test their own clients). If frame-decode validation
+            // had merely been relaxed enough to avoid the reset but the value were normalised/stripped en
+            // route to the event log, this assertion would catch it.
+            HttpRequest[] recorded = mockServerClient.retrieveRecordedRequests(
+                request().withPath("/http2_multiplex_malformed_header"));
+            assertThat("recorded request count", recorded.length, is(1));
+            assertThat("recorded header value preserved intact (embedded DEL 0x7F)",
+                recorded[0].getFirstHeader("x-malformed-value"), is(MALFORMED_HEADER_VALUE));
         } finally {
             group.shutdownGracefully(0, 1, TimeUnit.SECONDS);
         }
